@@ -24,6 +24,15 @@ The system SHALL dispatch a task to a named agent persona within a specified cre
 ### Requirement: Task status and collection
 The system SHALL report a task's progress and result when polled, and SHALL list all tasks in a crew when no specific task is named. The system SHALL always include mail state in the pickup response without requiring any flag or option. The system SHALL support an optional `timeout_secs` parameter that, when greater than zero, polls until the task completes, the timeout elapses, or new Admiral mail arrives.
 
+The system SHALL read all crew mailboxes on every `pickup` call (all six persona mailboxes, `/var/mail/captain`, and `/var/mail/admiral`) and include subject lines and counts in the response. Only subject lines are returned — message bodies are not read. Reading mailboxes never modifies them.
+
+What is reported back is tuned to how `pickup` was called:
+
+- When `pickup` is called with a `task_id`: report the task's agent mailbox, captain, and admiral — subjects and counts for those three.
+- When `pickup` is called without a `task_id` (crew-wide): report all persona mailboxes, captain, and admiral.
+
+In both cases all 8 mailboxes are read; only the reported set differs.
+
 #### Scenario: Poll a specific task
 - **WHEN** `pickup` is called with a `task_id` and `crew_id`
 - **THEN** the system returns the task's done state, turn count, last tool used, elapsed seconds, result, error, and outcome, plus the unread mail count for the agent that ran the task and the Admiral mail count
@@ -31,6 +40,14 @@ The system SHALL report a task's progress and result when polled, and SHALL list
 #### Scenario: List all tasks in a crew
 - **WHEN** `pickup` is called with a `crew_id` but no `task_id`
 - **THEN** the system returns a dict containing the task list, a per-agent unread mail summary, and the Admiral mail count
+
+#### Scenario: Poll a specific task reports agent, captain, and admiral subjects
+- **WHEN** `pickup` is called with a `task_id` and `crew_id`
+- **THEN** the response includes the existing fields plus `<agent>_mail: N`, `<agent>_subjects: [...]`, `captain_mail: N`, `captain_subjects: [...]`, `admiral_mail: N`, `admiral_subjects: [...]`
+
+#### Scenario: List all tasks reports all persona, captain, and admiral subjects
+- **WHEN** `pickup` is called with a `crew_id` but no `task_id`
+- **THEN** the response includes subject line summaries for all persona mailboxes plus captain and admiral alongside the existing task list
 
 #### Scenario: Poll a specific task with timeout
 - **WHEN** `pickup` is called with a `task_id`, `crew_id`, and `timeout_secs` greater than zero, and the task completes before the timeout elapses

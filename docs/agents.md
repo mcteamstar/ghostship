@@ -18,7 +18,7 @@ installs the `openspec` CLI; the `openspec-*` skills under
 | **Banshee** | Independent review/fix operative — a second pair of eyes across a wider field than Ghost's single task; finds bugs, runs tests, traces to root | `read grep glob write code shell` | `openspec-explore`, `openspec-propose`, `openspec-update-change`, `openspec-apply-change` |
 | **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code | `read grep glob shell` | none (adjacent — reads change context, doesn't edit it) |
 | **Reaper** | Cleanup operative — closes out finished changes | `read grep glob write shell` | `openspec-sync-specs`, `openspec-archive-change` |
-| **Raven** | Watcher and messenger for the Captain's recurring loop — skims the crew's and every worker's mailbox, assesses the whole crew each check-in, and dispatches bounded next steps without implementing them | `read grep glob shell` | dispatch via the `kirocrew` CLI and the crew gateway's REST API, restricted by prompt to Ghost, Spectre, Banshee, Wraith, or Reaper |
+| **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, and carries messages between personas and the Admiral. Dispatches bounded next steps without implementing work. Captain-loop behaviour is injected via standing order template, not baked into the persona. | `read grep glob shell` | dispatch via the `kirocrew` CLI and the crew gateway's REST API |
 
 The five worker personas form the OpenSpec cycle: Spectre explores and
 proposes, Ghost implements, Banshee independently reviews and fixes, Reaper

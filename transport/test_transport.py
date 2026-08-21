@@ -744,6 +744,7 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value=self._task_response(False)) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
             patch.object(server.time, "sleep") as sleep,
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
@@ -765,6 +766,7 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value={"agents": agents}) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
             patch.object(server.time, "sleep") as sleep,
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
@@ -792,6 +794,7 @@ class PickupTimeoutTests(unittest.TestCase):
             ) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
             patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
             patch.object(server.time, "sleep", side_effect=advance) as sleep,
         ):
@@ -815,6 +818,7 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
             patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
             patch.object(server.time, "sleep", side_effect=advance),
         ):
@@ -834,11 +838,14 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value=self._task_response(True, agent="ghost")),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={"ghost": 3, "admiral": 1}),
+            patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["hello"], "admiral": ["order1"]}),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
 
         self.assertEqual(result["agent_mail"], 3)
         self.assertEqual(result["admiral_mail"], 1)
+        self.assertEqual(result["ghost_subjects"], ["hello"])
+        self.assertEqual(result["admiral_subjects"], ["order1"])
 
     def test_pickup_mail_counts_present_list_all(self) -> None:
         """5.4 — mail counts present in list-all response."""
@@ -850,12 +857,15 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value={"agents": agents}),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={"ghost": 2, "admiral": 1}),
+            patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["done"], "admiral": ["check"]}),
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
 
         self.assertIn("mail_summary", result)
         self.assertEqual(result["mail_summary"]["ghost"], 2)
         self.assertEqual(result["admiral_mail"], 1)
+        self.assertEqual(result["ghost_subjects"], ["done"])
+        self.assertEqual(result["admiral_subjects"], ["check"])
 
     def test_pickup_admiral_mail_early_return(self) -> None:
         """5.5 — Admiral mail early-return sets reason='admiral_mail'."""
@@ -880,6 +890,7 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", side_effect=mock_read_all_mail_counts),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
             patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
             patch.object(server.time, "sleep", side_effect=advance),
         ):
@@ -1304,6 +1315,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
         prompt = json.loads(definition_path.read_text())["prompt"]
 
+        # Lean raven prompt retains gateway orientation (CLI + REST + auth)
         for phrase in (
             "kirocrew",
             "spawn list",
@@ -1318,55 +1330,72 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             "/api/spawn/{task_id}/steer",
             "/api/spawn/{task_id}/continue",
             "never let its value show up anywhere",
-            "pause your own check-in job",
-            "the only one in this crew",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, prompt)
+        # Self-cancel and store resolution are now Captain-template-only
         self.assertNotIn("captain-check-in", prompt)
         self.assertNotIn("native worker-status tool is not exposed", prompt)
         self.assertNotIn("agent shells do not receive", prompt)
         self.assertNotIn("native in-session spawn tooling", prompt)
 
+        # Verify self-cancel and store-resolution live in the Captain check-in task
+        checkin = server._CAPTAIN_CHECKIN_TASK
+        self.assertIn("pause your own check-in job", checkin)
+        self.assertIn("the only one in this crew", checkin)
+
     def test_raven_and_sdd_bodies_cover_running_task_steering(self) -> None:
         definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
         prompt = json.loads(definition_path.read_text())["prompt"]
-        bodies = {"raven prompt": prompt, "sdd template": server._ORDER_TEMPLATES["sdd"]["body"]}
-        for label, body in bodies.items():
-            with self.subTest(body=label):
-                for phrase in (
-                    "steer it with the new context rather than waiting for it to finish",
-                    "/api/spawn/{task_id}/steer",
-                    "/api/spawn/{task_id}/continue",
-                    '"mode": "follow_up"',
-                ):
-                    self.assertIn(phrase, body)
-                self.assertNotIn("native in-session spawn tooling", body)
+        # The raven prompt has the REST endpoints but not the Captain-loop
+        # steering instruction (that lives in the templates now).
+        for phrase in (
+            "/api/spawn/{task_id}/steer",
+            "/api/spawn/{task_id}/continue",
+            '"mode": "follow_up"',
+        ):
+            self.assertIn(phrase, prompt)
+
+        # The sdd template retains the full steering instruction.
+        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
+        for phrase in (
+            "steer it with the new context rather than waiting for it to finish",
+            "/api/spawn/{task_id}/steer",
+            "/api/spawn/{task_id}/continue",
+            '"mode": "follow_up"',
+        ):
+            self.assertIn(phrase, sdd_body)
+        self.assertNotIn("native in-session spawn tooling", sdd_body)
 
     def test_raven_and_sdd_bodies_cover_persona_mailbox_skim(self) -> None:
         definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
         prompt = json.loads(definition_path.read_text())["prompt"]
-        bodies = {"raven prompt": prompt, "sdd template": server._ORDER_TEMPLATES["sdd"]["body"]}
-        for label, body in bodies.items():
-            with self.subTest(body=label):
-                for persona in ("ghost", "spectre", "banshee", "wraith", "reaper"):
-                    self.assertIn(f"/var/mail/{persona}", body)
-                self.assertIn("never marks anything as read", body)
-                self.assertIn("spawn list", body)
+        # Lean raven prompt lists all persona mailboxes directly.
+        for persona in ("ghost", "spectre", "banshee", "wraith", "reaper"):
+            self.assertIn(f"/var/mail/{persona}", prompt)
+        self.assertIn("never marks anything as read", prompt)
+        self.assertIn("spawn list", prompt)
+        # The sdd template no longer duplicates the mailbox skim paragraph
+        # (that's generic Raven behaviour in raven.json now). It still has
+        # spawn list and gateway orientation.
+        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
+        self.assertIn("spawn list", sdd_body)
 
     def test_raven_and_sdd_bodies_cover_full_store_registration_command(self) -> None:
-        definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
-        prompt = json.loads(definition_path.read_text())["prompt"]
-        bodies = {"raven prompt": prompt, "sdd template": server._ORDER_TEMPLATES["sdd"]["body"]}
-        for label, body in bodies.items():
-            with self.subTest(body=label):
-                self.assertIn("openspec store list --json", body)
-                self.assertIn("openspec store register", body)
-                self.assertIn("--id repo", body)
-                self.assertIn("--yes", body)
-                self.assertIn("PROJECT_ROOT", body)
-                self.assertIn("subagent_*", body)
-                self.assertIn("--store <id>", body)
+        # Store resolution is now Captain-template-only, not in the lean raven prompt.
+        # Verify it's in the sdd template.
+        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
+        self.assertIn("openspec store list --json", sdd_body)
+        self.assertIn("openspec store register", sdd_body)
+        self.assertIn("--id repo", sdd_body)
+        self.assertIn("--yes", sdd_body)
+        self.assertIn("PROJECT_ROOT", sdd_body)
+        self.assertIn("subagent_*", sdd_body)
+        self.assertIn("--store <id>", sdd_body)
+        # Also in the Captain check-in task.
+        checkin = server._CAPTAIN_CHECKIN_TASK
+        self.assertIn("openspec store list --json", checkin)
+        self.assertIn("openspec store register", checkin)
 
     def test_order_without_existing_job_requires_schedule_before_mail(self) -> None:
         with (
@@ -1501,7 +1530,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("From admiral@localhost "))
         self.assertEqual(lines[1], "From: admiral@localhost")
         self.assertEqual(lines[2], "To: captain@localhost")
-        self.assertEqual(lines[3], "Subject: Standing order")
+        # Subject is derived from the first non-empty body line.
+        self.assertEqual(lines[3], "Subject: first order")
         self.assertTrue(lines[4].startswith("Date: "))
         self.assertEqual(lines[5], "")
         self.assertTrue(message.endswith("first order\nsecond line\n\n"))

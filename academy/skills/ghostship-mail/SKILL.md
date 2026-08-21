@@ -1,13 +1,13 @@
 ---
-name: radio
-description: Inter-agent messaging within a KiroCrew crew using mbox files in /var/mail. Use when one agent needs to hand off work to another, or wait on a result from another agent's task — each dispatched task runs in its own isolated working directory, so this is the coordination channel across them.
+name: ghostship-mail
+description: Inter-agent messaging within a KiroCrew crew using mbox files in /var/mail. Use when one agent needs to hand off work to another, or wait on a result from another agent's task — each dispatched task runs in its own isolated working directory, so mail is the coordination channel across them.
 allowed-tools: Bash(python3:*), Bash(cat:*), Bash(test:*), Bash(grep:*), Bash(sleep:*)
 metadata:
   author: ghostship
-  version: "1.0"
+  version: "2.0"
 ---
 
-# Radio
+# Mail
 
 Inter-agent messaging within a KiroCrew crew using mbox files in `/var/mail/`.
 
@@ -45,18 +45,31 @@ usual reader for this mailbox during its persistent scheduled check-in. Standing
 orders arrive there from the transport on the Admiral's behalf.
 Messages are ephemeral — they exist only for the lifetime of the container.
 
+## Subject-First Convention
+
+**The subject line carries the complete message wherever possible.** A one-liner
+status, a handoff notification, a request — put it entirely in the subject, with
+an empty body. Reserve the body for genuinely long content: diffs, multi-step
+task lists, error logs.
+
+When reading a mailbox, read subject lines first to assess what's present. Only
+open a message body when the subject alone isn't sufficient to understand what
+action is needed.
+
 ## Sending Mail
 
-Use this Python one-liner to send a message:
+Use this Python one-liner to send a message (subject-only, no body):
 
 ```bash
 python3 -c "
 import os, time, datetime
 to = 'spectre'
-subject = 'TICKET-123 ready for review'
-body = 'Committed abc1234. Please review src/components/Example.tsx.'
+subject = 'SRV-68 tasks done, committed abc1234 — ready for review'
+body = ''
 ts = datetime.datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
-msg = f'From ghost@localhost {time.strftime(\"%a %b %d %H:%M:%S %Y\")}\nFrom: ghost@localhost\nTo: {to}@localhost\nSubject: {subject}\nDate: {ts}\n\n{body}\n\n'
+task_id = os.path.basename(os.getcwd()).replace('subagent_', '')
+sender = f'ghost+{task_id}'
+msg = f'From {sender}@localhost {time.strftime(\"%a %b %d %H:%M:%S %Y\")}\nFrom: {sender}@localhost\nTo: {to}@localhost\nSubject: {subject}\nDate: {ts}\n\n{body}\n\n'
 mbox = f'/var/mail/{to}'
 os.makedirs('/var/mail', exist_ok=True)
 open(mbox, 'a').write(msg)
@@ -64,17 +77,40 @@ print(f'Sent to {to}')
 "
 ```
 
-Or write a helper script `/tmp/radio.py`:
+For messages with a body (long content):
+
+```bash
+python3 -c "
+import os, time, datetime
+to = 'spectre'
+subject = 'SRV-68 review findings — 3 issues'
+body = '''1. Missing null check in handler.py:45
+2. Test coverage gap for edge case
+3. Docstring outdated on process_batch()'''
+ts = datetime.datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
+task_id = os.path.basename(os.getcwd()).replace('subagent_', '')
+sender = f'ghost+{task_id}'
+msg = f'From {sender}@localhost {time.strftime(\"%a %b %d %H:%M:%S %Y\")}\nFrom: {sender}@localhost\nTo: {to}@localhost\nSubject: {subject}\nDate: {ts}\n\n{body}\n\n'
+mbox = f'/var/mail/{to}'
+os.makedirs('/var/mail', exist_ok=True)
+open(mbox, 'a').write(msg)
+print(f'Sent to {to}')
+"
+```
+
+Or write a helper script `/tmp/mail.py`:
 
 ```python
 #!/usr/bin/env python3
 import sys, os, time, datetime
 
-def send(to, subject, body, sender='ghost'):
+def send(to, subject, body='', sender='ghost'):
+    task_id = os.path.basename(os.getcwd()).replace('subagent_', '')
+    from_addr = f'{sender}+{task_id}'
     ts = datetime.datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
     msg = (
-        f'From {sender}@localhost {time.strftime("%a %b %d %H:%M:%S %Y")}\n'
-        f'From: {sender}@localhost\n'
+        f'From {from_addr}@localhost {time.strftime("%a %b %d %H:%M:%S %Y")}\n'
+        f'From: {from_addr}@localhost\n'
         f'To: {to}@localhost\n'
         f'Subject: {subject}\n'
         f'Date: {ts}\n'
@@ -85,23 +121,28 @@ def send(to, subject, body, sender='ghost'):
     os.makedirs('/var/mail', exist_ok=True)
     with open(mbox, 'a') as f:
         f.write(msg)
-    print(f'Radio: sent to {to}')
+    print(f'Mail: sent to {to}')
 
 if __name__ == '__main__':
-    # Usage: python3 /tmp/radio.py <to> <subject> <body>
-    send(sys.argv[1], sys.argv[2], sys.argv[3])
+    # Usage: python3 /tmp/mail.py <to> <subject> [body]
+    body = sys.argv[3] if len(sys.argv) > 3 else ''
+    send(sys.argv[1], sys.argv[2], body)
 ```
 
-Then: `python3 /tmp/radio.py spectre "TICKET-123 ready for review" "Committed abc1234."`
+Then: `python3 /tmp/mail.py spectre "SRV-68 ready for review"` (subject-only, empty body)
 
-## Checking Mail
+## Reading Mail
+
+**Read subject lines first** when checking any mailbox — they tell you what's
+there without opening bodies. Only open a body when the subject alone isn't
+sufficient to understand what action is needed.
 
 A `To:` header can use either of two address forms:
 
 - `ghost@localhost` is a **generic** address. Any instance of Ghost that is checking `/var/mail/ghost` should treat it as addressed to itself.
 - `ghost+<task_id>@localhost` is an **instance** address. Only the Ghost instance whose task ID exactly matches `<task_id>` should treat it as addressed to itself; other instances should ignore it.
 
-When checking mail, accept generic messages and instance-addressed messages for your own task ID, while ignoring instance-addressed messages for other task IDs. The following single pattern waits up to five minutes and applies both rules (change `PERSONA` for the persona whose mailbox you are checking):
+When checking mail, accept generic messages and instance-addressed messages for your own task ID, while ignoring instance-addressed messages for other task IDs. The following single pattern waits up to five minutes and applies both rules:
 
 ```bash
 PERSONA=ghost
@@ -145,7 +186,8 @@ fi
 
 ## Conventions
 
-- **Subject line**: include the ticket ID if relevant (e.g. `TICKET-123 ready for review`)
+- **Subject-first**: the subject carries the complete message. Body only for long content (diffs, task lists, error logs).
+- **Subject line**: include the ticket ID if relevant (e.g. `SRV-68 tasks done, committed abc1234`)
 - **Addressing a not-yet-dispatched recipient**: use the generic form (`ghost@localhost`) because that recipient does not have a task ID yet. This is correct and expected for a first-contact handoff, not an error, fallback, or degraded case.
 - **Targeted replies**: once the recipient's task ID is known, use the instance form (for example, `ghost+d07eb161@localhost`) so only that instance treats the reply as addressed to it.
 - **Ghost → Spectre**: ghost sends mail to spectre when implementation is committed and ready for review
@@ -155,7 +197,7 @@ fi
 
 ## Example Workflow
 
-Ghost implements, then signals spectre with its instance address:
+Ghost implements, then signals spectre (subject-only):
 ```bash
 TASK_ID=$(basename $PWD | sed 's/subagent_//')
 git -C /workspace/white commit -am "feat: G hotkey likes focused card"
@@ -164,8 +206,9 @@ HASH=$(git -C /workspace/white rev-parse --short HEAD)
 python3 -c "
 import os, time, datetime
 task_id = '$TASK_ID'
-to, subject = 'spectre', 'TICKET-123 ready for review'
-body = f'Committed $HASH. Please review src/components/Example.tsx.\nReply to ghost+{task_id}@localhost.'
+to = 'spectre'
+subject = f'TICKET-123 ready for review — committed $HASH in src/components/Example.tsx'
+body = ''
 ts = datetime.datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
 msg = (f'From ghost+{task_id}@localhost {time.strftime(\"%a %b %d %H:%M:%S %Y\")}\n'
        f'From: ghost+{task_id}@localhost\nTo: spectre@localhost\nSubject: {subject}\nDate: {ts}\n\n{body}\n\n')
@@ -191,17 +234,12 @@ REPLY_TO=$(grep '^From:' /var/mail/spectre | tail -1 | awk '{print $2}')
 python3 -c "
 import os, time, datetime
 to_addr = '$REPLY_TO'.replace('@localhost','')  # e.g. ghost+d07eb161
-msg_body = 'LGTM. One nit: add a comment on the guard condition.'
+subject = 'Re: TICKET-123 — LGTM, one nit on guard condition'
+body = ''
 ts = datetime.datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
 msg = (f'From spectre@localhost {time.strftime(\"%a %b %d %H:%M:%S %Y\")}\n'
-       f'From: spectre@localhost\nTo: {to_addr}@localhost\nSubject: Re: TICKET-123 ready for review\nDate: {ts}\n\n{msg_body}\n\n')
+       f'From: spectre@localhost\nTo: {to_addr}@localhost\nSubject: {subject}\nDate: {ts}\n\n{body}\n\n')
 open('/var/mail/ghost', 'a').write(msg)
 print('replied')
 "
-```
-
-Ghost checks for generic replies or replies addressed to its specific instance:
-```bash
-TASK_ID=$(basename $PWD | sed 's/^subagent_//')
-grep -A5 -E "^To: ghost(@localhost|\\+${TASK_ID}@localhost)$" /var/mail/ghost || echo "no reply yet"
 ```

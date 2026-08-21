@@ -29,15 +29,27 @@ The system SHALL grant each persona a distinct tool set matching its role, all d
 - **THEN** Raven's agent definition grants no `write` or `code` tool — it directs work by dispatching one of the five sanctioned personas, it does not implement anything itself
 
 ### Requirement: Raven is a sixth, coordination-only persona
-The system SHALL define Raven as a persona distinct in kind from the other five: the Captain is the recurring check-in loop itself, and Raven is the persona that loop dispatches to watch over a crew's standing orders, assess what is actually happening each cycle, and communicate the right order to the right worker — not to explore, implement, review, or archive OpenSpec work itself. Raven's prompt SHALL instruct it to restrict any dispatch it makes to the five sanctioned persona names (`ghost`, `spectre`, `banshee`, `wraith`, `reaper`) — a prompt-level restriction, since Raven composes its own authenticated `POST` to the crew gateway's `/api/spawn` (see `autonomous-orchestration`) and this system does not gate that call's `agent` value in code, the same category of trade-off `Persona division is prompt-level guidance, not a technical gate` already documents for the other five.
+The system SHALL define Raven as a lean, general-purpose watcher and messenger persona. Raven's prompt SHALL describe only generic crew-watching and mail behaviour: reading all mailboxes (including Admiral), writing mail to any address, watching crew task state, dispatching named personas via the crew gateway REST API, and using the `kirocrew` CLI for routine ops. Raven's prompt SHALL NOT embed Captain-loop-specific behaviour (self-cancellation, standing-order ownership, OpenSpec store resolution, or cron job management).
 
-#### Scenario: Raven is explicitly selected for Captain check-ins
-- **WHEN** `captain(crew_id, action="order", ...)` creates or reuses a standing-orders check-in job
-- **THEN** the job dispatches Raven because the Captain check-in explicitly selects that coordination persona; generic `schedule()` calls default to Ghost
+Captain-loop-specific behaviour — reading `/var/mail/captain`, self-cancelling when standing orders are met, the order-change contract, sanctioned persona list for dispatch, and OpenSpec store resolution — SHALL be injected by the Captain standing-order template at job creation time, not baked into the persona definition.
 
-#### Scenario: Raven restricts its own dispatches by prompt, not by a technical gate
-- **WHEN** Raven decides to dispatch a persona for the next atomic step
-- **THEN** its own system prompt instructs it to name only one of the five sanctioned personas in that request, and nothing in this system technically prevents it from naming another agent — the same accepted limitation as any other persona's prompt-level scoping
+Raven's prompt SHALL retain guidance on the four operations that require direct gateway REST API calls (dispatch a named persona, get per-task detail, steer a running task, continue a finished task) and how to authenticate those calls.
+
+#### Scenario: Raven dispatched directly reads all mailboxes
+- **WHEN** an Admiral dispatches Raven directly (not via Captain) to read or relay mail
+- **THEN** Raven reads `/var/mail/admiral` and all persona mailboxes as a core capability, without requiring any standing order to enable this behaviour
+
+#### Scenario: Captain-loop Raven receives its loop behaviour via the standing order
+- **WHEN** `captain(action="order")` creates or updates a standing-orders check-in
+- **THEN** the resolved standing order message injected into the Raven dispatch contains: read `/var/mail/captain`, self-cancel when done, the order-change contract, and sanctioned persona list — none of which come from `raven.json` itself
+
+#### Scenario: Directly dispatched Raven has an isolated session
+- **WHEN** Raven is dispatched via `dispatch(agent="raven", ...)`
+- **THEN** Raven runs in a dedicated KiroCrew session with no shared memory from Captain-loop check-ins, which run under the shared background session
+
+#### Scenario: Raven's lean prompt still covers gateway auth
+- **WHEN** Raven needs to dispatch a named persona, steer a task, or continue a finished task
+- **THEN** Raven's base prompt provides guidance on using the gateway REST API with `.local_secret` authentication, since this is generic dispatch capability not Captain-loop-specific
 
 ### Requirement: OpenSpec workflow division by persona
 The system SHALL scope each persona's prompt to the intended OpenSpec workflow division: Spectre to explore/propose/update-change, Ghost to all six operations with apply-change as its implementation path, Banshee to explore/propose/update-change/apply-change for independent review and fixes, and Reaper to sync-specs/archive-change. Banshee SHALL hand specification synchronization and change archival to Reaper rather than owning those close-out operations.

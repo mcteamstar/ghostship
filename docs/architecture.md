@@ -66,7 +66,7 @@ launch(crew_id)
   8. Wait for gateway ready again
   9. Copy manifest-selected agent JSONs (spectre/ghost/banshee/reaper/wraith/raven,
      by default) from /agents bind-mount
-  10. Copy manifest-selected skill dirs (openspec-*, radio, ..., by default)
+  10. Copy manifest-selected skill dirs (openspec-*, ghostship-mail, ..., by default)
       from /skills bind-mount
   11. Copy manifest-selected steering docs (all, by default) from /steering
       bind-mount (see below)
@@ -150,7 +150,7 @@ every `launch` (`"*"` for the `kirocrew` crew type today).
 
 Kept deliberately narrow: environment facts every persona needs regardless of
 its own prompt (the working-directory isolation model, the shared OpenSpec
-store, when to reach for radio) — not project conventions, which belong in
+store, when to reach for mail) — not project conventions, which belong in
 whatever repository the caller delivers into `repo/` and get read naturally
 as part of exploring that codebase. See
 [academy/steering/STANDING_ORDERS.md](../academy/steering/STANDING_ORDERS.md)
@@ -374,7 +374,7 @@ ghostship/
 │   │   └── raven.json
 │   ├── skills/            # KiroCrew skill files, manifest-selected per crew type
 │   │   ├── openspec-*/    # explore/propose/apply-change/update-change/sync-specs/archive-change
-│   │   └── radio/         # inter-agent mbox messaging
+│   │   └── ghostship-mail/  # inter-agent mbox messaging
 │   └── steering/          # crew-wide standing context, manifest-selected per crew type — see docs/architecture.md#steering
 │       └── STANDING_ORDERS.md
 ├── openspec/              # this project's own OpenSpec state (config.yaml, changes/, specs/)

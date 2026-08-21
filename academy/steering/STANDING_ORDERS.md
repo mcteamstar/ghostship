@@ -36,39 +36,50 @@ a completely separate, later-dispatched task implement it — you don't need
 to be told a path for this to work, just run `openspec` commands as normal
 from wherever you are.
 
-## Coordinating across tasks: radio
+## Coordinating across tasks: mail
 
-Default to signaling the crew over radio whenever your work hands off to
+Default to signaling the crew over mail whenever your work hands off to
 another persona, not only when you're stuck waiting. If you finish work
 another persona needs to act on — Ghost committing something Spectre or
 Banshee should review, Banshee finding issues Reaper needs to close out,
 anyone surfacing something the next persona in the cycle should know —
-send that persona a radio message before you finish your task, even if
+send that persona a mail message before you finish your task, even if
 nobody explicitly told you to. Don't rely on a human or another task
 noticing your output on its own; each dispatched task is isolated, so
-radio is the only way another instance finds out your work exists.
+mail is the only way another instance finds out your work exists.
 
 **Commit before you signal.** If your task produced changes to files in
-`repo/`, commit them to git before sending any radio handoff message. A
-radio signal that arrives before the commit means the next persona reads
+`repo/`, commit them to git before sending any mail handoff message. A
+mail message that arrives before the commit means the next persona reads
 state that doesn't yet exist on disk. The commit is the handoff artifact —
-the radio message is just the notification that it's ready.
+the mail message is just the notification that it's ready.
 
 The other direction also applies: if your task depends on output from
 another task that hasn't been dispatched yet, or that's running
 concurrently, you have no way to see when it's done — you can't share a
 working directory or session, and polling something that doesn't exist
-yet just spins forever. Use radio to signal or wait on another agent
+yet just spins forever. Use mail to signal or wait on another agent
 instance there too.
 
-Use the `radio` skill (`/var/mail/` mbox files) for both directions. See
-`skills/radio/SKILL.md` for the send/receive pattern. If a task hands you
-a concrete path or explicit instructions instead, that takes priority —
-radio is for cases where you'd otherwise have no way to know.
+Use the `ghostship-mail` skill (`/var/mail/` mbox files) for both directions.
+See `skills/ghostship-mail/SKILL.md` for the send/receive pattern. If a task
+hands you a concrete path or explicit instructions instead, that takes
+priority — mail is for cases where you'd otherwise have no way to know.
+
+## Mail conventions
+
+- **Derive task ID**: `TASK_ID=$(basename $PWD | sed 's/subagent_//')`
+- **From address**: always use `<persona>+$TASK_ID@localhost` as your `From:` address
+- **First contact**: use generic `<persona>@localhost` when the recipient has no task ID yet; use the instance form `<persona>+$TASK_ID@localhost` for targeted replies
+- **Filter by To**: when reading your mailbox, only process messages where `To:` has no plus-extension (generic) or the plus-extension matches your task ID
+- **Escalate to Admiral**: mail `admiral@localhost` when you need operator input
+- **Read-only**: reading mailboxes never modifies them
+- **Subject-first**: the subject carries the complete message. Read subject lines first when checking any mailbox — they tell you what's there without opening bodies. Only open a body when the subject alone isn't sufficient to understand what action is needed. Write bodies only for genuinely long content (diffs, task lists, error logs).
+- **Captain mailbox source convention**: `From: admiral@localhost` in `/var/mail/captain` = standing orders. `From: <persona>@localhost` = crew correspondence. Never conflate the two — a persona cannot issue standing orders by mailing captain.
 
 ## Avoid unbounded blocking loops
 
-Do not write open-ended blocking polling loops in shell, such as `while true; do ...; sleep N; done` with no fixed cap or exit condition reachable from outside the loop. `steer` cannot interrupt a tool call already in flight, so a task trapped in an unbounded loop cannot receive redirection until that call returns. Prefer a bounded retry loop or radio's send-and-continue pattern when waiting on another agent.
+Do not write open-ended blocking polling loops in shell, such as `while true; do ...; sleep N; done` with no fixed cap or exit condition reachable from outside the loop. `steer` cannot interrupt a tool call already in flight, so a task trapped in an unbounded loop cannot receive redirection until that call returns. Prefer a bounded retry loop or mail's send-and-continue pattern when waiting on another agent.
 
 For example, use a fixed cap and report when the wait expires:
 

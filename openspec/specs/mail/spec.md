@@ -1,13 +1,56 @@
-# Mail — Delta Spec (srv-68-raven-decouple)
+# Mail Specification
 
-Updates to the `radio-messaging` capability (renamed `mail`).
+## Purpose
 
-## Renamed Capability
+Let agents dispatched into the same crew hand off work and reply to each other across their isolated per-task working directories, using mbox files in `/var/mail/` as a coordination channel with no MTA required.
 
-The capability previously known as `radio-messaging` is renamed to `mail`. The skill previously named `radio` is renamed to `ghostship-mail` (the `ghostship-` prefix marks it as a ghostship-native skill). All references in agent prompts, steering docs, and architecture docs SHALL use `mail` and `ghostship-mail` rather than `radio`.
+## Requirements
 
-## New Requirement: Subject-first messaging convention
+### Requirement: Transport-originated Captain mailbox
+The system SHALL recognise `captain@localhost` as a generic address (per the existing two-address-form requirement, "whichever instance is checking") for a crew's standing-orders check-in loop. Unlike every other persona mailbox, which only ever receives mail written by another dispatched persona already inside the crew, `captain@localhost` SHALL also accept mail written from outside the crew container by ghostship's own transport process, on the Admiral's behalf, via `captain(action="order", ...)`.
 
+#### Scenario: Transport writes an Admiral's standing order
+- **WHEN** `captain(crew_id, action="order", message=<text>)` is called
+- **THEN** the system appends a mail message to `/var/mail/captain` inside the crew container, in the same mbox format (envelope line, `From:`/`To:`/`Subject:`/`Date:` headers, blank line, body) every existing persona-to-persona message already uses, addressed generically (no plus-extension) since there is exactly one check-in instance per crew
+
+#### Scenario: Raven checks the Captain mailbox like any persona checks its own
+- **WHEN** Raven's check-in task reads `/var/mail/captain`
+- **THEN** it uses the same generic-address mail-checking behavior every persona already uses for its own mailbox — no special-cased reading logic for this address
+
+### Requirement: Transport-side mail writes guard against body content that would corrupt mbox parsing
+Unlike agent-composed messages, a message written from outside the crew (per the requirement above) SHALL NOT assume its body is safe for the existing unescaped mbox format. The system SHALL detect a body line that begins with `From ` (which the read-side parser treats as a message boundary) before writing, and SHALL escape or reject it rather than write it verbatim.
+
+#### Scenario: Ordinary standing-order text
+- **WHEN** an Admiral's standing-order message contains no line beginning with `From `
+- **THEN** the system writes it unmodified, exactly as the existing agent-side mail convention would
+
+#### Scenario: Standing-order text containing a line that would corrupt mbox parsing
+- **WHEN** an Admiral's standing-order message contains a line beginning with `From `
+- **THEN** the system escapes or rejects that line before writing, rather than writing it verbatim and risking a later mail-check misreading the message boundary
+
+### Requirement: Two valid recipient address forms
+The system SHALL support two `To:` address forms on messages written to `/var/mail/<persona>`: a generic form (`<persona>@localhost`) meaning "whichever instance of this persona is checking mail", and an instance form (`<persona>+<task_id>@localhost`) meaning "only the instance with this exact task ID".
+
+#### Scenario: Generic handoff to a not-yet-dispatched recipient
+- **WHEN** an agent needs to hand off work to a persona that has not been dispatched yet, and therefore has no task ID to address
+- **THEN** it addresses the message `To: <persona>@localhost`, and this is the correct and only available form for a first-contact message — not an error or a degraded case
+
+#### Scenario: Targeted reply to a specific instance
+- **WHEN** an agent replies to a message whose `From:` header included a task ID (e.g. `ghost+d07eb161@localhost`)
+- **THEN** it addresses its reply `To: ghost+d07eb161@localhost`, so only that specific instance treats the reply as addressed to it
+
+### Requirement: Mail-checking filters both address forms correctly
+The system SHALL check mail using a single pattern that recognises a message as addressed to the checking instance if either: the `To:` header has no plus-extension (a generic message for the persona), or the `To:` header's plus-extension matches the checking instance's own task ID.
+
+#### Scenario: Instance checks mail and finds a generic assignment
+- **WHEN** a freshly dispatched agent checks its persona's mailbox and finds a message addressed with no plus-extension
+- **THEN** it treats that message as addressed to itself, without needing to fall back to reading the entire mailbox unfiltered
+
+#### Scenario: Instance checks mail and finds a reply for a different instance
+- **WHEN** an agent checks its persona's mailbox and finds a message whose `To:` plus-extension names a different task ID than its own
+- **THEN** it does not treat that message as addressed to itself
+
+### Requirement: Subject-first messaging convention
 The system SHALL establish a subject-first convention for all inter-agent mail: the subject line SHALL carry the complete message wherever possible. The body is reserved for genuinely long context that cannot fit in a subject — a full diff, a multi-step task list, a detailed error log. Status updates, handoff notifications, and requests SHALL go in the subject only, with an empty or minimal body.
 
 Correspondingly, when any agent reads a mailbox, it SHALL read subject lines first to assess what is present before deciding whether to open individual messages. A mailbox can be fully understood from its subject lines alone in the common case.
@@ -24,8 +67,7 @@ Correspondingly, when any agent reads a mailbox, it SHALL read subject lines fir
 - **WHEN** Raven reads mailboxes during any task — Captain-loop or direct dispatch
 - **THEN** it reads subject lines from all 8 mailboxes (`/var/mail/ghost`, `/var/mail/spectre`, `/var/mail/banshee`, `/var/mail/wraith`, `/var/mail/reaper`, `/var/mail/raven`, `/var/mail/captain`, `/var/mail/admiral`) to build situational awareness, only opening message bodies when the subject alone is insufficient to understand what action is needed
 
-## New Requirement: `pickup` surfaces mail subjects for full situational awareness
-
+### Requirement: `pickup` surfaces mail subjects for full situational awareness
 The system SHALL skim subject lines from relevant mailboxes on every `pickup` call and include them in the response. This gives the Admiral a mail picture without needing a separate dispatch.
 
 - When `pickup` is called with a `task_id`: skim the mailbox of the agent that ran that task, plus always `/var/mail/captain` and `/var/mail/admiral`.
@@ -49,9 +91,8 @@ The system SHALL skim subject lines from relevant mailboxes on every `pickup` ca
 - **WHEN** `pickup` is called and all mailboxes are empty
 - **THEN** the response is the same shape as today with all mail counts at zero
 
+### Requirement: Mail addressing and reading conventions
 The system SHALL document and enforce (via STANDING_ORDERS and the mail skill) a consistent set of conventions for how agents send, address, and read mail within a crew.
-
-### Sending conventions
 
 #### Scenario: Agent sends mail using its instance address as From
 - **WHEN** any persona sends a mail message
@@ -60,8 +101,6 @@ The system SHALL document and enforce (via STANDING_ORDERS and the mail skill) a
 #### Scenario: Agent derives its own task ID from the working directory
 - **WHEN** a persona needs to know its own task ID for addressing purposes
 - **THEN** it derives it from the working directory path: `TASK_ID=$(basename $PWD | sed 's/subagent_//')`
-
-### Addressing conventions
 
 #### Scenario: First contact with a persona not yet dispatched
 - **WHEN** an agent sends mail to a persona that has not been dispatched yet
@@ -75,8 +114,6 @@ The system SHALL document and enforce (via STANDING_ORDERS and the mail skill) a
 - **WHEN** any persona needs to report to or ask a question of the operator
 - **THEN** it addresses the message `To: admiral@localhost`, which the transport surfaces in `pickup` responses as unread Admiral mail count
 
-### Reading conventions
-
 #### Scenario: Agent checks only its own addressed messages
 - **WHEN** a persona checks its mailbox
 - **THEN** it filters messages by `To:` header, treating a message as addressed to itself only if: the `To:` has no plus-extension (generic), or the plus-extension matches its own task ID — it does not process messages addressed to other instances
@@ -85,8 +122,7 @@ The system SHALL document and enforce (via STANDING_ORDERS and the mail skill) a
 - **WHEN** Raven runs a crew-watching task (whether Captain-loop or direct dispatch)
 - **THEN** it reads all persona mailboxes and the Admiral mailbox for situational awareness, without marking any messages as consumed — reading never modifies a mailbox file
 
-## New Requirement: Captain mailbox source convention
-
+### Requirement: Captain mailbox source convention
 The system SHALL distinguish standing orders from crew correspondence in `/var/mail/captain` by the `From:` header alone:
 
 - `From: admiral@localhost` — a standing order written by the transport on the Admiral's behalf via `captain(action="order", ...)`. This is the only authorised source of standing orders.
