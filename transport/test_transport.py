@@ -24,6 +24,8 @@ except ModuleNotFoundError:
     _install_import_stubs()
     server = importlib.import_module("transport.server")
 
+import httpx
+
 
 class Request:
     def __init__(
@@ -933,7 +935,7 @@ class PersonaValidationTests(unittest.TestCase):
             self.assertEqual(api.call_args.kwargs["json"]["agent"], agent)
 
     def test_rejected_agents_do_not_lookup_or_call_crew(self) -> None:
-        rejected = ("kirocrew", "kirocrew-default", "custom-agent", "unknown")
+        rejected = ("spec-ops", "kirocrew-default", "custom-agent", "unknown")
         for agent in rejected:
             with self.subTest(agent=agent):
                 with (
@@ -1283,32 +1285,31 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_orders_resource_lists_sdd_template_metadata_and_body(self) -> None:
         resource = server.resource_orders()
-        definition = server._ORDER_TEMPLATES["sdd"]
+        resolved_body = server._resolve_order_template("sdd", "test-change")
 
         self.assertIn("## sdd", resource)
-        self.assertIn(definition["description"], resource)
-        self.assertIn(definition["body"], resource)
-        self.assertIn("openspec store list --json", definition["body"])
-        self.assertIn("openspec store register", definition["body"])
-        self.assertIn("`--store <id>`", definition["body"])
-        self.assertIn("fix findings that fit this change", definition["body"])
-        self.assertIn("kirocrew", definition["body"])
-        self.assertIn("spawn list", definition["body"])
-        self.assertIn("cron list", definition["body"])
-        self.assertIn("cron pause", definition["body"])
-        self.assertIn("cron resume", definition["body"])
-        self.assertIn("/home/kirocrew/.kiro/crew/.local_secret", definition["body"])
-        self.assertIn("X-Internal-Secret", definition["body"])
-        self.assertIn("localhost:5476", definition["body"])
-        self.assertIn("/api/spawn", definition["body"])
-        self.assertIn("/api/spawn/{task_id}", definition["body"])
-        self.assertIn("/api/spawn/{task_id}/steer", definition["body"])
-        self.assertIn("/api/spawn/{task_id}/continue", definition["body"])
-        self.assertIn("pause your own check-in job", definition["body"])
-        self.assertIn("the only one in this crew", definition["body"])
-        self.assertIn("never let its value show up anywhere", definition["body"])
-        self.assertNotIn("captain-check-in", definition["body"])
-        self.assertNotIn("external `captain(..., action=\"stop\")` operation", definition["body"])
+        self.assertIn("Drive a named OpenSpec change through the standard", resource)
+        self.assertIn("openspec store list --json", resolved_body)
+        self.assertIn("openspec store register", resolved_body)
+        self.assertIn("`--store <id>`", resolved_body)
+        self.assertIn("fix findings that fit this change", resolved_body)
+        self.assertIn("kirocrew", resolved_body)  # upstream kirocrew CLI references
+        self.assertIn("spawn list", resolved_body)
+        self.assertIn("cron list", resolved_body)
+        self.assertIn("cron pause", resolved_body)
+        self.assertIn("cron resume", resolved_body)
+        self.assertIn("/home/kirocrew/.kiro/crew/.local_secret", resolved_body)
+        self.assertIn("X-Internal-Secret", resolved_body)
+        self.assertIn("localhost:5476", resolved_body)
+        self.assertIn("/api/spawn", resolved_body)
+        self.assertIn("/api/spawn/{task_id}", resolved_body)
+        self.assertIn("/api/spawn/{task_id}/steer", resolved_body)
+        self.assertIn("/api/spawn/{task_id}/continue", resolved_body)
+        self.assertIn("pause your own check-in job", resolved_body)
+        self.assertIn("the only one in this crew", resolved_body)
+        self.assertIn("never let its value show up anywhere", resolved_body)
+        self.assertNotIn("captain-check-in", resolved_body)
+        self.assertNotIn("external `captain(..., action=\"stop\")` operation", resolved_body)
 
     def test_raven_prompt_covers_gateway_status_and_self_cancellation(self) -> None:
         definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
@@ -1316,7 +1317,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
         # Lean raven prompt retains gateway orientation (CLI + REST + auth)
         for phrase in (
-            "kirocrew",
+            "kirocrew",  # upstream kirocrew CLI references in Raven orientation
             "spawn list",
             "cron list",
             "cron pause",
@@ -1355,7 +1356,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             self.assertIn(phrase, prompt)
 
         # The sdd template retains the full steering instruction.
-        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
+        sdd_body = server._resolve_order_template("sdd", "test-change")
         for phrase in (
             "steer it with the new context rather than waiting for it to finish",
             "/api/spawn/{task_id}/steer",
@@ -1376,13 +1377,13 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         # The sdd template no longer duplicates the mailbox skim paragraph
         # (that's generic Raven behaviour in raven.json now). It still has
         # spawn list and gateway orientation.
-        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
+        sdd_body = server._resolve_order_template("sdd", "test-change")
         self.assertIn("spawn list", sdd_body)
 
     def test_raven_and_sdd_bodies_cover_full_store_registration_command(self) -> None:
         # Store resolution is now Captain-template-only, not in the lean raven prompt.
         # Verify it's in the sdd template.
-        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
+        sdd_body = server._resolve_order_template("sdd", "test-change")
         self.assertIn("openspec store list --json", sdd_body)
         self.assertIn("openspec store register", sdd_body)
         self.assertIn("--id repo", sdd_body)
@@ -1394,6 +1395,54 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         checkin = server._CAPTAIN_CHECKIN_TASK
         self.assertIn("openspec store list --json", checkin)
         self.assertIn("openspec store register", checkin)
+
+    def test_template_loaded_from_disk_matches_expected_resolved_content(self) -> None:
+        """Template loaded from academy/orders/sdd.md resolves to expected content."""
+        resolved = server._resolve_order_template("sdd", "my-test-change")
+        # Should contain the substituted constants, not raw placeholders
+        self.assertIn(server._RAVEN_GATEWAY_ORIENTATION, resolved)
+        self.assertIn(server._RAVEN_STORE_RESOLUTION, resolved)
+        self.assertIn(server._RAVEN_SELF_CANCEL, resolved)
+        # Should have the change_name substituted
+        self.assertIn("my-test-change", resolved)
+        self.assertNotIn("<change>", resolved)
+        # Should NOT contain any raw {{...}} placeholders
+        import re as _re
+        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
+
+    def test_unknown_template_name_raises_valueerror(self) -> None:
+        """Unknown template name raises ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            server._resolve_order_template("nonexistent-template", None)
+        self.assertIn("Unknown Captain order template", str(ctx.exception))
+        self.assertIn("nonexistent-template", str(ctx.exception))
+
+    def test_resource_orders_returns_dynamic_listing_from_academy_orders(self) -> None:
+        """resource_orders() returns dynamic listing from academy/orders/."""
+        resource = server.resource_orders()
+        # Should contain the sdd template section
+        self.assertIn("## sdd", resource)
+        # Should contain resolved content (no raw placeholders)
+        import re as _re
+        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resource))
+        # Should contain parts of the resolved body
+        self.assertIn("Drive OpenSpec change", resource)
+
+    def test_placeholder_residual_warning(self) -> None:
+        """A warning is logged when an unknown {{…}} placeholder remains after substitution."""
+        import tempfile
+        import os
+        # Create a temporary template with an unknown placeholder
+        orders_dir = server._resolve_orders_dir()
+        test_template = orders_dir / "_test_residual.md"
+        try:
+            test_template.write_text("Body with {{UNKNOWN_PLACEHOLDER}} here.\n")
+            with self.assertLogs("transport", level="WARNING") as cm:
+                server._resolve_order_template("_test_residual", None)
+            self.assertTrue(any("Residual placeholders" in msg for msg in cm.output))
+            self.assertTrue(any("UNKNOWN_PLACEHOLDER" in msg for msg in cm.output))
+        finally:
+            test_template.unlink(missing_ok=True)
 
     def test_order_without_existing_job_requires_schedule_before_mail(self) -> None:
         with (
@@ -2450,14 +2499,14 @@ class TestCrewTypeRegistry(unittest.TestCase):
         """_load_composition_registry() parses a valid registry.json correctly."""
         registry_data = json.dumps({
             "compositions": [
-                {"name": "kirocrew", "description": "Default type", "dir": "kirocrew"},
+                {"name": "spec-ops", "description": "Default type", "dir": "spec-ops"},
                 {"name": "custom", "description": "Custom type", "dir": "custom", "image": "custom:latest"},
             ]
         })
         with tempfile.TemporaryDirectory() as tmp:
             registry_path = Path(tmp) / "registry.json"
             registry_path.write_text(registry_data)
-            crews_dir = Path(tmp) / "kirocrew"
+            crews_dir = Path(tmp) / "spec-ops"
             crews_dir.mkdir()
             custom_dir = Path(tmp) / "custom"
             custom_dir.mkdir()
@@ -2486,7 +2535,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             reg_path = Path(tmp) / "registry.json"
             reg_path.write_text(registry_data)
-            kirocrew_dir = Path(tmp).parent / "crews" / "kirocrew"
+            kirocrew_dir = Path(tmp).parent / "crews" / "spec-ops"
             custom_dir2 = Path(tmp).parent / "crews" / "custom"
 
             # We test by patching the path and directory checks
@@ -2494,9 +2543,9 @@ class TestCrewTypeRegistry(unittest.TestCase):
                 with patch("pathlib.Path.is_dir", return_value=True):
                     result = server._load_composition_registry()
 
-        self.assertIn("kirocrew", result)
+        self.assertIn("spec-ops", result)
         self.assertIn("custom", result)
-        self.assertEqual(result["kirocrew"]["dir"], "kirocrew")
+        self.assertEqual(result["spec-ops"]["dir"], "spec-ops")
         self.assertEqual(result["custom"]["image"], "custom:latest")
 
     def test_missing_file_returns_fallback(self) -> None:
@@ -2504,8 +2553,8 @@ class TestCrewTypeRegistry(unittest.TestCase):
         with patch.object(server, "_CREW_REGISTRY_PATH", Path("/nonexistent/registry.json")):
             result = server._load_composition_registry()
 
-        self.assertEqual(list(result.keys()), ["kirocrew"])
-        self.assertEqual(result["kirocrew"]["dir"], "kirocrew")
+        self.assertEqual(list(result.keys()), ["spec-ops"])
+        self.assertEqual(result["spec-ops"]["dir"], "spec-ops")
 
     def test_malformed_json_returns_fallback(self) -> None:
         """_load_composition_registry() returns fallback for malformed JSON."""
@@ -2515,7 +2564,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
             try:
                 with patch.object(server, "_CREW_REGISTRY_PATH", Path(f.name)):
                     result = server._load_composition_registry()
-                self.assertEqual(list(result.keys()), ["kirocrew"])
+                self.assertEqual(list(result.keys()), ["spec-ops"])
             finally:
                 Path(f.name).unlink()
 
@@ -2524,7 +2573,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
         registry_data = json.dumps({
             "compositions": [
                 {"name": "INVALID-CAPS", "description": "Bad", "dir": "caps"},
-                {"name": "kirocrew", "description": "Good", "dir": "kirocrew"},
+                {"name": "spec-ops", "description": "Good", "dir": "spec-ops"},
             ]
         })
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -2537,7 +2586,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
                 ):
                     result = server._load_composition_registry()
                 self.assertNotIn("INVALID-CAPS", result)
-                self.assertIn("kirocrew", result)
+                self.assertIn("spec-ops", result)
             finally:
                 Path(f.name).unlink()
 
@@ -2546,8 +2595,8 @@ class TestCrewTypeHelpers(unittest.TestCase):
     """Unit tests for _resolve_manifest_path and _resolve_image."""
 
     def test_resolve_manifest_path(self) -> None:
-        entry = {"name": "kirocrew", "dir": "kirocrew"}
-        self.assertEqual(server._resolve_manifest_path(entry), Path("/crews/kirocrew/manifest.json"))
+        entry = {"name": "spec-ops", "dir": "spec-ops"}
+        self.assertEqual(server._resolve_manifest_path(entry), Path("/crews/spec-ops/manifest.json"))
 
     def test_resolve_manifest_path_custom_dir(self) -> None:
         entry = {"name": "custom", "dir": "my-custom-crew"}
@@ -2558,11 +2607,11 @@ class TestCrewTypeHelpers(unittest.TestCase):
         self.assertEqual(server._resolve_image(entry), "custom:v2")
 
     def test_resolve_image_without_override(self) -> None:
-        entry = {"name": "kirocrew", "dir": "kirocrew"}
+        entry = {"name": "spec-ops", "dir": "spec-ops"}
         self.assertEqual(server._resolve_image(entry), server.KC_IMAGE)
 
     def test_resolve_image_empty_string_uses_default(self) -> None:
-        entry = {"name": "kirocrew", "dir": "kirocrew", "image": ""}
+        entry = {"name": "spec-ops", "dir": "spec-ops", "image": ""}
         self.assertEqual(server._resolve_image(entry), server.KC_IMAGE)
 
 
@@ -2571,9 +2620,9 @@ class TestLaunchCrewType(unittest.TestCase):
 
     def test_launch_with_explicit_composition(self) -> None:
         """launch() with a valid composition resolves image and manifest correctly."""
-        test_entry = {"name": "kirocrew", "dir": "kirocrew", "description": "Default"}
+        test_entry = {"name": "spec-ops", "dir": "spec-ops", "description": "Default"}
         with (
-            patch.object(server, "COMPOSITION_REGISTRY", {"kirocrew": test_entry}),
+            patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
@@ -2587,25 +2636,25 @@ class TestLaunchCrewType(unittest.TestCase):
             mock_podman.container_create = Mock()
             mock_podman.container_start = Mock()
 
-            result = server.launch("test-crew", composition="kirocrew")
+            result = server.launch("test-crew", composition="spec-ops")
 
         self.assertEqual(result["status"], "ready")
         # Verify _finish_crew_setup was called with composition and entry
         call_args = mock_setup.call_args
         self.assertEqual(call_args[0][5], "dGVzdA==")  # auth_b64
-        self.assertEqual(call_args[0][6], "kirocrew")  # composition
+        self.assertEqual(call_args[0][6], "spec-ops")  # composition
         self.assertEqual(call_args[0][7], test_entry)  # composition_entry
 
     def test_launch_with_unknown_composition_errors(self) -> None:
         """launch() with unknown composition returns error listing available types."""
         with (
-            patch.object(server, "COMPOSITION_REGISTRY", {"kirocrew": {"name": "kirocrew"}}),
+            patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": {"name": "spec-ops"}}),
         ):
             result = server.launch("test-crew", composition="nonexistent")
 
         self.assertIn("error", result)
         self.assertIn("nonexistent", result["error"])
-        self.assertIn("kirocrew", result["error"])
+        self.assertIn("spec-ops", result["error"])
 
     def test_launch_uses_resolved_image_for_container(self) -> None:
         """launch() passes the resolved image to container_create."""
@@ -2636,14 +2685,14 @@ class TestCrewTypesTool(unittest.TestCase):
     def test_compositions_returns_registry_entries(self) -> None:
         """resource_compositions() returns text with name and description from the registry."""
         test_registry = {
-            "kirocrew": {"name": "kirocrew", "dir": "kirocrew", "description": "Default KiroCrew"},
+            "spec-ops": {"name": "spec-ops", "dir": "spec-ops", "description": "Default KiroCrew"},
             "custom": {"name": "custom", "dir": "custom", "description": "Custom crew type"},
         }
         with patch.object(server, "COMPOSITION_REGISTRY", test_registry):
             result = server.resource_compositions()
 
         self.assertIsInstance(result, str)
-        self.assertIn("kirocrew", result)
+        self.assertIn("spec-ops", result)
         self.assertIn("custom", result)
         self.assertIn("Default KiroCrew", result)
         self.assertIn("Custom crew type", result)
@@ -2651,6 +2700,278 @@ class TestCrewTypesTool(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScheduleCancelTests(unittest.TestCase):
+    """Tests for schedule(action='cancel', ...)."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_cancel_success(self) -> None:
+        """4.1 — cancel an existing job returns success."""
+        jobs_listing = {"jobs": [
+            {"id": "job-abc", "name": "my-job", "agent": "ghost", "enabled": True},
+        ]}
+
+        def api(_crew, _crew_id, method, path, **kwargs):
+            if method == "GET" and path == "/api/crons":
+                return jobs_listing
+            if method == "DELETE" and path == "/api/crons/job-abc":
+                return {}
+            raise AssertionError((method, path, kwargs))
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", side_effect=api),
+        ):
+            result = server.schedule(action="cancel", job_id="job-abc", crew_id="demo")
+
+        self.assertEqual(result, {"status": "cancelled", "job_id": "job-abc"})
+
+    def test_cancel_not_found(self) -> None:
+        """4.1 — cancel a non-existent job returns error."""
+        jobs_listing = {"jobs": []}
+        call_count = [0]
+
+        def api(_crew, _crew_id, method, path, **kwargs):
+            call_count[0] += 1
+            if method == "GET" and path == "/api/crons":
+                return jobs_listing
+            if method == "DELETE":
+                resp = Mock(status_code=404)
+                raise httpx.HTTPStatusError(
+                    "Not Found",
+                    request=None,
+                    response=resp,
+                )
+            raise AssertionError((method, path, kwargs))
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", side_effect=api),
+        ):
+            result = server.schedule(action="cancel", job_id="nonexistent", crew_id="demo")
+
+        self.assertIn("Job not found", result["error"])
+
+    def test_cancel_refuses_captain_checkin_job(self) -> None:
+        """4.2 — cancel refuses to cancel the captain check-in job."""
+        captain_job = {
+            "id": "captain-job-id",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        jobs_listing = {"jobs": [captain_job]}
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
+        ):
+            result = server.schedule(action="cancel", job_id="captain-job-id", crew_id="demo")
+
+        self.assertIn("Cannot cancel the Captain check-in job", result["error"])
+
+    def test_cancel_requires_job_id(self) -> None:
+        """cancel without job_id returns error."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+        ):
+            result = server.schedule(action="cancel", crew_id="demo")
+
+        self.assertIn("job_id is required", result["error"])
+
+
+class ScheduleCreateValidationTests(unittest.TestCase):
+    """Tests for schedule(action='create') input validation."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_create_requires_name(self) -> None:
+        """create without name returns error."""
+        result = server.schedule(action="create", message="do stuff", crew_id="demo", interval=60)
+        self.assertIn("name is required", result["error"])
+
+    def test_create_requires_message(self) -> None:
+        """create without message returns error."""
+        result = server.schedule(action="create", name="my-job", crew_id="demo", interval=60)
+        self.assertIn("message is required", result["error"])
+
+
+class ScheduleListTests(unittest.TestCase):
+    """Tests for schedule(action='list', ...)."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_list_with_jobs(self) -> None:
+        """4.3 — list returns jobs with expected fields."""
+        jobs_listing = {"jobs": [
+            {"id": "j1", "name": "daily-check", "schedule": "0 9 * * *", "agent": "ghost", "enabled": True, "last_run_ts": "2026-01-01T09:00:00"},
+            {"id": "j2", "name": "weekly-report", "schedule": "0 0 * * 1", "agent": "wraith", "enabled": False, "last_run_ts": None},
+        ]}
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
+        ):
+            result = server.schedule(action="list", crew_id="demo")
+
+        self.assertEqual(len(result["jobs"]), 2)
+        self.assertEqual(result["jobs"][0]["job_id"], "j1")
+        self.assertEqual(result["jobs"][0]["name"], "daily-check")
+        self.assertEqual(result["jobs"][0]["agent"], "ghost")
+        self.assertTrue(result["jobs"][0]["enabled"])
+        self.assertEqual(result["jobs"][1]["job_id"], "j2")
+        self.assertFalse(result["jobs"][1]["enabled"])
+
+    def test_list_empty(self) -> None:
+        """4.3 — list returns empty jobs list when no jobs exist."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value={"jobs": []}),
+        ):
+            result = server.schedule(action="list", crew_id="demo")
+
+        self.assertEqual(result, {"jobs": []})
+
+
+class DispatchFireAfterTests(unittest.TestCase):
+    """Tests for dispatch(delay=...)."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_delay_creates_one_shot_cron(self) -> None:
+        """4.4 — dispatch with delay creates a delayed cron job."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value={"id": "delayed-job-1"}) as api,
+        ):
+            result = server.dispatch(
+                "run cleanup", agent="ghost", crew_id="demo", delay=300
+            )
+
+        self.assertIsNone(result["task_id"])
+        self.assertEqual(result["job_id"], "delayed-job-1")
+        self.assertEqual(result["status"], "delayed")
+        self.assertEqual(result["delay"], 300)
+        self.assertEqual(result["agent"], "ghost")
+
+        # Verify it called POST /api/crons with a cron expression (not delay/strict_schedule)
+        api.assert_called_once()
+        call_kwargs = api.call_args.kwargs
+        cron_expr = call_kwargs["json"].get("cron", "")
+        # Should be a 5-field cron expression "M H D Mon *"
+        self.assertEqual(len(cron_expr.split()), 5, f"Expected 5-field cron expr, got: {cron_expr!r}")
+        self.assertNotIn("delay", call_kwargs["json"])
+        self.assertNotIn("strict_schedule", call_kwargs["json"])
+        self.assertEqual(call_kwargs["json"]["agent"], "ghost")
+        self.assertEqual(call_kwargs["json"]["message"], "run cleanup")
+
+    def test_delay_zero_rejected(self) -> None:
+        """4.5 — dispatch with delay=0 returns validation error."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery") as api,
+        ):
+            result = server.dispatch(
+                "run cleanup", crew_id="demo", delay=0
+            )
+
+        self.assertEqual(result, {"error": "delay must be >= 1"})
+        api.assert_not_called()
+
+    def test_delay_negative_rejected(self) -> None:
+        """dispatch with delay=-5 returns validation error."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery") as api,
+        ):
+            result = server.dispatch(
+                "run cleanup", crew_id="demo", delay=-5
+            )
+
+        self.assertEqual(result, {"error": "delay must be >= 1"})
+        api.assert_not_called()
+
+
+class ResourceJobsTests(unittest.TestCase):
+    """Tests for resource_jobs()."""
+
+    def test_resource_jobs_aggregates_across_crews(self) -> None:
+        """4.6 — resource_jobs collects jobs from multiple running crews."""
+        reg = {
+            "crews": {
+                "crew-a": {"container": "gs-crew-a", "status": "running", "cookie": "c1"},
+                "crew-b": {"container": "gs-crew-b", "status": "running", "cookie": "c2"},
+            }
+        }
+        crew_a_jobs = {"jobs": [
+            {"id": "j1", "name": "check", "schedule": "every 60s", "agent": "ghost", "enabled": True, "last_run_ts": "now", "last_status": "ok"},
+        ]}
+        crew_b_jobs = {"jobs": [
+            {"id": "j2", "name": "report", "schedule": "0 9 * * 1", "agent": "wraith", "enabled": False, "last_run_ts": None, "last_status": None},
+        ]}
+
+        def api(crew, method, path, **kwargs):
+            if crew["container"] == "gs-crew-a":
+                return crew_a_jobs
+            return crew_b_jobs
+
+        with (
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_crew_api", side_effect=api),
+        ):
+            result = server.resource_jobs()
+
+        self.assertIn("## crew-a", result)
+        self.assertIn("## crew-b", result)
+        self.assertIn("j1", result)
+        self.assertIn("j2", result)
+        self.assertIn("check", result)
+        self.assertIn("report", result)
+
+    def test_resource_jobs_no_running_crews(self) -> None:
+        """4.6 — resource_jobs returns message when no crews are running."""
+        reg = {"crews": {"stopped": {"container": "gs-stopped", "status": "stopped"}}}
+        with patch.object(server, "_load_registry", return_value=reg):
+            result = server.resource_jobs()
+
+        self.assertEqual(result, "No running crews found.")
+
+    def test_resource_jobs_handles_crew_error_gracefully(self) -> None:
+        """4.6 — resource_jobs reports crew connection errors inline."""
+        reg = {"crews": {"bad": {"container": "gs-bad", "status": "running", "cookie": "c"}}}
+
+        with (
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_crew_api", side_effect=RuntimeError("connection refused")),
+        ):
+            result = server.resource_jobs()
+
+        self.assertIn("## bad", result)
+        self.assertIn("error", result)
+        self.assertIn("connection refused", result)
+
+    def test_resource_jobs_empty_jobs_for_crew(self) -> None:
+        """4.6 — resource_jobs shows 'No scheduled jobs' for crew without jobs."""
+        reg = {"crews": {"empty": {"container": "gs-empty", "status": "running", "cookie": "c"}}}
+        with (
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_crew_api", return_value={"jobs": []}),
+        ):
+            result = server.resource_jobs()
+
+        self.assertIn("## empty", result)
+        self.assertIn("No scheduled jobs", result)
 
 
 class TestPolicyInjection(unittest.TestCase):
@@ -2674,7 +2995,7 @@ class TestPolicyInjection(unittest.TestCase):
             "commands": {"deny": ["^git push", "^gh "]},
             "channels": {"deny": ["slack", "discord"]},
         }
-        (self.policies_dir / "kirocrew.json").write_text(
+        (self.policies_dir / "spec-ops.json").write_text(
             json.dumps(self.kirocrew_policy, indent=2)
         )
 
@@ -2687,7 +3008,7 @@ class TestPolicyInjection(unittest.TestCase):
         mock_podman.container_exec_checked = Mock(return_value="policy injected version=2")
 
         with patch("transport.server.Path") as MockPath:
-            # Make Path("/policies/kirocrew.json") exist and return the composition template
+            # Make Path("/policies/spec-ops.json") exist and return the composition template
             composition_path = Mock()
             composition_path.exists.return_value = True
             composition_path.read_text.return_value = json.dumps(self.kirocrew_policy)
@@ -2697,7 +3018,7 @@ class TestPolicyInjection(unittest.TestCase):
             default_path.read_text.return_value = json.dumps(self.default_policy)
 
             def path_side_effect(arg):
-                if str(arg) == "/policies/kirocrew.json":
+                if str(arg) == "/policies/spec-ops.json":
                     return composition_path
                 elif str(arg) == "/policies/default.json":
                     return default_path
@@ -2706,7 +3027,7 @@ class TestPolicyInjection(unittest.TestCase):
             MockPath.side_effect = path_side_effect
 
             result = server._inject_policy(
-                mock_podman, "gs-test", "kirocrew", "secret123"
+                mock_podman, "gs-test", "spec-ops", "secret123"
             )
 
         self.assertEqual(result, "2")
@@ -2752,14 +3073,14 @@ class TestPolicyInjection(unittest.TestCase):
             composition_path.read_text.return_value = json.dumps(self.default_policy)
 
             def path_side_effect(arg):
-                if str(arg) == "/policies/kirocrew.json":
+                if str(arg) == "/policies/spec-ops.json":
                     return composition_path
                 return Mock()
 
             MockPath.side_effect = path_side_effect
 
             server._inject_policy(
-                mock_podman, "gs-test", "kirocrew", "secret123"
+                mock_podman, "gs-test", "spec-ops", "secret123"
             )
 
         # The script writes both files — verify the script content
@@ -2848,12 +3169,12 @@ class TestPolicyInjection(unittest.TestCase):
             composition_path.read_text.return_value = json.dumps(policy)
 
             def path_side_effect(arg):
-                if str(arg) == "/policies/kirocrew.json":
+                if str(arg) == "/policies/spec-ops.json":
                     return composition_path
                 return Mock()
 
             MockPath.side_effect = path_side_effect
-            server._inject_policy(mock_podman, "gs-test", "kirocrew", secret)
+            server._inject_policy(mock_podman, "gs-test", "spec-ops", secret)
 
         self.assertEqual(len(captured_scripts), 1)
         script = captured_scripts[0]
@@ -2891,7 +3212,7 @@ class TestPolicyInjection(unittest.TestCase):
             composition_path.read_text.return_value = json.dumps(self.default_policy)
 
             def path_side_effect(arg):
-                if str(arg) == "/policies/kirocrew.json":
+                if str(arg) == "/policies/spec-ops.json":
                     return composition_path
                 return Mock()
 
@@ -2901,14 +3222,14 @@ class TestPolicyInjection(unittest.TestCase):
             # catches it. Verify _inject_policy propagates the error.
             with self.assertRaises(RuntimeError):
                 server._inject_policy(
-                    mock_podman, "gs-test", "kirocrew", "secret123"
+                    mock_podman, "gs-test", "spec-ops", "secret123"
                 )
 
     def test_launch_response_includes_policy_version(self) -> None:
         """launch() response includes policy_version when injection succeeds."""
-        test_entry = {"name": "kirocrew", "dir": "kirocrew", "description": "Default"}
+        test_entry = {"name": "spec-ops", "dir": "spec-ops", "description": "Default"}
         with (
-            patch.object(server, "COMPOSITION_REGISTRY", {"kirocrew": test_entry}),
+            patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
             patch.object(server, "_get_podman") as mock_get_podman,
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
@@ -2934,7 +3255,7 @@ class TestPolicyInjection(unittest.TestCase):
             mock_podman.container_exec = Mock(return_value="ready")
             mock_podman.container_exec_checked = Mock(return_value="ok")
 
-            result = server.launch("policy-test", composition="kirocrew")
+            result = server.launch("policy-test", composition="spec-ops")
 
         self.assertEqual(result.get("policy_version"), "1")
 
@@ -2945,7 +3266,7 @@ class TestPolicyInjection(unittest.TestCase):
                 "test-crew": {
                     "container": "gs-test-crew",
                     "status": "running",
-                    "composition": "kirocrew",
+                    "composition": "spec-ops",
                     "created_at": "2026-01-01T00:00:00+00:00",
                     "cookie": "test-cookie",
                     "policy_version": "1",
@@ -2969,7 +3290,7 @@ class TestPolicyInjection(unittest.TestCase):
                 "old-crew": {
                     "container": "gs-old-crew",
                     "status": "running",
-                    "composition": "kirocrew",
+                    "composition": "spec-ops",
                     "created_at": "2025-01-01T00:00:00+00:00",
                     "cookie": "old-cookie",
                     # No policy_version key

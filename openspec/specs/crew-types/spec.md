@@ -12,7 +12,7 @@ The system SHALL discover available crew types from a `crews/registry.json` file
 
 #### Scenario: Registry is missing
 - **WHEN** `crews/registry.json` does not exist
-- **THEN** the system falls back to a single implicit `"kirocrew"` type with the current hardcoded defaults (`KC_IMAGE`, `crews/kirocrew/manifest.json`, `crews/kirocrew/Containerfile`)
+- **THEN** the system falls back to a single implicit `"spec-ops"` type with the current hardcoded defaults (`KC_IMAGE`, `crews/spec-ops/manifest.json`, `crews/spec-ops/Containerfile`)
 
 #### Scenario: Registry entry references a nonexistent directory
 - **WHEN** a crew type entry in the registry points to a `crews/<type>/` directory that does not exist
@@ -41,11 +41,11 @@ The system SHALL expose a `crew_types` MCP tool that returns the list of availab
 - **THEN** the system returns an array of objects, each containing `name` and `description`, for every valid crew type in the registry
 
 ### Requirement: Launch resolves crew type
-The `launch` tool SHALL accept an optional `crew_type` parameter (defaulting to `"kirocrew"`), resolve the matching registry entry, and use that entry's `image` and `dir` (for manifest lookup) when creating the crew container.
+The `launch` tool SHALL accept an optional `crew_type` parameter (defaulting to `"spec-ops"`), resolve the matching registry entry, and use that entry's `image` and `dir` (for manifest lookup) when creating the crew container.
 
 #### Scenario: Launch with default crew type
 - **WHEN** `launch` is called without a `crew_type` argument
-- **THEN** the system launches using the `"kirocrew"` type's configuration, preserving current behavior
+- **THEN** the system launches using the `"spec-ops"` type's configuration, preserving current behavior
 
 #### Scenario: Launch with explicit crew type
 - **WHEN** `launch` is called with `crew_type="worker"`
@@ -64,5 +64,5 @@ The system SHALL record the `crew_type` used at launch time in the crew's regist
 
 #### Scenario: Existing crews without type field
 - **WHEN** the system reads a crew registry entry that has no `crew_type` field (pre-migration)
-- **THEN** it treats the crew as type `"kirocrew"` for display and operational purposes
+- **THEN** it treats the crew as type `"spec-ops"` for display and operational purposes
 

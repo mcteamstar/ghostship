@@ -36,9 +36,9 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
         registry_data = {
             "compositions": [
                 {
-                    "name": "kirocrew",
+                    "name": "spec-ops",
                     "description": "Default crew",
-                    "dir": "kirocrew",
+                    "dir": "spec-ops",
                 },
                 {
                     "name": "custom",
@@ -60,9 +60,9 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
         ):
             result = server._load_composition_registry()
 
-        self.assertIn("kirocrew", result)
+        self.assertIn("spec-ops", result)
         self.assertIn("custom", result)
-        self.assertEqual(result["kirocrew"]["dir"], "kirocrew")
+        self.assertEqual(result["spec-ops"]["dir"], "spec-ops")
         self.assertEqual(result["custom"]["image"], "my-image:latest")
         self.assertEqual(result["custom"]["description"], "Custom crew type")
         tmp_path.unlink()
@@ -73,9 +73,9 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
         with patch.object(server, "_CREW_REGISTRY_PATH", nonexistent):
             result = server._load_composition_registry()
 
-        self.assertEqual(list(result.keys()), ["kirocrew"])
-        self.assertEqual(result["kirocrew"]["dir"], "kirocrew")
-        self.assertEqual(result["kirocrew"]["description"], "Default KiroCrew crew type")
+        self.assertEqual(list(result.keys()), ["spec-ops"])
+        self.assertEqual(result["spec-ops"]["dir"], "spec-ops")
+        self.assertEqual(result["spec-ops"]["description"], "Default KiroCrew crew type")
 
     def test_malformed_json_returns_fallback(self) -> None:
         """Unparseable JSON returns fallback."""
@@ -87,7 +87,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
         with patch.object(server, "_CREW_REGISTRY_PATH", tmp_path):
             result = server._load_composition_registry()
 
-        self.assertEqual(list(result.keys()), ["kirocrew"])
+        self.assertEqual(list(result.keys()), ["spec-ops"])
         tmp_path.unlink()
 
     def test_invalid_entries_excluded(self) -> None:
@@ -142,7 +142,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
         with patch.object(server, "_CREW_REGISTRY_PATH", tmp_path):
             result = server._load_composition_registry()
 
-        self.assertEqual(list(result.keys()), ["kirocrew"])
+        self.assertEqual(list(result.keys()), ["spec-ops"])
         tmp_path.unlink()
 
 
@@ -151,9 +151,9 @@ class TestResolveManifestPath(unittest.TestCase):
 
     def test_resolve_manifest_path(self) -> None:
         """Returns correct path for a crew type entry."""
-        entry = {"name": "kirocrew", "dir": "kirocrew"}
+        entry = {"name": "spec-ops", "dir": "spec-ops"}
         result = server._resolve_manifest_path(entry)
-        self.assertEqual(result, Path("/crews/kirocrew/manifest.json"))
+        self.assertEqual(result, Path("/crews/spec-ops/manifest.json"))
 
     def test_resolve_manifest_path_custom(self) -> None:
         """Returns correct path for a custom type."""
@@ -169,13 +169,13 @@ class TestResolveManifestPath(unittest.TestCase):
 
     def test_resolve_image_without_override(self) -> None:
         """Entry without image field falls back to KC_IMAGE."""
-        entry = {"name": "kirocrew", "dir": "kirocrew"}
+        entry = {"name": "spec-ops", "dir": "spec-ops"}
         result = server._resolve_image(entry)
         self.assertEqual(result, server.KC_IMAGE)
 
     def test_resolve_image_empty_string_falls_back(self) -> None:
         """Entry with empty image string falls back to KC_IMAGE."""
-        entry = {"name": "kirocrew", "dir": "kirocrew", "image": ""}
+        entry = {"name": "spec-ops", "dir": "spec-ops", "image": ""}
         result = server._resolve_image(entry)
         self.assertEqual(result, server.KC_IMAGE)
 
@@ -199,9 +199,9 @@ class TestLaunchComposition(unittest.TestCase):
             "image": "custom-image:v1",
         }
         custom_registry = {
-            "kirocrew": {
-                "name": "kirocrew",
-                "dir": "kirocrew",
+            "spec-ops": {
+                "name": "spec-ops",
+                "dir": "spec-ops",
                 "description": "Default",
             },
             "custom": custom_entry,
@@ -261,9 +261,9 @@ class TestCompositionsResource(unittest.TestCase):
     def test_compositions_returns_registry_entries(self) -> None:
         """resource_compositions() returns text with name and description for each entry."""
         mock_registry = {
-            "kirocrew": {
-                "name": "kirocrew",
-                "dir": "kirocrew",
+            "spec-ops": {
+                "name": "spec-ops",
+                "dir": "spec-ops",
                 "description": "Default KiroCrew crew type",
             },
             "custom": {
@@ -277,7 +277,7 @@ class TestCompositionsResource(unittest.TestCase):
             result = server.resource_compositions()
 
         self.assertIsInstance(result, str)
-        self.assertIn("kirocrew", result)
+        self.assertIn("spec-ops", result)
         self.assertIn("custom", result)
         self.assertIn("Default KiroCrew crew type", result)
         self.assertIn("A custom crew type", result)
@@ -286,7 +286,7 @@ class TestCompositionsResource(unittest.TestCase):
     def test_compositions_default_registry_has_kirocrew(self) -> None:
         """Default registry always contains kirocrew."""
         result = server.resource_compositions()
-        self.assertIn("kirocrew", result)
+        self.assertIn("spec-ops", result)
 
 
 if __name__ == "__main__":

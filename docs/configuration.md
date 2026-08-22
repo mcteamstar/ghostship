@@ -6,7 +6,7 @@ Environment variables read by the transport server:
 |:---------|:--------|:------------|
 | `HOST` | `0.0.0.0` | Interface the MCP and file servers bind to inside the container — `install.sh` only ever publishes `127.0.0.1` on the host, so this is not normally a reason to change it |
 | `PORT` | `64057` | MCP server port. The file server always runs on `PORT+1` (`64058` by default) — set via `install.sh --port <port>` |
-| `KC_IMAGE` | `localhost/kirocrew-crew:latest` | Crew container image |
+| `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
 | `GA_MAX_CREWS` | `6` | Max concurrent crews |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
 | `KC_MODEL_OVERRIDE` | _(unset)_ | When set, overrides the model in all agent JSON files at launch — takes precedence over per-agent defaults. Set via `install.sh --model <model>`. Leave unset to use each agent's own default. |
@@ -149,7 +149,7 @@ risks not redesigned by API-key authentication.
 
 ## Extending the crew image
 
-Edit `crews/kirocrew/Containerfile` and re-run `./install.sh`:
+Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
 FROM ghcr.io/kirodotdev/kirocrew:stable

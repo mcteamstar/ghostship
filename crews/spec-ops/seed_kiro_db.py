@@ -6,7 +6,7 @@ with no migration wait and no restart cycle.
 
 ⚠️  Migration schema from kirocrew 0.2.0 (10 rows, versions 0-9).
     If kiro-cli adds migrations in a future release, update this file.
-    See crews/kirocrew/Containerfile for the upgrade checklist.
+    See crews/spec-ops/Containerfile for the upgrade checklist.
 """
 import os
 import pathlib

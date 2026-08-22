@@ -7,7 +7,7 @@ copied into each crew on `launch` (see
 personas split up the [OpenSpec](https://github.com/Fission-AI/OpenSpec)
 spec-driven workflow — explore → propose → apply → archive, plus update-change
 and sync-specs — while Raven coordinates standing orders without implementing
-work. The definitions are baked into the crew image (`crews/kirocrew/Containerfile`
+work. The definitions are baked into the crew image (`crews/spec-ops/Containerfile`
 installs the `openspec` CLI; the `openspec-*` skills under
 [`academy/skills/`](../academy/skills/) shell out to it).
 

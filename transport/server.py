@@ -21,6 +21,7 @@ Tools:
 Resources:
   transport://agents — available agents and their roles (read before dispatching)
   transport://orders — built-in standing-order templates (read before ordering)
+  transport://jobs — scheduled jobs across all running crews
 
 Auth flow:
   On first launch (no ga-kiro-auth file), the crew container initiates
@@ -92,7 +93,7 @@ PODMAN_SOCK = os.environ.get(
     "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
 )
 
-KC_IMAGE = os.environ.get("KC_IMAGE", "localhost/kirocrew-crew:latest")
+KC_IMAGE = os.environ.get("KC_IMAGE", "localhost/spec-ops:latest")
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
 KC_BASE_IMAGE = os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:stable")
@@ -105,6 +106,21 @@ GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
 GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
+
+# ── Version ───────────────────────────────────────────────────────────────────
+
+def _read_transport_version() -> str:
+    """Read VERSION file at repo root (one directory up from transport/).
+
+    Returns the semver string, or '0.0.0-dev' if the file is missing.
+    """
+    version_path = Path(__file__).resolve().parent.parent / "VERSION"
+    try:
+        return version_path.read_text().strip()
+    except (FileNotFoundError, OSError):
+        return "0.0.0-dev"
+
+TRANSPORT_VERSION: str = _read_transport_version()
 
 def _load_or_create_file_secret() -> str:
     """Load the persistent file-URL signing secret, generating it on first run.
@@ -195,15 +211,15 @@ def _load_composition_registry() -> dict[str, dict]:
     missing or unparseable.
     """
     fallback: dict[str, dict] = {
-        "kirocrew": {
-            "name": "kirocrew",
-            "dir": "kirocrew",
+        "spec-ops": {
+            "name": "spec-ops",
+            "dir": "spec-ops",
             "description": "Default KiroCrew crew type",
             "image": KC_IMAGE,
         }
     }
     if not _CREW_REGISTRY_PATH.exists():
-        logger.info("No crew registry at %s — using default kirocrew type", _CREW_REGISTRY_PATH)
+        logger.info("No crew registry at %s — using default spec-ops type", _CREW_REGISTRY_PATH)
         return fallback
     try:
         data = json.loads(_CREW_REGISTRY_PATH.read_text())
@@ -278,6 +294,12 @@ _http = httpx.Client(timeout=60.0)
 
 # ── API-key authentication middleware ─────────────────────────────────────────
 
+
+async def _handle_version_get(request: Request) -> Response:
+    """GET /version — unauthenticated endpoint returning transport version."""
+    return JSONResponse({"transport": TRANSPORT_VERSION})
+
+
 class BearerAuthMiddleware:
     """Pure ASGI middleware enforcing a static bearer API key.
 
@@ -299,9 +321,28 @@ class BearerAuthMiddleware:
             ("POST", "/login"): _handle_login_post,
             ("GET",  "/login"): _handle_login_get,
             ("POST", "/logout"): _handle_logout_post,
+            ("GET",  "/health"): _handle_health,
+        }
+        # Routes exempt from authentication (served before auth check)
+        self._public_routes: dict[tuple[str, str], Any] = {
+            ("GET", "/version"): _handle_version_get,
         }
 
+    # Paths that bypass API-key auth (readiness probes, etc.)
+    _PUBLIC_PATHS: set[str] = {"/health"}
+
     async def __call__(self, scope, receive, send) -> None:
+        # Public routes — served without any authentication check
+        if scope["type"] == "http":
+            public_handler = self._public_routes.get(
+                (scope["method"], scope["path"])
+            )
+            if public_handler is not None:
+                request = Request(scope, receive)
+                response = await public_handler(request)
+                await response(scope, receive, send)
+                return
+
         if not self._key or scope["type"] != "http":
             # No API key — still need to check login/logout routes
             if scope["type"] == "http":
@@ -315,6 +356,15 @@ class BearerAuthMiddleware:
                     return
             await self.app(scope, receive, send)
             return
+
+        # Allow public paths through without auth (health probes, etc.)
+        if scope["path"] in self._PUBLIC_PATHS:
+            handler = self._routes.get((scope["method"], scope["path"]))
+            if handler is not None:
+                request = Request(scope, receive)
+                response = await handler(request)
+                await response(scope, receive, send)
+                return
 
         # Extract Authorization headers from the ASGI scope
         auth_values = [
@@ -428,6 +478,12 @@ class PodmanClient:
             ).raise_for_status()
         except Exception:
             pass
+
+    def container_inspect(self, name: str) -> dict:
+        """Inspect a container, returning the full JSON object."""
+        r = self._c.get(f"/libpod/containers/{name}/json")
+        r.raise_for_status()
+        return r.json()
 
     def container_exists(self, name: str) -> bool:
         return self._c.get(f"/libpod/containers/{name}/json").status_code == 200
@@ -744,6 +800,69 @@ _RAVEN_STORE_RESOLUTION = """Before touching OpenSpec for a delivered project, m
 
 _RAVEN_SELF_CANCEL = """Once you're genuinely satisfied the standing orders are met, pause your own check-in job (named "captain", the only one in this crew) through the CLI, and confirm via `cron list` that it actually stopped before you hold — don't ask the Admiral to do it for you, and don't report it done without checking."""
 
+# ── Academy order template loading ───────────────────────────────────────────
+
+_ORDERS_DIR = Path(os.environ.get("ACADEMY_PATH", str(Path(__file__).resolve().parent.parent / "academy"))) / "orders"
+# Inside the container the academy subdirectories are individually bind-mounted;
+# /orders is the canonical mount point for academy/orders/.
+_ORDERS_CONTAINER_DIR = Path("/orders")
+
+
+def _resolve_orders_dir() -> Path:
+    """Return the orders directory, checking the container mount first."""
+    if _ORDERS_CONTAINER_DIR.is_dir():
+        return _ORDERS_CONTAINER_DIR
+    return _ORDERS_DIR
+
+
+def _load_order_template(name: str) -> tuple[str, str]:
+    """Load a template from academy/orders/<name>.md.
+
+    Returns (description, body). Parses optional YAML front-matter for
+    the ``description`` field; defaults to "" if absent.
+    """
+    orders_dir = _resolve_orders_dir()
+    template_path = orders_dir / f"{name}.md"
+    if not template_path.is_file():
+        raise ValueError(f"Unknown Captain order template: {name!r}")
+    content = template_path.read_text(encoding="utf-8")
+
+    # Parse optional YAML front-matter
+    description = ""
+    body = content
+    if content.startswith("---\n"):
+        end = content.find("\n---\n", 4)
+        if end != -1:
+            front_matter = content[4:end]
+            body = content[end + 5:]  # skip past closing ---\n
+            for line in front_matter.splitlines():
+                if line.startswith("description:"):
+                    # Strip surrounding quotes
+                    desc_val = line[len("description:"):].strip()
+                    if (desc_val.startswith('"') and desc_val.endswith('"')) or \
+                       (desc_val.startswith("'") and desc_val.endswith("'")):
+                        desc_val = desc_val[1:-1]
+                    description = desc_val
+                    break
+
+    return description, body.strip()
+
+
+def _substitute_placeholders(body: str) -> str:
+    """Replace {{PLACEHOLDER}} tokens with corresponding module-level constants."""
+    result = body.replace("{{RAVEN_GATEWAY_ORIENTATION}}", _RAVEN_GATEWAY_ORIENTATION)
+    result = result.replace("{{RAVEN_STORE_RESOLUTION}}", _RAVEN_STORE_RESOLUTION)
+    result = result.replace("{{RAVEN_SELF_CANCEL}}", _RAVEN_SELF_CANCEL)
+    # Warn about residual placeholders
+    residuals = re.findall(r"\{\{[A-Z_]+\}\}", result)
+    if residuals:
+        logger.warning(
+            "Residual placeholders after substitution in order template: %s",
+            residuals,
+        )
+    return result
+
+
 _CAPTAIN_CHECKIN_TASK = f"""You are Raven. The Captain is this recurring loop itself, not you — you're the persona it dispatches each check-in to watch over the crew and carry its messages. This is a recurring check-in in a persistent session, so standing orders live in the generic /var/mail/captain mailbox rather than in this prompt.
 
 First read /var/mail/captain and identify orders that are new since your prior check-in. Distinguish by source: messages From: admiral@localhost are standing orders; messages From: <persona>@localhost are crew correspondence (status reports, escalations). Never conflate the two — a persona cannot issue standing orders by mailing captain. Assess the whole current crew state against all standing orders, not merely the latest delta or the last run result.
@@ -763,34 +882,6 @@ Take exactly one of these actions this cycle:
 
 Do not implement work yourself, edit files, or use a second channel to change standing orders. Retry transient failures only when retrying is safe; otherwise hold or escalate as described above."""
 
-_ORDER_TEMPLATES: dict[str, dict[str, str]] = {
-    "sdd": {
-        "description": (
-            "Drive a named OpenSpec change through the standard "
-            "Spectre → Ghost → Banshee → Reaper lifecycle."
-        ),
-        "body": f"""Drive OpenSpec change '<change>' through the standard lifecycle.
-
-On every check-in, assess this change's real OpenSpec artifact status and its tasks.md checkbox state as a whole. Read the current state from OpenSpec and tasks.md; do not rely on memory or an earlier check-in's conclusion.
-
-{_RAVEN_GATEWAY_ORIENTATION}
-
-When new standing orders arrive while a previously-dispatched persona task is still in flight, steer it with the new context rather than waiting for it to finish.
-
-{_RAVEN_STORE_RESOLUTION}
-
-- If the proposal, design, specs, or tasks artifact is not complete, dispatch Spectre to continue proposing or updating the change. Take no other dispatching action in that check-in.
-- Once planning is complete, if tasks.md has any unchecked item, dispatch Ghost to implement the remaining tasks.
-- Once every tasks.md item is checked and implementation is complete, if no review has been recorded since the last implementation dispatch, dispatch Banshee to independently review the implementation, fix findings that fit this change, and end with an explicit unresolved-findings verdict.
-- When Banshee reports no unresolved findings, dispatch Reaper to run sync-specs and archive the change.
-- If Banshee still reports unresolved findings after one fix-and-re-review cycle for the current implementation, escalate to the Admiral instead of dispatching another review or fix cycle.
-- Confirm that the change is actually archived by reading real OpenSpec state on a later check-in; never assert completion from memory alone.
-- {_RAVEN_SELF_CANCEL}
-
-Each check-in takes exactly one action: dispatch at most one of Ghost, Spectre, Banshee, Wraith, or Reaper using the authenticated REST dispatch described above; hold when no action is needed; or message the Admiral when permission or a decision outside your authority is required. Do not use `kirocrew spawn run` for named persona dispatch. Do not implement work yourself, edit files, or change these standing orders through another channel.""",
-    },
-}
-
 
 _CHANGE_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -808,15 +899,16 @@ def _resolve_order_template(
     template: str | None,
     change_name: str | None,
 ) -> str:
-    if template not in _ORDER_TEMPLATES:
-        raise ValueError(f"Unknown Captain order template: {template!r}")
+    if template is None:
+        raise ValueError("Unknown Captain order template: None")
+    _description, body = _load_order_template(template)
+    body = _substitute_placeholders(body)
     if change_name is not None:
         _validate_captain_change_name(change_name)
-    body = _ORDER_TEMPLATES[template]["body"]
     if "<change>" in body:
         if change_name is None:
             raise ValueError(f"Template {template!r} requires change_name")
-        return body.replace("<change>", change_name)
+        body = body.replace("<change>", change_name)
     return body
 
 
@@ -1341,8 +1433,12 @@ def _crew_api_with_recovery(
                 # Retry with refreshed cookie
                 try:
                     return _crew_api(crew, method, path, **kw)
-                except Exception:
-                    pass  # Fall through to phase 2
+                except Exception as _retry_exc:
+                    logger.warning(
+                        "Crew %s phase-1 retry failed after cookie refresh: %s — "
+                        "escalating to full restart",
+                        crew_id, _retry_exc,
+                    )
 
             # Phase 1 failed — escalate to full restart
             logger.info(
@@ -2157,6 +2253,7 @@ def crews() -> list:
             "composition": info.get("composition", "kirocrew"),
             "created_at": info.get("created_at"),
             "gateway_healthy": gateway_healthy,
+            "crew_image_version": info.get("crew_image_version", "unknown"),
             "agents": [],
         }
         if "policy_version" in info:
@@ -2200,7 +2297,7 @@ def resource_compositions() -> str:
 
 
 @mcp.tool()
-def launch(crew_id: str, composition: str = "kirocrew") -> dict:
+def launch(crew_id: str, composition: str = "spec-ops") -> dict:
     """Summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
@@ -2400,7 +2497,7 @@ def _finish_crew_setup(
     volume: str,
     home_volume: str,
     auth_b64: str,
-    composition: str = "kirocrew",
+    composition: str = "spec-ops",
     composition_entry: dict | None = None,
 ) -> dict:
     """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
@@ -2450,10 +2547,12 @@ def _finish_crew_setup(
 
     # Inject security policy (operator governance tier)
     policy_version = None
+    policy_warning: str | None = None
     try:
         policy_version = _inject_policy(podman, container, composition, admiral_secret)
     except Exception as e:
-        logger.warning("Policy injection failed for %s: %s — continuing without policy", container, e)
+        policy_warning = str(e)
+        logger.error("Policy injection failed for %s: %s — continuing without policy", container, e)
 
     # Wait for gateway to write its built-in kirocrew*.json agent files
     # before patching them — poll instead of blind sleep
@@ -2474,6 +2573,15 @@ def _finish_crew_setup(
         _cleanup_crew(podman, container, volume, home_volume)
         return {"error": f"Failed to mint session cookie for crew {crew_id}"}
 
+    # Read crew image version from OCI label
+    crew_image_version = "unknown"
+    try:
+        inspect_data = podman.container_inspect(container)
+        labels = inspect_data.get("Config", {}).get("Labels", {})
+        crew_image_version = labels.get("org.ghostship.version", "unknown")
+    except Exception as e:
+        logger.warning("Could not read version label from %s: %s", container, e)
+
     with _registry_lock:
         reg = _load_registry()
         crew_entry = {
@@ -2487,6 +2595,7 @@ def _finish_crew_setup(
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_used": time.time(),
             "admiral_secret": admiral_secret,
+            "crew_image_version": crew_image_version,
         }
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
@@ -2502,6 +2611,8 @@ def _finish_crew_setup(
     }
     if policy_version is not None:
         result["policy_version"] = policy_version
+    if policy_warning is not None:
+        result["policy_warning"] = f"Policy injection failed — crew is ungoverned: {policy_warning}"
     return result
 
 
@@ -2968,16 +3079,18 @@ def captain(
 
 @mcp.tool()
 def schedule(
-    name: str,
-    message: str,
+    name: str = "",
+    message: str = "",
     crew_id: str | None = None,
     cron: str | None = None,
     interval: int | None = None,
     agent: str = "ghost",
     timezone: str = "Australia/Sydney",
     fire_immediately: bool | None = None,
+    action: str = "create",
+    job_id: str | None = None,
 ) -> dict:
-    """Book a recurring task to run automatically on KiroCrew.
+    """Book, cancel, or list recurring tasks on KiroCrew.
 
     Use for anything that should run on a timer — daily reports, periodic
     checks, background maintenance — without manual dispatching each time.
@@ -2993,8 +3106,9 @@ def schedule(
     Also: book, recur, cron, timer, automate.
 
     Args:
-        name: A short name for the job.
-        message: The task instruction to run on each trigger.
+        action: One of "create" (default), "cancel", or "list".
+        name: A short name for the job (required for create).
+        message: The task instruction to run on each trigger (required for create).
         crew_id: Which crew to schedule on. Required.
         cron: 5-field cron expression (e.g. '0 9 * * 1' for Monday 9am).
         interval: Run every N seconds (minimum 60).
@@ -3003,7 +3117,21 @@ def schedule(
         fire_immediately: Whether to dispatch the task once immediately on
             creation. Defaults to True when interval is set, False when cron
             is set. Explicit values override the default.
+        job_id: Job ID to cancel (required for action="cancel").
     """
+    if action not in ("create", "cancel", "list"):
+        return {"error": "action must be one of: create, cancel, list"}
+
+    if action == "cancel":
+        return _schedule_cancel(job_id, crew_id)
+    if action == "list":
+        return _schedule_list(crew_id)
+
+    # action == "create"
+    if not name:
+        return {"error": "name is required for action='create'"}
+    if not message:
+        return {"error": "message is required for action='create'"}
     try:
         _validate_agent(agent)
     except ValueError as e:
@@ -3055,8 +3183,73 @@ def schedule(
     return result
 
 
+def _schedule_cancel(job_id: str | None, crew_id: str | None) -> dict:
+    """Cancel (delete) a scheduled job by ID on a crew gateway."""
+    if not job_id:
+        return {"error": "job_id is required for action='cancel'"}
+    try:
+        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+    except (ValueError, KeyError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    # Guard against cancelling the captain check-in job
+    try:
+        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
+        jobs = _captain_jobs(cron_listing)
+        for job in jobs:
+            if job.get("id") == job_id:
+                if (
+                    job.get("name") == _CAPTAIN_CHECKIN_JOB_NAME
+                    and job.get("agent") == "raven"
+                ):
+                    return {
+                        "error": f"Cannot cancel the Captain check-in job — "
+                        "use captain(action=\"stop\", ...) instead"
+                    }
+                break
+    except (CrewUnresponsiveError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    try:
+        _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/crons/{job_id}")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {"error": f"Job not found: {job_id}"}
+        return {"error": str(e)}
+    except (CrewUnresponsiveError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    return {"status": "cancelled", "job_id": job_id}
+
+
+def _schedule_list(crew_id: str | None) -> dict:
+    """List all scheduled jobs for a crew."""
+    try:
+        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+    except (ValueError, KeyError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    try:
+        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
+    except (CrewUnresponsiveError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    jobs = _captain_jobs(cron_listing)
+    result_jobs = []
+    for job in jobs:
+        result_jobs.append({
+            "job_id": job.get("id"),
+            "name": job.get("name"),
+            "schedule": job.get("schedule"),
+            "agent": job.get("agent"),
+            "enabled": job.get("enabled", False),
+            "last_run": job.get("last_run_ts"),
+        })
+    return {"jobs": result_jobs}
+
+
 @mcp.tool()
-def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dict:
+def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None, delay: int | None = None) -> dict:
     """Spawn a task on a KiroCrew agent, dispatched for autonomous execution.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
@@ -3064,12 +3257,17 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
     unattended.
     Also: dropoff, send, assign.
 
-    Returns a task_id to use with status/pickup/update.
+    Returns a task_id to use with status/pickup/update. When delay is
+    set, the task is scheduled as a one-shot job that fires once after the
+    specified delay (minimum 1 second) rather than dispatching immediately.
 
     Args:
         task: What to do. Be specific — the agent has no other context.
         agent: Which agent to use. Default is 'ghost' (general-purpose).
         crew_id: Which crew to dispatch to. Required — use launch first.
+        delay: Optional delay in seconds before the task fires.
+            Must be >= 1. Creates a one-shot cron job instead of an immediate
+            spawn. The job auto-deletes after firing.
     """
     try:
         _validate_agent(agent)
@@ -3079,6 +3277,36 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
+
+    if delay is not None:
+        if delay < 1:
+            return {"error": "delay must be >= 1"}
+        # Build a one-shot cron expression: fire exactly once at now + delay.
+        # KiroCrew's cron API accepts a 5-field cron expression (min hour dom mon dow).
+        # We compute the target UTC time and emit "M H D Mon *" so it fires once and
+        # then never matches again (the month anchor makes it a one-off).
+        import datetime as _dt
+        fire_at = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=delay)
+        cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
+        body: dict = {
+            "name": f"delayed-dispatch-{agent}",
+            "message": task,
+            "agent": agent,
+            "cron": cron_expr,
+        }
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
+        except (CrewUnresponsiveError, RuntimeError) as e:
+            return {"error": str(e)}
+        return {
+            "task_id": None,
+            "job_id": r.get("id"),
+            "crew_id": crew_id,
+            "status": "delayed",
+            "delay": delay,
+            "agent": agent,
+        }
+
     result = _crew_api_with_recovery(
         crew, crew_id, "POST", "/api/spawn",
         json={"task": task, "agent": agent, "keep": True},
@@ -3373,14 +3601,90 @@ def resource_agents() -> str:
     mime_type="text/plain",
 )
 def resource_orders() -> str:
-    """Return every built-in standing-order template and its full body."""
-    if not _ORDER_TEMPLATES:
+    """Return every standing-order template from academy/orders/ and its full body."""
+    orders_dir = _resolve_orders_dir()
+    if not orders_dir.is_dir():
+        return "No standing-order templates are available."
+    templates = sorted(p for p in orders_dir.glob("*.md") if not p.name.startswith("."))
+    if not templates:
         return "No standing-order templates are available."
     sections = []
-    for name, definition in _ORDER_TEMPLATES.items():
-        sections.append(
-            f"## {name}\n{definition['description']}\n\n{definition['body']}"
-        )
+    for template_path in templates:
+        name = template_path.stem
+        description, body = _load_order_template(name)
+        resolved_body = _substitute_placeholders(body)
+        sections.append(f"## {name}\n{description}\n\n{resolved_body}")
+    return "\n\n".join(sections)
+
+
+@mcp.resource(
+    "transport://version",
+    name="version",
+    title="Transport and Crew Image Versions",
+    description="Returns the transport process version and, for each running crew, its crew image version.",
+    mime_type="application/json",
+)
+def resource_version() -> str:
+    """Return transport version and per-crew image versions from registry."""
+    with _registry_lock:
+        reg = _load_registry()
+    crews_versions = {}
+    for cid, info in reg["crews"].items():
+        crews_versions[cid] = {
+            "crew_image_version": info.get("crew_image_version", "unknown")
+        }
+    return json.dumps({
+        "transport": TRANSPORT_VERSION,
+        "crews": crews_versions,
+    })
+
+
+@mcp.resource(
+    "transport://jobs",
+    name="jobs",
+    title="Scheduled Jobs",
+    description="Lists all scheduled jobs across all running crews — job_id, name, schedule, agent, enabled, last_run, last_status.",
+    mime_type="text/plain",
+)
+def resource_jobs() -> str:
+    """Return a plain-text listing of all scheduled jobs across all running crews."""
+    with _registry_lock:
+        reg = _load_registry()
+
+    if not reg["crews"]:
+        return "No running crews found."
+
+    sections = []
+    for crew_id, info in reg["crews"].items():
+        if info.get("status") != "running":
+            continue
+        try:
+            crew = info
+            cron_listing = _crew_api(crew, "GET", "/api/crons")
+            jobs = _captain_jobs(cron_listing)
+        except Exception as e:
+            sections.append(f"## {crew_id}\n(error: {e})")
+            continue
+
+        if not jobs:
+            sections.append(f"## {crew_id}\nNo scheduled jobs.")
+            continue
+
+        lines = [f"## {crew_id}"]
+        for job in jobs:
+            lines.append(
+                f"- {job.get('name', '?')} "
+                f"[{job.get('id', '?')}] "
+                f"schedule={job.get('schedule', '?')} "
+                f"agent={job.get('agent', '?')} "
+                f"enabled={job.get('enabled', False)} "
+                f"last_run={job.get('last_run_ts', 'never')} "
+                f"last_status={job.get('last_status', 'none')}"
+            )
+        sections.append("\n".join(lines))
+
+    if not sections:
+        return "No running crews found."
     return "\n\n".join(sections)
 
 # ── Idle monitor ─────────────────────────────────────────────────────────────
@@ -4003,6 +4307,18 @@ login_routes = [
     Route("/login", _handle_login_post, methods=["POST"]),
     Route("/login", _handle_login_get, methods=["GET"]),
     Route("/logout", _handle_logout_post, methods=["POST"]),
+]
+
+
+# ── Health endpoint ───────────────────────────────────────────────────────────
+
+async def _handle_health(request: Request) -> Response:
+    """Minimal health probe — returns 200 OK when the transport is alive."""
+    return PlainTextResponse("ok")
+
+
+health_routes = [
+    Route("/health", _handle_health, methods=["GET"]),
 ]
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
