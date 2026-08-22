@@ -1,0 +1,32 @@
+{
+  "_comment": "Example strict policy for operators who want tighter controls. Not the default — supply this as a composition-specific policy (e.g. kirocrew-strict) to apply it.",
+  "version": "1",
+  "sandbox": {
+    "min_level": "standard"
+  },
+  "filesystem": {
+    "write": {
+      "mode": "allow",
+      "prefixes": ["~/workplace", "~/.kiro", "~/.local/share/kiro-cli", "/var/mail", "/tmp"]
+    }
+  },
+  "commands": {
+    "deny": [
+      "^git push",
+      "^git remote add",
+      "^gh ",
+      "^curl.*\\|.*sh",
+      "^wget.*\\|.*sh",
+      "^sudo ",
+      "^rm -rf /"
+    ]
+  },
+  "channels": {
+    "deny": ["slack", "discord", "telegram", "teams", "webex", "wecom", "wechat"]
+  },
+  "network": {
+    "egress": {
+      "mode": "allow"
+    }
+  }
+}

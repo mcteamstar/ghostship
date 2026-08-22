@@ -424,3 +424,55 @@ not exist in old containers.
   body); `verify-admiral-sig` validates authenticity inside the crew
 - **Plus-addressing**: `ghost+taskid@localhost` routes to `/var/mail/ghost/`
   via the `maildeliver` script
+
+## Operator governance
+
+Ghostship uses the KiroCrew **operator tier** — a static-file-at-boot
+governance model where the transport writes config files into each crew
+container during setup, and the gateway enforces them as an unforgeable
+ceiling the agent cannot weaken. No code runs inside the gateway for
+governance; the files are the API.
+
+### How policy files are injected
+
+During `_finish_crew_setup`, after the `admiral_secret` is generated and
+injected:
+
+1. The transport reads a policy template from `/policies/<composition>.json`
+   (bind-mounted from `academy/policies/` on the host). If no
+   composition-specific template exists, `/policies/default.json` is used.
+2. The canonical (sorted-keys) JSON body is HMAC-SHA256 signed using the
+   crew's `admiral_secret`.
+3. Two files are written into `~/.kiro/crew/` inside the container:
+   - `security_policy.json` — the governance ceiling
+   - `admission_policy.json` — contains `require_policy_signature: true`
+     and the HMAC signature as a trust key
+4. The `policy_version` is stored in the crew registry and returned in
+   `launch()` and `crews()` responses.
+
+Policy injection failure is logged but never aborts crew launch.
+
+### Customising per composition
+
+Policy templates live in `academy/policies/`:
+
+| Template | Used by | Description |
+|:---------|:--------|:------------|
+| `default.json` | `kirocrew` (and any composition without its own template) | Platform-integrity focus: blocks `git push`, `gh`, pipe-to-shell, messaging integrations |
+| `research.json` | `kirocrew-research` | Same as default; starting point for customisation |
+| `strict.json` | Example only (not applied by default) | Adds `sandbox.min_level`, `filesystem.write` bounds, broader command denials |
+
+To apply tighter controls, create a new composition with its own policy
+template (e.g. `academy/policies/kirocrew-strict.json`) and launch crews
+with that composition name.
+
+### Security properties
+
+- The container is the security boundary. Default policy covers platform
+  integrity only — no filesystem, sandbox, or network restrictions.
+- Policy is HMAC-signed with the `admiral_secret`. A tampered policy causes
+  the gateway to detect a signature mismatch and refuse to continue.
+- The agent has no path to the `admiral_secret` and cannot forge a valid
+  policy signature.
+- Policy is set once at launch. To change policy, nuke and relaunch the
+  crew.

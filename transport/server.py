@@ -2143,6 +2143,8 @@ def crews() -> list:
             "gateway_healthy": gateway_healthy,
             "agents": [],
         }
+        if "policy_version" in info:
+            entry["policy_version"] = info["policy_version"]
         # Try to fetch active tasks from the gateway
         try:
             tasks = _crew_api(info, "GET", "/api/spawn")
@@ -2335,6 +2337,63 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
+def _inject_policy(
+    podman: PodmanClient,
+    container: str,
+    composition: str,
+    admiral_secret: str,
+) -> str:
+    """Inject security_policy.json and admission_policy.json into the crew.
+
+    Returns the policy version string for registry storage.
+    Raises on failure — caller must catch and handle gracefully.
+    """
+    # 1. Load template — composition-specific or fallback to default
+    policy_template_path = Path(f"/policies/{composition}.json")
+    if not policy_template_path.exists():
+        policy_template_path = Path("/policies/default.json")
+    policy = json.loads(policy_template_path.read_text())
+    policy_body = json.dumps(policy, indent=2, sort_keys=True)
+    policy_version = policy.get("version", "1")
+
+    # 2. Compute HMAC-SHA256 signature over canonical (sorted) policy body
+    sig = hmac.new(
+        admiral_secret.encode(),
+        policy_body.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    # 3. Build admission policy
+    admission = {
+        "require_policy_signature": True,
+        "trust_keys": [{"id": "admiral", "key": sig}],
+    }
+    admission_body = json.dumps(admission, indent=2)
+
+    # 4. Write both files via container_exec
+    policy_b64 = base64.b64encode(policy_body.encode()).decode()
+    admission_b64 = base64.b64encode(admission_body.encode()).decode()
+
+    script = (
+        "import base64, pathlib, os\n"
+        "crew_dir = pathlib.Path('/home/kirocrew/.kiro/crew')\n"
+        "crew_dir.mkdir(parents=True, exist_ok=True)\n"
+        "\n"
+        "policy_path = crew_dir / 'security_policy.json'\n"
+        "fd = os.open(str(policy_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
+        f"os.write(fd, base64.b64decode('{policy_b64}')); os.close(fd)\n"
+        "\n"
+        "admission_path = crew_dir / 'admission_policy.json'\n"
+        "fd = os.open(str(admission_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
+        f"os.write(fd, base64.b64decode('{admission_b64}')); os.close(fd)\n"
+        "\n"
+        f"print('policy injected version={policy_version}')\n"
+    )
+    result = podman.container_exec_checked(container, ["python3", "-c", script])
+    logger.info("Injected security policy for %s: %s", container, result.strip())
+    return policy_version
+
+
 def _finish_crew_setup(
     podman: PodmanClient,
     crew_id: str,
@@ -2378,7 +2437,7 @@ def _finish_crew_setup(
     admiral_secret = secrets.token_hex(32)
     secret_inject_script = (
         "import os, pathlib; "
-        f"p = pathlib.Path('/home/kirocrew/workplace/.admiral_secret'); "
+        f"p = pathlib.Path('/home/kirocrew/.kiro/crew/.admiral_secret'); "
         f"p.parent.mkdir(parents=True, exist_ok=True); "
         f"fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600); "
         f"os.write(fd, b'{admiral_secret}'); os.close(fd); "
@@ -2389,6 +2448,13 @@ def _finish_crew_setup(
         logger.info("Injected admiral signing secret for %s", container)
     except Exception as e:
         logger.warning("Failed to inject admiral secret for %s: %s", container, e)
+
+    # Inject security policy (operator governance tier)
+    policy_version = None
+    try:
+        policy_version = _inject_policy(podman, container, composition, admiral_secret)
+    except Exception as e:
+        logger.warning("Policy injection failed for %s: %s — continuing without policy", container, e)
 
     # Wait for gateway to write its built-in kirocrew*.json agent files
     # before patching them — poll instead of blind sleep
@@ -2414,7 +2480,7 @@ def _finish_crew_setup(
 
     with _registry_lock:
         reg = _load_registry()
-        reg["crews"][crew_id] = {
+        crew_entry = {
             "container": container,
             "volume": volume,
             "home_volume": home_volume,
@@ -2426,15 +2492,21 @@ def _finish_crew_setup(
             "last_used": time.time(),
             "admiral_secret": admiral_secret,
         }
+        if policy_version is not None:
+            crew_entry["policy_version"] = policy_version
+        reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 
     logger.info("Crew %s ready", crew_id)
-    return {
+    result = {
         "crew_id": crew_id,
         "container": container,
         "gateway_url": crew_url,
         "status": "ready",
     }
+    if policy_version is not None:
+        result["policy_version"] = policy_version
+    return result
 
 
 @mcp.tool()

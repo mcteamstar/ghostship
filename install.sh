@@ -288,6 +288,7 @@ podman run -d --name ga-transport --restart=always \
   -v "${GHOSTSHIP_DIR}/academy/agents:/agents:ro" \
   -v "${GHOSTSHIP_DIR}/academy/skills:/skills:ro" \
   -v "${GHOSTSHIP_DIR}/academy/steering:/steering:ro" \
+  -v "${GHOSTSHIP_DIR}/academy/policies:/policies:ro" \
   -v "${GHOSTSHIP_DIR}/crews:/crews:ro" \
   -v "${PODMAN_SOCK}:${PODMAN_SOCK}" \
   -e "PODMAN_SOCKET=${PODMAN_SOCK}" \
