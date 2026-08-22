@@ -256,25 +256,6 @@ the transport writes to `/var/mail/captain` includes an `X-Admiral-Sig:` header
 invoke `/usr/local/bin/verify-admiral-sig` to confirm a message is genuine
 before acting on it as a standing order.
 
-### Policy signing
-
-The same `admiral_secret` is also used to sign the crew's security policy at
-injection time. The transport computes HMAC-SHA256 over the canonical
-(sorted-keys JSON) policy body and writes the signature into
-`~/.kiro/crew/admission_policy.json` as a trust key. This gives the
-`admiral_secret` two uses per crew:
-
-1. **Mail signing** — `X-Admiral-Sig` header on standing orders to
-   `/var/mail/captain`
-2. **Policy signing** — HMAC over `security_policy.json`, stored in
-   `admission_policy.json`
-
-Both use the same HMAC-SHA256 construction (key = `admiral_secret`, message =
-the content being signed, output = hex digest). The gateway verifies the
-policy signature on load; a tampered `security_policy.json` causes a signature
-mismatch and the gateway refuses to continue — the agent cannot forge a valid
-policy without the `admiral_secret`.
-
 ### Storage
 
 The `admiral_secret` is stored in plaintext in `crews.json` (the transport

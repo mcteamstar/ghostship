@@ -14,8 +14,7 @@ import hmac
 import hashlib
 import email
 
-SECRET_PATH = '/home/kirocrew/.kiro/crew/.admiral_secret'
-SECRET_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_secret'
+SECRET_PATH = '/home/kirocrew/workplace/.admiral_secret'
 
 msg = email.message_from_file(sys.stdin)
 sig = msg.get('X-Admiral-Sig', '').strip()
@@ -26,16 +25,9 @@ if not sig:
     sys.exit(1)
 
 try:
-    for path in (SECRET_PATH, SECRET_PATH_FALLBACK):
-        try:
-            with open(path) as f:
-                secret = f.read().strip().encode()
-            break
-        except FileNotFoundError:
-            continue
-    else:
-        sys.exit(2)
-except Exception:
+    with open(SECRET_PATH) as f:
+        secret = f.read().strip().encode()
+except FileNotFoundError:
     sys.exit(2)
 
 expected = hmac.new(secret, body.encode('utf-8'), hashlib.sha256).hexdigest()

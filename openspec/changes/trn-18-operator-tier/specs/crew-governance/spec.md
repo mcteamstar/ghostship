@@ -1,8 +1,6 @@
 # Updates to the `crew-governance` capability (new)
 
-## ADDED Requirements
-
-### Requirement: Transport injects per-crew security policy at setup
+## New Requirement: Transport injects per-crew security policy at setup
 
 The transport SHALL inject a `security_policy.json` into
 `~/.kiro/crew/security_policy.json` inside each crew container during
@@ -30,7 +28,7 @@ transport container at `/policies/`.
 - **THEN** the failure is logged as a warning and `launch()` continues;
   `policy_version` is omitted from the response
 
-### Requirement: Security policy is HMAC-signed by the Admiral
+## New Requirement: Security policy is HMAC-signed by the Admiral
 
 The transport SHALL compute an HMAC-SHA256 signature over the canonical
 (JSON-sorted-keys) policy body using the crew's `admiral_secret`, then write
@@ -50,7 +48,7 @@ an `admission_policy.json` to `~/.kiro/crew/admission_policy.json` containing
   and refuses to continue — the agent cannot forge a valid policy without
   the `admiral_secret`
 
-### Requirement: Default policy enforces platform integrity not access restriction
+## New Requirement: Default policy enforces platform integrity, not access restriction
 
 The default security policy (`academy/policies/default.json`) SHALL focus
 exclusively on platform integrity — preventing agents from subverting the
@@ -86,7 +84,7 @@ bounds, or additional `commands.deny` patterns.
 - **THEN** the strict policy (with sandbox floor, filesystem bounds, etc) is
   injected instead of the default
 
-### Requirement: Composition-specific policy variants
+## New Requirement: Composition-specific policy variants
 
 The composition registry MAY declare a `security_policy` key naming a policy
 template variant (e.g. `"research"`). Research-composition crews SHALL receive
@@ -97,7 +95,7 @@ reflecting the different risk profile of read-heavy investigative work.
 - **WHEN** `launch(crew_id, composition="kirocrew-research")` completes
 - **THEN** the research policy template is injected, not the default
 
-### Requirement: crews and launch report policy version
+## New Requirement: `crews()` and `launch()` report policy version
 
 Both `launch()` and the per-crew entries in `crews()` SHALL include a
 `policy_version` field reflecting the policy version that was applied at

@@ -1,6 +1,6 @@
 # Tasks — trn-18-operator-tier
 
-## Task 1 — Create default policy template ✅
+## Task 1 — Create default policy template
 
 File: `academy/policies/default.json` (new)
 
@@ -11,7 +11,7 @@ specified in design.md §Default policy baseline. Platform-integrity focus only:
 - No `sandbox`, `filesystem`, or `network` restrictions
 - `version: "1"`
 
-## Task 2 — Create research and strict policy variants ✅
+## Task 2 — Create research and strict policy variants
 
 Files: `academy/policies/research.json`, `academy/policies/strict.json` (new)
 
@@ -24,7 +24,7 @@ allow-mode with `~/workplace`, `~/.kiro`, `~/.local/share/kiro-cli`,
 `/var/mail`, `/tmp`, broader `commands.deny` (add `sudo`, `rm -rf /`).
 Add a comment in the file noting it is an example, not a default.
 
-## Task 3 — Implement `_inject_policy()` in transport ✅
+## Task 3 — Implement `_inject_policy()` in transport
 
 File: `transport/server.py`
 
@@ -47,7 +47,7 @@ KiroCrew source in the upstream repo (`packages/kiro-crew-core/` or similar).
 If the schema differs from the design, update the design and this task before
 proceeding. An incorrect schema means signing silently does nothing.
 
-## Task 4 — Call `_inject_policy()` from `_finish_crew_setup()` ✅
+## Task 4 — Call `_inject_policy()` from `_finish_crew_setup()`
 
 File: `transport/server.py`
 
@@ -59,7 +59,7 @@ the registry:
 
 Wrap the call in try/except — policy injection failure MUST NOT abort launch.
 
-## Task 5 — Add `policy_version` to `launch()` response and `crews()` ✅
+## Task 5 — Add `policy_version` to `launch()` response and `crews()`
 
 File: `transport/server.py`
 
@@ -68,7 +68,7 @@ File: `transport/server.py`
 - `crews()` per-crew entry: include `policy_version` from the registry entry
   if present; omit the field for crews that pre-date this change
 
-## Task 6 — Mount `academy/policies/` in transport container ✅
+## Task 6 — Mount `academy/policies/` in transport container
 
 Files: `docker-compose.yml`, `install.sh`
 
@@ -76,7 +76,7 @@ Add a bind mount that maps `academy/policies/` on the host to `/policies/`
 inside the transport container, following the same pattern as `/agents/`,
 `/skills/`, and `/steering/`. Verify the mount is read-only.
 
-## Task 7 — Write tests for policy injection ✅
+## Task 7 — Write tests for policy injection
 
 File: `transport/test_transport.py`
 
@@ -96,7 +96,7 @@ Add tests covering:
 Leave for Reaper dispatch after all Ghost tasks are complete and verified.
 Do not implement this task — it is a reminder that Reaper closes the change.
 
-## Task 9 — Update docs ✅
+## Task 9 — Update docs
 
 Files: `docs/architecture.md`, `docs/auth.md`
 

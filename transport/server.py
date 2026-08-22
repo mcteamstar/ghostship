@@ -105,32 +105,7 @@ GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
 GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
-
-def _load_or_create_file_secret() -> str:
-    """Load the persistent file-URL signing secret, generating it on first run.
-
-    Persisted to DATA_DIR/ga-file-secret (0600) so supply/evac URLs survive
-    transport restarts. GA_FILE_SECRET env var overrides (for testing).
-    """
-    if env_secret := os.environ.get("GA_FILE_SECRET", "").strip():
-        return env_secret
-    secret_path = DATA_DIR / "ga-file-secret"
-    try:
-        if secret_path.is_file():
-            return secret_path.read_text().strip()
-    except Exception:
-        pass
-    new_secret = secrets.token_hex(32)
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.write(fd, new_secret.encode())
-        os.close(fd)
-    except Exception as e:
-        logging.getLogger(__name__).warning("Could not persist file secret: %s", e)
-    return new_secret
-
-_FILE_SECRET = _load_or_create_file_secret()
+_FILE_SECRET = os.environ.get("GA_FILE_SECRET") or secrets.token_hex(32)
 GA_API_KEY = os.environ.get("GA_API_KEY", "").strip()
 
 
@@ -1165,50 +1140,35 @@ def _reconcile_registry() -> None:
                 _nuke_login_container(podman, cname.lstrip("/"))
     except Exception as e:
         logger.warning("Login container sweep failed: %s", e)
-    # Snapshot the registry under the lock, then release it before the
-    # per-crew restart loop so the lock is not held across gateway waits
-    # (up to 30s each).  Per-crew write-backs re-acquire the lock individually.
     with _registry_lock:
         reg = _load_registry()
-        snapshot = dict(reg["crews"])
-
-    to_remove = []
-    updates: dict[str, dict] = {}  # cid -> fields to merge back
-
-    for cid, info in snapshot.items():
-        container = info["container"]
-        if not podman.container_exists(container):
-            logger.info("Removing gone crew from registry: %s", cid)
-            to_remove.append(cid)
-        elif not podman.container_is_running(container):
-            # Container exists but stopped (e.g. VM reboot) — restart it
-            logger.info("Restarting stopped crew on startup: %s", cid)
-            try:
-                podman.container_start(container)
-                crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-                if _wait_gateway(crew_url, timeout=30):
-                    new_cookie = _mint_cookie(podman, container, crew_url)
-                    updates[cid] = {
-                        "status": "running",
-                        "last_used": time.time(),
-                        **({"cookie": new_cookie} if new_cookie else {}),
-                    }
-                    logger.info("Crew %s restored", cid)
-                else:
-                    logger.warning("Crew %s gateway not ready after restart — leaving stopped", cid)
-                    updates[cid] = {"status": "stopped"}
-            except Exception as e:
-                logger.warning("Could not restart crew %s: %s", cid, e)
-                updates[cid] = {"status": "stopped"}
-
-    # Write all changes back under the lock in one pass
-    with _registry_lock:
-        reg = _load_registry()
+        to_remove = []
+        for cid, info in reg["crews"].items():
+            container = info["container"]
+            if not podman.container_exists(container):
+                logger.info("Removing gone crew from registry: %s", cid)
+                to_remove.append(cid)
+            elif not podman.container_is_running(container):
+                # Container exists but stopped (e.g. VM reboot) — restart it
+                logger.info("Restarting stopped crew on startup: %s", cid)
+                try:
+                    podman.container_start(container)
+                    crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+                    if _wait_gateway(crew_url, timeout=30):
+                        new_cookie = _mint_cookie(podman, container, crew_url)
+                        if new_cookie:
+                            reg["crews"][cid]["cookie"] = new_cookie
+                        reg["crews"][cid]["status"] = "running"
+                        reg["crews"][cid]["last_used"] = time.time()
+                        logger.info("Crew %s restored", cid)
+                    else:
+                        logger.warning("Crew %s gateway not ready after restart — leaving stopped", cid)
+                        reg["crews"][cid]["status"] = "stopped"
+                except Exception as e:
+                    logger.warning("Could not restart crew %s: %s", cid, e)
+                    reg["crews"][cid]["status"] = "stopped"
         for cid in to_remove:
-            reg["crews"].pop(cid, None)
-        for cid, fields in updates.items():
-            if cid in reg["crews"]:
-                reg["crews"][cid].update(fields)
+            del reg["crews"][cid]
         _save_registry(reg)
     logger.info("Registry reconciled. Live crews: %s", list(reg["crews"].keys()))
 
@@ -1530,6 +1490,7 @@ def _ensure_crew_running(
         # from config.local.json (tracked: KiroCrew upstream issue, spawn gate ignores
         # config file overrides for spawn_min_memory_gb).
         _patch_crew_config(podman, crew["container"])
+        _remove_builtin_agents(podman, crew["container"])
         podman.container_stop(crew["container"])
         podman.container_start(crew["container"])
         if not _wait_gateway(crew_url, timeout=30):
@@ -1576,9 +1537,9 @@ def _inject_auth(podman: PodmanClient, container: str, auth_b64: str) -> bool:
         "conn.commit(); conn.close(); "
         "print(f'injected {len(rows)} auth rows')"
     )
-    podman.container_exec_checked(container, ["python3", "-c", inject])
-    logger.info("Auth injected for %s", container)
-    return True
+    result = podman.container_exec(container, ["python3", "-c", inject])
+    logger.info("Auth inject for %s: %s", container, result.strip())
+    return "injected" in result
 
 
 def _wait_gateway(url: str, timeout: int = 30) -> bool:
@@ -1875,15 +1836,13 @@ async def _handle_login_post(request: Request) -> Response:
     code immediately so the operator can open the browser.
     """
     # ── State guards ──────────────────────────────────────────────────────────
-    # Both checks held under the same lock so concurrent requests cannot slip
-    # through between the auth-file check and the login-pending check (TOCTOU).
     global _login_pending
+    if _read_auth_file():
+        return PlainTextResponse(
+            "Already authenticated. POST /logout first.",
+            status_code=409,
+        )
     with _login_pending_lock:
-        if _read_auth_file():
-            return PlainTextResponse(
-                "Already authenticated. POST /logout first.",
-                status_code=409,
-            )
         if _login_pending is not None:
             return PlainTextResponse(
                 "Login already in progress. Poll GET /login for status.",
@@ -2159,8 +2118,6 @@ def crews() -> list:
             "gateway_healthy": gateway_healthy,
             "agents": [],
         }
-        if "policy_version" in info:
-            entry["policy_version"] = info["policy_version"]
         # Try to fetch active tasks from the gateway
         try:
             tasks = _crew_api(info, "GET", "/api/spawn")
@@ -2300,6 +2257,26 @@ def launch(crew_id: str, composition: str = "kirocrew") -> dict:
         return {"error": f"Launch failed: {e}"}
 
 
+def _remove_builtin_agents(podman: PodmanClient, container: str) -> None:
+    """Remove KiroCrew's built-in agent JSONs from the crew's agents directory.
+
+    The gateway seeds kirocrew*.json files (kirocrew, kirocrew-lite,
+    kirocrew-research, kirocrew-heartbeat) on every start. These bypass our
+    PERSONA_ALLOWLIST if called directly via the gateway REST API. Deleting
+    them ensures only our six custom personas are available in the crew.
+
+    Called alongside _patch_crew_config — both after initial setup and after
+    every container restart via _ensure_crew_running.
+    """
+    try:
+        result = podman.container_exec(container, [
+            "python3", "-c",
+            f"import pathlib; removed = [p.unlink() or p.name for p in pathlib.Path('{KIRO_AGENTS_DIR}').glob('kirocrew*.json')]; print('removed:', removed)"
+        ])
+        logger.info("Removed built-in agents from %s: %s", container, result.strip())
+    except Exception as e:
+        logger.warning("Failed to remove built-in agents from %s: %s", container, e)
+
 def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     """Patch KiroCrew config after gateway has seeded it on first start.
 
@@ -2319,6 +2296,10 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "a['dangerously_skip_permissions'] = True; "
         "a['default_agent'] = 'ghost'; "
         "a['reasoning_effort'] = 'max'; "
+        "a['sandbox'] = 'none'; "
+        "a['sandbox_allow_no_isolation'] = True; "
+        "a['sandbox_allow_unsandboxed_exec'] = True; "
+        "cfg.setdefault('session', {})['pool_size'] = 2; "
         "p.write_text(json.dumps(cfg, indent=2)); "
         "print('patched config.local.json')"
     )
@@ -2327,66 +2308,6 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         logger.info("Config patch for %s: %s", container, result.strip())
     except Exception as e:
         logger.warning("Config patch failed for %s: %s", container, e)
-
-
-def _inject_policy(
-    podman: PodmanClient,
-    container: str,
-    composition: str,
-    admiral_secret: str,
-) -> str:
-    """Inject security_policy.json and admission_policy.json into the crew.
-
-    Returns the policy version string for registry storage.
-    Raises on failure — caller must catch and handle gracefully.
-    """
-    # 1. Load template — composition-specific or fallback to default
-    policy_template_path = Path(f"/policies/{composition}.json")
-    if not policy_template_path.exists():
-        policy_template_path = Path("/policies/default.json")
-    policy = json.loads(policy_template_path.read_text())
-    policy_body = json.dumps(policy, indent=2, sort_keys=True)
-    policy_version = policy.get("version", "1")
-
-    # 2. Compute HMAC-SHA256 signature over canonical (sorted) policy body
-    sig = hmac.new(
-        admiral_secret.encode(),
-        policy_body.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    # 3. Build admission policy — signature verification disabled until the
-    # signing flow is implemented correctly (policy_signing_payload requires
-    # embedding identity.signature inside the policy document itself, not a
-    # separate HMAC; require_policy_signature=False lets the policy load as
-    # advisory/unsigned rather than refusing to boot).
-    admission = {
-        "require_policy_signature": False,
-    }
-    admission_body = json.dumps(admission, indent=2)
-
-    # 4. Write both files via container_exec
-    policy_b64 = base64.b64encode(policy_body.encode()).decode()
-    admission_b64 = base64.b64encode(admission_body.encode()).decode()
-
-    script = (
-        "import base64, pathlib, os\n"
-        "crew_dir = pathlib.Path('/home/kirocrew/.kiro/crew')\n"
-        "crew_dir.mkdir(parents=True, exist_ok=True)\n"
-        "\n"
-        "policy_path = crew_dir / 'security_policy.json'\n"
-        "fd = os.open(str(policy_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
-        f"os.write(fd, base64.b64decode('{policy_b64}')); os.close(fd)\n"
-        "\n"
-        "admission_path = crew_dir / 'admission_policy.json'\n"
-        "fd = os.open(str(admission_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
-        f"os.write(fd, base64.b64decode('{admission_b64}')); os.close(fd)\n"
-        "\n"
-        f"print('policy injected version={policy_version}')\n"
-    )
-    result = podman.container_exec_checked(container, ["python3", "-c", script])
-    logger.info("Injected security policy for %s: %s", container, result.strip())
-    return policy_version
 
 
 def _finish_crew_setup(
@@ -2432,7 +2353,7 @@ def _finish_crew_setup(
     admiral_secret = secrets.token_hex(32)
     secret_inject_script = (
         "import os, pathlib; "
-        f"p = pathlib.Path('/home/kirocrew/.kiro/crew/.admiral_secret'); "
+        f"p = pathlib.Path('/home/kirocrew/workplace/.admiral_secret'); "
         f"p.parent.mkdir(parents=True, exist_ok=True); "
         f"fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600); "
         f"os.write(fd, b'{admiral_secret}'); os.close(fd); "
@@ -2443,13 +2364,6 @@ def _finish_crew_setup(
         logger.info("Injected admiral signing secret for %s", container)
     except Exception as e:
         logger.warning("Failed to inject admiral secret for %s: %s", container, e)
-
-    # Inject security policy (operator governance tier)
-    policy_version = None
-    try:
-        policy_version = _inject_policy(podman, container, composition, admiral_secret)
-    except Exception as e:
-        logger.warning("Policy injection failed for %s: %s — continuing without policy", container, e)
 
     # Wait for gateway to write its built-in kirocrew*.json agent files
     # before patching them — poll instead of blind sleep
@@ -2464,6 +2378,9 @@ def _finish_crew_setup(
         time.sleep(0.5)
 
     _patch_models(podman, container)
+    # Remove built-in agents AFTER the gateway has seeded them (the wait loop
+    # above confirms they exist). This runs last so the deletion sticks.
+    _remove_builtin_agents(podman, container)
 
     cookie = _mint_cookie(podman, container, crew_url)
     if not cookie:
@@ -2472,7 +2389,7 @@ def _finish_crew_setup(
 
     with _registry_lock:
         reg = _load_registry()
-        crew_entry = {
+        reg["crews"][crew_id] = {
             "container": container,
             "volume": volume,
             "home_volume": home_volume,
@@ -2484,21 +2401,15 @@ def _finish_crew_setup(
             "last_used": time.time(),
             "admiral_secret": admiral_secret,
         }
-        if policy_version is not None:
-            crew_entry["policy_version"] = policy_version
-        reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 
     logger.info("Crew %s ready", crew_id)
-    result = {
+    return {
         "crew_id": crew_id,
         "container": container,
         "gateway_url": crew_url,
         "status": "ready",
     }
-    if policy_version is not None:
-        result["policy_version"] = policy_version
-    return result
 
 
 @mcp.tool()
@@ -3926,7 +3837,7 @@ async def _handle_file_put(request: Request) -> Response:
     if unpack and bundle:
         return PlainTextResponse("unpack and bundle cannot both be enabled", status_code=400)
 
-    if not _verify_file_token(crew_id, path, expires, sig):
+    if not _verify_file_token(crew_id, path, expires, sig, bundle=bundle):
         return PlainTextResponse("Forbidden", status_code=403)
 
     # Sanitise path — no traversal outside workspace
