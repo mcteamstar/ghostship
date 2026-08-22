@@ -1,0 +1,90 @@
+# Ghostship Reference
+
+Quick reference for operators and developers. For full docs see the linked files.
+
+## MCP Tools
+
+### Ship operations
+
+| Tool | What it does | Also known as |
+|:-----|:-------------|:--------------|
+| `crews` | List all registered crews, their status, and active agents | list crews, show workspaces, what's running, sitrep |
+| `launch` | Create a new crew container + workspace | calldown, create workspace, launch crew, init environment |
+| `supply` | Get a presigned URL to deliver files/tars/bundles into a crew workspace | deliver, inject, upload, seed workspace, push file |
+| `evac` | Get a presigned URL to extract files, diffs, or git bundles from a crew workspace | extract, exfil, pull, get file, show diff |
+| `nuke` | Permanently destroy a crew — container + both volumes. Not routine cleanup. | destroy, teardown, kill |
+
+### Crew operations
+
+| Tool | What it does | Also known as |
+|:-----|:-------------|:--------------|
+| `dispatch` | Spawn a task on a named agent persona | dropoff, send, assign |
+| `pickup` | Check a task / list all tasks / wait for completion + mail state | see below |
+| `steer` | Redirect a running task or continue a completed one | redirect, update, continue, follow up, add context |
+| `captain` | Manage the crew's standing-orders Captain (Raven check-in) | supervise, oversee, autopilot, govern, sitrep, status |
+| `schedule` | Create a recurring task on a crew (cron or interval in seconds) | book, recur, cron, timer, automate |
+
+### pickup aliases by usage
+
+| Usage | Aliases |
+|:------|:--------|
+| `pickup(task_id, crew_id)` — check one task immediately | collect, get result, check progress |
+| `pickup(crew_id)` — list all tasks in a crew | list, overview, what's happening |
+| `pickup(timeout_secs=N)` — wait until done or timeout | bridge, watch, wait, monitor, hold, patrol, poll |
+
+### Resources (read-only, not tools)
+
+| Resource | What it returns |
+|:---------|:----------------|
+| `transport://agents` | Available agent personas and their roles |
+| `transport://compositions` | Available crew compositions for `launch` |
+| `transport://orders` | Built-in Captain standing-order templates |
+
+---
+
+## Agent Personas
+
+See [`docs/agents.md`](agents.md) for full detail. Quick summary:
+
+| Agent | Role | OpenSpec ownership |
+|:------|:-----|:-------------------|
+| **Ghost** | General-purpose — implements tasks, handles end-to-end work | All six operations |
+| **Spectre** | Planning — proposes, explores, updates changes | explore, propose, update-change |
+| **Banshee** | Review/fix — independent second pass, finds bugs, runs tests | explore, propose, update-change, apply-change |
+| **Wraith** | Recon/docs — research and documentation, read-only over code | None |
+| **Reaper** | Cleanup — syncs specs and archives completed changes | sync-specs, archive-change |
+| **Raven** | Coordinator — runs the Captain check-in loop, dispatches personas | Dispatch only (via CLI + gateway REST) |
+
+### SDD cycle (who does what)
+
+```
+dispatch(spectre)   → explore + propose
+dispatch(spectre)   → update-change (revisions)
+dispatch(ghost)     → apply-change (implement tasks)
+dispatch(banshee)   → review + fix findings
+dispatch(reaper)    → sync-specs + archive
+```
+
+Or autonomously via `captain(action="order", template="sdd", change_name="...", interval=60)`.
+
+---
+
+## Composition (crew type)
+
+`launch(composition="kirocrew")` — default, full agent/skill/steering set.
+
+Add new compositions to [`crews/registry.json`](../crews/registry.json). Read available options via the `transport://compositions` resource.
+
+---
+
+## Key env vars
+
+| Var | Default | Purpose |
+|:----|:--------|:--------|
+| `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before auto-stopping a crew container |
+| `GA_FILE_PUBLIC_URL` | _(falls back to `GA_PUBLIC_URL`, then `localhost:PORT+1`)_ | Externally-visible file server base URL |
+| `GA_MCP_PUBLIC_URL` | _(falls back to `localhost:PORT`)_ | Externally-visible MCP endpoint base URL |
+| `KC_MODEL_OVERRIDE` | _(unset)_ | Override model for all crew agent JSONs |
+| `GA_API_KEY` | _(unset)_ | Static bearer key protecting the MCP endpoint |
+
+Full list: [`docs/configuration.md`](configuration.md).

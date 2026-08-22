@@ -1,0 +1,49 @@
+FROM ghcr.io/kirodotdev/kirocrew:stable
+
+# Extend the official KiroCrew image with extra tooling for crew containers.
+# Built locally at install time — not pushed to any registry.
+# Add packages here as needed; keep it lean.
+USER root
+
+# Install Node.js 24 LTS via NodeSource
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends curl ca-certificates && \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
+    apt-get install -y -qq --no-install-recommends nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# OpenSpec CLI — spec-driven development (propose/explore/apply/archive).
+# Backs the openspec-* skills seeded from skills/ — those skills shell out
+# to this binary, so it must be present for them to actually work. Pinned to
+# match the version the skills/ SKILL.md files were generated with (see each
+# file's `metadata.generatedBy`) — bumping the skills means bumping this too.
+RUN npm install -g @fission-ai/openspec@1.9.0
+
+# Radio skill: agent mailboxes as plain mbox files — no MTA needed.
+# Agents write RFC 2822 messages directly to /var/mail/<agent>.
+# See skills/radio/SKILL.md for the send/receive pattern.
+RUN mkdir -p /var/mail && chmod 1777 /var/mail
+
+# Pre-seed the kiro-cli SQLite DB with schema + all migrations applied.
+# At launch, transport only needs to INSERT auth_kv rows — no migration wait,
+# no restart needed.
+#
+# ⚠️  FRAGILITY WARNING — read before updating kirocrew:
+# This schema and migration count (10 rows, versions 0–9) was extracted from
+# kiro-cli as shipped with kirocrew 0.2.0. If kiro-cli adds new migrations in a
+# future kirocrew release, this pre-seeded DB will be missing them and kiro-cli
+# may fail to start or behave incorrectly in crew containers.
+#
+# When updating FROM ghcr.io/kirodotdev/kirocrew:stable to a newer version:
+#   1. Spin up a crew with the old image, run launch normally
+#   2. In the running container: python3 -c "import sqlite3; conn=sqlite3.connect(
+#      '/home/kirocrew/.local/share/kiro-cli/data.sqlite3');
+#      print(conn.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
+#   3. If count or max version changed, update seed_kiro_db.py below to match
+#   4. If schema changed, update the CREATE TABLE statements in seed_kiro_db.py too
+#
+# Tracked in: README.md — "Extending the crew image"
+COPY --chown=kirocrew:kirocrew seed_kiro_db.py /tmp/seed_kiro_db.py
+USER kirocrew
+RUN python3 /tmp/seed_kiro_db.py && rm /tmp/seed_kiro_db.py
