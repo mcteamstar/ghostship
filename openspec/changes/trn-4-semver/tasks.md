@@ -5,7 +5,7 @@
 
 ## 2. Crew Image Label
 
-- [ ] 2.1 Add `ARG VERSION=0.0.0-dev` and `LABEL org.ghostship.version=$VERSION` to `crews/kirocrew/Containerfile`
+- [ ] 2.1 Add `ARG VERSION=0.0.0-dev` and `LABEL org.ghostship.version=$VERSION` to `crews/spec-ops/Containerfile`
 - [ ] 2.2 Update `install.sh` build command to pass `--build-arg VERSION=$(cat VERSION)` when building the crew image
 
 ## 3. Transport Version Endpoint and Resource
