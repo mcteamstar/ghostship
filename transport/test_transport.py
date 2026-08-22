@@ -2738,18 +2738,10 @@ class TestPolicyInjection(unittest.TestCase):
         self.assertIn("security_policy.json", script)
         self.assertIn("admission_policy.json", script)
 
-    def test_inject_policy_hmac_is_deterministic(self) -> None:
-        """HMAC uses admiral_secret and produces deterministic output for fixed input."""
-        import hashlib
-        import hmac as hmac_mod
-
-        policy = {"version": "1", "commands": {"deny": ["^git push"]}}
-        canonical = json.dumps(policy, indent=2, sort_keys=True)
+    def test_inject_policy_admission_disables_signature(self) -> None:
+        """Admission policy sets require_policy_signature=False (signature flow not yet implemented)."""
+        policy = {"version": 1, "boot": {"fail_closed": False}}
         secret = "fixed-secret-for-test"
-
-        expected_sig = hmac_mod.new(
-            secret.encode(), canonical.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
 
         mock_podman = Mock()
         mock_podman.container_exec_checked = Mock(return_value="policy injected version=1")
@@ -2768,20 +2760,14 @@ class TestPolicyInjection(unittest.TestCase):
 
             server._inject_policy(mock_podman, "gs-test", "test", secret)
 
-        # Verify HMAC signature is embedded in the script
         call_args = mock_podman.container_exec_checked.call_args
         script = call_args[0][1][2]
-        # The admission_policy b64 should decode to contain our expected sig
-        import base64
-        # Extract admission_b64 from script — it's the second b64decode call
-        import re
+        import base64, re
         b64_matches = re.findall(r"b64decode\('([^']+)'\)", script)
         self.assertEqual(len(b64_matches), 2)
         admission_decoded = base64.b64decode(b64_matches[1]).decode()
         admission = json.loads(admission_decoded)
-        self.assertTrue(admission["require_policy_signature"])
-        self.assertEqual(admission["trust_keys"][0]["id"], "admiral")
-        self.assertEqual(admission["trust_keys"][0]["key"], expected_sig)
+        self.assertFalse(admission["require_policy_signature"])
 
     def test_inject_policy_failure_does_not_abort_launch(self) -> None:
         """Policy injection failure is caught and does not abort launch."""
@@ -2826,7 +2812,6 @@ class TestPolicyInjection(unittest.TestCase):
             patch.object(server, "_copy_steering", return_value=[]),
             patch.object(server, "_seed_openspec_store"),
             patch.object(server, "_patch_models"),
-            patch.object(server, "_remove_builtin_agents"),
             patch.object(server, "_inject_policy", return_value="1"),
             patch.object(server, "_mint_cookie", return_value="test-cookie"),
         ):

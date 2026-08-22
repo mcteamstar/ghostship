@@ -55,6 +55,23 @@ This is a stub only — capturing the scope for a future Wraith dispatch.
 - Check that the captain mailbox source convention is accurate
 - Bounded loop examples — still correct?
 
+### MCP tool descriptions and resources
+- `transport://agents` resource — verify persona descriptions, tool grants,
+  and enforcement notes are current (significant changes in SRV-68, TRN-15,
+  TRN-16)
+- `transport://orders` resource — verify template descriptions match actual
+  template behaviour
+- Tool docstrings (`dispatch`, `pickup`, `captain`, `steer`) — ensure the
+  control-channel model is clearly explained: pickup is for dispatch task_ids,
+  captain status/stop is for the recurring check-in loop, Raven is the
+  designated mail reader (not Ghost). Make these distinctions impossible to
+  miss without knowing the system
+- `pickup` tool — `admiral_subjects` and `captain_subjects` fields should be
+  called out explicitly in the docstring as the fast path for checking mail
+  without dispatching a reader agent
+- README agents table — Raven's role as watcher/mail-reader should be
+  unambiguous; add "read mail" to its description
+
 ## Approach
 
 Dispatch a Wraith to read all docs, identify gaps and stale content, and either

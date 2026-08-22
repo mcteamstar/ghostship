@@ -1,15 +1,6 @@
 {
-  "version": "1",
-  "commands": {
-    "deny": [
-      "^git push",
-      "^git remote add",
-      "^gh ",
-      "^curl.*\\|.*sh",
-      "^wget.*\\|.*sh"
-    ]
-  },
-  "channels": {
-    "deny": ["slack", "discord", "telegram", "teams", "webex", "wecom", "wechat"]
+  "version": 1,
+  "boot": {
+    "fail_closed": false
   }
 }
