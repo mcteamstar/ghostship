@@ -124,23 +124,6 @@ to avoid resurrecting entries that were removed concurrently.
 - **WHEN** `_reconcile_registry` snapshots crew X, releases the lock, and another thread removes crew X before the write-back lock is acquired
 - **THEN** the write-back does NOT re-add crew X to the registry
 
-### Requirement: Test suite runs safely inside crew containers
-
-The test suite SHALL be partitioned into Podman-dependent tests and pure unit
-tests. Tests that require a real Podman socket SHALL be decorated with
-`@unittest.skipUnless(shutil.which("podman"), "requires podman")` so they are
-skipped automatically when Podman is not available (e.g., inside a crew
-container). The top of `test_transport.py` SHALL document which test classes are
-Podman-dependent and which are safe to run anywhere.
-
-#### Scenario: Full suite completes inside a crew container
-- **WHEN** `python -m unittest discover -s transport -p "test_*.py"` is run inside a crew container where Podman is absent
-- **THEN** Podman-dependent tests are skipped, all other tests run and pass, and the suite exits 0
-
-#### Scenario: Full suite runs all tests on a host with Podman
-- **WHEN** `python -m unittest discover -s transport -p "test_*.py"` is run on a host where Podman is available
-- **THEN** all tests including Podman-dependent ones are executed
-
 ### Requirement: _idle_monitor handles 401 with cookie refresh
 
 When the idle monitor's HTTP call to a crew's gateway returns HTTP 401, the

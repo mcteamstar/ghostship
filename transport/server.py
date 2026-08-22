@@ -21,7 +21,6 @@ Tools:
 Resources:
   transport://agents — available agents and their roles (read before dispatching)
   transport://orders — built-in standing-order templates (read before ordering)
-  transport://jobs — scheduled jobs across all running crews
 
 Auth flow:
   On first launch (no ga-kiro-auth file), the crew container initiates
@@ -105,27 +104,7 @@ PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
 GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
-GA_MIN_FREE_MEM_GB = float(os.environ.get("GA_MIN_FREE_MEM_GB", "2.0"))
-GA_MEMORY_WAIT_SECS = int(os.environ.get("GA_MEMORY_WAIT_SECS", "60"))
-GA_SPAWN_MIN_MEMORY_GB = float(os.environ.get("GA_SPAWN_MIN_MEMORY_GB", "1.5"))
-GA_RESOURCE_PRESSURE_GB = float(os.environ.get("GA_RESOURCE_PRESSURE_GB", "2.0"))
-GA_RESOURCE_CRITICAL_GB = float(os.environ.get("GA_RESOURCE_CRITICAL_GB", "1.0"))
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
-
-# ── Version ───────────────────────────────────────────────────────────────────
-
-def _read_transport_version() -> str:
-    """Read VERSION file at repo root (one directory up from transport/).
-
-    Returns the semver string, or '0.0.0-dev' if the file is missing.
-    """
-    version_path = Path(__file__).resolve().parent.parent / "VERSION"
-    try:
-        return version_path.read_text().strip()
-    except (FileNotFoundError, OSError):
-        return "0.0.0-dev"
-
-TRANSPORT_VERSION: str = _read_transport_version()
 
 def _load_or_create_file_secret() -> str:
     """Load the persistent file-URL signing secret, generating it on first run.
@@ -152,35 +131,7 @@ def _load_or_create_file_secret() -> str:
     return new_secret
 
 _FILE_SECRET = _load_or_create_file_secret()
-
-
-def _load_api_key() -> str:
-    """Load GA_API_KEY from Podman secret file, falling back to env var (deprecated)."""
-    _logger = logging.getLogger(__name__)
-    secret_path = Path("/run/secrets/ga-api-key")
-    try:
-        if secret_path.is_file():
-            key = secret_path.read_text().strip()
-            if key:
-                return key
-    except Exception:
-        pass
-
-    # Deprecated fallback: environment variable
-    env_key = os.environ.get("GA_API_KEY", "").strip()
-    if env_key:
-        _logger.warning(
-            "GA_API_KEY loaded from environment variable (DEPRECATED). "
-            "Re-run install.sh to migrate to Podman secrets."
-        )
-        return env_key
-
-    _logger.info("No API key configured (neither /run/secrets/ga-api-key nor GA_API_KEY env var). "
-                 "MCP API-key authentication disabled.")
-    return ""
-
-
-GA_API_KEY = _load_api_key()
+GA_API_KEY = os.environ.get("GA_API_KEY", "").strip()
 
 
 def _auth_file_path() -> Path:
@@ -327,12 +278,6 @@ _http = httpx.Client(timeout=60.0)
 
 # ── API-key authentication middleware ─────────────────────────────────────────
 
-
-async def _handle_version_get(request: Request) -> Response:
-    """GET /version — unauthenticated endpoint returning transport version."""
-    return JSONResponse({"transport": TRANSPORT_VERSION})
-
-
 class BearerAuthMiddleware:
     """Pure ASGI middleware enforcing a static bearer API key.
 
@@ -354,28 +299,9 @@ class BearerAuthMiddleware:
             ("POST", "/login"): _handle_login_post,
             ("GET",  "/login"): _handle_login_get,
             ("POST", "/logout"): _handle_logout_post,
-            ("GET",  "/health"): _handle_health,
         }
-        # Routes exempt from authentication (served before auth check)
-        self._public_routes: dict[tuple[str, str], Any] = {
-            ("GET", "/version"): _handle_version_get,
-        }
-
-    # Paths that bypass API-key auth (readiness probes, etc.)
-    _PUBLIC_PATHS: set[str] = {"/health"}
 
     async def __call__(self, scope, receive, send) -> None:
-        # Public routes — served without any authentication check
-        if scope["type"] == "http":
-            public_handler = self._public_routes.get(
-                (scope["method"], scope["path"])
-            )
-            if public_handler is not None:
-                request = Request(scope, receive)
-                response = await public_handler(request)
-                await response(scope, receive, send)
-                return
-
         if not self._key or scope["type"] != "http":
             # No API key — still need to check login/logout routes
             if scope["type"] == "http":
@@ -389,15 +315,6 @@ class BearerAuthMiddleware:
                     return
             await self.app(scope, receive, send)
             return
-
-        # Allow public paths through without auth (health probes, etc.)
-        if scope["path"] in self._PUBLIC_PATHS:
-            handler = self._routes.get((scope["method"], scope["path"]))
-            if handler is not None:
-                request = Request(scope, receive)
-                response = await handler(request)
-                await response(scope, receive, send)
-                return
 
         # Extract Authorization headers from the ASGI scope
         auth_values = [
@@ -512,12 +429,6 @@ class PodmanClient:
         except Exception:
             pass
 
-    def container_inspect(self, name: str) -> dict:
-        """Inspect a container, returning the full JSON object."""
-        r = self._c.get(f"/libpod/containers/{name}/json")
-        r.raise_for_status()
-        return r.json()
-
     def container_exists(self, name: str) -> bool:
         return self._c.get(f"/libpod/containers/{name}/json").status_code == 200
 
@@ -526,10 +437,6 @@ class PodmanClient:
         if r.status_code != 200:
             return False
         return r.json().get("State", {}).get("Status") == "running"
-
-    def system_info(self) -> dict:
-        """Query Podman system info (GET /libpod/system/info)."""
-        return self._req("GET", "/libpod/system/info")
 
     def _demux(self, raw: bytes) -> str:
         """Demux Docker multiplexed stream format into plain text."""
@@ -801,52 +708,6 @@ def _get_podman() -> PodmanClient:
         _podman = PodmanClient(PODMAN_SOCK)
     return _podman
 
-
-# ── Memory helpers ────────────────────────────────────────────────────────────
-
-def _get_host_memory_gb(podman: PodmanClient) -> float:
-    """Extract available memory (GB) from Podman system info."""
-    info = podman.system_info()
-    mem_free = info.get("host", {}).get("memFree", 0)
-    return round(mem_free / (1024 ** 3), 1)
-
-
-_host_memory_cache: tuple[float, float] | None = None
-
-
-def _get_host_memory_gb_cached(podman: PodmanClient) -> float | None:
-    """Return available memory with 5-second TTL cache.
-
-    Returns None if Podman info fails.
-    """
-    global _host_memory_cache
-    now = time.monotonic()
-    if _host_memory_cache is not None:
-        ts, value = _host_memory_cache
-        if now - ts < 5.0:
-            return value
-    try:
-        value = _get_host_memory_gb(podman)
-        _host_memory_cache = (now, value)
-        return value
-    except Exception:
-        return None
-
-
-def _wait_for_memory(podman: PodmanClient, required_gb: float, timeout_secs: int) -> float:
-    """Block until host has required_gb free, or timeout_secs expires.
-
-    Returns current free GB (may be < required_gb on timeout).
-    """
-    deadline = time.monotonic() + timeout_secs
-    while True:
-        free_gb = _get_host_memory_gb(podman)
-        if free_gb >= required_gb:
-            return free_gb
-        if time.monotonic() >= deadline:
-            return free_gb
-        time.sleep(5)
-
 # ── Crew registry ─────────────────────────────────────────────────────────────
 
 _registry_lock = threading.Lock()
@@ -883,69 +744,6 @@ _RAVEN_STORE_RESOLUTION = """Before touching OpenSpec for a delivered project, m
 
 _RAVEN_SELF_CANCEL = """Once you're genuinely satisfied the standing orders are met, pause your own check-in job (named "captain", the only one in this crew) through the CLI, and confirm via `cron list` that it actually stopped before you hold — don't ask the Admiral to do it for you, and don't report it done without checking."""
 
-# ── Academy order template loading ───────────────────────────────────────────
-
-_ORDERS_DIR = Path(os.environ.get("ACADEMY_PATH", str(Path(__file__).resolve().parent.parent / "academy"))) / "orders"
-# Inside the container the academy subdirectories are individually bind-mounted;
-# /orders is the canonical mount point for academy/orders/.
-_ORDERS_CONTAINER_DIR = Path("/orders")
-
-
-def _resolve_orders_dir() -> Path:
-    """Return the orders directory, checking the container mount first."""
-    if _ORDERS_CONTAINER_DIR.is_dir():
-        return _ORDERS_CONTAINER_DIR
-    return _ORDERS_DIR
-
-
-def _load_order_template(name: str) -> tuple[str, str]:
-    """Load a template from academy/orders/<name>.md.
-
-    Returns (description, body). Parses optional YAML front-matter for
-    the ``description`` field; defaults to "" if absent.
-    """
-    orders_dir = _resolve_orders_dir()
-    template_path = orders_dir / f"{name}.md"
-    if not template_path.is_file():
-        raise ValueError(f"Unknown Captain order template: {name!r}")
-    content = template_path.read_text(encoding="utf-8")
-
-    # Parse optional YAML front-matter
-    description = ""
-    body = content
-    if content.startswith("---\n"):
-        end = content.find("\n---\n", 4)
-        if end != -1:
-            front_matter = content[4:end]
-            body = content[end + 5:]  # skip past closing ---\n
-            for line in front_matter.splitlines():
-                if line.startswith("description:"):
-                    # Strip surrounding quotes
-                    desc_val = line[len("description:"):].strip()
-                    if (desc_val.startswith('"') and desc_val.endswith('"')) or \
-                       (desc_val.startswith("'") and desc_val.endswith("'")):
-                        desc_val = desc_val[1:-1]
-                    description = desc_val
-                    break
-
-    return description, body.strip()
-
-
-def _substitute_placeholders(body: str) -> str:
-    """Replace {{PLACEHOLDER}} tokens with corresponding module-level constants."""
-    result = body.replace("{{RAVEN_GATEWAY_ORIENTATION}}", _RAVEN_GATEWAY_ORIENTATION)
-    result = result.replace("{{RAVEN_STORE_RESOLUTION}}", _RAVEN_STORE_RESOLUTION)
-    result = result.replace("{{RAVEN_SELF_CANCEL}}", _RAVEN_SELF_CANCEL)
-    # Warn about residual placeholders
-    residuals = re.findall(r"\{\{[A-Z_]+\}\}", result)
-    if residuals:
-        logger.warning(
-            "Residual placeholders after substitution in order template: %s",
-            residuals,
-        )
-    return result
-
-
 _CAPTAIN_CHECKIN_TASK = f"""You are Raven. The Captain is this recurring loop itself, not you — you're the persona it dispatches each check-in to watch over the crew and carry its messages. This is a recurring check-in in a persistent session, so standing orders live in the generic /var/mail/captain mailbox rather than in this prompt.
 
 First read /var/mail/captain and identify orders that are new since your prior check-in. Distinguish by source: messages From: admiral@localhost are standing orders; messages From: <persona>@localhost are crew correspondence (status reports, escalations). Never conflate the two — a persona cannot issue standing orders by mailing captain. Assess the whole current crew state against all standing orders, not merely the latest delta or the last run result.
@@ -965,6 +763,34 @@ Take exactly one of these actions this cycle:
 
 Do not implement work yourself, edit files, or use a second channel to change standing orders. Retry transient failures only when retrying is safe; otherwise hold or escalate as described above."""
 
+_ORDER_TEMPLATES: dict[str, dict[str, str]] = {
+    "sdd": {
+        "description": (
+            "Drive a named OpenSpec change through the standard "
+            "Spectre → Ghost → Banshee → Reaper lifecycle."
+        ),
+        "body": f"""Drive OpenSpec change '<change>' through the standard lifecycle.
+
+On every check-in, assess this change's real OpenSpec artifact status and its tasks.md checkbox state as a whole. Read the current state from OpenSpec and tasks.md; do not rely on memory or an earlier check-in's conclusion.
+
+{_RAVEN_GATEWAY_ORIENTATION}
+
+When new standing orders arrive while a previously-dispatched persona task is still in flight, steer it with the new context rather than waiting for it to finish.
+
+{_RAVEN_STORE_RESOLUTION}
+
+- If the proposal, design, specs, or tasks artifact is not complete, dispatch Spectre to continue proposing or updating the change. Take no other dispatching action in that check-in.
+- Once planning is complete, if tasks.md has any unchecked item, dispatch Ghost to implement the remaining tasks.
+- Once every tasks.md item is checked and implementation is complete, if no review has been recorded since the last implementation dispatch, dispatch Banshee to independently review the implementation, fix findings that fit this change, and end with an explicit unresolved-findings verdict.
+- When Banshee reports no unresolved findings, dispatch Reaper to run sync-specs and archive the change.
+- If Banshee still reports unresolved findings after one fix-and-re-review cycle for the current implementation, escalate to the Admiral instead of dispatching another review or fix cycle.
+- Confirm that the change is actually archived by reading real OpenSpec state on a later check-in; never assert completion from memory alone.
+- {_RAVEN_SELF_CANCEL}
+
+Each check-in takes exactly one action: dispatch at most one of Ghost, Spectre, Banshee, Wraith, or Reaper using the authenticated REST dispatch described above; hold when no action is needed; or message the Admiral when permission or a decision outside your authority is required. Do not use `kirocrew spawn run` for named persona dispatch. Do not implement work yourself, edit files, or change these standing orders through another channel.""",
+    },
+}
+
 
 _CHANGE_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -982,16 +808,15 @@ def _resolve_order_template(
     template: str | None,
     change_name: str | None,
 ) -> str:
-    if template is None:
-        raise ValueError("Unknown Captain order template: None")
-    _description, body = _load_order_template(template)
-    body = _substitute_placeholders(body)
+    if template not in _ORDER_TEMPLATES:
+        raise ValueError(f"Unknown Captain order template: {template!r}")
     if change_name is not None:
         _validate_captain_change_name(change_name)
+    body = _ORDER_TEMPLATES[template]["body"]
     if "<change>" in body:
         if change_name is None:
             raise ValueError(f"Template {template!r} requires change_name")
-        body = body.replace("<change>", change_name)
+        return body.replace("<change>", change_name)
     return body
 
 
@@ -1684,17 +1509,6 @@ def _ensure_crew_running(
     # We are the leader — do the restart
     try:
         logger.info("Crew %s is stopped — restarting", crew_id)
-
-        # Pre-launch memory gate: wait for balloon to deflate before starting
-        if GA_MIN_FREE_MEM_GB > 0:
-            free_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, GA_MEMORY_WAIT_SECS)
-            if free_gb < GA_MIN_FREE_MEM_GB:
-                raise RuntimeError(
-                    f"Insufficient available memory to start crew {crew_id}: "
-                    f"{free_gb}GB free, {GA_MIN_FREE_MEM_GB}GB required. "
-                    f"Retry in a moment."
-                )
-
         podman.container_start(crew["container"])
         crew_url = _crew_url(crew)
         if not _wait_gateway(crew_url, timeout=30):
@@ -2067,8 +1881,6 @@ async def _handle_login_post(request: Request) -> Response:
     # ── State guards ──────────────────────────────────────────────────────────
     # Both checks held under the same lock so concurrent requests cannot slip
     # through between the auth-file check and the login-pending check (TOCTOU).
-    # The sentinel is also set inside this same critical section to close the
-    # write-side TOCTOU window.
     global _login_pending
     with _login_pending_lock:
         if _read_auth_file():
@@ -2081,18 +1893,10 @@ async def _handle_login_post(request: Request) -> Response:
                 "Login already in progress. Poll GET /login for status.",
                 status_code=409,
             )
-        # Set lightweight sentinel immediately to prevent concurrent starts
-        _login_pending = {
-            "container": None,
-            "started_at": time.time(),
-            "state": "starting",
-        }
 
     try:
         podman = _get_podman()
     except Exception as e:
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(str(e), status_code=500)
 
     # ── Start ephemeral container ─────────────────────────────────────────────
@@ -2100,17 +1904,7 @@ async def _handle_login_post(request: Request) -> Response:
         container = _start_login_container(podman)
     except Exception as e:
         logger.error("Failed to start login container: %s", e)
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(f"Failed to start login container: {e}", status_code=500)
-
-    # Update sentinel with real container name
-    with _login_pending_lock:
-        _login_pending = {
-            "container": container,
-            "started_at": _login_pending["started_at"] if _login_pending else time.time(),
-            "state": "started",
-        }
 
     # ── Wait for kiro-cli to be available in the container ────────────────────
     # The container uses KC_IMAGE which has kiro-cli installed; a short wait
@@ -2135,8 +1929,6 @@ async def _handle_login_post(request: Request) -> Response:
         exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
     except Exception as e:
         _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(f"Failed to start kiro-cli login: {e}", status_code=500)
 
     pty_sock.setblocking(False)
@@ -2204,8 +1996,6 @@ async def _handle_login_post(request: Request) -> Response:
         except Exception:
             pass
         _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(
             f"kiro-cli did not produce a login URL within 15s.\nOutput:\n{raw_output}",
             status_code=500,
@@ -2231,10 +2021,13 @@ async def _handle_login_post(request: Request) -> Response:
     drain_thread = threading.Thread(target=_drain_pty, daemon=True, name=f"pty-drain-{container}")
     drain_thread.start()
 
-    # ── Update sentinel with exec_id ─────────────────────────────────────────
+    # ── Record pending state ──────────────────────────────────────────────────
     with _login_pending_lock:
-        if _login_pending is not None:
-            _login_pending["exec_id"] = exec_id
+        _login_pending = {
+            "container": container,
+            "exec_id": exec_id,
+            "started_at": time.time(),
+        }
 
     logger.info("Login flow started in %s, URL extracted", container)
     return JSONResponse({
@@ -2286,13 +2079,10 @@ async def _handle_login_get(request: Request) -> Response:
             except Exception as e:
                 logger.warning("Could not inject auth into crew %s: %s", cid, e)
 
-    # Nuke temp container and clear pending state (guarded)
+    # Nuke temp container and clear pending state
     _nuke_login_container(podman, pending["container"])
     with _login_pending_lock:
-        # Only clear if the pending login is the one we just completed;
-        # a new concurrent login may have started between nuke and here.
-        if _login_pending is not None and _login_pending.get("container") == pending["container"]:
-            _login_pending = None
+        _login_pending = None
 
     return JSONResponse({"status": "complete"})
 
@@ -2343,7 +2133,7 @@ async def _handle_logout_post(request: Request) -> Response:
 # ── MCP tools: workspace ─────────────────────────────────────────────────────
 
 @mcp.tool()
-def crews() -> dict:
+def crews() -> list:
     """List all live crews in the registry.
 
     Shows crew_id, container, status, and created_at for each.
@@ -2352,13 +2142,6 @@ def crews() -> dict:
     """
     with _registry_lock:
         reg = _load_registry()
-
-    # Host memory visibility
-    try:
-        podman = _get_podman()
-        host_mem = _get_host_memory_gb_cached(podman)
-    except Exception:
-        host_mem = None
 
     result = []
     for cid, info in reg["crews"].items():
@@ -2378,7 +2161,6 @@ def crews() -> dict:
             "composition": info.get("composition", "kirocrew"),
             "created_at": info.get("created_at"),
             "gateway_healthy": gateway_healthy,
-            "crew_image_version": info.get("crew_image_version", "unknown"),
             "agents": [],
         }
         if "policy_version" in info:
@@ -2400,7 +2182,7 @@ def crews() -> dict:
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
         result.append(entry)
-    return {"crews": result, "host_memory_available_gb": host_mem}
+    return result
 
 
 @mcp.resource(
@@ -2535,9 +2317,9 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "p = pathlib.Path('/home/kirocrew/.kiro/crew/config.local.json'); "
         "cfg = json.loads(p.read_text()) if p.exists() else {}; "
         "a = cfg.setdefault('agent', {}); "
-        f"a['spawn_min_memory_gb'] = {GA_SPAWN_MIN_MEMORY_GB}; "
-        f"a['resource_pressure_gb'] = {GA_RESOURCE_PRESSURE_GB}; "
-        f"a['resource_critical_gb'] = {GA_RESOURCE_CRITICAL_GB}; "
+        "a['spawn_min_memory_gb'] = 0; "
+        "a['resource_pressure_gb'] = 0; "
+        "a['resource_critical_gb'] = 0; "
         "a['dangerously_skip_permissions'] = True; "
         "a['default_agent'] = 'ghost'; "
         "a['reasoning_effort'] = 'max'; "
@@ -2698,15 +2480,6 @@ def _finish_crew_setup(
         _cleanup_crew(podman, container, volume, home_volume)
         return {"error": f"Failed to mint session cookie for crew {crew_id}"}
 
-    # Read crew image version from OCI label
-    crew_image_version = "unknown"
-    try:
-        inspect_data = podman.container_inspect(container)
-        labels = inspect_data.get("Config", {}).get("Labels", {})
-        crew_image_version = labels.get("org.ghostship.version", "unknown")
-    except Exception as e:
-        logger.warning("Could not read version label from %s: %s", container, e)
-
     with _registry_lock:
         reg = _load_registry()
         crew_entry = {
@@ -2720,7 +2493,6 @@ def _finish_crew_setup(
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_used": time.time(),
             "admiral_secret": admiral_secret,
-            "crew_image_version": crew_image_version,
         }
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
@@ -3204,18 +2976,16 @@ def captain(
 
 @mcp.tool()
 def schedule(
-    name: str = "",
-    message: str = "",
+    name: str,
+    message: str,
     crew_id: str | None = None,
     cron: str | None = None,
     interval: int | None = None,
     agent: str = "ghost",
     timezone: str = "Australia/Sydney",
     fire_immediately: bool | None = None,
-    action: str = "create",
-    job_id: str | None = None,
 ) -> dict:
-    """Book, cancel, or list recurring tasks on KiroCrew.
+    """Book a recurring task to run automatically on KiroCrew.
 
     Use for anything that should run on a timer — daily reports, periodic
     checks, background maintenance — without manual dispatching each time.
@@ -3231,9 +3001,8 @@ def schedule(
     Also: book, recur, cron, timer, automate.
 
     Args:
-        action: One of "create" (default), "cancel", or "list".
-        name: A short name for the job (required for create).
-        message: The task instruction to run on each trigger (required for create).
+        name: A short name for the job.
+        message: The task instruction to run on each trigger.
         crew_id: Which crew to schedule on. Required.
         cron: 5-field cron expression (e.g. '0 9 * * 1' for Monday 9am).
         interval: Run every N seconds (minimum 60).
@@ -3242,21 +3011,7 @@ def schedule(
         fire_immediately: Whether to dispatch the task once immediately on
             creation. Defaults to True when interval is set, False when cron
             is set. Explicit values override the default.
-        job_id: Job ID to cancel (required for action="cancel").
     """
-    if action not in ("create", "cancel", "list"):
-        return {"error": "action must be one of: create, cancel, list"}
-
-    if action == "cancel":
-        return _schedule_cancel(job_id, crew_id)
-    if action == "list":
-        return _schedule_list(crew_id)
-
-    # action == "create"
-    if not name:
-        return {"error": "name is required for action='create'"}
-    if not message:
-        return {"error": "message is required for action='create'"}
     try:
         _validate_agent(agent)
     except ValueError as e:
@@ -3308,73 +3063,8 @@ def schedule(
     return result
 
 
-def _schedule_cancel(job_id: str | None, crew_id: str | None) -> dict:
-    """Cancel (delete) a scheduled job by ID on a crew gateway."""
-    if not job_id:
-        return {"error": "job_id is required for action='cancel'"}
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    # Guard against cancelling the captain check-in job
-    try:
-        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-        jobs = _captain_jobs(cron_listing)
-        for job in jobs:
-            if job.get("id") == job_id:
-                if (
-                    job.get("name") == _CAPTAIN_CHECKIN_JOB_NAME
-                    and job.get("agent") == "raven"
-                ):
-                    return {
-                        "error": f"Cannot cancel the Captain check-in job — "
-                        "use captain(action=\"stop\", ...) instead"
-                    }
-                break
-    except (CrewUnresponsiveError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    try:
-        _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/crons/{job_id}")
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return {"error": f"Job not found: {job_id}"}
-        return {"error": str(e)}
-    except (CrewUnresponsiveError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    return {"status": "cancelled", "job_id": job_id}
-
-
-def _schedule_list(crew_id: str | None) -> dict:
-    """List all scheduled jobs for a crew."""
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    try:
-        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-    except (CrewUnresponsiveError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    jobs = _captain_jobs(cron_listing)
-    result_jobs = []
-    for job in jobs:
-        result_jobs.append({
-            "job_id": job.get("id"),
-            "name": job.get("name"),
-            "schedule": job.get("schedule"),
-            "agent": job.get("agent"),
-            "enabled": job.get("enabled", False),
-            "last_run": job.get("last_run_ts"),
-        })
-    return {"jobs": result_jobs}
-
-
 @mcp.tool()
-def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None, delay: int | None = None) -> dict:
+def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dict:
     """Spawn a task on a KiroCrew agent, dispatched for autonomous execution.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
@@ -3382,17 +3072,12 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None, delay:
     unattended.
     Also: dropoff, send, assign.
 
-    Returns a task_id to use with status/pickup/update. When delay is
-    set, the task is scheduled as a one-shot job that fires once after the
-    specified delay (minimum 1 second) rather than dispatching immediately.
+    Returns a task_id to use with status/pickup/update.
 
     Args:
         task: What to do. Be specific — the agent has no other context.
         agent: Which agent to use. Default is 'ghost' (general-purpose).
         crew_id: Which crew to dispatch to. Required — use launch first.
-        delay: Optional delay in seconds before the task fires.
-            Must be >= 1. Creates a one-shot cron job instead of an immediate
-            spawn. The job auto-deletes after firing.
     """
     try:
         _validate_agent(agent)
@@ -3402,36 +3087,6 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None, delay:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
-
-    if delay is not None:
-        if delay < 1:
-            return {"error": "delay must be >= 1"}
-        # Build a one-shot cron expression: fire exactly once at now + delay.
-        # KiroCrew's cron API accepts a 5-field cron expression (min hour dom mon dow).
-        # We compute the target UTC time and emit "M H D Mon *" so it fires once and
-        # then never matches again (the month anchor makes it a one-off).
-        import datetime as _dt
-        fire_at = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=delay)
-        cron_expr = f"{fire_at.minute} {fire_at.hour} {fire_at.day} {fire_at.month} *"
-        body: dict = {
-            "name": f"delayed-dispatch-{agent}",
-            "message": task,
-            "agent": agent,
-            "cron": cron_expr,
-        }
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
-        except (CrewUnresponsiveError, RuntimeError) as e:
-            return {"error": str(e)}
-        return {
-            "task_id": None,
-            "job_id": r.get("id"),
-            "crew_id": crew_id,
-            "status": "delayed",
-            "delay": delay,
-            "agent": agent,
-        }
-
     result = _crew_api_with_recovery(
         crew, crew_id, "POST", "/api/spawn",
         json={"task": task, "agent": agent, "keep": True},
@@ -3726,90 +3381,14 @@ def resource_agents() -> str:
     mime_type="text/plain",
 )
 def resource_orders() -> str:
-    """Return every standing-order template from academy/orders/ and its full body."""
-    orders_dir = _resolve_orders_dir()
-    if not orders_dir.is_dir():
-        return "No standing-order templates are available."
-    templates = sorted(p for p in orders_dir.glob("*.md") if not p.name.startswith("."))
-    if not templates:
+    """Return every built-in standing-order template and its full body."""
+    if not _ORDER_TEMPLATES:
         return "No standing-order templates are available."
     sections = []
-    for template_path in templates:
-        name = template_path.stem
-        description, body = _load_order_template(name)
-        resolved_body = _substitute_placeholders(body)
-        sections.append(f"## {name}\n{description}\n\n{resolved_body}")
-    return "\n\n".join(sections)
-
-
-@mcp.resource(
-    "transport://version",
-    name="version",
-    title="Transport and Crew Image Versions",
-    description="Returns the transport process version and, for each running crew, its crew image version.",
-    mime_type="application/json",
-)
-def resource_version() -> str:
-    """Return transport version and per-crew image versions from registry."""
-    with _registry_lock:
-        reg = _load_registry()
-    crews_versions = {}
-    for cid, info in reg["crews"].items():
-        crews_versions[cid] = {
-            "crew_image_version": info.get("crew_image_version", "unknown")
-        }
-    return json.dumps({
-        "transport": TRANSPORT_VERSION,
-        "crews": crews_versions,
-    })
-
-
-@mcp.resource(
-    "transport://jobs",
-    name="jobs",
-    title="Scheduled Jobs",
-    description="Lists all scheduled jobs across all running crews — job_id, name, schedule, agent, enabled, last_run, last_status.",
-    mime_type="text/plain",
-)
-def resource_jobs() -> str:
-    """Return a plain-text listing of all scheduled jobs across all running crews."""
-    with _registry_lock:
-        reg = _load_registry()
-
-    if not reg["crews"]:
-        return "No running crews found."
-
-    sections = []
-    for crew_id, info in reg["crews"].items():
-        if info.get("status") != "running":
-            continue
-        try:
-            crew = info
-            cron_listing = _crew_api(crew, "GET", "/api/crons")
-            jobs = _captain_jobs(cron_listing)
-        except Exception as e:
-            sections.append(f"## {crew_id}\n(error: {e})")
-            continue
-
-        if not jobs:
-            sections.append(f"## {crew_id}\nNo scheduled jobs.")
-            continue
-
-        lines = [f"## {crew_id}"]
-        for job in jobs:
-            lines.append(
-                f"- {job.get('name', '?')} "
-                f"[{job.get('id', '?')}] "
-                f"schedule={job.get('schedule', '?')} "
-                f"agent={job.get('agent', '?')} "
-                f"enabled={job.get('enabled', False)} "
-                f"last_run={job.get('last_run_ts', 'never')} "
-                f"last_status={job.get('last_status', 'none')}"
-            )
-        sections.append("\n".join(lines))
-
-    if not sections:
-        return "No running crews found."
+    for name, definition in _ORDER_TEMPLATES.items():
+        sections.append(
+            f"## {name}\n{definition['description']}\n\n{definition['body']}"
+        )
     return "\n\n".join(sections)
 
 # ── Idle monitor ─────────────────────────────────────────────────────────────
@@ -4432,18 +4011,6 @@ login_routes = [
     Route("/login", _handle_login_post, methods=["POST"]),
     Route("/login", _handle_login_get, methods=["GET"]),
     Route("/logout", _handle_logout_post, methods=["POST"]),
-]
-
-
-# ── Health endpoint ───────────────────────────────────────────────────────────
-
-async def _handle_health(request: Request) -> Response:
-    """Minimal health probe — returns 200 OK when the transport is alive."""
-    return PlainTextResponse("ok")
-
-
-health_routes = [
-    Route("/health", _handle_health, methods=["GET"]),
 ]
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

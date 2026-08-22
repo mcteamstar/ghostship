@@ -53,9 +53,3 @@
 
 - [ ] 9.1 Run full test suite: `python -m pytest transport/test_transport.py -v`
 - [ ] 9.2 Run `openspec validate --changes --store repo` to confirm planning completeness
-
-## 10. Test suite portability
-
-- [ ] 10.1 Identify all test classes/methods that call real `podman` commands or depend on a live Podman socket
-- [ ] 10.2 Decorate each Podman-dependent class/method with `@unittest.skipUnless(shutil.which("podman"), "requires podman")`
-- [ ] 10.3 Add a comment block at the top of `test_transport.py` listing Podman-dependent vs portable test classes, and confirm the portable subset runs to completion inside a crew container

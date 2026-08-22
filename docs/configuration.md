@@ -16,15 +16,10 @@ Environment variables read by the transport server:
 | `GA_FILE_TTL_SECS` | `300` | Seconds a presigned `evac`/`supply` URL stays valid before expiring |
 | `KC_GATEWAY_TOKEN_TTL` | `24h` | Duration passed to `kirocrew token --ttl` when setup, restart recovery, or startup reconciliation mints a gateway session token; independent of file URL expiry |
 | `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs — set explicitly if you need presigned URLs to survive a transport restart |
-| `GA_API_KEY` | _(unset)_ | **DEPRECATED as an env var.** The API key is now delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). The env var is a deprecated fallback for pre-migration installs — a warning is logged at startup when it is used. Re-run `install.sh` to migrate. Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration and rollback. |
+| `GA_API_KEY` | _(unset)_ | Static bearer API key for MCP endpoint authentication. When set, every MCP request must include `Authorization: Bearer <key>`. Unset/empty disables authentication (localhost-trust model). Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration and rollback. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins — see [auth.md](auth.md) |
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum free memory (GB) required before starting a crew container. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
-| `GA_MEMORY_WAIT_SECS` | `60` | Maximum seconds to wait for sufficient memory before returning an error. Only relevant when `GA_MIN_FREE_MEM_GB > 0` |
-| `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |
-| `GA_RESOURCE_PRESSURE_GB` | `2.0` | Value patched into each crew's `resource_pressure_gb` config — KiroCrew throttles subagent spawning below this threshold |
-| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
 
 ## Config file
 
