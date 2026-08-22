@@ -114,7 +114,7 @@ Ship operations (the crew container itself) come first, then crew operations
 | `schedule` | Book a recurring task on a crew (cron or interval); recurring work defaults to Ghost; pass Raven explicitly for a Captain check-in. |
 | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. |
 | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
-| `pickup` | Check progress or collect result; always includes mail state. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout (also: bridge, patrol, poll). Without `task_id`: list all tasks. |
+| `pickup` | Check progress or collect result; always includes mail state. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout (also: bridge, watch, monitor, patrol, poll). Without `task_id`: list all tasks. |
 
 ### Seed or extract a Git repository
 
@@ -170,7 +170,7 @@ standing orders without implementing work. See
 
 A full pass, start to finish — left of the divider is the Admiral (you,
 issuing MCP calls); right of it is the ghostship itself, alive from
-`launch` to `nuke`:
+`launch` until you intentionally tear it down with `nuke`:
 
 ```
 ADMIRAL  (your MCP client)                  │  GHOSTSHIP  (crew container + workspace)
@@ -196,6 +196,7 @@ dispatch(reaper, "sync-specs + archive")    ──► specs synced, change archi
                                             │                                                  │
 evac(path)                                  ◄── pull the finished diff or file out             │
                                             │                                                  │
+                          ↺ repeat for the next change — crew persists                        │
                                             └──────────────────────────────────────────────────┘
 ```
 

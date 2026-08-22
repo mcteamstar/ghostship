@@ -27,8 +27,23 @@ def _install_import_stubs() -> None:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
+    class HTTPStatusError(Exception):
+        def __init__(self, message="", request=None, response=None):
+            super().__init__(message)
+            self.request = request
+            self.response = response
+
+    class ConnectError(Exception):
+        pass
+
+    class ConnectTimeout(Exception):
+        pass
+
     httpx.Client = Client  # type: ignore[attr-defined]
     httpx.HTTPTransport = HTTPTransport  # type: ignore[attr-defined]
+    httpx.HTTPStatusError = HTTPStatusError  # type: ignore[attr-defined]
+    httpx.ConnectError = ConnectError  # type: ignore[attr-defined]
+    httpx.ConnectTimeout = ConnectTimeout  # type: ignore[attr-defined]
     sys.modules["httpx"] = httpx
 
     mcp = types.ModuleType("mcp")

@@ -245,3 +245,32 @@ configs if desired.
   visible to operators with `podman inspect` access. Treat it as an
   operator-managed secret.
 - Automatic key generation and rotation are intentionally out of scope.
+
+## Admiral mail signing (`admiral_secret`)
+
+When a crew is launched, the transport generates a random 32-byte hex secret
+(`admiral_secret`) and injects it into the crew container at
+`/home/kirocrew/workplace/.admiral_secret` (mode `0600`). Every standing order
+the transport writes to `/var/mail/captain` includes an `X-Admiral-Sig:` header
+— an HMAC-SHA256 signature of the message body keyed by this secret. Raven can
+invoke `/usr/local/bin/verify-admiral-sig` to confirm a message is genuine
+before acting on it as a standing order.
+
+### Storage
+
+The `admiral_secret` is stored in plaintext in `crews.json` (the transport
+registry at `$TRANSPORT_DATA_DIR/crews.json`, default `/data/crews.json`).
+
+### Threat model
+
+- **Single operator (local):** `DATA_DIR` is only accessible to the user
+  running the transport container. The threat model is the same as for
+  `GA_API_KEY` — operator-level access to the host is assumed trusted. No
+  additional hardening is required.
+- **Multi-operator:** If multiple operators share access to the host's data
+  volume (or can run `podman inspect ga-transport`), any of them can read
+  `admiral_secret` from `crews.json` and forge Admiral standing orders to any
+  running crew. For multi-operator deployments, `DATA_DIR` should have `0700`
+  permissions and `podman inspect` access should be restricted.
+- **Future hardening:** Encrypting secrets at rest in `crews.json`, or storing
+  them separately with tighter file permissions, is tracked in TRN-16.

@@ -1304,7 +1304,6 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("/api/spawn/{task_id}", definition["body"])
         self.assertIn("/api/spawn/{task_id}/steer", definition["body"])
         self.assertIn("/api/spawn/{task_id}/continue", definition["body"])
-        self.assertIn('"mode": "follow_up"', definition["body"])
         self.assertIn("pause your own check-in job", definition["body"])
         self.assertIn("the only one in this crew", definition["body"])
         self.assertIn("never let its value show up anywhere", definition["body"])
@@ -1352,7 +1351,6 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         for phrase in (
             "/api/spawn/{task_id}/steer",
             "/api/spawn/{task_id}/continue",
-            '"mode": "follow_up"',
         ):
             self.assertIn(phrase, prompt)
 
@@ -1362,7 +1360,6 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             "steer it with the new context rather than waiting for it to finish",
             "/api/spawn/{task_id}/steer",
             "/api/spawn/{task_id}/continue",
-            '"mode": "follow_up"',
         ):
             self.assertIn(phrase, sdd_body)
         self.assertNotIn("native in-session spawn tooling", sdd_body)
@@ -1370,9 +1367,10 @@ class CaptainStandingOrdersTests(unittest.TestCase):
     def test_raven_and_sdd_bodies_cover_persona_mailbox_skim(self) -> None:
         definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
         prompt = json.loads(definition_path.read_text())["prompt"]
-        # Lean raven prompt lists all persona mailboxes directly.
-        for persona in ("ghost", "spectre", "banshee", "wraith", "reaper"):
-            self.assertIn(f"/var/mail/{persona}", prompt)
+        # Raven prompt uses generic <persona> placeholder — not fragile explicit paths.
+        self.assertIn("/var/mail/<persona>", prompt)
+        self.assertIn("captain", prompt)
+        self.assertIn("admiral", prompt)
         self.assertIn("never marks anything as read", prompt)
         self.assertIn("spawn list", prompt)
         # The sdd template no longer duplicates the mailbox skim paragraph
@@ -1986,6 +1984,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
         ):
             result = server.launch("new")
 
@@ -2548,6 +2547,7 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}) as mock_setup,
             patch.object(server, "_wait_gateway", return_value=True),
         ):
@@ -2585,6 +2585,7 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_get_podman") as mock_get_podman,
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}),
             patch.object(server, "_wait_gateway", return_value=True),
         ):

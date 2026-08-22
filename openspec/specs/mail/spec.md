@@ -17,16 +17,14 @@ The system SHALL recognise `captain@localhost` as a generic address (per the exi
 - **WHEN** Raven's check-in task reads `/var/mail/captain`
 - **THEN** it uses the same generic-address mail-checking behavior every persona already uses for its own mailbox — no special-cased reading logic for this address
 
-### Requirement: Transport-side mail writes guard against body content that would corrupt mbox parsing
-Unlike agent-composed messages, a message written from outside the crew (per the requirement above) SHALL NOT assume its body is safe for the existing unescaped mbox format. The system SHALL detect a body line that begins with `From ` (which the read-side parser treats as a message boundary) before writing, and SHALL escape or reject it rather than write it verbatim.
+### Requirement: Transport-side mail writes use atomic Maildir delivery
+Unlike agent-composed messages, a message written from outside the crew by the transport SHALL be delivered via the local MTA (`maildeliver`) to ensure atomic write semantics. Each message is written to `new/` as a Maildir entry and atomically renamed — no file corruption under concurrent delivery.
 
-#### Scenario: Ordinary standing-order text
-- **WHEN** an Admiral's standing-order message contains no line beginning with `From `
-- **THEN** the system writes it unmodified, exactly as the existing agent-side mail convention would
+> **Note:** A prior version of this requirement mandated escaping `From ` lines to avoid mbox boundary corruption. This requirement is superseded by the Maildir delivery model introduced in TRN-1: Maildir stores each message as an independent file and does not parse `From ` as a message boundary.
 
-#### Scenario: Standing-order text containing a line that would corrupt mbox parsing
-- **WHEN** an Admiral's standing-order message contains a line beginning with `From `
-- **THEN** the system escapes or rejects that line before writing, rather than writing it verbatim and risking a later mail-check misreading the message boundary
+#### Scenario: Transport delivers standing order atomically to captain mailbox
+- **WHEN** `captain(action="order", ...)` writes a standing order to the crew
+- **THEN** the message is delivered via `maildeliver` to `/var/mail/captain/new/` as an independent Maildir file; two concurrent deliveries do not corrupt each other
 
 ### Requirement: Two valid recipient address forms
 The system SHALL support two `To:` address forms on messages written to `/var/mail/<persona>`: a generic form (`<persona>@localhost`) meaning "whichever instance of this persona is checking mail", and an instance form (`<persona>+<task_id>@localhost`) meaning "only the instance with this exact task ID".

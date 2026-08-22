@@ -215,6 +215,7 @@ class TestLaunchComposition(unittest.TestCase):
             patch.object(server, "COMPOSITION_REGISTRY", custom_registry),
             patch.object(server, "_get_podman", return_value=mock_podman),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(
@@ -238,6 +239,7 @@ class TestLaunchComposition(unittest.TestCase):
         with (
             patch.object(server, "_get_podman", return_value=mock_podman),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(
