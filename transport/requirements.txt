@@ -1,6 +1,2 @@
 mcp[cli]==2.0.0
 httpx==0.28.1
-# Declared explicitly — mcp[cli] pulls these as transitive deps but pinning
-# prevents silent breakage if mcp ever restructures its extras.
-starlette>=0.27.0,<2.0.0
-uvicorn>=0.31.1,<1.0.0

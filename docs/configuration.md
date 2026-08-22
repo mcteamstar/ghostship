@@ -6,7 +6,7 @@ Environment variables read by the transport server:
 |:---------|:--------|:------------|
 | `HOST` | `0.0.0.0` | Interface the MCP and file servers bind to inside the container — `install.sh` only ever publishes `127.0.0.1` on the host, so this is not normally a reason to change it |
 | `PORT` | `64057` | MCP server port. The file server always runs on `PORT+1` (`64058` by default) — set via `install.sh --port <port>` |
-| `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
+| `KC_IMAGE` | `localhost/kirocrew-crew:latest` | Crew container image |
 | `GA_MAX_CREWS` | `6` | Max concurrent crews |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
 | `KC_MODEL_OVERRIDE` | _(unset)_ | When set, overrides the model in all agent JSON files at launch — takes precedence over per-agent defaults. Set via `install.sh --model <model>`. Leave unset to use each agent's own default. |
@@ -16,25 +16,10 @@ Environment variables read by the transport server:
 | `GA_FILE_TTL_SECS` | `300` | Seconds a presigned `evac`/`supply` URL stays valid before expiring |
 | `KC_GATEWAY_TOKEN_TTL` | `24h` | Duration passed to `kirocrew token --ttl` when setup, restart recovery, or startup reconciliation mints a gateway session token; independent of file URL expiry |
 | `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs — set explicitly if you need presigned URLs to survive a transport restart |
-| `GA_API_KEY` | _(unset)_ | **DEPRECATED as an env var.** The API key is now delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). The env var is a deprecated fallback for pre-migration installs — a warning is logged at startup when it is used. Re-run `install.sh` to migrate. Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration and rollback. |
+| `GA_API_KEY` | _(unset)_ | Static bearer API key for MCP endpoint authentication. When set, every MCP request must include `Authorization: Bearer <key>`. Unset/empty disables authentication (localhost-trust model). Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration and rollback. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins — see [auth.md](auth.md) |
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum free memory (GB) required before starting a crew container. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
-| `GA_MEMORY_WAIT_SECS` | `60` | Maximum seconds to wait for sufficient memory before returning an error. Only relevant when `GA_MIN_FREE_MEM_GB > 0` |
-| `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |
-| `GA_RESOURCE_PRESSURE_GB` | `2.0` | Value patched into each crew's `resource_pressure_gb` config — KiroCrew throttles subagent spawning below this threshold |
-| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
-| `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
-| `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
-
-> **Internal constant — not user-settable:**
-> `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each
-> crew container's gateway over the internal `ga-net` network. It is
-> hardcoded in `server.py` and is **not** configurable via environment
-> variable. Changing it would require rebuilding both the crew image and the
-> transport. All user-facing ports are controlled by `PORT` (MCP) and
-> `PORT+1` (file server) above.
 
 ## Config file
 
@@ -164,7 +149,7 @@ risks not redesigned by API-key authentication.
 
 ## Extending the crew image
 
-Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
+Edit `crews/kirocrew/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
 FROM ghcr.io/kirodotdev/kirocrew:stable

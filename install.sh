@@ -31,11 +31,6 @@
 # API key: --api-key <key> enables MCP bearer-token auth and persists the
 # key to your data directory, so it stays enabled on future installs without
 # repeating the flag. --api-key "" (empty) clears it. See docs/auth.md.
-# set -e: exit on any command failure. set -o pipefail: exit on failures
-# within pipelines. Together these ensure that podman machine ssh failures
-# (including those in command-substitution subshells like GUEST_UID=...)
-# propagate as non-zero exits. Explicit error guards below add diagnostic
-# messages to name *what* failed.
 set -eo pipefail
 
 GHOSTSHIP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,10 +57,6 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: config file is not readable: $CONFIG_FILE" >&2
     exit 1
   fi
-  # TRUST ASSUMPTION: this executes arbitrary shell code from the path the user
-  # passed via --config. The caller is trusted — this is intentional: config
-  # files export env vars that control identity provider, region, API keys, etc.
-  # Do NOT source untrusted paths.
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
   echo "✓ Sourced config file: $CONFIG_FILE"
@@ -97,16 +88,6 @@ fi
 if [[ -n "${KIRO_IDENTITY_PROVIDER:-}" && -z "${KIRO_REGION:-}" && -t 0 ]]; then
   read -rp "AWS region for that identity provider: " KIRO_REGION
 fi
-
-# ── Memory management env vars ────────────────────────────────────────────────
-# GA_MIN_FREE_MEM_GB  (default 2.0)  — minimum free memory (GB) before starting
-#   a crew container. Transport polls Podman info in 5s intervals until memory
-#   frees or timeout expires. Set to 0 to disable the gate entirely.
-# GA_MEMORY_WAIT_SECS (default 60)   — max seconds to wait for memory.
-# GA_SPAWN_MIN_MEMORY_GB (default 1.5) — patched into crew's spawn_min_memory_gb
-#   (KiroCrew's internal subagent admission gate).
-# GA_RESOURCE_PRESSURE_GB (default 2.0) — patched into crew's resource_pressure_gb.
-# GA_RESOURCE_CRITICAL_GB (default 1.0) — patched into crew's resource_critical_gb.
 
 # ── Podman ────────────────────────────────────────────────────────────────────
 
@@ -176,16 +157,14 @@ if [[ "$OS" == "Darwin" ]]; then
   # affects what happens once you start the machine yourself — it does not
   # make the machine start automatically (no launchd/login autostart is used
   # here on purpose).
-  podman machine ssh -- systemctl --user enable podman-restart.service \
-    || { echo "Error: failed to enable podman-restart.service in the podman machine guest — is the VM running?" >&2; exit 1; }
+  podman machine ssh -- systemctl --user enable podman-restart.service
   echo "✓ podman-restart.service enabled (transport survives machine restarts)"
 
   # In-guest socket path (NOT the host-side /var/folders proxy socket from
   # `podman machine inspect` — that path only exists on macOS and can't be
   # bind-mounted into a container, which runs inside the guest VM). Confirmed
   # via `podman machine ssh -- systemctl --user status podman.socket`.
-  GUEST_UID="$(podman machine ssh -- id -u)" \
-    || { echo "Error: failed to retrieve guest UID via 'podman machine ssh -- id -u' — SSH into the VM may be broken" >&2; exit 1; }
+  GUEST_UID="$(podman machine ssh -- id -u)"
   PODMAN_SOCK="/run/user/${GUEST_UID}/podman/podman.sock"
   echo "✓ Guest podman socket: ${PODMAN_SOCK}"
 
@@ -280,7 +259,7 @@ fi
 
 # ── Network ───────────────────────────────────────────────────────────────────
 
-podman network exists ga-net 2>/dev/null || podman network create ga-net
+podman network create ga-net 2>/dev/null || true
 echo "✓ ga-net network ready (DNS-enabled by default)"
 
 # ── Pre-warm + build images ──────────────────────────────────────────────────
@@ -288,25 +267,13 @@ echo "✓ ga-net network ready (DNS-enabled by default)"
 podman pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
   && echo "✓ KiroCrew image pre-warmed" || echo "⚠ KiroCrew image pull failed (offline?)"
 
-echo "Building localhost/spec-ops:latest ..."
-podman build -t localhost/spec-ops:latest \
-  --build-arg VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")" \
-  "$GHOSTSHIP_DIR/crews/spec-ops/" \
+echo "Building localhost/kirocrew-crew:latest ..."
+podman build -t localhost/kirocrew-crew:latest "$GHOSTSHIP_DIR/crews/kirocrew/" \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
 echo "Building localhost/transport:latest ..."
 podman build -t localhost/transport:latest "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
-
-# ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
-
-podman secret rm ga-api-key 2>/dev/null || true
-GA_SECRET_FLAG=""
-if [[ -n "${GA_API_KEY:-}" ]]; then
-  printf '%s' "$GA_API_KEY" | podman secret create ga-api-key -
-  GA_SECRET_FLAG="--secret ga-api-key"
-  echo "✓ Podman secret 'ga-api-key' created"
-fi
 
 # ── Run transport ─────────────────────────────────────────────────────────────
 
@@ -322,7 +289,6 @@ podman run -d --name ga-transport --restart=always \
   -v "${GHOSTSHIP_DIR}/academy/skills:/skills:ro" \
   -v "${GHOSTSHIP_DIR}/academy/steering:/steering:ro" \
   -v "${GHOSTSHIP_DIR}/academy/policies:/policies:ro" \
-  -v "${GHOSTSHIP_DIR}/academy/orders:/orders:ro" \
   -v "${GHOSTSHIP_DIR}/crews:/crews:ro" \
   -v "${PODMAN_SOCK}:${PODMAN_SOCK}" \
   -e "PODMAN_SOCKET=${PODMAN_SOCK}" \
@@ -335,12 +301,7 @@ podman run -d --name ga-transport --restart=always \
   -e "KIRO_REGION=${KIRO_REGION:-}" \
   -e "KIRO_LICENSE=${KIRO_LICENSE:-}" \
   -e "KC_MODEL_OVERRIDE=${KC_MODEL_OVERRIDE:-}" \
-  -e "GA_MIN_FREE_MEM_GB=${GA_MIN_FREE_MEM_GB:-2.0}" \
-  -e "GA_MEMORY_WAIT_SECS=${GA_MEMORY_WAIT_SECS:-60}" \
-  -e "GA_SPAWN_MIN_MEMORY_GB=${GA_SPAWN_MIN_MEMORY_GB:-1.5}" \
-  -e "GA_RESOURCE_PRESSURE_GB=${GA_RESOURCE_PRESSURE_GB:-2.0}" \
-  -e "GA_RESOURCE_CRITICAL_GB=${GA_RESOURCE_CRITICAL_GB:-1.0}" \
-  ${GA_SECRET_FLAG} \
+  -e "GA_API_KEY=${GA_API_KEY:-}" \
   localhost/transport:latest
 
 echo "✓ ga-transport container started"
@@ -351,27 +312,10 @@ else
   echo "  MCP API-key authentication: disabled (pass --api-key <key> to enable)"
 fi
 
-sleep 1  # brief pause before first probe attempt
+sleep 3
 echo ""
 echo "=== Health check ==="
-_max_wait=30
-_interval=2
-_ready=0
-for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-    _ready=1
-    break
-  fi
-  sleep "$_interval"
-done
-if [[ "$_ready" == "1" ]]; then
-  echo "✓ Transport is ready (responded on http://127.0.0.1:${PORT}/health)"
-else
-  echo "✗ Transport did not become ready within ${_max_wait}s" >&2
-  echo "  Last 20 lines of container logs:" >&2
-  podman logs ga-transport --tail 20 >&2
-  exit 1
-fi
+podman ps --filter name=ga-transport --format '{{.Names}} {{.Status}}'
 
 echo ""
 echo "=== Post-install ==="

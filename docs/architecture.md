@@ -8,16 +8,16 @@ containers via the Podman socket. Exposes the `ghostship` tools (see the
 main README).
 
 **Crew containers** — on-demand KiroCrew instances, each a **ghostship**
-(`localhost/spec-ops:latest`), named `gs-<id>`. Each has two
+(`localhost/kirocrew-crew:latest`), named `gs-<id>`. Each has two
 volumes: a workspace volume (`gs-vol-<id>`) and a home volume
 (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join
 `ga-net` so transport can reach them by container name
 (`http://gs-<id>:5476`).
 
-**Crew image** (`crews/spec-ops/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:stable`
+**Crew image** (`crews/kirocrew/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:stable`
 (Debian 13, Python 3.12, git, curl). Adds Node.js 24 LTS via NodeSource, and
 the `openspec` CLI (`@fission-ai/openspec`) that the `openspec-*` skills shell
-out to. Built locally at install time (`localhost/spec-ops:latest`). See
+out to. Built locally at install time (`localhost/kirocrew-crew:latest`). See
 [configuration.md](configuration.md#extending-the-crew-image) to add packages.
 
 ## Ghost Academy
@@ -31,7 +31,7 @@ curriculum, bind-mounted into transport and copied into every crew at
 manifest key (`agents`, `skills`, `steering`) is either the literal string
 `"*"` or an explicit array of exact names to include from the
 corresponding Academy pool. The only crew type today, `kirocrew`
-(`crews/spec-ops/manifest.json`), specifies `"*"` for every key, so every
+(`crews/kirocrew/manifest.json`), specifies `"*"` for every key, so every
 ghostship still gets the whole curriculum in practice — the manifest is
 groundwork for a future second crew type to select a different combination,
 not a restriction on this one. Within whatever a crew type's manifest
@@ -58,7 +58,7 @@ launch(crew_id)
      └── missing → start kiro-cli device auth flow, return login URL
                    call launch again after auth to finish setup
   2. Create gs-vol-<id> + gs-home-<id> volumes
-  3. Start crew container (localhost/spec-ops:latest)
+  3. Start crew container (localhost/kirocrew-crew:latest)
   4. Wait for gateway ready (GET / on :5476, 30s timeout)
   5. Inject kiro-cli auth rows into crew's SQLite DB
   6. Patch KiroCrew config (sandbox=none, skip_permissions=true, spawn_min_memory_gb=0)
@@ -327,7 +327,7 @@ Idle-stop is what keeps a fleet of crews from consuming resources when inactive.
 `nuke`'s counterpart on transport restart) restarts the *existing* container
 object — it does not recreate it from the current image tag. A container is
 bound to whichever image it was created from at `podman run` time, so
-rebuilding `localhost/transport:latest` or `localhost/spec-ops:latest`
+rebuilding `localhost/transport:latest` or `localhost/kirocrew-crew:latest`
 has no effect on containers that already exist; only a fresh `podman run`
 (i.e. `install.sh` for transport, `launch` for a crew) picks up the new
 image.
@@ -335,12 +335,12 @@ image.
 | You rebuilt... | What needs recreating | How |
 |:----------------|:-----------------------|:----|
 | `transport/` (`localhost/transport:latest`) | The `ga-transport` container | `./install.sh` — it `podman rm -f`s and re-`run`s `ga-transport` unconditionally, no crew impact |
-| `crews/spec-ops/Containerfile` (`localhost/spec-ops:latest`) | Each existing crew container | `nuke(crew_id, confirm=True)` then `launch(crew_id)` per crew — destroys that crew's workspace and home volumes, so pull out anything needed via `evac` first |
+| `crews/kirocrew/Containerfile` (`localhost/kirocrew-crew:latest`) | Each existing crew container | `nuke(crew_id, confirm=True)` then `launch(crew_id)` per crew — destroys that crew's workspace and home volumes, so pull out anything needed via `evac` first |
 
 Restarting a stopped crew (idle-stop recovery, or transport's own reboot
 `_reconcile_registry` pass) never picks up a rebuilt crew image — it's the
 same container, just started again. Only `nuke` + `launch` recreates it
-against the current `localhost/spec-ops:latest`.
+against the current `localhost/kirocrew-crew:latest`.
 
 ## Reboot recovery
 

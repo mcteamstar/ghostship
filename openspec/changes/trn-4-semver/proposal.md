@@ -67,7 +67,7 @@ This is a stub only — capturing the direction for a future design pass.
 ## Impact
 
 - `VERSION` (new file at repo root)
-- `crews/spec-ops/Containerfile` — add `LABEL` instruction
+- `crews/kirocrew/Containerfile` — add `LABEL` instruction
 - `transport/server.py` — version endpoint, registry storage, `crews()` field
 - `install.sh` — potentially pass `--build-arg VERSION=...` to podman build
 - Not yet scoped: release tagging automation, changelog generation

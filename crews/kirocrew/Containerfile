@@ -1,28 +1,14 @@
-# WARNING: floating tag — ghcr.io/kirodotdev/kirocrew:stable has no versioned
-# alternative today.  A rebuild on a different day may silently pull a different
-# image.  Pin to a versioned tag (e.g. kirocrew:0.3.2) when upstream publishes
-# one.  Digest pinning is deferred until CI automation can rotate it.
 FROM ghcr.io/kirodotdev/kirocrew:stable
-
-ARG VERSION=0.0.0-dev
-LABEL org.ghostship.version=$VERSION
 
 # Extend the official KiroCrew image with extra tooling for crew containers.
 # Built locally at install time — not pushed to any registry.
 # Add packages here as needed; keep it lean.
 USER root
 
-# Install Node.js 24 LTS via NodeSource — with integrity verification.
-# The setup script is downloaded first and its SHA-256 is checked before
-# execution.  Update NODESOURCE_SETUP_SHA256 when bumping Node.js versions
-# (compute with: curl -fsSL https://deb.nodesource.com/setup_24.x | sha256sum).
-ARG NODESOURCE_SETUP_SHA256="6e3d580f5bd7ccf2aa1e8df8d35c60d78e873c3ff8beb282c9bebd914904ad72"
+# Install Node.js 24 LTS via NodeSource
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends curl ca-certificates && \
-    curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup.sh && \
-    echo "${NODESOURCE_SETUP_SHA256}  /tmp/nodesource_setup.sh" | sha256sum -c - && \
-    bash /tmp/nodesource_setup.sh && \
-    rm -f /tmp/nodesource_setup.sh && \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y -qq --no-install-recommends nodejs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
