@@ -116,8 +116,8 @@ Ship operations (the crew container itself) come first, then crew operations
 | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
 | `captain` | Manage a crew's order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
-| `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with cron or interval schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. `dispatch` also offers one-shot delayed fire via `delay`. |
-| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Pass `delay=N` to schedule a one-shot job that fires after N seconds instead of dispatching immediately. |
+| `schedule` | Book a recurring task on a crew (cron or interval); recurring work defaults to Ghost; pass Raven explicitly for a Captain check-in. |
+| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. |
 | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
 | `pickup` | Check progress or collect result; always includes mail state. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout (also: bridge, watch, monitor, patrol, poll). Without `task_id`: list all tasks. |
 
@@ -226,9 +226,8 @@ by default — pass `fire_immediately=False` to suppress this, or
 the resolved order to `captain@localhost` and ensures one persistent Raven
 check-in; `status` reports job enablement, last-run summary, and both Captain
 and Admiral mailbox counts, while `stop` pauses the job without deleting its
-history. The `transport://agents` resource lists available personas,
-`transport://orders` lists built-in standing-order templates, and
-`transport://jobs` lists all scheduled jobs across all running crews. A scheduled
+history. The `transport://agents` resource lists available personas and
+`transport://orders` lists built-in standing-order templates. A scheduled
 check-in has a `job_id`, not a dispatch `task_id`, so `steer` is not its
 control channel.
 

@@ -31,11 +31,6 @@
 # API key: --api-key <key> enables MCP bearer-token auth and persists the
 # key to your data directory, so it stays enabled on future installs without
 # repeating the flag. --api-key "" (empty) clears it. See docs/auth.md.
-# set -e: exit on any command failure. set -o pipefail: exit on failures
-# within pipelines. Together these ensure that podman machine ssh failures
-# (including those in command-substitution subshells like GUEST_UID=...)
-# propagate as non-zero exits. Explicit error guards below add diagnostic
-# messages to name *what* failed.
 set -eo pipefail
 
 GHOSTSHIP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,10 +57,6 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: config file is not readable: $CONFIG_FILE" >&2
     exit 1
   fi
-  # TRUST ASSUMPTION: this executes arbitrary shell code from the path the user
-  # passed via --config. The caller is trusted — this is intentional: config
-  # files export env vars that control identity provider, region, API keys, etc.
-  # Do NOT source untrusted paths.
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
   echo "✓ Sourced config file: $CONFIG_FILE"
@@ -166,16 +157,14 @@ if [[ "$OS" == "Darwin" ]]; then
   # affects what happens once you start the machine yourself — it does not
   # make the machine start automatically (no launchd/login autostart is used
   # here on purpose).
-  podman machine ssh -- systemctl --user enable podman-restart.service \
-    || { echo "Error: failed to enable podman-restart.service in the podman machine guest — is the VM running?" >&2; exit 1; }
+  podman machine ssh -- systemctl --user enable podman-restart.service
   echo "✓ podman-restart.service enabled (transport survives machine restarts)"
 
   # In-guest socket path (NOT the host-side /var/folders proxy socket from
   # `podman machine inspect` — that path only exists on macOS and can't be
   # bind-mounted into a container, which runs inside the guest VM). Confirmed
   # via `podman machine ssh -- systemctl --user status podman.socket`.
-  GUEST_UID="$(podman machine ssh -- id -u)" \
-    || { echo "Error: failed to retrieve guest UID via 'podman machine ssh -- id -u' — SSH into the VM may be broken" >&2; exit 1; }
+  GUEST_UID="$(podman machine ssh -- id -u)"
   PODMAN_SOCK="/run/user/${GUEST_UID}/podman/podman.sock"
   echo "✓ Guest podman socket: ${PODMAN_SOCK}"
 
@@ -279,9 +268,7 @@ podman pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
   && echo "✓ KiroCrew image pre-warmed" || echo "⚠ KiroCrew image pull failed (offline?)"
 
 echo "Building localhost/spec-ops:latest ..."
-podman build -t localhost/spec-ops:latest \
-  --build-arg VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")" \
-  "$GHOSTSHIP_DIR/crews/spec-ops/" \
+podman build -t localhost/spec-ops:latest "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
 echo "Building localhost/transport:latest ..."
@@ -302,7 +289,6 @@ podman run -d --name ga-transport --restart=always \
   -v "${GHOSTSHIP_DIR}/academy/skills:/skills:ro" \
   -v "${GHOSTSHIP_DIR}/academy/steering:/steering:ro" \
   -v "${GHOSTSHIP_DIR}/academy/policies:/policies:ro" \
-  -v "${GHOSTSHIP_DIR}/academy/orders:/orders:ro" \
   -v "${GHOSTSHIP_DIR}/crews:/crews:ro" \
   -v "${PODMAN_SOCK}:${PODMAN_SOCK}" \
   -e "PODMAN_SOCKET=${PODMAN_SOCK}" \
@@ -326,27 +312,10 @@ else
   echo "  MCP API-key authentication: disabled (pass --api-key <key> to enable)"
 fi
 
-sleep 1  # brief pause before first probe attempt
+sleep 3
 echo ""
 echo "=== Health check ==="
-_max_wait=30
-_interval=2
-_ready=0
-for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-    _ready=1
-    break
-  fi
-  sleep "$_interval"
-done
-if [[ "$_ready" == "1" ]]; then
-  echo "✓ Transport is ready (responded on http://127.0.0.1:${PORT}/health)"
-else
-  echo "✗ Transport did not become ready within ${_max_wait}s" >&2
-  echo "  Last 20 lines of container logs:" >&2
-  podman logs ga-transport --tail 20 >&2
-  exit 1
-fi
+podman ps --filter name=ga-transport --format '{{.Names}} {{.Status}}'
 
 echo ""
 echo "=== Post-install ==="

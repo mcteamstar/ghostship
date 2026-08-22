@@ -24,8 +24,6 @@ except ModuleNotFoundError:
     _install_import_stubs()
     server = importlib.import_module("transport.server")
 
-import httpx
-
 
 class Request:
     def __init__(
@@ -1285,31 +1283,32 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_orders_resource_lists_sdd_template_metadata_and_body(self) -> None:
         resource = server.resource_orders()
-        resolved_body = server._resolve_order_template("sdd", "test-change")
+        definition = server._ORDER_TEMPLATES["sdd"]
 
         self.assertIn("## sdd", resource)
-        self.assertIn("Drive a named OpenSpec change through the standard", resource)
-        self.assertIn("openspec store list --json", resolved_body)
-        self.assertIn("openspec store register", resolved_body)
-        self.assertIn("`--store <id>`", resolved_body)
-        self.assertIn("fix findings that fit this change", resolved_body)
-        self.assertIn("kirocrew", resolved_body)  # upstream kirocrew CLI references
-        self.assertIn("spawn list", resolved_body)
-        self.assertIn("cron list", resolved_body)
-        self.assertIn("cron pause", resolved_body)
-        self.assertIn("cron resume", resolved_body)
-        self.assertIn("/home/kirocrew/.kiro/crew/.local_secret", resolved_body)
-        self.assertIn("X-Internal-Secret", resolved_body)
-        self.assertIn("localhost:5476", resolved_body)
-        self.assertIn("/api/spawn", resolved_body)
-        self.assertIn("/api/spawn/{task_id}", resolved_body)
-        self.assertIn("/api/spawn/{task_id}/steer", resolved_body)
-        self.assertIn("/api/spawn/{task_id}/continue", resolved_body)
-        self.assertIn("pause your own check-in job", resolved_body)
-        self.assertIn("the only one in this crew", resolved_body)
-        self.assertIn("never let its value show up anywhere", resolved_body)
-        self.assertNotIn("captain-check-in", resolved_body)
-        self.assertNotIn("external `captain(..., action=\"stop\")` operation", resolved_body)
+        self.assertIn(definition["description"], resource)
+        self.assertIn(definition["body"], resource)
+        self.assertIn("openspec store list --json", definition["body"])
+        self.assertIn("openspec store register", definition["body"])
+        self.assertIn("`--store <id>`", definition["body"])
+        self.assertIn("fix findings that fit this change", definition["body"])
+        self.assertIn("kirocrew", definition["body"])  # upstream kirocrew CLI references
+        self.assertIn("spawn list", definition["body"])
+        self.assertIn("cron list", definition["body"])
+        self.assertIn("cron pause", definition["body"])
+        self.assertIn("cron resume", definition["body"])
+        self.assertIn("/home/kirocrew/.kiro/crew/.local_secret", definition["body"])
+        self.assertIn("X-Internal-Secret", definition["body"])
+        self.assertIn("localhost:5476", definition["body"])
+        self.assertIn("/api/spawn", definition["body"])
+        self.assertIn("/api/spawn/{task_id}", definition["body"])
+        self.assertIn("/api/spawn/{task_id}/steer", definition["body"])
+        self.assertIn("/api/spawn/{task_id}/continue", definition["body"])
+        self.assertIn("pause your own check-in job", definition["body"])
+        self.assertIn("the only one in this crew", definition["body"])
+        self.assertIn("never let its value show up anywhere", definition["body"])
+        self.assertNotIn("captain-check-in", definition["body"])
+        self.assertNotIn("external `captain(..., action=\"stop\")` operation", definition["body"])
 
     def test_raven_prompt_covers_gateway_status_and_self_cancellation(self) -> None:
         definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
@@ -1356,7 +1355,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             self.assertIn(phrase, prompt)
 
         # The sdd template retains the full steering instruction.
-        sdd_body = server._resolve_order_template("sdd", "test-change")
+        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
         for phrase in (
             "steer it with the new context rather than waiting for it to finish",
             "/api/spawn/{task_id}/steer",
@@ -1377,13 +1376,13 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         # The sdd template no longer duplicates the mailbox skim paragraph
         # (that's generic Raven behaviour in raven.json now). It still has
         # spawn list and gateway orientation.
-        sdd_body = server._resolve_order_template("sdd", "test-change")
+        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
         self.assertIn("spawn list", sdd_body)
 
     def test_raven_and_sdd_bodies_cover_full_store_registration_command(self) -> None:
         # Store resolution is now Captain-template-only, not in the lean raven prompt.
         # Verify it's in the sdd template.
-        sdd_body = server._resolve_order_template("sdd", "test-change")
+        sdd_body = server._ORDER_TEMPLATES["sdd"]["body"]
         self.assertIn("openspec store list --json", sdd_body)
         self.assertIn("openspec store register", sdd_body)
         self.assertIn("--id repo", sdd_body)
@@ -1395,54 +1394,6 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         checkin = server._CAPTAIN_CHECKIN_TASK
         self.assertIn("openspec store list --json", checkin)
         self.assertIn("openspec store register", checkin)
-
-    def test_template_loaded_from_disk_matches_expected_resolved_content(self) -> None:
-        """Template loaded from academy/orders/sdd.md resolves to expected content."""
-        resolved = server._resolve_order_template("sdd", "my-test-change")
-        # Should contain the substituted constants, not raw placeholders
-        self.assertIn(server._RAVEN_GATEWAY_ORIENTATION, resolved)
-        self.assertIn(server._RAVEN_STORE_RESOLUTION, resolved)
-        self.assertIn(server._RAVEN_SELF_CANCEL, resolved)
-        # Should have the change_name substituted
-        self.assertIn("my-test-change", resolved)
-        self.assertNotIn("<change>", resolved)
-        # Should NOT contain any raw {{...}} placeholders
-        import re as _re
-        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
-
-    def test_unknown_template_name_raises_valueerror(self) -> None:
-        """Unknown template name raises ValueError."""
-        with self.assertRaises(ValueError) as ctx:
-            server._resolve_order_template("nonexistent-template", None)
-        self.assertIn("Unknown Captain order template", str(ctx.exception))
-        self.assertIn("nonexistent-template", str(ctx.exception))
-
-    def test_resource_orders_returns_dynamic_listing_from_academy_orders(self) -> None:
-        """resource_orders() returns dynamic listing from academy/orders/."""
-        resource = server.resource_orders()
-        # Should contain the sdd template section
-        self.assertIn("## sdd", resource)
-        # Should contain resolved content (no raw placeholders)
-        import re as _re
-        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resource))
-        # Should contain parts of the resolved body
-        self.assertIn("Drive OpenSpec change", resource)
-
-    def test_placeholder_residual_warning(self) -> None:
-        """A warning is logged when an unknown {{…}} placeholder remains after substitution."""
-        import tempfile
-        import os
-        # Create a temporary template with an unknown placeholder
-        orders_dir = server._resolve_orders_dir()
-        test_template = orders_dir / "_test_residual.md"
-        try:
-            test_template.write_text("Body with {{UNKNOWN_PLACEHOLDER}} here.\n")
-            with self.assertLogs("transport", level="WARNING") as cm:
-                server._resolve_order_template("_test_residual", None)
-            self.assertTrue(any("Residual placeholders" in msg for msg in cm.output))
-            self.assertTrue(any("UNKNOWN_PLACEHOLDER" in msg for msg in cm.output))
-        finally:
-            test_template.unlink(missing_ok=True)
 
     def test_order_without_existing_job_requires_schedule_before_mail(self) -> None:
         with (
@@ -2700,278 +2651,6 @@ class TestCrewTypesTool(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class ScheduleCancelTests(unittest.TestCase):
-    """Tests for schedule(action='cancel', ...)."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_cancel_success(self) -> None:
-        """4.1 — cancel an existing job returns success."""
-        jobs_listing = {"jobs": [
-            {"id": "job-abc", "name": "my-job", "agent": "ghost", "enabled": True},
-        ]}
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "DELETE" and path == "/api/crons/job-abc":
-                return {}
-            raise AssertionError((method, path, kwargs))
-
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-        ):
-            result = server.schedule(action="cancel", job_id="job-abc", crew_id="demo")
-
-        self.assertEqual(result, {"status": "cancelled", "job_id": "job-abc"})
-
-    def test_cancel_not_found(self) -> None:
-        """4.1 — cancel a non-existent job returns error."""
-        jobs_listing = {"jobs": []}
-        call_count = [0]
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            call_count[0] += 1
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "DELETE":
-                resp = Mock(status_code=404)
-                raise httpx.HTTPStatusError(
-                    "Not Found",
-                    request=None,
-                    response=resp,
-                )
-            raise AssertionError((method, path, kwargs))
-
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-        ):
-            result = server.schedule(action="cancel", job_id="nonexistent", crew_id="demo")
-
-        self.assertIn("Job not found", result["error"])
-
-    def test_cancel_refuses_captain_checkin_job(self) -> None:
-        """4.2 — cancel refuses to cancel the captain check-in job."""
-        captain_job = {
-            "id": "captain-job-id",
-            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
-            "agent": "raven",
-            "enabled": True,
-        }
-        jobs_listing = {"jobs": [captain_job]}
-
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
-        ):
-            result = server.schedule(action="cancel", job_id="captain-job-id", crew_id="demo")
-
-        self.assertIn("Cannot cancel the Captain check-in job", result["error"])
-
-    def test_cancel_requires_job_id(self) -> None:
-        """cancel without job_id returns error."""
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-        ):
-            result = server.schedule(action="cancel", crew_id="demo")
-
-        self.assertIn("job_id is required", result["error"])
-
-
-class ScheduleCreateValidationTests(unittest.TestCase):
-    """Tests for schedule(action='create') input validation."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_create_requires_name(self) -> None:
-        """create without name returns error."""
-        result = server.schedule(action="create", message="do stuff", crew_id="demo", interval=60)
-        self.assertIn("name is required", result["error"])
-
-    def test_create_requires_message(self) -> None:
-        """create without message returns error."""
-        result = server.schedule(action="create", name="my-job", crew_id="demo", interval=60)
-        self.assertIn("message is required", result["error"])
-
-
-class ScheduleListTests(unittest.TestCase):
-    """Tests for schedule(action='list', ...)."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_list_with_jobs(self) -> None:
-        """4.3 — list returns jobs with expected fields."""
-        jobs_listing = {"jobs": [
-            {"id": "j1", "name": "daily-check", "schedule": "0 9 * * *", "agent": "ghost", "enabled": True, "last_run_ts": "2026-01-01T09:00:00"},
-            {"id": "j2", "name": "weekly-report", "schedule": "0 0 * * 1", "agent": "wraith", "enabled": False, "last_run_ts": None},
-        ]}
-
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
-        ):
-            result = server.schedule(action="list", crew_id="demo")
-
-        self.assertEqual(len(result["jobs"]), 2)
-        self.assertEqual(result["jobs"][0]["job_id"], "j1")
-        self.assertEqual(result["jobs"][0]["name"], "daily-check")
-        self.assertEqual(result["jobs"][0]["agent"], "ghost")
-        self.assertTrue(result["jobs"][0]["enabled"])
-        self.assertEqual(result["jobs"][1]["job_id"], "j2")
-        self.assertFalse(result["jobs"][1]["enabled"])
-
-    def test_list_empty(self) -> None:
-        """4.3 — list returns empty jobs list when no jobs exist."""
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", return_value={"jobs": []}),
-        ):
-            result = server.schedule(action="list", crew_id="demo")
-
-        self.assertEqual(result, {"jobs": []})
-
-
-class DispatchFireAfterTests(unittest.TestCase):
-    """Tests for dispatch(delay=...)."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_delay_creates_one_shot_cron(self) -> None:
-        """4.4 — dispatch with delay creates a delayed cron job."""
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", return_value={"id": "delayed-job-1"}) as api,
-        ):
-            result = server.dispatch(
-                "run cleanup", agent="ghost", crew_id="demo", delay=300
-            )
-
-        self.assertIsNone(result["task_id"])
-        self.assertEqual(result["job_id"], "delayed-job-1")
-        self.assertEqual(result["status"], "delayed")
-        self.assertEqual(result["delay"], 300)
-        self.assertEqual(result["agent"], "ghost")
-
-        # Verify it called POST /api/crons with a cron expression (not delay/strict_schedule)
-        api.assert_called_once()
-        call_kwargs = api.call_args.kwargs
-        cron_expr = call_kwargs["json"].get("cron", "")
-        # Should be a 5-field cron expression "M H D Mon *"
-        self.assertEqual(len(cron_expr.split()), 5, f"Expected 5-field cron expr, got: {cron_expr!r}")
-        self.assertNotIn("delay", call_kwargs["json"])
-        self.assertNotIn("strict_schedule", call_kwargs["json"])
-        self.assertEqual(call_kwargs["json"]["agent"], "ghost")
-        self.assertEqual(call_kwargs["json"]["message"], "run cleanup")
-
-    def test_delay_zero_rejected(self) -> None:
-        """4.5 — dispatch with delay=0 returns validation error."""
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery") as api,
-        ):
-            result = server.dispatch(
-                "run cleanup", crew_id="demo", delay=0
-            )
-
-        self.assertEqual(result, {"error": "delay must be >= 1"})
-        api.assert_not_called()
-
-    def test_delay_negative_rejected(self) -> None:
-        """dispatch with delay=-5 returns validation error."""
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery") as api,
-        ):
-            result = server.dispatch(
-                "run cleanup", crew_id="demo", delay=-5
-            )
-
-        self.assertEqual(result, {"error": "delay must be >= 1"})
-        api.assert_not_called()
-
-
-class ResourceJobsTests(unittest.TestCase):
-    """Tests for resource_jobs()."""
-
-    def test_resource_jobs_aggregates_across_crews(self) -> None:
-        """4.6 — resource_jobs collects jobs from multiple running crews."""
-        reg = {
-            "crews": {
-                "crew-a": {"container": "gs-crew-a", "status": "running", "cookie": "c1"},
-                "crew-b": {"container": "gs-crew-b", "status": "running", "cookie": "c2"},
-            }
-        }
-        crew_a_jobs = {"jobs": [
-            {"id": "j1", "name": "check", "schedule": "every 60s", "agent": "ghost", "enabled": True, "last_run_ts": "now", "last_status": "ok"},
-        ]}
-        crew_b_jobs = {"jobs": [
-            {"id": "j2", "name": "report", "schedule": "0 9 * * 1", "agent": "wraith", "enabled": False, "last_run_ts": None, "last_status": None},
-        ]}
-
-        def api(crew, method, path, **kwargs):
-            if crew["container"] == "gs-crew-a":
-                return crew_a_jobs
-            return crew_b_jobs
-
-        with (
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.resource_jobs()
-
-        self.assertIn("## crew-a", result)
-        self.assertIn("## crew-b", result)
-        self.assertIn("j1", result)
-        self.assertIn("j2", result)
-        self.assertIn("check", result)
-        self.assertIn("report", result)
-
-    def test_resource_jobs_no_running_crews(self) -> None:
-        """4.6 — resource_jobs returns message when no crews are running."""
-        reg = {"crews": {"stopped": {"container": "gs-stopped", "status": "stopped"}}}
-        with patch.object(server, "_load_registry", return_value=reg):
-            result = server.resource_jobs()
-
-        self.assertEqual(result, "No running crews found.")
-
-    def test_resource_jobs_handles_crew_error_gracefully(self) -> None:
-        """4.6 — resource_jobs reports crew connection errors inline."""
-        reg = {"crews": {"bad": {"container": "gs-bad", "status": "running", "cookie": "c"}}}
-
-        with (
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(server, "_crew_api", side_effect=RuntimeError("connection refused")),
-        ):
-            result = server.resource_jobs()
-
-        self.assertIn("## bad", result)
-        self.assertIn("error", result)
-        self.assertIn("connection refused", result)
-
-    def test_resource_jobs_empty_jobs_for_crew(self) -> None:
-        """4.6 — resource_jobs shows 'No scheduled jobs' for crew without jobs."""
-        reg = {"crews": {"empty": {"container": "gs-empty", "status": "running", "cookie": "c"}}}
-        with (
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(server, "_crew_api", return_value={"jobs": []}),
-        ):
-            result = server.resource_jobs()
-
-        self.assertIn("## empty", result)
-        self.assertIn("No scheduled jobs", result)
 
 
 class TestPolicyInjection(unittest.TestCase):

@@ -2,7 +2,7 @@
 
 See proposal.md — Why. Currently neither the transport nor any crew container
 exposes a version. The transport is a single-file Python MCP server; the crew
-image is built via `crews/spec-ops/Containerfile`.
+image is built via `crews/kirocrew/Containerfile`.
 
 ## Goals / Non-Goals
 
