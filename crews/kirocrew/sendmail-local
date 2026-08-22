@@ -1,0 +1,45 @@
+#!/bin/bash
+# sendmail-local — sendmail-compatible wrapper for local Maildir delivery.
+# Replaces the msmtp-mta sendmail binary so that `mail -s "subj" ghost@localhost`
+# works without needing a listening SMTP daemon.
+#
+# Accepts standard sendmail arguments:
+#   sendmail [flags] recipient@localhost [recipient2@localhost ...]
+#   Message body is read from stdin.
+#
+# Flags are ignored (they're for SMTP features we don't use).
+# Each recipient gets a copy delivered via maildeliver.
+
+set -euo pipefail
+
+# Parse: skip all flags (anything starting with -), collect recipients
+RECIPIENTS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --)  shift; break ;;
+        -*)  shift ;;         # ignore all flags (-f, -t, -i, -oi, etc.)
+        *)   RECIPIENTS+=("$1"); shift ;;
+    esac
+done
+# Any remaining args after -- are also recipients
+while [ $# -gt 0 ]; do
+    RECIPIENTS+=("$1"); shift
+done
+
+if [ ${#RECIPIENTS[@]} -eq 0 ]; then
+    # If no recipients on command line, try -t mode (extract from headers).
+    # Read message, extract To: header.
+    MSG=$(cat)
+    TO=$(echo "$MSG" | grep -m1 -i '^To:' | sed 's/^[Tt]o: *//;s/ *$//')
+    if [ -z "$TO" ]; then
+        echo "sendmail-local: no recipients specified" >&2
+        exit 1
+    fi
+    echo "$MSG" | /usr/local/bin/maildeliver "$TO"
+else
+    # Deliver to each recipient
+    MSG=$(cat)
+    for RECIP in "${RECIPIENTS[@]}"; do
+        echo "$MSG" | /usr/local/bin/maildeliver "$RECIP"
+    done
+fi

@@ -2,9 +2,9 @@
 
 Updates to the `radio-messaging` capability.
 
-## Modified Requirement: Local mail delivery via standard Unix tooling
+## ADDED Requirements
 
-Replace the existing delivery requirement with:
+### Requirement: Local mail delivery via standard Unix tooling
 
 The system SHALL deliver inter-agent mail via a standard local MTA (msmtp-mta)
 installed in the crew image, storing messages in Maildir format rather than
@@ -34,7 +34,7 @@ appending to mbox files. Every persona mailbox SHALL be a Maildir directory
 - **THEN** it uses `mail -H` to list headers (subject, from, date) without
   consuming messages, consistent with the subject-first convention
 
-## New Requirement: Full RFC 5322 threading headers
+### Requirement: Full RFC 5322 threading headers
 
 Every outbound message SHALL carry:
 - `Message-ID: <uuid>@localhost` — globally unique per message
@@ -56,7 +56,7 @@ Replies SHALL additionally carry:
 - **THEN** the reply is addressed to the `Reply-To:` address from the original
   message (`<persona>+<task_id>@localhost`), routing it to the correct instance
 
-## New Requirement: Supersedes header for standing order amendment
+### Requirement: Supersedes header for standing order amendment
 
 When the Admiral sends a new standing order that supersedes a prior one, the
 transport SHALL include a `Supersedes: <message-id>` header (RFC 2156)
@@ -72,7 +72,7 @@ referencing the prior order's Message-ID. The prior order is never deleted.
 - **WHEN** `captain(action="order", ...)` is called and no prior order exists
 - **THEN** the message has no `Supersedes:` header
 
-## New Requirement: HMAC signing of Admiral mail
+### Requirement: HMAC signing of Admiral mail
 
 Every message the transport writes to `/var/mail/captain` as
 `From: admiral@localhost` SHALL carry an `X-Admiral-Sig:` header containing an

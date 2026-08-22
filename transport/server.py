@@ -48,12 +48,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import io
 import posixpath
 import select
 import socket
 import tarfile
-import hmac
+import textwrap
 import json
 import logging
 import os
@@ -790,13 +791,21 @@ def _resolve_order_template(
 
 
 
-def _format_captain_mail(body: str) -> str:
-    """Render one Admiral standing order in mbox format.
+def _format_captain_mail(body: str, signing_secret: str | None = None, supersedes_id: str | None = None) -> tuple[str, str]:
+    """Render one Admiral standing order as a full RFC 5322 message.
+
+    Returns (formatted_message, message_id).
 
     Source convention: From: admiral@localhost is the only authorised source
     of standing orders; persona messages in the captain mailbox are crew
     correspondence.
+
+    When signing_secret is provided, an X-Admiral-Sig HMAC-SHA256 header is
+    added over the message body. When supersedes_id is provided, a Supersedes
+    header referencing the previous order's Message-ID is included.
     """
+    import uuid as _uuid
+
     body = body.rstrip("\r\n")
     # Derive subject from first non-empty line, truncated to ~72 chars.
     first_line = ""
@@ -806,54 +815,77 @@ def _format_captain_mail(body: str) -> str:
             first_line = stripped
             break
     subject = first_line[:72] if first_line else "Standing order"
-    # Escape body lines that look like mbox envelope separators.  This keeps
-    # ordinary phrasing such as "From now on, ..." from creating a new entry.
-    body = re.sub(r"(?m)^From ", ">From ", body)
-    envelope_ts = time.strftime("%a %b %d %H:%M:%S %Y", time.gmtime())
+
+    message_id = f"<{_uuid.uuid4()}@localhost>"
     header_ts = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
-    return (
-        f"From admiral@localhost {envelope_ts}\n"
-        "From: admiral@localhost\n"
-        "To: captain@localhost\n"
-        f"Subject: {subject}\n"
-        f"Date: {header_ts}\n"
-        "\n"
-        f"{body}\n\n"
-    )
+
+    headers = [
+        "From: admiral@localhost",
+        "To: captain@localhost",
+        f"Subject: {subject}",
+        f"Message-ID: {message_id}",
+        f"Date: {header_ts}",
+    ]
+
+    if supersedes_id:
+        headers.append(f"Supersedes: {supersedes_id}")
+
+    if signing_secret:
+        sig = hmac.new(
+            signing_secret.encode(), body.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        headers.append(f"X-Admiral-Sig: {sig}")
+
+    message = "\n".join(headers) + "\n\n" + body + "\n"
+    return message, message_id
 
 
 def _append_captain_mail(
     podman: PodmanClient,
     container: str,
     body: str,
+    crew_id: str | None = None,
 ) -> None:
-    """Append an Admiral order atomically to the crew Captain mailbox."""
-    payload = _format_captain_mail(body).encode("utf-8")
-    encoded = base64.b64encode(payload).decode("ascii")
-    path_literal = json.dumps(_CAPTAIN_MAILBOX_PATH)
-    data_literal = json.dumps(encoded)
-    script = f"""
-import base64
-import os
-import pathlib
+    """Deliver an Admiral order via MTA to the crew Captain mailbox.
 
-path = pathlib.Path({path_literal})
-data = base64.b64decode({data_literal})
-path.parent.mkdir(parents=True, exist_ok=True)
-fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-try:
-    os.fchmod(fd, 0o600)
-    remaining = memoryview(data)
-    while remaining:
-        written = os.write(fd, remaining)
-        if written <= 0:
-            raise OSError("short mbox append")
-        remaining = remaining[written:]
-    os.fsync(fd)
-finally:
-    os.close(fd)
-os.chmod(path, 0o600)
-print('captain mail appended')
+    Uses sendmail inside the container for atomic Maildir delivery.
+    Generates a Message-ID, optionally adds Supersedes referencing the
+    previous order, and signs with HMAC if the crew has a signing secret.
+    """
+    # Read signing secret and last message-id from registry
+    signing_secret: str | None = None
+    supersedes_id: str | None = None
+    if crew_id:
+        with _registry_lock:
+            reg = _load_registry()
+            crew_entry = reg["crews"].get(crew_id, {})
+            signing_secret = crew_entry.get("admiral_secret")
+            supersedes_id = crew_entry.get("last_captain_message_id")
+
+    message, message_id = _format_captain_mail(
+        body, signing_secret=signing_secret, supersedes_id=supersedes_id
+    )
+
+    # Store the new Message-ID for the next order's Supersedes header
+    if crew_id:
+        with _registry_lock:
+            reg = _load_registry()
+            if crew_id in reg["crews"]:
+                reg["crews"][crew_id]["last_captain_message_id"] = message_id
+                _save_registry(reg)
+
+    # Pipe through sendmail inside the container for Maildir delivery
+    payload = base64.b64encode(message.encode("utf-8")).decode("ascii")
+    script = f"""\
+import base64, subprocess
+msg = base64.b64decode("{payload}")
+proc = subprocess.run(
+    ["/usr/local/bin/maildeliver", "captain@localhost"],
+    input=msg, capture_output=True
+)
+if proc.returncode != 0:
+    raise RuntimeError(f"maildeliver failed: {{proc.stderr.decode()}}")
+print("captain mail delivered via MTA")
 """
     podman.container_exec_checked(container, ["python3", "-c", script])
 
@@ -866,15 +898,28 @@ def _mail_count(
     container: str,
     mailbox_path: str,
 ) -> int:
-    """Count mbox entries currently present in a mailbox."""
+    """Count messages currently present in a Maildir mailbox.
+
+    Counts files in new/ and cur/ subdirectories of the Maildir.
+    Falls back to mbox counting for backward compatibility with
+    pre-Maildir crews.
+    """
     script = (
-        f'if [ -f "{mailbox_path}" ]; then cat "{mailbox_path}"; '
-        f'else echo "{_MBOX_MISSING_MARKER}"; fi'
+        f'if [ -d "{mailbox_path}/new" ]; then '
+        f'echo $(ls -1 "{mailbox_path}/new" 2>/dev/null | wc -l) '
+        f'$(ls -1 "{mailbox_path}/cur" 2>/dev/null | wc -l); '
+        f'elif [ -f "{mailbox_path}" ]; then '
+        f'grep -c "^From " "{mailbox_path}" 2>/dev/null || echo 0; '
+        f'else echo "0 0"; fi'
     )
     raw = podman.container_exec_checked(container, ["sh", "-c", script])
-    if raw.strip() == _MBOX_MISSING_MARKER:
+    parts = raw.strip().split()
+    try:
+        if len(parts) == 2:
+            return int(parts[0]) + int(parts[1])
+        return int(parts[0])
+    except (ValueError, IndexError):
         return 0
-    return len(re.findall(r"(?m)^From [^\n]*$", raw))
 
 
 # All mailboxes checked in a single exec per pickup poll cycle.
@@ -890,17 +935,19 @@ def _read_all_mail_counts(
     """Read all relevant mailboxes in one container exec and return counts.
 
     Returns a dict mapping mailbox name to message count, omitting entries
-    where the count is zero.  Replaces repeated ``_mail_count`` calls in the
-    pickup poll loop, reducing N individual execs to one.
+    where the count is zero. Supports both Maildir (new/ + cur/) and
+    legacy mbox format for backward compatibility.
     """
-    # Build a compact Python one-liner that checks every mailbox and emits
-    # JSON: {"ghost": 2, "admiral": 1} — only non-zero entries.
     script = (
-        "import json, re, os; "
+        "import json, os, re; "
         "counts = {}; "
         + "".join(
-            f"_raw=open('/var/mail/{name}').read() if os.path.isfile('/var/mail/{name}') else ''; "
-            f"_n=len(re.findall(r'(?m)^From [^\\n]*$',_raw)); counts['{name}']=_n if _n else None; "
+            f"_p='/var/mail/{name}'; "
+            f"_n=(len(os.listdir(_p+'/new'))+len(os.listdir(_p+'/cur')) "
+            f"if os.path.isdir(_p+'/new') "
+            f"else len(re.findall(r'(?m)^From [^\\n]*$',open(_p).read())) "
+            f"if os.path.isfile(_p) else 0); "
+            f"counts['{name}']=_n if _n else None; "
             for name in _ALL_MAIL_MAILBOXES
         )
         + "print(json.dumps({k:v for k,v in counts.items() if v}))"
@@ -923,18 +970,47 @@ def _read_all_mail_subjects(
 
     Returns a dict mapping mailbox name to a list of Subject header values.
     Empty mailboxes yield an empty list. Reading never modifies the files.
+    Supports both Maildir and legacy mbox format.
     """
-    script = (
-        "import json, re, os; "
-        "subjects = {}; "
-        + "".join(
-            f"_raw=open('/var/mail/{name}').read() if os.path.isfile('/var/mail/{name}') else ''; "
-            f"subjects['{name}']=[m.group(1) for m in re.finditer(r'(?m)^Subject: (.+)$',_raw)]; "
-            for name in _ALL_MAIL_MAILBOXES
-        )
-        + "print(json.dumps(subjects))"
+    # Build the script as a base64-encoded payload to avoid any quoting issues
+    # with mailbox names or path separators inside the inline Python string.
+    _read_subjects_src = textwrap.dedent("""\
+        import json, os, re, sys
+
+        def read_mailbox(path):
+            \"\"\"Return concatenated raw text of all messages in path.
+            Supports Maildir (directory with new/ and cur/) and legacy mbox (file).
+            \"\"\"
+            if os.path.isdir(os.path.join(path, "new")):
+                parts = []
+                for subdir in ("new", "cur"):
+                    d = os.path.join(path, subdir)
+                    for fname in os.listdir(d):
+                        try:
+                            parts.append(open(os.path.join(d, fname)).read())
+                        except OSError:
+                            pass
+                return "".join(parts)
+            elif os.path.isfile(path):
+                return open(path).read()
+            return ""
+
+        mailboxes = json.loads(sys.argv[1])
+        subjects = {}
+        for name in mailboxes:
+            raw = read_mailbox(f"/var/mail/{name}")
+            subjects[name] = re.findall(r"(?m)^Subject: (.+)$", raw)
+        print(json.dumps(subjects))
+    """)
+    encoded = base64.b64encode(_read_subjects_src.encode()).decode()
+    decode_and_run = (
+        f"import base64,sys; "
+        f"exec(base64.b64decode('{encoded}').decode())"
     )
-    raw = podman.container_exec_checked(container, ["python3", "-c", script])
+    mailboxes_json = json.dumps(list(_ALL_MAIL_MAILBOXES))
+    raw = podman.container_exec_checked(
+        container, ["python3", "-c", decode_and_run, mailboxes_json]
+    )
     try:
         result = json.loads(raw.strip())
         if isinstance(result, dict):
@@ -2074,6 +2150,22 @@ def _finish_crew_setup(
     _copy_steering(podman, container, composition_entry)
     _seed_openspec_store(podman, container)
 
+    # Inject HMAC signing secret for Admiral mail authentication
+    admiral_secret = secrets.token_hex(32)
+    secret_inject_script = (
+        "import os, pathlib; "
+        f"p = pathlib.Path('/home/kirocrew/workplace/.admiral_secret'); "
+        f"p.parent.mkdir(parents=True, exist_ok=True); "
+        f"fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600); "
+        f"os.write(fd, b'{admiral_secret}'); os.close(fd); "
+        "print('admiral secret injected')"
+    )
+    try:
+        podman.container_exec_checked(container, ["python3", "-c", secret_inject_script])
+        logger.info("Injected admiral signing secret for %s", container)
+    except Exception as e:
+        logger.warning("Failed to inject admiral secret for %s: %s", container, e)
+
     # Wait for gateway to write its built-in kirocrew*.json agent files
     # before patching them — poll instead of blind sleep
     for _ in range(20):
@@ -2108,6 +2200,7 @@ def _finish_crew_setup(
             "composition": composition,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_used": time.time(),
+            "admiral_secret": admiral_secret,
         }
         _save_registry(reg)
 
@@ -2477,7 +2570,7 @@ def captain(
             # failed provisioning call must not leave mail that no Raven can read.
             try:
                 podman = _get_podman()
-                _append_captain_mail(podman, crew["container"], order_message)
+                _append_captain_mail(podman, crew["container"], order_message, crew_id=crew_id)
             except Exception as exc:
                 return {"error": f"Could not write Captain order: {exc}"}
 

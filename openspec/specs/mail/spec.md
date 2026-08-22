@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Let agents dispatched into the same crew hand off work and reply to each other across their isolated per-task working directories, using mbox files in `/var/mail/` as a coordination channel with no MTA required.
+Let agents dispatched into the same crew hand off work and reply to each other across their isolated per-task working directories, using Maildir mailboxes in `/var/mail/` as a coordination channel. Messages are delivered via a local MTA (msmtp-mta + maildeliver) for atomic, concurrent-write-safe delivery. No external SMTP is required.
 
 ## Requirements
 
@@ -11,7 +11,7 @@ The system SHALL recognise `captain@localhost` as a generic address (per the exi
 
 #### Scenario: Transport writes an Admiral's standing order
 - **WHEN** `captain(crew_id, action="order", message=<text>)` is called
-- **THEN** the system appends a mail message to `/var/mail/captain` inside the crew container, in the same mbox format (envelope line, `From:`/`To:`/`Subject:`/`Date:` headers, blank line, body) every existing persona-to-persona message already uses, addressed generically (no plus-extension) since there is exactly one check-in instance per crew
+- **THEN** the system appends a mail message to `/var/mail/captain` inside the crew container, as a full RFC 5322 message with `From:`, `To:`, `Subject:`, `Message-ID:`, `Date:` headers, delivered via the local MTA to the Maildir at `/var/mail/captain/`, addressed generically (no plus-extension) since there is exactly one check-in instance per crew
 
 #### Scenario: Raven checks the Captain mailbox like any persona checks its own
 - **WHEN** Raven's check-in task reads `/var/mail/captain`
@@ -143,3 +143,96 @@ The transport SHALL write standing orders with a meaningful subject derived from
 #### Scenario: Raven distinguishes orders from correspondence
 - **WHEN** Raven reads `/var/mail/captain` and finds messages from both `admiral@localhost` and a persona
 - **THEN** it treats admiral messages as standing orders (goals and objectives) and persona messages as crew correspondence (status, escalations) — never conflating the two
+
+### Requirement: Local mail delivery via standard Unix tooling
+
+The system SHALL deliver inter-agent mail via a standard local MTA (msmtp-mta)
+installed in the crew image, storing messages in Maildir format rather than
+appending to mbox files. Every persona mailbox SHALL be a Maildir directory
+(`/var/mail/<persona>/new/`, `cur/`, `tmp/`). Agents SHALL send mail using the
+`mail` command from mailutils rather than Python file-append.
+
+#### Scenario: Agent sends mail using mail command
+- **WHEN** a persona sends a message to another persona
+- **THEN** it uses `echo "body" | mail -s "subject" ghost@localhost` or
+  `mail -s "subject" ghost@localhost <<< ""` (subject-only); the MTA delivers
+  atomically to `/var/mail/ghost/new/` via Maildir rename — no file corruption
+  under concurrent delivery
+
+#### Scenario: Concurrent delivery from two agents does not corrupt the mailbox
+- **WHEN** two personas deliver to the same mailbox simultaneously
+- **THEN** both messages are delivered atomically; neither corrupts the other
+  (Maildir rename semantics guarantee this)
+
+#### Scenario: Agent checks for new mail
+- **WHEN** a persona wants to know if it has unread messages
+- **THEN** it uses `mail -e` (exits 0 if mail exists) or checks
+  `/var/mail/<persona>/new/` directly; either works without custom parsing
+
+#### Scenario: Agent lists subject lines without opening messages
+- **WHEN** a persona skims its mailbox
+- **THEN** it uses `mail -H` to list headers (subject, from, date) without
+  consuming messages, consistent with the subject-first convention
+
+### Requirement: Full RFC 5322 threading headers
+
+Every outbound message SHALL carry:
+- `Message-ID: <uuid>@localhost` — globally unique per message
+- `Reply-To: <persona>+<task_id>@localhost` — routes replies to the specific
+  sending instance without requiring the recipient to know the task ID
+
+Replies SHALL additionally carry:
+- `In-Reply-To: <message-id>` — references the message being replied to
+- `References: <message-id> [<prior-ids>]` — full thread chain
+
+#### Scenario: Agent replies to a message
+- **WHEN** a persona replies to a received message
+- **THEN** the reply includes `In-Reply-To:` referencing the original
+  Message-ID, and `References:` carrying the full chain; the thread is
+  reconstructable from headers alone
+
+#### Scenario: Reply-To routes to the sending instance
+- **WHEN** a recipient replies without specifying a plus-extension
+- **THEN** the reply is addressed to the `Reply-To:` address from the original
+  message (`<persona>+<task_id>@localhost`), routing it to the correct instance
+
+### Requirement: Supersedes header for standing order amendment
+
+When the Admiral sends a new standing order that supersedes a prior one, the
+transport SHALL include a `Supersedes: <message-id>` header (RFC 2156)
+referencing the prior order's Message-ID. The prior order is never deleted.
+
+#### Scenario: New standing order supersedes prior one
+- **WHEN** `captain(action="order", ...)` is called and a prior order exists
+  in `/var/mail/captain`
+- **THEN** the new message carries `Supersedes: <prior-message-id>`; Raven
+  treats the superseded message as historical and the new one as current
+
+#### Scenario: First standing order has no Supersedes header
+- **WHEN** `captain(action="order", ...)` is called and no prior order exists
+- **THEN** the message has no `Supersedes:` header
+
+### Requirement: HMAC signing of Admiral mail
+
+Every message the transport writes to `/var/mail/captain` as
+`From: admiral@localhost` SHALL carry an `X-Admiral-Sig:` header containing an
+HMAC-SHA256 signature of the message body, keyed by a crew-specific secret
+injected at crew setup time. The crew image SHALL provide a verification helper
+agents can invoke to confirm a message's signature before treating it as a
+standing order.
+
+#### Scenario: Admiral mail is signed on write
+- **WHEN** the transport writes a standing order to `/var/mail/captain`
+- **THEN** the message includes `X-Admiral-Sig: <hmac-sha256-hex>` computed
+  over the message body using the crew's signing secret
+
+#### Scenario: Agent verifies Admiral mail signature
+- **WHEN** Raven reads a message `From: admiral@localhost` in `/var/mail/captain`
+- **THEN** it can invoke the verification helper with the message body and
+  signature to confirm authenticity before acting on it as a standing order
+
+#### Scenario: Message with invalid or missing signature is not a standing order
+- **WHEN** a message in `/var/mail/captain` carries no `X-Admiral-Sig:` header
+  or a signature that does not verify
+- **THEN** the message is treated as crew correspondence, not a standing order,
+  regardless of its `From:` header

@@ -20,10 +20,35 @@ RUN apt-get update -qq && \
 # file's `metadata.generatedBy`) — bumping the skills means bumping this too.
 RUN npm install -g @fission-ai/openspec@1.9.0
 
-# Radio skill: agent mailboxes as plain mbox files — no MTA needed.
-# Agents write RFC 2822 messages directly to /var/mail/<agent>.
-# See skills/radio/SKILL.md for the send/receive pattern.
-RUN mkdir -p /var/mail && chmod 1777 /var/mail
+# ghostship-mail: proper local mail delivery via mailutils + msmtp-mta + procmail
+# Replaces hand-rolled mbox file-append. Local delivery only — no external SMTP.
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+      mailutils msmtp msmtp-mta && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Provision Maildir mailboxes for all 7 local addresses
+# (6 personas + captain; admiral is written by the transport only)
+# Owned by kirocrew so agents can deliver without root or mail group.
+RUN for mb in ghost spectre banshee wraith reaper raven captain; do \
+      install -d -o kirocrew -g kirocrew -m 700 \
+        /var/mail/$mb \
+        /var/mail/$mb/new \
+        /var/mail/$mb/cur \
+        /var/mail/$mb/tmp; \
+    done && chmod 1777 /var/mail
+
+# Local mail delivery configuration
+COPY --chown=root:root msmtprc /etc/msmtprc
+COPY --chown=root:root maildeliver /usr/local/bin/maildeliver
+COPY --chown=root:root sendmail-local /usr/local/bin/sendmail-local
+RUN chmod 644 /etc/msmtprc && chmod 755 /usr/local/bin/maildeliver && \
+    chmod 755 /usr/local/bin/sendmail-local && \
+    ln -sf /usr/local/bin/sendmail-local /usr/sbin/sendmail
+
+# HMAC verification helper for Admiral mail authenticity
+COPY --chown=root:root verify-admiral-sig /usr/local/bin/verify-admiral-sig
+RUN chmod 755 /usr/local/bin/verify-admiral-sig
 
 # Pre-seed the kiro-cli SQLite DB with schema + all migrations applied.
 # At launch, transport only needs to INSERT auth_kv rows — no migration wait,

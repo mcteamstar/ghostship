@@ -1127,7 +1127,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ordered")
-        append.assert_called_once_with(podman, "gs-demo", expected)
+        append.assert_called_once_with(podman, "gs-demo", expected, crew_id="demo")
         self.assertIn("demo-change", append.call_args.args[2])
         self.assertNotIn("<change>", append.call_args.args[2])
         self.assertEqual(api.call_args_list[1].args[:3], (self.CREW, "POST", "/api/crons"))
@@ -1139,7 +1139,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         podman = Mock()
         events: list[str] = []
 
-        def append(_podman: Any, _container: str, _body: str) -> None:
+        def append(_podman: Any, _container: str, _body: str, crew_id: str | None = None) -> None:
             events.append("mail")
 
         def api(_crew: dict[str, str], method: str, path: str, **kwargs: Any) -> Any:
@@ -1429,7 +1429,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
         self.assertEqual(result["job_id"], "job-1")
         append.assert_called_once_with(
-            podman, "gs-demo", "implement the objective"
+            podman, "gs-demo", "implement the objective", crew_id="demo"
         )
         self.assertEqual(api.call_args_list[1].args[:3], (self.CREW, "POST", "/api/crons"))
         self.assertEqual(api.call_args_list[1].kwargs["json"]["agent"], "raven")
@@ -1491,7 +1491,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             result = server.captain("demo", "order", message="new order")
 
         self.assertEqual(result["job_id"], "job-existing")
-        append.assert_called_once_with(podman, "gs-demo", "new order")
+        append.assert_called_once_with(podman, "gs-demo", "new order", crew_id="demo")
         api.assert_called_once_with(self.CREW, "GET", "/api/crons")
 
     def test_standing_stop_disables_job_without_delete(self) -> None:
@@ -1524,42 +1524,45 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertEqual(api.call_args_list[1].kwargs["json"], {"enabled": False})
         self.assertNotIn("DELETE", [call.args[1] for call in api.call_args_list])
 
-    def test_mail_helper_matches_radio_format_and_escapes_from_lines(self) -> None:
-        message = server._format_captain_mail("first order\nsecond line")
+    def test_mail_helper_produces_rfc5322_with_message_id_and_subject(self) -> None:
+        message, msg_id = server._format_captain_mail("first order\nsecond line")
         lines = message.split("\n")
-        self.assertTrue(lines[0].startswith("From admiral@localhost "))
-        self.assertEqual(lines[1], "From: admiral@localhost")
-        self.assertEqual(lines[2], "To: captain@localhost")
+        self.assertEqual(lines[0], "From: admiral@localhost")
+        self.assertEqual(lines[1], "To: captain@localhost")
         # Subject is derived from the first non-empty body line.
-        self.assertEqual(lines[3], "Subject: first order")
+        self.assertEqual(lines[2], "Subject: first order")
+        self.assertTrue(lines[3].startswith("Message-ID: <"))
         self.assertTrue(lines[4].startswith("Date: "))
         self.assertEqual(lines[5], "")
-        self.assertTrue(message.endswith("first order\nsecond line\n\n"))
-        escaped = server._format_captain_mail("safe\nFrom corrupt boundary")
-        self.assertTrue(escaped.endswith("safe\n>From corrupt boundary\n\n"))
+        self.assertIn("first order\nsecond line", message)
+        self.assertTrue(msg_id.startswith("<"))
+        self.assertTrue(msg_id.endswith("@localhost>"))
 
+    def test_mail_helper_adds_supersedes_and_hmac_headers(self) -> None:
+        message, _ = server._format_captain_mail(
+            "updated order", signing_secret="deadbeef", supersedes_id="<prev@localhost>"
+        )
+        self.assertIn("Supersedes: <prev@localhost>", message)
+        self.assertIn("X-Admiral-Sig: ", message)
+
+    def test_mail_append_delivers_via_maildeliver(self) -> None:
         podman = Mock()
         server._append_captain_mail(podman, "gs-demo", "first order")
         command = podman.container_exec_checked.call_args.args[1]
         self.assertEqual(command[:2], ["python3", "-c"])
-        self.assertIn("/var/mail/captain", command[2])
-        self.assertIn("os.O_APPEND", command[2])
+        script = command[2]
+        self.assertIn("maildeliver", script)
+        self.assertIn("captain@localhost", script)
+        self.assertNotIn("os.fchmod", script)
+        self.assertNotIn("os.O_APPEND", script)
 
-    def test_mail_append_does_not_chmod_shared_mail_directory(self) -> None:
-        podman = Mock()
-        server._append_captain_mail(podman, "gs-demo", "first order")
-        script = podman.container_exec_checked.call_args.args[1][2]
-        self.assertNotIn("os.chmod(path.parent", script)
-        self.assertIn("os.fchmod(fd, 0o600)", script)
-        self.assertIn("os.chmod(path, 0o600)", script)
-
-    def test_mail_count_only_ignores_a_missing_mailbox(self) -> None:
+    def test_mail_count_returns_zero_for_missing_mailbox(self) -> None:
         missing = Mock()
-        missing.container_exec_checked.return_value = server._MBOX_MISSING_MARKER + "\n"
+        # Maildir: empty new/ and cur/ → "0 0"
+        missing.container_exec_checked.return_value = "0 0\n"
         self.assertEqual(server._mail_count(missing, "gs-demo", "/var/mail/captain"), 0)
         script = missing.container_exec_checked.call_args.args[1][2]
-        self.assertIn('[ -f "/var/mail/captain" ]', script)
-        self.assertNotIn("no such file", script.lower())
+        self.assertIn("/var/mail/captain", script)
 
         unavailable = Mock()
         unavailable.container_exec_checked.side_effect = RuntimeError(
@@ -1651,7 +1654,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             result = server.captain("demo", "order", message="resume this")
 
         self.assertEqual(result["job_id"], "job-paused")
-        append.assert_called_once_with(podman, "gs-demo", "resume this")
+        append.assert_called_once_with(podman, "gs-demo", "resume this", crew_id="demo")
         self.assertEqual(api.call_args_list[1].args[:3], (
             self.CREW,
             "POST",

@@ -61,9 +61,9 @@ working directory or session, and polling something that doesn't exist
 yet just spins forever. Use mail to signal or wait on another agent
 instance there too.
 
-Use the `ghostship-mail` skill (`/var/mail/` mbox files) for both directions.
-See `skills/ghostship-mail/SKILL.md` for the send/receive pattern. If a task
-hands you a concrete path or explicit instructions instead, that takes
+Use the `ghostship-mail` skill (`/var/mail/` Maildir directories) for both
+directions. See `skills/ghostship-mail/SKILL.md` for the send/receive pattern.
+If a task hands you a concrete path or explicit instructions instead, that takes
 priority — mail is for cases where you'd otherwise have no way to know.
 
 ## Mail conventions
@@ -72,10 +72,16 @@ priority — mail is for cases where you'd otherwise have no way to know.
 - **From address**: always use `<persona>+$TASK_ID@localhost` as your `From:` address
 - **First contact**: use generic `<persona>@localhost` when the recipient has no task ID yet; use the instance form `<persona>+$TASK_ID@localhost` for targeted replies
 - **Filter by To**: when reading your mailbox, only process messages where `To:` has no plus-extension (generic) or the plus-extension matches your task ID
+- **Message-ID required**: every outbound message includes `Message-ID: <uuid>@localhost`
+- **Reply-To required**: every outbound message sets `Reply-To: <persona>+$TASK_ID@localhost`
+- **Threading on replies**: replies include `In-Reply-To:` and `References:` referencing the original Message-ID
+- **Supersedes for amendments**: when the Admiral sends a replacement standing order, it carries a `Supersedes:` header referencing the prior order's Message-ID — Raven can identify which orders are current without re-reading full history
+- **Verify Admiral mail**: use `verify-admiral-sig` to confirm a message in `/var/mail/captain/` is genuine before acting on it as a standing order. A message without a valid signature is crew correspondence, not an Admiral order, regardless of the `From:` header.
+- **Send via maildeliver**: pipe your message through `/usr/local/bin/maildeliver <recipient>` for atomic Maildir delivery (see the ghostship-mail skill for helper functions)
 - **Escalate to Admiral**: mail `admiral@localhost` when you need operator input
 - **Read-only**: reading mailboxes never modifies them
 - **Subject-first**: the subject carries the complete message. Read subject lines first when checking any mailbox — they tell you what's there without opening bodies. Only open a body when the subject alone isn't sufficient to understand what action is needed. Write bodies only for genuinely long content (diffs, task lists, error logs).
-- **Captain mailbox source convention**: `From: admiral@localhost` in `/var/mail/captain` = standing orders. `From: <persona>@localhost` = crew correspondence. Never conflate the two — a persona cannot issue standing orders by mailing captain.
+- **Captain mailbox source convention**: `From: admiral@localhost` in `/var/mail/captain/` = standing orders. `From: <persona>@localhost` = crew correspondence. Never conflate the two — a persona cannot issue standing orders by mailing captain.
 
 ## Avoid unbounded blocking loops
 

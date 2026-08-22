@@ -385,3 +385,35 @@ ghostship/
 │       └── manifest.json  # which academy/ agents, skills, steering this crew type includes
 └── docs/                  # this folder
 ```
+
+## Mail system migration (trn-1-unix-mail)
+
+### Breaking change: mbox → Maildir
+
+Prior to this change, inter-agent mail used flat mbox files at
+`/var/mail/<persona>` (a single file per persona, messages appended as
+RFC 2822 entries with `From ` envelope separators). After this change, the
+same paths (`/var/mail/<persona>`) are Maildir directories with `new/`,
+`cur/`, and `tmp/` subdirectories. Each message is a separate file,
+delivered atomically via rename.
+
+**Existing crews (pre-trn-1-unix-mail) must be nuked and relaunched.**
+The Containerfile change installs `mailutils`, `msmtp-mta`, and `procmail`,
+provisions Maildir structure, and copies delivery configuration into the
+image. The new image is not backward-compatible with existing mbox
+mailboxes — the old flat files cannot be read by the new Maildir-aware
+tooling, and the new delivery scripts expect directory structure that does
+not exist in old containers.
+
+### New capabilities in the mail system
+
+- **Atomic delivery**: Maildir uses tmp → new rename (no corruption under
+  concurrent writes)
+- **Threading**: every message carries `Message-ID`; replies include
+  `In-Reply-To` and `References`
+- **Supersedes**: replacement standing orders carry a `Supersedes:` header
+  so Raven can identify current orders without full history scan
+- **HMAC signing**: Admiral mail carries `X-Admiral-Sig` (HMAC-SHA256 of
+  body); `verify-admiral-sig` validates authenticity inside the crew
+- **Plus-addressing**: `ghost+taskid@localhost` routes to `/var/mail/ghost/`
+  via the `maildeliver` script

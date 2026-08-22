@@ -1,0 +1,39 @@
+#!/bin/bash
+# maildeliver — local Maildir delivery with plus-address routing.
+# Receives an RFC 5322 message on stdin and delivers atomically to
+# the appropriate Maildir under /var/mail/.
+#
+# Usage: maildeliver <recipient@localhost>
+#   e.g. maildeliver ghost+abc123@localhost
+#        → delivers to /var/mail/ghost/new/<unique>
+#
+# Plus-extension is stripped: ghost+taskid@localhost → /var/mail/ghost/
+# This script is called by sendmail (msmtp-mta) for local delivery.
+
+set -euo pipefail
+
+RECIPIENT="${1:-}"
+if [ -z "$RECIPIENT" ]; then
+    echo "Usage: maildeliver <address>" >&2
+    exit 1
+fi
+
+# Strip @localhost domain
+LOCAL="${RECIPIENT%%@*}"
+# Strip plus-extension to get base persona
+BASE="${LOCAL%%+*}"
+
+MAILDIR="/var/mail/${BASE}"
+
+# Ensure Maildir structure exists
+mkdir -p "${MAILDIR}/new" "${MAILDIR}/cur" "${MAILDIR}/tmp"
+
+# Generate unique filename per Maildir spec (time.pid.host)
+TIMESTAMP=$(date +%s)
+UNIQUE="${TIMESTAMP}.$$.$RANDOM.$(hostname)"
+TMP_FILE="${MAILDIR}/tmp/${UNIQUE}"
+NEW_FILE="${MAILDIR}/new/${UNIQUE}"
+
+# Write to tmp/ first, then atomically rename to new/ (Maildir guarantee)
+cat > "${TMP_FILE}"
+mv "${TMP_FILE}" "${NEW_FILE}"
