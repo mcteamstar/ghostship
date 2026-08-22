@@ -110,8 +110,23 @@ if ! command -v podman >/dev/null 2>&1; then
         sudo dnf install -y -q podman
       else
         echo "No supported package manager found (looked for apt-get, dnf)." >&2
-        echo "Install podman yourself, then re-run this script." >&2
-        exit 1
+        echo "" >&2
+        echo "Minimum requirements to continue:" >&2
+        echo "  • podman >= 4.0" >&2
+        echo "  • crun or runc (OCI runtime)" >&2
+        echo "  • slirp4netns or pasta (rootless networking)" >&2
+        echo "" >&2
+        echo "See docs/manual-install.md for example commands (Arch, Alpine, Nix)." >&2
+        echo "" >&2
+        if [[ -t 0 ]]; then
+          echo "Install podman manually, then press Enter to continue (or Ctrl-C to abort)." >&2
+          read -r
+        fi
+        if ! command -v podman >/dev/null 2>&1; then
+          echo "podman still not found on PATH — cannot continue." >&2
+          exit 1
+        fi
+        echo "✓ podman found after manual install"
       fi
       ;;
     *)
@@ -169,14 +184,49 @@ else
   systemctl --user enable podman-restart.service 2>/dev/null || true
   echo "✓ podman.socket + podman-restart.service enabled"
 
-  PODMAN_SOCK="/run/user/$(id -u)/podman/podman.sock"
+  # Enable lingering so systemd user units (and thus the transport container)
+  # survive logout. Without this, headless servers tear down the user slice
+  # when the last session ends, silently killing the transport.
+  loginctl enable-linger "$(whoami)" 2>/dev/null || true
+  echo "✓ Linger enabled — transport survives logout/reboot"
+
+  # Socket path: honour an existing PODMAN_SOCK env var (user override) or
+  # default to the standard rootless path.
+  if [[ -z "${PODMAN_SOCK:-}" ]]; then
+    PODMAN_SOCK="/run/user/$(id -u)/podman/podman.sock"
+  fi
+
+  # Validate that the socket actually exists (podman.socket activation may
+  # need a moment). Bounded retry: up to 5 seconds.
+  _sock_tries=0
+  while [[ ! -S "$PODMAN_SOCK" ]] && (( _sock_tries < 5 )); do
+    sleep 1
+    (( _sock_tries++ )) || true
+  done
+  if [[ ! -S "$PODMAN_SOCK" ]]; then
+    echo "⚠ Podman socket not found at: ${PODMAN_SOCK}" >&2
+    echo "  Expected path: /run/user/$(id -u)/podman/podman.sock" >&2
+    echo "  Check: podman info --format '{{.Host.RemoteSocket.Path}}'" >&2
+    echo "  Override: set PODMAN_SOCK=/your/path before running install.sh" >&2
+    exit 1
+  fi
   echo "✓ podman socket: ${PODMAN_SOCK}"
 
   DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ghostship/data"
 
-  # Same SELinux caveat as the macOS guest applies here too on Fedora/RHEL —
-  # `--security-opt label=disable` below is a no-op where SELinux isn't in
-  # play (e.g. Debian/Ubuntu) and the fix where it is.
+  # SELinux & container labels:
+  # `--security-opt label=disable` (applied to the transport container below)
+  # disables SELinux label confinement for bind-mounted paths. This is necessary
+  # because the podman socket is labeled user_tmp_t, which the container's
+  # confined domain cannot access — producing a silent "Permission denied".
+  #
+  # Trade-off: on SELinux-enforcing hosts (Fedora/RHEL/CentOS), this means the
+  # transport container runs without MAC-layer confinement. The blast radius is
+  # limited: the container is rootless and binds only to localhost. For hardened
+  # environments that require full SELinux enforcement, see
+  # docs/troubleshooting.md for guidance on supplying a custom policy.
+  #
+  # On non-SELinux hosts (Debian/Ubuntu), this flag is a no-op.
 fi
 
 mkdir -p "$DATA_DIR"

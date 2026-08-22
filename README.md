@@ -21,9 +21,14 @@ Command your crews over MCP from any agent. Multiple crews can run side by side 
 
 - macOS or Linux
 - Podman — installed automatically if missing (Homebrew on macOS, `apt` or
-  `dnf` on Linux)
+  `dnf` on Linux; other distros: see [docs/manual-install.md](docs/manual-install.md))
 - A kiro-cli identity — either the default Builder ID (free tier), or an
   org-licensed IAM Identity Center login (see [docs/auth.md](docs/auth.md))
+
+**Linux platform support:** Verified on Ubuntu 22.04+ (apt) and Fedora 39+
+(dnf, SELinux enforcing). Other distributions work if Podman >= 4.0 is
+available — see [docs/manual-install.md](docs/manual-install.md) for
+requirements and example commands. Requires cgroup v2 and Podman rootless.
 
 ### Setup
 

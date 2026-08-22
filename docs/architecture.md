@@ -351,6 +351,13 @@ container comes back automatically once Podman is running again (verified —
 on macOS without this; on Linux it covers a `systemctl --user` restart or
 relogin with lingering enabled).
 
+**Linger (Linux):** `install.sh` runs `loginctl enable-linger` so the user's
+systemd slice stays alive after logout. Without linger, headless/SSH-only
+servers tear down all user services — including `podman.socket` and the
+transport container — when the last login session ends. Linger is low-risk
+(it only keeps the user's slice resident) and is required for unattended
+operation. See `docs/troubleshooting.md` for verification steps.
+
 On transport startup, `_reconcile_registry` checks all registered crews:
 - Container missing → remove from registry
 - Container stopped → restart it, refresh cookie, mark running
