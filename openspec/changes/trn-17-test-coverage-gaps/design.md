@@ -20,6 +20,7 @@ trn-19 adds a memory gate to `_ensure_crew_running` but does NOT change
 - Expose and fix the `_idle_monitor` 401 path (needs cookie refresh, not silent stop)
 - Expose and fix `_reconcile_registry` stale-snapshot write-back race
 - Expose and fix `_handle_login_get` guard-clear ordering gap
+- Partition the test suite into Podman-dependent and pure unit tests so it runs safely inside crew containers
 
 **Non-Goals:**
 - Changing `_idle_monitor` scope or responsibilities (settled by trn-19)
@@ -96,6 +97,24 @@ the crew (fail-open) for this cycle.
 
 **Rationale:** The idle monitor's job is conservative — it should only stop crews it
 is confident are idle. A 401 means "can't check," not "nothing is running."
+
+### 7. Test suite portability: @skipUnless guards
+
+**Choice:** Decorate all test classes/methods that require a real Podman socket
+with `@unittest.skipUnless(shutil.which("podman"), "requires podman")`. Add a
+comment block at the top of `test_transport.py` listing which classes are
+Podman-dependent.
+
+**Alternatives considered:**
+- Separate test files (`test_transport_unit.py` / `test_transport_integration.py`)
+  — cleaner split but requires renaming all existing imports and CI config.
+- Environment variable flag (`TEST_INTEGRATION=1`) — less discoverable than a
+  standard `skipUnless` that auto-detects the environment.
+
+**Rationale:** `shutil.which("podman")` is zero-config — it works correctly on both
+a developer's Mac and inside a crew container without any manual setup. The comment
+block at the top of the file makes the split immediately visible to anyone running
+the suite for the first time.
 
 ## Risks / Trade-offs
 
