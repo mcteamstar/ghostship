@@ -19,6 +19,7 @@ The transport log and gateway log are treated as two views of the same truth. Wr
 - On crew restart/reconciliation (`_reconcile_registry`), transport re-registers tracked jobs into the gateway cron API so the gateway and transport stay in sync
 - Captain orders write to both the gateway cron API (for in-container execution) and the transport registry (for wake-up persistence)
 - The `schedule` tool's `list` and `cancel` actions (TRN-23) read from the transport registry as the authoritative source rather than proxying the gateway — making them available even when the crew is stopped
+- **`dispatch delay=N` is removed** — `delay` moves to the `schedule` tool as a first-class parameter alongside `interval` and `cron`. `dispatch` becomes purely immediate (always returns `task_id`). `schedule delay=N` creates a one-shot job that fires once after N seconds and returns a `job_id`. This cleans up the broken abstraction where `dispatch delay` returned a `job_id` instead of a `task_id`.
 
 ## Capabilities
 

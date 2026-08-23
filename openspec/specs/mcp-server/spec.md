@@ -90,3 +90,55 @@ The system SHALL return human-readable, actionable error messages to MCP clients
 #### Scenario: Error messages do not leak implementation details
 - **WHEN** recovery-failure errors are returned to the MCP client
 - **THEN** messages do not include raw HTTP response bodies, Python tracebacks, container names (beyond crew_id), or internal endpoint paths
+
+### Requirement: Version resource exposes transport and crew image versions
+The system SHALL expose a `transport://version` MCP resource that returns the transport process version and, for each running crew, the crew image version. The transport version SHALL be read from a `VERSION` file at the repository root at startup. The crew image version SHALL be read from the crew container's OCI label `org.ghostship.version` at crew launch time and stored in the registry.
+
+#### Scenario: Version resource with no crews running
+- **WHEN** `transport://version` is read and no crews are registered
+- **THEN** the response is a JSON object containing `transport` set to the semver string from the `VERSION` file, and `crews` as an empty object
+
+#### Scenario: Version resource with crews running
+- **WHEN** `transport://version` is read and one or more crews are registered
+- **THEN** the response is a JSON object containing `transport` set to the transport semver, and `crews` as an object keyed by `crew_id` each with a `crew_image_version` field read from the registry
+
+#### Scenario: VERSION file missing at startup
+- **WHEN** the transport process starts and no `VERSION` file exists at the repository root
+- **THEN** the transport version SHALL default to `"0.0.0-dev"` and the resource SHALL still be available
+
+#### Scenario: Crew image has no version label
+- **WHEN** a crew is launched from an image that does not carry the `org.ghostship.version` OCI label
+- **THEN** the registry stores `crew_image_version` as `"unknown"` for that crew, and `transport://version` reports it as such
+
+### Requirement: HTTP health endpoint includes version
+The system SHALL include the transport version in the MCP server's HTTP response headers or a dedicated `GET /version` route on the MCP port, so that monitoring tools and operators can query the running version without an MCP client.
+
+#### Scenario: GET /version returns JSON
+- **WHEN** an HTTP GET request is made to `/version` on the MCP port
+- **THEN** the response is `200 OK` with `Content-Type: application/json` and a body containing at minimum `{"transport": "<semver>"}`
+
+#### Scenario: Unauthenticated access when API key is set
+- **WHEN** `GA_API_KEY` is configured and a GET request to `/version` omits the bearer token
+- **THEN** the response is `200 OK` — the version endpoint SHALL NOT require authentication, as version information is not sensitive
+
+### Requirement: Host memory visibility in crews() response
+
+The `crews()` MCP endpoint SHALL include a top-level
+`host_memory_available_gb` field (float, rounded to 1 decimal) in its JSON
+response, representing the current available memory as reported by the Podman
+info API.
+
+The value SHALL be cached for up to 5 seconds to avoid per-call Podman API
+overhead.
+
+#### Scenario: crews() returns memory field
+- **WHEN** a client calls the `crews()` endpoint
+- **THEN** the response includes `"host_memory_available_gb": <float>` at the top level alongside the crew list
+
+#### Scenario: Cached value within TTL
+- **WHEN** two `crews()` calls are made within 5 seconds
+- **THEN** only one Podman info API call is made; the second response uses the cached value
+
+#### Scenario: Podman info unavailable
+- **WHEN** the Podman info API call fails
+- **THEN** `host_memory_available_gb` is set to `null` and the rest of the response is unaffected
