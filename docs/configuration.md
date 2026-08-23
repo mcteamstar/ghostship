@@ -25,6 +25,16 @@ Environment variables read by the transport server:
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Value patched into each crew's `resource_pressure_gb` config — KiroCrew throttles subagent spawning below this threshold |
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
+| `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
+| `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
+
+> **Internal constant — not user-settable:**
+> `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each
+> crew container's gateway over the internal `ga-net` network. It is
+> hardcoded in `server.py` and is **not** configurable via environment
+> variable. Changing it would require rebuilding both the crew image and the
+> transport. All user-facing ports are controlled by `PORT` (MCP) and
+> `PORT+1` (file server) above.
 
 ## Config file
 

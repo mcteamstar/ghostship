@@ -110,6 +110,8 @@ GA_MEMORY_WAIT_SECS = int(os.environ.get("GA_MEMORY_WAIT_SECS", "60"))
 GA_SPAWN_MIN_MEMORY_GB = float(os.environ.get("GA_SPAWN_MIN_MEMORY_GB", "1.5"))
 GA_RESOURCE_PRESSURE_GB = float(os.environ.get("GA_RESOURCE_PRESSURE_GB", "2.0"))
 GA_RESOURCE_CRITICAL_GB = float(os.environ.get("GA_RESOURCE_CRITICAL_GB", "1.0"))
+GA_SUBAGENT_TIMEOUT_SECS = int(os.environ.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"))
+GA_SUBAGENT_MAX_TURNS = int(os.environ.get("GA_SUBAGENT_MAX_TURNS", "200"))
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
 
 # ── Version ───────────────────────────────────────────────────────────────────
@@ -2541,6 +2543,8 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "a['dangerously_skip_permissions'] = True; "
         "a['default_agent'] = 'ghost'; "
         "a['reasoning_effort'] = 'max'; "
+        f"a['subagent_timeout_secs'] = {GA_SUBAGENT_TIMEOUT_SECS}; "
+        f"a['subagent_max_turns'] = {GA_SUBAGENT_MAX_TURNS}; "
         "p.write_text(json.dumps(cfg, indent=2)); "
         "print('patched config.local.json')"
     )

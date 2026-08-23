@@ -3422,10 +3422,53 @@ class TestPatchCrewConfig(unittest.TestCase):
             self.assertIn("3.0", script)
             self.assertIn("1.5", script)
             self.assertNotIn("'spawn_min_memory_gb'] = 0", script)
+            # Verify subagent_timeout_secs and subagent_max_turns are present with defaults
+            self.assertIn("subagent_timeout_secs", script)
+            self.assertIn("subagent_max_turns", script)
+            self.assertIn("3600", script)
+            self.assertIn("200", script)
         finally:
             server.GA_SPAWN_MIN_MEMORY_GB = original
             server.GA_RESOURCE_PRESSURE_GB = 2.0
             server.GA_RESOURCE_CRITICAL_GB = 1.0
+
+    def test_subagent_timeout_from_env(self) -> None:
+        """GA_SUBAGENT_TIMEOUT_SECS=7200 → subagent_timeout_secs: 7200 in patched config."""
+        original = server.GA_SUBAGENT_TIMEOUT_SECS
+        try:
+            server.GA_SUBAGENT_TIMEOUT_SECS = 7200
+            exec_calls: list[tuple[str, list[str]]] = []
+
+            class CapturePodman:
+                def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                    exec_calls.append((name, cmd))
+                    return "patched config.local.json"
+
+            server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+            self.assertEqual(len(exec_calls), 1)
+            script = exec_calls[0][1][-1]
+            self.assertIn("'subagent_timeout_secs'] = 7200", script)
+        finally:
+            server.GA_SUBAGENT_TIMEOUT_SECS = original
+
+    def test_subagent_max_turns_from_env(self) -> None:
+        """GA_SUBAGENT_MAX_TURNS=300 → subagent_max_turns: 300 in patched config."""
+        original = server.GA_SUBAGENT_MAX_TURNS
+        try:
+            server.GA_SUBAGENT_MAX_TURNS = 300
+            exec_calls: list[tuple[str, list[str]]] = []
+
+            class CapturePodman:
+                def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                    exec_calls.append((name, cmd))
+                    return "patched config.local.json"
+
+            server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+            self.assertEqual(len(exec_calls), 1)
+            script = exec_calls[0][1][-1]
+            self.assertIn("'subagent_max_turns'] = 300", script)
+        finally:
+            server.GA_SUBAGENT_MAX_TURNS = original
 
 
 class TestCrewsMemoryField(unittest.TestCase):

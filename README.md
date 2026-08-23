@@ -67,6 +67,10 @@ If you enabled API-key authentication (`./install.sh --api-key <key>`), add
 the `Authorization: Bearer <key>` header to every client — see
 [docs/auth.md](docs/auth.md) for details and TLS guidance.
 
+For remote (non-localhost) deployments, see
+[docs/remote.md](docs/remote.md) — covers TLS termination, reverse proxy
+setup, and MCP client registration for a remote host.
+
 **kiro-cli:**
 ```bash
 # Without API key:
@@ -238,3 +242,4 @@ control channel.
 - [docs/agents.md](docs/agents.md) — the six agent personas, what each owns in the OpenSpec workflow, and how that's enforced (and isn't)
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
+- [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations
