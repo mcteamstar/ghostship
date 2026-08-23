@@ -476,8 +476,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         ):
             result = server.crews()
 
-        self.assertEqual(len(result), 1)
-        self.assertTrue(result[0]["gateway_healthy"])
+        self.assertEqual(len(result["crews"]), 1)
+        self.assertTrue(result["crews"][0]["gateway_healthy"])
 
     def test_unhealthy_crew(self):
         """Running crew with dead gateway → gateway_healthy: False."""
@@ -497,8 +497,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         ):
             result = server.crews()
 
-        self.assertEqual(len(result), 1)
-        self.assertFalse(result[0]["gateway_healthy"])
+        self.assertEqual(len(result["crews"]), 1)
+        self.assertFalse(result["crews"][0]["gateway_healthy"])
 
     def test_stopped_crew(self):
         """Stopped crew → gateway_healthy: False without probing."""
@@ -518,8 +518,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         ):
             result = server.crews()
 
-        self.assertEqual(len(result), 1)
-        self.assertFalse(result[0]["gateway_healthy"])
+        self.assertEqual(len(result["crews"]), 1)
+        self.assertFalse(result["crews"][0]["gateway_healthy"])
         # Probe should NOT be called for stopped containers
         mock_probe.assert_not_called()
 

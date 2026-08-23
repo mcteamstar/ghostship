@@ -8,16 +8,16 @@ containers via the Podman socket. Exposes the `ghostship` tools (see the
 main README).
 
 **Crew containers** — on-demand KiroCrew instances, each a **ghostship**
-(`localhost/kirocrew-crew:latest`), named `gs-<id>`. Each has two
+(`localhost/spec-ops:latest`), named `gs-<id>`. Each has two
 volumes: a workspace volume (`gs-vol-<id>`) and a home volume
 (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join
 `ga-net` so transport can reach them by container name
 (`http://gs-<id>:5476`).
 
-**Crew image** (`crews/kirocrew/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:stable`
+**Crew image** (`crews/spec-ops/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:stable`
 (Debian 13, Python 3.12, git, curl). Adds Node.js 24 LTS via NodeSource, and
 the `openspec` CLI (`@fission-ai/openspec`) that the `openspec-*` skills shell
-out to. Built locally at install time (`localhost/kirocrew-crew:latest`). See
+out to. Built locally at install time (`localhost/spec-ops:latest`). See
 [configuration.md](configuration.md#extending-the-crew-image) to add packages.
 
 ## Ghost Academy
@@ -31,7 +31,7 @@ curriculum, bind-mounted into transport and copied into every crew at
 manifest key (`agents`, `skills`, `steering`) is either the literal string
 `"*"` or an explicit array of exact names to include from the
 corresponding Academy pool. The only crew type today, `kirocrew`
-(`crews/kirocrew/manifest.json`), specifies `"*"` for every key, so every
+(`crews/spec-ops/manifest.json`), specifies `"*"` for every key, so every
 ghostship still gets the whole curriculum in practice — the manifest is
 groundwork for a future second crew type to select a different combination,
 not a restriction on this one. Within whatever a crew type's manifest
@@ -58,7 +58,7 @@ launch(crew_id)
      └── missing → start kiro-cli device auth flow, return login URL
                    call launch again after auth to finish setup
   2. Create gs-vol-<id> + gs-home-<id> volumes
-  3. Start crew container (localhost/kirocrew-crew:latest)
+  3. Start crew container (localhost/spec-ops:latest)
   4. Wait for gateway ready (GET / on :5476, 30s timeout)
   5. Inject kiro-cli auth rows into crew's SQLite DB
   6. Patch KiroCrew config (sandbox=none, skip_permissions=true, spawn_min_memory_gb=0)
@@ -327,7 +327,7 @@ Idle-stop is what keeps a fleet of crews from consuming resources when inactive.
 `nuke`'s counterpart on transport restart) restarts the *existing* container
 object — it does not recreate it from the current image tag. A container is
 bound to whichever image it was created from at `podman run` time, so
-rebuilding `localhost/transport:latest` or `localhost/kirocrew-crew:latest`
+rebuilding `localhost/transport:latest` or `localhost/spec-ops:latest`
 has no effect on containers that already exist; only a fresh `podman run`
 (i.e. `install.sh` for transport, `launch` for a crew) picks up the new
 image.
@@ -335,12 +335,12 @@ image.
 | You rebuilt... | What needs recreating | How |
 |:----------------|:-----------------------|:----|
 | `transport/` (`localhost/transport:latest`) | The `ga-transport` container | `./install.sh` — it `podman rm -f`s and re-`run`s `ga-transport` unconditionally, no crew impact |
-| `crews/kirocrew/Containerfile` (`localhost/kirocrew-crew:latest`) | Each existing crew container | `nuke(crew_id, confirm=True)` then `launch(crew_id)` per crew — destroys that crew's workspace and home volumes, so pull out anything needed via `evac` first |
+| `crews/spec-ops/Containerfile` (`localhost/spec-ops:latest`) | Each existing crew container | `nuke(crew_id, confirm=True)` then `launch(crew_id)` per crew — destroys that crew's workspace and home volumes, so pull out anything needed via `evac` first |
 
 Restarting a stopped crew (idle-stop recovery, or transport's own reboot
 `_reconcile_registry` pass) never picks up a rebuilt crew image — it's the
 same container, just started again. Only `nuke` + `launch` recreates it
-against the current `localhost/kirocrew-crew:latest`.
+against the current `localhost/spec-ops:latest`.
 
 ## Reboot recovery
 
@@ -350,6 +350,13 @@ container comes back automatically once Podman is running again (verified —
 `--restart=always` alone does not survive a full `podman machine` stop/start
 on macOS without this; on Linux it covers a `systemctl --user` restart or
 relogin with lingering enabled).
+
+**Linger (Linux):** `install.sh` runs `loginctl enable-linger` so the user's
+systemd slice stays alive after logout. Without linger, headless/SSH-only
+servers tear down all user services — including `podman.socket` and the
+transport container — when the last login session ends. Linger is low-risk
+(it only keeps the user's slice resident) and is required for unattended
+operation. See `docs/troubleshooting.md` for verification steps.
 
 On transport startup, `_reconcile_registry` checks all registered crews:
 - Container missing → remove from registry
@@ -417,3 +424,55 @@ not exist in old containers.
   body); `verify-admiral-sig` validates authenticity inside the crew
 - **Plus-addressing**: `ghost+taskid@localhost` routes to `/var/mail/ghost/`
   via the `maildeliver` script
+
+## Operator governance
+
+Ghostship uses the KiroCrew **operator tier** — a static-file-at-boot
+governance model where the transport writes config files into each crew
+container during setup, and the gateway enforces them as an unforgeable
+ceiling the agent cannot weaken. No code runs inside the gateway for
+governance; the files are the API.
+
+### How policy files are injected
+
+During `_finish_crew_setup`, after the `admiral_secret` is generated and
+injected:
+
+1. The transport reads a policy template from `/policies/<composition>.json`
+   (bind-mounted from `academy/policies/` on the host). If no
+   composition-specific template exists, `/policies/default.json` is used.
+2. The canonical (sorted-keys) JSON body is HMAC-SHA256 signed using the
+   crew's `admiral_secret`.
+3. Two files are written into `~/.kiro/crew/` inside the container:
+   - `security_policy.json` — the governance ceiling
+   - `admission_policy.json` — contains `require_policy_signature: true`
+     and the HMAC signature as a trust key
+4. The `policy_version` is stored in the crew registry and returned in
+   `launch()` and `crews()` responses.
+
+Policy injection failure is logged but never aborts crew launch.
+
+### Customising per composition
+
+Policy templates live in `academy/policies/`:
+
+| Template | Used by | Description |
+|:---------|:--------|:------------|
+| `default.json` | `kirocrew` (and any composition without its own template) | Platform-integrity focus: blocks `git push`, `gh`, pipe-to-shell, messaging integrations |
+| `research.json` | `kirocrew-research` | Same as default; starting point for customisation |
+| `strict.json` | Example only (not applied by default) | Adds `sandbox.min_level`, `filesystem.write` bounds, broader command denials |
+
+To apply tighter controls, create a new composition with its own policy
+template (e.g. `academy/policies/kirocrew-strict.json`) and launch crews
+with that composition name.
+
+### Security properties
+
+- The container is the security boundary. Default policy covers platform
+  integrity only — no filesystem, sandbox, or network restrictions.
+- Policy is HMAC-signed with the `admiral_secret`. A tampered policy causes
+  the gateway to detect a signature mismatch and refuse to continue.
+- The agent has no path to the `admiral_secret` and cannot forge a valid
+  policy signature.
+- Policy is set once at launch. To change policy, nuke and relaunch the
+  crew.

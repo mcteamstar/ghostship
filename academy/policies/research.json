@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "boot": {
+    "fail_closed": false
+  }
+}

@@ -31,6 +31,11 @@
 # API key: --api-key <key> enables MCP bearer-token auth and persists the
 # key to your data directory, so it stays enabled on future installs without
 # repeating the flag. --api-key "" (empty) clears it. See docs/auth.md.
+# set -e: exit on any command failure. set -o pipefail: exit on failures
+# within pipelines. Together these ensure that podman machine ssh failures
+# (including those in command-substitution subshells like GUEST_UID=...)
+# propagate as non-zero exits. Explicit error guards below add diagnostic
+# messages to name *what* failed.
 set -eo pipefail
 
 GHOSTSHIP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,6 +62,10 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: config file is not readable: $CONFIG_FILE" >&2
     exit 1
   fi
+  # TRUST ASSUMPTION: this executes arbitrary shell code from the path the user
+  # passed via --config. The caller is trusted — this is intentional: config
+  # files export env vars that control identity provider, region, API keys, etc.
+  # Do NOT source untrusted paths.
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
   echo "✓ Sourced config file: $CONFIG_FILE"
@@ -89,6 +98,16 @@ if [[ -n "${KIRO_IDENTITY_PROVIDER:-}" && -z "${KIRO_REGION:-}" && -t 0 ]]; then
   read -rp "AWS region for that identity provider: " KIRO_REGION
 fi
 
+# ── Memory management env vars ────────────────────────────────────────────────
+# GA_MIN_FREE_MEM_GB  (default 2.0)  — minimum free memory (GB) before starting
+#   a crew container. Transport polls Podman info in 5s intervals until memory
+#   frees or timeout expires. Set to 0 to disable the gate entirely.
+# GA_MEMORY_WAIT_SECS (default 60)   — max seconds to wait for memory.
+# GA_SPAWN_MIN_MEMORY_GB (default 1.5) — patched into crew's spawn_min_memory_gb
+#   (KiroCrew's internal subagent admission gate).
+# GA_RESOURCE_PRESSURE_GB (default 2.0) — patched into crew's resource_pressure_gb.
+# GA_RESOURCE_CRITICAL_GB (default 1.0) — patched into crew's resource_critical_gb.
+
 # ── Podman ────────────────────────────────────────────────────────────────────
 
 if ! command -v podman >/dev/null 2>&1; then
@@ -110,8 +129,23 @@ if ! command -v podman >/dev/null 2>&1; then
         sudo dnf install -y -q podman
       else
         echo "No supported package manager found (looked for apt-get, dnf)." >&2
-        echo "Install podman yourself, then re-run this script." >&2
-        exit 1
+        echo "" >&2
+        echo "Minimum requirements to continue:" >&2
+        echo "  • podman >= 4.0" >&2
+        echo "  • crun or runc (OCI runtime)" >&2
+        echo "  • slirp4netns or pasta (rootless networking)" >&2
+        echo "" >&2
+        echo "See docs/manual-install.md for example commands (Arch, Alpine, Nix)." >&2
+        echo "" >&2
+        if [[ -t 0 ]]; then
+          echo "Install podman manually, then press Enter to continue (or Ctrl-C to abort)." >&2
+          read -r
+        fi
+        if ! command -v podman >/dev/null 2>&1; then
+          echo "podman still not found on PATH — cannot continue." >&2
+          exit 1
+        fi
+        echo "✓ podman found after manual install"
       fi
       ;;
     *)
@@ -142,14 +176,16 @@ if [[ "$OS" == "Darwin" ]]; then
   # affects what happens once you start the machine yourself — it does not
   # make the machine start automatically (no launchd/login autostart is used
   # here on purpose).
-  podman machine ssh -- systemctl --user enable podman-restart.service
+  podman machine ssh -- systemctl --user enable podman-restart.service \
+    || { echo "Error: failed to enable podman-restart.service in the podman machine guest — is the VM running?" >&2; exit 1; }
   echo "✓ podman-restart.service enabled (transport survives machine restarts)"
 
   # In-guest socket path (NOT the host-side /var/folders proxy socket from
   # `podman machine inspect` — that path only exists on macOS and can't be
   # bind-mounted into a container, which runs inside the guest VM). Confirmed
   # via `podman machine ssh -- systemctl --user status podman.socket`.
-  GUEST_UID="$(podman machine ssh -- id -u)"
+  GUEST_UID="$(podman machine ssh -- id -u)" \
+    || { echo "Error: failed to retrieve guest UID via 'podman machine ssh -- id -u' — SSH into the VM may be broken" >&2; exit 1; }
   PODMAN_SOCK="/run/user/${GUEST_UID}/podman/podman.sock"
   echo "✓ Guest podman socket: ${PODMAN_SOCK}"
 
@@ -169,14 +205,49 @@ else
   systemctl --user enable podman-restart.service 2>/dev/null || true
   echo "✓ podman.socket + podman-restart.service enabled"
 
-  PODMAN_SOCK="/run/user/$(id -u)/podman/podman.sock"
+  # Enable lingering so systemd user units (and thus the transport container)
+  # survive logout. Without this, headless servers tear down the user slice
+  # when the last session ends, silently killing the transport.
+  loginctl enable-linger "$(whoami)" 2>/dev/null || true
+  echo "✓ Linger enabled — transport survives logout/reboot"
+
+  # Socket path: honour an existing PODMAN_SOCK env var (user override) or
+  # default to the standard rootless path.
+  if [[ -z "${PODMAN_SOCK:-}" ]]; then
+    PODMAN_SOCK="/run/user/$(id -u)/podman/podman.sock"
+  fi
+
+  # Validate that the socket actually exists (podman.socket activation may
+  # need a moment). Bounded retry: up to 5 seconds.
+  _sock_tries=0
+  while [[ ! -S "$PODMAN_SOCK" ]] && (( _sock_tries < 5 )); do
+    sleep 1
+    (( _sock_tries++ )) || true
+  done
+  if [[ ! -S "$PODMAN_SOCK" ]]; then
+    echo "⚠ Podman socket not found at: ${PODMAN_SOCK}" >&2
+    echo "  Expected path: /run/user/$(id -u)/podman/podman.sock" >&2
+    echo "  Check: podman info --format '{{.Host.RemoteSocket.Path}}'" >&2
+    echo "  Override: set PODMAN_SOCK=/your/path before running install.sh" >&2
+    exit 1
+  fi
   echo "✓ podman socket: ${PODMAN_SOCK}"
 
   DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ghostship/data"
 
-  # Same SELinux caveat as the macOS guest applies here too on Fedora/RHEL —
-  # `--security-opt label=disable` below is a no-op where SELinux isn't in
-  # play (e.g. Debian/Ubuntu) and the fix where it is.
+  # SELinux & container labels:
+  # `--security-opt label=disable` (applied to the transport container below)
+  # disables SELinux label confinement for bind-mounted paths. This is necessary
+  # because the podman socket is labeled user_tmp_t, which the container's
+  # confined domain cannot access — producing a silent "Permission denied".
+  #
+  # Trade-off: on SELinux-enforcing hosts (Fedora/RHEL/CentOS), this means the
+  # transport container runs without MAC-layer confinement. The blast radius is
+  # limited: the container is rootless and binds only to localhost. For hardened
+  # environments that require full SELinux enforcement, see
+  # docs/troubleshooting.md for guidance on supplying a custom policy.
+  #
+  # On non-SELinux hosts (Debian/Ubuntu), this flag is a no-op.
 fi
 
 mkdir -p "$DATA_DIR"
@@ -209,7 +280,7 @@ fi
 
 # ── Network ───────────────────────────────────────────────────────────────────
 
-podman network create ga-net 2>/dev/null || true
+podman network exists ga-net 2>/dev/null || podman network create ga-net
 echo "✓ ga-net network ready (DNS-enabled by default)"
 
 # ── Pre-warm + build images ──────────────────────────────────────────────────
@@ -217,13 +288,25 @@ echo "✓ ga-net network ready (DNS-enabled by default)"
 podman pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
   && echo "✓ KiroCrew image pre-warmed" || echo "⚠ KiroCrew image pull failed (offline?)"
 
-echo "Building localhost/kirocrew-crew:latest ..."
-podman build -t localhost/kirocrew-crew:latest "$GHOSTSHIP_DIR/crews/kirocrew/" \
+echo "Building localhost/spec-ops:latest ..."
+podman build -t localhost/spec-ops:latest \
+  --build-arg VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")" \
+  "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
 echo "Building localhost/transport:latest ..."
 podman build -t localhost/transport:latest "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
+
+# ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
+
+podman secret rm ga-api-key 2>/dev/null || true
+GA_SECRET_FLAG=""
+if [[ -n "${GA_API_KEY:-}" ]]; then
+  printf '%s' "$GA_API_KEY" | podman secret create ga-api-key -
+  GA_SECRET_FLAG="--secret ga-api-key"
+  echo "✓ Podman secret 'ga-api-key' created"
+fi
 
 # ── Run transport ─────────────────────────────────────────────────────────────
 
@@ -238,6 +321,8 @@ podman run -d --name ga-transport --restart=always \
   -v "${GHOSTSHIP_DIR}/academy/agents:/agents:ro" \
   -v "${GHOSTSHIP_DIR}/academy/skills:/skills:ro" \
   -v "${GHOSTSHIP_DIR}/academy/steering:/steering:ro" \
+  -v "${GHOSTSHIP_DIR}/academy/policies:/policies:ro" \
+  -v "${GHOSTSHIP_DIR}/academy/orders:/orders:ro" \
   -v "${GHOSTSHIP_DIR}/crews:/crews:ro" \
   -v "${PODMAN_SOCK}:${PODMAN_SOCK}" \
   -e "PODMAN_SOCKET=${PODMAN_SOCK}" \
@@ -250,7 +335,12 @@ podman run -d --name ga-transport --restart=always \
   -e "KIRO_REGION=${KIRO_REGION:-}" \
   -e "KIRO_LICENSE=${KIRO_LICENSE:-}" \
   -e "KC_MODEL_OVERRIDE=${KC_MODEL_OVERRIDE:-}" \
-  -e "GA_API_KEY=${GA_API_KEY:-}" \
+  -e "GA_MIN_FREE_MEM_GB=${GA_MIN_FREE_MEM_GB:-2.0}" \
+  -e "GA_MEMORY_WAIT_SECS=${GA_MEMORY_WAIT_SECS:-60}" \
+  -e "GA_SPAWN_MIN_MEMORY_GB=${GA_SPAWN_MIN_MEMORY_GB:-1.5}" \
+  -e "GA_RESOURCE_PRESSURE_GB=${GA_RESOURCE_PRESSURE_GB:-2.0}" \
+  -e "GA_RESOURCE_CRITICAL_GB=${GA_RESOURCE_CRITICAL_GB:-1.0}" \
+  ${GA_SECRET_FLAG} \
   localhost/transport:latest
 
 echo "✓ ga-transport container started"
@@ -261,10 +351,27 @@ else
   echo "  MCP API-key authentication: disabled (pass --api-key <key> to enable)"
 fi
 
-sleep 3
+sleep 1  # brief pause before first probe attempt
 echo ""
 echo "=== Health check ==="
-podman ps --filter name=ga-transport --format '{{.Names}} {{.Status}}'
+_max_wait=30
+_interval=2
+_ready=0
+for (( _i=0; _i<_max_wait; _i+=_interval )); do
+  if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+    _ready=1
+    break
+  fi
+  sleep "$_interval"
+done
+if [[ "$_ready" == "1" ]]; then
+  echo "✓ Transport is ready (responded on http://127.0.0.1:${PORT}/health)"
+else
+  echo "✗ Transport did not become ready within ${_max_wait}s" >&2
+  echo "  Last 20 lines of container logs:" >&2
+  podman logs ga-transport --tail 20 >&2
+  exit 1
+fi
 
 echo ""
 echo "=== Post-install ==="
