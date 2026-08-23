@@ -113,17 +113,17 @@ The installation SHALL persist reusable kiro-cli auth as a single plain file, `D
 
 ### Requirement: Container base images use deterministic references
 
-All Containerfiles in the project SHALL pin base images to a specific patch version tag (e.g. `python:3.12.x-slim`) rather than floating minor/major tags. Where upstream does not publish stable versioned tags (e.g. `ghcr.io/kirodotdev/kirocrew:stable`), a comment SHALL document the floating-tag risk and the condition under which a pin becomes possible.
+All Containerfiles in the project SHALL pin base images to a specific version tag rather than floating tags. `transport/Containerfile` SHALL pin to a patch-version Python slim tag. `crews/spec-ops/Containerfile` SHALL pin to a versioned KiroCrew semver tag.
 
 #### Scenario: Transport Containerfile pin
 
 - **WHEN** `transport/Containerfile` is built
 - **THEN** the `FROM` line references a patch-version-pinned Python slim image (e.g. `python:3.12.10-slim`)
 
-#### Scenario: Crew Containerfile floating tag documentation
+#### Scenario: Crew Containerfile versioned pin
 
-- **WHEN** `crews/spec-ops/Containerfile` references `ghcr.io/kirodotdev/kirocrew:stable`
-- **THEN** a comment adjacent to the `FROM` line documents the floating-tag fragility and states the condition for pinning
+- **WHEN** `crews/spec-ops/Containerfile` is built
+- **THEN** the `FROM` line references a semver-pinned KiroCrew image (e.g. `ghcr.io/kirodotdev/kirocrew:0.3.0`) and a comment documents the current version and instructs operators to update when upstream releases a new version
 
 ### Requirement: NodeSource install includes integrity verification
 
