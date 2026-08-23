@@ -1,6 +1,8 @@
-# Pinned to 0.3.0 semver tag — deterministic, conventionally stable.
-# When upstream releases 0.4.0, update this line and run install.sh to rebuild.
-FROM ghcr.io/kirodotdev/kirocrew:0.3.0
+# WARNING: floating tag — ghcr.io/kirodotdev/kirocrew:stable has no versioned
+# alternative today.  A rebuild on a different day may silently pull a different
+# image.  Pin to a versioned tag (e.g. kirocrew:0.3.2) when upstream publishes
+# one.  Digest pinning is deferred until CI automation can rotate it.
+FROM ghcr.io/kirodotdev/kirocrew:stable
 
 ARG VERSION=0.0.0-dev
 LABEL org.ghostship.version=$VERSION

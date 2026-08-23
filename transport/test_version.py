@@ -97,8 +97,8 @@ class TestCrewsVersionField(unittest.TestCase):
         with patch.object(server, "_load_registry", return_value=fake_registry):
             result = server.crews()
 
-        self.assertEqual(len(result["crews"]), 1)
-        entry = result["crews"][0]
+        self.assertEqual(len(result), 1)
+        entry = result[0]
         self.assertIn("crew_image_version", entry)
         self.assertEqual(entry["crew_image_version"], "unknown")
 
@@ -118,8 +118,8 @@ class TestCrewsVersionField(unittest.TestCase):
         with patch.object(server, "_load_registry", return_value=fake_registry):
             result = server.crews()
 
-        self.assertEqual(len(result["crews"]), 1)
-        entry = result["crews"][0]
+        self.assertEqual(len(result), 1)
+        entry = result[0]
         self.assertEqual(entry["crew_image_version"], "0.1.0")
 
 

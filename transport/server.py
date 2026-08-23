@@ -56,7 +56,6 @@ import select
 import socket
 import tarfile
 import textwrap
-import warnings
 import json
 import logging
 import os
@@ -106,13 +105,6 @@ PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
 GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
-GA_MIN_FREE_MEM_GB = float(os.environ.get("GA_MIN_FREE_MEM_GB", "2.0"))
-GA_MEMORY_WAIT_SECS = int(os.environ.get("GA_MEMORY_WAIT_SECS", "60"))
-GA_SPAWN_MIN_MEMORY_GB = float(os.environ.get("GA_SPAWN_MIN_MEMORY_GB", "1.5"))
-GA_RESOURCE_PRESSURE_GB = float(os.environ.get("GA_RESOURCE_PRESSURE_GB", "2.0"))
-GA_RESOURCE_CRITICAL_GB = float(os.environ.get("GA_RESOURCE_CRITICAL_GB", "1.0"))
-GA_SUBAGENT_TIMEOUT_SECS = int(os.environ.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"))
-GA_SUBAGENT_MAX_TURNS = int(os.environ.get("GA_SUBAGENT_MAX_TURNS", "200"))
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
 
 # ── Version ───────────────────────────────────────────────────────────────────
@@ -155,35 +147,7 @@ def _load_or_create_file_secret() -> str:
     return new_secret
 
 _FILE_SECRET = _load_or_create_file_secret()
-
-
-def _load_api_key() -> str:
-    """Load GA_API_KEY from Podman secret file, falling back to env var (deprecated)."""
-    _logger = logging.getLogger(__name__)
-    secret_path = Path("/run/secrets/ga-api-key")
-    try:
-        if secret_path.is_file():
-            key = secret_path.read_text().strip()
-            if key:
-                return key
-    except Exception:
-        pass
-
-    # Deprecated fallback: environment variable
-    env_key = os.environ.get("GA_API_KEY", "").strip()
-    if env_key:
-        _logger.warning(
-            "GA_API_KEY loaded from environment variable (DEPRECATED). "
-            "Re-run install.sh to migrate to Podman secrets."
-        )
-        return env_key
-
-    _logger.info("No API key configured (neither /run/secrets/ga-api-key nor GA_API_KEY env var). "
-                 "MCP API-key authentication disabled.")
-    return ""
-
-
-GA_API_KEY = _load_api_key()
+GA_API_KEY = os.environ.get("GA_API_KEY", "").strip()
 
 
 def _auth_file_path() -> Path:
@@ -349,10 +313,9 @@ class BearerAuthMiddleware:
     never wrapped in a Starlette router — that would break the MCP lifespan.
     """
 
-    def __init__(self, app, api_key: str = "", file_app=None) -> None:
+    def __init__(self, app, api_key: str = "") -> None:
         self.app = app
         self._key = api_key
-        self._file_app = file_app
         # Map (method, path) → handler for routes that live outside the MCP app
         self._routes: dict[tuple[str, str], Any] = {
             ("POST", "/login"): _handle_login_post,
@@ -378,11 +341,6 @@ class BearerAuthMiddleware:
                 request = Request(scope, receive)
                 response = await public_handler(request)
                 await response(scope, receive, send)
-                return
-
-            # File routes — use presigned-URL auth, bypass API key
-            if self._file_app and scope["path"].startswith("/files/"):
-                await self._file_app(scope, receive, send)
                 return
 
         if not self._key or scope["type"] != "http":
@@ -535,10 +493,6 @@ class PodmanClient:
         if r.status_code != 200:
             return False
         return r.json().get("State", {}).get("Status") == "running"
-
-    def system_info(self) -> dict:
-        """Query Podman system info (GET /libpod/system/info)."""
-        return self._req("GET", "/libpod/system/info")
 
     def _demux(self, raw: bytes) -> str:
         """Demux Docker multiplexed stream format into plain text."""
@@ -809,52 +763,6 @@ def _get_podman() -> PodmanClient:
             )
         _podman = PodmanClient(PODMAN_SOCK)
     return _podman
-
-
-# ── Memory helpers ────────────────────────────────────────────────────────────
-
-def _get_host_memory_gb(podman: PodmanClient) -> float:
-    """Extract available memory (GB) from Podman system info."""
-    info = podman.system_info()
-    mem_free = info.get("host", {}).get("memFree", 0)
-    return round(mem_free / (1024 ** 3), 1)
-
-
-_host_memory_cache: tuple[float, float] | None = None
-
-
-def _get_host_memory_gb_cached(podman: PodmanClient) -> float | None:
-    """Return available memory with 5-second TTL cache.
-
-    Returns None if Podman info fails.
-    """
-    global _host_memory_cache
-    now = time.monotonic()
-    if _host_memory_cache is not None:
-        ts, value = _host_memory_cache
-        if now - ts < 5.0:
-            return value
-    try:
-        value = _get_host_memory_gb(podman)
-        _host_memory_cache = (now, value)
-        return value
-    except Exception:
-        return None
-
-
-def _wait_for_memory(podman: PodmanClient, required_gb: float, timeout_secs: int) -> float:
-    """Block until host has required_gb free, or timeout_secs expires.
-
-    Returns current free GB (may be < required_gb on timeout).
-    """
-    deadline = time.monotonic() + timeout_secs
-    while True:
-        free_gb = _get_host_memory_gb(podman)
-        if free_gb >= required_gb:
-            return free_gb
-        if time.monotonic() >= deadline:
-            return free_gb
-        time.sleep(5)
 
 # ── Crew registry ─────────────────────────────────────────────────────────────
 
@@ -1693,17 +1601,6 @@ def _ensure_crew_running(
     # We are the leader — do the restart
     try:
         logger.info("Crew %s is stopped — restarting", crew_id)
-
-        # Pre-launch memory gate: wait for balloon to deflate before starting
-        if GA_MIN_FREE_MEM_GB > 0:
-            free_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, GA_MEMORY_WAIT_SECS)
-            if free_gb < GA_MIN_FREE_MEM_GB:
-                raise RuntimeError(
-                    f"Insufficient available memory to start crew {crew_id}: "
-                    f"{free_gb}GB free, {GA_MIN_FREE_MEM_GB}GB required. "
-                    f"Retry in a moment."
-                )
-
         podman.container_start(crew["container"])
         crew_url = _crew_url(crew)
         if not _wait_gateway(crew_url, timeout=30):
@@ -2076,8 +1973,6 @@ async def _handle_login_post(request: Request) -> Response:
     # ── State guards ──────────────────────────────────────────────────────────
     # Both checks held under the same lock so concurrent requests cannot slip
     # through between the auth-file check and the login-pending check (TOCTOU).
-    # The sentinel is also set inside this same critical section to close the
-    # write-side TOCTOU window.
     global _login_pending
     with _login_pending_lock:
         if _read_auth_file():
@@ -2090,18 +1985,10 @@ async def _handle_login_post(request: Request) -> Response:
                 "Login already in progress. Poll GET /login for status.",
                 status_code=409,
             )
-        # Set lightweight sentinel immediately to prevent concurrent starts
-        _login_pending = {
-            "container": None,
-            "started_at": time.time(),
-            "state": "starting",
-        }
 
     try:
         podman = _get_podman()
     except Exception as e:
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(str(e), status_code=500)
 
     # ── Start ephemeral container ─────────────────────────────────────────────
@@ -2109,17 +1996,7 @@ async def _handle_login_post(request: Request) -> Response:
         container = _start_login_container(podman)
     except Exception as e:
         logger.error("Failed to start login container: %s", e)
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(f"Failed to start login container: {e}", status_code=500)
-
-    # Update sentinel with real container name
-    with _login_pending_lock:
-        _login_pending = {
-            "container": container,
-            "started_at": _login_pending["started_at"] if _login_pending else time.time(),
-            "state": "started",
-        }
 
     # ── Wait for kiro-cli to be available in the container ────────────────────
     # The container uses KC_IMAGE which has kiro-cli installed; a short wait
@@ -2144,8 +2021,6 @@ async def _handle_login_post(request: Request) -> Response:
         exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
     except Exception as e:
         _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(f"Failed to start kiro-cli login: {e}", status_code=500)
 
     pty_sock.setblocking(False)
@@ -2213,8 +2088,6 @@ async def _handle_login_post(request: Request) -> Response:
         except Exception:
             pass
         _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
         return PlainTextResponse(
             f"kiro-cli did not produce a login URL within 15s.\nOutput:\n{raw_output}",
             status_code=500,
@@ -2240,10 +2113,13 @@ async def _handle_login_post(request: Request) -> Response:
     drain_thread = threading.Thread(target=_drain_pty, daemon=True, name=f"pty-drain-{container}")
     drain_thread.start()
 
-    # ── Update sentinel with exec_id ─────────────────────────────────────────
+    # ── Record pending state ──────────────────────────────────────────────────
     with _login_pending_lock:
-        if _login_pending is not None:
-            _login_pending["exec_id"] = exec_id
+        _login_pending = {
+            "container": container,
+            "exec_id": exec_id,
+            "started_at": time.time(),
+        }
 
     logger.info("Login flow started in %s, URL extracted", container)
     return JSONResponse({
@@ -2295,13 +2171,10 @@ async def _handle_login_get(request: Request) -> Response:
             except Exception as e:
                 logger.warning("Could not inject auth into crew %s: %s", cid, e)
 
-    # Nuke temp container and clear pending state (guarded)
+    # Nuke temp container and clear pending state
     _nuke_login_container(podman, pending["container"])
     with _login_pending_lock:
-        # Only clear if the pending login is the one we just completed;
-        # a new concurrent login may have started between nuke and here.
-        if _login_pending is not None and _login_pending.get("container") == pending["container"]:
-            _login_pending = None
+        _login_pending = None
 
     return JSONResponse({"status": "complete"})
 
@@ -2352,7 +2225,7 @@ async def _handle_logout_post(request: Request) -> Response:
 # ── MCP tools: workspace ─────────────────────────────────────────────────────
 
 @mcp.tool()
-def crews() -> dict:
+def crews() -> list:
     """List all live crews in the registry.
 
     Shows crew_id, container, status, and created_at for each.
@@ -2361,13 +2234,6 @@ def crews() -> dict:
     """
     with _registry_lock:
         reg = _load_registry()
-
-    # Host memory visibility
-    try:
-        podman = _get_podman()
-        host_mem = _get_host_memory_gb_cached(podman)
-    except Exception:
-        host_mem = None
 
     result = []
     for cid, info in reg["crews"].items():
@@ -2409,7 +2275,7 @@ def crews() -> dict:
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
         result.append(entry)
-    return {"crews": result, "host_memory_available_gb": host_mem}
+    return result
 
 
 @mcp.resource(
@@ -2544,14 +2410,12 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "p = pathlib.Path('/home/kirocrew/.kiro/crew/config.local.json'); "
         "cfg = json.loads(p.read_text()) if p.exists() else {}; "
         "a = cfg.setdefault('agent', {}); "
-        f"a['spawn_min_memory_gb'] = {GA_SPAWN_MIN_MEMORY_GB}; "
-        f"a['resource_pressure_gb'] = {GA_RESOURCE_PRESSURE_GB}; "
-        f"a['resource_critical_gb'] = {GA_RESOURCE_CRITICAL_GB}; "
+        "a['spawn_min_memory_gb'] = 0; "
+        "a['resource_pressure_gb'] = 0; "
+        "a['resource_critical_gb'] = 0; "
         "a['dangerously_skip_permissions'] = True; "
         "a['default_agent'] = 'ghost'; "
         "a['reasoning_effort'] = 'max'; "
-        f"a['subagent_timeout_secs'] = {GA_SUBAGENT_TIMEOUT_SECS}; "
-        f"a['subagent_max_turns'] = {GA_SUBAGENT_MAX_TURNS}; "
         "p.write_text(json.dumps(cfg, indent=2)); "
         "print('patched config.local.json')"
     )
@@ -3911,24 +3775,6 @@ def _idle_monitor() -> None:
                     headers={"Cookie": cookie, "Origin": crew_url},
                     timeout=5.0,
                 )
-                if r.status_code == 401:
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/spawn",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
                 payload = r.json() if r.status_code == 200 else {}
                 agents = payload.get("agents", []) if isinstance(payload, dict) else []
                 active = [
@@ -3953,24 +3799,6 @@ def _idle_monitor() -> None:
                     headers={"Cookie": cookie, "Origin": crew_url},
                     timeout=5.0,
                 )
-                if r.status_code == 401:
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/crons",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
                 if r.status_code == 200:
                     cron_payload = r.json()
                     if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
@@ -3995,31 +3823,6 @@ def _idle_monitor() -> None:
 
 # ── File transfer endpoints ───────────────────────────────────────────────────
 
-
-def _resolve_public_url_base() -> str:
-    """Return the public URL base for presigned file URLs.
-
-    Precedence: GA_PUBLIC_URL > GA_MCP_PUBLIC_URL (deprecated fallback) >
-    http://localhost:{PORT}.
-    """
-    base = os.environ.get("GA_PUBLIC_URL")
-    if base:
-        return base.rstrip("/")
-    # Deprecated fallback
-    legacy = os.environ.get("GA_MCP_PUBLIC_URL")
-    if legacy:
-        warnings.warn(
-            "GA_MCP_PUBLIC_URL is deprecated; set GA_PUBLIC_URL instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        logger.warning(
-            "GA_MCP_PUBLIC_URL is deprecated — set GA_PUBLIC_URL instead"
-        )
-        return legacy.rstrip("/")
-    return f"http://localhost:{PORT}"
-
-
 def _sign_file_url(
     crew_id: str,
     path: str,
@@ -4030,7 +3833,12 @@ def _sign_file_url(
     expires = int(time.time()) + GA_FILE_TTL_SECS
     payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{expires}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
-    base = _resolve_public_url_base()
+    # Precedence: GA_FILE_PUBLIC_URL > GA_PUBLIC_URL > localhost default (task 1.8)
+    base = (
+        os.environ.get("GA_FILE_PUBLIC_URL")
+        or os.environ.get("GA_PUBLIC_URL")
+        or f"http://localhost:{PORT + 1}"
+    )
     url = f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
     if ref:
         url += f"&ref={quote(ref, safe='/')}"
@@ -4475,7 +4283,12 @@ def _sign_upload_url(crew_id: str, path: str) -> str:
     # deliberately stays outside the signed payload (see supply()).
     payload = f"{crew_id}:{path}:::{expires}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
-    base = _resolve_public_url_base()
+    # Precedence: GA_FILE_PUBLIC_URL > GA_PUBLIC_URL > localhost default (task 1.8)
+    base = (
+        os.environ.get("GA_FILE_PUBLIC_URL")
+        or os.environ.get("GA_PUBLIC_URL")
+        or f"http://localhost:{PORT + 1}"
+    )
     return f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
 
 
@@ -4515,20 +4328,27 @@ if __name__ == "__main__":
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
     _reconcile_registry()
     threading.Thread(target=_idle_monitor, daemon=True, name="idle-monitor").start()
+    # Run file server on PORT+1 in a background thread, MCP on PORT
+    FILE_PORT = PORT + 1
+    file_app = Starlette(routes=file_routes)
+
+    def _run_file_server() -> None:
+        config = uvicorn.Config(file_app, host=HOST, port=FILE_PORT, log_level="warning")
+        asyncio.run(uvicorn.Server(config).serve())
+
+    threading.Thread(target=_run_file_server, daemon=True, name="file-server").start()
+    logger.info("File server on %s:%d", HOST, FILE_PORT)
 
     # Build the MCP ASGI app, wrap with API-key middleware, serve with Uvicorn.
     # Login/logout routes are handled inside BearerAuthMiddleware directly so
     # mcp_app is never wrapped in a Starlette router — that would break the
     # MCP lifespan (Task group is not initialized).
-    # File routes are mounted on the same port via BearerAuthMiddleware's
-    # file_app pass-through (presigned-URL auth, no API key needed).
     mcp_app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,
         host=HOST,
     )
-    _file_starlette = Starlette(routes=file_routes)
-    app = BearerAuthMiddleware(mcp_app, api_key=GA_API_KEY, file_app=_file_starlette)
+    app = BearerAuthMiddleware(mcp_app, api_key=GA_API_KEY)
     if GA_API_KEY:
         logger.info("MCP API-key authentication: enabled")
     else:

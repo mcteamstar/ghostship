@@ -14,7 +14,7 @@ volumes: a workspace volume (`gs-vol-<id>`) and a home volume
 `ga-net` so transport can reach them by container name
 (`http://gs-<id>:5476`).
 
-**Crew image** (`crews/spec-ops/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:0.3.0`
+**Crew image** (`crews/spec-ops/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:stable`
 (Debian 13, Python 3.12, git, curl). Adds Node.js 24 LTS via NodeSource, and
 the `openspec` CLI (`@fission-ai/openspec`) that the `openspec-*` skills shell
 out to. Built locally at install time (`localhost/spec-ops:latest`). See
@@ -387,7 +387,7 @@ ghostship/
 ├── openspec/              # this project's own OpenSpec state (config.yaml, changes/, specs/)
 ├── crews/                 # crew type definitions — each composes a crew from academy/
 │   └── kirocrew/          # the one crew type today
-│       ├── Containerfile  # FROM kirocrew:0.3.0 + Node 24 LTS + openspec CLI + extras
+│       ├── Containerfile  # FROM kirocrew:stable + Node 24 LTS + openspec CLI + extras
 │       ├── seed_kiro_db.py
 │       └── manifest.json  # which academy/ agents, skills, steering this crew type includes
 └── docs/                  # this folder

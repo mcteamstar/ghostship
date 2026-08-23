@@ -188,44 +188,11 @@ never logged, printed, or included in responses.
 ```
 
 `install.sh` persists the key to a plain, mode-`0600` file in your data
-directory (`DATA_DIR/ga-api-key`). Once set, later `./install.sh` runs reuse
-it automatically — you don't need to pass `--api-key` every time. The install
-output reports only `enabled` / `disabled`, never the key itself.
-
-#### How the key is stored and delivered
-
-The key is delivered to the transport container as a **Podman secret**
-(not an environment variable). `install.sh` runs:
-
-```bash
-podman secret rm ga-api-key 2>/dev/null || true
-printf '%s' "$GA_API_KEY" | podman secret create ga-api-key -
-```
-
-The container is started with `--secret ga-api-key`, which bind-mounts the
-key read-only at `/run/secrets/ga-api-key` inside the container. The
-transport reads it from that path at startup. This approach means the key
-**never appears** in `podman inspect`, `/proc/1/environ`, or any other
-process-metadata surface.
-
-The persisted file in `DATA_DIR/ga-api-key` is the source of truth across
-installs — the Podman secret is recreated from it on each `install.sh` run.
-
-#### Rotating the API key
-
-1. Run `./install.sh --api-key <new-key>` — this overwrites the persisted
-   file, recreates the Podman secret, and restarts the transport container.
-2. Update all MCP clients with the new bearer token.
-
-No downtime is required beyond the container restart (~2s).
-
-#### Deprecated: environment variable fallback
-
-If `/run/secrets/ga-api-key` is not present (e.g. the operator upgraded the
-transport image but has not yet re-run `install.sh`), the transport falls
-back to reading `GA_API_KEY` from the environment and logs a deprecation
-warning at startup. Re-run `install.sh` to migrate to the secrets-based
-delivery. The env-var fallback will be removed in a future release.
+directory (`DATA_DIR/ga-api-key` — the same lightweight approach used for
+`ga-kiro-auth`'s own file-based persistence, not a Podman secret). Once set, later
+`./install.sh` runs reuse it automatically — you don't need to pass `--api-key`
+every time. The install output reports only `enabled` / `disabled`, never the
+key itself.
 
 ### Client configuration
 
@@ -274,12 +241,9 @@ configs if desired.
 - Plain HTTP is appropriate only for loopback (`127.0.0.1`) or a trusted
   private tunnel. For remote deployments, terminate TLS at a reverse proxy
   or route through an encrypted VPN.
-- The key is delivered via Podman secret (`--secret ga-api-key`), mounted
-  read-only at `/run/secrets/ga-api-key`. It is **not** visible via
-  `podman inspect` or `/proc/1/environ`.
-- The persisted file in `DATA_DIR/ga-api-key` (mode `0600`) is accessible
-  only to the user running `install.sh`. Ensure `~/.local/share/containers/`
-  is mode `0700` on multi-user systems.
+- The key is passed as a container environment variable (`-e GA_API_KEY=...`),
+  visible to operators with `podman inspect` access. Treat it as an
+  operator-managed secret.
 - Automatic key generation and rotation are intentionally out of scope.
 
 ## Admiral mail signing (`admiral_secret`)

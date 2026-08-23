@@ -25,8 +25,8 @@
 #   2. --identity-provider / --region / --license flags
 #   3. Interactive prompt, if running in a terminal and still unset
 #
-# Port: MCP and file transfer both listen on --port (default 64057) — one port
-# serves all routes, matching server.py's unified app.
+# Port: MCP listens on --port (default 64057); the file server always runs
+# on port+1 (64058 by default) — one flag controls both, matching server.py.
 #
 # API key: --api-key <key> enables MCP bearer-token auth and persists the
 # key to your data directory, so it stays enabled on future installs without
@@ -85,11 +85,11 @@ while [[ $# -gt 0 ]]; do
     --model) KC_MODEL_OVERRIDE="$2"; shift 2 ;;
     --file-public-url) GA_FILE_PUBLIC_URL="$2"; shift 2 ;;
     --mcp-public-url) GA_MCP_PUBLIC_URL="$2"; shift 2 ;;
-    --public-url) GA_PUBLIC_URL="$2"; shift 2 ;;
     --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+FILE_PORT=$((PORT + 1))
 
 if [[ -z "${KIRO_IDENTITY_PROVIDER:-}" && -t 0 ]]; then
   read -rp "kiro-cli identity provider URL (blank = default Builder ID login): " KIRO_IDENTITY_PROVIDER
@@ -97,16 +97,6 @@ fi
 if [[ -n "${KIRO_IDENTITY_PROVIDER:-}" && -z "${KIRO_REGION:-}" && -t 0 ]]; then
   read -rp "AWS region for that identity provider: " KIRO_REGION
 fi
-
-# ── Memory management env vars ────────────────────────────────────────────────
-# GA_MIN_FREE_MEM_GB  (default 2.0)  — minimum free memory (GB) before starting
-#   a crew container. Transport polls Podman info in 5s intervals until memory
-#   frees or timeout expires. Set to 0 to disable the gate entirely.
-# GA_MEMORY_WAIT_SECS (default 60)   — max seconds to wait for memory.
-# GA_SPAWN_MIN_MEMORY_GB (default 1.5) — patched into crew's spawn_min_memory_gb
-#   (KiroCrew's internal subagent admission gate).
-# GA_RESOURCE_PRESSURE_GB (default 2.0) — patched into crew's resource_pressure_gb.
-# GA_RESOURCE_CRITICAL_GB (default 1.0) — patched into crew's resource_critical_gb.
 
 # ── Podman ────────────────────────────────────────────────────────────────────
 
@@ -298,16 +288,6 @@ echo "Building localhost/transport:latest ..."
 podman build -t localhost/transport:latest "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
-# ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
-
-podman secret rm ga-api-key 2>/dev/null || true
-GA_SECRET_FLAG=""
-if [[ -n "${GA_API_KEY:-}" ]]; then
-  printf '%s' "$GA_API_KEY" | podman secret create ga-api-key -
-  GA_SECRET_FLAG="--secret ga-api-key"
-  echo "✓ Podman secret 'ga-api-key' created"
-fi
-
 # ── Run transport ─────────────────────────────────────────────────────────────
 
 podman rm -f ga-transport >/dev/null 2>&1 || true
@@ -315,6 +295,7 @@ podman rm -f ga-transport >/dev/null 2>&1 || true
 podman run -d --name ga-transport --restart=always \
   --security-opt label=disable \
   -p "127.0.0.1:${PORT}:${PORT}" \
+  -p "127.0.0.1:${FILE_PORT}:${FILE_PORT}" \
   --network ga-net \
   -v "${DATA_DIR}:/data" \
   -v "${GHOSTSHIP_DIR}/academy/agents:/agents:ro" \
@@ -326,7 +307,7 @@ podman run -d --name ga-transport --restart=always \
   -v "${PODMAN_SOCK}:${PODMAN_SOCK}" \
   -e "PODMAN_SOCKET=${PODMAN_SOCK}" \
   -e "PORT=${PORT}" \
-  -e "GA_PUBLIC_URL=${GA_PUBLIC_URL:-http://localhost:${PORT}}" \
+  -e "GA_PUBLIC_URL=http://localhost:${FILE_PORT}" \
   -e "GA_FILE_PUBLIC_URL=${GA_FILE_PUBLIC_URL:-}" \
   -e "GA_MCP_PUBLIC_URL=${GA_MCP_PUBLIC_URL:-}" \
   -e "KC_GATEWAY_TOKEN_TTL=${KC_GATEWAY_TOKEN_TTL:-24h}" \
@@ -334,12 +315,7 @@ podman run -d --name ga-transport --restart=always \
   -e "KIRO_REGION=${KIRO_REGION:-}" \
   -e "KIRO_LICENSE=${KIRO_LICENSE:-}" \
   -e "KC_MODEL_OVERRIDE=${KC_MODEL_OVERRIDE:-}" \
-  -e "GA_MIN_FREE_MEM_GB=${GA_MIN_FREE_MEM_GB:-2.0}" \
-  -e "GA_MEMORY_WAIT_SECS=${GA_MEMORY_WAIT_SECS:-60}" \
-  -e "GA_SPAWN_MIN_MEMORY_GB=${GA_SPAWN_MIN_MEMORY_GB:-1.5}" \
-  -e "GA_RESOURCE_PRESSURE_GB=${GA_RESOURCE_PRESSURE_GB:-2.0}" \
-  -e "GA_RESOURCE_CRITICAL_GB=${GA_RESOURCE_CRITICAL_GB:-1.0}" \
-  ${GA_SECRET_FLAG} \
+  -e "GA_API_KEY=${GA_API_KEY:-}" \
   localhost/transport:latest
 
 echo "✓ ga-transport container started"

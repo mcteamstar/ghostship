@@ -13,11 +13,11 @@ installs the `openspec` CLI; the `openspec-*` skills under
 
 | Agent | Role | Tools | Owns |
 |:------|:-----|:------|:-----|
-| **Ghost** | General-purpose precision operative — executes one well-scoped task or brief end to end, including implementing a change's tasks | `read grep glob write code shell web_search web_fetch` | all six OpenSpec operations |
-| **Spectre** | Planning operative — drives the front half of a change: investigates, scaffolds proposals, revises plans as understanding evolves | `read grep glob write code shell web_search web_fetch` | `openspec-explore`, `openspec-propose`, `openspec-update-change` |
-| **Banshee** | Independent review/fix operative — a second pair of eyes across a wider field than Ghost's single task; finds bugs, runs tests, traces to root | `read grep glob write code shell web_search web_fetch` | `openspec-explore`, `openspec-propose`, `openspec-update-change`, `openspec-apply-change` |
-| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code | `read grep glob shell web_search web_fetch` | none (adjacent — reads change context, doesn't edit it) |
-| **Reaper** | Cleanup operative — closes out finished changes | `read grep glob write shell web_search web_fetch` | `openspec-sync-specs`, `openspec-archive-change` |
+| **Ghost** | General-purpose precision operative — executes one well-scoped task or brief end to end, including implementing a change's tasks | `read grep glob write code shell` | all six OpenSpec operations |
+| **Spectre** | Planning operative — drives the front half of a change: investigates, scaffolds proposals, revises plans as understanding evolves | `read grep glob write code shell` | `openspec-explore`, `openspec-propose`, `openspec-update-change` |
+| **Banshee** | Independent review/fix operative — a second pair of eyes across a wider field than Ghost's single task; finds bugs, runs tests, traces to root | `read grep glob write code shell` | `openspec-explore`, `openspec-propose`, `openspec-update-change`, `openspec-apply-change` |
+| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code | `read grep glob shell` | none (adjacent — reads change context, doesn't edit it) |
+| **Reaper** | Cleanup operative — closes out finished changes | `read grep glob write shell` | `openspec-sync-specs`, `openspec-archive-change` |
 | **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, and carries messages between personas and the Admiral. Dispatches bounded next steps without implementing work. Captain-loop behaviour is injected via standing order template, not baked into the persona. | `read grep glob shell` | dispatch via the `kirocrew` CLI and the crew gateway's REST API |
 
 The five worker personas form the OpenSpec cycle: Spectre explores and
