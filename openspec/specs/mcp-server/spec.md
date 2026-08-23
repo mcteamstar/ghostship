@@ -5,7 +5,15 @@
 Expose crew orchestration to any MCP client as a single streamable-HTTP server (`ghostship`), covering the tool/resource surface, transport wiring, and discoverability — as distinct from what each tool does internally (see `crew-lifecycle`, `task-orchestration`, `file-transfer`).
 ## Requirements
 ### Requirement: Streamable-HTTP MCP transport on a configurable port
-The system SHALL serve MCP over streamable HTTP on `PORT` (default `64057`), bound to the host given by `HOST` (default `0.0.0.0` inside the container, published to `127.0.0.1` only by `install.sh`). When `GA_API_KEY` is unset or empty, the transport SHALL preserve the existing network-binding-only trust model. When `GA_API_KEY` is non-empty, every HTTP request to the MCP listener SHALL include `Authorization: Bearer <GA_API_KEY>` and the transport SHALL reject missing, malformed, or incorrect credentials before MCP processing.
+The system SHALL serve MCP over streamable HTTP on `PORT` (default `64057`), bound to the host given by `HOST` (default **`0.0.0.0`** inside a container). For containerised installs, host-side isolation is provided by `install.sh` publishing the port as `-p "127.0.0.1:PORT:PORT"`, making it unreachable from other network hosts regardless of the container-internal bind. Operators running the transport directly (non-containerised) who need loopback-only binding SHALL set `HOST=127.0.0.1` explicitly. When `GA_API_KEY` is unset or empty, the transport SHALL preserve the existing trust model. When `GA_API_KEY` is non-empty, every HTTP request to the MCP listener SHALL include `Authorization: Bearer <GA_API_KEY>` and the transport SHALL reject missing, malformed, or incorrect credentials before MCP processing.
+
+#### Scenario: Default bind address for containerised install
+- **WHEN** the transport starts inside a container without a `HOST` override and `install.sh` published the port as `-p "127.0.0.1:PORT:PORT"`
+- **THEN** the MCP server is reachable only from localhost on the host, not from other network hosts
+
+#### Scenario: Non-containerised loopback binding
+- **WHEN** the transport starts with `HOST=127.0.0.1`
+- **THEN** the MCP server listens on loopback only and is not reachable from the local network
 
 #### Scenario: Default port
 - **WHEN** the transport process starts with no `PORT` override and `GA_API_KEY` unset or empty
@@ -24,8 +32,8 @@ The system SHALL serve MCP over streamable HTTP on `PORT` (default `64057`), bou
 - **THEN** the transport responds with `401 Unauthorized` and `WWW-Authenticate: Bearer`, and the MCP application does not process the request
 
 #### Scenario: Client registration carries the key as a header
-- **WHEN** a user registers the server with an MCP client (Kiro CLI, Claude Code, or another streamable-HTTP-capable client) while API-key authentication is enabled
-- **THEN** the client points at `http://localhost:<PORT>/mcp` or the configured endpoint and sends `Authorization: Bearer <GA_API_KEY>` on the initialization and subsequent MCP HTTP requests
+- **WHEN** a user registers the server with an MCP client while API-key authentication is enabled
+- **THEN** the client points at `http://localhost:<PORT>/mcp` and sends `Authorization: Bearer <GA_API_KEY>` on initialization and subsequent MCP HTTP requests
 
 ### Requirement: Agent roster resource
 The system SHALL expose a `transport://agents` MCP resource that lists every agent JSON found in the `/agents` bind-mount, formatted for a client to read before calling `dispatch`.

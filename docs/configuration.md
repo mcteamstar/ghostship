@@ -4,12 +4,14 @@ Environment variables read by the transport server:
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `HOST` | `0.0.0.0` | Interface the MCP and file servers bind to inside the container — `install.sh` only ever publishes `127.0.0.1` on the host, so this is not normally a reason to change it |
+| `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. The host-side protection is in `install.sh`: `-p "127.0.0.1:PORT:PORT"` ensures the port is only reachable from localhost on the host, regardless of the container's internal bind. Set `HOST=127.0.0.1` only for non-containerised installs where loopback-only binding is needed at the process level |
 | `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
-| `GA_MAX_CREWS` | `6` | Max concurrent crews |
+| `GA_MAX_CREWS` | `20` | Maximum number of registered crews (running + stopped). Stopped crews cost no memory, so this is primarily a housekeeping limit on how many persistent workspaces you keep around. Raise it freely on unconstrained hosts |
+| `GA_MAX_ACTIVE_CREWS` | `3` | Maximum number of simultaneously running (active) crew containers. Enforced when a stopped crew is restarted — if the running count already equals this limit, the restart is refused until another crew idles out. Set to `0` to disable the active limit entirely. At ~2–3 GB per running crew, the default of 3 fits comfortably on an 8 GB host |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
 | `KC_MODEL_OVERRIDE` | _(unset)_ | When set, overrides the model in all agent JSON files at launch — takes precedence over per-agent defaults. Set via `install.sh --model <model>`. Leave unset to use each agent's own default. |
+| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json`. Applies when no per-agent model field overrides it. Lower precedence than `KC_MODEL_OVERRIDE` and per-agent model field. Set via `install.sh --model-default <model>`. Full precedence order: `KC_MODEL_OVERRIDE` > per-agent model > `KC_MODEL_DEFAULT` > KiroCrew built-in. Omit to leave KiroCrew's built-in default unchanged. |
 | `TRANSPORT_DATA_DIR` | `/data` | Registry + data dir |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path — on Linux this is your host uid (`id -u`); on macOS it's the `podman machine` guest's uid (`podman machine ssh -- id -u`), which is often different |
 | `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Replaces the deprecated `GA_MCP_PUBLIC_URL` and `GA_FILE_PUBLIC_URL` variables — set this single var for all externally-reachable URLs |
@@ -68,6 +70,7 @@ For every settable variable, the effective value is resolved in this order
 | `KIRO_REGION` | `--region` |
 | `KIRO_LICENSE` | `--license` |
 | `KC_MODEL_OVERRIDE` | `--model` |
+| `KC_MODEL_DEFAULT` | `--model-default` |
 | `GA_API_KEY` | `--api-key` |
 | `GA_HOST_URL` | `--public-url` |
 | `GA_FILE_PUBLIC_URL` | `--file-public-url` _(deprecated, migrate to `GA_HOST_URL`)_ |

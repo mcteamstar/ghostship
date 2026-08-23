@@ -24,14 +24,25 @@ PORT=64057
 # Override the default model for all crew agents.
 # KC_MODEL_OVERRIDE="claude-sonnet-4.6"
 
+# Set a global model fallback for agents that don't have a per-agent model set.
+# Lower precedence than KC_MODEL_OVERRIDE and per-agent model fields.
+# Precedence: KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
+# KC_MODEL_DEFAULT=""
+
 # ── Crew lifecycle ────────────────────────────────────────────────────────────
 # Stop idle crew containers after this many seconds to free memory.
 # The schedule monitor wakes crews before ticks fire, so this can be set
 # independently of any captain interval.
 GA_IDLE_TIMEOUT_SECS=300
 
-# Maximum number of concurrent crews.
-# GA_MAX_CREWS=10
+# Maximum number of registered crews (running + stopped).
+# Stopped crews cost no memory, so this is a housekeeping limit.
+# GA_MAX_CREWS=20
+
+# Maximum number of simultaneously running crew containers.
+# Enforced on restart: refused if running count already equals this limit.
+# Set to 0 to disable the active limit entirely.
+# GA_MAX_ACTIVE_CREWS=3
 
 # ── Subagent timeouts ─────────────────────────────────────────────────────────
 # Wall-clock timeout per task (seconds). KiroCrew default is 1800 (30 min).

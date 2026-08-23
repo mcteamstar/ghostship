@@ -87,6 +87,7 @@ while [[ $# -gt 0 ]]; do
     --license) KIRO_LICENSE="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --model) KC_MODEL_OVERRIDE="$2"; shift 2 ;;
+    --model-default) KC_MODEL_DEFAULT="$2"; shift 2 ;;
     --file-public-url) GA_FILE_PUBLIC_URL="$2"; shift 2 ;;
     --mcp-public-url) GA_MCP_PUBLIC_URL="$2"; shift 2 ;;
     --public-url) GA_HOST_URL="$2"; shift 2 ;;
@@ -338,6 +339,7 @@ podman run -d --name ga-transport --restart=always \
   -e "KIRO_REGION=${KIRO_REGION:-}" \
   -e "KIRO_LICENSE=${KIRO_LICENSE:-}" \
   -e "KC_MODEL_OVERRIDE=${KC_MODEL_OVERRIDE:-}" \
+  -e "KC_MODEL_DEFAULT=${KC_MODEL_DEFAULT:-}" \
   -e "GA_MIN_FREE_MEM_GB=${GA_MIN_FREE_MEM_GB:-2.0}" \
   -e "GA_MEMORY_WAIT_SECS=${GA_MEMORY_WAIT_SECS:-60}" \
   -e "GA_SPAWN_MIN_MEMORY_GB=${GA_SPAWN_MIN_MEMORY_GB:-1.5}" \

@@ -42,6 +42,58 @@ Quick reference for operators and developers. For full docs see the linked files
 
 ---
 
+## HTTP Proxy Routes
+
+These routes proxy directly through to a crew's gateway. They require the same
+`Authorization: Bearer <GA_API_KEY>` header as MCP routes (when `GA_API_KEY` is set).
+
+### Gateway UI proxy
+
+```
+GET  /crews/{crew_id}/ui
+GET  /crews/{crew_id}/ui/{path}
+POST /crews/{crew_id}/ui/{path}
+```
+
+Proxies to `http://gs-{crew_id}:5476/{path}`. Opens the crew's KiroCrew dashboard
+in a browser. Auto-wakes a stopped crew before proxying. No session cookie is
+injected — the browser goes through the normal gateway login flow.
+
+Example (open in browser when no API key is set):
+```
+http://<transport-host>:<PORT>/crews/my-crew/ui
+```
+
+### Gateway API proxy
+
+```
+GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/api/{path}
+```
+
+Proxies to `http://gs-{crew_id}:5476/api/{path}` with the internal session cookie
+(`mc_token_5476`) automatically injected. Useful for operator or automation access
+to the gateway REST API without separately obtaining a session.
+
+On upstream 401/403, the cookie is refreshed and the request is retried once.
+
+Example curl commands:
+```bash
+# List active tasks
+curl -H "Authorization: Bearer $GA_API_KEY" \
+     http://<transport-host>:<PORT>/crews/my-crew/api/spawn
+
+# Dispatch a task
+curl -H "Authorization: Bearer $GA_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"task": "check the objective", "agent": "ghost"}' \
+     http://<transport-host>:<PORT>/crews/my-crew/api/spawn
+```
+
+> **Note:** Both proxy routes respect the 60 s request timeout. Use `evac` for
+> large file downloads from a crew workspace.
+
+
+
 ## Agent Personas
 
 See [`docs/agents.md`](agents.md) for full detail. Quick summary:

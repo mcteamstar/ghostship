@@ -286,30 +286,44 @@ configs if desired.
 
 When a crew is launched, the transport generates a random 32-byte hex secret
 (`admiral_secret`) and injects it into the crew container at
-`/home/kirocrew/workplace/.admiral_secret` (mode `0600`). Every standing order
+`/home/kirocrew/.kiro/crew/.admiral_secret` (mode `0600`). Every standing order
 the transport writes to `/var/mail/captain` includes an `X-Admiral-Sig:` header
 — an HMAC-SHA256 signature of the message body keyed by this secret. Raven can
 invoke `/usr/local/bin/verify-admiral-sig` to confirm a message is genuine
 before acting on it as a standing order.
 
+### Delivery path and threat model
+
+The `admiral_secret` is written to two places:
+
+1. **`.admiral_secret` file** (mode `0600`) — read by `verify-admiral-sig` to
+   verify Admiral mail signatures.
+2. **`admission_policy.json` `trust_keys` field** — required by KiroCrew's
+   governance API to verify the security policy signature on gateway startup.
+   This file is mode `0600` but is readable by agent processes running as the
+   `kirocrew` user inside the container.
+
+**Threat model:** An agent that reads `admission_policy.json` can extract the
+`admiral_secret` and forge Admiral standing orders. This is an accepted risk
+for the current single-operator, isolated-container use case — each crew
+container runs in its own Podman sandbox and agents are trusted not to be
+actively malicious. For multi-operator or untrusted-agent deployments, a
+separate policy-signing key (distinct from `admiral_secret`) would close this
+gap. See TRN-38 for the investigation that surfaced this.
+
 ### Policy signing
 
-The same `admiral_secret` is also used to sign the crew's security policy at
+The same `admiral_secret` is used to sign the crew's security policy at
 injection time. The transport computes HMAC-SHA256 over the canonical
 (sorted-keys JSON) policy body and writes the signature into
-`~/.kiro/crew/admission_policy.json` as a trust key. This gives the
-`admiral_secret` two uses per crew:
-
-1. **Mail signing** — `X-Admiral-Sig` header on standing orders to
-   `/var/mail/captain`
-2. **Policy signing** — HMAC over `security_policy.json`, stored in
-   `admission_policy.json`
-
-Both use the same HMAC-SHA256 construction (key = `admiral_secret`, message =
-the content being signed, output = hex digest). The gateway verifies the
-policy signature on load; a tampered `security_policy.json` causes a signature
-mismatch and the gateway refuses to continue — the agent cannot forge a valid
+`~/.kiro/crew/security_policy.json` as `identity.signature`. The gateway
+verifies this signature on load; a tampered `security_policy.json` causes a
+mismatch and the gateway refuses to continue — an agent cannot forge a valid
 policy without the `admiral_secret`.
+
+`admission_policy.json` records only `require_policy_signature: true` — it
+does **not** hold the `admiral_secret` or any trust key. The secret used to
+verify the signature is read from `.admiral_secret` at verification time.
 
 ### Storage
 
@@ -327,5 +341,9 @@ registry at `$TRANSPORT_DATA_DIR/crews.json`, default `/data/crews.json`).
   `admiral_secret` from `crews.json` and forge Admiral standing orders to any
   running crew. For multi-operator deployments, `DATA_DIR` should have `0700`
   permissions and `podman inspect` access should be restricted.
+- **Agent-level isolation:** Agent processes inside the crew container cannot
+  read `admiral_secret` — it is only accessible via the `.admiral_secret` file
+  (mode `0600`, not agent-readable) and is never written to any agent-readable
+  policy file.
 - **Future hardening:** Encrypting secrets at rest in `crews.json`, or storing
   them separately with tighter file permissions, is tracked in TRN-16.

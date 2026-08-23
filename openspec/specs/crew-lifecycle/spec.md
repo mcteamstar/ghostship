@@ -7,11 +7,11 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ## Requirements
 
 ### Requirement: Crew creation via launch
-The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew-type registry based on the optional `composition` parameter (defaulting to `"kirocrew"`). At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`.
+The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew-type registry based on the optional `composition` parameter (defaulting to `"kirocrew"`). At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
 
 #### Scenario: First launch for a new crew_id
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
-- **THEN** the system creates `gs-vol-<crew_id>` and `gs-home-<crew_id>` volumes, creates and starts a `gs-<crew_id>` container attached to `ga-net` using the image resolved from the crew type registry, reads the `org.ghostship.version` label from the container, stores it in the registry entry as `crew_image_version`, and waits up to 30 seconds for its gateway to respond on `:5476`
+- **THEN** a new crew container and volumes are created and the crew is registered as "running"
 
 #### Scenario: Launch with composition parameter
 - **WHEN** `launch` is called with a valid `crew_id` and `composition="worker"`
@@ -29,9 +29,9 @@ The system SHALL create an isolated crew container with a dedicated workspace vo
 - **WHEN** `launch` is called with a `crew_id` that already has a registry entry not in `auth_required` status
 - **THEN** the system returns an error instructing the caller to nuke the existing crew first
 
-#### Scenario: Max crews reached
+#### Scenario: Max registered crews reached
 - **WHEN** `launch` is called while the number of registered crews is already at or above `GA_MAX_CREWS`
-- **THEN** the system returns an error and creates no container
+- **THEN** `launch` returns an error indicating the registered crew limit has been reached and instructing the operator to nuke a crew first
 
 #### Scenario: Gateway does not become ready
 - **WHEN** the newly started crew container's gateway does not respond within 30 seconds
@@ -65,15 +65,51 @@ The system SHALL require explicit confirmation before tearing down a crew, and S
 - **THEN** the diagram SHALL NOT show `nuke` as the final step; the diagram SHALL end at `evac` or an equivalent non-destructive operation, and a note below SHALL explain that `nuke` is for intentional workspace destruction, not routine cleanup
 
 ### Requirement: Crew setup completion is all-or-nothing
-The system SHALL only mark a crew "running" after auth injection, config patching, a config-picking-up restart, agent/skill/steering copy, OpenSpec store seeding, and cookie minting have all succeeded, and SHALL clean up the crew if any required step fails. Auth injection SHALL be verified by exit code, not by pattern-matching the output string.
+
+The system SHALL only mark a crew "running" after all required setup steps have
+succeeded, and SHALL clean up the crew if any required step fails. Auth injection
+SHALL be verified by exit code, not by pattern-matching the output string.
+
+The setup steps SHALL execute in dependency order:
+
+1. Wait for gateway (pre-restart)
+2. Inject kiro-cli auth (`_inject_auth`)
+3. Generate and inject admiral signing secret — alongside auth, before restart,
+   so the secret is in place before Raven can ever run
+4. Patch crew config (`_patch_crew_config`)
+5. Container restart (auth + config take effect)
+6. Wait for gateway (post-restart)
+7. Copy agents, skills, steering
+8. Seed OpenSpec store
+9. Inject security policy (depends only on admiral secret, not on the gateway)
+10. Wait for KiroCrew to seed built-in agent files (gateway-dependent)
+11. Patch model overrides
+12. Mint session cookie
+13. Read version label, write registry entry
+
+The admiral signing secret write SHALL use `os.fsync` before closing the file
+descriptor to ensure the write is durable before any process inside the container
+can read the file.
 
 #### Scenario: Successful setup
-- **WHEN** a crew has confirmed auth and every setup step (auth inject, config patch, restart, agent/skill/steering copy, OpenSpec seed, model patch, cookie mint) succeeds
-- **THEN** the crew is registered with status "running", a gateway URL, and a session cookie
+
+- **WHEN** all setup steps succeed
+- **THEN** the crew is marked "running" and the admiral secret is present in the
+  container before the post-restart gateway ever becomes reachable
+
+#### Scenario: Admiral secret present before post-restart gateway
+
+- **WHEN** the transport has completed auth injection and the pre-restart gateway
+  wait, and then restarts the container
+- **THEN** the admiral secret file exists at
+  `/home/kirocrew/.kiro/crew/.admiral_secret` before any post-restart gateway
+  call is made
 
 #### Scenario: Cookie mint fails
-- **WHEN** every earlier setup step succeeds but minting a session cookie fails
-- **THEN** the system tears down the container and both volumes and returns an error rather than registering a crew with no usable cookie
+
+- **WHEN** every step up to and including cookie minting succeeds except
+  `_mint_cookie`
+- **THEN** the crew is cleaned up and `launch` returns an error
 
 #### Scenario: Auth injection failure is detected
 - **WHEN** the auth injection command exits with a non-zero exit code
@@ -314,3 +350,119 @@ Both variables SHALL be documented in `docs/configuration.md`.
 
 - **WHEN** the transport is started with `GA_SUBAGENT_MAX_TURNS=300`
 - **THEN** every new crew's `config.local.json` contains `subagent_max_turns: 300`
+
+### Requirement: Config patch applied on reconcile restart
+
+When the transport starts and discovers a stopped crew container in the
+registry, it SHALL apply all pending configuration patches (including
+`spawn_min_memory_gb`) to that container before marking it as running, in
+the same way patches are applied during initial crew creation.
+
+#### Scenario: Stopped crew restored after transport restart
+- **WHEN** `_reconcile_registry` restarts a stopped crew container
+- **THEN** `_patch_crew_config` is called on that container before the
+  crew is marked as running in the registry
+
+#### Scenario: Config patch idempotent on repeated restarts
+- **WHEN** the transport is restarted multiple times and the same crew is
+  restored each time
+- **THEN** each restart applies `_patch_crew_config` without error, and
+  the crew's configuration reflects the current transport defaults
+
+### Requirement: Registry reconciliation is idempotent
+
+`_reconcile_registry` SHALL produce the same registry state whether
+called once or multiple times in succession for the same set of running
+containers.
+
+#### Scenario: Reconcile called twice without container changes
+- **WHEN** `_reconcile_registry` is called a second time while all
+  previously-reconciled crews are already running
+- **THEN** no container is restarted again and registry state is unchanged
+
+#### Scenario: Reconcile tolerates containers already running
+- **WHEN** a crew container is already in running state at reconcile time
+- **THEN** `_reconcile_registry` does not restart it and does not error
+
+### Requirement: Registry file written with restricted permissions
+The system SHALL write `crews.json` with file permissions `0o600` (owner read/write only), ensuring the registry is not readable by other local users on the host.
+
+#### Scenario: Registry written with 0o600 permissions
+- **WHEN** `_save_registry` writes `crews.json`
+- **THEN** the resulting file has permissions `0o600`
+
+#### Scenario: Existing registry file permissions corrected on write
+- **WHEN** `_save_registry` is called on a host where `crews.json` already exists with broader permissions
+- **THEN** after the write the file has permissions `0o600`
+
+### Requirement: dangerously_skip_permissions usage is annotated
+Any call site in the codebase that passes `dangerously_skip_permissions=True` SHALL include an inline comment explaining why the permission bypass is required and what threat model constraint that implies.
+
+#### Scenario: dangerously_skip_permissions call site has explanatory comment
+- **WHEN** a developer reads the code at the `dangerously_skip_permissions=True` call site
+- **THEN** the comment explains the purpose of the bypass and the security implication of enabling it
+
+### Requirement: Threat model for admiral secret delivery is documented
+The system's documentation SHALL describe the threat model for the admiral secret: why it must not reside in a file readable by agent processes, what privilege boundary the env-var delivery provides, and the residual risk (host-level access bypasses all container-side controls).
+
+#### Scenario: Documentation covers admiral secret threat model
+- **WHEN** a user or operator reads the security section of `docs/auth.md`
+- **THEN** they find an explanation of why the admiral secret must not be in a world-readable file, what the delivery mechanism protects against, and what it does not protect against
+
+### Requirement: Configurable model default patch
+The `_patch_crew_config` function SHALL write `KC_MODEL_DEFAULT` (when set and non-empty) into the crew's `config.local.json` as the `default_model` field inside the `agent` config block. When `KC_MODEL_DEFAULT` is unset or empty, `_patch_crew_config` SHALL NOT write a `default_model` field, leaving KiroCrew's built-in default unchanged. The variable SHALL be documented in `docs/configuration.md`.
+
+The effective model for any given agent is resolved in this precedence order (highest first):
+1. `KC_MODEL_OVERRIDE` — transport patches the per-agent `"model"` field directly in every agent JSON file; beats everything
+2. Per-agent `"model"` field in the agent JSON (e.g. `academy/agents/*.json`) — explicit per-agent pin
+3. `KC_MODEL_DEFAULT` — patched into `config.local.json` as `default_model`; applies when the per-agent field is absent or cleared
+4. KiroCrew built-in default — the hardcoded fallback inside KiroCrew when no other override is in effect
+
+#### Scenario: KC_MODEL_DEFAULT set
+- **WHEN** the transport is started with `KC_MODEL_DEFAULT=anthropic/claude-sonnet-4`
+- **THEN** every new crew's `config.local.json` contains `default_model: "anthropic/claude-sonnet-4"` inside the `agent` block
+
+#### Scenario: KC_MODEL_DEFAULT unset
+- **WHEN** the transport is started without `KC_MODEL_DEFAULT`
+- **THEN** `_patch_crew_config` does NOT write a `default_model` field into `config.local.json`, leaving KiroCrew's built-in default unchanged
+
+#### Scenario: KC_MODEL_DEFAULT does not affect per-agent pins
+- **WHEN** `KC_MODEL_DEFAULT` is set and an agent JSON contains a non-empty `"model"` field (and `KC_MODEL_OVERRIDE` is unset)
+- **THEN** that agent continues to use its own pinned model; `KC_MODEL_DEFAULT` only applies to agents whose effective model would otherwise fall through to the KiroCrew built-in
+
+#### Scenario: KC_MODEL_OVERRIDE beats KC_MODEL_DEFAULT
+- **WHEN** both `KC_MODEL_OVERRIDE` and `KC_MODEL_DEFAULT` are set
+- **THEN** `_patch_models` writes `KC_MODEL_OVERRIDE` into every agent JSON's `"model"` field, making `KC_MODEL_DEFAULT` irrelevant in practice (the per-agent field is now set, so the default is never reached)
+
+### Requirement: Active crew limit enforced before restart
+
+The transport SHALL enforce a separate limit on simultaneously running crew
+containers via `GA_MAX_ACTIVE_CREWS` (default: 3). Before starting a stopped
+crew container, `_ensure_crew_running` SHALL count the number of currently
+running containers in the registry and refuse to start if the count is at or
+above `GA_MAX_ACTIVE_CREWS`.
+
+This limit protects host memory independently of the registered-crew count: an
+operator can keep many idle crews registered while preventing too many from
+running simultaneously.
+
+#### Scenario: Active limit not reached
+- **WHEN** `_ensure_crew_running` is called for a stopped crew and fewer than
+  `GA_MAX_ACTIVE_CREWS` crew containers are currently running
+- **THEN** the crew container is started normally
+
+#### Scenario: Active limit reached
+- **WHEN** `_ensure_crew_running` is called for a stopped crew and
+  `GA_MAX_ACTIVE_CREWS` crew containers are already running
+- **THEN** `_ensure_crew_running` raises `CrewUnresponsiveError` (or equivalent)
+  with a clear message indicating the active crew limit and instructing the
+  operator to wait for a running crew to idle out or nuke one
+
+#### Scenario: Already-running crew is unaffected
+- **WHEN** `_ensure_crew_running` is called for a crew that is already running
+- **THEN** the active limit check is skipped — the crew is not counted a
+  second time
+
+#### Scenario: GA_MAX_ACTIVE_CREWS=0 disables the limit
+- **WHEN** `GA_MAX_ACTIVE_CREWS` is set to `0`
+- **THEN** the active limit check is skipped entirely — no cap on running crews

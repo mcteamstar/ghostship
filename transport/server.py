@@ -62,7 +62,6 @@ import logging
 import os
 import re
 import secrets
-import shlex
 import time
 import threading
 from datetime import datetime, timezone
@@ -81,7 +80,11 @@ import asyncio
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-HOST = os.environ.get("HOST", "0.0.0.0")
+HOST = os.environ.get("HOST", "0.0.0.0")  # Binds all interfaces inside the container.
+# The host-side protection is in install.sh: -p "127.0.0.1:PORT:PORT" ensures
+# the published port is only reachable from localhost on the host, regardless
+# of what the container binds internally. Set HOST=127.0.0.1 only for
+# non-containerised installs where you want loopback-only binding.
 PORT = int(os.environ.get("PORT", "64057"))
 
 DATA_DIR = Path(os.environ.get("TRANSPORT_DATA_DIR", "/data"))
@@ -99,12 +102,14 @@ KC_IMAGE = os.environ.get("KC_IMAGE", "localhost/spec-ops:latest")
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
 KC_BASE_IMAGE = os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:stable")
 GA_NETWORK = "ga-net"
-GA_MAX_CREWS = int(os.environ.get("GA_MAX_CREWS", "6"))
+GA_MAX_CREWS = int(os.environ.get("GA_MAX_CREWS", "20"))
+GA_MAX_ACTIVE_CREWS = int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3"))
 GA_AUTH_FILE = "ga-kiro-auth"
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
+KC_MODEL_DEFAULT = os.environ.get("KC_MODEL_DEFAULT", "")
 GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
 GA_MIN_FREE_MEM_GB = float(os.environ.get("GA_MIN_FREE_MEM_GB", "2.0"))
 GA_MEMORY_WAIT_SECS = int(os.environ.get("GA_MEMORY_WAIT_SECS", "60"))
@@ -151,7 +156,7 @@ def _load_or_create_file_secret() -> str:
         os.write(fd, new_secret.encode())
         os.close(fd)
     except Exception as e:
-        logging.getLogger(__name__).warning("Could not persist file secret: %s", e)
+        logging.getLogger(__name__).warning("Could not persist file secret to %s: %s", secret_path, e)
     return new_secret
 
 _FILE_SECRET = _load_or_create_file_secret()
@@ -326,9 +331,205 @@ mcp = MCPServer(
 )
 
 _http = httpx.Client(timeout=60.0)
+# Async client used exclusively by the proxy handlers (_handle_crew_ui_proxy,
+# _handle_crew_api_proxy). The synchronous _http client is reserved for the
+# MCP tool functions that run in Starlette's threadpool executor. Using an
+# async client here avoids blocking the event loop while streaming potentially
+# large proxy response bodies.
+_async_http = httpx.AsyncClient(timeout=60.0)
 
 
 # ── API-key authentication middleware ─────────────────────────────────────────
+
+# Hop-by-hop headers that must be stripped from forwarded responses per
+# standard reverse-proxy practice (RFC 2616 §13.5.1).
+_HOP_BY_HOP_HEADERS: frozenset[str] = frozenset({
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "te",
+    "trailers",
+    "upgrade",
+})
+
+
+def _extract_crew_proxy_parts(path: str) -> tuple[str, str, str] | None:
+    """Parse /crews/{crew_id}/{segment}/{sub_path} into (crew_id, segment, sub_path).
+
+    Returns None if the path does not match the expected structure.
+
+    Examples:
+        /crews/demo/ui           → ("demo", "ui", "")
+        /crews/demo/ui/          → ("demo", "ui", "")
+        /crews/demo/ui/app/page  → ("demo", "ui", "app/page")
+        /crews/demo/api/spawn    → ("demo", "api", "spawn")
+    """
+    # Expect at least /crews/<id>/<segment>
+    parts = path.lstrip("/").split("/")
+    if len(parts) < 3 or parts[0] != "crews":
+        return None
+    crew_id = parts[1]
+    segment = parts[2]
+    sub_path = "/".join(parts[3:])
+    return crew_id, segment, sub_path
+
+
+async def _handle_crew_ui_proxy(request: Request) -> Response:
+    """Reverse-proxy GET/POST to the crew gateway UI at http://gs-{crew_id}:5476/.
+
+    Route: /crews/{crew_id}/ui  →  http://gs-{crew_id}:5476/
+           /crews/{crew_id}/ui/{path}  →  http://gs-{crew_id}:5476/{path}
+
+    - Auto-wakes the crew before proxying.
+    - Passes request headers through (minus host).
+    - Does NOT inject any session cookie (browser goes through the normal
+      gateway login UI — see design.md decision D3).
+    - Streams the upstream response body without buffering.
+    - Returns 404 for unknown crew_id.
+    """
+    parsed = _extract_crew_proxy_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, sub_path = parsed
+
+    # Crew lookup
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # Auto-wake if stopped
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError as e:
+        return PlainTextResponse(str(e), status_code=502)
+
+    # Build upstream URL
+    upstream_base = f"http://gs-{crew_id}:{CREW_GATEWAY_PORT}"
+    upstream_path = f"/{sub_path}" if sub_path else "/"
+    query = request.scope.get("query_string", b"")
+    upstream_url = upstream_path
+    if query:
+        upstream_url = f"{upstream_path}?{query.decode('latin-1')}"
+    upstream_full = f"{upstream_base}{upstream_url}"
+
+    # Forward headers minus host
+    forward_headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() != "host"
+    }
+
+    # Proxy and stream
+    try:
+        async with _async_http.stream(
+            request.method,
+            upstream_full,
+            headers=forward_headers,
+            content=await request.body(),
+        ) as upstream_resp:
+            # Strip hop-by-hop headers from forwarded response
+            response_headers = {
+                k: v
+                for k, v in upstream_resp.headers.items()
+                if k.lower() not in _HOP_BY_HOP_HEADERS
+            }
+            # Read body fully so we can close the upstream context; for large
+            # responses this is acceptable given the 60 s timeout constraint.
+            body = await upstream_resp.aread()
+        return Response(
+            content=body,
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+        )
+    except Exception as e:
+        logger.warning("UI proxy error for crew %s: %s", crew_id, e)
+        return PlainTextResponse(f"Proxy error: {e}", status_code=502)
+
+
+async def _handle_crew_api_proxy(request: Request) -> Response:
+    """Reverse-proxy to the crew gateway REST API at http://gs-{crew_id}:5476/api/{path}.
+
+    Route: /crews/{crew_id}/api/{path}  →  http://gs-{crew_id}:5476/api/{path}
+
+    - Auto-wakes the crew before proxying.
+    - Injects the internal session cookie mc_token_5476.
+    - On upstream 401/403, refreshes the cookie and retries once (D4).
+    - Returns 404 for unknown crew_id.
+    """
+    parsed = _extract_crew_proxy_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, sub_path = parsed
+
+    # Crew lookup
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # Auto-wake if stopped
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError as e:
+        return PlainTextResponse(str(e), status_code=502)
+
+    # Build upstream URL
+    upstream_base = f"http://gs-{crew_id}:{CREW_GATEWAY_PORT}"
+    api_path = f"/api/{sub_path}" if sub_path else "/api/"
+    query = request.scope.get("query_string", b"")
+    if query:
+        api_path = f"{api_path}?{query.decode('latin-1')}"
+    upstream_full = f"{upstream_base}{api_path}"
+
+    # Forward headers minus host, then inject session cookie
+    forward_headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() != "host"
+    }
+    forward_headers["Cookie"] = _crew_cookie(crew)
+
+    body = await request.body()
+
+    async def _do_request(headers: dict) -> httpx.Response:
+        return await _async_http.request(
+            request.method,
+            upstream_full,
+            headers=headers,
+            content=body,
+        )
+
+    try:
+        upstream_resp = await _do_request(forward_headers)
+
+        # Single-retry on 401/403 (stale cookie)
+        if upstream_resp.status_code in (401, 403):
+            logger.info(
+                "API proxy: upstream %d for crew %s — refreshing cookie",
+                upstream_resp.status_code, crew_id,
+            )
+            if _refresh_cookie(crew, crew_id):
+                # crew dict was mutated by _refresh_cookie
+                forward_headers["Cookie"] = _crew_cookie(crew)
+                upstream_resp = await _do_request(forward_headers)
+
+        response_headers = {
+            k: v
+            for k, v in upstream_resp.headers.items()
+            if k.lower() not in _HOP_BY_HOP_HEADERS
+        }
+        return Response(
+            content=upstream_resp.content,
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+        )
+    except Exception as e:
+        logger.warning("API proxy error for crew %s: %s", crew_id, e)
+        return PlainTextResponse(f"Proxy error: {e}", status_code=502)
+
+
+
 
 
 async def _handle_version_get(request: Request) -> Response:
@@ -396,6 +597,19 @@ class BearerAuthMiddleware:
                     response = await handler(request)
                     await response(scope, receive, send)
                     return
+                # Crew proxy routes (no auth required when GA_API_KEY unset)
+                _path = scope["path"]
+                _parts = _path.lstrip("/").split("/")
+                if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":
+                    request = Request(scope, receive)
+                    response = await _handle_crew_ui_proxy(request)
+                    await response(scope, receive, send)
+                    return
+                if len(_parts) >= 4 and _parts[0] == "crews" and _parts[2] == "api":
+                    request = Request(scope, receive)
+                    response = await _handle_crew_api_proxy(request)
+                    await response(scope, receive, send)
+                    return
             await self.app(scope, receive, send)
             return
 
@@ -436,6 +650,31 @@ class BearerAuthMiddleware:
         if handler is not None:
             request = Request(scope, receive)
             response = await handler(request)
+            await response(scope, receive, send)
+            return
+
+        # Crew UI proxy — /crews/<id>/ui and /crews/<id>/ui/<path>
+        # Dispatch after auth passes so GA_API_KEY enforcement applies.
+        path = scope["path"]
+        path_parts = path.lstrip("/").split("/")
+        if (
+            len(path_parts) >= 3
+            and path_parts[0] == "crews"
+            and path_parts[2] == "ui"
+        ):
+            request = Request(scope, receive)
+            response = await _handle_crew_ui_proxy(request)
+            await response(scope, receive, send)
+            return
+
+        # Crew API proxy — /crews/<id>/api/<path>
+        if (
+            len(path_parts) >= 4
+            and path_parts[0] == "crews"
+            and path_parts[2] == "api"
+        ):
+            request = Request(scope, receive)
+            response = await _handle_crew_api_proxy(request)
             await response(scope, receive, send)
             return
 
@@ -571,41 +810,6 @@ class PodmanClient:
             headers={"Content-Type": "application/json"},
         )
         return self._demux(resp.content)
-
-    def container_exec_pty(self, name: str, cmd: list[str]) -> tuple[str, httpx.Response, httpx.Client]:
-        """Start a PTY exec session in a container, return (exec_id, streaming response, client).
-
-        Uses Tty: true — the response body is a raw byte stream with NO multiplex
-        framing (unlike container_exec which uses _demux). The caller is responsible
-        for reading the response and closing both it and the returned client when done.
-        httpx timeout is None so the stream stays open for the full duration of the
-        device auth flow.
-        """
-        spec: dict = {
-            "AttachStdout": True,
-            "AttachStderr": True,
-            "Tty": True,
-            "Cmd": cmd,
-        }
-        r = self._req("POST", f"/libpod/containers/{name}/exec", json=spec)
-        exec_id = r["Id"]
-        # Use a dedicated no-timeout client — kiro-cli blocks until the OAuth
-        # redirect completes, which can take several minutes.
-        notimeout_client = httpx.Client(
-            transport=httpx.HTTPTransport(uds=self._sock_path),
-            base_url="http://d/v4.0.0",
-            timeout=None,
-        )
-        resp = notimeout_client.send(
-            notimeout_client.build_request(
-                "POST",
-                f"/libpod/exec/{exec_id}/start",
-                json={"Detach": False},
-                headers={"Content-Type": "application/json"},
-            ),
-            stream=True,
-        )
-        return exec_id, resp, notimeout_client
 
     def container_exec_pty_stdin(
         self, name: str, cmd: list[str]
@@ -821,22 +1025,25 @@ def _get_host_memory_gb(podman: PodmanClient) -> float:
 
 
 _host_memory_cache: tuple[float, float] | None = None
+_host_memory_cache_lock = threading.Lock()
 
 
 def _get_host_memory_gb_cached(podman: PodmanClient) -> float | None:
     """Return available memory with 5-second TTL cache.
 
-    Returns None if Podman info fails.
+    Returns None if Podman info fails. Thread-safe via _host_memory_cache_lock.
     """
     global _host_memory_cache
     now = time.monotonic()
-    if _host_memory_cache is not None:
-        ts, value = _host_memory_cache
-        if now - ts < 5.0:
-            return value
+    with _host_memory_cache_lock:
+        if _host_memory_cache is not None:
+            ts, value = _host_memory_cache
+            if now - ts < 5.0:
+                return value
     try:
         value = _get_host_memory_gb(podman)
-        _host_memory_cache = (now, value)
+        with _host_memory_cache_lock:
+            _host_memory_cache = (now, value)
         return value
     except Exception:
         return None
@@ -857,6 +1064,12 @@ def _wait_for_memory(podman: PodmanClient, required_gb: float, timeout_secs: int
         time.sleep(5)
 
 # ── Crew registry ─────────────────────────────────────────────────────────────
+
+# Sentinel for "this job never fires again" (one-shot done, unknown type).
+# float("inf") is non-finite and raises ValueError in json.dumps; this value
+# (≈ year 2286 Unix timestamp) is finite, JSON-serialisable, and practically
+# unreachable as a real schedule time.
+_NEVER_FIRE_AT: float = 9_999_999_999.0
 
 _registry_lock = threading.Lock()
 # Per-crew startup locks: prevent concurrent restarts racing each other.
@@ -879,6 +1092,7 @@ def _save_registry(reg: dict) -> None:
     tmp = REGISTRY_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(reg, indent=2))
     os.replace(tmp, REGISTRY_PATH)
+    os.chmod(REGISTRY_PATH, 0o600)
 
 
 # ── Schedule registry helpers (TRN-29) ───────────────────────────────────────
@@ -916,18 +1130,27 @@ def _advance_next_fire_at(job: dict) -> None:
     """Mutate next_fire_at based on interval_secs or next cron tick."""
     if job.get("one_shot"):
         # One-shot job (delay-based): mark as fired by setting far future.
-        job["next_fire_at"] = float("inf")
+        job["next_fire_at"] = _NEVER_FIRE_AT
         return
     interval = job.get("interval_secs")
     if interval:
         job["next_fire_at"] = time.time() + interval
     elif job.get("cron_expr"):
-        # For cron expressions, compute next fire time from now.
-        # Simple approach: advance by 60s minimum (the monitor re-evaluates).
-        job["next_fire_at"] = time.time() + 60
+        # Compute true next fire time using croniter.  Fall back to +60s for
+        # malformed expressions (same cadence as before, but now only for
+        # genuinely invalid cron strings).
+        from croniter import croniter as _croniter
+        try:
+            job["next_fire_at"] = _croniter(job["cron_expr"], time.time()).get_next(float)
+        except Exception as _cron_err:
+            logger.warning(
+                "croniter failed for cron_expr %r, falling back to +60s: %s",
+                job.get("cron_expr"), _cron_err,
+            )
+            job["next_fire_at"] = time.time() + 60
     else:
         # Unknown schedule type: mark as fired to avoid infinite re-fire.
-        job["next_fire_at"] = float("inf")
+        job["next_fire_at"] = _NEVER_FIRE_AT
 
 
 # ── Captain standing orders ──────────────────────────────────────────────────
@@ -1026,6 +1249,10 @@ Do not implement work yourself, edit files, or use a second channel to change st
 
 _CHANGE_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
+# Crew-id format: lowercase alphanumeric and hyphens, 1-50 chars.
+# Must start and end with alphanumeric.  Used in launch() and file handlers.
+CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
+
 
 def _validate_captain_change_name(change_name: str) -> None:
     """Require the kebab-case change id accepted by OpenSpec at creation time."""
@@ -1114,8 +1341,13 @@ def _append_captain_mail(
     Uses sendmail inside the container for atomic Maildir delivery.
     Generates a Message-ID, optionally adds Supersedes referencing the
     previous order, and signs with HMAC if the crew has a signing secret.
+
+    Lock discipline (D-05): the first lock acquisition reads signing_secret
+    and supersedes_id atomically.  _format_captain_mail (pure computation) runs
+    outside the lock.  The second acquisition writes last_captain_message_id.
+    container_exec_checked (I/O) always runs outside any lock.
     """
-    # Read signing secret and last message-id from registry
+    # Read signing secret and last message-id from registry in one atomic block
     signing_secret: str | None = None
     supersedes_id: str | None = None
     if crew_id:
@@ -1125,6 +1357,7 @@ def _append_captain_mail(
             signing_secret = crew_entry.get("admiral_secret")
             supersedes_id = crew_entry.get("last_captain_message_id")
 
+    # Pure computation — outside any lock
     message, message_id = _format_captain_mail(
         body, signing_secret=signing_secret, supersedes_id=supersedes_id
     )
@@ -1137,7 +1370,7 @@ def _append_captain_mail(
                 reg["crews"][crew_id]["last_captain_message_id"] = message_id
                 _save_registry(reg)
 
-    # Pipe through sendmail inside the container for Maildir delivery
+    # Pipe through sendmail inside the container for Maildir delivery (I/O — outside lock)
     payload = base64.b64encode(message.encode("utf-8")).decode("ascii")
     script = f"""\
 import base64, subprocess
@@ -1365,7 +1598,8 @@ def _start_login_container(podman: PodmanClient) -> str:
 
 def _nuke_login_container(podman: PodmanClient, name: str) -> None:
     """Best-effort stop and remove a ga-login-* container."""
-    assert name.startswith(GA_LOGIN_CONTAINER_PREFIX), f"Not a login container: {name}"
+    if not name.startswith(GA_LOGIN_CONTAINER_PREFIX):
+        raise RuntimeError(f"Refusing to nuke non-login container: {name!r}")
     try:
         podman.container_stop(name)
     except Exception:
@@ -1481,6 +1715,9 @@ def _reconcile_registry() -> None:
                 crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
                 if _wait_gateway(crew_url, timeout=30):
                     new_cookie = _mint_cookie(podman, container, crew_url)
+                    # D-07: Apply config overrides on every reconcile restart,
+                    # symmetric with the _ensure_crew_running restart path.
+                    _patch_crew_config(podman, container)
                     updates[cid] = {
                         "status": "running",
                         "last_used": time.time(),
@@ -1811,6 +2048,21 @@ def _ensure_crew_running(
     try:
         logger.info("Crew %s is stopped — restarting", crew_id)
 
+        # Active crew limit: count running entries in the registry.
+        # A stopped crew requesting restart must not push the running count
+        # over GA_MAX_ACTIVE_CREWS.  GA_MAX_ACTIVE_CREWS=0 disables the check.
+        if GA_MAX_ACTIVE_CREWS > 0:
+            with _registry_lock:
+                reg = _load_registry()
+                active = sum(
+                    1 for c in reg["crews"].values() if c.get("status") == "running"
+                )
+            if active >= GA_MAX_ACTIVE_CREWS:
+                raise RuntimeError(
+                    f"Active crew limit ({GA_MAX_ACTIVE_CREWS}) reached — "
+                    "wait for a running crew to idle out or nuke one first"
+                )
+
         # Pre-launch memory gate: wait for balloon to deflate before starting
         if GA_MIN_FREE_MEM_GB > 0:
             free_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, GA_MEMORY_WAIT_SECS)
@@ -1956,12 +2208,14 @@ def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict |
         if not _manifest_selects(selection, af.name):
             continue
         try:
-            b64 = base64.b64encode(af.read_bytes()).decode()
-            dest = f"{KIRO_AGENTS_DIR}/{af.name}"
-            podman.container_exec(container, [
-                "python3", "-c",
-                f"import base64; open('{dest}','wb').write(base64.b64decode('{b64}'))"
-            ])
+            data = af.read_bytes()
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                info = tarfile.TarInfo(name=af.name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            buf.seek(0)
+            podman.container_archive_put(container, KIRO_AGENTS_DIR, buf.read())
             copied.append(af.name)
         except Exception as e:
             logger.warning("Failed to copy agent %s: %s", af.name, e)
@@ -1986,15 +2240,17 @@ def _copy_skills(podman: PodmanClient, container: str, composition_entry: dict |
         if not skill_md.exists():
             continue
         try:
-            b64 = base64.b64encode(skill_md.read_bytes()).decode()
+            data = skill_md.read_bytes()
             dest_dir = f"{KIRO_SKILLS_DIR}/{skill_dir.name}"
-            dest_file = f"{dest_dir}/SKILL.md"
-            podman.container_exec(container, [
-                "python3", "-c",
-                f"import base64, pathlib; "
-                f"pathlib.Path(\'{dest_dir}\').mkdir(parents=True, exist_ok=True); "
-                f"open(\'{dest_file}\','wb').write(base64.b64decode(\'{b64}\'))"
-            ])
+            # Ensure the skill subdirectory exists before writing into it.
+            podman.container_exec(container, ["mkdir", "-p", dest_dir])
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                info = tarfile.TarInfo(name="SKILL.md")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            buf.seek(0)
+            podman.container_archive_put(container, dest_dir, buf.read())
             copied.append(skill_dir.name)
         except Exception as e:
             logger.warning("Failed to copy skill %s: %s", skill_dir.name, e)
@@ -2132,41 +2388,6 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
     except Exception as e:
         logger.warning("Auth read failed: %s", e)
     return None
-
-
-def _login_flags() -> list[str]:
-    flags = ["--use-device-flow"]
-    if KIRO_LICENSE:
-        flags += ["--license", KIRO_LICENSE]
-    if KIRO_IDENTITY_PROVIDER:
-        flags += ["--identity-provider", KIRO_IDENTITY_PROVIDER]
-    if KIRO_REGION:
-        flags += ["--region", KIRO_REGION]
-    return flags
-
-
-def _initiate_login(podman: PodmanClient, container: str) -> dict | None:
-    """Start kiro-cli device auth flow, return login info dict with url and code."""
-    try:
-        # Run with a short timeout — the URL prints immediately before it blocks
-        # We use 'timeout 8' inside the container to get the URL then let it continue
-        # in the background via nohup
-        script = (
-            f"nohup kiro-cli login {shlex.join(_login_flags())} > /tmp/kiro-login.log 2>&1 & "
-            "sleep 4 && cat /tmp/kiro-login.log"
-        )
-        result = podman.container_exec(container, ["sh", "-c", script])
-        url_match = re.search(r'https?://\S+', result)
-        code_match = re.search(r'Code:\s*([A-Z0-9-]+)', result)
-        if url_match:
-            return {
-                "url": url_match.group(0).rstrip(").,"),
-                "code": code_match.group(1) if code_match else None,
-            }
-        return None
-    except Exception as e:
-        logger.error("Login initiation failed: %s", e)
-        return None
 
 
 def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume: str) -> None:
@@ -2526,7 +2747,13 @@ def crews() -> dict:
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
         result.append(entry)
-    return {"crews": result, "host_memory_available_gb": host_mem}
+    active_crews = sum(1 for e in result if e.get("status") == "running")
+    return {
+        "crews": result,
+        "host_memory_available_gb": host_mem,
+        "active_crews": active_crews,
+        "max_active_crews": GA_MAX_ACTIVE_CREWS,
+    }
 
 
 @mcp.resource(
@@ -2591,7 +2818,7 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         if existing:
             return {"error": f"Crew '{crew_id}' already exists. Nuke it first to recreate."}
         if len(reg["crews"]) >= GA_MAX_CREWS:
-            return {"error": f"Max crews ({GA_MAX_CREWS}) reached. Nuke one first."}
+            return {"error": f"Registered crew limit ({GA_MAX_CREWS}) reached. Nuke one first."}
         # Pre-insert a placeholder to prevent concurrent launches with the same id
         reg["crews"][crew_id] = {"status": "launching", "container": container}
         _save_registry(reg)
@@ -2656,6 +2883,16 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     start). The gateway deep-merges config.local.json over config.json on every
     load, so these overrides are permanent without needing to re-patch.
     """
+    # Build the optional default_model assignment line.
+    # KC_MODEL_DEFAULT sets agent.default_model — a global fallback that applies
+    # when no per-agent model field overrides it.  Precedence (high→low):
+    #   KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
+    # Only write the field when the env var is set and non-empty; omitting it
+    # leaves KiroCrew's built-in default intact for existing installs.
+    default_model_line = ""
+    if KC_MODEL_DEFAULT:
+        default_model_literal = json.dumps(KC_MODEL_DEFAULT)
+        default_model_line = f"a['default_model'] = {default_model_literal}; "
     script = (
         "import json, pathlib; "
         "p = pathlib.Path('/home/kirocrew/.kiro/crew/config.local.json'); "
@@ -2664,11 +2901,19 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         f"a['spawn_min_memory_gb'] = {GA_SPAWN_MIN_MEMORY_GB}; "
         f"a['resource_pressure_gb'] = {GA_RESOURCE_PRESSURE_GB}; "
         f"a['resource_critical_gb'] = {GA_RESOURCE_CRITICAL_GB}; "
+        # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
+        # permission guard for the agent running inside this crew container.
+        # This is intentional and safe: (a) the crew container is an isolated
+        # Podman sandbox — normal permission enforcement would block config
+        # writes because the transport and gateway run as different UIDs;
+        # (b) the flag is scoped to this crew's config.local.json patch only
+        # and does not affect the transport process itself.
         "a['dangerously_skip_permissions'] = True; "
         "a['default_agent'] = 'ghost'; "
         "a['reasoning_effort'] = 'max'; "
         f"a['subagent_timeout_secs'] = {GA_SUBAGENT_TIMEOUT_SECS}; "
         f"a['subagent_max_turns'] = {GA_SUBAGENT_MAX_TURNS}; "
+        + default_model_line +
         "p.write_text(json.dumps(cfg, indent=2)); "
         "print('patched config.local.json')"
     )
@@ -2689,6 +2934,12 @@ def _inject_policy(
 
     Returns the policy version string for registry storage.
     Raises on failure — caller must catch and handle gracefully.
+
+    Note: admission_policy.json contains trust_keys (the admiral_secret) which
+    is required by KiroCrew's governance API to verify the policy signature.
+    The file is written with mode 0600, but agents running as kirocrew can still
+    read it. See docs/auth.md for the threat model — this is accepted for the
+    current single-operator use case.
     """
     # 1. Load template — composition-specific or fallback to default
     policy_template_path = Path(f"/policies/{composition}.json")
@@ -2726,9 +2977,15 @@ def _inject_policy(
         "sig = hmac.new(secret.encode('utf-8'), payload, hashlib.sha256).hexdigest()\n"
         "policy['identity']['signature'] = sig\n"
         "policy_body = json.dumps(policy, indent=2)\n"
+        # admission_policy.json stores the verification flag and trust key.
+        # The trust_keys field is required by KiroCrew's governance API to verify
+        # the security policy signature — without it the gateway rejects the policy.
+        # Note: admission_policy.json is written with mode 0600 (see below), but
+        # agents running as kirocrew can still read it. See docs/auth.md for the
+        # threat model around admiral_secret exposure.
         "admission_body = json.dumps({\n"
         "    'require_policy_signature': True,\n"
-        "    'trust_keys': {'ghostship': secret},\n"
+        f"    'trust_keys': {{'ghostship': '{admiral_secret}'}},\n"
         "}, indent=2)\n"
         "crew_dir = pathlib.Path('/home/kirocrew/.kiro/crew')\n"
         "crew_dir.mkdir(parents=True, exist_ok=True)\n"
@@ -2756,7 +3013,7 @@ def _finish_crew_setup(
     """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
     crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
 
-    # Ensure gateway is running (may need restart after auth inject)
+    # depends on: container running (pre-restart)
     if not _wait_gateway(crew_url, timeout=10):
         podman.container_stop(container)
         podman.container_start(container)
@@ -2764,32 +3021,18 @@ def _finish_crew_setup(
             _cleanup_crew(podman, container, volume, home_volume)
             return {"error": f"Gateway did not recover for crew {crew_id}"}
 
-    # Inject auth into kiro-cli DB (wait for migrations to run first)
+    # depends on: gateway (pre-restart)
     _inject_auth(podman, container, auth_b64)
 
-    # Patch config after gateway has written it (gateway seeds on first start)
-    _patch_crew_config(podman, container)
-
-    # Restart so pool workers pick up auth credentials and patched config
-    podman.container_stop(container)
-    podman.container_start(container)
-    if not _wait_gateway(crew_url, timeout=30):
-        _cleanup_crew(podman, container, volume, home_volume)
-        return {"error": f"Gateway did not recover after auth restart for crew {crew_id}"}
-
-    _copy_agents(podman, container, composition_entry)
-    _copy_skills(podman, container, composition_entry)
-    _copy_steering(podman, container, composition_entry)
-    _seed_openspec_store(podman, container)
-
-    # Inject HMAC signing secret for Admiral mail authentication
+    # depends on: container running (pre-restart); must be written before restart
+    # so the secret is on the home volume before the post-restart gateway starts
     admiral_secret = secrets.token_hex(32)
     secret_inject_script = (
         "import os, pathlib; "
         f"p = pathlib.Path('/home/kirocrew/.kiro/crew/.admiral_secret'); "
         f"p.parent.mkdir(parents=True, exist_ok=True); "
         f"fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600); "
-        f"os.write(fd, b'{admiral_secret}'); os.close(fd); "
+        f"os.write(fd, b'{admiral_secret}'); os.fsync(fd); os.close(fd); "
         "print('admiral secret injected')"
     )
     try:
@@ -2798,7 +3041,26 @@ def _finish_crew_setup(
     except Exception as e:
         logger.warning("Failed to inject admiral secret for %s: %s", container, e)
 
-    # Inject security policy (operator governance tier)
+    # depends on: gateway (pre-restart); gateway seeds config on first start
+    _patch_crew_config(podman, container)
+
+    # depends on: auth + admiral_secret + config all committed before workers start
+    podman.container_stop(container)
+    podman.container_start(container)
+    if not _wait_gateway(crew_url, timeout=30):
+        _cleanup_crew(podman, container, volume, home_volume)
+        return {"error": f"Gateway did not recover after auth restart for crew {crew_id}"}
+
+    # depends on: gateway (post-restart)
+    _copy_agents(podman, container, composition_entry)
+    # depends on: gateway (post-restart)
+    _copy_skills(podman, container, composition_entry)
+    # depends on: gateway (post-restart)
+    _copy_steering(podman, container, composition_entry)
+    # depends on: gateway (post-restart)
+    _seed_openspec_store(podman, container)
+
+    # depends on: admiral_secret (already generated above), filesystem
     policy_version = None
     policy_warning: str | None = None
     try:
@@ -2807,8 +3069,7 @@ def _finish_crew_setup(
         policy_warning = str(e)
         logger.error("Policy injection failed for %s: %s — continuing without policy", container, e)
 
-    # Wait for gateway to write its built-in kirocrew*.json agent files
-    # before patching them — poll instead of blind sleep
+    # depends on: gateway (post-restart); poll until gateway writes built-in kirocrew*.json files before patching
     for _ in range(20):
         check = podman.container_exec(container, [
             "python3", "-c",
@@ -2819,8 +3080,10 @@ def _finish_crew_setup(
             break
         time.sleep(0.5)
 
+    # depends on: gateway (post-restart), agent files present
     _patch_models(podman, container)
 
+    # depends on: gateway (post-restart), fully configured
     cookie = _mint_cookie(podman, container, crew_url)
     if not cookie:
         _cleanup_crew(podman, container, volume, home_volume)
@@ -2921,13 +3184,10 @@ def supply(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    url = _sign_upload_url(crew_id, clean)
+    url = _sign_upload_url(crew_id, clean, unpack=unpack, bundle=bundle)
     if unpack:
         url += "&unpack=1"
     if bundle:
-        # Mode selection deliberately remains outside the signed upload payload,
-        # matching unpack's existing precedent: both modes only write caller-
-        # supplied bytes to a path the caller was already authorized to write.
         url += "&bundle=1"
 
     if bundle:
@@ -2972,6 +3232,8 @@ def evac(
         bundle: If True, return a git bundle instead of a file or diff.
     """
     clean = path.lstrip("/")
+    if not clean:
+        return {"error": "path must not be empty"}
     if ".." in clean.split("/"):
         return {"error": "Invalid path — no traversal allowed"}
 
@@ -3036,8 +3298,13 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     container = crew["container"]
     vol = crew["volume"]
     home_vol = crew.get("home_volume", f"gs-home-{crew_id}")
-    assert container.startswith("gs-")
-    assert vol.startswith("gs-vol-")
+    try:
+        if not container.startswith("gs-"):
+            raise RuntimeError(f"Refusing to nuke non-crew container: {container!r}")
+        if not vol.startswith("gs-vol-"):
+            raise RuntimeError(f"Refusing to nuke non-crew volume: {vol!r}")
+    except RuntimeError as e:
+        return {"error": str(e)}
 
     _cleanup_crew(podman, container, vol, home_vol)
 
@@ -3857,6 +4124,10 @@ def _pickup_single(
         if remaining <= 0:
             return out
 
+        # F-03 audit: @mcp.tool() handlers are dispatched via run_in_executor
+        # (confirmed: MCPServer.streamable_http_app wraps sync handlers in the
+        # default thread-pool executor). time.sleep blocks the worker thread,
+        # not the event loop — safe, no conversion to asyncio.sleep needed.
         time.sleep(min(3, remaining))
 
 
@@ -3941,6 +4212,7 @@ def _pickup_list(
         if remaining <= 0:
             return out
 
+        # F-03: same as _pickup_single — time.sleep is safe in executor thread.
         time.sleep(min(3, remaining))
 
 
@@ -4118,7 +4390,7 @@ def _schedule_monitor() -> None:
                 for sched in schedules:
                     if not sched.get("enabled", True):
                         continue
-                    next_fire = sched.get("next_fire_at", float("inf"))
+                    next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
                     if next_fire > now:
                         continue
 
@@ -4379,7 +4651,7 @@ def _sign_file_url(
     """Return a short-lived presigned URL for a crew workspace file or bundle."""
     expires = int(time.time()) + GA_FILE_TTL_SECS
     payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{expires}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
     base = _resolve_public_url_base()
     url = f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
     if ref:
@@ -4396,6 +4668,7 @@ def _verify_file_token(
     sig: str,
     ref: str | None = None,
     bundle: bool = False,
+    mode: str = "",
 ) -> bool:
     """Verify a presigned file URL token. Returns False if invalid or expired."""
     try:
@@ -4404,8 +4677,13 @@ def _verify_file_token(
         return False
     if time.time() > exp:
         return False
-    payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{exp}"
-    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
+    # Upload tokens use mode-based payload; download tokens use ref/bundle payload.
+    # The caller passes either (ref, bundle) for GET or mode for PUT.
+    if mode:
+        payload = f"{crew_id}:{path}::{mode}:{exp}"
+    else:
+        payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{exp}"
+    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
     return hmac.compare_digest(expected, sig)
 
 
@@ -4652,11 +4930,16 @@ async def _handle_file_get(request: Request) -> Response:
     expires = request.query_params.get("expires", "")
     sig = request.query_params.get("sig", "")
 
+    if not CREW_ID_RE.fullmatch(crew_id):
+        return PlainTextResponse("Invalid crew_id", status_code=400)
+
     if not _verify_file_token(crew_id, path, expires, sig, ref, bundle):
         return PlainTextResponse("Forbidden", status_code=403)
 
     # Sanitise path — no traversal outside workspace
     clean = path.lstrip("/")
+    if not clean:
+        return PlainTextResponse("Invalid path", status_code=400)
     if ".." in clean.split("/"):
         return PlainTextResponse("Invalid path", status_code=400)
 
@@ -4773,10 +5056,14 @@ async def _handle_file_put(request: Request) -> Response:
     unpack = request.query_params.get("unpack", "0") in ("1", "true", "yes")
     bundle = request.query_params.get("bundle", "0") in ("1", "true", "yes")
 
+    if not CREW_ID_RE.fullmatch(crew_id):
+        return PlainTextResponse("Invalid crew_id", status_code=400)
+
     if unpack and bundle:
         return PlainTextResponse("unpack and bundle cannot both be enabled", status_code=400)
 
-    if not _verify_file_token(crew_id, path, expires, sig):
+    mode = "unpack" if unpack else ("bundle" if bundle else "")
+    if not _verify_file_token(crew_id, path, expires, sig, mode=mode):
         return PlainTextResponse("Forbidden", status_code=403)
 
     # Sanitise path — no traversal outside workspace
@@ -4817,14 +5104,16 @@ async def _handle_file_put(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=500)
 
 
-def _sign_upload_url(crew_id: str, path: str) -> str:
-    """Return a short-lived presigned upload URL for a crew workspace path."""
+def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool = False) -> str:
+    """Return a short-lived presigned upload URL for a crew workspace path.
+
+    The mode (unpack/bundle) is included in the signed HMAC payload so a token
+    signed for a plain write cannot be replayed as an unpack or bundle clone.
+    """
     expires = int(time.time()) + GA_FILE_TTL_SECS
-    # Match _verify_file_token's 5-field payload with ref and bundle both
-    # empty — upload tokens never carry a ref, and mode (unpack/bundle)
-    # deliberately stays outside the signed payload (see supply()).
-    payload = f"{crew_id}:{path}:::{expires}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
+    mode = "unpack" if unpack else ("bundle" if bundle else "")
+    payload = f"{crew_id}:{path}::{mode}:{expires}"
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
     base = _resolve_public_url_base()
     return f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
 

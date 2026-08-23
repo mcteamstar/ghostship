@@ -23,6 +23,16 @@ def _install_import_stubs() -> None:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
+    class AsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def request(self, *args: Any, **kwargs: Any) -> Any:
+            pass
+
+        def stream(self, *args: Any, **kwargs: Any) -> Any:
+            pass
+
     class HTTPTransport:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
@@ -40,6 +50,7 @@ def _install_import_stubs() -> None:
         pass
 
     httpx.Client = Client  # type: ignore[attr-defined]
+    httpx.AsyncClient = AsyncClient  # type: ignore[attr-defined]
     httpx.HTTPTransport = HTTPTransport  # type: ignore[attr-defined]
     httpx.HTTPStatusError = HTTPStatusError  # type: ignore[attr-defined]
     httpx.ConnectError = ConnectError  # type: ignore[attr-defined]
@@ -96,8 +107,31 @@ def _install_import_stubs() -> None:
             self.status_code = status_code
             self.kwargs = kwargs
 
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            """Make Response callable as an ASGI app (for proxy handler tests)."""
+            await send({
+                "type": "http.response.start",
+                "status": self.status_code,
+                "headers": [],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": self.body if isinstance(self.body, bytes) else b"",
+            })
+
     class Request:
-        pass
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            if args:
+                scope = args[0]
+                self.method = scope.get("method", "GET")
+                self.scope = scope
+                self.headers = {
+                    k.decode("latin-1"): v.decode("latin-1")
+                    for k, v in scope.get("headers", [])
+                }
+
+        async def body(self) -> bytes:
+            return b""
 
     class Starlette:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
