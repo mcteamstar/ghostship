@@ -82,7 +82,7 @@ Add new compositions to [`crews/registry.json`](../crews/registry.json). Read av
 | Var | Default | Purpose |
 |:----|:--------|:--------|
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before auto-stopping a crew container |
-| `GA_FILE_PUBLIC_URL` | _(falls back to `GA_PUBLIC_URL`, then `localhost:PORT+1`)_ | Externally-visible file server base URL |
+| `GA_FILE_PUBLIC_URL` | _(falls back to `GA_HOST_URL`, then `localhost:PORT+1`)_ | Externally-visible file server base URL |
 | `GA_MCP_PUBLIC_URL` | _(falls back to `localhost:PORT`)_ | Externally-visible MCP endpoint base URL |
 | `KC_MODEL_OVERRIDE` | _(unset)_ | Override model for all crew agent JSONs |
 | `GA_API_KEY` | _(unset)_ | Static bearer key protecting the MCP endpoint |

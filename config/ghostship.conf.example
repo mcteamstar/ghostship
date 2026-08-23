@@ -1,0 +1,55 @@
+# ghostship.conf.example — copy to ghostship.conf and fill in your values
+# Pass to install.sh with: ./install.sh --config ghostship.conf
+# Full reference: docs/configuration.md
+
+# ── Network ───────────────────────────────────────────────────────────────────
+# Port the transport listens on (MCP + file transfer on the same port).
+PORT=64057
+
+# Public URL baked into presigned evac/supply links.
+# For local installs, leave unset (defaults to http://localhost:<PORT>).
+# For remote installs, set to the publicly reachable address.
+# GA_HOST_URL="https://my-host.example.com"
+
+# ── Authentication ────────────────────────────────────────────────────────────
+# API key for MCP endpoint auth. Leave unset for local/trusted installs.
+# GA_API_KEY="your-secret-key"
+
+# kiro-cli identity provider (omit to use default Builder ID / free tier).
+# KIRO_IDENTITY_PROVIDER="https://your-sso.awsapps.com/start/#/"
+# KIRO_REGION="us-east-1"
+# KIRO_LICENSE="pro"
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+# Override the default model for all crew agents.
+# KC_MODEL_OVERRIDE="claude-sonnet-4.6"
+
+# ── Crew lifecycle ────────────────────────────────────────────────────────────
+# Stop idle crew containers after this many seconds to free memory.
+# The schedule monitor wakes crews before ticks fire, so this can be set
+# independently of any captain interval.
+GA_IDLE_TIMEOUT_SECS=300
+
+# Maximum number of concurrent crews.
+# GA_MAX_CREWS=10
+
+# ── Subagent timeouts ─────────────────────────────────────────────────────────
+# Wall-clock timeout per task (seconds). KiroCrew default is 1800 (30 min).
+GA_SUBAGENT_TIMEOUT_SECS=3600
+
+# Maximum turns per task. KiroCrew default is 100.
+GA_SUBAGENT_MAX_TURNS=200
+
+# ── Memory gate ───────────────────────────────────────────────────────────────
+# Minimum free host memory (GB) required before launching a new crew.
+# Set to 0 to disable the gate entirely.
+GA_MIN_FREE_MEM_GB=2.0
+
+# How long to wait (seconds) for memory to free up before failing the launch.
+GA_MEMORY_WAIT_SECS=60
+
+# ── KiroCrew memory thresholds ────────────────────────────────────────────────
+# Written to config.local.json inside each crew at launch.
+GA_SPAWN_MIN_MEMORY_GB=1.5
+GA_RESOURCE_PRESSURE_GB=2.0
+GA_RESOURCE_CRITICAL_GB=1.0

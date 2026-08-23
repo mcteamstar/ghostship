@@ -58,6 +58,10 @@ To run on a different port (the file server always follows at `port+1`):
 Full resolution order (config file → flags → interactive prompt) and all
 environment variables: [docs/configuration.md](docs/configuration.md).
 
+Copy [`config/ghostship.conf.example`](config/ghostship.conf.example) to `ghostship.conf` and
+pass it to `install.sh` with `--config ghostship.conf` to persist your settings
+across reinstalls.
+
 ### Connecting to a harness
 
 `ghostship` speaks MCP over streamable HTTP at `http://localhost:64057/mcp`
@@ -66,6 +70,10 @@ environment variables: [docs/configuration.md](docs/configuration.md).
 If you enabled API-key authentication (`./install.sh --api-key <key>`), add
 the `Authorization: Bearer <key>` header to every client — see
 [docs/auth.md](docs/auth.md) for details and TLS guidance.
+
+For remote (non-localhost) deployments, see
+[docs/remote.md](docs/remote.md) — covers TLS termination, reverse proxy
+setup, and MCP client registration for a remote host.
 
 **kiro-cli:**
 ```bash
@@ -116,8 +124,8 @@ Ship operations (the crew container itself) come first, then crew operations
 | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
 | `captain` | Manage a crew's order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
-| `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with cron or interval schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. `dispatch` also offers one-shot delayed fire via `delay`. |
-| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Pass `delay=N` to schedule a one-shot job that fires after N seconds instead of dispatching immediately. |
+| `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. `delay=N` creates a one-shot job that fires once after N seconds. |
+| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. For delayed execution, use `schedule(delay=N)` instead. |
 | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
 | `pickup` | Check progress or collect result; always includes mail state. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout (also: bridge, watch, monitor, patrol, poll). Without `task_id`: list all tasks. |
 
@@ -238,3 +246,4 @@ control channel.
 - [docs/agents.md](docs/agents.md) — the six agent personas, what each owns in the OpenSpec workflow, and how that's enforced (and isn't)
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
+- [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations

@@ -3,9 +3,7 @@
 ## Purpose
 
 Expose crew orchestration to any MCP client as a single streamable-HTTP server (`ghostship`), covering the tool/resource surface, transport wiring, and discoverability — as distinct from what each tool does internally (see `crew-lifecycle`, `task-orchestration`, `file-transfer`).
-
 ## Requirements
-
 ### Requirement: Streamable-HTTP MCP transport on a configurable port
 The system SHALL serve MCP over streamable HTTP on `PORT` (default `64057`), bound to the host given by `HOST` (default `0.0.0.0` inside the container, published to `127.0.0.1` only by `install.sh`). When `GA_API_KEY` is unset or empty, the transport SHALL preserve the existing network-binding-only trust model. When `GA_API_KEY` is non-empty, every HTTP request to the MCP listener SHALL include `Authorization: Bearer <GA_API_KEY>` and the transport SHALL reject missing, malformed, or incorrect credentials before MCP processing.
 
@@ -28,13 +26,6 @@ The system SHALL serve MCP over streamable HTTP on `PORT` (default `64057`), bou
 #### Scenario: Client registration carries the key as a header
 - **WHEN** a user registers the server with an MCP client (Kiro CLI, Claude Code, or another streamable-HTTP-capable client) while API-key authentication is enabled
 - **THEN** the client points at `http://localhost:<PORT>/mcp` or the configured endpoint and sends `Authorization: Bearer <GA_API_KEY>` on the initialization and subsequent MCP HTTP requests
-
-### Requirement: Companion file server on PORT+1
-The system SHALL run a separate Starlette HTTP server on `PORT + 1`, in a background thread independent of the MCP server, exclusively serving the presigned file-transfer routes (`evac`/`supply`).
-
-#### Scenario: File server starts alongside MCP server
-- **WHEN** the transport process starts
-- **THEN** both the MCP listener on `PORT` and the file-transfer listener on `PORT + 1` are serving before the process is considered ready, and a failure in one does not necessarily block the other since they run on independent threads
 
 ### Requirement: Agent roster resource
 The system SHALL expose a `transport://agents` MCP resource that lists every agent JSON found in the `/agents` bind-mount, formatted for a client to read before calling `dispatch`.
@@ -120,3 +111,55 @@ The system SHALL include the transport version in the MCP server's HTTP response
 #### Scenario: Unauthenticated access when API key is set
 - **WHEN** `GA_API_KEY` is configured and a GET request to `/version` omits the bearer token
 - **THEN** the response is `200 OK` — the version endpoint SHALL NOT require authentication, as version information is not sensitive
+
+### Requirement: Host memory visibility in crews() response
+
+The `crews()` MCP endpoint SHALL include a top-level
+`host_memory_available_gb` field (float, rounded to 1 decimal) in its JSON
+response, representing the current available memory as reported by the Podman
+info API.
+
+The value SHALL be cached for up to 5 seconds to avoid per-call Podman API
+overhead.
+
+#### Scenario: crews() returns memory field
+- **WHEN** a client calls the `crews()` endpoint
+- **THEN** the response includes `"host_memory_available_gb": <float>` at the top level alongside the crew list
+
+#### Scenario: Cached value within TTL
+- **WHEN** two `crews()` calls are made within 5 seconds
+- **THEN** only one Podman info API call is made; the second response uses the cached value
+
+#### Scenario: Podman info unavailable
+- **WHEN** the Podman info API call fails
+- **THEN** `host_memory_available_gb` is set to `null` and the rest of the response is unaffected
+
+### Requirement: Transport exposes a single port
+
+The transport SHALL bind to a single port for all operations: MCP, REST, and
+file transfer. A second file-server port SHALL NOT exist. The single port SHALL
+be configurable via `GA_PORT` (default 8000).
+
+#### Scenario: All operations on one port
+- **WHEN** a client connects to the transport's single port
+- **THEN** MCP (`/mcp`), REST (`/login`, `/logout`, `/health`, `/version`), and file transfer (`/files/*`) are all available at that port
+
+#### Scenario: No second port
+- **WHEN** the transport starts
+- **THEN** only one port is bound; no service listens on `PORT+1`
+
+### Requirement: Single public URL configuration
+
+The transport SHALL accept a single `GA_HOST_URL` environment variable as the
+base URL for all externally-reachable endpoints, replacing the previous split
+between `GA_MCP_PUBLIC_URL` and `GA_FILE_PUBLIC_URL`. Presigned file URLs
+(supply and evac) SHALL use `GA_HOST_URL` as their base.
+
+#### Scenario: Presigned URLs use GA_HOST_URL
+- **WHEN** the Admiral calls `evac()` or `supply()`
+- **THEN** the returned URL uses `GA_HOST_URL` as its base (e.g. `https://my-host.example.com/files/...`)
+
+#### Scenario: Legacy vars ignored
+- **WHEN** `GA_MCP_PUBLIC_URL` or `GA_FILE_PUBLIC_URL` are set but `GA_HOST_URL` is not
+- **THEN** the transport logs a deprecation warning and falls back to `GA_MCP_PUBLIC_URL` for backward compatibility
+
