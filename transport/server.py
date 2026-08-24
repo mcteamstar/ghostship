@@ -2405,10 +2405,24 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
 
 
 def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume: str) -> None:
-    podman.container_stop(container)
-    podman.container_remove(container)
-    podman.volume_remove(volume)
-    podman.volume_remove(home_volume)
+    # Each step is best-effort — a failed launch may mean the container or
+    # volumes were never created, so not-found errors are silently ignored.
+    try:
+        podman.container_stop(container)
+    except Exception:
+        pass
+    try:
+        podman.container_remove(container)
+    except Exception:
+        pass
+    try:
+        podman.volume_remove(volume)
+    except Exception:
+        pass
+    try:
+        podman.volume_remove(home_volume)
+    except Exception:
+        pass
 
 
 # ── Academy login / logout HTTP routes ───────────────────────────────────────
@@ -3322,8 +3336,8 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             pass
         return {
             "warning": f"Pass confirm=True to tear down crew '{crew_id}'",
-            "container": crew["container"],
-            "volumes": [crew["volume"], crew.get("home_volume", f"gs-home-{crew_id}")],
+            "container": crew.get("container", f"gs-{crew_id}"),
+            "volumes": [crew.get("volume", f"gs-vol-{crew_id}"), crew.get("home_volume", f"gs-home-{crew_id}")],
             "active_tasks": len(active),
         }
 
@@ -3332,8 +3346,10 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-    container = crew["container"]
-    vol = crew["volume"]
+    # A failed launch may leave a partial registry entry with only 'container'
+    # and 'status: launching' — fall back to conventional names for anything missing.
+    container = crew.get("container", f"gs-{crew_id}")
+    vol = crew.get("volume", f"gs-vol-{crew_id}")
     home_vol = crew.get("home_volume", f"gs-home-{crew_id}")
     try:
         if not container.startswith("gs-"):

@@ -768,6 +768,43 @@ class LifecycleRegressionTests(unittest.TestCase):
         self.assertEqual(result["status"], "nuked")
         self.assertNotIn("demo", server._captain_order_locks)
 
+    def test_nuke_partial_registry_entry_failed_launch(self) -> None:
+        """nuke() must succeed when registry entry has only container+status (failed launch)."""
+        # A launch that failed partway leaves only container and status — no volume keys.
+        partial_crew = {
+            "container": "gs-half",
+            "status": "launching",
+        }
+        registry = {"crews": {"half": partial_crew}}
+        mock_podman = Mock()
+        with (
+            patch.object(server, "_get_crew", return_value=partial_crew),
+            patch.object(server, "_get_podman", return_value=mock_podman),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+        ):
+            result = server.nuke("half", confirm=True)
+
+        self.assertEqual(result["status"], "nuked")
+        self.assertEqual(result["container"], "gs-half")
+        # _cleanup_crew should have been called with conventional fallback names
+        # (verified indirectly — if it raised KeyError the result would be an error dict)
+        self.assertNotIn("error", result)
+
+    def test_nuke_partial_registry_dry_run(self) -> None:
+        """nuke() dry-run must not KeyError on a partial registry entry."""
+        partial_crew = {
+            "container": "gs-half",
+            "status": "launching",
+        }
+        with patch.object(server, "_get_crew", return_value=partial_crew):
+            result = server.nuke("half", confirm=False)
+
+        self.assertIn("warning", result)
+        self.assertEqual(result["container"], "gs-half")
+        self.assertIn("gs-vol-half", result["volumes"])
+        self.assertIn("gs-home-half", result["volumes"])
+
 
 class PickupTimeoutTests(unittest.TestCase):
     """Tests for the unified pickup with timeout_secs, mail state, and early-return."""
