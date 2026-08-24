@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import os
 import sys
 import tempfile
@@ -15,17 +14,7 @@ from unittest.mock import MagicMock, patch
 
 # ── Import server using the same stub pattern as other transport tests ────────
 
-try:
-    server = importlib.import_module("transport.server")
-except ModuleNotFoundError:
-    # Running from repo root without deps — install stubs first
-    sys.path.insert(0, str(Path(__file__).parent))
-    try:
-        from test_file_transfer import _install_import_stubs
-    except ImportError:
-        from transport.test_file_transfer import _install_import_stubs  # type: ignore[no-redef]
-    _install_import_stubs()
-    server = importlib.import_module("transport.server")
+from tests.unit.test_file_transfer import server
 
 
 class TestLoadApiKey(unittest.TestCase):
@@ -226,7 +215,7 @@ class TestInstallShPodmanSecret(unittest.TestCase):
 
     def test_install_script_has_secret_create(self):
         """5.5 (partial): install.sh contains podman secret create and no env-var pass."""
-        install_path = Path(__file__).resolve().parent.parent / "install.sh"
+        install_path = Path(__file__).resolve().parents[2] / "install.sh"
         if not install_path.exists():
             self.skipTest("install.sh not found relative to test")
 

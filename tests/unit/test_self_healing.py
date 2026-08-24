@@ -5,7 +5,6 @@ Covers tasks.md sections 1.3, 2.2, 3.4, 4.3, 5.3, 6.3, 7.1–7.3.
 """
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 import threading
@@ -44,15 +43,7 @@ def _ensure_httpx_exceptions() -> None:
         _httpx.ConnectTimeout = ConnectTimeout  # type: ignore[attr-defined]
 
 
-try:
-    _ensure_httpx_exceptions()
-    from transport.test_file_transfer import server
-except ModuleNotFoundError:
-    from test_file_transfer import _install_import_stubs
-
-    _install_import_stubs()
-    _ensure_httpx_exceptions()
-    server = importlib.import_module("transport.server")
+from tests.unit.test_file_transfer import server
 
 _ensure_httpx_exceptions()
 import httpx

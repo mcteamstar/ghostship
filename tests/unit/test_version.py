@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import os
 import sys
@@ -12,13 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch, MagicMock
 
-try:
-    from transport.test_file_transfer import server
-except ModuleNotFoundError:
-    from test_file_transfer import _install_import_stubs
-
-    _install_import_stubs()
-    server = importlib.import_module("transport.server")
+from tests.unit.test_file_transfer import server
 
 
 class TestReadTransportVersion(unittest.TestCase):
@@ -48,7 +41,7 @@ class TestReadTransportVersion(unittest.TestCase):
 
     def test_version_file_at_repo_root_exists(self) -> None:
         """The VERSION file actually exists in the repo."""
-        version_path = Path(__file__).resolve().parent.parent / "VERSION"
+        version_path = Path(__file__).resolve().parents[2] / "VERSION"
         self.assertTrue(version_path.exists(), f"VERSION file not found at {version_path}")
         content = version_path.read_text().strip()
         self.assertEqual(content, "0.1.0")
@@ -165,13 +158,13 @@ class TestContainerfileVersion(unittest.TestCase):
 
     def test_containerfile_has_version_arg(self) -> None:
         """Containerfile contains ARG VERSION=0.0.0-dev."""
-        containerfile = Path(__file__).resolve().parent.parent / "crews" / "spec-ops" / "Containerfile"
+        containerfile = Path(__file__).resolve().parents[2] / "crews" / "spec-ops" / "Containerfile"
         content = containerfile.read_text()
         self.assertIn("ARG VERSION=0.0.0-dev", content)
 
     def test_containerfile_has_version_label(self) -> None:
         """Containerfile contains LABEL org.ghostship.version=$VERSION."""
-        containerfile = Path(__file__).resolve().parent.parent / "crews" / "spec-ops" / "Containerfile"
+        containerfile = Path(__file__).resolve().parents[2] / "crews" / "spec-ops" / "Containerfile"
         content = containerfile.read_text()
         self.assertIn("LABEL org.ghostship.version=$VERSION", content)
 

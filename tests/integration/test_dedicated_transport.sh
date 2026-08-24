@@ -6,11 +6,11 @@
 # machine in CI — the transport only needs to reach the socket, and the real
 # PodmanClient tests cover API correctness separately.
 #
-# Run: bash tests/test_dedicated_transport.sh
+# Run: bash tests/integration/test_dedicated_transport.sh
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMPDIR="$(mktemp -d)"
 SOCAT_PID=""
 trap 'rm -rf "$TMPDIR"; [[ -n "$SOCAT_PID" ]] && kill $SOCAT_PID 2>/dev/null || true' EXIT

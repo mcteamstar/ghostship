@@ -2497,14 +2497,22 @@ async def _handle_login_post(request: Request) -> Response:
     pty_sock.setblocking(False)
 
     # ── Read output, answer prompts, wait for device URL (max 15s) ───────────
-    # kiro-cli prompts for "Start URL" then "Region" before printing the code.
-    # We detect each prompt and write the configured answer to stdin.
+    # kiro-cli may present "Select login method" before the "Start URL" and
+    # "Region" prompts. Detect each known prompt and write its answer to stdin.
     deadline = time.time() + 15.0
     collected = bytearray()
     login_url: str | None = None
     login_code: str | None = None
+    # Ordered from the earliest interactive prompt to the latest. Each matcher
+    # is answered at most once so accumulated PTY output cannot replay input.
+    prompt_rules: list[tuple[str, bytes]] = [
+        ("Select login method", b"\n"),
+        ("Start URL", (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()),
+        ("Region", (KIRO_REGION + "\n").encode()),
+    ]
+    answered_prompts: set[str] = set()
     answered_url = False
-    answered_region = False
+    start_url_seen = False
 
     try:
         while time.time() < deadline:
@@ -2519,18 +2527,33 @@ async def _handle_login_post(request: Request) -> Response:
                 collected.extend(chunk)
                 text = collected.decode("utf-8", errors="replace")
 
-                # Answer "Start URL" prompt
-                if not answered_url and "Start URL" in text:
-                    answer = (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()
-                    pty_sock.sendall(answer)
-                    answered_url = True
-                    logger.debug("Answered Start URL prompt")
+                for matcher, answer in prompt_rules:
+                    if matcher not in text or matcher in answered_prompts:
+                        continue
+                    if matcher == "Select login method":
+                        # Builder ID is the default only when this menu precedes
+                        # the IAM Identity Center Start URL prompt.
+                        menu_position = text.find(matcher)
+                        start_url_position = text.find("Start URL")
+                        if start_url_seen or (
+                            start_url_position >= 0
+                            and start_url_position < menu_position
+                        ):
+                            continue
+                    elif matcher == "Region" and not answered_url:
+                        # Preserve the existing Start URL -> Region ordering.
+                        continue
 
-                # Answer "Region" prompt (only after URL was answered)
-                if answered_url and not answered_region and "Region" in text:
-                    pty_sock.sendall((KIRO_REGION + "\n").encode())
-                    answered_region = True
-                    logger.debug("Answered Region prompt")
+                    pty_sock.sendall(answer)
+                    answered_prompts.add(matcher)
+                    if matcher == "Select login method":
+                        logger.debug("Answered login method menu with Builder ID default")
+                    elif matcher == "Start URL":
+                        answered_url = True
+                        start_url_seen = True
+                        logger.debug("Answered Start URL prompt")
+                    else:
+                        logger.debug("Answered Region prompt")
 
                 # Look for device code URL — kiro-cli prints:
                 # "Open this URL: https://...#/device?user_code=XXXX-XXXX"

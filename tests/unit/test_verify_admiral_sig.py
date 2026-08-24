@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 # Resolve the script path relative to the repo root
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "crews" / "_base" / "orientation" / "verify-admiral-sig"
 
 

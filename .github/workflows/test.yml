@@ -20,4 +20,4 @@ jobs:
         run: pip install -r transport/requirements.txt
 
       - name: Run tests
-        run: python3 -m unittest discover -s transport -p "test_*.py" -v
+        run: tests/run.sh --unit

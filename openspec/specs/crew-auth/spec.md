@@ -56,7 +56,7 @@ The system SHALL read the saved `ga-kiro-auth` file and inject its rows into eve
 - **THEN** the file is written in place with mode `0600`, flushed, for later launches to read
 
 ### Requirement: Identity provider configuration
-The system SHALL direct the device auth flow at a configured identity provider when `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION`/`KIRO_LICENSE` are set, and SHALL fall back to Builder ID (free tier) when they are not.
+The system SHALL direct the device auth flow at a configured identity provider when `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION`/`KIRO_LICENSE` are set, and SHALL fall back to Builder ID (free tier) when they are not. When falling back to Builder ID, `kiro-cli` may present an interactive login-method selection menu before the device code appears; the system SHALL answer that menu (accepting the Builder ID default) rather than treating its appearance as a failure.
 
 #### Scenario: Identity provider configured
 - **WHEN** `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION` are set on the transport container
@@ -64,4 +64,4 @@ The system SHALL direct the device auth flow at a configured identity provider w
 
 #### Scenario: No identity provider configured
 - **WHEN** none of `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE` are set
-- **THEN** `kiro-cli login` runs with only `--use-device-flow`, authenticating against the default Builder ID identity
+- **THEN** `kiro-cli login` runs with only `--use-device-flow`, authenticating against the default Builder ID identity; if kiro-cli shows a login-method selection menu first, the system answers it to select Builder ID and the flow still completes with a device code and URL

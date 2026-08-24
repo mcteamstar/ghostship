@@ -9,7 +9,6 @@ Covers:
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 import tempfile
@@ -19,13 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch, MagicMock
 
-try:
-    from transport.test_file_transfer import server
-except ModuleNotFoundError:
-    from test_file_transfer import _install_import_stubs
-
-    _install_import_stubs()
-    server = importlib.import_module("transport.server")
+from tests.unit.test_file_transfer import server
 
 
 class TestLoadCrewTypeRegistry(unittest.TestCase):

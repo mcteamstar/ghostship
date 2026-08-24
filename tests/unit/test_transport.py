@@ -33,7 +33,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import os
 import stat
 import json
@@ -48,13 +47,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import Mock, patch
 
-try:
-    from transport.test_file_transfer import server
-except ModuleNotFoundError:
-    from test_file_transfer import _install_import_stubs
-
-    _install_import_stubs()
-    server = importlib.import_module("transport.server")
+from tests.unit.test_file_transfer import server
 
 import httpx
 
@@ -1398,7 +1391,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertNotIn("external `captain(..., action=\"stop\")` operation", resolved_body)
 
     def test_raven_prompt_covers_gateway_status_and_self_cancellation(self) -> None:
-        definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
+        definition_path = Path(__file__).resolve().parents[2] / "academy" / "agents" / "raven.json"
         prompt = json.loads(definition_path.read_text())["prompt"]
 
         # Lean raven prompt retains gateway orientation (CLI + REST + auth)
@@ -1431,7 +1424,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("the only one in this crew", checkin)
 
     def test_raven_and_sdd_bodies_cover_running_task_steering(self) -> None:
-        definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
+        definition_path = Path(__file__).resolve().parents[2] / "academy" / "agents" / "raven.json"
         prompt = json.loads(definition_path.read_text())["prompt"]
         # The raven prompt has the REST endpoints but not the Captain-loop
         # steering instruction (that lives in the templates now).
@@ -1452,7 +1445,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertNotIn("native in-session spawn tooling", sdd_body)
 
     def test_raven_and_sdd_bodies_cover_persona_mailbox_skim(self) -> None:
-        definition_path = Path(__file__).resolve().parents[1] / "academy" / "agents" / "raven.json"
+        definition_path = Path(__file__).resolve().parents[2] / "academy" / "agents" / "raven.json"
         prompt = json.loads(definition_path.read_text())["prompt"]
         # Raven prompt uses generic <persona> placeholder — not fragile explicit paths.
         self.assertIn("/var/mail/<persona>", prompt)
@@ -2157,7 +2150,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         self.assertIn("/login", result["instructions"])
 
     def test_installer_has_no_podman_secret_machinery(self) -> None:
-        repo_root = Path(__file__).resolve().parents[1]
+        repo_root = Path(__file__).resolve().parents[2]
         installer = (repo_root / "install.sh").read_text()
         self.assertIn('-v "${DATA_DIR}:/data"', installer)
         self.assertIn('KC_GATEWAY_TOKEN_TTL=${KC_GATEWAY_TOKEN_TTL:-24h}', installer)
@@ -2407,6 +2400,71 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertIsNotNone(pending)
         self.assertEqual(pending["container"], container_name)
         self.assertEqual(pending["exec_id"], exec_id)
+
+    def test_post_login_answers_builder_id_login_method_menu(self) -> None:
+        """Builder ID fallback accepts kiro-cli's highlighted default option."""
+        podman = Mock()
+        container_name = "ga-login-builder123"
+        exec_id = "exec-builder"
+
+        # Captured kiro-cli 2.19.0 transcript with no identity provider set.
+        output_chunks = [
+            (
+                b"\x1b[?25l? Select login method \xe2\x80\xba\r\n"
+                b"\xe2\x9d\xaf Use with Builder ID\r\n"
+                b"  Use with Google\r\n"
+                b"  Use with GitHub\r\n"
+                b"  Use with Your Organization\r\n"
+                b"\x1b[4A\r\x1b[2K\x1b[1B\r\x1b[2K\x1b[1B\r\x1b[2K\x1b[1B\r\x1b[2K\x1b[1B"
+                b"\x1b[4A\xe2\x9d\xaf Use with Builder ID\r\n"
+                b"  Use with Google\r\n"
+                b"  Use with GitHub\r\n"
+                b"  Use with Your Organization\r\n"
+            ),
+            (
+                b"\r\nOpen this URL: "
+                b"https://device.auth.example.com/activate?user_code=BUILDER-1234\r\n"
+            ),
+        ]
+        chunk_iter = iter(output_chunks)
+
+        fake_sock = Mock()
+        fake_sock.fileno.return_value = 5
+
+        def fake_recv(n):
+            try:
+                return next(chunk_iter)
+            except StopIteration:
+                return b""
+
+        fake_sock.recv.side_effect = fake_recv
+
+        with (
+            patch.object(server, "KIRO_IDENTITY_PROVIDER", ""),
+            patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_start_login_container", return_value=container_name),
+            patch.object(server, "select") as mock_select,
+            patch.object(podman, "container_exec", return_value="kiro-cli"),
+            patch.object(
+                podman,
+                "container_exec_pty_stdin",
+                return_value=(exec_id, fake_sock),
+            ),
+        ):
+            mock_select.select.return_value = ([fake_sock], [], [])
+            request = Mock()
+            response = asyncio.run(server._handle_login_post(request))
+
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertEqual(body["status"], "pending")
+        self.assertEqual(
+            body["login_url"],
+            "https://device.auth.example.com/activate?user_code=BUILDER-1234",
+        )
+        self.assertEqual(body["code"], "BUILDER-1234")
+        fake_sock.sendall.assert_called_once_with(b"\n")
 
     def test_post_login_returns_409_when_already_authenticated(self) -> None:
         with patch.object(server, "_read_auth_file", return_value="dGVzdA=="):
@@ -5950,7 +6008,7 @@ class InstallEnvVarSyncTests(unittest.TestCase):
     def _vars_from_server() -> set[str]:
         """Extract env var names read via os.environ.get() in server.py."""
         import re
-        root = Path(__file__).parent.parent
+        root = Path(__file__).resolve().parents[2]
         src = (root / "transport" / "server.py").read_text()
         # Match os.environ.get("VAR_NAME", ...) calls
         return set(re.findall(r'os\.environ\.get\(\s*["\']([A-Z_]+)["\']', src))
@@ -5959,7 +6017,7 @@ class InstallEnvVarSyncTests(unittest.TestCase):
     def _vars_from_install() -> set[str]:
         """Extract env var names passed via -e flags in install.sh."""
         import re
-        root = Path(__file__).parent.parent
+        root = Path(__file__).resolve().parents[2]
         src = (root / "install.sh").read_text()
         # Match -e "VAR_NAME=..." lines
         return set(re.findall(r'-e\s+["\']([A-Z_]+)=', src))
