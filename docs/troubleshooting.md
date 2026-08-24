@@ -204,3 +204,98 @@ launch(crew_id="<id>")
 
 This section will be expanded with root cause and permanent fix once TRN-16
 is applied.
+
+## Dedicated Podman Machine
+
+These issues apply only when `GA_DEDICATED_MACHINE=true`.
+
+### Dedicated machine not starting (macOS)
+
+If `install.sh` fails with a machine-related error:
+
+1. List all machines and check their state:
+   ```bash
+   podman machine list
+   ```
+2. If the `ghostship` machine shows as "stopped", start it manually:
+   ```bash
+   podman machine start ghostship
+   ```
+3. If `init` failed (machine doesn't appear in the list), check available
+   disk and memory — the machine requires the configured `GA_MACHINE_DISK`
+   (default 60 GB) free disk space.
+4. Check for conflicting machine names:
+   ```bash
+   podman machine inspect ghostship
+   ```
+
+### Dedicated socket not found (Linux)
+
+If `install.sh` reports the dedicated socket was not found:
+
+1. Check the systemd socket unit:
+   ```bash
+   systemctl --user status podman-ghostship.socket
+   journalctl --user -u podman-ghostship.service --since "5 min ago"
+   ```
+2. Verify the socket file exists:
+   ```bash
+   ls -la /run/user/$(id -u)/podman/ghostship.sock
+   ```
+3. If the socket unit failed, reload and restart:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user restart podman-ghostship.socket
+   ```
+4. Ensure the `ListenStream` path directory exists:
+   ```bash
+   mkdir -p /run/user/$(id -u)/podman
+   ```
+
+### Storage space on dedicated root (Linux)
+
+The dedicated instance stores all containers and images under
+`~/.local/share/ghostship/containers/storage`. This is separate from your
+default Podman storage, so images are NOT shared — base images are pulled
+separately into the dedicated storage.
+
+To check disk usage:
+```bash
+du -sh ~/.local/share/ghostship/
+```
+
+To prune unused images on the dedicated instance:
+```bash
+podman --root=~/.local/share/ghostship/containers/storage \
+  --runroot=$XDG_RUNTIME_DIR/ghostship-containers \
+  image prune -a
+```
+
+### Identifying which containers are on which instance
+
+**macOS** — use the named connection:
+```bash
+# Default machine containers:
+podman ps
+
+# Dedicated machine containers (requires connection setup):
+podman machine ssh ghostship -- podman ps
+```
+
+**Linux** — pass the storage root:
+```bash
+# Default instance containers:
+podman ps
+
+# Dedicated instance containers:
+podman --root=~/.local/share/ghostship/containers/storage \
+  --runroot=$XDG_RUNTIME_DIR/ghostship-containers \
+  ps
+```
+
+You can alias this for convenience:
+```bash
+alias podman-gs='podman --root=~/.local/share/ghostship/containers/storage --runroot=$XDG_RUNTIME_DIR/ghostship-containers'
+podman-gs ps
+podman-gs images
+```

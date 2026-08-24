@@ -5936,3 +5936,54 @@ class ProxyHandlerTests(unittest.TestCase):
         self.assertIsNone(server._extract_crew_proxy_parts("/mcp"))
         self.assertIsNone(server._extract_crew_proxy_parts("/crews"))
         self.assertIsNone(server._extract_crew_proxy_parts("/crews/demo"))
+
+
+class InstallEnvVarSyncTests(unittest.TestCase):
+    """Verify that every GA_* / KC_* env var read by server.py is also
+    passed to the transport container via a -e flag in install.sh.
+
+    This catches regressions where a new config var is added to server.py
+    but the corresponding -e line is forgotten in the install script.
+    """
+
+    @staticmethod
+    def _vars_from_server() -> set[str]:
+        """Extract env var names read via os.environ.get() in server.py."""
+        import re
+        root = Path(__file__).parent.parent
+        src = (root / "transport" / "server.py").read_text()
+        # Match os.environ.get("VAR_NAME", ...) calls
+        return set(re.findall(r'os\.environ\.get\(\s*["\']([A-Z_]+)["\']', src))
+
+    @staticmethod
+    def _vars_from_install() -> set[str]:
+        """Extract env var names passed via -e flags in install.sh."""
+        import re
+        root = Path(__file__).parent.parent
+        src = (root / "install.sh").read_text()
+        # Match -e "VAR_NAME=..." lines
+        return set(re.findall(r'-e\s+["\']([A-Z_]+)=', src))
+
+    def test_all_server_ga_vars_passed_in_install(self) -> None:
+        """Every GA_* and KC_* var read by server.py must have a -e entry in install.sh."""
+        server_vars = {
+            v for v in self._vars_from_server()
+            if v.startswith("GA_") or v.startswith("KC_")
+        }
+        install_vars = self._vars_from_install()
+
+        # Vars that are intentionally not forwarded via plain -e flags
+        excluded = {
+            "KC_IMAGE",       # build-time image name, not a runtime var
+            "KC_BASE_IMAGE",  # build-time base image for login containers
+            "GA_API_KEY",     # passed via podman secret (--secret ga-api-key), not -e
+            "GA_FILE_SECRET", # generated internally by the transport at startup
+        }
+
+        missing = server_vars - install_vars - excluded
+        self.assertSetEqual(
+            missing,
+            set(),
+            f"Env vars read by server.py but missing from install.sh -e flags: {sorted(missing)}\n"
+            "Add the missing -e lines to the podman run block in install.sh.",
+        )

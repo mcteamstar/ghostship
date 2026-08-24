@@ -1,5 +1,7 @@
 ![Ghostship](docs/ghostship.png)
 
+[![tests](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml/badge.svg)](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml)
+
 *Launch a Ghostship from the Ghost Academy and command the crew.*
 
 A multi-agent orchestration system for [KiroCrew](https://github.com/kirodotdev/KiroCrew) over MCP.

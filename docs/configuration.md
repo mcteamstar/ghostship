@@ -26,6 +26,11 @@ Environment variables read by the transport server:
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum free memory (GB) required before starting a crew container. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
+| `GA_DEDICATED_MACHINE` | `false` | When `true`, provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) exclusively for Ghost Academy. Crew containers are fully isolated from the host's default Podman runtime. When `false` or unset, behaviour is unchanged (uses the default socket) |
+| `GA_MACHINE_CPUS` | `4` | CPUs allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
+| `GA_MACHINE_MEMORY` | `8192` | Memory in MB allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
+| `GA_MACHINE_DISK` | `60` | Disk size in GB allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
+| `GA_MACHINE_NAME` | `ghostship` | Name of the dedicated machine (macOS) or systemd service suffix (Linux). Used as the machine name in `podman machine` commands and as the service name in `podman-<name>.socket`/`.service` |
 | `GA_MEMORY_WAIT_SECS` | `60` | Maximum seconds to wait for sufficient memory before returning an error. Only relevant when `GA_MIN_FREE_MEM_GB > 0` |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Value patched into each crew's `resource_pressure_gb` config — KiroCrew throttles subagent spawning below this threshold |
