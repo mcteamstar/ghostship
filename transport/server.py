@@ -537,8 +537,8 @@ class PodmanClient:
         return r.json().get("State", {}).get("Status") == "running"
 
     def system_info(self) -> dict:
-        """Query Podman system info (GET /libpod/system/info)."""
-        return self._req("GET", "/libpod/system/info")
+        """Query Podman system info (GET /libpod/info)."""
+        return self._req("GET", "/libpod/info")
 
     def _demux(self, raw: bytes) -> str:
         """Demux Docker multiplexed stream format into plain text."""
