@@ -2118,23 +2118,21 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
 
     def test_read_auth_file_missing_returns_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            with patch.object(server, "DATA_DIR", Path(temporary)):
-                self.assertEqual(server._read_auth_file(), "")
+            missing = Path(temporary) / server.GA_AUTH_FILE
+            self.assertEqual(server._read_auth_file(_path=missing), "")
 
     def test_write_then_read_auth_file_round_trips_and_is_restrictive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            data_dir = Path(temporary)
-            with patch.object(server, "DATA_DIR", data_dir):
-                server._write_auth_file("first")
-                path = data_dir / server.GA_AUTH_FILE
-                inode = path.stat().st_ino
-                self.assertEqual(server._read_auth_file(), "first")
-                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            path = Path(temporary) / server.GA_AUTH_FILE
+            server._write_auth_file("first", _path=path)
+            inode = path.stat().st_ino
+            self.assertEqual(server._read_auth_file(_path=path), "first")
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
-                server._write_auth_file("second")
-                self.assertEqual(server._read_auth_file(), "second")
-                self.assertEqual(path.stat().st_ino, inode)
-                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            server._write_auth_file("second", _path=path)
+            self.assertEqual(server._read_auth_file(_path=path), "second")
+            self.assertEqual(path.stat().st_ino, inode)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_missing_auth_file_returns_not_authenticated_error(self) -> None:
         """launch fails fast when no auth is available — POST /login handles auth."""

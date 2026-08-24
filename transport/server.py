@@ -197,9 +197,12 @@ def _auth_file_path() -> Path:
     return DATA_DIR / GA_AUTH_FILE
 
 
-def _read_auth_file() -> str:
-    """Read the persisted auth value, or "" if it doesn't exist yet."""
-    path = _auth_file_path()
+def _read_auth_file(_path: Path | None = None) -> str:
+    """Read the persisted auth value, or "" if it doesn't exist yet.
+
+    _path: override the default path (for testing only).
+    """
+    path = _path if _path is not None else _auth_file_path()
     if not path.is_file():
         return ""
     try:
@@ -209,9 +212,12 @@ def _read_auth_file() -> str:
         return ""
 
 
-def _write_auth_file(value: str) -> None:
-    """Persist the reusable auth value for future launches."""
-    path = _auth_file_path()
+def _write_auth_file(value: str, _path: Path | None = None) -> None:
+    """Persist the reusable auth value for future launches.
+
+    _path: override the default path (for testing only).
+    """
+    path = _path if _path is not None else _auth_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:

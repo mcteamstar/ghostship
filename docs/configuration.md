@@ -142,11 +142,6 @@ GA_HOST_URL="https://academy.example.com"
 > Until renamed, deployments that set these variables will silently fall back
 > to built-in defaults.
 >
->  `your-deployment/ghostship.conf`
-> (separate deployment repository) must also be updated:
-> `KC_FILE_PUBLIC_URL` → `GA_FILE_PUBLIC_URL`,
-> `KC_MCP_PUBLIC_URL` → `GA_MCP_PUBLIC_URL`.
->
 > **Port unification (trn-32):** The file-transfer routes now share the same
 > port as MCP (`PORT`, default 64057). There is no longer a separate file
 > server on `PORT+1`. Replace `GA_FILE_PUBLIC_URL` and `GA_MCP_PUBLIC_URL`
