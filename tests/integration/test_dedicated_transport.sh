@@ -26,7 +26,7 @@ echo "=== Test: Dedicated Transport Socket Connectivity ==="
 echo ""
 echo "--- Test 1: Mock socket at dedicated path is reachable ---"
 
-_DEDICATED_SOCK="${TMPDIR}/podman/ghost-academy.sock"
+_DEDICATED_SOCK="${TMPDIR}/ghost-academy/podman.sock"
 mkdir -p "$(dirname "$_DEDICATED_SOCK")"
 
 # Create a minimal mock socket that responds to HTTP (simulates Podman API)
@@ -55,7 +55,7 @@ if command -v socat >/dev/null 2>&1; then
 else
   echo "  ⚠ socat not available — testing path logic only"
   # Fallback: just verify the path logic
-  if [[ "${_DEDICATED_SOCK}" == "${TMPDIR}/podman/ghost-academy.sock" ]]; then
+  if [[ "${_DEDICATED_SOCK}" == "${TMPDIR}/ghost-academy/podman.sock" ]]; then
     pass "Socket path constructed correctly (socat not available for live test)"
   else
     fail "Socket path construction"
@@ -73,8 +73,8 @@ resolve_socket_path() {
 }
 
 RESULT=$(resolve_socket_path "ghost-academy" "/run/user/1000")
-[[ "$RESULT" == "/run/user/1000/podman/ghost-academy.sock" ]] \
-  && pass "Default name → /run/user/1000/podman/ghost-academy.sock" \
+[[ "$RESULT" == "/run/user/1000/ghost-academy/podman.sock" ]] \
+  && pass "Default name → /run/user/1000/ghost-academy/podman.sock" \
   || fail "Default name path (got: $RESULT)"
 
 RESULT=$(resolve_socket_path "academy" "/run/user/1000")
@@ -145,7 +145,7 @@ test_socket_selection() {
   local PODMAN_SOCK=""
 
   if [[ "$dedicated" == "true" ]]; then
-    PODMAN_SOCK="/run/user/${_UID}/podman/ghost-academy.sock"
+    PODMAN_SOCK="/run/user/${_UID}/ghost-academy/podman.sock"
   else
     PODMAN_SOCK="/run/user/${_UID}/podman/podman.sock"
   fi
@@ -158,7 +158,7 @@ RESULT=$(test_socket_selection "false")
   || fail "Disabled socket path (got: $RESULT)"
 
 RESULT=$(test_socket_selection "true")
-[[ "$RESULT" == "/run/user/1000/podman/ghost-academy.sock" ]] \
+[[ "$RESULT" == "/run/user/1000/ghost-academy/podman.sock" ]] \
   && pass "Enabled → dedicated socket" \
   || fail "Enabled socket path (got: $RESULT)"
 

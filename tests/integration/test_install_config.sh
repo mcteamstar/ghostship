@@ -270,7 +270,7 @@ test_socket_resolution() {
 
   if [[ "$GA_DEDICATED_MACHINE" == "true" ]]; then
     local _RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$_UID}"
-    PODMAN_SOCK="${_RUNTIME_DIR}/podman/${GA_MACHINE_NAME}.sock"
+    PODMAN_SOCK="${_RUNTIME_DIR}/${GA_MACHINE_NAME}/podman.sock"
   else
     PODMAN_SOCK="/run/user/$_UID/podman/podman.sock"
   fi
@@ -279,8 +279,8 @@ test_socket_resolution() {
 
 _UID=$(id -u)
 EXPECTED_DEFAULT="/run/user/${_UID}/podman/podman.sock"
-EXPECTED_DEDICATED="/run/user/${_UID}/podman/ghost-academy.sock"
-EXPECTED_CUSTOM="/run/user/${_UID}/podman/academy.sock"
+EXPECTED_DEDICATED="/run/user/${_UID}/ghost-academy/podman.sock"
+EXPECTED_CUSTOM="/run/user/${_UID}/academy/podman.sock"
 
 OUTPUT=$(test_socket_resolution "false")
 [[ "$OUTPUT" == "$EXPECTED_DEFAULT" ]] && pass "Default socket path: $OUTPUT" || fail "Default socket path (got: $OUTPUT, expected: $EXPECTED_DEFAULT)"

@@ -249,7 +249,7 @@ if [[ "$OS" == "Darwin" ]]; then
     echo "✓ Guest podman socket: ${PODMAN_SOCK}"
   fi
 
-  DATA_DIR="$HOME/Library/Application Support/ghostship/data"
+  DATA_DIR="$HOME/Library/Application Support/${GA_MACHINE_NAME}/data"
 
   # The podman-machine guest (Fedora CoreOS) runs SELinux enforcing. The socket
   # is labeled user_tmp_t, which the container's confined domain can't access —
@@ -271,60 +271,56 @@ else
 
     mkdir -p "${_UNIT_DIR}"
 
-    # Write podman-ghostship.socket unit
-    cat > "${_UNIT_DIR}/podman-${_MACHINE}.socket" <<UNIT_EOF
-[Unit]
-Description=Ghost Academy dedicated Podman socket (${_MACHINE})
-
-[Socket]
-ListenStream=${_RUNTIME_DIR}/podman/${_MACHINE}.sock
-SocketMode=0660
-
-[Install]
-WantedBy=sockets.target
-UNIT_EOF
-
-    # Write podman-ghostship.service unit
+    # Write the dedicated Podman service unit. We run podman system service
+    # directly (Type=simple) so it creates the socket file itself — systemd
+    # socket activation holds the fd internally without materialising the file,
+    # which breaks the socket check on modern kernels (Ubuntu 25.10+).
+    # RuntimeDirectory= ensures the socket dir exists under XDG_RUNTIME_DIR.
     cat > "${_UNIT_DIR}/podman-${_MACHINE}.service" <<UNIT_EOF
 [Unit]
 Description=Ghost Academy dedicated Podman API (${_MACHINE})
-Requires=podman-${_MACHINE}.socket
+After=network.target
 
 [Service]
-Type=exec
+Type=simple
+Environment=CONTAINERS_CONF=${_GA_CONTAINERS_CONF}
+RuntimeDirectory=${_MACHINE}
 ExecStart=/usr/bin/podman \\
   --root=${_STORAGE_ROOT} \\
   --runroot=${_RUNTIME_DIR}/${_MACHINE}-containers \\
-  system service --time=0 unix://${_RUNTIME_DIR}/podman/${_MACHINE}.sock
+  system service --time=0 unix://${_RUNTIME_DIR}/${_MACHINE}/podman.sock
 Restart=on-failure
 
 [Install]
 WantedBy=default.target
 UNIT_EOF
 
-    echo "✓ Systemd units written to ${_UNIT_DIR}"
+    echo "✓ Systemd service unit written to ${_UNIT_DIR}"
 
-    # Reload and enable the socket
+    # Remove any stale socket-activation unit from a previous install
+    rm -f "${_UNIT_DIR}/podman-${_MACHINE}.socket" 2>/dev/null || true
+
+    # Reload and start the service directly (no socket activation)
     systemctl --user daemon-reload
-    systemctl --user enable --now "podman-${_MACHINE}.socket"
-    echo "✓ podman-${_MACHINE}.socket enabled and started"
+    systemctl --user enable --now "podman-${_MACHINE}.service"
 
     # Enable lingering for reboot survival
     loginctl enable-linger "$(whoami)" 2>/dev/null || true
     echo "✓ Linger enabled — dedicated instance survives logout/reboot"
 
-    # Set socket path to the dedicated one
-    PODMAN_SOCK="${_RUNTIME_DIR}/podman/${_MACHINE}.sock"
+    # Set socket path — service creates it under its own RuntimeDirectory
+    PODMAN_SOCK="${_RUNTIME_DIR}/${_MACHINE}/podman.sock"
 
-    # Validate that the socket actually exists. Bounded retry: up to 5 seconds.
+    # Validate the socket file exists. The service creates it on startup so
+    # a file-existence check is reliable (unlike socket activation).
     _sock_tries=0
-    while [[ ! -S "$PODMAN_SOCK" ]] && (( _sock_tries < 5 )); do
+    while [[ ! -S "$PODMAN_SOCK" ]] && (( _sock_tries < 10 )); do
       sleep 1
       (( _sock_tries++ )) || true
     done
     if [[ ! -S "$PODMAN_SOCK" ]]; then
-      echo "⚠ Dedicated Podman socket not found at: ${PODMAN_SOCK}" >&2
-      echo "  Check: systemctl --user status podman-${_MACHINE}.socket" >&2
+      echo "⚠ Dedicated Podman socket not reachable at: ${PODMAN_SOCK}" >&2
+      echo "  Check: systemctl --user status podman-${_MACHINE}.service" >&2
       echo "  Journal: journalctl --user -u podman-${_MACHINE}.service" >&2
       exit 1
     fi
@@ -366,7 +362,7 @@ UNIT_EOF
     echo "✓ podman socket: ${PODMAN_SOCK}"
   fi
 
-  DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ghostship/data"
+  DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${GA_MACHINE_NAME}/data"
 
   # SELinux & container labels:
   # `--security-opt label=disable` (applied to the transport container below)
@@ -422,7 +418,33 @@ fi
 if [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Linux" ]]; then
   _RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   _STORAGE_ROOT="${HOME}/.local/share/${GA_MACHINE_NAME}/containers/storage"
-  _PODMAN_CMD="podman --root=${_STORAGE_ROOT} --runroot=${_RUNTIME_DIR}/${GA_MACHINE_NAME}-containers"
+  _GA_CONTAINERS_CONF="${HOME}/.config/${GA_MACHINE_NAME}/containers.conf"
+
+  # ── WSL2: write a ghostship-scoped containers.conf ────────────────────────
+  # Written unconditionally to a ghostship-owned path so it never affects the
+  # user's default Podman. On non-WSL2 hosts the file is empty (comment-only),
+  # a no-op. The dedicated service unit sets CONTAINERS_CONF to this file.
+  mkdir -p "$(dirname "${_GA_CONTAINERS_CONF}")"
+  if grep -qi "microsoft" /proc/version 2>/dev/null; then
+    cat > "${_GA_CONTAINERS_CONF}" <<CONF_EOF
+# ghostship-scoped containers.conf — generated by install.sh
+# Scoped to the dedicated '${GA_MACHINE_NAME}' Podman instance only.
+# WSL2: use iptables instead of nftables for bridge networking.
+[network]
+firewall_driver = "iptables"
+CONF_EOF
+    echo "✓ WSL2 detected — scoped iptables workaround written to ${_GA_CONTAINERS_CONF}"
+  else
+    cat > "${_GA_CONTAINERS_CONF}" <<CONF_EOF
+# ghostship-scoped containers.conf — generated by install.sh
+# Scoped to the dedicated '${GA_MACHINE_NAME}' Podman instance only.
+CONF_EOF
+  fi
+
+  # Prefix CONTAINERS_CONF so all podman subcommands (network, build, run, …)
+  # pick up the ghostship-scoped config (WSL2 iptables workaround etc.) without
+  # touching the user's default Podman configuration.
+  _PODMAN_CMD="env CONTAINERS_CONF=${_GA_CONTAINERS_CONF} podman --root=${_STORAGE_ROOT} --runroot=${_RUNTIME_DIR}/${GA_MACHINE_NAME}-containers"
 elif [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Darwin" ]]; then
   _PODMAN_CMD="podman --connection ${GA_MACHINE_NAME}"
 else
@@ -476,6 +498,16 @@ fi
 # ── Run transport ─────────────────────────────────────────────────────────────
 
 ${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 || true
+
+# Kill any stale rootlessport process that may be holding the transport port
+# open from a previous (possibly interrupted) install. These survive container
+# removal and will cause `podman run` to fail with "address already in use".
+for _pid in $(pgrep -x rootlessport 2>/dev/null); do
+  if ss -tlnp 2>/dev/null | grep -q "127.0.0.1:${PORT}.*pid=${_pid}"; then
+    kill "$_pid" 2>/dev/null && echo "✓ killed stale rootlessport on port ${PORT} (pid ${_pid})" || true
+    sleep 0.5
+  fi
+done
 
 ${_PODMAN_CMD} run -d --name ga-transport --restart=always \
   --security-opt label=disable \

@@ -52,18 +52,19 @@ if [[ -n "$CONFIG_FILE" ]]; then
   echo "✓ Sourced config file: $CONFIG_FILE"
 fi
 
-if [[ "$OS" == "Darwin" ]]; then
-  DATA_DIR="$HOME/Library/Application Support/ghostship/data"
-else
-  DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ghostship/data"
-fi
-
 # ── Detect dedicated machine/instance ─────────────────────────────────────────
 # Check if a dedicated machine/instance exists so we can clean it up.
 # GA_MACHINE_NAME honours the same env var / --config file as install.sh, so
 # a customised name is actually found instead of silently left behind.
+# NOTE: _MACHINE_NAME must be set before DATA_DIR so it expands correctly.
 _HAS_DEDICATED_MACHINE=""
 _MACHINE_NAME="$GA_MACHINE_NAME"
+
+if [[ "$OS" == "Darwin" ]]; then
+  DATA_DIR="$HOME/Library/Application Support/${_MACHINE_NAME}/data"
+else
+  DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${_MACHINE_NAME}/data"
+fi
 
 if [[ "$OS" == "Darwin" ]]; then
   if podman machine list --format '{{.Name}}' 2>/dev/null | grep -qw "${_MACHINE_NAME}"; then
@@ -71,7 +72,8 @@ if [[ "$OS" == "Darwin" ]]; then
   fi
 else
   _UNIT_DIR="${HOME}/.config/systemd/user"
-  if [[ -f "${_UNIT_DIR}/podman-${_MACHINE_NAME}.socket" ]]; then
+  if [[ -f "${_UNIT_DIR}/podman-${_MACHINE_NAME}.socket" ]] \
+     || [[ -f "${_UNIT_DIR}/podman-${_MACHINE_NAME}.service" ]]; then
     _HAS_DEDICATED_MACHINE="1"
   fi
 fi
@@ -114,6 +116,14 @@ fi
 
 if [[ -n "$_HAS_DEDICATED_MACHINE" && "$OS" == "Darwin" ]]; then
   _PODMAN_CMD="podman --connection ${_MACHINE_NAME}"
+elif [[ -n "$_HAS_DEDICATED_MACHINE" && "$OS" == "Linux" ]]; then
+  # Target the dedicated storage root so containers, networks, and images in
+  # it are actually found. Mirror install.sh's _PODMAN_CMD construction and
+  # include CONTAINERS_CONF so the same scoped config applies (needed on WSL2).
+  _GA_CONTAINERS_CONF="${HOME}/.config/${_MACHINE_NAME}/containers.conf"
+  _STORAGE_ROOT_EARLY="${HOME}/.local/share/${_MACHINE_NAME}/containers/storage"
+  _RUNTIME_DIR_EARLY="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  _PODMAN_CMD="env CONTAINERS_CONF=${_GA_CONTAINERS_CONF} podman --root=${_STORAGE_ROOT_EARLY} --runroot=${_RUNTIME_DIR_EARLY}/${_MACHINE_NAME}-containers"
 else
   _PODMAN_CMD="podman"
 fi
@@ -176,12 +186,35 @@ if [[ -n "$_HAS_DEDICATED_MACHINE" ]]; then
     # Remove dedicated storage root
     if [[ -z "$KEEP_MACHINE" ]]; then
       if [[ -d "${_STORAGE_ROOT}" ]]; then
+        # Overlay layer diffs are owned by subuid-mapped UIDs inside the
+        # rootless user namespace — plain rm fails with "Permission denied".
+        # Use podman unshare to enter the namespace and wipe them first, then
+        # remove the rest as the host user.
+        podman unshare rm -rf "${HOME}/.local/share/${_MACHINE_NAME}/containers/storage/overlay" \
+          2>/dev/null || true
         rm -rf "${HOME}/.local/share/${_MACHINE_NAME}"
         echo "  ✓ removed dedicated storage root: ${HOME}/.local/share/${_MACHINE_NAME}"
       fi
-      # Clean up runtime dir
+      # Kill any stale rootlessport processes that were bound to this instance.
+      # These survive container removal and hold the port open, blocking reinstall.
+      # They are identified by having the ghostship working directory in their env.
+      for pid in $(pgrep -x rootlessport 2>/dev/null); do
+        port_env=$(cat /proc/"$pid"/environ 2>/dev/null | tr '\0' '\n' | grep -c "ghostship\|ghost.academy\|ghost_academy" || true)
+        if [[ "$port_env" -gt 0 ]] || cat /proc/"$pid"/environ 2>/dev/null | tr '\0' '\n' | grep -q "GHOSTSHIP\|ghost-academy"; then
+          kill "$pid" 2>/dev/null && echo "  ✓ killed stale rootlessport pid $pid" || true
+        fi
+      done
+      # Also remove lingering runtime socket dirs for this instance
       rm -rf "${_RUNTIME_DIR}/${_MACHINE_NAME}-containers" 2>/dev/null || true
       rm -f "${_RUNTIME_DIR}/podman/${_MACHINE_NAME}.sock" 2>/dev/null || true
+      rm -rf "${_RUNTIME_DIR}/${_MACHINE_NAME}" 2>/dev/null || true
+      # Clean up ghostship-scoped containers.conf
+      _GA_CONTAINERS_CONF_CLEANUP="${HOME}/.config/${_MACHINE_NAME}/containers.conf"
+      if [[ -f "${_GA_CONTAINERS_CONF_CLEANUP}" ]]; then
+        rm -f "${_GA_CONTAINERS_CONF_CLEANUP}"
+        echo "  ✓ removed ${_GA_CONTAINERS_CONF_CLEANUP}"
+        rmdir "$(dirname "${_GA_CONTAINERS_CONF_CLEANUP}")" 2>/dev/null || true
+      fi
     else
       echo "  (keeping storage at ${_STORAGE_ROOT} per --keep-machine)"
     fi
