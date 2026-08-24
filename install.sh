@@ -293,9 +293,16 @@ echo "✓ ga-net network ready (DNS-enabled by default)"
 podman pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
   && echo "✓ KiroCrew image pre-warmed" || echo "⚠ KiroCrew image pull failed (offline?)"
 
+VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
+
+echo "Building localhost/base:latest ..."
+podman build -t localhost/base:latest \
+  "$GHOSTSHIP_DIR/crews/_base/" \
+  && echo "✓ base image built" || { echo "✗ base image build failed"; exit 1; }
+
 echo "Building localhost/spec-ops:latest ..."
 podman build -t localhost/spec-ops:latest \
-  --build-arg VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")" \
+  --build-arg VERSION="${VERSION}-spec-ops" \
   "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
