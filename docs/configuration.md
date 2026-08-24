@@ -7,6 +7,7 @@ Environment variables read by the transport server:
 | `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. The host-side protection is in `install.sh`: `-p "127.0.0.1:PORT:PORT"` ensures the port is only reachable from localhost on the host, regardless of the container's internal bind. Set `HOST=127.0.0.1` only for non-containerised installs where loopback-only binding is needed at the process level |
 | `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
+| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:stable` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
 | `GA_MAX_CREWS` | `20` | Maximum number of registered crews (running + stopped). Stopped crews cost no memory, so this is primarily a housekeeping limit on how many persistent workspaces you keep around. Raise it freely on unconstrained hosts |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum number of simultaneously running (active) crew containers. Enforced when a stopped crew is restarted — if the running count already equals this limit, the restart is refused until another crew idles out. Set to `0` to disable the active limit entirely. At ~2–3 GB per running crew, the default of 3 fits comfortably on an 8 GB host |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
@@ -31,6 +32,7 @@ Environment variables read by the transport server:
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
+| `GA_PICKUP_MAX_POLL_SECS` | `30` | Maximum seconds the transport holds an HTTP connection open during a `pickup(timeout_secs=N)` long-poll. When this cap fires before the caller's `timeout_secs` elapses, `pickup` returns a normal JSON response with `"reason": "timeout"` so the caller can re-poll — the MCP transport error path is never used for a clean timeout expiry. Set lower if your MCP client has a short read timeout; set higher if you have confirmed your client tolerates longer-lived connections |
 
 > **Internal constant — not user-settable:**
 > `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each

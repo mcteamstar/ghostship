@@ -50,9 +50,8 @@ These routes proxy directly through to a crew's gateway. They require the same
 ### Gateway UI proxy
 
 ```
-GET  /crews/{crew_id}/ui
-GET  /crews/{crew_id}/ui/{path}
-POST /crews/{crew_id}/ui/{path}
+GET|POST /crews/{crew_id}/ui
+GET|POST /crews/{crew_id}/ui/{path:path}
 ```
 
 Proxies to `http://gs-{crew_id}:5476/{path}`. Opens the crew's KiroCrew dashboard
@@ -67,7 +66,7 @@ http://<transport-host>:<PORT>/crews/my-crew/ui
 ### Gateway API proxy
 
 ```
-GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/api/{path}
+GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/api/{path:path}
 ```
 
 Proxies to `http://gs-{crew_id}:5476/api/{path}` with the internal session cookie

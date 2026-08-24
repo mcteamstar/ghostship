@@ -119,7 +119,7 @@ Ship operations (the crew container itself) come first, then crew operations
 | Tool | Description |
 |:-----|:------------|
 | `crews` | List all registered crews and their status. |
-| `launch` | Summon a new crew container + workspace. Repository seeding is a separate step. |
+| `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
 | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
 | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |

@@ -118,6 +118,7 @@ GA_RESOURCE_PRESSURE_GB = float(os.environ.get("GA_RESOURCE_PRESSURE_GB", "2.0")
 GA_RESOURCE_CRITICAL_GB = float(os.environ.get("GA_RESOURCE_CRITICAL_GB", "1.0"))
 GA_SUBAGENT_TIMEOUT_SECS = int(os.environ.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"))
 GA_SUBAGENT_MAX_TURNS = int(os.environ.get("GA_SUBAGENT_MAX_TURNS", "200"))
+GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
 
 # ── Version ───────────────────────────────────────────────────────────────────
@@ -4053,7 +4054,7 @@ def pickup(
         return {"error": str(e)}
 
     container = crew["container"]
-    effective_timeout = max(0, timeout_secs)
+    effective_timeout = min(max(0, timeout_secs), GA_PICKUP_MAX_POLL_SECS) if timeout_secs > 0 else 0
 
     if task_id:
         return _pickup_single(crew, crew_id, task_id, podman, container, effective_timeout)
@@ -4122,6 +4123,8 @@ def _pickup_single(
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            if not done:
+                out["reason"] = "timeout"
             return out
 
         # F-03 audit: @mcp.tool() handlers are dispatched via run_in_executor
@@ -4210,6 +4213,7 @@ def _pickup_list(
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            out["reason"] = "timeout"
             return out
 
         # F-03: same as _pickup_single — time.sleep is safe in executor thread.

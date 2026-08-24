@@ -321,9 +321,14 @@ verifies this signature on load; a tampered `security_policy.json` causes a
 mismatch and the gateway refuses to continue — an agent cannot forge a valid
 policy without the `admiral_secret`.
 
-`admission_policy.json` records only `require_policy_signature: true` — it
-does **not** hold the `admiral_secret` or any trust key. The secret used to
-verify the signature is read from `.admiral_secret` at verification time.
+`admission_policy.json` also carries the `admiral_secret` in its `trust_keys`
+field — this is required by KiroCrew's governance API, which reads trust keys
+from the policy file at gateway startup. Delivering the secret exclusively via
+the `.admiral_secret` file (which would close the agent-readability gap
+described in the threat model above) was investigated in TRN-38 but reverted
+because `trust_keys` is a hard dependency of the governance API. The
+`require_policy_signature: false` flag is set in `admission_policy.json` while
+that API contract is being resolved upstream.
 
 ### Storage
 

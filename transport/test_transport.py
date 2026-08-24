@@ -886,8 +886,37 @@ class PickupTimeoutTests(unittest.TestCase):
         self.assertFalse(result["done"])
         self.assertEqual(result["crew_id"], "demo")
         # Should not have "error" key set (or empty string)
-        self.assertNotIn("reason", result)
+        self.assertEqual(result.get("reason"), "timeout")
         self.assertFalse(result.get("error"))
+
+    def test_pickup_poll_cap_fires_before_caller_timeout(self) -> None:
+        """5.3b — internal GA_PICKUP_MAX_POLL_SECS cap fires before caller timeout_secs;
+        response is a normal dict with reason='timeout', not a transport error."""
+        clock = [0.0]
+
+        def advance(seconds: float) -> None:
+            clock[0] += seconds
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api", return_value=self._task_response(False)),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(server.time, "sleep", side_effect=advance),
+            patch.object(server, "GA_PICKUP_MAX_POLL_SECS", 5),
+        ):
+            # caller requests 60s, but the internal cap is 5s
+            result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
+
+        # Must be a normal dict — no exception raised
+        self.assertIsInstance(result, dict)
+        self.assertFalse(result["done"])
+        self.assertEqual(result.get("reason"), "timeout")
+        self.assertFalse(result.get("error"))
+        self.assertEqual(result["crew_id"], "demo")
 
     def test_pickup_mail_counts_present_single_task(self) -> None:
         """5.4 — mail counts present in single-task response."""
