@@ -4,7 +4,7 @@
 Exit codes:
   0 — valid signature (message is genuine Admiral mail)
   1 — signature mismatch (message is not genuine)
-  2 — signing secret not found (cannot verify)
+  2 — signing secret not found after retries (cannot verify; transient)
 
 Usage:
   cat /var/mail/captain/new/<msg> | verify-admiral-sig
@@ -13,9 +13,13 @@ import sys
 import hmac
 import hashlib
 import email
+import time
 
 SECRET_PATH = '/home/kirocrew/.kiro/crew/.admiral_secret'
 SECRET_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_secret'
+
+MAX_RETRIES = 3
+RETRY_DELAY_SECS = 2
 
 msg = email.message_from_file(sys.stdin)
 sig = msg.get('X-Admiral-Sig', '').strip()
@@ -25,7 +29,8 @@ if not sig:
     # No signature header present — not Admiral mail
     sys.exit(1)
 
-try:
+secret = None
+for attempt in range(MAX_RETRIES):
     for path in (SECRET_PATH, SECRET_PATH_FALLBACK):
         try:
             with open(path) as f:
@@ -33,9 +38,14 @@ try:
             break
         except FileNotFoundError:
             continue
-    else:
-        sys.exit(2)
-except Exception:
+    if secret is not None:
+        break
+    # Secret not found — wait and retry (transient race with container startup)
+    if attempt < MAX_RETRIES - 1:
+        time.sleep(RETRY_DELAY_SECS)
+
+if secret is None:
+    # All retries exhausted — secret file absent (transient condition)
     sys.exit(2)
 
 expected = hmac.new(secret, body.encode('utf-8'), hashlib.sha256).hexdigest()

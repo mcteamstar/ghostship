@@ -28,7 +28,7 @@ The system SHALL accept a `--config <path>` flag pointing to a shell file that e
 - **THEN** the script SHALL exit with a non-zero status and print an error indicating the file does not exist or is not readable
 
 #### Scenario: Config file with all supported variables
-- **WHEN** a config file exports any combination of: `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE`, `PORT`, `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT`, `GA_API_KEY`, `GA_FILE_PUBLIC_URL`, `GA_MCP_PUBLIC_URL`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MACHINE_CPUS`, `GA_MACHINE_MEMORY`, `GA_MACHINE_DISK`
+- **WHEN** a config file exports any combination of: `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE`, `PORT`, `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT`, `GA_API_KEY`, `GA_FILE_PUBLIC_URL`, `GA_MCP_PUBLIC_URL`
 - **THEN** each exported variable SHALL act as a default, overridable by its corresponding flag
 
 ### Requirement: Config file format documentation

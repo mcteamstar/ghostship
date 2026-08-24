@@ -29,22 +29,6 @@ PORT=64057
 # Precedence: KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
 # KC_MODEL_DEFAULT=""
 
-# ── Dedicated Podman Machine ──────────────────────────────────────────────────
-# Provision an isolated Podman machine (macOS) or instance (Linux) exclusively
-# for Ghost Academy crew containers. Keeps GA containers off your default
-# Podman runtime — no contention, no accidental interference from IDE plugins
-# or other tooling. Default: disabled (uses your existing default machine).
-#
-# GA_DEDICATED_MACHINE=true
-#
-# macOS only — resources allocated to the dedicated VM:
-# GA_MACHINE_CPUS=4
-# GA_MACHINE_MEMORY=8192
-# GA_MACHINE_DISK=60
-#
-# Name of the dedicated machine/service (default "ghostship"):
-# GA_MACHINE_NAME="ghostship"
-
 # ── Crew lifecycle ────────────────────────────────────────────────────────────
 # Stop idle crew containers after this many seconds to free memory.
 # The schedule monitor wakes crews before ticks fire, so this can be set

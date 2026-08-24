@@ -231,8 +231,8 @@ class TestInstallShPodmanSecret(unittest.TestCase):
             self.skipTest("install.sh not found relative to test")
 
         content = install_path.read_text()
-        self.assertIn("secret rm ga-api-key", content)
-        self.assertIn("secret create ga-api-key", content)
+        self.assertIn("podman secret rm ga-api-key", content)
+        self.assertIn("podman secret create ga-api-key", content)
         self.assertIn("--secret ga-api-key", content)
         # Verify the env var line is gone
         self.assertNotIn('-e "GA_API_KEY=${GA_API_KEY:-}"', content)
