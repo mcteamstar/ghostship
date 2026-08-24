@@ -104,8 +104,6 @@ fi
 
 ## Avoid duplicate dispatches
 
-For SDD transitions, the full dispatch-coordination pattern—including its pre-spawn intent token, post-spawn assigned-ID confirmation, and pending-marker election—is defined in `academy/orders/sdd.md` and applies to every SDD transition, including Ghost, Banshee, and Reaper dispatches.
-
 Before dispatching any persona task, check `spawn list` to confirm no task for
 that persona is already in flight. If a task is running, steer or continue it
 rather than spawning a duplicate. Duplicate dispatches waste resources, can
