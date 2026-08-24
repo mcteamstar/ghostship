@@ -35,9 +35,9 @@ process sees and what each default means:
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum free memory (GB) required before starting a crew container. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) exclusively for Ghost Academy. Crew containers are fully isolated from the host's default Podman runtime. Set to `false` to use the default socket instead |
-| `GA_MACHINE_CPUS` | `4` | CPUs allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
-| `GA_MACHINE_MEMORY` | `8192` | Memory in MB allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
-| `GA_MACHINE_DISK` | `60` | Disk size in GB allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
+| `GA_MACHINE_CPUS` | `8` | vCPUs allocated to the dedicated Podman machine VM (macOS only) — a cap on concurrent vCPU threads, not a reservation; the host scheduler time-shares real cores across them like any other process. Ignored on Linux |
+| `GA_MACHINE_MEMORY` | `16384` | Memory in MB allocated to the dedicated Podman machine VM (macOS only) — a ceiling, not an upfront reservation (Apple's Virtualization.framework backs guest RAM on demand, so idle usage stays far below this). Ignored on Linux |
+| `GA_MACHINE_DISK` | `100` | Disk size in GB allocated to the dedicated Podman machine VM (macOS only) — backed by a sparse file, so this is an apparent-size ceiling; actual disk blocks are only consumed as data is written. Ignored on Linux |
 | `GA_MACHINE_NAME` | `ghost-academy` | Name of the dedicated machine (macOS) or systemd service suffix (Linux). Used as the machine name in `podman machine` commands and as the service name in `podman-<name>.socket`/`.service` |
 | `GA_MEMORY_WAIT_SECS` | `60` | Maximum seconds to wait for sufficient memory before returning an error. Only relevant when `GA_MIN_FREE_MEM_GB > 0` |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |

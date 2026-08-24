@@ -1,28 +1,31 @@
 # ghostship.conf.example — copy to ghostship.conf and fill in your values
 # Pass to install.sh with: ./install.sh --config ghostship.conf
+# Every value below is commented out and shows install.sh's actual built-in
+# default (kept in sync with the literal defaults block at the top of
+# install.sh) — uncomment and edit only the ones you want to override.
 # Full reference: docs/configuration.md
 
 # ── Network ───────────────────────────────────────────────────────────────────
 # Port the transport listens on (MCP + file transfer on the same port).
-PORT=64057
+# PORT=64057
 
 # Public URL baked into presigned evac/supply links.
 # For local installs, leave unset (defaults to http://localhost:<PORT>).
 # For remote installs, set to the publicly reachable address.
-# GA_HOST_URL="https://my-host.example.com"
+# GA_HOST_URL=""
 
 # ── Authentication ────────────────────────────────────────────────────────────
 # API key for MCP endpoint auth. Leave unset for local/trusted installs.
-# GA_API_KEY="your-secret-key"
+# GA_API_KEY=""
 
 # kiro-cli identity provider (omit to use default Builder ID / free tier).
-# KIRO_IDENTITY_PROVIDER="https://your-sso.awsapps.com/start/#/"
-# KIRO_REGION="us-east-1"
-# KIRO_LICENSE="pro"
+# KIRO_IDENTITY_PROVIDER=""
+# KIRO_REGION=""
+# KIRO_LICENSE=""
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 # Override the default model for all crew agents.
-# KC_MODEL_OVERRIDE="claude-sonnet-4.6"
+# KC_MODEL_OVERRIDE=""
 
 # Set a global model fallback for agents that don't have a per-agent model set.
 # Lower precedence than KC_MODEL_OVERRIDE and per-agent model fields.
@@ -34,23 +37,21 @@ PORT=64057
 # for Ghost Academy crew containers. Keeps GA containers off your default
 # Podman runtime — no contention, no accidental interference from IDE plugins
 # or other tooling. Default: enabled, named "ghost-academy".
-#
-# Set to false to use your existing default Podman machine instead:
-# GA_DEDICATED_MACHINE=false
-#
+# GA_DEDICATED_MACHINE=true
+
 # macOS only — resources allocated to the dedicated VM:
-# GA_MACHINE_CPUS=4
-# GA_MACHINE_MEMORY=8192
-# GA_MACHINE_DISK=60
-#
-# Name of the dedicated machine/service (default "ghost-academy"):
+# GA_MACHINE_CPUS=8
+# GA_MACHINE_MEMORY=16384
+# GA_MACHINE_DISK=100
+
+# Name of the dedicated machine/service:
 # GA_MACHINE_NAME="ghost-academy"
 
 # ── Crew lifecycle ────────────────────────────────────────────────────────────
 # Stop idle crew containers after this many seconds to free memory.
 # The schedule monitor wakes crews before ticks fire, so this can be set
 # independently of any captain interval.
-GA_IDLE_TIMEOUT_SECS=300
+# GA_IDLE_TIMEOUT_SECS=300
 
 # Maximum number of registered crews (running + stopped).
 # Stopped crews cost no memory, so this is a housekeeping limit.
@@ -63,21 +64,21 @@ GA_IDLE_TIMEOUT_SECS=300
 
 # ── Subagent timeouts ─────────────────────────────────────────────────────────
 # Wall-clock timeout per task (seconds). KiroCrew default is 1800 (30 min).
-GA_SUBAGENT_TIMEOUT_SECS=3600
+# GA_SUBAGENT_TIMEOUT_SECS=3600
 
 # Maximum turns per task. KiroCrew default is 100.
-GA_SUBAGENT_MAX_TURNS=200
+# GA_SUBAGENT_MAX_TURNS=200
 
 # ── Memory gate ───────────────────────────────────────────────────────────────
 # Minimum free host memory (GB) required before launching a new crew.
 # Set to 0 to disable the gate entirely.
-GA_MIN_FREE_MEM_GB=2.0
+# GA_MIN_FREE_MEM_GB=2.0
 
 # How long to wait (seconds) for memory to free up before failing the launch.
-GA_MEMORY_WAIT_SECS=60
+# GA_MEMORY_WAIT_SECS=60
 
 # ── KiroCrew memory thresholds ────────────────────────────────────────────────
 # Written to config.local.json inside each crew at launch.
-GA_SPAWN_MIN_MEMORY_GB=1.5
-GA_RESOURCE_PRESSURE_GB=2.0
-GA_RESOURCE_CRITICAL_GB=1.0
+# GA_SPAWN_MIN_MEMORY_GB=1.5
+# GA_RESOURCE_PRESSURE_GB=2.0
+# GA_RESOURCE_CRITICAL_GB=1.0

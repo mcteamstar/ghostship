@@ -176,9 +176,9 @@ test_parse_dedicated() {
   local API_KEY_FLAG_PASSED=0
   local GA_API_KEY=""
   local GA_DEDICATED_MACHINE="${GA_DEDICATED_MACHINE:-true}"
-  local GA_MACHINE_CPUS="${GA_MACHINE_CPUS:-4}"
-  local GA_MACHINE_MEMORY="${GA_MACHINE_MEMORY:-8192}"
-  local GA_MACHINE_DISK="${GA_MACHINE_DISK:-60}"
+  local GA_MACHINE_CPUS="${GA_MACHINE_CPUS:-8}"
+  local GA_MACHINE_MEMORY="${GA_MACHINE_MEMORY:-16384}"
+  local GA_MACHINE_DISK="${GA_MACHINE_DISK:-100}"
   local GA_MACHINE_NAME="${GA_MACHINE_NAME:-ghost-academy}"
   local _args=("$@")
 
@@ -202,9 +202,9 @@ test_parse_dedicated() {
 
   # Apply defaults after config sourcing
   GA_DEDICATED_MACHINE="${GA_DEDICATED_MACHINE:-true}"
-  GA_MACHINE_CPUS="${GA_MACHINE_CPUS:-4}"
-  GA_MACHINE_MEMORY="${GA_MACHINE_MEMORY:-8192}"
-  GA_MACHINE_DISK="${GA_MACHINE_DISK:-60}"
+  GA_MACHINE_CPUS="${GA_MACHINE_CPUS:-8}"
+  GA_MACHINE_MEMORY="${GA_MACHINE_MEMORY:-16384}"
+  GA_MACHINE_DISK="${GA_MACHINE_DISK:-100}"
   GA_MACHINE_NAME="${GA_MACHINE_NAME:-ghost-academy}"
 
   # Second pass: parse flags
@@ -233,9 +233,9 @@ test_parse_dedicated() {
 
 OUTPUT=$(test_parse_dedicated)
 echo "$OUTPUT" | grep -q "GA_DEDICATED_MACHINE=true" && pass "GA_DEDICATED_MACHINE defaults to true" || fail "GA_DEDICATED_MACHINE default"
-echo "$OUTPUT" | grep -q "GA_MACHINE_CPUS=4" && pass "GA_MACHINE_CPUS defaults to 4" || fail "GA_MACHINE_CPUS default"
-echo "$OUTPUT" | grep -q "GA_MACHINE_MEMORY=8192" && pass "GA_MACHINE_MEMORY defaults to 8192" || fail "GA_MACHINE_MEMORY default"
-echo "$OUTPUT" | grep -q "GA_MACHINE_DISK=60" && pass "GA_MACHINE_DISK defaults to 60" || fail "GA_MACHINE_DISK default"
+echo "$OUTPUT" | grep -q "GA_MACHINE_CPUS=8" && pass "GA_MACHINE_CPUS defaults to 8" || fail "GA_MACHINE_CPUS default"
+echo "$OUTPUT" | grep -q "GA_MACHINE_MEMORY=16384" && pass "GA_MACHINE_MEMORY defaults to 16384" || fail "GA_MACHINE_MEMORY default"
+echo "$OUTPUT" | grep -q "GA_MACHINE_DISK=100" && pass "GA_MACHINE_DISK defaults to 100" || fail "GA_MACHINE_DISK default"
 echo "$OUTPUT" | grep -q "GA_MACHINE_NAME=ghost-academy" && pass "GA_MACHINE_NAME defaults to ghost-academy" || fail "GA_MACHINE_NAME default"
 
 # ── Test 8: Dedicated machine variables from config file ──────────────────────
@@ -246,7 +246,7 @@ cat > "$TMPDIR/dedicated.conf" <<'EOF'
 GA_DEDICATED_MACHINE=true
 GA_MACHINE_CPUS=6
 GA_MACHINE_MEMORY=12288
-GA_MACHINE_DISK=100
+GA_MACHINE_DISK=150
 GA_MACHINE_NAME=academy
 PORT=9999
 EOF
@@ -255,7 +255,7 @@ OUTPUT=$(test_parse_dedicated --config "$TMPDIR/dedicated.conf")
 echo "$OUTPUT" | grep -q "GA_DEDICATED_MACHINE=true" && pass "GA_DEDICATED_MACHINE from config" || fail "GA_DEDICATED_MACHINE from config"
 echo "$OUTPUT" | grep -q "GA_MACHINE_CPUS=6" && pass "GA_MACHINE_CPUS from config" || fail "GA_MACHINE_CPUS from config"
 echo "$OUTPUT" | grep -q "GA_MACHINE_MEMORY=12288" && pass "GA_MACHINE_MEMORY from config" || fail "GA_MACHINE_MEMORY from config"
-echo "$OUTPUT" | grep -q "GA_MACHINE_DISK=100" && pass "GA_MACHINE_DISK from config" || fail "GA_MACHINE_DISK from config"
+echo "$OUTPUT" | grep -q "GA_MACHINE_DISK=150" && pass "GA_MACHINE_DISK from config" || fail "GA_MACHINE_DISK from config"
 echo "$OUTPUT" | grep -q "GA_MACHINE_NAME=academy" && pass "GA_MACHINE_NAME from config" || fail "GA_MACHINE_NAME from config"
 
 # ── Test 9: Socket path resolution logic (Linux, GA_DEDICATED_MACHINE=true) ──
