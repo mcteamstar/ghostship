@@ -159,6 +159,254 @@ echo "$OUTPUT" | grep -q "PORT=7777" && pass "PORT flag overrides" || fail "PORT
 echo "$OUTPUT" | grep -q "KIRO_IDENTITY_PROVIDER=https://config-idp.example.com" && pass "IDP kept from config" || fail "IDP kept from config"
 echo "$OUTPUT" | grep -q "GA_FILE_PUBLIC_URL=https://config-files.example.com" && pass "FILE_PUBLIC_URL kept from config" || fail "FILE_PUBLIC_URL kept from config"
 
+# ── Test 7: Dedicated machine config variables have defaults ──────────────────
+echo ""
+echo "--- Test 7: Dedicated machine variables — defaults when unset ---"
+
+test_parse_dedicated() {
+  # Reset variables
+  local PORT=64057
+  local CONFIG_FILE=""
+  local KIRO_IDENTITY_PROVIDER=""
+  local KIRO_REGION=""
+  local KIRO_LICENSE=""
+  local KC_MODEL_OVERRIDE=""
+  local GA_FILE_PUBLIC_URL=""
+  local GA_MCP_PUBLIC_URL=""
+  local API_KEY_FLAG_PASSED=0
+  local GA_API_KEY=""
+  local GA_DEDICATED_MACHINE="${GA_DEDICATED_MACHINE:-true}"
+  local GA_MACHINE_CPUS="${GA_MACHINE_CPUS:-4}"
+  local GA_MACHINE_MEMORY="${GA_MACHINE_MEMORY:-8192}"
+  local GA_MACHINE_DISK="${GA_MACHINE_DISK:-60}"
+  local GA_MACHINE_NAME="${GA_MACHINE_NAME:-ghost-academy}"
+  local _args=("$@")
+
+  # First pass: extract --config
+  for ((i=0; i < ${#_args[@]}; i++)); do
+    if [[ "${_args[i]}" == "--config" ]]; then
+      CONFIG_FILE="${_args[i+1]:-}"
+      break
+    fi
+  done
+
+  # Source config if provided
+  if [[ -n "$CONFIG_FILE" ]]; then
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+      echo "__ERROR__:config file does not exist"
+      return 0
+    fi
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+  fi
+
+  # Apply defaults after config sourcing
+  GA_DEDICATED_MACHINE="${GA_DEDICATED_MACHINE:-true}"
+  GA_MACHINE_CPUS="${GA_MACHINE_CPUS:-4}"
+  GA_MACHINE_MEMORY="${GA_MACHINE_MEMORY:-8192}"
+  GA_MACHINE_DISK="${GA_MACHINE_DISK:-60}"
+  GA_MACHINE_NAME="${GA_MACHINE_NAME:-ghost-academy}"
+
+  # Second pass: parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --config) shift 2 ;;
+      --identity-provider) KIRO_IDENTITY_PROVIDER="$2"; shift 2 ;;
+      --region) KIRO_REGION="$2"; shift 2 ;;
+      --license) KIRO_LICENSE="$2"; shift 2 ;;
+      --port) PORT="$2"; shift 2 ;;
+      --model) KC_MODEL_OVERRIDE="$2"; shift 2 ;;
+      --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
+      --file-public-url) GA_FILE_PUBLIC_URL="$2"; shift 2 ;;
+      --mcp-public-url) GA_MCP_PUBLIC_URL="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  echo "GA_DEDICATED_MACHINE=$GA_DEDICATED_MACHINE"
+  echo "GA_MACHINE_CPUS=$GA_MACHINE_CPUS"
+  echo "GA_MACHINE_MEMORY=$GA_MACHINE_MEMORY"
+  echo "GA_MACHINE_DISK=$GA_MACHINE_DISK"
+  echo "GA_MACHINE_NAME=$GA_MACHINE_NAME"
+  echo "PORT=$PORT"
+}
+
+OUTPUT=$(test_parse_dedicated)
+echo "$OUTPUT" | grep -q "GA_DEDICATED_MACHINE=true" && pass "GA_DEDICATED_MACHINE defaults to true" || fail "GA_DEDICATED_MACHINE default"
+echo "$OUTPUT" | grep -q "GA_MACHINE_CPUS=4" && pass "GA_MACHINE_CPUS defaults to 4" || fail "GA_MACHINE_CPUS default"
+echo "$OUTPUT" | grep -q "GA_MACHINE_MEMORY=8192" && pass "GA_MACHINE_MEMORY defaults to 8192" || fail "GA_MACHINE_MEMORY default"
+echo "$OUTPUT" | grep -q "GA_MACHINE_DISK=60" && pass "GA_MACHINE_DISK defaults to 60" || fail "GA_MACHINE_DISK default"
+echo "$OUTPUT" | grep -q "GA_MACHINE_NAME=ghost-academy" && pass "GA_MACHINE_NAME defaults to ghost-academy" || fail "GA_MACHINE_NAME default"
+
+# ── Test 8: Dedicated machine variables from config file ──────────────────────
+echo ""
+echo "--- Test 8: Dedicated machine variables from config file ---"
+
+cat > "$TMPDIR/dedicated.conf" <<'EOF'
+GA_DEDICATED_MACHINE=true
+GA_MACHINE_CPUS=6
+GA_MACHINE_MEMORY=12288
+GA_MACHINE_DISK=100
+GA_MACHINE_NAME=academy
+PORT=9999
+EOF
+
+OUTPUT=$(test_parse_dedicated --config "$TMPDIR/dedicated.conf")
+echo "$OUTPUT" | grep -q "GA_DEDICATED_MACHINE=true" && pass "GA_DEDICATED_MACHINE from config" || fail "GA_DEDICATED_MACHINE from config"
+echo "$OUTPUT" | grep -q "GA_MACHINE_CPUS=6" && pass "GA_MACHINE_CPUS from config" || fail "GA_MACHINE_CPUS from config"
+echo "$OUTPUT" | grep -q "GA_MACHINE_MEMORY=12288" && pass "GA_MACHINE_MEMORY from config" || fail "GA_MACHINE_MEMORY from config"
+echo "$OUTPUT" | grep -q "GA_MACHINE_DISK=100" && pass "GA_MACHINE_DISK from config" || fail "GA_MACHINE_DISK from config"
+echo "$OUTPUT" | grep -q "GA_MACHINE_NAME=academy" && pass "GA_MACHINE_NAME from config" || fail "GA_MACHINE_NAME from config"
+
+# ── Test 9: Socket path resolution logic (Linux, GA_DEDICATED_MACHINE=true) ──
+echo ""
+echo "--- Test 9: Socket path resolution — dedicated vs default ---"
+
+test_socket_resolution() {
+  local GA_DEDICATED_MACHINE="$1"
+  local GA_MACHINE_NAME="${2:-ghost-academy}"
+  local _UID=$(id -u)
+  local PODMAN_SOCK=""
+
+  if [[ "$GA_DEDICATED_MACHINE" == "true" ]]; then
+    local _RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$_UID}"
+    PODMAN_SOCK="${_RUNTIME_DIR}/podman/${GA_MACHINE_NAME}.sock"
+  else
+    PODMAN_SOCK="/run/user/$_UID/podman/podman.sock"
+  fi
+  echo "$PODMAN_SOCK"
+}
+
+_UID=$(id -u)
+EXPECTED_DEFAULT="/run/user/${_UID}/podman/podman.sock"
+EXPECTED_DEDICATED="/run/user/${_UID}/podman/ghost-academy.sock"
+EXPECTED_CUSTOM="/run/user/${_UID}/podman/academy.sock"
+
+OUTPUT=$(test_socket_resolution "false")
+[[ "$OUTPUT" == "$EXPECTED_DEFAULT" ]] && pass "Default socket path: $OUTPUT" || fail "Default socket path (got: $OUTPUT, expected: $EXPECTED_DEFAULT)"
+
+OUTPUT=$(test_socket_resolution "true" "ghost-academy")
+[[ "$OUTPUT" == "$EXPECTED_DEDICATED" ]] && pass "Dedicated socket path: $OUTPUT" || fail "Dedicated socket path (got: $OUTPUT, expected: $EXPECTED_DEDICATED)"
+
+OUTPUT=$(test_socket_resolution "true" "academy")
+[[ "$OUTPUT" == "$EXPECTED_CUSTOM" ]] && pass "Custom-name socket path: $OUTPUT" || fail "Custom-name socket path (got: $OUTPUT, expected: $EXPECTED_CUSTOM)"
+
+# ── Test 10: GA_DEDICATED_MACHINE=false skips dedicated provisioning ──────────
+echo ""
+echo "--- Test 10: Fallback — GA_DEDICATED_MACHINE=false uses default socket ---"
+
+test_gate_logic() {
+  local GA_DEDICATED_MACHINE="${1:-true}"
+  if [[ "$GA_DEDICATED_MACHINE" == "false" ]]; then
+    echo "DEFAULT"
+  else
+    echo "DEDICATED"
+  fi
+}
+
+OUTPUT=$(test_gate_logic "false")
+[[ "$OUTPUT" == "DEFAULT" ]] && pass "GA_DEDICATED_MACHINE=false → DEFAULT path" || fail "Gate: false → DEFAULT"
+
+OUTPUT=$(test_gate_logic "")
+[[ "$OUTPUT" == "DEDICATED" ]] && pass "GA_DEDICATED_MACHINE unset → DEDICATED path" || fail "Gate: unset → DEDICATED"
+
+OUTPUT=$(test_gate_logic "true")
+[[ "$OUTPUT" == "DEDICATED" ]] && pass "GA_DEDICATED_MACHINE=true → DEDICATED path" || fail "Gate: true → DEDICATED"
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+# ── Test 11: Ambient env var is IGNORED when neither config nor flag sets it ──
+echo ""
+echo "--- Test 11: Ambient env var ignored (no config, no flag → built-in default) ---"
+
+# This test function replicates the NEW resolution logic: literal default
+# BEFORE config sourcing. An ambient env var should have NO effect.
+test_parse_no_ambient() {
+  # Literal built-in defaults (BEFORE config sourcing)
+  local PORT=64057
+  local KIRO_IDENTITY_PROVIDER=""
+  local GA_MACHINE_NAME=ghost-academy
+  local GA_MAX_CREWS=20
+  local CONFIG_FILE=""
+  local _args=("$@")
+
+  # First pass: extract --config
+  for ((i=0; i < ${#_args[@]}; i++)); do
+    if [[ "${_args[i]}" == "--config" ]]; then
+      CONFIG_FILE="${_args[i+1]:-}"
+      break
+    fi
+  done
+
+  # Source config if provided (overwrites built-in defaults)
+  if [[ -n "$CONFIG_FILE" ]]; then
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+      echo "__ERROR__:config file does not exist"
+      return 0
+    fi
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+  fi
+
+  # Second pass: parse flags (overwrites config values)
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --config) shift 2 ;;
+      --identity-provider) KIRO_IDENTITY_PROVIDER="$2"; shift 2 ;;
+      --port) PORT="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  echo "PORT=$PORT"
+  echo "KIRO_IDENTITY_PROVIDER=$KIRO_IDENTITY_PROVIDER"
+  echo "GA_MACHINE_NAME=$GA_MACHINE_NAME"
+  echo "GA_MAX_CREWS=$GA_MAX_CREWS"
+}
+
+# Set ambient env vars that should be ignored
+export KIRO_IDENTITY_PROVIDER="https://ambient-leak.example.com"
+export GA_MACHINE_NAME="ambient-machine"
+export GA_MAX_CREWS=999
+
+OUTPUT=$(test_parse_no_ambient)
+
+echo "$OUTPUT" | grep -q "KIRO_IDENTITY_PROVIDER=$" \
+  && pass "Ambient KIRO_IDENTITY_PROVIDER ignored (flagged var)" \
+  || fail "Ambient KIRO_IDENTITY_PROVIDER leaked (got: $(echo "$OUTPUT" | grep KIRO_IDENTITY_PROVIDER))"
+echo "$OUTPUT" | grep -q "GA_MACHINE_NAME=ghost-academy" \
+  && pass "Ambient GA_MACHINE_NAME ignored (dedicated-machine var)" \
+  || fail "Ambient GA_MACHINE_NAME leaked (got: $(echo "$OUTPUT" | grep GA_MACHINE_NAME))"
+echo "$OUTPUT" | grep -q "GA_MAX_CREWS=20" \
+  && pass "Ambient GA_MAX_CREWS ignored (crew-limit var)" \
+  || fail "Ambient GA_MAX_CREWS leaked (got: $(echo "$OUTPUT" | grep GA_MAX_CREWS))"
+
+# ── Test 12: Config file overrides ambient env var ────────────────────────────
+echo ""
+echo "--- Test 12: Config file value wins over ambient env var ---"
+
+cat > "$TMPDIR/override-ambient.conf" <<'EOF'
+KIRO_IDENTITY_PROVIDER="https://config-wins.example.com"
+GA_MACHINE_NAME=config-machine
+GA_MAX_CREWS=42
+EOF
+
+# Ambient vars still exported from test 11
+OUTPUT=$(test_parse_no_ambient --config "$TMPDIR/override-ambient.conf")
+
+echo "$OUTPUT" | grep -q "KIRO_IDENTITY_PROVIDER=https://config-wins.example.com" \
+  && pass "Config overrides ambient KIRO_IDENTITY_PROVIDER" \
+  || fail "Config did not override ambient KIRO_IDENTITY_PROVIDER (got: $(echo "$OUTPUT" | grep KIRO_IDENTITY_PROVIDER))"
+echo "$OUTPUT" | grep -q "GA_MACHINE_NAME=config-machine" \
+  && pass "Config overrides ambient GA_MACHINE_NAME" \
+  || fail "Config did not override ambient GA_MACHINE_NAME (got: $(echo "$OUTPUT" | grep GA_MACHINE_NAME))"
+echo "$OUTPUT" | grep -q "GA_MAX_CREWS=42" \
+  && pass "Config overrides ambient GA_MAX_CREWS" \
+  || fail "Config did not override ambient GA_MAX_CREWS (got: $(echo "$OUTPUT" | grep GA_MAX_CREWS))"
+
+# Clean up exported vars
+unset KIRO_IDENTITY_PROVIDER GA_MACHINE_NAME GA_MAX_CREWS
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

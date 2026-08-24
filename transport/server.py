@@ -2151,10 +2151,17 @@ def _inject_auth(podman: PodmanClient, container: str, auth_b64: str) -> bool:
 
 
 def _wait_gateway(url: str, timeout: int = 30) -> bool:
+    """Poll /api/ready until KiroCrew reports startup_complete (200), or timeout.
+
+    /api/ready is auth-bypassed and returns 503 until the session manager is
+    wired and post-bind startup work finishes — unlike GET / which returns the
+    SPA HTML the moment the HTTP server binds, before KiroCrew is ready to
+    accept dispatches.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            if _http.get(f"{url}/", timeout=2.0).status_code == 200:
+            if _http.get(f"{url}/api/ready", timeout=2.0).status_code == 200:
                 return True
         except Exception:
             pass

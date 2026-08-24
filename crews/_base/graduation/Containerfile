@@ -1,0 +1,35 @@
+# Graduation layer: applied after a composition to restore USER kirocrew and
+# run kirocrew-owned setup steps. Every recruit who completes induction and
+# their composition training graduates here before being commissioned.
+#
+# Takes MID_IMAGE as a build arg — the intermediate image produced by the
+# composition's own Containerfile. install.sh builds this as the final step
+# for each composition, tagging it as the launchable image.
+#
+# This is a build dependency, not a launchable composition — it is NOT
+# listed in crews/registry.json.
+ARG MID_IMAGE
+FROM ${MID_IMAGE}
+
+# Pre-seed the kiro-cli SQLite DB with schema + all migrations applied.
+# At launch, transport only needs to INSERT auth_kv rows — no migration wait,
+# no restart needed.
+#
+# ⚠️  FRAGILITY WARNING — read before updating kirocrew:
+# This schema and migration count (10 rows, versions 0–9) was extracted from
+# kiro-cli as shipped with kirocrew 0.2.0. If kiro-cli adds new migrations in a
+# future kirocrew release, this pre-seeded DB will be missing them and kiro-cli
+# may fail to start or behave incorrectly in crew containers.
+#
+# When updating the FROM ghcr.io/kirodotdev/kirocrew pin to a newer version:
+#   1. Spin up a crew with the old image, run launch normally
+#   2. In the running container: python3 -c "import sqlite3; conn=sqlite3.connect(
+#      '/home/kirocrew/.local/share/kiro-cli/data.sqlite3');
+#      print(conn.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
+#   3. If count or max version changed, update seed_kiro_db.py below to match
+#   4. If schema changed, update the CREATE TABLE statements in seed_kiro_db.py too
+#
+# Tracked in: README.md — "Extending the crew image"
+COPY --chown=kirocrew:kirocrew seed_kiro_db.py /tmp/seed_kiro_db.py
+USER kirocrew
+RUN python3 /tmp/seed_kiro_db.py && rm /tmp/seed_kiro_db.py

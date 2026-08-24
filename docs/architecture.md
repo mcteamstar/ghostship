@@ -5,7 +5,12 @@
 **ga-transport** — the MCP server (`transport/server.py`). Runs as a plain
 `podman run` container, bound straight to `localhost`. Manages crew
 containers via the Podman socket. Exposes the `ghostship` tools (see the
-main README).
+main README). Optionally runs on a **dedicated Podman machine** (macOS) or
+**dedicated systemd socket-activated instance** (Linux), isolated from the
+host's default Podman runtime — see `GA_DEDICATED_MACHINE` in
+[configuration.md](configuration.md). When enabled, crew containers live on a
+separate instance with its own storage, network, and lifecycle, eliminating
+resource contention with other host workloads.
 
 **Crew containers** — on-demand KiroCrew instances, each a **ghostship**
 (`localhost/spec-ops:latest`), named `gs-<id>`. Each has two

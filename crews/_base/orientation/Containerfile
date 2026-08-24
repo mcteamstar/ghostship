@@ -1,0 +1,53 @@
+# Induction layer: shared infrastructure installed as root.
+#
+# Every composition inherits from this image. It ends as USER root so
+# compositions can add their own root-level installs without a USER switch.
+# The graduation layer (_base-graduation) is applied after the composition
+# to restore USER kirocrew and run any kirocrew-owned setup.
+#
+# Build order enforced by install.sh:
+#   1. localhost/base-orientation   ← this file
+#   2. localhost/<comp>-mid       ← composition Containerfile (FROM base-orientation)
+#   3. localhost/<comp>           ← base-graduation Containerfile (FROM <comp>-mid)
+#
+# This is a build dependency, not a launchable composition — it is NOT
+# listed in crews/registry.json.
+#
+# Pinned to 0.3.0 semver tag — deterministic, conventionally stable.
+# When upstream releases 0.4.0, update this line and run install.sh to rebuild.
+FROM ghcr.io/kirodotdev/kirocrew:0.3.0
+
+USER root
+
+# ghostship-mail: proper local mail delivery via mailutils + msmtp-mta
+# Replaces hand-rolled mbox file-append. Local delivery only — no external SMTP.
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+      mailutils msmtp msmtp-mta && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Provision Maildir mailboxes for all 7 local addresses
+# (6 personas + captain; admiral is written by the transport only)
+# Owned by kirocrew so agents can deliver without root or mail group.
+RUN for mb in ghost spectre banshee wraith reaper raven captain; do \
+      install -d -o kirocrew -g kirocrew -m 700 \
+        /var/mail/$mb \
+        /var/mail/$mb/new \
+        /var/mail/$mb/cur \
+        /var/mail/$mb/tmp; \
+    done && chmod 1777 /var/mail
+
+# Local mail delivery configuration
+COPY --chown=root:root msmtprc /etc/msmtprc
+COPY --chown=root:root maildeliver /usr/local/bin/maildeliver
+COPY --chown=root:root sendmail-local /usr/local/bin/sendmail-local
+RUN chmod 644 /etc/msmtprc && chmod 755 /usr/local/bin/maildeliver && \
+    chmod 755 /usr/local/bin/sendmail-local && \
+    ln -sf /usr/local/bin/sendmail-local /usr/sbin/sendmail
+
+# HMAC verification helper for Admiral mail authenticity
+COPY --chown=root:root verify-admiral-sig /usr/local/bin/verify-admiral-sig
+RUN chmod 755 /usr/local/bin/verify-admiral-sig
+
+# Ends as USER root — composition adds its own installs on top.
+# base-graduation restores USER kirocrew.

@@ -1,6 +1,14 @@
 # Configuration
 
-Environment variables read by the transport server:
+## Environment variables in the transport container
+
+The following variables are baked into the transport container's runtime
+environment by `install.sh` at `podman run` time (via `-e "VAR=value"`
+flags). They are **not** variables an operator sets by exporting them in
+any shell — `install.sh` resolves each variable internally using the
+built-in default → config file → CLI flag hierarchy, then passes the
+resolved value to the container. The table documents what the transport
+process sees and what each default means:
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
@@ -26,6 +34,11 @@ Environment variables read by the transport server:
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum free memory (GB) required before starting a crew container. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
+| `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) exclusively for Ghost Academy. Crew containers are fully isolated from the host's default Podman runtime. Set to `false` to use the default socket instead |
+| `GA_MACHINE_CPUS` | `4` | CPUs allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
+| `GA_MACHINE_MEMORY` | `8192` | Memory in MB allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
+| `GA_MACHINE_DISK` | `60` | Disk size in GB allocated to the dedicated Podman machine VM (macOS only). Ignored on Linux |
+| `GA_MACHINE_NAME` | `ghost-academy` | Name of the dedicated machine (macOS) or systemd service suffix (Linux). Used as the machine name in `podman machine` commands and as the service name in `podman-<name>.socket`/`.service` |
 | `GA_MEMORY_WAIT_SECS` | `60` | Maximum seconds to wait for sufficient memory before returning an error. Only relevant when `GA_MIN_FREE_MEM_GB > 0` |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Value patched into each crew's `resource_pressure_gb` config — KiroCrew throttles subagent spawning below this threshold |
@@ -49,21 +62,31 @@ sets default values for any of the variables below. The file is sourced
 before argument parsing, so **command-line flags always override config-file
 values**.
 
+### Resolution order
+
+For every settable variable, the effective value is resolved in this order
+(later tiers unconditionally override earlier ones):
+
+1. **Built-in default** (literal assignment in `install.sh`, e.g. `PORT=64057`)
+2. **Config file** (sourced from `--config <path>`, overwrites the built-in)
+3. **Command-line flag** (e.g. `--port 9000`, overwrites both)
+
+> **⚠️ Behavior change:** There is **no ambient-environment-variable tier**.
+> Exporting a variable in the invoking shell (or in a wrapper script, CI job,
+> `.bashrc`, etc.) has no effect on `install.sh` or `uninstall.sh`. Only the
+> config file and CLI flags are supported configuration inputs. If you
+> previously relied on exported variables reaching the installer, move those
+> values into a config file and pass `--config <path>`.
+
 ### Format
 
 A plain shell file that exports (or simply assigns) variables. Lines
 starting with `#` are comments.
 
-### Resolution order
+### Supported variables (flag-mapped)
 
-For every settable variable, the effective value is resolved in this order
-(first non-empty wins):
-
-1. **Command-line flag** (e.g. `--port 9000`)
-2. **Config file** (sourced from `--config <path>`)
-3. **Built-in default** (e.g. `PORT=64057`)
-
-### Supported variables
+These variables have a corresponding CLI flag. If neither the config file
+nor the flag sets them, the built-in default applies.
 
 | Variable | Corresponding flag |
 |:---------|:-------------------|
@@ -77,6 +100,10 @@ For every settable variable, the effective value is resolved in this order
 | `GA_HOST_URL` | `--public-url` |
 | `GA_FILE_PUBLIC_URL` | `--file-public-url` _(deprecated, migrate to `GA_HOST_URL`)_ |
 | `GA_MCP_PUBLIC_URL` | `--mcp-public-url` _(deprecated, migrate to `GA_HOST_URL`)_ |
+
+Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
+`GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`) are **config-file-only** — they
+have no CLI flag and no ambient-environment-variable input.
 
 ### Error handling
 

@@ -1,10 +1,4 @@
-# Config File Specification
-
-## Purpose
-
-Allow operators to set install.sh defaults in a shell config file rather than passing long flag lists on every invocation. The config file is sourced before flag parsing so command-line flags always override config-file values.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Config file sourcing with correct precedence
 The system SHALL accept a `--config <path>` flag pointing to a shell file that exports configuration variables. The config file SHALL be sourced BEFORE other flags are processed, so that command-line flags take precedence over values from the config file. Every supported variable SHALL be assigned a literal built-in default BEFORE the config file is sourced, so the config file's assignment (if any) unconditionally overrides that default rather than an ambient value inherited from the invoking shell's environment. Resolution order for every variable: built-in default → config file → command-line flag (where a corresponding flag exists). The system SHALL NOT treat an environment variable exported in the invoking shell as a configuration input at any point in this resolution — an ambient value with no corresponding config-file entry or flag SHALL be ignored, and the built-in default SHALL apply instead. A command-line flag is not required to mirror a single config-file variable one-to-one; a flag MAY represent a composite concept spanning what were previously multiple separate variables (for example, `--public-url` setting `GA_HOST_URL`, which replaced the separate `GA_FILE_PUBLIC_URL`/`GA_MCP_PUBLIC_URL` variables).
@@ -49,10 +43,3 @@ The system SHALL accept a `--config <path>` flag pointing to a shell file that e
 #### Scenario: No ambient environment variable tier documented
 - **WHEN** reading `docs/configuration.md`
 - **THEN** it SHALL NOT describe exporting a variable in the invoking shell as a supported way to configure `install.sh` or `uninstall.sh`
-
-### Requirement: Auth docs config file reference
-`docs/auth.md` SHALL document the config file as the first item in identity provider resolution order (config file → flags → interactive prompt) and include an example config file snippet for identity provider settings.
-
-#### Scenario: Auth docs reference config file
-- **WHEN** reading `docs/auth.md` "Identity provider config" section
-- **THEN** it SHALL list config file as item 1 in the resolution order and include an example snippet showing `KIRO_IDENTITY_PROVIDER=...` and `KIRO_REGION=...`

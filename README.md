@@ -5,17 +5,18 @@
 *Launch a Ghostship from the Ghost Academy and command the crew.*
 
 A multi-agent orchestration system for [KiroCrew](https://github.com/kirodotdev/KiroCrew) over MCP.
-Customise shared agent personas, skills, and steering.
-Runs locally on macOS or Linux using Podman.
+Customise agent personas, skills, and steering for your crews and send them out into the unknown.
+Runs locally and remotely on macOS or Linux using Podman.
 
 ## Why Ghostship?
 
-KiroCrew is designed for running fleets of agents over long horizon tasks, but running KiroCrew on your desktop limits you to one instance, directly on your filesystem, with low isolation between crewmates.
+KiroCrew is designed for running teams of agents over long horizon tasks, but running KiroCrew on your desktop limits you to one instance, directly on your filesystem, with limited isolation between crewmates.
 
-`ghostship` runs each crew in its own container and isolates workspaces with podman volumes. Crews are persistent workspaces — summoned once (`launch`) and reusable across multiple features, with idle-stop handling resource management transparently.
-Command your crews over MCP from any agent. Multiple crews can run side by side without colliding, with fresh context and curated capabilities.
+`ghostship` runs each crew in its own container and makes dedicated workspaces via podman volumes. Each ship is a durable workspace, summoned once (`launch`) and reusable across multiple features; with idle resource management when not in use. At the same time, ghostships are also expendable and can be torn down cleanly (`nuke`) at any time.
 
-`crews` here are designed for **Spectre-Driven Development** based off [OpenSpec](https://github.com/Fission-AI/OpenSpec). In particular, Kiro is both a fast and cost-efficient workhorse for executing well-defined change specs, and versatile enough to handle the whole cycle when needed. Agents default to `gpt-5.6-luna` but this is configurable via the `--model` flag (see [docs/configuration.md](docs/configuration.md)).
+As the **Admiral** you can command your crews over MCP from any agent. Delegate orders to the crew's **Captain** or be the captain yourself. All the ships in your *fleet* run side by side without colliding, and can be tailored to your tactical needs.
+
+The built-in `spec-ops` composition is designed for **Spectre-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is both a fast and cost-efficient workhorse for executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable (see [docs/configuration.md](docs/configuration.md)).
 
 ## Install
 
@@ -106,17 +107,14 @@ First `launch` triggers a kiro-cli device auth prompt — see
 
 ## Ghost Academy
 
-Every ghostship runs the same curriculum — agent personas, skills, and
-steering — copied in at `launch`. See
-[docs/architecture.md](docs/architecture.md) for how `ga-transport` manages
-the containers underneath.
+Every ghostship crew has access to the same curriculum — agent personas, skills, and steering — onboarded at `launch`.
+See [docs/architecture.md](docs/architecture.md) for more.
 
-### Tools
+### MCP Tools
 
 Registered as `ghostship`:
 
-Ship operations (the crew container itself) come first, then crew operations
-(the personas and tasks running inside it):
+Ship operations (the crew container itself) come first, then crew operations (the personas and tasks running inside it):
 
 | Tool | Description |
 |:-----|:------------|
@@ -133,9 +131,8 @@ Ship operations (the crew container itself) come first, then crew operations
 
 ### Seed or extract a Git repository
 
-`launch` creates the crew and its empty workspace; it does not clone a
-repository. To seed a checkout with its real commit history, create a bundle
-locally and upload it after `launch` returns a ready crew:
+`launch` creates the crew and its empty workspace; for security, it is not recommended to have crews directly clone a repository.
+To seed a checkout with its real commit history, create a bundle locally and upload it after `launch` returns a ready crew:
 
 ```bash
 # On the caller's machine
@@ -222,25 +219,7 @@ shown once here for brevity, with a loop-back on `update-change` since
 that's the step you're most likely to repeat. `crews()` lists every
 registered crew and its status at any point in the lifecycle.
 
-Captain has one autonomous mechanism per crew: a recurring Raven check-in.
-For an open-ended objective, call `captain(crew_id, action="order",
-message="<standing order>", interval=<n>)` or provide a cron expression. For
-standard OpenSpec lifecycle work, use
-`captain(crew_id, action="order", template="sdd", change_name="<change>",
-interval=<n>)`; the built-in template makes Raven read real OpenSpec and
-`tasks.md` state, dispatch the next sanctioned persona, review independently,
-and sync/archive only after a clean review. When `interval` is set, Raven is
-also dispatched once immediately on creation (before the first interval tick)
-by default — pass `fire_immediately=False` to suppress this, or
-`fire_immediately=True` with a cron expression to opt in. The transport writes
-the resolved order to `captain@localhost` and ensures one persistent Raven
-check-in; `status` reports job enablement, last-run summary, and both Captain
-and Admiral mailbox counts, while `stop` pauses the job without deleting its
-history. The `transport://agents` resource lists available personas,
-`transport://orders` lists built-in standing-order templates, and
-`transport://jobs` lists all scheduled jobs across all running crews. A scheduled
-check-in has a `job_id`, not a dispatch `task_id`, so `steer` is not its
-control channel.
+Captain manages autonomous recurring work per crew via a Raven check-in. The built-in `sdd` template drives the full OpenSpec lifecycle — assess, dispatch, review, archive — without manual intervention. See [docs/architecture.md](docs/architecture.md#captain-supervision) for standing orders, scheduling, and the `sdd` template.
 
 ## Further reading
 

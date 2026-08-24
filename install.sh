@@ -44,7 +44,40 @@ set -eo pipefail
 
 GHOSTSHIP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS="$(uname -s)"
+
+# ── Built-in defaults (literal assignments, BEFORE config sourcing) ──────────
+# Resolution order: built-in default → config file → CLI flag.
+# A literal assignment here ensures an ambient env var from the invoking shell
+# is unconditionally overwritten — only the config file or a flag can override.
 PORT=64057
+GA_FILE_PUBLIC_URL=""
+GA_MCP_PUBLIC_URL=""
+KIRO_IDENTITY_PROVIDER=""
+KIRO_REGION=""
+KIRO_LICENSE=""
+KC_MODEL_OVERRIDE=""
+KC_MODEL_DEFAULT=""
+GA_HOST_URL=""
+GA_API_KEY=""
+GA_DEDICATED_MACHINE=true
+GA_MACHINE_CPUS=4
+GA_MACHINE_MEMORY=8192
+GA_MACHINE_DISK=60
+GA_MACHINE_NAME=ghost-academy
+GA_MAX_CREWS=20
+GA_MAX_ACTIVE_CREWS=3
+GA_IDLE_TIMEOUT_SECS=300
+GA_FILE_TTL_SECS=300
+GA_SUBAGENT_TIMEOUT_SECS=3600
+GA_SUBAGENT_MAX_TURNS=200
+GA_PICKUP_MAX_POLL_SECS=30
+KC_GATEWAY_TOKEN_TTL=24h
+GA_MIN_FREE_MEM_GB=2.0
+GA_MEMORY_WAIT_SECS=60
+GA_SPAWN_MIN_MEMORY_GB=1.5
+GA_RESOURCE_PRESSURE_GB=2.0
+GA_RESOURCE_CRITICAL_GB=1.0
+HOST=0.0.0.0
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -77,8 +110,6 @@ fi
 
 # ── Flag parsing (runs AFTER config sourcing — flags override config) ────────
 API_KEY_FLAG_PASSED=0
-GA_FILE_PUBLIC_URL="${GA_FILE_PUBLIC_URL:-}"
-GA_MCP_PUBLIC_URL="${GA_MCP_PUBLIC_URL:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) shift 2 ;;  # already consumed above
@@ -102,16 +133,6 @@ fi
 if [[ -n "${KIRO_IDENTITY_PROVIDER:-}" && -z "${KIRO_REGION:-}" && -t 0 ]]; then
   read -rp "AWS region for that identity provider: " KIRO_REGION
 fi
-
-# ── Memory management env vars ────────────────────────────────────────────────
-# GA_MIN_FREE_MEM_GB  (default 2.0)  — minimum free memory (GB) before starting
-#   a crew container. Transport polls Podman info in 5s intervals until memory
-#   frees or timeout expires. Set to 0 to disable the gate entirely.
-# GA_MEMORY_WAIT_SECS (default 60)   — max seconds to wait for memory.
-# GA_SPAWN_MIN_MEMORY_GB (default 1.5) — patched into crew's spawn_min_memory_gb
-#   (KiroCrew's internal subagent admission gate).
-# GA_RESOURCE_PRESSURE_GB (default 2.0) — patched into crew's resource_pressure_gb.
-# GA_RESOURCE_CRITICAL_GB (default 1.0) — patched into crew's resource_critical_gb.
 
 # ── Podman ────────────────────────────────────────────────────────────────────
 
@@ -165,34 +186,68 @@ fi
 if [[ "$OS" == "Darwin" ]]; then
   # macOS has no container-capable kernel of its own — podman runs inside a
   # Linux VM ("podman machine"). Linux needs none of this; see the else branch.
-  if ! podman machine list --format '{{.Name}}' 2>/dev/null | grep -q .; then
-    echo "Initialising podman machine..."
-    podman machine init --cpus 4 --memory 8192 --disk-size 60
+
+  if [[ "${GA_DEDICATED_MACHINE}" == "true" ]]; then
+    # ── Dedicated machine provisioning (macOS) ──────────────────────────────
+    # A separate podman machine exclusively for Ghost Academy, isolating crew
+    # containers from the user's default machine. See design.md.
+    _MACHINE="${GA_MACHINE_NAME}"
+
+    if ! podman machine list --format '{{.Name}}' 2>/dev/null | grep -qw "${_MACHINE}"; then
+      echo "Initialising dedicated podman machine '${_MACHINE}'..."
+      podman machine init "${_MACHINE}" \
+        --cpus "${GA_MACHINE_CPUS}" \
+        --memory "${GA_MACHINE_MEMORY}" \
+        --disk-size "${GA_MACHINE_DISK}"
+    fi
+
+    # Start the dedicated machine if not already running
+    if ! podman machine inspect "${_MACHINE}" --format '{{.State}}' 2>/dev/null | grep -qi "running"; then
+      echo "Starting dedicated podman machine '${_MACHINE}'..."
+      podman machine start "${_MACHINE}"
+    fi
+
+    # Enable podman-restart.service inside the dedicated machine guest
+    podman machine ssh "${_MACHINE}" -- systemctl --user enable podman-restart.service \
+      || { echo "Error: failed to enable podman-restart.service in '${_MACHINE}' guest — is the VM running?" >&2; exit 1; }
+    echo "✓ podman-restart.service enabled in dedicated machine '${_MACHINE}'"
+
+    # Resolve the in-guest socket path for the dedicated machine
+    GUEST_UID="$(podman machine ssh "${_MACHINE}" -- id -u)" \
+      || { echo "Error: failed to retrieve guest UID from '${_MACHINE}' — SSH into the VM may be broken" >&2; exit 1; }
+    PODMAN_SOCK="/run/user/${GUEST_UID}/podman/podman.sock"
+    echo "✓ Dedicated machine '${_MACHINE}' guest socket: ${PODMAN_SOCK}"
+  else
+    # ── Default machine (macOS, existing behaviour) ──────────────────────────
+    if ! podman machine list --format '{{.Name}}' 2>/dev/null | grep -q .; then
+      echo "Initialising podman machine..."
+      podman machine init --cpus 4 --memory 8192 --disk-size 60
+    fi
+
+    if ! podman machine list --format '{{.Running}}' 2>/dev/null | grep -q true; then
+      echo "Starting podman machine..."
+      podman machine start
+    fi
+
+    # podman-restart.service is disabled by default in the guest, so a container
+    # run with --restart=always does NOT come back after `podman machine stop` +
+    # `start` on its own (verified: it needs this unit enabled). This only
+    # affects what happens once you start the machine yourself — it does not
+    # make the machine start automatically (no launchd/login autostart is used
+    # here on purpose).
+    podman machine ssh -- systemctl --user enable podman-restart.service \
+      || { echo "Error: failed to enable podman-restart.service in the podman machine guest — is the VM running?" >&2; exit 1; }
+    echo "✓ podman-restart.service enabled (transport survives machine restarts)"
+
+    # In-guest socket path (NOT the host-side /var/folders proxy socket from
+    # `podman machine inspect` — that path only exists on macOS and can't be
+    # bind-mounted into a container, which runs inside the guest VM). Confirmed
+    # via `podman machine ssh -- systemctl --user status podman.socket`.
+    GUEST_UID="$(podman machine ssh -- id -u)" \
+      || { echo "Error: failed to retrieve guest UID via 'podman machine ssh -- id -u' — SSH into the VM may be broken" >&2; exit 1; }
+    PODMAN_SOCK="/run/user/${GUEST_UID}/podman/podman.sock"
+    echo "✓ Guest podman socket: ${PODMAN_SOCK}"
   fi
-
-  if ! podman machine list --format '{{.Running}}' 2>/dev/null | grep -q true; then
-    echo "Starting podman machine..."
-    podman machine start
-  fi
-
-  # podman-restart.service is disabled by default in the guest, so a container
-  # run with --restart=always does NOT come back after `podman machine stop` +
-  # `start` on its own (verified: it needs this unit enabled). This only
-  # affects what happens once you start the machine yourself — it does not
-  # make the machine start automatically (no launchd/login autostart is used
-  # here on purpose).
-  podman machine ssh -- systemctl --user enable podman-restart.service \
-    || { echo "Error: failed to enable podman-restart.service in the podman machine guest — is the VM running?" >&2; exit 1; }
-  echo "✓ podman-restart.service enabled (transport survives machine restarts)"
-
-  # In-guest socket path (NOT the host-side /var/folders proxy socket from
-  # `podman machine inspect` — that path only exists on macOS and can't be
-  # bind-mounted into a container, which runs inside the guest VM). Confirmed
-  # via `podman machine ssh -- systemctl --user status podman.socket`.
-  GUEST_UID="$(podman machine ssh -- id -u)" \
-    || { echo "Error: failed to retrieve guest UID via 'podman machine ssh -- id -u' — SSH into the VM may be broken" >&2; exit 1; }
-  PODMAN_SOCK="/run/user/${GUEST_UID}/podman/podman.sock"
-  echo "✓ Guest podman socket: ${PODMAN_SOCK}"
 
   DATA_DIR="$HOME/Library/Application Support/ghostship/data"
 
@@ -204,39 +259,112 @@ if [[ "$OS" == "Darwin" ]]; then
   # below with `--security-opt label=disable` on the transport container.
 else
   # Linux: podman runs directly on the host, no VM, no guest indirection.
-  # `podman.socket` gives us the rootless API socket on demand; `enable --now`
-  # so it's live immediately, not just on next login.
-  systemctl --user enable --now podman.socket 2>/dev/null || true
-  systemctl --user enable podman-restart.service 2>/dev/null || true
-  echo "✓ podman.socket + podman-restart.service enabled"
 
-  # Enable lingering so systemd user units (and thus the transport container)
-  # survive logout. Without this, headless servers tear down the user slice
-  # when the last session ends, silently killing the transport.
-  loginctl enable-linger "$(whoami)" 2>/dev/null || true
-  echo "✓ Linger enabled — transport survives logout/reboot"
+  if [[ "${GA_DEDICATED_MACHINE}" == "true" ]]; then
+    # ── Dedicated Podman instance (Linux) ────────────────────────────────────
+    # A separate systemd socket-activated Podman service with its own storage
+    # root, completely isolated from the default instance.
+    _MACHINE="${GA_MACHINE_NAME}"
+    _UNIT_DIR="${HOME}/.config/systemd/user"
+    _RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    _STORAGE_ROOT="${HOME}/.local/share/${_MACHINE}/containers/storage"
 
-  # Socket path: honour an existing PODMAN_SOCK env var (user override) or
-  # default to the standard rootless path.
-  if [[ -z "${PODMAN_SOCK:-}" ]]; then
-    PODMAN_SOCK="/run/user/$(id -u)/podman/podman.sock"
+    mkdir -p "${_UNIT_DIR}"
+
+    # Write podman-ghostship.socket unit
+    cat > "${_UNIT_DIR}/podman-${_MACHINE}.socket" <<UNIT_EOF
+[Unit]
+Description=Ghost Academy dedicated Podman socket (${_MACHINE})
+
+[Socket]
+ListenStream=${_RUNTIME_DIR}/podman/${_MACHINE}.sock
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target
+UNIT_EOF
+
+    # Write podman-ghostship.service unit
+    cat > "${_UNIT_DIR}/podman-${_MACHINE}.service" <<UNIT_EOF
+[Unit]
+Description=Ghost Academy dedicated Podman API (${_MACHINE})
+Requires=podman-${_MACHINE}.socket
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/podman \\
+  --root=${_STORAGE_ROOT} \\
+  --runroot=${_RUNTIME_DIR}/${_MACHINE}-containers \\
+  system service --time=0 unix://${_RUNTIME_DIR}/podman/${_MACHINE}.sock
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+UNIT_EOF
+
+    echo "✓ Systemd units written to ${_UNIT_DIR}"
+
+    # Reload and enable the socket
+    systemctl --user daemon-reload
+    systemctl --user enable --now "podman-${_MACHINE}.socket"
+    echo "✓ podman-${_MACHINE}.socket enabled and started"
+
+    # Enable lingering for reboot survival
+    loginctl enable-linger "$(whoami)" 2>/dev/null || true
+    echo "✓ Linger enabled — dedicated instance survives logout/reboot"
+
+    # Set socket path to the dedicated one
+    PODMAN_SOCK="${_RUNTIME_DIR}/podman/${_MACHINE}.sock"
+
+    # Validate that the socket actually exists. Bounded retry: up to 5 seconds.
+    _sock_tries=0
+    while [[ ! -S "$PODMAN_SOCK" ]] && (( _sock_tries < 5 )); do
+      sleep 1
+      (( _sock_tries++ )) || true
+    done
+    if [[ ! -S "$PODMAN_SOCK" ]]; then
+      echo "⚠ Dedicated Podman socket not found at: ${PODMAN_SOCK}" >&2
+      echo "  Check: systemctl --user status podman-${_MACHINE}.socket" >&2
+      echo "  Journal: journalctl --user -u podman-${_MACHINE}.service" >&2
+      exit 1
+    fi
+    echo "✓ Dedicated podman socket: ${PODMAN_SOCK}"
+  else
+    # ── Default Podman instance (Linux, existing behaviour) ──────────────────
+    # `podman.socket` gives us the rootless API socket on demand; `enable --now`
+    # so it's live immediately, not just on next login.
+    systemctl --user enable --now podman.socket 2>/dev/null || true
+    systemctl --user enable podman-restart.service 2>/dev/null || true
+    echo "✓ podman.socket + podman-restart.service enabled"
+
+    # Enable lingering so systemd user units (and thus the transport container)
+    # survive logout. Without this, headless servers tear down the user slice
+    # when the last session ends, silently killing the transport.
+    loginctl enable-linger "$(whoami)" 2>/dev/null || true
+    echo "✓ Linger enabled — transport survives logout/reboot"
+
+    # Socket path: honour an existing PODMAN_SOCK env var (user override) or
+    # default to the standard rootless path.
+    if [[ -z "${PODMAN_SOCK:-}" ]]; then
+      PODMAN_SOCK="/run/user/$(id -u)/podman/podman.sock"
+    fi
+
+    # Validate that the socket actually exists (podman.socket activation may
+    # need a moment). Bounded retry: up to 5 seconds.
+    _sock_tries=0
+    while [[ ! -S "$PODMAN_SOCK" ]] && (( _sock_tries < 5 )); do
+      sleep 1
+      (( _sock_tries++ )) || true
+    done
+    if [[ ! -S "$PODMAN_SOCK" ]]; then
+      echo "⚠ Podman socket not found at: ${PODMAN_SOCK}" >&2
+      echo "  Expected path: /run/user/$(id -u)/podman/podman.sock" >&2
+      echo "  Check: podman info --format '{{.Host.RemoteSocket.Path}}'" >&2
+      echo "  Override: set PODMAN_SOCK=/your/path before running install.sh" >&2
+      exit 1
+    fi
+    echo "✓ podman socket: ${PODMAN_SOCK}"
   fi
-
-  # Validate that the socket actually exists (podman.socket activation may
-  # need a moment). Bounded retry: up to 5 seconds.
-  _sock_tries=0
-  while [[ ! -S "$PODMAN_SOCK" ]] && (( _sock_tries < 5 )); do
-    sleep 1
-    (( _sock_tries++ )) || true
-  done
-  if [[ ! -S "$PODMAN_SOCK" ]]; then
-    echo "⚠ Podman socket not found at: ${PODMAN_SOCK}" >&2
-    echo "  Expected path: /run/user/$(id -u)/podman/podman.sock" >&2
-    echo "  Check: podman info --format '{{.Host.RemoteSocket.Path}}'" >&2
-    echo "  Override: set PODMAN_SOCK=/your/path before running install.sh" >&2
-    exit 1
-  fi
-  echo "✓ podman socket: ${PODMAN_SOCK}"
 
   DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ghostship/data"
 
@@ -283,48 +411,73 @@ elif [[ -s "$API_KEY_PROJECTION" ]]; then
   echo "✓ API key restored from ${API_KEY_PROJECTION}"
 fi
 
+# ── Resolve dedicated-instance podman command ────────────────────────────────
+
+# On Linux with a dedicated instance, all podman commands (network, pull,
+# build, secret, run) must target the dedicated storage root so every
+# resource lands on the same instance. On macOS with a dedicated machine,
+# use --connection to target it. For the default instance, bare `podman`
+# just works. Resolved once and reused below so no step is accidentally
+# left targeting the wrong instance.
+if [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Linux" ]]; then
+  _RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  _STORAGE_ROOT="${HOME}/.local/share/${GA_MACHINE_NAME}/containers/storage"
+  _PODMAN_CMD="podman --root=${_STORAGE_ROOT} --runroot=${_RUNTIME_DIR}/${GA_MACHINE_NAME}-containers"
+elif [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Darwin" ]]; then
+  _PODMAN_CMD="podman --connection ${GA_MACHINE_NAME}"
+else
+  _PODMAN_CMD="podman"
+fi
+
 # ── Network ───────────────────────────────────────────────────────────────────
 
-podman network exists ga-net 2>/dev/null || podman network create ga-net
-echo "✓ ga-net network ready (DNS-enabled by default)"
+${_PODMAN_CMD} network exists ga-net 2>/dev/null || ${_PODMAN_CMD} network create ga-net
+if [[ "${GA_DEDICATED_MACHINE}" == "true" ]]; then
+  echo "✓ ga-net network ready on dedicated instance '${GA_MACHINE_NAME}' (DNS-enabled by default)"
+else
+  echo "✓ ga-net network ready (DNS-enabled by default)"
+fi
 
 # ── Pre-warm + build images ──────────────────────────────────────────────────
 
-podman pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
+${_PODMAN_CMD} pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
   && echo "✓ KiroCrew image pre-warmed" || echo "⚠ KiroCrew image pull failed (offline?)"
 
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
-echo "Building localhost/base:latest ..."
-podman build -t localhost/base:latest \
-  "$GHOSTSHIP_DIR/crews/_base/" \
-  && echo "✓ base image built" || { echo "✗ base image build failed"; exit 1; }
+echo "Building localhost/base-orientation:latest (orientation) ..."
+${_PODMAN_CMD} build -t localhost/base-orientation:latest \
+  "$GHOSTSHIP_DIR/crews/_base/orientation/" \
+  && echo "✓ orientation image built" || { echo "✗ orientation image build failed"; exit 1; }
 
 echo "Building localhost/spec-ops:latest ..."
-podman build -t localhost/spec-ops:latest \
+${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   --build-arg VERSION="${VERSION}-spec-ops" \
   "$GHOSTSHIP_DIR/crews/spec-ops/" \
+  && ${_PODMAN_CMD} build -t localhost/spec-ops:latest \
+  --build-arg MID_IMAGE=localhost/spec-ops-mid:latest \
+  "$GHOSTSHIP_DIR/crews/_base/graduation/" \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
 echo "Building localhost/transport:latest ..."
-podman build -t localhost/transport:latest "$GHOSTSHIP_DIR/transport/" \
+${_PODMAN_CMD} build -t localhost/transport:latest "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
 # ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
 
-podman secret rm ga-api-key 2>/dev/null || true
+${_PODMAN_CMD} secret rm ga-api-key 2>/dev/null || true
 GA_SECRET_FLAG=""
 if [[ -n "${GA_API_KEY:-}" ]]; then
-  printf '%s' "$GA_API_KEY" | podman secret create ga-api-key -
+  printf '%s' "$GA_API_KEY" | ${_PODMAN_CMD} secret create ga-api-key -
   GA_SECRET_FLAG="--secret ga-api-key"
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
 # ── Run transport ─────────────────────────────────────────────────────────────
 
-podman rm -f ga-transport >/dev/null 2>&1 || true
+${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 || true
 
-podman run -d --name ga-transport --restart=always \
+${_PODMAN_CMD} run -d --name ga-transport --restart=always \
   --security-opt label=disable \
   -p "127.0.0.1:${PORT}:${PORT}" \
   --network ga-net \
@@ -389,7 +542,7 @@ if [[ "$_ready" == "1" ]]; then
 else
   echo "✗ Transport did not become ready within ${_max_wait}s" >&2
   echo "  Last 20 lines of container logs:" >&2
-  podman logs ga-transport --tail 20 >&2
+  ${_PODMAN_CMD} logs ga-transport --tail 20 >&2
   exit 1
 fi
 

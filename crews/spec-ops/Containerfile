@@ -1,9 +1,12 @@
 # Spec-ops crew image — SDD (spec-driven development) tooling.
-# Inherits shared infrastructure (mail, kiro-cli DB seed) from localhost/base.
+# Inherits shared infrastructure from localhost/base-orientation.
 # Adds Node.js (required for OpenSpec CLI) and the OpenSpec CLI itself.
 #
+# USER kirocrew is restored by the base-graduation layer applied by install.sh
+# after this image is built. Do not add USER kirocrew here.
+#
 # Built locally at install time — not pushed to any registry.
-FROM localhost/base:latest
+FROM localhost/base-orientation:latest
 
 USER root
 

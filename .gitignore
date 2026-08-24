@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 .openspec-store/
+
+# User-filled config (copied from config/*.conf.example)
+config/*.conf
+!config/*.conf.example

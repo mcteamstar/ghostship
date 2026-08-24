@@ -184,7 +184,7 @@ never logged, printed, or included in responses.
 
 ```bash
 ./install.sh --api-key <your-secret-key>
-# OR export GA_API_KEY=<key> before running install.sh
+# OR set GA_API_KEY=<key> in a config file and pass --config <path>
 ```
 
 `install.sh` persists the key to a plain, mode-`0600` file in your data
