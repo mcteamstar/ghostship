@@ -16,7 +16,7 @@ KiroCrew is designed for running teams of agents over long horizon tasks, but ru
 
 As the **Admiral** you can command your crews over MCP from any agent. Delegate orders to the crew's **Captain** or be the captain yourself. All the ships in your *fleet* run side by side without colliding, and can be tailored to your tactical needs.
 
-The built-in `spec-ops` composition is designed for **Spectre-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is both a fast and cost-efficient workhorse for executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable (see [docs/configuration.md](docs/configuration.md)).
+The built-in `spec-ops` composition is designed for **Spectre-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is both a fast and cost-efficient workhorse for executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable — use `KC_MODEL_OVERRIDE` to override all agents at once, or `KC_MODEL_DEFAULT` as a global fallback (see [docs/configuration.md](docs/configuration.md)).
 
 ## Install
 
@@ -41,9 +41,15 @@ requirements and example commands. Requires cgroup v2 and Podman rootless.
 
 Installs Podman if missing, sets it up (on macOS: a `podman machine` VM,
 since macOS has no container-capable kernel of its own; on Linux: directly
-on the host, no VM), builds the transport and crew images, and runs the
-`ga-transport` container bound to `localhost:64057` (MCP) and `localhost:64058`
-(files).
+on the host, no VM), builds the crew images in three stages
+(`base-orientation` → `spec-ops` composition → `base-graduation`), and runs
+the `ga-transport` container bound to `localhost:64057`. MCP, REST API, and
+file transfer all share this single port.
+
+The three-stage build is what `install.sh` runs automatically:
+1. **`base-orientation`** — mail stack and auth layer (extends `ghcr.io/kirodotdev/kirocrew:0.3.0`)
+2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI
+3. **`base-graduation`** — pre-seeds the kiro-cli DB (`seed_kiro_db.py`)
 
 If your kiro-cli login needs a specific identity provider, pass it directly
 or let the script prompt you:
@@ -52,11 +58,14 @@ or let the script prompt you:
 ./install.sh --identity-provider <url> --region <region>
 ```
 
-To run on a different port (the file server always follows at `port+1`):
+To run on a different port:
 
 ```bash
 ./install.sh --port <port>
 ```
+
+To uninstall, run `./uninstall.sh` (pass `--purge-auth` to also clear saved
+kiro-cli credentials).
 
 Full resolution order (config file → flags → interactive prompt) and all
 environment variables: [docs/configuration.md](docs/configuration.md).

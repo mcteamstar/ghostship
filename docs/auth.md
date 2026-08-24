@@ -229,34 +229,15 @@ delivery. The env-var fallback will be removed in a future release.
 
 ### Client configuration
 
-After enabling, add the bearer header to each MCP client:
-
-**Kiro CLI / IDE:**
-```bash
-kiro-cli mcp add --name ghostship \
-  --url http://localhost:64057/mcp \
-  --headers '{"Authorization": "Bearer ${GHOSTSHIP_API_KEY}"}' \
-  --scope global
-```
-Set `GHOSTSHIP_API_KEY` in your shell environment — do not commit the literal.
-
-**Claude Code** (`~/.claude.json`):
-```json
-"ghostship": {
-  "type": "http",
-  "url": "http://localhost:64057/mcp",
-  "headers": { "Authorization": "Bearer ${GHOSTSHIP_API_KEY}" }
-}
-```
-
-**Generic streamable-HTTP clients:**
-Send `Authorization: Bearer <key>` on initialization and every subsequent
-MCP GET/POST/DELETE request.
+After enabling, add the bearer header to each MCP client. See the
+[Connecting to a harness](../README.md#connecting-to-a-harness) section in
+the README for kiro-cli and Claude Code examples with the `Authorization`
+header.
 
 ### Relationship to file-transfer HMAC
 
-`GA_API_KEY` protects the MCP endpoint only. The companion file server on
-`PORT+1` retains its existing HMAC presigned-URL model — a valid presigned
+`GA_API_KEY` protects the MCP endpoint only. File-transfer routes share the
+same port but use HMAC presigned URLs for authorization — a valid presigned
 URL issued by `evac` or `supply` (which are MCP tools and therefore
 API-key-protected at issuance) remains usable via plain `curl` without an
 additional header until its TTL expires.
@@ -346,9 +327,10 @@ registry at `$TRANSPORT_DATA_DIR/crews.json`, default `/data/crews.json`).
   `admiral_secret` from `crews.json` and forge Admiral standing orders to any
   running crew. For multi-operator deployments, `DATA_DIR` should have `0700`
   permissions and `podman inspect` access should be restricted.
-- **Agent-level isolation:** Agent processes inside the crew container cannot
-  read `admiral_secret` — it is only accessible via the `.admiral_secret` file
-  (mode `0600`, not agent-readable) and is never written to any agent-readable
-  policy file.
+- **Agent-level isolation:** Agent processes inside the crew container can
+  read `admission_policy.json`, which carries `admiral_secret` in its
+  `trust_keys` field (a hard dependency of the governance API). This is an
+  accepted risk for the current single-operator, isolated-container use case.
+  See the threat model note above under "Delivery path and threat model."
 - **Future hardening:** Encrypting secrets at rest in `crews.json`, or storing
   them separately with tighter file permissions, is tracked in TRN-16.

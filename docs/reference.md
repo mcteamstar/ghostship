@@ -46,6 +46,17 @@ Quick reference for operators and developers. For full docs see the linked files
 
 These routes proxy directly through to a crew's gateway. They require the same
 `Authorization: Bearer <GA_API_KEY>` header as MCP routes (when `GA_API_KEY` is set).
+Both proxy routes respect a **60 s request timeout** — use `evac` for large file
+downloads from a crew workspace.
+
+### Health probe
+
+```
+GET /health
+```
+
+Returns `200 OK` when the transport process is alive. No auth required. Suitable
+for load-balancer health checks and startup probes.
 
 ### Gateway UI proxy
 
@@ -88,11 +99,6 @@ curl -H "Authorization: Bearer $GA_API_KEY" \
      http://<transport-host>:<PORT>/crews/my-crew/api/spawn
 ```
 
-> **Note:** Both proxy routes respect the 60 s request timeout. Use `evac` for
-> large file downloads from a crew workspace.
-
-
-
 ## Agent Personas
 
 See [`docs/agents.md`](agents.md) for full detail. Quick summary:
@@ -122,7 +128,7 @@ Or autonomously via `captain(action="order", template="sdd", change_name="...", 
 
 ## Composition (crew type)
 
-`launch(composition="kirocrew")` — default, full agent/skill/steering set.
+`launch(composition="spec-ops")` — default, full agent/skill/steering set.
 
 Add new compositions to [`crews/registry.json`](../crews/registry.json). Read available options via the `transport://compositions` resource.
 
@@ -133,8 +139,7 @@ Add new compositions to [`crews/registry.json`](../crews/registry.json). Read av
 | Var | Default | Purpose |
 |:----|:--------|:--------|
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before auto-stopping a crew container |
-| `GA_FILE_PUBLIC_URL` | _(falls back to `GA_HOST_URL`, then `localhost:PORT+1`)_ | Externally-visible file server base URL |
-| `GA_MCP_PUBLIC_URL` | _(falls back to `localhost:PORT`)_ | Externally-visible MCP endpoint base URL |
+| `GA_HOST_URL` | _(falls back to `localhost:PORT`)_ | Externally-visible base URL for all links (MCP endpoint and presigned `evac`/`supply` links). Set `--public-url` on `install.sh` to configure |
 | `KC_MODEL_OVERRIDE` | _(unset)_ | Override model for all crew agent JSONs |
 | `GA_API_KEY` | _(unset)_ | Static bearer key protecting the MCP endpoint |
 

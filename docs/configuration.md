@@ -12,7 +12,7 @@ process sees and what each default means:
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. The host-side protection is in `install.sh`: `-p "127.0.0.1:PORT:PORT"` ensures the port is only reachable from localhost on the host, regardless of the container's internal bind. Set `HOST=127.0.0.1` only for non-containerised installs where loopback-only binding is needed at the process level |
+| `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host regardless of this value. |
 | `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
 | `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:stable` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
@@ -25,7 +25,7 @@ process sees and what each default means:
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path — on Linux this is your host uid (`id -u`); on macOS it's the `podman machine` guest's uid (`podman machine ssh -- id -u`), which is often different |
 | `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Replaces the deprecated `GA_MCP_PUBLIC_URL` and `GA_FILE_PUBLIC_URL` variables — set this single var for all externally-reachable URLs |
 | `GA_MCP_PUBLIC_URL` | _(unset)_ | **DEPRECATED.** Legacy fallback for `GA_HOST_URL`. If `GA_HOST_URL` is unset and this is set, it is used with a deprecation warning. Migrate to `GA_HOST_URL` |
-| `GA_FILE_PUBLIC_URL` | _(unset)_ | **DEPRECATED.** No longer read by the transport. Retained in `install.sh --file-public-url` for backward-compatible config files only. Migrate to `GA_HOST_URL` |
+| `GA_FILE_PUBLIC_URL` | _(unset)_ | **DEPRECATED.** No longer read by the transport — passing it via `-e` to the container has no effect. `install.sh --file-public-url` still accepts this flag and stores the value for backward-compatible config files, but the transport ignores it at runtime. Migrate to `GA_HOST_URL` / `--public-url`. |
 | `GA_FILE_TTL_SECS` | `300` | Seconds a presigned `evac`/`supply` URL stays valid before expiring |
 | `KC_GATEWAY_TOKEN_TTL` | `24h` | Duration passed to `kirocrew token --ttl` when setup, restart recovery, or startup reconciliation mints a gateway session token; independent of file URL expiry |
 | `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs — set explicitly if you need presigned URLs to survive a transport restart |
@@ -71,12 +71,18 @@ For every settable variable, the effective value is resolved in this order
 2. **Config file** (sourced from `--config <path>`, overwrites the built-in)
 3. **Command-line flag** (e.g. `--port 9000`, overwrites both)
 
-> **⚠️ Behavior change:** There is **no ambient-environment-variable tier**.
+> **⚠️ Behavior change:** There is **no ambient-environment-variable tier**
+> for `install.sh` configuration.
 > Exporting a variable in the invoking shell (or in a wrapper script, CI job,
 > `.bashrc`, etc.) has no effect on `install.sh` or `uninstall.sh`. Only the
 > config file and CLI flags are supported configuration inputs. If you
 > previously relied on exported variables reaching the installer, move those
 > values into a config file and pass `--config <path>`.
+>
+> **Exception — `PODMAN_SOCK`:** This single variable *is* read directly from
+> the ambient environment by `install.sh`, before config-file sourcing, to
+> allow overriding the Podman socket path without a config file. This is a
+> deliberate, narrow exception and does not generalise to any other variable.
 
 ### Format
 
@@ -158,29 +164,8 @@ Then override any single value at the command line:
 
 ## Git repository transfer
 
-`launch` creates the crew workspace only; it does not clone a caller-owned
-repository. For a history-preserving seed, create a bundle locally, request a
-bundle delivery URL, and upload the bytes:
-
-```bash
-git bundle create ./project.bundle --all
-# Call supply(path="repo", crew_id="<id>", bundle=True), then:
-curl -X POST "<delivery_url>" --data-binary @./project.bundle
-```
-
-To bring Git history back out, request `evac(path="repo", crew_id="<id>",
-bundle=True)`, download the URL, and clone or fetch the resulting bundle:
-
-```bash
-curl -fsSL "<evac_url>" -o ./crew.bundle
-git clone ./crew.bundle ./crew-repo
-git bundle list-heads ./crew.bundle
-git fetch ./crew.bundle refs/heads/main:refs/remotes/crew/main
-```
-
-`git bundle create ./changes.bundle old-ref..new-ref` creates an incremental
-bundle. A range bundle can be fetched only after the receiver has the
-`old-ref` prerequisite.
+See the [Seed or extract a Git repository](../README.md#seed-or-extract-a-git-repository)
+section in the README for full bundle instructions (supply, evac, incremental bundles).
 
 ## Deployment security boundary
 

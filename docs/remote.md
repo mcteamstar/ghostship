@@ -11,8 +11,7 @@ from your local machine over the network.
 - **Podman rootless** — `podman info` should succeed as a non-root user.
 - **Port exposure** — the transport port (default `64057`) serves all routes:
   MCP, REST API, and file transfer. Only one port needs to be exposed.
-  (default `64058`) must be reachable from your client. Open them in your
-  firewall or security group.
+  Open it in your firewall or security group.
 - **API key** — required for any non-loopback deployment. Without it, anyone
   who can reach the port has full MCP access.
 
@@ -21,8 +20,7 @@ from your local machine over the network.
 ```bash
 # On the remote host:
 ./install.sh --api-key <your-secret-key> \
-  --mcp-public-url https://mcp.your-domain.com \
-  --file-public-url https://files.your-domain.com
+  --public-url https://mcp.your-domain.com
 ```
 
 ### Key flags
@@ -30,8 +28,7 @@ from your local machine over the network.
 | Flag | Purpose |
 |:-----|:--------|
 | `--api-key <key>` | Require bearer auth on all MCP requests |
-| `--mcp-public-url <url>` | Base URL clients use for MCP (set to your reverse proxy's public HTTPS address) |
-| `--public-url <url>` | Base URL baked into presigned `evac`/`supply` links (set to the public HTTPS address) |
+| `--public-url <url>` | Base URL for all externally-visible links (presigned `evac`/`supply` URLs and MCP endpoint) — set to your reverse proxy's public HTTPS address |
 | `--port <port>` | Override the transport listen port (MCP, REST, and file transfer all on this port) |
 
 ### Identity provider (org-licensed)
@@ -43,8 +40,7 @@ For IAM Identity Center logins, add `--identity-provider` and `--region`:
   --identity-provider "https://identitycenter.amazonaws.com/ssoins-abc123" \
   --region us-east-1 \
   --license pro \
-  --mcp-public-url https://mcp.your-domain.com \
-  --file-public-url https://files.your-domain.com
+  --public-url https://mcp.your-domain.com
 ```
 
 Or use a config file (`--config ./ghostship.conf`). See
@@ -56,13 +52,15 @@ The transport binds plain HTTP inside the container. For production remote
 deployments, terminate TLS at a reverse proxy. Example with nginx:
 
 ```nginx
-# /etc/nginx/sites-available/ghostship-mcp
+# /etc/nginx/sites-available/ghostship
 server {
     listen 443 ssl http2;
     server_name mcp.your-domain.com;
 
     ssl_certificate     /etc/letsencrypt/live/mcp.your-domain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/mcp.your-domain.com/privkey.pem;
+
+    client_max_body_size 500M;
 
     location / {
         proxy_pass http://127.0.0.1:64057;
@@ -79,26 +77,6 @@ server {
         chunked_transfer_encoding on;
     }
 }
-
-# /etc/nginx/sites-available/ghostship-files
-server {
-    listen 443 ssl http2;
-    server_name files.your-domain.com;
-
-    ssl_certificate     /etc/letsencrypt/live/files.your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/files.your-domain.com/privkey.pem;
-
-    client_max_body_size 500M;
-
-    location / {
-        proxy_pass http://127.0.0.1:64058;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
 ```
 
 Caddy is simpler if you prefer automatic certificate management:
@@ -106,10 +84,6 @@ Caddy is simpler if you prefer automatic certificate management:
 ```
 mcp.your-domain.com {
     reverse_proxy localhost:64057
-}
-
-files.your-domain.com {
-    reverse_proxy localhost:64058
 }
 ```
 

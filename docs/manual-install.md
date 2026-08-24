@@ -88,7 +88,9 @@ proceed with socket setup, image builds, and transport container launch.
 - **Subuids not configured:** If `podman info` warns about subuids, ensure
   `/etc/subuid` and `/etc/subgid` have entries for your user.
 - **Socket path differs:** If your podman socket is at a non-standard path,
-  set `PODMAN_SOCK=/your/path` before running `install.sh`. This is a
-  socket-discovery override for the default (non-dedicated) Linux path only —
-  it is not a general configuration mechanism. For all other settings, use
-  `--config <path>` or CLI flags (see [configuration.md](configuration.md)).
+  set `PODMAN_SOCK=/your/path` before running `install.sh`. This is a genuine
+  exception to the no-ambient-environment-variable rule — `install.sh` reads
+  `PODMAN_SOCK` directly from the environment before config-file sourcing to
+  allow overriding the socket path without a config file. It is the only
+  variable with this behaviour. For all other settings, use `--config <path>`
+  or CLI flags (see [configuration.md](configuration.md)).

@@ -20,10 +20,23 @@ volumes: a workspace volume (`gs-vol-<id>`) and a home volume
 (`http://gs-<id>:5476`).
 
 **Crew image** (`crews/spec-ops/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:0.3.0`
-(Debian 13, Python 3.12, git, curl). Adds Node.js 24 LTS via NodeSource, and
+(Debian 12 bookworm, Python 3.12, git, curl). Adds Node.js 24 LTS via NodeSource, and
 the `openspec` CLI (`@fission-ai/openspec`) that the `openspec-*` skills shell
-out to. Built locally at install time (`localhost/spec-ops:latest`). See
-[configuration.md](configuration.md#extending-the-crew-image) to add packages.
+out to. Built locally at install time (`localhost/spec-ops:latest`) as part of
+a three-stage build:
+
+1. **`base-orientation`** (`crews/_base/orientation/`) — mail stack and auth
+   layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, and
+   adds `maildeliver` and `verify-admiral-sig`. Extends
+   `ghcr.io/kirodotdev/kirocrew:0.3.0`.
+2. **`spec-ops` composition** (`crews/spec-ops/`) — adds Node.js 24 LTS and
+   the `openspec` CLI. Extends `base-orientation`.
+3. **`base-graduation`** (`crews/_base/graduation/`) — runs `seed_kiro_db.py`
+   to pre-seed the kiro-cli SQLite DB schema so auth injection works without
+   running migrations at every launch. Extends the `spec-ops` intermediate
+   image to produce the final `localhost/spec-ops:latest`.
+
+See [configuration.md](configuration.md#extending-the-crew-image) to add packages.
 
 ## Ghost Academy
 
@@ -35,7 +48,7 @@ curriculum, bind-mounted into transport and copied into every crew at
 (`crews/<crew-type>/manifest.json`, also bind-mounted into transport). Each
 manifest key (`agents`, `skills`, `steering`) is either the literal string
 `"*"` or an explicit array of exact names to include from the
-corresponding Academy pool. The only crew type today, `kirocrew`
+corresponding Academy pool. The only crew type today, `spec-ops`
 (`crews/spec-ops/manifest.json`), specifies `"*"` for every key, so every
 ghostship still gets the whole curriculum in practice — the manifest is
 groundwork for a future second crew type to select a different combination,
@@ -87,31 +100,11 @@ nuke(crew_id, confirm=True)
 
 ### Repository transfer
 
-`launch(crew_id)` creates a workspace but does not clone or authenticate to a
-caller-owned repository. Seed a Git checkout explicitly after the crew is
-ready: create a self-contained bundle on the caller's machine, request
-`supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle to the
-returned URL.
-
-```bash
-git bundle create ./project.bundle --all
-curl -X POST "<delivery_url>" --data-binary @./project.bundle
-```
-
-The bundle is cloned into `repo/` inside the crew, preserving commits,
-authorship, branches, and tags. To extract that history, request
-`evac(path="repo", crew_id="<id>", bundle=True)`, download its URL, and either
-clone it or fetch it into an existing checkout:
-
-```bash
-curl -fsSL "<evac_url>" -o ./crew.bundle
-git clone ./crew.bundle ./crew-repo
-git bundle list-heads ./crew.bundle
-git fetch ./crew.bundle refs/heads/main:refs/remotes/crew/main
-```
-
-Use `git bundle create ./changes.bundle old-ref..new-ref` for an incremental
-range; the receiving repository must already contain the range's prerequisite.
+See [Seed or extract a Git repository](../README.md#seed-or-extract-a-git-repository)
+in the README for full bundle instructions. In short: create a bundle locally,
+call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle
+bytes to the returned URL. For extraction, call `evac(path="repo", ...,
+bundle=True)` and clone or fetch the downloaded bundle.
 
 ### Captain supervision
 
@@ -151,7 +144,7 @@ regardless of working directory — unlike agents and skills, which apply per
 persona or per skill, steering is crew-wide standing context every dispatched
 task gets automatically. `_copy_steering` copies the crew type's
 manifest-selected `.md` files from `academy/steering/` into that path at
-every `launch` (`"*"` for the `kirocrew` crew type today).
+every `launch` (`"*"` for the `spec-ops` crew type today).
 
 Kept deliberately narrow: environment facts every persona needs regardless of
 its own prompt (the working-directory isolation model, the shared OpenSpec
@@ -253,78 +246,9 @@ crew dict.
 ## Known workarounds
 
 These are deliberate hacks for upstream bugs or limitations. Each is marked with
-`# WORKAROUND:` in the source and should be removed when the upstream issue is fixed.
-
-### spawn_min_memory_gb not read from config files (KiroCrew bug)
-
-**Symptom:** Agent spawns are refused with "only N GB available (need 4 GB)" even
-after setting `spawn_min_memory_gb: 0` in `config.local.json` or `config.json`.
-
-**Root cause:** KiroCrew's `AgentConfig` loader explicitly constructs the config
-object from a dict but never reads `spawn_min_memory_gb` — the field always uses
-its dataclass default of `4.0`. Other fields (`resource_pressure_gb`,
-`resource_critical_gb`) are read correctly. Only `spawn_min_memory_gb` is affected.
-
-**Workaround (in `_ensure_crew_running`):** After every container restart, re-run
-`_patch_crew_config` (which writes `spawn_min_memory_gb=0` into `config.json`),
-then stop and restart the gateway so it re-seeds `config.json` before the loader
-runs. This adds one extra stop/start cycle to every auto-restart but is the only
-reliable way to keep the spawn gate disabled across restarts.
-
-**Remove when:** KiroCrew upstream fixes `AgentConfig.load()` to read
-`spawn_min_memory_gb` from `config.local.json`.
-
-### Direct SQLite writes into kiro-cli's internal database
-
-**Location:** `_inject_auth`, `_read_auth_from_crew` in `transport/server.py`.
-
-**What we do:** Write auth rows directly into kiro-cli's `auth_kv` SQLite table
-using `INSERT OR REPLACE`, bypassing kiro-cli's own migration and ORM layer. We
-also read rows back the same way to copy auth between containers.
-
-**Why it's fragile:** If kiro-cli changes the `auth_kv` schema (renames the table,
-adds a NOT NULL column, changes key names, or moves to a different storage
-backend), auth injection silently fails — no error is raised, crews just fail to
-authenticate. The comment "schema and migrations are pre-seeded in the crew image"
-is true but only holds as long as the upstream schema is stable.
-
-**Why we do it:** kiro-cli provides no external API for injecting auth. The only
-alternative is running `kiro-cli login` inside every new crew container, which
-requires a full device auth flow per crew. Direct DB writes let us authenticate
-once and propagate to all crews.
-
-**Remove when:** kiro-cli exposes an official mechanism for pre-seeding auth
-(config file, env var, or CLI flag).
-
-### Cookie minting via `kirocrew token` + HTTP Set-Cookie header scraping
-
-**Location:** `_mint_cookie` in `transport/server.py`.
-
-**What we do:** Run `kirocrew token --ttl <ttl>` inside the container to get a
-short-lived token, then make an HTTP GET to the gateway with that token as a query
-param and scrape the `mc_token_5476=` value from the `Set-Cookie` response header
-by string splitting.
-
-**Why it's fragile:** The cookie name `mc_token_5476` is port-specific — it
-embeds the gateway port. If the port changes, the scraping logic breaks silently
-(no cookie found, all crew operations fail). The token-exchange flow is also
-undocumented internal KiroCrew API that could change without notice.
-
-**Why we do it:** The gateway requires a session cookie for all API calls. There
-is no documented way to mint one from outside the gateway. The `kirocrew token`
-subcommand is the only path we found.
-
-**Remove when:** KiroCrew exposes a stable, documented way to obtain a session
-credential for the gateway REST API.
-
-### Idle-stop vs. nuke
-
-These are two distinct lifecycle operations and should not be confused:
-
-- **Idle-stop** — automatic, transparent, reversible, no data loss. The container stops after a timeout and restarts on the next command. This is the normal resource management path; operators do not need to take any action.
-- **Nuke** — explicit, permanent, workspace-destroying. Removes the container and both volumes entirely. Use only when you intentionally want to discard the crew's workspace, history, and context. Not a routine post-task step.
-
-Idle-stop is what keeps a fleet of crews from consuming resources when inactive. Nuke is for when a crew's purpose is fully served and its data is no longer needed.
+`# WORKAROUND:` in the source and should be removed when the upstream issue is
+fixed. See [docs/troubleshooting.md](troubleshooting.md#known-workarounds) for
+the full inventory and removal conditions.
 
 ## Rebuilding images
 
@@ -372,6 +296,7 @@ On transport startup, `_reconcile_registry` checks all registered crews:
 ```
 ghostship/
 ├── install.sh             # builds images, sets up podman machine, runs transport
+├── uninstall.sh           # tears down transport; --purge-auth also removes kiro-cli credentials
 ├── transport/             # transport MCP server
 │   ├── Containerfile
 │   ├── server.py
@@ -387,14 +312,21 @@ ghostship/
 │   ├── skills/            # KiroCrew skill files, manifest-selected per crew type
 │   │   ├── openspec-*/    # explore/propose/apply-change/update-change/sync-specs/archive-change
 │   │   └── ghostship-mail/  # inter-agent mbox messaging
-│   └── steering/          # crew-wide standing context, manifest-selected per crew type — see docs/architecture.md#steering
-│       └── STANDING_ORDERS.md
-├── openspec/              # this project's own OpenSpec state (config.yaml, changes/, specs/)
+│   ├── steering/          # crew-wide standing context, manifest-selected per crew type — see docs/architecture.md#steering
+│   │   └── STANDING_ORDERS.md
+│   ├── orders/            # built-in Captain standing-order templates (e.g. sdd)
+│   └── policies/          # governance policy templates (on-disk repo path; bind-mounted as /policies/<composition>.json inside the container at launch)
+├── config/                # example config files (ghostship.conf.example)
 ├── crews/                 # crew type definitions — each composes a crew from academy/
-│   └── kirocrew/          # the one crew type today
-│       ├── Containerfile  # FROM kirocrew:0.3.0 + Node 24 LTS + openspec CLI + extras
-│       ├── seed_kiro_db.py
+│   ├── registry.json      # registered crew types
+│   ├── _base/
+│   │   ├── orientation/   # stage 1: mail stack + auth layer (extends ghcr.io/kirodotdev/kirocrew:0.3.0)
+│   │   └── graduation/    # stage 3: kiro-cli DB pre-seed (seed_kiro_db.py)
+│   └── spec-ops/          # stage 2: the one crew type today — adds Node.js 24 LTS + openspec CLI
+│       ├── Containerfile
 │       └── manifest.json  # which academy/ agents, skills, steering this crew type includes
+├── tests/                 # test suite (unit/, integration/, e2e/)
+├── openspec/              # this project's own OpenSpec state (config.yaml, changes/, specs/)
 └── docs/                  # this folder
 ```
 
@@ -444,8 +376,9 @@ During `_finish_crew_setup`, after the `admiral_secret` is generated and
 injected:
 
 1. The transport reads a policy template from `/policies/<composition>.json`
-   (bind-mounted from `academy/policies/` on the host). If no
-   composition-specific template exists, `/policies/default.json` is used.
+   inside the transport container (bind-mounted from `academy/policies/` on the
+   host at container start). If no composition-specific template exists,
+   `/policies/default.json` is used.
 2. The canonical (sorted-keys) JSON body is HMAC-SHA256 signed using the
    crew's `admiral_secret`.
 3. Two files are written into `~/.kiro/crew/` inside the container:
@@ -463,7 +396,7 @@ Policy templates live in `academy/policies/`:
 
 | Template | Used by | Description |
 |:---------|:--------|:------------|
-| `default.json` | `kirocrew` (and any composition without its own template) | Platform-integrity focus: blocks `git push`, `gh`, pipe-to-shell, messaging integrations |
+| `default.json` | `spec-ops` (and any composition without its own template) | Platform-integrity focus: blocks `git push`, `gh`, pipe-to-shell, messaging integrations |
 | `research.json` | `kirocrew-research` | Same as default; starting point for customisation |
 | `strict.json` | Example only (not applied by default) | Adds `sandbox.min_level`, `filesystem.write` bounds, broader command denials |
 

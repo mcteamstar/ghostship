@@ -223,7 +223,7 @@ If `install.sh` fails with a machine-related error:
    ```
 3. If `init` failed (machine doesn't appear in the list), check available
    disk and memory — the machine requires the configured `GA_MACHINE_DISK`
-   (default 60 GB) free disk space.
+   (default 100 GB) free disk space.
 4. Check for conflicting machine names:
    ```bash
    podman machine inspect ghostship
@@ -299,3 +299,84 @@ alias podman-gs='podman --root=~/.local/share/ghostship/containers/storage --run
 podman-gs ps
 podman-gs images
 ```
+
+## Known workarounds
+
+These are deliberate hacks for upstream bugs or limitations. Each is marked with
+`# WORKAROUND:` in the source and should be removed when the upstream issue is fixed.
+
+### spawn_min_memory_gb not read from config files (KiroCrew bug)
+
+**Symptom:** Agent spawns are refused with "only N GB available (need 4 GB)" even
+after setting `spawn_min_memory_gb: 0` in `config.local.json` or `config.json`.
+
+**Root cause:** KiroCrew's `AgentConfig` loader explicitly constructs the config
+object from a dict but never reads `spawn_min_memory_gb` — the field always uses
+its dataclass default of `4.0`. Other fields (`resource_pressure_gb`,
+`resource_critical_gb`) are read correctly. Only `spawn_min_memory_gb` is affected.
+
+**Workaround (in `_ensure_crew_running`):** After every container restart, re-run
+`_patch_crew_config` (which writes `spawn_min_memory_gb=0` into `config.json`),
+then stop and restart the gateway so it re-seeds `config.json` before the loader
+runs. This adds one extra stop/start cycle to every auto-restart but is the only
+reliable way to keep the spawn gate disabled across restarts.
+
+**Remove when:** KiroCrew upstream fixes `AgentConfig.load()` to read
+`spawn_min_memory_gb` from `config.local.json`.
+
+### Direct SQLite writes into kiro-cli's internal database
+
+**Location:** `_inject_auth`, `_read_auth_from_crew` in `transport/server.py`.
+
+**What we do:** Write auth rows directly into kiro-cli's `auth_kv` SQLite table
+using `INSERT OR REPLACE`, bypassing kiro-cli's own migration and ORM layer. We
+also read rows back the same way to copy auth between containers.
+
+**Why it's fragile:** If kiro-cli changes the `auth_kv` schema (renames the table,
+adds a NOT NULL column, changes key names, or moves to a different storage
+backend), auth injection silently fails — no error is raised, crews just fail to
+authenticate. The comment "schema and migrations are pre-seeded in the crew image"
+is true but only holds as long as the upstream schema is stable.
+
+**Why we do it:** kiro-cli provides no external API for injecting auth. The only
+alternative is running `kiro-cli login` inside every new crew container, which
+requires a full device auth flow per crew. Direct DB writes let us authenticate
+once and propagate to all crews.
+
+**Remove when:** kiro-cli exposes an official mechanism for pre-seeding auth
+(config file, env var, or CLI flag).
+
+### Cookie minting via `kirocrew token` + HTTP Set-Cookie header scraping
+
+**Location:** `_mint_cookie` in `transport/server.py`.
+
+**What we do:** Run `kirocrew token --ttl <ttl>` inside the container to get a
+short-lived token, then make an HTTP GET to the gateway with that token as a query
+param and scrape the `mc_token_5476=` value from the `Set-Cookie` response header
+by string splitting.
+
+**Why it's fragile:** The cookie name `mc_token_5476` is port-specific — it
+embeds the gateway port. If the port changes, the scraping logic breaks silently
+(no cookie found, all crew operations fail). The token-exchange flow is also
+undocumented internal KiroCrew API that could change without notice.
+
+**Why we do it:** The gateway requires a session cookie for all API calls. There
+is no documented way to mint one from outside the gateway. The `kirocrew token`
+subcommand is the only path we found.
+
+**Remove when:** KiroCrew exposes a stable, documented way to obtain a session
+credential for the gateway REST API.
+
+### Idle-stop vs. nuke
+
+These are two distinct lifecycle operations and should not be confused:
+
+- **Idle-stop** — automatic, transparent, reversible, no data loss. The container
+  stops after a timeout and restarts on the next command. This is the normal
+  resource management path; operators do not need to take any action.
+- **Nuke** — explicit, permanent, workspace-destroying. Removes the container and
+  both volumes entirely. Use only when you intentionally want to discard the
+  crew's workspace, history, and context. Not a routine post-task step.
+
+Idle-stop is what keeps a fleet of crews from consuming resources when inactive.
+Nuke is for when a crew's purpose is fully served and its data is no longer needed.
