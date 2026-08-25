@@ -489,7 +489,9 @@ ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
 echo "Building localhost/transport:latest ..."
-${_PODMAN_CMD} build -t localhost/transport:latest "$GHOSTSHIP_DIR/transport/" \
+${_PODMAN_CMD} build -t localhost/transport:latest \
+  --build-arg VERSION="${VERSION}" \
+  "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
 # ── Podman secret for GA_API_KEY ──────────────────────────────────────────────

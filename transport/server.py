@@ -127,10 +127,16 @@ KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
 # ── Version ───────────────────────────────────────────────────────────────────
 
 def _read_transport_version() -> str:
-    """Read VERSION file at repo root (one directory up from transport/).
+    """Resolve the transport version.
 
-    Returns the semver string, or '0.0.0-dev' if the file is missing.
+    Checks in order:
+    1. TRANSPORT_VERSION env var (set via --build-arg at image build time)
+    2. VERSION file at repo root (present in dev, absent in the container image)
+    3. Fallback sentinel '0.0.0-dev'
     """
+    env_version = os.environ.get("TRANSPORT_VERSION", "").strip()
+    if env_version:
+        return env_version
     version_path = Path(__file__).resolve().parent.parent / "VERSION"
     try:
         return version_path.read_text().strip()

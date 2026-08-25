@@ -9,6 +9,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy server
 COPY server.py .
 
+# Version baked in at build time via --build-arg VERSION=<semver>
+ARG VERSION=0.0.0-dev
+ENV TRANSPORT_VERSION=${VERSION}
+
 EXPOSE 64057 64058
 
 CMD ["python", "server.py"]
