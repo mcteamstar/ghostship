@@ -29,6 +29,8 @@ else:
     msg = email.message_from_file(sys.stdin)
 
 sig = msg.get('X-Admiral-Sig', '').strip()
+subject = msg.get('Subject', '')
+sender = msg.get('From', '')
 body = (msg.get_payload() or '').rstrip('\n')
 
 if not sig:
@@ -54,7 +56,11 @@ if secret is None:
     # All retries exhausted — secret file absent (transient condition)
     sys.exit(2)
 
-expected = hmac.new(secret, body.encode('utf-8'), hashlib.sha256).hexdigest()
+expected = hmac.new(
+    secret,
+    f'Subject:{subject}\nFrom:{sender}\n\n{body}'.encode('utf-8'),
+    hashlib.sha256,
+).hexdigest()
 if hmac.compare_digest(sig, expected):
     sys.exit(0)
 else:

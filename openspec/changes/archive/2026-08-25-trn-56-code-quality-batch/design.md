@@ -1,13 +1,13 @@
 ## Context
 
-Six independent code quality fixes in `transport/server.py` and `tests/unit/test_transport.py`. None introduce new external behaviour; each corrects an existing defect or improves internal clarity. See proposal.md for motivation.
+Five independent code quality fixes in `transport/server.py` and `tests/unit/test_transport.py`. None introduce new external behaviour; each corrects an existing defect or improves internal clarity. See proposal.md for motivation.
 
 One item from the original TRN-56 ticket (/version auth) is **dropped**: `openspec/specs/mcp-server/spec.md` explicitly requires `GET /version` to be unauthenticated (`SHALL NOT require authentication`). The Banshee finding contradicts the spec intent, which is that version info is not sensitive enough to gate.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Fix fail-closed idle monitor (crew incorrectly stopped on transient API error)
+- Fix fail-closed idle monitor (crew incorrectly stopped on transient API error or unexpected response)
 - Extend captain mail HMAC to cover Subject header
 - Extract magic container prefix strings to named constants
 - Fix flaky `test_cron_branch` that fails at HH:59
@@ -19,7 +19,7 @@ One item from the original TRN-56 ticket (/version auth) is **dropped**: `opensp
 
 ## Decisions
 
-**Fail-open idle monitor:** On exception from `/api/spawn` or `/api/crons`, `continue` (skip crew) rather than `pass` (fall through to stop). The existing `pass` comment says "keep fail-closed stop behavior" — that comment is wrong: stopping a crew whose activity state is unknown is the wrong default. The safe default is to leave it running and retry next cycle.
+**Fail-open idle monitor:** On an exception or non-success response from `/api/spawn` or `/api/crons`, `continue` (skip crew) rather than allowing an unknown activity result to fall through to stop. The existing `pass` comment says "keep fail-closed stop behavior" — that comment is wrong: stopping a crew whose activity state is unknown is the wrong default. The safe default is to leave it running and retry next cycle.
 
 **HMAC over headers:** Include `Subject:` and `From:` in the signed payload by changing the HMAC input from `body.encode()` to `f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode()`. The `X-Admiral-Sig` header value format is unchanged (hex digest). Verification in `verify-admiral-sig` (shell script) must be updated to match.
 

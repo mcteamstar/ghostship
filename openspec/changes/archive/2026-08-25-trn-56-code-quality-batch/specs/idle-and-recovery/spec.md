@@ -19,6 +19,18 @@ The system SHALL stop a crew's container after it has had no active dispatched t
 - **WHEN** a crew's idle time exceeds `GA_IDLE_TIMEOUT_SECS` but it still has at least one non-done task
 - **THEN** the idle monitor updates `last_used` and leaves the container running
 
+#### Scenario: Cron execution keeps crew alive
+- **WHEN** a running crew's gateway reports a cron execution in progress, or a cron `last_run_ts` newer than the crew registry's `last_used` timestamp
+- **THEN** the idle monitor refreshes `last_used` and leaves the container running
+
+#### Scenario: Crew awaiting auth
+- **WHEN** a crew's registry status is `auth_required`
+- **THEN** the idle monitor skips it entirely, never stopping a container that hasn't finished setup
+
+#### Scenario: Newly completed setup receives a full idle window
+- **WHEN** crew setup completes successfully and the crew is registered as `running`
+- **THEN** the registry records the current time as `last_used` before the idle monitor can evaluate the crew
+
 #### Scenario: API error during activity check
 - **WHEN** the idle monitor's request to `/api/spawn` or `/api/crons` fails with a connection error, timeout, or unexpected HTTP response
 - **THEN** the idle monitor skips that crew for the current cycle and leaves it running

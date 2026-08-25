@@ -1709,12 +1709,11 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("X-Admiral-Sig: ", message)
 
     def test_admiral_sig_round_trip_matches_verify_admiral_sig_logic(self) -> None:
-        """X-Admiral-Sig survives a parse-and-verify round trip.
+        """X-Admiral-Sig covers Subject, From, and body after parsing.
 
         Simulates the verify-admiral-sig logic: parse the message with
-        email.message_from_string, strip trailing newline from the payload,
-        re-derive the HMAC, and compare.  This is the exact bug TRN-21 fixed —
-        the trailing newline mismatch caused Raven to reject every captain order.
+        email.message_from_string, extract the signed headers, strip the
+        trailing newline from the payload, re-derive the HMAC, and compare.
         """
         import email as _email
         import hmac as _hmac
@@ -1727,12 +1726,14 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         # Parse as email (what verify-admiral-sig does)
         msg = _email.message_from_string(message)
         sig_header = msg.get("X-Admiral-Sig", "").strip()
-        parsed_body = (msg.get_payload() or "").rstrip("\n")  # TRN-21 fix
+        subject = msg.get("Subject", "")
+        sender = msg.get("From", "")
+        parsed_body = (msg.get_payload() or "").rstrip("\n")
 
-        # Re-derive expected HMAC
+        # Re-derive expected HMAC over the same headers and body as the verifier.
         expected = _hmac.new(
             secret.encode("utf-8"),
-            parsed_body.encode("utf-8"),
+            f"Subject:{subject}\nFrom:{sender}\n\n{parsed_body}".encode("utf-8"),
             _hashlib.sha256,
         ).hexdigest()
 
@@ -4128,7 +4129,7 @@ class IdleMonitorTests(unittest.TestCase):
         self,
         crew_items: list[tuple[str, dict]],
         podman: IdleMonitorPodman,
-        http_responses: list[MockHTTPResponse] | None = None,
+        http_responses: list[MockHTTPResponse | BaseException] | None = None,
         mint_cookie_return: str | None = None,
     ) -> dict[str, Any]:
         """Run a single iteration of the idle monitor and return state."""
@@ -4138,7 +4139,10 @@ class IdleMonitorTests(unittest.TestCase):
         class FakeHTTP:
             def get(self, url: str, **kwargs: Any) -> MockHTTPResponse:
                 http_calls.append(url)
-                return next(response_iter, MockHTTPResponse(500))
+                response = next(response_iter, MockHTTPResponse(500))
+                if isinstance(response, BaseException):
+                    raise response
+                return response
 
         touched: list[str] = []
         saved_regs: list[dict] = []
@@ -4260,6 +4264,93 @@ class IdleMonitorTests(unittest.TestCase):
         self.assertEqual(result["stops"], [])
         # Should NOT touch (we can't verify activity)
         self.assertEqual(result["touched"], [])
+
+    def test_spawn_activity_check_exception_skips_crew(self) -> None:
+        """An /api/spawn error leaves the crew running for this cycle."""
+        podman = IdleMonitorPodman(containers_running={"gs-spawn-error": True})
+        crew_items = [(
+            "spawn-error",
+            {"container": "gs-spawn-error", "status": "running", "cookie": "c", "last_used": 0},
+        )]
+
+        result = self._run_one_iteration(
+            crew_items, podman, [RuntimeError("spawn unavailable")]
+        )
+
+        self.assertEqual(result["stops"], [])
+
+    def test_spawn_activity_check_unexpected_response_skips_crew(self) -> None:
+        """A non-success /api/spawn response leaves the crew running."""
+        podman = IdleMonitorPodman(containers_running={"gs-spawn-status-error": True})
+        crew_items = [(
+            "spawn-status-error",
+            {"container": "gs-spawn-status-error", "status": "running", "cookie": "c", "last_used": 0},
+        )]
+
+        result = self._run_one_iteration(
+            crew_items, podman, [MockHTTPResponse(503)]
+        )
+
+        self.assertEqual(result["stops"], [])
+
+    def test_spawn_activity_check_malformed_response_skips_crew(self) -> None:
+        """A malformed successful /api/spawn payload leaves the crew running."""
+        podman = IdleMonitorPodman(containers_running={"gs-spawn-malformed": True})
+        crew_items = [(
+            "spawn-malformed",
+            {"container": "gs-spawn-malformed", "status": "running", "cookie": "c", "last_used": 0},
+        )]
+
+        result = self._run_one_iteration(
+            crew_items, podman, [MockHTTPResponse(200, [])]
+        )
+
+        self.assertEqual(result["stops"], [])
+
+    def test_cron_activity_check_exception_skips_crew(self) -> None:
+        """An /api/crons error leaves the crew running for this cycle."""
+        podman = IdleMonitorPodman(containers_running={"gs-cron-error": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        crew_items = [(
+            "cron-error",
+            {"container": "gs-cron-error", "status": "running", "cookie": "c", "last_used": 0},
+        )]
+
+        result = self._run_one_iteration(
+            crew_items, podman, [spawn_resp, RuntimeError("crons unavailable")]
+        )
+
+        self.assertEqual(result["stops"], [])
+
+    def test_cron_activity_check_unexpected_response_skips_crew(self) -> None:
+        """A non-success /api/crons response leaves the crew running."""
+        podman = IdleMonitorPodman(containers_running={"gs-cron-status-error": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        crew_items = [(
+            "cron-status-error",
+            {"container": "gs-cron-status-error", "status": "running", "cookie": "c", "last_used": 0},
+        )]
+
+        result = self._run_one_iteration(
+            crew_items, podman, [spawn_resp, MockHTTPResponse(503)]
+        )
+
+        self.assertEqual(result["stops"], [])
+
+    def test_cron_activity_check_malformed_response_skips_crew(self) -> None:
+        """A malformed successful /api/crons payload leaves the crew running."""
+        podman = IdleMonitorPodman(containers_running={"gs-cron-malformed": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        crew_items = [(
+            "cron-malformed",
+            {"container": "gs-cron-malformed", "status": "running", "cookie": "c", "last_used": 0},
+        )]
+
+        result = self._run_one_iteration(
+            crew_items, podman, [spawn_resp, MockHTTPResponse(200, [])]
+        )
+
+        self.assertEqual(result["stops"], [])
 
     def test_idle_monitor_cron_401_retries_with_fresh_cookie(self) -> None:
         """D9 — cron endpoint 401 triggers cookie refresh and retry (TRN-39 4.4)."""
@@ -5047,17 +5138,17 @@ class AdvanceNextFireAtTests(unittest.TestCase):
         self.assertAlmostEqual(job["next_fire_at"], now + 300, delta=2.0)
 
     def test_cron_branch(self) -> None:
-        """cron_expr branch advances using croniter, not always +60s.  # requires TRN-37"""
+        """cron_expr branch matches croniter at a simulated HH:59 time."""
+        from datetime import datetime, timezone
+        from croniter import croniter
+
         job = {"job_id": "j2", "interval_secs": None, "cron_expr": "0 * * * *", "one_shot": False}
-        now = time.time()
-        server._advance_next_fire_at(job)
-        # croniter should give the next top-of-hour, which is > now+60 in general
-        # and always <= now+3600.  The key assertion is that it is NOT simply now+60.
-        self.assertGreater(job["next_fire_at"], now)
-        self.assertLessEqual(job["next_fire_at"], now + 3601)
-        # Confirm it is computing a real cron tick, not the fallback now+60 value:
-        # a value exactly at now+60 would mean croniter was not used.
-        self.assertGreater(job["next_fire_at"], now + 60)
+        now = datetime(2026, 8, 24, 12, 59, 30, tzinfo=timezone.utc).timestamp()
+        with patch.object(server.time, "time", return_value=now):
+            server._advance_next_fire_at(job)
+
+        expected = croniter("0 * * * *", now).get_next(float)
+        self.assertEqual(job["next_fire_at"], expected)
 
     def test_one_shot_branch(self) -> None:
         """one_shot=True sets next_fire_at to _NEVER_FIRE_AT sentinel."""
@@ -5342,6 +5433,31 @@ class ActiveCrewLimitTests(unittest.TestCase):
             crews[f"crew-{i}"] = self._make_crew(status="running", container=f"gs-{i}")
         crews[target_id] = self._make_crew(status="stopped", container="gs-target")
         return {"crews": crews}
+
+    def test_startup_event_pruned_when_leader_restart_raises(self) -> None:
+        """A failed leader restart always removes its startup event."""
+        class FailingRestartPodman:
+            def container_is_running(self, name: str) -> bool:
+                return False
+
+            def container_start(self, name: str) -> None:
+                pass
+
+        startup_events: dict[str, threading.Event] = {}
+        crew = self._make_crew(status="stopped", container="gs-failing")
+
+        with (
+            patch.object(server, "_get_podman", return_value=FailingRestartPodman()),
+            patch.object(server, "_startup_events", startup_events),
+            patch.object(server, "_startup_events_lock", threading.Lock()),
+            patch.object(server, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(server, "GA_MIN_FREE_MEM_GB", 0.0),
+            patch.object(server, "_wait_gateway", side_effect=RuntimeError("restart failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "restart failed"):
+                server._ensure_crew_running(crew, "target")
+
+        self.assertNotIn("target", startup_events)
 
     # ── Task 3.1: raises when limit reached ─────────────────────────────────
 

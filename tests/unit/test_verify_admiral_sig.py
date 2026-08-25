@@ -40,10 +40,12 @@ def _make_message(body: str, sig: str | None = None) -> str:
 
 
 def _compute_sig(body: str, secret: str) -> str:
-    """Compute the expected HMAC-SHA256 hex signature for a body."""
+    """Compute the expected HMAC-SHA256 signature for the message payload."""
+    normalized_body = body.rstrip("\n")
+    payload = f"Subject:test order\nFrom:admiral@localhost\n\n{normalized_body}"
     return hmac.new(
         secret.encode("utf-8"),
-        body.rstrip("\n").encode("utf-8"),
+        payload.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 

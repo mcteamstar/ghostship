@@ -92,6 +92,9 @@ REGISTRY_PATH = DATA_DIR / "crews.json"
 
 # KiroCrew gateway port — fixed by upstream, not configurable from this transport.
 CREW_GATEWAY_PORT = 5476
+CREW_CONTAINER_PREFIX = "gs-"
+CREW_VOLUME_PREFIX = "gs-vol-"
+CREW_HOME_VOLUME_PREFIX = "gs-home-"
 
 PODMAN_SOCK = os.environ.get(
     "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
@@ -412,7 +415,7 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=502)
 
     # Build upstream URL
-    upstream_base = f"http://gs-{crew_id}:{CREW_GATEWAY_PORT}"
+    upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
     upstream_path = f"/{sub_path}" if sub_path else "/"
     query = request.scope.get("query_string", b"")
     upstream_url = upstream_path
@@ -482,7 +485,7 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=502)
 
     # Build upstream URL
-    upstream_base = f"http://gs-{crew_id}:{CREW_GATEWAY_PORT}"
+    upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
     api_path = f"/api/{sub_path}" if sub_path else "/api/"
     query = request.scope.get("query_string", b"")
     if query:
@@ -1298,7 +1301,8 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
     correspondence.
 
     When signing_secret is provided, an X-Admiral-Sig HMAC-SHA256 header is
-    added over the message body. When supersedes_id is provided, a Supersedes
+    added over the Subject and From headers plus the message body. When
+    supersedes_id is provided, a Supersedes
     header referencing the previous order's Message-ID is included.
     """
     import uuid as _uuid
@@ -1329,7 +1333,9 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
 
     if signing_secret:
         sig = hmac.new(
-            signing_secret.encode(), body.encode("utf-8"), hashlib.sha256
+            signing_secret.encode(),
+            f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8"),
+            hashlib.sha256,
         ).hexdigest()
         headers.append(f"X-Admiral-Sig: {sig}")
 
@@ -2854,9 +2860,9 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         return {"error": f"Unknown composition '{composition}'. Available: {available}"}
 
     image = _resolve_image(composition_entry)
-    container = f"gs-{crew_id}"
-    volume = f"gs-vol-{crew_id}"
-    home_volume = f"gs-home-{crew_id}"
+    container = f"{CREW_CONTAINER_PREFIX}{crew_id}"
+    volume = f"{CREW_VOLUME_PREFIX}{crew_id}"
+    home_volume = f"{CREW_HOME_VOLUME_PREFIX}{crew_id}"
 
     try:
         podman = _get_podman()
@@ -3342,8 +3348,8 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             pass
         return {
             "warning": f"Pass confirm=True to tear down crew '{crew_id}'",
-            "container": crew.get("container", f"gs-{crew_id}"),
-            "volumes": [crew.get("volume", f"gs-vol-{crew_id}"), crew.get("home_volume", f"gs-home-{crew_id}")],
+            "container": crew.get("container", f"{CREW_CONTAINER_PREFIX}{crew_id}"),
+            "volumes": [crew.get("volume", f"{CREW_VOLUME_PREFIX}{crew_id}"), crew.get("home_volume", f"{CREW_HOME_VOLUME_PREFIX}{crew_id}")],
             "active_tasks": len(active),
         }
 
@@ -3354,13 +3360,13 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     # A failed launch may leave a partial registry entry with only 'container'
     # and 'status: launching' — fall back to conventional names for anything missing.
-    container = crew.get("container", f"gs-{crew_id}")
-    vol = crew.get("volume", f"gs-vol-{crew_id}")
-    home_vol = crew.get("home_volume", f"gs-home-{crew_id}")
+    container = crew.get("container", f"{CREW_CONTAINER_PREFIX}{crew_id}")
+    vol = crew.get("volume", f"{CREW_VOLUME_PREFIX}{crew_id}")
+    home_vol = crew.get("home_volume", f"{CREW_HOME_VOLUME_PREFIX}{crew_id}")
     try:
-        if not container.startswith("gs-"):
+        if not container.startswith(CREW_CONTAINER_PREFIX):
             raise RuntimeError(f"Refusing to nuke non-crew container: {container!r}")
-        if not vol.startswith("gs-vol-"):
+        if not vol.startswith(CREW_VOLUME_PREFIX):
             raise RuntimeError(f"Refusing to nuke non-crew volume: {vol!r}")
     except RuntimeError as e:
         return {"error": str(e)}
@@ -4613,8 +4619,16 @@ def _idle_monitor() -> None:
                     else:
                         # Can't verify activity — skip this crew (fail-open)
                         continue
-                payload = r.json() if r.status_code == 200 else {}
-                agents = payload.get("agents", []) if isinstance(payload, dict) else []
+                if r.status_code != 200:
+                    # Activity is unknown after any non-success response — fail open.
+                    continue
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    # A successful response with an unusable shape is still unknown activity.
+                    continue
+                agents = payload.get("agents")
+                if not isinstance(agents, list):
+                    continue
                 active = [
                     agent for agent in agents
                     if isinstance(agent, dict) and not agent.get("done")
@@ -4624,7 +4638,7 @@ def _idle_monitor() -> None:
                     _touch_crew(crew_id)
                     continue
             except Exception:
-                pass  # keep the existing fail-closed stop behavior
+                continue
 
             # Cron executions do not appear in /api/spawn.  The gateway exposes
             # their running and last-completed timestamps through /api/crons —
@@ -4655,15 +4669,22 @@ def _idle_monitor() -> None:
                     else:
                         # Can't verify activity — skip this crew (fail-open)
                         continue
-                if r.status_code == 200:
-                    cron_payload = r.json()
-                    if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
-                        cron_payload
-                    ):
-                        _touch_crew(crew_id)
-                        continue
+                if r.status_code != 200:
+                    # Activity is unknown after any non-success response — fail open.
+                    continue
+                cron_payload = r.json()
+                if not isinstance(cron_payload, dict):
+                    # A successful response with an unusable shape is still unknown activity.
+                    continue
+                if not isinstance(cron_payload.get("jobs"), list):
+                    continue
+                if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
+                    cron_payload
+                ):
+                    _touch_crew(crew_id)
+                    continue
             except Exception:
-                pass  # keep the existing fail-closed stop behavior
+                continue
 
             logger.info(
                 "Crew %s idle for %.0fs — stopping container",
