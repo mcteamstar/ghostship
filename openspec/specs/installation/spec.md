@@ -7,22 +7,18 @@ Install and run Ghost Academy locally on either macOS or Linux with a single scr
 ## Requirements
 
 ### Requirement: Cross-platform Podman provisioning
-The system SHALL detect the host OS via `uname -s` and install Podman with the appropriate package manager if it is missing: Homebrew on Darwin, and on Linux whichever of `apt-get` or `dnf` is available.
+The system SHALL detect the host OS via `uname -s` and verify that `podman` and `podman-compose` are installed before proceeding. If either is missing, `install.sh` SHALL exit with a clear error and print the install command for the detected OS. Podman and podman-compose are prerequisites that must be installed before running `install.sh` — the script does not install them itself.
 
-#### Scenario: macOS without Podman
-- **WHEN** `install.sh` runs on Darwin and `podman` is not on `PATH`
-- **THEN** the script requires Homebrew and installs Podman via `brew install podman`
+#### Scenario: Podman not installed
+- **WHEN** `install.sh` runs and `podman` is not on `PATH`
+- **THEN** the script exits with an error and prints the install command for the detected OS (e.g. `brew install podman` on macOS, `sudo apt-get install -y podman podman-compose` on Ubuntu)
 
-#### Scenario: Linux with apt
-- **WHEN** `install.sh` runs on Linux, `podman` is not on `PATH`, and `apt-get` is available
-- **THEN** the script installs Podman via `apt-get install podman`
-
-#### Scenario: Linux with dnf
-- **WHEN** `install.sh` runs on Linux, `podman` is not on `PATH`, `apt-get` is unavailable, and `dnf` is available
-- **THEN** the script installs Podman via `dnf install podman`
+#### Scenario: podman-compose not installed
+- **WHEN** `install.sh` runs, `podman` is on `PATH`, but no compose provider (`podman-compose`, `docker-compose`, or `docker compose`) is found
+- **THEN** the script exits with an error and prints the install command for podman-compose on the detected OS
 
 #### Scenario: Unsupported platform
-- **WHEN** `install.sh` runs on an OS that is neither Darwin nor Linux, or on Linux with neither `apt-get` nor `dnf` available
+- **WHEN** `install.sh` runs on an OS that is neither Darwin nor Linux
 - **THEN** the script exits with an error rather than guessing a package manager
 
 ### Requirement: Platform-appropriate Podman runtime setup
@@ -280,3 +276,35 @@ The `org.ghostship.version` OCI label on each composition image SHALL be `<VERSI
 #### Scenario: Future composition follows same convention
 - **WHEN** a new composition `research` is built with ghostship version `0.2.0`
 - **THEN** its OCI label reads `"0.2.0-research"` and `crews()` reports that value
+
+### Requirement: Transport service definition generated as a Compose file
+`install.sh` SHALL generate a `compose.yml` in `${DATA_DIR}` after building images, containing the complete `ga-transport` service definition: image, ports, volumes, environment variables, network, restart policy, and security options. The Podman socket path and all machine-specific values SHALL be baked in at generation time so the file is self-contained and usable without re-running `install.sh`.
+
+`install.sh`, `start.sh`, and `uninstall.sh` SHALL all use `podman compose -f "${DATA_DIR}/compose.yml"` to manage the `ga-transport` container lifecycle, replacing raw `podman run`, `podman stop`, and `podman rm` calls.
+
+#### Scenario: install.sh generates compose.yml
+- **WHEN** `install.sh` completes the image build phase
+- **THEN** `${DATA_DIR}/compose.yml` exists and contains a valid Compose service definition for `ga-transport` with all env vars, mounts, ports, and the host-specific Podman socket path
+
+#### Scenario: start.sh starts a stopped transport
+- **WHEN** `start.sh` is run and `ga-transport` is stopped or does not exist
+- **THEN** `podman compose up -d` starts or recreates the container from `compose.yml` without requiring additional arguments
+
+#### Scenario: start.sh is idempotent when transport is running
+- **WHEN** `start.sh` is run and `ga-transport` is already running
+- **THEN** `podman compose up -d` detects it is already up and makes no changes
+
+#### Scenario: uninstall.sh tears down via compose
+- **WHEN** `uninstall.sh` tears down `ga-transport`
+- **THEN** `podman compose down` stops and removes the container cleanly
+
+### Requirement: podman-compose required as a prerequisite
+The system SHALL require a Compose provider (`podman-compose`, `docker-compose`, or `docker compose`) to be installed before `install.sh` runs. `install.sh` SHALL check for a compose provider and exit with a clear error and install instructions if none is found.
+
+#### Scenario: compose provider present
+- **WHEN** `install.sh` runs and `podman-compose` (or equivalent) is on `PATH`
+- **THEN** installation proceeds normally
+
+#### Scenario: no compose provider found
+- **WHEN** `install.sh` runs and no compose provider is found
+- **THEN** the script exits with an error and prints the install command for `podman-compose` on the detected OS

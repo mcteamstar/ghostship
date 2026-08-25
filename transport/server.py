@@ -2433,48 +2433,31 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
 
 # ── Academy login / logout HTTP routes ───────────────────────────────────────
 
-async def _handle_login_post(request: Request) -> Response:
-    """POST /login — initiate kiro-cli device auth via an ephemeral temp container.
+def _initiate_login(podman: "PodmanClient") -> dict:
+    """Start a device auth flow and return login URL and code.
 
-    State machine guard:
-      - 409 if ga-kiro-auth already exists and is non-empty (already authenticated)
-      - 409 if a login flow is already pending
+    Acquires _login_pending_lock, applies TOCTOU-safe guards, starts the
+    ephemeral login container, runs kiro-cli login via PTY, answers interactive
+    prompts, extracts the device URL and code, and hands the stream to a
+    background drain thread.
 
-    Creates a ga-login-<token> container, starts a PTY exec with kiro-cli login,
-    reads raw output until the device URL/code appear (~2–5s), then hands the
-    still-running exec stream to a daemon background thread. Returns the URL and
-    code immediately so the operator can open the browser.
+    Returns one of:
+      {"login_url": str, "code": str | None}     — flow started successfully
+      {"login_pending": True}                     — a flow is already in progress
+      {"error": str}                              — hard failure (container / PTY)
+
+    Callers must NOT hold _login_pending_lock when calling this.
     """
-    # ── State guards ──────────────────────────────────────────────────────────
-    # Both checks held under the same lock so concurrent requests cannot slip
-    # through between the auth-file check and the login-pending check (TOCTOU).
-    # The sentinel is also set inside this same critical section to close the
-    # write-side TOCTOU window.
     global _login_pending
     with _login_pending_lock:
-        if _read_auth_file():
-            return PlainTextResponse(
-                "Already authenticated. POST /logout first.",
-                status_code=409,
-            )
         if _login_pending is not None:
-            return PlainTextResponse(
-                "Login already in progress. Poll GET /login for status.",
-                status_code=409,
-            )
+            return {"login_pending": True}
         # Set lightweight sentinel immediately to prevent concurrent starts
         _login_pending = {
             "container": None,
             "started_at": time.time(),
             "state": "starting",
         }
-
-    try:
-        podman = _get_podman()
-    except Exception as e:
-        with _login_pending_lock:
-            _login_pending = None
-        return PlainTextResponse(str(e), status_code=500)
 
     # ── Start ephemeral container ─────────────────────────────────────────────
     try:
@@ -2483,7 +2466,7 @@ async def _handle_login_post(request: Request) -> Response:
         logger.error("Failed to start login container: %s", e)
         with _login_pending_lock:
             _login_pending = None
-        return PlainTextResponse(f"Failed to start login container: {e}", status_code=500)
+        return {"error": f"Failed to start login container: {e}"}
 
     # Update sentinel with real container name
     with _login_pending_lock:
@@ -2494,8 +2477,6 @@ async def _handle_login_post(request: Request) -> Response:
         }
 
     # ── Wait for kiro-cli to be available in the container ────────────────────
-    # The container uses KC_IMAGE which has kiro-cli installed; a short wait
-    # ensures the container init has run before we exec.
     for _ in range(10):
         try:
             check = podman.container_exec(container, ["which", "kiro-cli"])
@@ -2518,19 +2499,15 @@ async def _handle_login_post(request: Request) -> Response:
         _nuke_login_container(podman, container)
         with _login_pending_lock:
             _login_pending = None
-        return PlainTextResponse(f"Failed to start kiro-cli login: {e}", status_code=500)
+        return {"error": f"Failed to start kiro-cli login: {e}"}
 
     pty_sock.setblocking(False)
 
     # ── Read output, answer prompts, wait for device URL (max 15s) ───────────
-    # kiro-cli may present "Select login method" before the "Start URL" and
-    # "Region" prompts. Detect each known prompt and write its answer to stdin.
     deadline = time.time() + 15.0
     collected = bytearray()
     login_url: str | None = None
     login_code: str | None = None
-    # Ordered from the earliest interactive prompt to the latest. Each matcher
-    # is answered at most once so accumulated PTY output cannot replay input.
     prompt_rules: list[tuple[str, bytes]] = [
         ("Select login method", b"\n"),
         ("Start URL", (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()),
@@ -2557,8 +2534,6 @@ async def _handle_login_post(request: Request) -> Response:
                     if matcher not in text or matcher in answered_prompts:
                         continue
                     if matcher == "Select login method":
-                        # Builder ID is the default only when this menu precedes
-                        # the IAM Identity Center Start URL prompt.
                         menu_position = text.find(matcher)
                         start_url_position = text.find("Start URL")
                         if start_url_seen or (
@@ -2567,7 +2542,6 @@ async def _handle_login_post(request: Request) -> Response:
                         ):
                             continue
                     elif matcher == "Region" and not answered_url:
-                        # Preserve the existing Start URL -> Region ordering.
                         continue
 
                     pty_sock.sendall(answer)
@@ -2581,16 +2555,12 @@ async def _handle_login_post(request: Request) -> Response:
                     else:
                         logger.debug("Answered Region prompt")
 
-                # Look for device code URL — kiro-cli prints:
-                # "Open this URL: https://...#/device?user_code=XXXX-XXXX"
                 url_match = re.search(r'Open this URL[:\s]+(https?://\S+)', text)
                 if not url_match:
-                    # Fallback: any URL with user_code param
                     url_match = re.search(r'(https?://\S+user_code=\S+)', text)
                 code_match = re.search(r'[Cc]ode[:\s]+([A-Z0-9-]{4,})', text)
                 if url_match:
                     login_url = url_match.group(1).rstrip(").,")
-                    # Extract code from user_code URL param (reliable) or inline Code: line
                     uc_match = re.search(r'user_code=([A-Z0-9-]{4,})', login_url)
                     if uc_match:
                         login_code = uc_match.group(1)
@@ -2601,7 +2571,6 @@ async def _handle_login_post(request: Request) -> Response:
         logger.warning("PTY read error during login: %s", e)
 
     if not login_url:
-        # Failed to extract URL — clean up and return raw output
         raw_output = collected.decode("utf-8", errors="replace")
         try:
             pty_sock.close()
@@ -2610,10 +2579,7 @@ async def _handle_login_post(request: Request) -> Response:
         _nuke_login_container(podman, container)
         with _login_pending_lock:
             _login_pending = None
-        return PlainTextResponse(
-            f"kiro-cli did not produce a login URL within 15s.\nOutput:\n{raw_output}",
-            status_code=500,
-        )
+        return {"error": f"kiro-cli did not produce a login URL within 15s.\nOutput:\n{raw_output}"}
 
     # ── Hand off remaining stream to background thread ────────────────────────
     pty_sock.setblocking(True)
@@ -2635,16 +2601,56 @@ async def _handle_login_post(request: Request) -> Response:
     drain_thread = threading.Thread(target=_drain_pty, daemon=True, name=f"pty-drain-{container}")
     drain_thread.start()
 
-    # ── Update sentinel with exec_id ─────────────────────────────────────────
     with _login_pending_lock:
         if _login_pending is not None:
             _login_pending["exec_id"] = exec_id
 
     logger.info("Login flow started in %s, URL extracted", container)
+    return {"login_url": login_url, "code": login_code}
+
+
+async def _handle_login_post(request: Request) -> Response:
+    """POST /login — initiate kiro-cli device auth via an ephemeral temp container.
+
+    State machine guard:
+      - 409 if ga-kiro-auth already exists and is non-empty (already authenticated)
+      - 409 if a login flow is already pending
+
+    Delegates to _initiate_login() for the actual container start and PTY flow.
+    Returns the URL and code immediately so the operator can open the browser.
+    """
+    global _login_pending
+    with _login_pending_lock:
+        if _read_auth_file():
+            return PlainTextResponse(
+                "Already authenticated. POST /logout first.",
+                status_code=409,
+            )
+        if _login_pending is not None:
+            return PlainTextResponse(
+                "Login already in progress. Poll GET /login for status.",
+                status_code=409,
+            )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _initiate_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Login already in progress. Poll GET /login for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
     return JSONResponse({
         "status": "pending",
-        "login_url": login_url,
-        "code": login_code,
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
     })
 
 
@@ -2839,13 +2845,14 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
     with a dedicated workspace. Repository seeding is a separate supply step.
     Also: calldown, create workspace, launch crew, init environment, load the ghostship.
 
-    Requires prior authentication via POST /login. Returns an error if no auth
-    is available — call launch again after completing the login flow.
+    Requires prior authentication. If not authenticated, launch automatically
+    initiates the device auth flow and returns login_url and code so the caller
+    can complete auth and retry launch — no separate POST /login call needed.
 
     Args:
         crew_id: Name for this crew (e.g. 'general', 'srv-refactor'). Must be
                  unique. Use lowercase letters, numbers, hyphens.
-        composition: Crew composition to launch (default: "kirocrew"). See the
+        composition: Crew composition to launch (default: "spec-ops"). See the
                      transport://compositions resource for available compositions.
 
     Returns crew_id and status once the gateway is ready (~30s).
@@ -2869,6 +2876,25 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
     except Exception as e:
         return {"error": str(e)}
 
+    # ── Auth check — before registry write to avoid orphaned entries ──────────
+    auth_b64: str | None = _read_auth_file() or None
+    if not auth_b64:
+        result = _initiate_login(podman)
+        if result.get("login_pending"):
+            return {
+                "error": "not_authenticated",
+                "login_pending": True,
+                "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+            }
+        if "error" in result:
+            return {"error": result["error"]}
+        return {
+            "error": "not_authenticated",
+            "login_url": result.get("login_url"),
+            "code": result.get("code"),
+            "instructions": "Open login_url to authenticate, then call launch again.",
+        }
+
     with _registry_lock:
         reg = _load_registry()
         existing = reg["crews"].get(crew_id)
@@ -2879,14 +2905,6 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         # Pre-insert a placeholder to prevent concurrent launches with the same id
         reg["crews"][crew_id] = {"status": "launching", "container": container}
         _save_registry(reg)
-
-    # ── Auth check — fail fast if not authenticated ───────────────────────────
-    auth_b64: str | None = _read_auth_file() or None
-    if not auth_b64:
-        return {
-            "error": "not_authenticated",
-            "instructions": "Call POST /login to authenticate first, then call launch again.",
-        }
 
     try:
         podman.network_create(GA_NETWORK)

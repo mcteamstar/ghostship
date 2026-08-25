@@ -39,6 +39,14 @@ The endpoint SHALL set `_login_pending` to a non-None sentinel value while still
 - **WHEN** `GA_API_KEY` is configured and `POST /login` is called without a valid bearer token
 - **THEN** the transport responds with `401 Unauthorized`
 
+#### Scenario: Login flow initiated from within launch (no existing pending flow)
+- **WHEN** `launch` is called without valid auth, no login flow is currently pending, and `_initiate_login()` is called internally
+- **THEN** a `ga-login-<token>` container is started, `_login_pending` is set to a non-None sentinel before the lock is released (same TOCTOU guard as a direct `POST /login` call), and `login_url` and `code` are extracted and returned to the caller via the `launch` error response — the background drain thread continues running to completion
+
+#### Scenario: Login flow initiated from within launch (flow already pending)
+- **WHEN** `launch` is called without valid auth and a login flow is already in progress (the `_login_pending` sentinel is set)
+- **THEN** `launch` does NOT start a second container; the response includes `error: "not_authenticated"` and `login_pending: true` so the caller knows to poll `GET /login`
+
 ### Requirement: GET /login polls auth completion and propagates on success
 The system SHALL expose a `GET /login` route that checks whether kiro-cli auth has completed inside the temp container by inspecting its SQLite database for a full auth row set. On completion, the transport SHALL write `ga-kiro-auth`, inject the auth rows into every running crew's kiro-cli DB, and nuke the temp container.
 

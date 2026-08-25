@@ -142,7 +142,16 @@ done
 
 # ── Transport ─────────────────────────────────────────────────────────────────
 
-${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 && echo "✓ ga-transport container removed" || echo "  (ga-transport was not running)"
+_COMPOSE_FILE="${HOME}/.local/share/${_MACHINE_NAME}/data/compose.yml"
+if [[ "$OS" == "Darwin" ]]; then
+  _COMPOSE_FILE="${HOME}/Library/Application Support/${_MACHINE_NAME}/data/compose.yml"
+fi
+if [[ -f "$_COMPOSE_FILE" ]]; then
+  ${_PODMAN_CMD} compose --project-name ga -f "$_COMPOSE_FILE" down 2>/dev/null \
+    && echo "✓ ga-transport stopped and removed via compose" || true
+else
+  ${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 && echo "✓ ga-transport container removed" || echo "  (ga-transport was not running)"
+fi
 ${_PODMAN_CMD} network rm ga-net >/dev/null 2>&1 && echo "✓ ga-net network removed" || echo "  (ga-net did not exist)"
 
 # ── Images ────────────────────────────────────────────────────────────────────

@@ -222,8 +222,9 @@ class TestInstallShPodmanSecret(unittest.TestCase):
         content = install_path.read_text()
         self.assertIn("secret rm ga-api-key", content)
         self.assertIn("secret create ga-api-key", content)
-        self.assertIn("--secret ga-api-key", content)
-        # Verify the env var line is gone
+        # Secret is referenced in the compose file's secrets section, not via --secret flag
+        self.assertIn("ga-api-key", content)
+        # Verify plain env var pass is gone
         self.assertNotIn('-e "GA_API_KEY=${GA_API_KEY:-}"', content)
 
 

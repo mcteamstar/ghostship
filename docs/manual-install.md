@@ -1,15 +1,17 @@
 # Manual Install (Unsupported Package Managers)
 
-`install.sh` automates podman installation for `apt` (Debian/Ubuntu) and `dnf`
-(Fedora/RHEL/CentOS). If your distro uses a different package manager, install
-the prerequisites yourself, then re-run `install.sh` — it will detect podman on
-PATH and continue with setup.
+`install.sh` requires `podman` and `podman-compose` to already be installed
+before it runs — it does not install them itself. For `apt` (Debian/Ubuntu)
+and `dnf` (Fedora/RHEL/CentOS), the standard install commands are in the
+README. For other distros, install the prerequisites below manually, then
+re-run `install.sh`.
 
 ## Prerequisites
 
 | Package          | Minimum version | Purpose                         |
 |------------------|-----------------|---------------------------------|
-| `podman`         | 4.0+            | Container runtime (rootless)    |
+| `podman`         | 4.4+            | Container runtime (rootless)    |
+| `podman-compose` | any             | Compose provider for `podman compose` |
 | `crun` or `runc` | —               | OCI runtime backend             |
 | `slirp4netns` or `pasta` | —      | Rootless network namespace      |
 
@@ -22,13 +24,13 @@ Optional but recommended:
 ### Arch Linux
 
 ```bash
-sudo pacman -S podman crun slirp4netns
+sudo pacman -S podman podman-compose crun slirp4netns
 ```
 
 ### Alpine Linux
 
 ```bash
-sudo apk add podman crun slirp4netns
+sudo apk add podman podman-compose crun slirp4netns
 # Enable cgroups v2 (required):
 # Ensure /sys/fs/cgroup is mounted as cgroup2 (Alpine 3.15+ default)
 ```

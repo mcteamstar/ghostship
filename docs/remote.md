@@ -5,9 +5,9 @@ from your local machine over the network.
 
 ## Prerequisites
 
-- **Linux host** — Ubuntu 22.04+, Fedora 39+, or any distro with Podman ≥ 4.0
-  and cgroup v2. See [manual-install.md](manual-install.md) for distro-specific
-  notes.
+- **Linux host** — Ubuntu 22.04+ (verified). Other distros should work if
+  Podman >= 4.4 and podman-compose are available. See
+  [manual-install.md](manual-install.md) for requirements.
 - **Podman rootless** — `podman info` should succeed as a non-root user.
 - **Port exposure** — the transport port (default `64057`) serves all routes:
   MCP, REST API, and file transfer. Only one port needs to be exposed.

@@ -8,18 +8,92 @@ into `ga-transport` (as `/data`), so transport reads and writes it directly;
 
 ## First login
 
-On first launch (no auth file yet, or it's empty): initiates
-`kiro-cli login --use-device-flow` inside the crew container and returns a
-device auth URL. `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION` control which
-identity provider that login targets — without them, kiro-cli falls back to
-Builder ID (free tier), which is unlikely to be what an org-licensed install
-wants. After the user completes the flow, call launch again with the same
-`crew_id` to save the auth file and finish setup.
+Auth must be completed before `launch` will work. If you attempt to launch a crew without completing auth first, the launch will fail — **do not retry `launch` until auth is confirmed complete**, as any crew created mid-auth will be unauthenticated and must be nuked.
+
+The recommended flow is always: **`POST /login` → open URL → confirm complete → then `launch`**.
+
+### Step-by-step first-login walkthrough
+
+**1. Run install with your identity provider settings**
+
+For IAM Identity Center (org-licensed) installs, pass all three flags — or put them in a config file (recommended):
+
+```bash
+# Flags directly:
+./install.sh \
+  --identity-provider https://d-xxxxxxxxxx.awsapps.com/start/#/ \
+  --region <region> \
+  --license pro
+
+# Or via config file (recommended for repeatability):
+cp config/ghostship.conf.example config/ghostship.conf
+# Edit config/ghostship.conf, then:
+./install.sh --config config/ghostship.conf
+```
+
+Key points:
+- The start URL **must include the `/#/` suffix** — e.g. `https://d-xxxxxxxxxx.awsapps.com/start/#/`. Without it, the login flow will not route through your IdC correctly.
+- `--license pro` is required for IAM Identity Center. Without it, kiro-cli falls back to Builder ID (free tier).
+- **WSL2 users:** ghostship is verified on WSL2. The installer detects WSL2 automatically and applies the required `iptables` networking workaround — no manual steps needed.
+
+**2. Trigger the login flow**
+
+After install completes, call `POST /login`:
+
+```bash
+curl -sX POST http://localhost:64057/login | jq
+```
+
+Response:
+```json
+{
+  "status": "pending",
+  "login_url": "https://d-xxxxxxxxxx.awsapps.com/start/#/device?user_code=XXXX-XXXX",
+  "code": "XXXX-XXXX"
+}
+```
+
+The `login_url` will go through your Identity Center (not the generic `view.awsapps.com`) when `KIRO_IDENTITY_PROVIDER` is set correctly.
+
+**3. Open the URL and approve the device**
+
+Open `login_url` in a browser and sign in with your org credentials. The device code is embedded in the URL — you may be asked to confirm it.
+
+**4. Confirm the flow completed**
+
+Poll `GET /login` until it returns `complete`:
+
+```bash
+curl -s http://localhost:64057/login | jq .status
+# → "complete"
+```
+
+**5. Launch your first crew**
+
+Only after seeing `"complete"` should you launch:
+
+```bash
+# Via MCP tool:
+ghostship__launch(crew_id="general")
+
+# Or register the MCP server first if you haven't yet:
+kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp --scope global
+```
+
+**Known UX limitation:** attempting `launch` before auth is complete will fail with `not_authenticated`. Any crew that was partially created in this state must be nuked (`ghostship__nuke(crew_id=..., confirm=True)`) before re-launching — it cannot be salvaged. Always complete the `POST /login` flow before your first `launch`.
+
+---
+
+On first launch (no auth file yet, or it's empty): the transport reads the
+auth credentials written by `POST /login` and injects them into the crew
+container. `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION` control which identity
+provider that login targets — without them, kiro-cli falls back to Builder ID
+(free tier), which is unlikely to be what an org-licensed install wants.
 
 **Note for `--license pro` (IAM Identity Center) operators:** the `launch`
 first-time auth path uses a non-TTY exec that may fail silently for the IDC
 device flow (upstream bug [#6120](https://github.com/kirodotdev/Kiro/issues/6120)).
-Use the `POST /login` endpoint below for initial auth instead.
+Use the `POST /login` endpoint above for initial auth instead.
 
 When the flow completes, the transport writes the auth file in place,
 flushes it, and restores mode `0600` or stricter. If the file is missing or

@@ -273,16 +273,40 @@ against the current `localhost/spec-ops:latest`.
 
 ## Reboot recovery
 
-`podman-restart.service` is enabled at install time — inside the podman
-machine guest on macOS, directly on the host on Linux — so the transport
-container comes back automatically once Podman is running again (verified —
-`--restart=always` alone does not survive a full `podman machine` stop/start
-on macOS without this; on Linux it covers a `systemctl --user` restart or
-relogin with lingering enabled).
+## Starting and restarting
+
+`./start.sh` brings ghostship back up after a stop — it starts the Podman
+service (or machine on macOS) and the `ga-transport` container. Safe to run
+any time; does nothing if things are already running.
+
+```bash
+./start.sh                            # auto-discovers config
+./start.sh --config ~/ghostship.conf  # explicit config
+./start.sh --machine-name my-academy  # override machine name
+```
+
+`start.sh` uses `podman compose up -d` against a Compose file generated at
+install time and stored at `${DATA_DIR}/compose.yml` (typically
+`~/.local/share/ghost-academy/data/compose.yml` on Linux,
+`~/Library/Application Support/ghost-academy/data/compose.yml` on macOS).
+Compose handles "already running", "stopped", and "container doesn't exist"
+transparently — no separate cold-boot fallback is needed.
+
+Config discovery order (first match wins):
+1. `<ghostship-dir>/ghostship.conf` — next to `start.sh`
+2. `~/ghostship.conf` — home directory
+3. `~/.config/ghostship/ghostship.conf` — XDG
+
+If no config is found it prompts interactively. If multiple are found it
+lists them and asks you to choose.
+
+On Linux with systemd, `start.sh` uses `systemctl --user start` to bring
+up the Podman service. Without systemd (WSL) it falls back to spawning the
+Podman service directly as a background process.
 
 **Linger (Linux):** `install.sh` runs `loginctl enable-linger` so the user's
 systemd slice stays alive after logout. Without linger, headless/SSH-only
-servers tear down all user services — including `podman.socket` and the
+servers tear down all user services — including the Podman service and the
 transport container — when the last login session ends. Linger is low-risk
 (it only keeps the user's slice resident) and is required for unattended
 operation. See `docs/troubleshooting.md` for verification steps.
@@ -295,7 +319,8 @@ On transport startup, `_reconcile_registry` checks all registered crews:
 
 ```
 ghostship/
-├── install.sh             # builds images, sets up podman machine, runs transport
+├── install.sh             # builds images, sets up podman service/machine, runs transport
+├── start.sh               # starts Podman + ga-transport; run after a reboot or manual stop
 ├── uninstall.sh           # tears down transport; --purge-auth also removes kiro-cli credentials
 ├── transport/             # transport MCP server
 │   ├── Containerfile

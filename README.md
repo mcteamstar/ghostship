@@ -30,16 +30,18 @@ The built-in `spec-ops` composition is designed for **Spectre-Driven Development
 
 ### Prerequisites
 
+Install these before running `install.sh`:
+
 - macOS or Linux
-- Podman — installed automatically if missing (Homebrew on macOS, `apt` or
-  `dnf` on Linux; other distros: see [docs/manual-install.md](docs/manual-install.md))
+- **Podman >= 4.4** — `brew install podman` (macOS), `sudo apt-get install -y podman` or `sudo dnf install -y podman` (Linux); other distros: [docs/manual-install.md](docs/manual-install.md)
+- **`podman-compose`** — `brew install podman-compose` (macOS), `sudo apt-get install -y podman-compose` or `sudo dnf install -y podman-compose` (Linux)
 - A kiro-cli identity — either the default Builder ID (free tier), or an
   org-licensed IAM Identity Center login (see [docs/auth.md](docs/auth.md))
 
-**Linux platform support:** Verified on Ubuntu 22.04+ (apt) and Fedora 39+
-(dnf, SELinux enforcing). Other distributions work if Podman >= 4.0 is
-available — see [docs/manual-install.md](docs/manual-install.md) for
-requirements and example commands. Requires cgroup v2 and Podman rootless.
+**Linux platform support:** Verified on Ubuntu 22.04+ (apt). Other distributions
+should work if Podman >= 4.4 and podman-compose are available — see
+[docs/manual-install.md](docs/manual-install.md) for requirements and example
+commands. Requires cgroup v2 and Podman rootless.
 
 ### Setup
 
@@ -59,11 +61,26 @@ The three-stage build is what `install.sh` runs automatically:
 2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI
 3. **`base-graduation`** — pre-seeds the kiro-cli DB (`seed_kiro_db.py`)
 
-If your kiro-cli login needs a specific identity provider, pass it directly
-or let the script prompt you:
+**IAM Identity Center users:** if your kiro-cli is org-licensed, configure
+your identity provider *before* running `install.sh` — the transport uses
+these settings to authenticate crew containers. Without them, kiro-cli falls
+back to Builder ID (free tier). Pass the flags directly or use a config file
+(see [docs/auth.md](docs/auth.md) for the full first-login walkthrough):
 
 ```bash
-./install.sh --identity-provider <url> --region <region>
+./install.sh --identity-provider <start-url> --region <region> --license pro
+```
+
+The `<start-url>` is your IAM Identity Center start URL including the `/#/`
+suffix, e.g. `https://d-xxxxxxxxxx.awsapps.com/start/#/`. See
+[docs/auth.md](docs/auth.md) for details.
+
+For a repeatable setup, copy the example config and fill in your values:
+
+```bash
+cp config/ghostship.conf.example config/ghostship.conf
+# edit config/ghostship.conf, then:
+./install.sh --config config/ghostship.conf
 ```
 
 To run on a different port:
@@ -74,6 +91,12 @@ To run on a different port:
 
 To uninstall, run `./uninstall.sh` (pass `--purge-auth` to also clear saved
 kiro-cli credentials).
+
+If ghostship stops after a reboot or manual stop, run `./start.sh` to bring
+it back up without reinstalling. It auto-discovers your config, starts the
+Podman service, and starts the transport container. Pass `--config <path>` or
+`--machine-name <name>` to override — see
+[docs/architecture.md](docs/architecture.md#starting-and-restarting) for details.
 
 Full resolution order (config file → flags → interactive prompt) and all
 environment variables: [docs/configuration.md](docs/configuration.md).
@@ -119,8 +142,9 @@ Omit the `headers` field if API-key auth is disabled.
 auth is enabled, send `Authorization: Bearer <key>` on every MCP request.
 Use TLS or a trusted encrypted network if exposing the endpoint beyond localhost.
 
-First `launch` triggers a kiro-cli device auth prompt — see
-[docs/auth.md](docs/auth.md).
+Before your first `launch`, complete the device auth flow via `POST /login` — see
+[docs/auth.md](docs/auth.md) for the step-by-step walkthrough. Attempting `launch`
+before auth is complete will fail and leave an orphaned crew that must be nuked.
 
 ## Ghost Academy
 

@@ -2173,26 +2173,93 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_missing_auth_file_returns_not_authenticated_error(self) -> None:
-        """launch fails fast when no auth is available — POST /login handles auth."""
+        """launch fails fast when no auth is available — returns login_url inline."""
         with (
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_save_registry"),
+            patch.object(server, "_initiate_login", return_value={
+                "login_url": "https://example.com/device?user_code=ABCD-1234",
+                "code": "ABCD-1234",
+            }),
         ):
             result = server.launch("new")
 
         self.assertEqual(result["error"], "not_authenticated")
-        self.assertIn("/login", result["instructions"])
+        self.assertIn("login_url", result)
+        self.assertIn("code", result)
+        self.assertIn("launch again", result["instructions"])
 
     def test_installer_has_no_podman_secret_machinery(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         installer = (repo_root / "install.sh").read_text()
-        self.assertIn('-v "${DATA_DIR}:/data"', installer)
-        self.assertIn('KC_GATEWAY_TOKEN_TTL=${KC_GATEWAY_TOKEN_TTL:-24h}', installer)
+        self.assertIn('${DATA_DIR}:/data', installer)
+        self.assertIn('KC_GATEWAY_TOKEN_TTL', installer)
         self.assertNotIn("podman secret inspect ga-kiro-auth", installer)
         self.assertNotIn("SECRETS_DIR", installer)
         self.assertNotIn("/run/podman-secrets", installer)
+
+    # ── TRN-58: launch auth gate tests ───────────────────────────────────────
+
+    def test_launch_not_authenticated_returns_login_url(self) -> None:
+        """launch with no auth returns not_authenticated + login_url inline."""
+        with (
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_initiate_login", return_value={
+                "login_url": "https://example.com/device?user_code=TEST-1234",
+                "code": "TEST-1234",
+            }),
+        ):
+            result = server.launch("my-crew")
+
+        self.assertEqual(result["error"], "not_authenticated")
+        self.assertEqual(result["login_url"], "https://example.com/device?user_code=TEST-1234")
+        self.assertEqual(result["code"], "TEST-1234")
+        self.assertIn("login_url", result["instructions"])
+
+    def test_launch_not_authenticated_login_already_pending(self) -> None:
+        """launch with no auth and a pending flow returns login_pending: True."""
+        with (
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_initiate_login", return_value={"login_pending": True}),
+        ):
+            result = server.launch("my-crew")
+
+        self.assertEqual(result["error"], "not_authenticated")
+        self.assertTrue(result.get("login_pending"))
+        self.assertIn("GET /login", result["instructions"])
+
+    def test_launch_not_authenticated_does_not_write_registry(self) -> None:
+        """launch with no auth must NOT write a registry entry."""
+        save_calls = []
+        registry = {"crews": {}}
+
+        def mock_save(reg: dict) -> None:
+            save_calls.append(reg)
+
+        with (
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry", side_effect=mock_save),
+            patch.object(server, "_initiate_login", return_value={
+                "login_url": "https://example.com/device",
+                "code": None,
+            }),
+        ):
+            server.launch("no-registry-entry")
+
+        # _save_registry must never have been called — no orphaned entry
+        self.assertEqual(save_calls, [])
+        # The registry dict itself must also be untouched
+        self.assertNotIn("no-registry-entry", registry["crews"])
 
 
 # ── API-key authentication middleware tests ───────────────────────────────────
@@ -5644,6 +5711,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             with (
                 patch.object(server, "_load_registry", return_value=reg),
                 patch.object(server, "_get_podman", return_value=MinimalPodman()),
+                patch.object(server, "_read_auth_file", return_value="dummyauth"),
                 patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "dir": "spec-ops"}),
                 patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
             ):
@@ -6187,12 +6255,19 @@ class InstallEnvVarSyncTests(unittest.TestCase):
 
     @staticmethod
     def _vars_from_install() -> set[str]:
-        """Extract env var names passed via -e flags in install.sh."""
+        """Extract env var names passed to the transport container in install.sh.
+
+        Matches both the old podman run -e flag format and the new compose YAML
+        environment block format.
+        """
         import re
         root = Path(__file__).resolve().parents[2]
         src = (root / "install.sh").read_text()
-        # Match -e "VAR_NAME=..." lines
-        return set(re.findall(r'-e\s+["\']([A-Z_]+)=', src))
+        # Old: -e "VAR_NAME=..."
+        via_flags = set(re.findall(r'-e\s+["\']([A-Z_]+)=', src))
+        # New: compose YAML environment block: "      VAR_NAME: ..."
+        via_yaml = set(re.findall(r'^\s{6}([A-Z_]+):\s', src, re.MULTILINE))
+        return via_flags | via_yaml
 
     def test_all_server_ga_vars_passed_in_install(self) -> None:
         """Every GA_* and KC_* var read by server.py must have a -e entry in install.sh."""
