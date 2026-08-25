@@ -5443,6 +5443,9 @@ class ActiveCrewLimitTests(unittest.TestCase):
             def container_start(self, name: str) -> None:
                 pass
 
+            def container_stop(self, name: str) -> None:
+                pass
+
         startup_events: dict[str, threading.Event] = {}
         crew = self._make_crew(status="stopped", container="gs-failing")
 

@@ -1,12 +1,12 @@
 ![Ghostship](docs/ghostship.png)
 
-[![tests](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml/badge.svg)](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml)
-
-*Launch a Ghostship from the Ghost Academy and command the crew.*
+*Launch Ghostships from the Ghost Academy and command the crew.*
 
 A multi-agent orchestration system for [KiroCrew](https://github.com/kirodotdev/KiroCrew) over MCP.
-Customise agent personas, skills, and steering for your crews and send them out into the unknown.
+Customise agent personas, skills and steering, then send them out into the unknown.
 Runs locally and remotely on macOS or Linux using Podman.
+
+[![tests](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml/badge.svg)](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml)
 
 ## Why Ghostship?
 
@@ -17,6 +17,14 @@ KiroCrew is designed for running teams of agents over long horizon tasks, but ru
 As the **Admiral** you can command your crews over MCP from any agent. Delegate orders to the crew's **Captain** or be the captain yourself. All the ships in your *fleet* run side by side without colliding, and can be tailored to your tactical needs.
 
 The built-in `spec-ops` composition is designed for **Spectre-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is both a fast and cost-efficient workhorse for executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable — use `KC_MODEL_OVERRIDE` to override all agents at once, or `KC_MODEL_DEFAULT` as a global fallback (see [docs/configuration.md](docs/configuration.md)).
+
+### Why Not...
+
+**Subagents?** Subagents are tied to your parent session, and share your live workspace directly. Crew members are just KiroCrew subagents on a ghostship.
+
+**Cloud Agents?** Cloud agents run on infrastructure outside of your control. Crew container images can be tailored to your development needs within a security boundary you own. Ghostship can be hosted remotely like a private cloud agent.
+
+**Agent Harnesses?** You could absolutely make a DIY orchestration system for regular harnesses to improve parallelism, concurrency and inter-agent communication. Ghostship is literally just that layer for KiroCrew, and is consumable by any agent over MCP.
 
 ## Install
 
