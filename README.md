@@ -16,7 +16,7 @@ KiroCrew is designed for running teams of agents over long horizon tasks, but ru
 
 As the **Admiral** you can command your crews over MCP from any agent. Delegate orders to the crew's **Captain** or be the captain yourself. All the ships in your *fleet* run side by side without colliding, and can be tailored to your tactical needs.
 
-The built-in `spec-ops` composition is designed for **Spectre-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is both a fast and cost-efficient workhorse for executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable — use `KC_MODEL_OVERRIDE` to override all agents at once, or `KC_MODEL_DEFAULT` as a global fallback (see [docs/configuration.md](docs/configuration.md)).
+The built-in `spec-ops` loadout is designed for **Spectre-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is fast and cost-efficient at executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable and overridable (see [docs/configuration.md](docs/configuration.md)).
 
 ### Why Not...
 
@@ -93,7 +93,22 @@ For remote deployments, IAM Identity Center config, and TLS setup: [docs/remote.
 
 ## Ghost Academy
 
-Every ghostship crew has access to the same curriculum — agent personas, skills, and steering — onboarded at `launch`.
+Every ghostship has access to the same crew curriculum: agent personas, skills, and steering.
+
+### Agents
+
+There are six basic agent personas. The five worker personas split up the [OpenSpec](https://github.com/Fission-AI/OpenSpec) spec-driven workflow.
+
+| Agent | Role |
+|:------|:-----|
+| **Spectre** | Planning operative — investigates, scaffolds proposals, revises plans as understanding evolves |
+| **Ghost** | General-purpose operative — executes one well-scoped task or brief end to end |
+| **Banshee** | Independent review/fix operative — a second pair of eyes; finds bugs, runs tests, traces to root |
+| **Reaper** | Cleanup operative — closes out finished changes |
+| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code |
+| **Raven** | Watcher and messenger for the Captain's recurring loop — skims mailboxes, assesses the crew, dispatches bounded worker steps |
+
+See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. The **Captain** tool uses Ravens to handle messaging and orders to the other agents. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
 
 ### MCP Tools
 
@@ -111,21 +126,6 @@ Registered as `ghostship`:
 | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
 | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
 | `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
-
-### Agents
-
-Every ghostship ships the same six KiroCrew agent personas — the Ghost Academy's curriculum. See [docs/agents.md](docs/agents.md) for tool grants and enforcement details.
-
-| Agent | Role |
-|:------|:-----|
-| **Spectre** | Planning operative — investigates, scaffolds proposals, revises plans as understanding evolves |
-| **Ghost** | General-purpose operative — executes one well-scoped task or brief end to end |
-| **Banshee** | Independent review/fix operative — a second pair of eyes; finds bugs, runs tests, traces to root |
-| **Reaper** | Cleanup operative — closes out finished changes |
-| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code |
-| **Raven** | Watcher and messenger for the Captain's recurring loop — skims mailboxes, assesses the crew, dispatches bounded worker steps |
-
-The five worker personas split up [OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow — explore → propose → apply → archive. Captain manages autonomous recurring work per crew via Raven. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
 
 ## Further reading
 
