@@ -181,7 +181,7 @@ Every `dispatch` request asks the crew gateway for a dedicated, retained run
 for later continuation, including after a forceful stop.
 
 `steer(task_id, message, crew_id, force=False)` preserves the normal turn-boundary
-behavior by default: a running task receives `/steer`, while a completed task
+behaviour by default: a running task receives `/steer`, while a completed task
 uses `/continue`. With `force=True` on a running task, transport first calls
 `DELETE /api/spawn/{task_id}` to stop that task's process, then calls
 `POST /api/spawn/{task_id}/continue` with the message and returns
@@ -216,7 +216,7 @@ react to escalations without waiting for the full timeout.
 
 Crew containers are stopped automatically after `GA_IDLE_TIMEOUT_SECS` (default
 300s) of no activity. This timer uses the registry's `last_used` timestamp;
-setup initializes it when a crew is first registered as running. Active
+setup initialises it when a crew is first registered as running. Active
 `dispatch` tasks refresh the timestamp and prevent a stop. Cron executions are
 tracked separately by the crew gateway, so a running cron or a cron whose
 `last_run_ts` is newer than the registry timestamp also refreshes `last_used`.

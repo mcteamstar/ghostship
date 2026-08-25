@@ -33,15 +33,11 @@ The built-in `spec-ops` composition is designed for **Spectre-Driven Development
 Install these before running `install.sh`:
 
 - macOS or Linux
-- **Podman >= 4.4** — `brew install podman` (macOS), `sudo apt-get install -y podman` or `sudo dnf install -y podman` (Linux); other distros: [docs/manual-install.md](docs/manual-install.md)
-- **`podman-compose`** — `brew install podman-compose` (macOS), `sudo apt-get install -y podman-compose` or `sudo dnf install -y podman-compose` (Linux)
-- A kiro-cli identity — either the default Builder ID (free tier), or an
-  org-licensed IAM Identity Center login (see [docs/auth.md](docs/auth.md))
+- **Podman >= 4.4** — `brew install podman` (macOS), `sudo apt-get install -y podman podman-compose` (Ubuntu/Debian)
+- **`podman-compose`** — `brew install podman-compose` (macOS); included in the apt command above
+- A kiro-cli identity — Builder ID (free tier) or an IAM Identity Center login (see [docs/auth.md](docs/auth.md))
 
-**Linux platform support:** Verified on Ubuntu 22.04+ (apt). Other distributions
-should work if Podman >= 4.4 and podman-compose are available — see
-[docs/manual-install.md](docs/manual-install.md) for requirements and example
-commands. Requires cgroup v2 and Podman rootless.
+Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup v2 and Podman rootless. Verified on Ubuntu 22.04+.
 
 ### Setup
 
@@ -49,33 +45,9 @@ commands. Requires cgroup v2 and Podman rootless.
 ./install.sh
 ```
 
-Installs Podman if missing, sets it up (on macOS: a `podman machine` VM,
-since macOS has no container-capable kernel of its own; on Linux: directly
-on the host, no VM), builds the crew images in three stages
-(`base-orientation` → `spec-ops` composition → `base-graduation`), and runs
-the `ga-transport` container bound to `localhost:64057`. MCP, REST API, and
-file transfer all share this single port.
+Builds the crew images and starts the `ga-transport` container on `localhost:64057`. MCP, REST API, and file transfer all share this single port.
 
-The three-stage build is what `install.sh` runs automatically:
-1. **`base-orientation`** — mail stack and auth layer (extends `ghcr.io/kirodotdev/kirocrew:0.3.0`)
-2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI
-3. **`base-graduation`** — pre-seeds the kiro-cli DB (`seed_kiro_db.py`)
-
-**IAM Identity Center users:** if your kiro-cli is org-licensed, configure
-your identity provider *before* running `install.sh` — the transport uses
-these settings to authenticate crew containers. Without them, kiro-cli falls
-back to Builder ID (free tier). Pass the flags directly or use a config file
-(see [docs/auth.md](docs/auth.md) for the full first-login walkthrough):
-
-```bash
-./install.sh --identity-provider <start-url> --region <region> --license pro
-```
-
-The `<start-url>` is your IAM Identity Center start URL including the `/#/`
-suffix, e.g. `https://d-xxxxxxxxxx.awsapps.com/start/#/`. See
-[docs/auth.md](docs/auth.md) for details.
-
-For a repeatable setup, copy the example config and fill in your values:
+For a repeatable setup, copy the example config and fill in your values before running:
 
 ```bash
 cp config/ghostship.conf.example config/ghostship.conf
@@ -83,47 +55,26 @@ cp config/ghostship.conf.example config/ghostship.conf
 ./install.sh --config config/ghostship.conf
 ```
 
-To run on a different port:
+**API key** — for any non-local deployment (or if you just want auth), pass `--api-key <key>` to lock the endpoint:
 
 ```bash
-./install.sh --port <port>
+./install.sh --api-key <key>
 ```
 
-To uninstall, run `./uninstall.sh` (pass `--purge-auth` to also clear saved
-kiro-cli credentials).
+To uninstall: `./uninstall.sh`. If ghostship stops after a reboot, run `./start.sh` to bring it back without reinstalling.
 
-If ghostship stops after a reboot or manual stop, run `./start.sh` to bring
-it back up without reinstalling. It auto-discovers your config, starts the
-Podman service, and starts the transport container. Pass `--config <path>` or
-`--machine-name <name>` to override — see
-[docs/architecture.md](docs/architecture.md#starting-and-restarting) for details.
-
-Full resolution order (config file → flags → interactive prompt) and all
-environment variables: [docs/configuration.md](docs/configuration.md).
-
-Copy [`config/ghostship.conf.example`](config/ghostship.conf.example) to `ghostship.conf` and
-pass it to `install.sh` with `--config ghostship.conf` to persist your settings
-across reinstalls.
+Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
 
 ### Connecting to a harness
 
-`ghostship` speaks MCP over streamable HTTP at `http://localhost:64057/mcp`
-— no auth required, it's bound to `localhost` only.
-
-If you enabled API-key authentication (`./install.sh --api-key <key>`), add
-the `Authorization: Bearer <key>` header to every client — see
-[docs/auth.md](docs/auth.md) for details and TLS guidance.
-
-For remote (non-localhost) deployments, see
-[docs/remote.md](docs/remote.md) — covers TLS termination, reverse proxy
-setup, and MCP client registration for a remote host.
+Before your first `launch`, complete the device auth flow — open the URL returned by `POST /login` or by calling `launch` without auth. See [docs/auth.md](docs/auth.md) for the walkthrough.
 
 **kiro-cli:**
 ```bash
 # Without API key:
 kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp --scope global
 
-# With API key (set GHOSTSHIP_API_KEY in your environment):
+# With API key:
 kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
   --headers '{"Authorization": "Bearer ${GHOSTSHIP_API_KEY}"}' --scope global
 ```
@@ -136,26 +87,17 @@ kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
   "headers": { "Authorization": "Bearer ${GHOSTSHIP_API_KEY}" }
 }
 ```
-Omit the `headers` field if API-key auth is disabled.
+Omit `headers` if API-key auth is disabled.
 
-**Any other MCP client** — same URL, streamable-HTTP transport. When API-key
-auth is enabled, send `Authorization: Bearer <key>` on every MCP request.
-Use TLS or a trusted encrypted network if exposing the endpoint beyond localhost.
-
-Before your first `launch`, complete the device auth flow via `POST /login` — see
-[docs/auth.md](docs/auth.md) for the step-by-step walkthrough. Attempting `launch`
-before auth is complete will fail and leave an orphaned crew that must be nuked.
+For remote deployments, IAM Identity Center config, and TLS setup: [docs/remote.md](docs/remote.md) and [docs/auth.md](docs/auth.md).
 
 ## Ghost Academy
 
 Every ghostship crew has access to the same curriculum — agent personas, skills, and steering — onboarded at `launch`.
-See [docs/architecture.md](docs/architecture.md) for more.
 
 ### MCP Tools
 
 Registered as `ghostship`:
-
-Ship operations (the crew container itself) come first, then crew operations (the personas and tasks running inside it):
 
 | Tool | Description |
 |:-----|:------------|
@@ -164,103 +106,26 @@ Ship operations (the crew container itself) come first, then crew operations (th
 | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
 | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
-| `captain` | Manage a crew's order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
-| `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. `delay=N` creates a one-shot job that fires once after N seconds. |
-| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. For delayed execution, use `schedule(delay=N)` instead. |
+| `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
+| `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
+| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
 | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
-| `pickup` | Check progress or collect result; always includes mail state. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout (also: bridge, watch, monitor, patrol, poll). Without `task_id`: list all tasks. |
-
-### Seed or extract a Git repository
-
-`launch` creates the crew and its empty workspace; for security, it is not recommended to have crews directly clone a repository.
-To seed a checkout with its real commit history, create a bundle locally and upload it after `launch` returns a ready crew:
-
-```bash
-# On the caller's machine
-git bundle create ./project.bundle --all
-
-# Ask the transport for supply(path="repo", crew_id="my-crew", bundle=True),
-# then upload the returned delivery_url.
-curl -X POST "<delivery_url>" --data-binary @./project.bundle
-```
-
-To extract history from the crew, ask for `evac(path="repo",
-crew_id="my-crew", bundle=True)`, download the returned URL, and consume the
-bundle as a normal Git source:
-
-```bash
-curl -fsSL "<evac_url>" -o ./crew.bundle
-git clone ./crew.bundle ./crew-repo
-
-# For an existing checkout, fetch an advertised ref from the bundle instead.
-git bundle list-heads ./crew.bundle
-git fetch ./crew.bundle refs/heads/main:refs/remotes/crew/main
-```
-
-For an incremental transfer, create a range bundle such as
-`git bundle create ./changes.bundle old-ref..new-ref`; a receiver must already
-have the prerequisite `old-ref` before fetching that bundle.
+| `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
 ### Agents
 
-Every ghostship ships the same six KiroCrew agent personas — the Ghost
-Academy's curriculum. The five worker personas split up
-[OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow —
-explore → propose → apply → archive — between them, while Raven coordinates
-standing orders without implementing work. See
-[docs/agents.md](docs/agents.md) for tool grants and enforcement details.
+Every ghostship ships the same six KiroCrew agent personas — the Ghost Academy's curriculum. See [docs/agents.md](docs/agents.md) for tool grants and enforcement details.
 
-| Agent | Role | Owns |
-|:------|:-----|:-----|
-| **Spectre** | Planning operative — investigates, scaffolds proposals, revises plans as understanding evolves | `openspec-explore`, `openspec-propose`, `openspec-update-change` |
-| **Ghost** | General-purpose precision operative — executes one well-scoped task or brief end to end, including implementing a change's tasks | all six OpenSpec operations |
-| **Banshee** | Independent review/fix operative — a second pair of eyes across a wider field than Ghost's single task; finds bugs, runs tests, traces to root | `openspec-explore`, `openspec-propose`, `openspec-update-change`, `openspec-apply-change` |
-| **Reaper** | Cleanup operative — closes out finished changes | `openspec-sync-specs`, `openspec-archive-change` |
-| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code | none (adjacent) |
-| **Raven** | Watcher and messenger for the Captain's recurring loop — skims mailboxes, assesses the crew, and dispatches bounded worker steps | dispatch via the `kirocrew` CLI and gateway REST API; prompt-restricted to the five worker personas |
+| Agent | Role |
+|:------|:-----|
+| **Spectre** | Planning operative — investigates, scaffolds proposals, revises plans as understanding evolves |
+| **Ghost** | General-purpose operative — executes one well-scoped task or brief end to end |
+| **Banshee** | Independent review/fix operative — a second pair of eyes; finds bugs, runs tests, traces to root |
+| **Reaper** | Cleanup operative — closes out finished changes |
+| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code |
+| **Raven** | Watcher and messenger for the Captain's recurring loop — skims mailboxes, assesses the crew, dispatches bounded worker steps |
 
-### Spectre Driven Development
-
-A full pass, start to finish — left of the divider is the Admiral (you,
-issuing MCP calls); right of it is the ghostship itself, alive from
-`launch` until you intentionally tear it down with `nuke`:
-
-```
-ADMIRAL  (your MCP client)                  │  GHOSTSHIP  (crew container + workspace)
-────────────────────────────────────────────┼───────────────────────────────────────────────────
-                                            │                                                  │
-launch(crew_id)                             ┌──────────────────────────────────────────────────┐
-                                            │   container + workspace created                  │
-                                            │                                                  │
-dispatch(spectre, "explore + propose")      ──► Spectre drafts a spec-backed proposal          │
-                                            │                                                  │
-pickup(task_id)                             ◄── proposal ready to review                       │
- ▲                                          │                                                  │
- │   not happy yet? revise it:              │                                                  │
- └───────────────────┐                      │                                                  │
-                     ▼                      │                                                  │
-dispatch(spectre, "update-change")          ──► plan revised                                   │
-                                            │                                                  │
-dispatch(ghost, "apply-change")             ──► Ghost implements the change                    │
-                                            │                                                  │
-dispatch(banshee, "review")                 ──► optional independent pass — finds + fixes bugs │
-                                            │                                                  │
-dispatch(reaper, "sync-specs + archive")    ──► specs synced, change archived                  │
-                                            │                                                  │
-evac(path)                                  ◄── pull the finished diff or file out             │
-                                            │                                                  │
-                          ↺ repeat for the next change — crew persists                        │
-                                            └──────────────────────────────────────────────────┘
-```
-
-Crews persist across changes. After `evac`, the crew remains live and ready for the next feature — there is no need to tear it down between tasks. The idle-stop mechanism handles resource management automatically: inactive crews stop after a timeout and restart transparently on the next command. `nuke` exists for intentional permanent workspace destruction — when you want to discard a crew's volumes, history, and context entirely — not as a routine post-task step.
-
-`pickup(task_id)` polls after every `dispatch` above, not just the first —
-shown once here for brevity, with a loop-back on `update-change` since
-that's the step you're most likely to repeat. `crews()` lists every
-registered crew and its status at any point in the lifecycle.
-
-Captain manages autonomous recurring work per crew via a Raven check-in. The built-in `sdd` template drives the full OpenSpec lifecycle — assess, dispatch, review, archive — without manual intervention. See [docs/architecture.md](docs/architecture.md#captain-supervision) for standing orders, scheduling, and the `sdd` template.
+The five worker personas split up [OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow — explore → propose → apply → archive. Captain manages autonomous recurring work per crew via Raven. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
 
 ## Further reading
 
