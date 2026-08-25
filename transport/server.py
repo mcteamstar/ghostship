@@ -2082,8 +2082,6 @@ def _ensure_crew_running(
 
         podman.container_start(crew["container"])
         crew_url = _crew_url(crew)
-        if not _wait_gateway(crew_url, timeout=30):
-            raise RuntimeError(f"Gateway did not recover after restart for crew {crew_id}")
 
         # WORKAROUND: KiroCrew bug — spawn_min_memory_gb not read from config files
         #
@@ -2096,10 +2094,12 @@ def _ensure_crew_running(
         # Other fields (resource_pressure_gb, resource_critical_gb) ARE read from
         # config.local.json and work correctly. Only spawn_min_memory_gb is affected.
         #
-        # Fix: re-run _patch_crew_config (which writes spawn_min_memory_gb=0 into
-        # config.json), then bounce the gateway so it re-seedes config.json with
-        # our value before the loader runs. This survives restarts because this hook
-        # runs on every auto-restart via _ensure_crew_running.
+        # Fix: start the container without waiting, then re-run _patch_crew_config
+        # (which writes spawn_min_memory_gb into config.local.json), stop it,
+        # start it again, and wait for the gateway. The sequence is
+        # start (no wait) -> exec-patch -> stop -> start -> wait. This survives
+        # restarts because this hook runs on every auto-restart via
+        # _ensure_crew_running.
         #
         # Remove this block when KiroCrew fixes the loader to read spawn_min_memory_gb
         # from config.local.json (tracked: KiroCrew upstream issue, spawn gate ignores
@@ -2927,7 +2927,12 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
 
 
 def _patch_crew_config(podman: PodmanClient, container: str) -> None:
-    """Patch KiroCrew config after gateway has seeded it on first start.
+    """Patch KiroCrew config while the container is running.
+
+    The stopped-crew recovery path calls this immediately after a provisional
+    start, before waiting for gateway readiness. Create the destination
+    directory in the exec script so the patch does not depend on the gateway
+    having seeded the config files already.
 
     Writes to config.local.json (user overrides that survive gateway upgrades
     and restarts) rather than config.json (which the gateway re-seeds on every
@@ -2947,6 +2952,7 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     script = (
         "import json, pathlib; "
         "p = pathlib.Path('/home/kirocrew/.kiro/crew/config.local.json'); "
+        "p.parent.mkdir(parents=True, exist_ok=True); "
         "cfg = json.loads(p.read_text()) if p.exists() else {}; "
         "a = cfg.setdefault('agent', {}); "
         f"a['spawn_min_memory_gb'] = {GA_SPAWN_MIN_MEMORY_GB}; "

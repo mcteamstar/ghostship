@@ -3666,6 +3666,7 @@ class TestPatchCrewConfig(unittest.TestCase):
             self.assertIn("2.5", script)
             self.assertIn("3.0", script)
             self.assertIn("1.5", script)
+            self.assertIn("p.parent.mkdir(parents=True, exist_ok=True)", script)
             self.assertNotIn("'spawn_min_memory_gb'] = 0", script)
             # Verify subagent_timeout_secs and subagent_max_turns are present with defaults
             self.assertIn("subagent_timeout_secs", script)
@@ -5373,41 +5374,58 @@ class ActiveCrewLimitTests(unittest.TestCase):
     # ── Task 3.2: succeeds when below limit ──────────────────────────────────
 
     def test_active_limit_not_reached_proceeds(self) -> None:
-        """_ensure_crew_running proceeds when running count is below limit."""
+        """_ensure_crew_running proceeds below the limit with one gateway wait."""
         original = server.GA_MAX_ACTIVE_CREWS
         try:
             server.GA_MAX_ACTIVE_CREWS = 3
             # Only 1 running crew; limit is 3 → should NOT raise
             reg = self._registry_with_running(1)
+            steps: list[str] = []
 
             class StoppedRestartPodman:
+                def __init__(self) -> None:
+                    self.starts = 0
+
                 def container_is_running(self, name: str) -> bool:
                     return False
 
                 def container_start(self, name: str) -> None:
-                    pass
+                    self.starts += 1
+                    steps.append("start")
 
                 def container_stop(self, name: str) -> None:
-                    pass
+                    steps.append("stop")
 
                 def container_exec(self, name: str, cmd: list, env: dict | None = None) -> str:
                     return "ok"
 
+            podman = StoppedRestartPodman()
             with (
                 patch.object(server, "_load_registry", return_value=reg),
                 patch.object(server, "_save_registry"),
-                patch.object(server, "_get_podman", return_value=StoppedRestartPodman()),
+                patch.object(server, "_get_podman", return_value=podman),
                 patch.object(server, "_startup_events", {}),
                 patch.object(server, "_startup_events_lock", __import__("threading").Lock()),
                 patch.object(server, "GA_MIN_FREE_MEM_GB", 0.0),
-                patch.object(server, "_wait_gateway", return_value=True),
-                patch.object(server, "_patch_crew_config"),
+                patch.object(
+                    server,
+                    "_wait_gateway",
+                    side_effect=lambda *args, **kwargs: (steps.append("wait") or True),
+                ) as wait_gateway,
+                patch.object(
+                    server,
+                    "_patch_crew_config",
+                    side_effect=lambda *args, **kwargs: steps.append("patch"),
+                ),
                 patch.object(server, "_mint_cookie", return_value="new-c"),
             ):
                 crew = reg["crews"]["target"]
                 # Should not raise
                 result = server._ensure_crew_running(crew, "target")
             self.assertIsNotNone(result)
+            self.assertEqual(podman.starts, 2)
+            self.assertEqual(steps, ["start", "patch", "stop", "start", "wait"])
+            wait_gateway.assert_called_once_with("http://gs-target:5476", timeout=30)
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
 
