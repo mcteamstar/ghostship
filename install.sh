@@ -577,10 +577,18 @@ for _pid in $(pgrep -x rootlessport 2>/dev/null); do
   fi
 done
 
-# podman-compose calls podman internally — point it at the right socket via
-# CONTAINER_HOST for the dedicated instance, or use the default for others.
+# The external podman-compose provider is shelled out to as a separate
+# process, so CLI flags like --connection or --root/--runroot on the outer
+# `podman compose` invocation are NOT inherited by its internal podman calls
+# — only environment variables are. Point it at the right instance via
+# CONTAINER_HOST for the dedicated Linux instance, or CONTAINER_CONNECTION
+# for the dedicated macOS machine (bare `podman` would otherwise resolve via
+# whatever the ambient default connection happens to be, which may not be
+# '${GA_MACHINE_NAME}'). Non-dedicated installs use the default either way.
 if [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Linux" ]]; then
   _COMPOSE_ENV="CONTAINER_HOST=unix://${PODMAN_SOCK}"
+elif [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Darwin" ]]; then
+  _COMPOSE_ENV="CONTAINER_CONNECTION=${GA_MACHINE_NAME}"
 else
   _COMPOSE_ENV=""
 fi
