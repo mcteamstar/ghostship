@@ -25,12 +25,12 @@ the `openspec` CLI (`@fission-ai/openspec`) that the `openspec-*` skills shell
 out to. Built locally at install time (`localhost/spec-ops:latest`) as part of
 a three-stage build:
 
-1. **`base-orientation`** (`crews/_base/orientation/`) — mail stack and auth
+1. **`base-admission`** (`crews/_base/admission/`) — mail stack and auth
    layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, and
    adds `maildeliver` and `verify-admiral-sig`. Extends
    `ghcr.io/kirodotdev/kirocrew:0.3.0`.
 2. **`spec-ops` composition** (`crews/spec-ops/`) — adds Node.js 24 LTS and
-   the `openspec` CLI. Extends `base-orientation`.
+   the `openspec` CLI. Extends `base-admission`.
 3. **`base-graduation`** (`crews/_base/graduation/`) — runs `seed_kiro_db.py`
    to pre-seed the kiro-cli SQLite DB schema so auth injection works without
    running migrations at every launch. Extends the `spec-ops` intermediate
@@ -345,7 +345,7 @@ ghostship/
 ├── crews/                 # crew type definitions — each composes a crew from academy/
 │   ├── registry.json      # registered crew types
 │   ├── _base/
-│   │   ├── orientation/   # stage 1: mail stack + auth layer (extends ghcr.io/kirodotdev/kirocrew:0.3.0)
+│   │   ├── admission/     # stage 1: mail stack + auth layer (extends ghcr.io/kirodotdev/kirocrew:0.3.0)
 │   │   └── graduation/    # stage 3: kiro-cli DB pre-seed (seed_kiro_db.py)
 │   └── spec-ops/          # stage 2: the one crew type today — adds Node.js 24 LTS + openspec CLI
 │       ├── Containerfile

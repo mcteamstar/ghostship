@@ -140,6 +140,11 @@ keeps `DATA_DIR/ga-kiro-auth`, so a later install can reuse the login.
 `uninstall.sh --purge-auth` removes it too and requires a fresh device-auth
 login on the next install.
 
+On Linux with a dedicated instance, omitting `--keep-machine` removes only the
+dedicated Podman storage root (`containers/`) — not `ga-kiro-auth`. The
+`--purge-auth` flag is the sole control over whether credentials are removed,
+independent of `--keep-machine`.
+
 ## Secret rotation
 
 When tokens expire, use the login/logout endpoints below to re-authenticate

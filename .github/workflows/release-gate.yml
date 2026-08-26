@@ -1,0 +1,21 @@
+name: Release gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  release-gate:
+    name: release-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check source branch is a release branch
+        run: |
+          branch="${{ github.head_ref }}"
+          if [[ "$branch" == release/* ]]; then
+            echo "✓ Source branch '$branch' matches release/* — allowed to merge into main."
+          else
+            echo "✗ Source branch '$branch' does not match release/*."
+            echo "  Only release/* branches may be merged into main."
+            exit 1
+          fi

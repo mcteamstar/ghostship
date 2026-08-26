@@ -3370,11 +3370,16 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             active = [a for a in tasks.get("agents", []) if not a.get("done")]
         except Exception:
             pass
+        with _registry_lock:
+            reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
         return {
             "warning": f"Pass confirm=True to tear down crew '{crew_id}'",
             "container": crew.get("container", f"{CREW_CONTAINER_PREFIX}{crew_id}"),
             "volumes": [crew.get("volume", f"{CREW_VOLUME_PREFIX}{crew_id}"), crew.get("home_volume", f"{CREW_HOME_VOLUME_PREFIX}{crew_id}")],
             "active_tasks": len(active),
+            "scheduled_jobs": len(schedules),
+            "scheduled_job_names": [s.get("name", "") for s in schedules],
         }
 
     try:
@@ -3394,6 +3399,19 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             raise RuntimeError(f"Refusing to nuke non-crew volume: {vol!r}")
     except RuntimeError as e:
         return {"error": str(e)}
+
+    # TRN-59: cancel gateway cron jobs before teardown (best-effort).
+    # Use bare _crew_api (not _crew_api_with_recovery) to avoid restarting a
+    # container we are about to destroy.
+    with _registry_lock:
+        reg = _load_registry()
+    schedules = _get_crew_schedules(reg, crew_id)
+    for sched in schedules:
+        job_id = sched.get("job_id", "")
+        try:
+            _crew_api(crew, "DELETE", f"/api/crons/{job_id}")
+        except Exception as e:
+            logger.warning("nuke: failed to cancel cron %s for crew %s: %s", job_id, crew_id, e)
 
     _cleanup_crew(podman, container, vol, home_vol)
 

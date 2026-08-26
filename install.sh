@@ -474,10 +474,10 @@ ${_PODMAN_CMD} pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
 
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
-echo "Building localhost/base-orientation:latest (orientation) ..."
-${_PODMAN_CMD} build -t localhost/base-orientation:latest \
-  "$GHOSTSHIP_DIR/crews/_base/orientation/" \
-  && echo "✓ orientation image built" || { echo "✗ orientation image build failed"; exit 1; }
+echo "Building localhost/base-admission:latest (admission) ..."
+${_PODMAN_CMD} build -t localhost/base-admission:latest \
+  "$GHOSTSHIP_DIR/crews/_base/admission/" \
+  && echo "✓ admission image built" || { echo "✗ admission image build failed"; exit 1; }
 
 echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
@@ -577,10 +577,18 @@ for _pid in $(pgrep -x rootlessport 2>/dev/null); do
   fi
 done
 
-# podman-compose calls podman internally — point it at the right socket via
-# CONTAINER_HOST for the dedicated instance, or use the default for others.
+# The external podman-compose provider is shelled out to as a separate
+# process, so CLI flags like --connection or --root/--runroot on the outer
+# `podman compose` invocation are NOT inherited by its internal podman calls
+# — only environment variables are. Point it at the right instance via
+# CONTAINER_HOST for the dedicated Linux instance, or CONTAINER_CONNECTION
+# for the dedicated macOS machine (bare `podman` would otherwise resolve via
+# whatever the ambient default connection happens to be, which may not be
+# '${GA_MACHINE_NAME}'). Non-dedicated installs use the default either way.
 if [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Linux" ]]; then
   _COMPOSE_ENV="CONTAINER_HOST=unix://${PODMAN_SOCK}"
+elif [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Darwin" ]]; then
+  _COMPOSE_ENV="CONTAINER_CONNECTION=${GA_MACHINE_NAME}"
 else
   _COMPOSE_ENV=""
 fi

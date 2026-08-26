@@ -21,8 +21,9 @@ class TestReadTransportVersion(unittest.TestCase):
         """When VERSION file exists at repo root, returns its content stripped."""
         # _read_transport_version resolves VERSION relative to server.py's parent.
         # Since the real VERSION file exists, it returns its content.
+        expected = (Path(__file__).resolve().parents[2] / "VERSION").read_text().strip()
         result = server._read_transport_version()
-        self.assertEqual(result, "0.1.0")
+        self.assertEqual(result, expected)
 
     def test_returns_default_when_file_missing(self) -> None:
         """When the VERSION path raises FileNotFoundError, returns '0.0.0-dev'."""
@@ -40,11 +41,11 @@ class TestReadTransportVersion(unittest.TestCase):
         self.assertTrue(len(server.TRANSPORT_VERSION) > 0)
 
     def test_version_file_at_repo_root_exists(self) -> None:
-        """The VERSION file actually exists in the repo."""
+        """The VERSION file actually exists in the repo and contains a valid semver string."""
         version_path = Path(__file__).resolve().parents[2] / "VERSION"
         self.assertTrue(version_path.exists(), f"VERSION file not found at {version_path}")
         content = version_path.read_text().strip()
-        self.assertEqual(content, "0.1.0")
+        self.assertRegex(content, r"^\d+\.\d+\.\d+", f"VERSION content '{content}' is not a valid semver")
 
 
 class TestVersionEndpoint(unittest.TestCase):
@@ -104,7 +105,7 @@ class TestCrewsVersionField(unittest.TestCase):
                     "status": "stopped",
                     "composition": "spec-ops",
                     "created_at": "2026-01-01T00:00:00Z",
-                    "crew_image_version": "0.1.0",
+                    "crew_image_version": "0.1.1",
                 }
             }
         }
@@ -113,7 +114,7 @@ class TestCrewsVersionField(unittest.TestCase):
 
         self.assertEqual(len(result["crews"]), 1)
         entry = result["crews"][0]
-        self.assertEqual(entry["crew_image_version"], "0.1.0")
+        self.assertEqual(entry["crew_image_version"], "0.1.1")
 
 
 class TestContainerInspect(unittest.TestCase):
@@ -142,14 +143,14 @@ class TestResourceVersion(unittest.TestCase):
         """resource_version includes per-crew version info."""
         fake_registry = {
             "crews": {
-                "crew-a": {"crew_image_version": "0.1.0"},
+                "crew-a": {"crew_image_version": "0.1.1"},
                 "crew-b": {},
             }
         }
         with patch.object(server, "_load_registry", return_value=fake_registry):
             result = json.loads(server.resource_version())
 
-        self.assertEqual(result["crews"]["crew-a"]["crew_image_version"], "0.1.0")
+        self.assertEqual(result["crews"]["crew-a"]["crew_image_version"], "0.1.1")
         self.assertEqual(result["crews"]["crew-b"]["crew_image_version"], "unknown")
 
 

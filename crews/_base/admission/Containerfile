@@ -6,8 +6,8 @@
 # to restore USER kirocrew and run any kirocrew-owned setup.
 #
 # Build order enforced by install.sh:
-#   1. localhost/base-orientation   ← this file
-#   2. localhost/<comp>-mid       ← composition Containerfile (FROM base-orientation)
+#   1. localhost/base-admission    ← this file
+#   2. localhost/<comp>-mid       ← composition Containerfile (FROM base-admission)
 #   3. localhost/<comp>           ← base-graduation Containerfile (FROM <comp>-mid)
 #
 # This is a build dependency, not a launchable composition — it is NOT

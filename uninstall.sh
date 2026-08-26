@@ -14,9 +14,11 @@
 #   --purge-auth    Also remove the ga-kiro-auth file. Off by default —
 #                   removing it means the next install needs a fresh device
 #                   auth login instead of inheriting the existing one.
+#                   On Linux, this is the only flag that removes ga-kiro-auth;
+#                   omitting --keep-machine does NOT remove it.
 #   --keep-machine  Keep the dedicated Podman machine/instance (don't remove
-#                   the VM on macOS or storage root on Linux). Useful if you
-#                   plan to re-install soon.
+#                   the VM on macOS or the containers/ storage root on Linux).
+#                   Useful if you plan to re-install soon.
 set -eo pipefail
 
 OS="$(uname -s)"
@@ -116,6 +118,10 @@ fi
 
 if [[ -n "$_HAS_DEDICATED_MACHINE" && "$OS" == "Darwin" ]]; then
   _PODMAN_CMD="podman --connection ${_MACHINE_NAME}"
+  # podman-compose shells out to an external provider as a separate process,
+  # so --connection on ${_PODMAN_CMD} above is NOT inherited by its internal
+  # podman calls — only env vars are. Used below for the one compose call.
+  _COMPOSE_ENV="CONTAINER_CONNECTION=${_MACHINE_NAME}"
 elif [[ -n "$_HAS_DEDICATED_MACHINE" && "$OS" == "Linux" ]]; then
   # Target the dedicated storage root so containers, networks, and images in
   # it are actually found. Mirror install.sh's _PODMAN_CMD construction and
@@ -124,8 +130,13 @@ elif [[ -n "$_HAS_DEDICATED_MACHINE" && "$OS" == "Linux" ]]; then
   _STORAGE_ROOT_EARLY="${HOME}/.local/share/${_MACHINE_NAME}/containers/storage"
   _RUNTIME_DIR_EARLY="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   _PODMAN_CMD="env CONTAINERS_CONF=${_GA_CONTAINERS_CONF} podman --root=${_STORAGE_ROOT_EARLY} --runroot=${_RUNTIME_DIR_EARLY}/${_MACHINE_NAME}-containers"
+  # Same reasoning as the Darwin branch above — --root/--runroot are flags on
+  # ${_PODMAN_CMD}, not env vars, so they don't reach podman-compose's internal
+  # calls either. CONTAINER_HOST (the raw dedicated socket) does.
+  _COMPOSE_ENV="CONTAINER_HOST=unix://${_RUNTIME_DIR_EARLY}/${_MACHINE_NAME}/podman.sock"
 else
   _PODMAN_CMD="podman"
+  _COMPOSE_ENV=""
 fi
 
 echo ""
@@ -142,12 +153,12 @@ done
 
 # ── Transport ─────────────────────────────────────────────────────────────────
 
-_COMPOSE_FILE="${HOME}/.local/share/${_MACHINE_NAME}/data/compose.yml"
+_COMPOSE_FILE="${XDG_DATA_HOME:-${HOME}/.local/share}/${_MACHINE_NAME}/data/compose.yml"
 if [[ "$OS" == "Darwin" ]]; then
   _COMPOSE_FILE="${HOME}/Library/Application Support/${_MACHINE_NAME}/data/compose.yml"
 fi
 if [[ -f "$_COMPOSE_FILE" ]]; then
-  ${_PODMAN_CMD} compose --project-name ga -f "$_COMPOSE_FILE" down 2>/dev/null \
+  eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${_COMPOSE_FILE}\" down" 2>/dev/null \
     && echo "✓ ga-transport stopped and removed via compose" || true
 else
   ${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 && echo "✓ ga-transport container removed" || echo "  (ga-transport was not running)"
@@ -199,10 +210,15 @@ if [[ -n "$_HAS_DEDICATED_MACHINE" ]]; then
         # rootless user namespace — plain rm fails with "Permission denied".
         # Use podman unshare to enter the namespace and wipe them first, then
         # remove the rest as the host user.
+        # Only wipe containers/ — not the entire ~/.local/share/${_MACHINE_NAME}
+        # tree. The data/ subdirectory (which contains ga-kiro-auth) is handled
+        # by the data-dir cleanup step below, which correctly respects
+        # --purge-auth. Wiping the whole tree here would destroy ga-kiro-auth
+        # even without --purge-auth.
         podman unshare rm -rf "${HOME}/.local/share/${_MACHINE_NAME}/containers/storage/overlay" \
           2>/dev/null || true
-        rm -rf "${HOME}/.local/share/${_MACHINE_NAME}"
-        echo "  ✓ removed dedicated storage root: ${HOME}/.local/share/${_MACHINE_NAME}"
+        rm -rf "${HOME}/.local/share/${_MACHINE_NAME}/containers"
+        echo "  ✓ removed dedicated storage root: ${HOME}/.local/share/${_MACHINE_NAME}/containers"
       fi
       # Kill any stale rootlessport processes that were bound to this instance.
       # These survive container removal and hold the port open, blocking reinstall.

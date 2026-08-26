@@ -177,9 +177,17 @@ if [[ ! -f "$_COMPOSE_FILE" ]]; then
 fi
 
 echo "Starting ga-transport via compose..."
-# podman-compose calls podman internally — point it at the right socket
+# podman-compose shells out to an external provider as a separate process, so
+# flags on the outer `podman compose` invocation aren't inherited by its
+# internal podman calls — only env vars cross that boundary. Point it at the
+# right instance via CONTAINER_HOST on Linux, or CONTAINER_CONNECTION on a
+# dedicated macOS machine (bare `podman` would otherwise resolve via whatever
+# the ambient default connection happens to be, which may not be
+# '${GA_MACHINE_NAME}').
 if [[ "$OS" == "Linux" && -n "${PODMAN_SOCK:-}" ]]; then
   _COMPOSE_ENV="CONTAINER_HOST=unix://${PODMAN_SOCK}"
+elif [[ "$OS" == "Darwin" && "${GA_DEDICATED_MACHINE}" == "true" ]]; then
+  _COMPOSE_ENV="CONTAINER_CONNECTION=${GA_MACHINE_NAME}"
 else
   _COMPOSE_ENV=""
 fi

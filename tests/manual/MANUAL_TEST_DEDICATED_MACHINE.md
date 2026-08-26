@@ -127,11 +127,13 @@ podman machine list
 # 3. Verify cleanup (Linux)
 systemctl --user status podman-ghost-academy.socket 2>&1
 # Expected: "could not be found" or "inactive"
-ls ~/.local/share/ghost-academy/ 2>&1
-# Expected: directory removed
+ls ~/.local/share/ghost-academy/containers/ 2>&1
+# Expected: directory removed (containers/ is wiped)
+ls ~/.local/share/ghost-academy/data/ 2>&1
+# Expected: data/ still present (ga-kiro-auth preserved unless --purge-auth)
 ```
 
-**Pass criteria:** No traces of the dedicated machine/instance remain.
+**Pass criteria:** No containers/storage traces remain; `data/ga-kiro-auth` is preserved.
 
 ## Test 6: Uninstall with --keep-machine
 
