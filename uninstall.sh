@@ -14,9 +14,11 @@
 #   --purge-auth    Also remove the ga-kiro-auth file. Off by default —
 #                   removing it means the next install needs a fresh device
 #                   auth login instead of inheriting the existing one.
+#                   On Linux, this is the only flag that removes ga-kiro-auth;
+#                   omitting --keep-machine does NOT remove it.
 #   --keep-machine  Keep the dedicated Podman machine/instance (don't remove
-#                   the VM on macOS or storage root on Linux). Useful if you
-#                   plan to re-install soon.
+#                   the VM on macOS or the containers/ storage root on Linux).
+#                   Useful if you plan to re-install soon.
 set -eo pipefail
 
 OS="$(uname -s)"
@@ -208,10 +210,15 @@ if [[ -n "$_HAS_DEDICATED_MACHINE" ]]; then
         # rootless user namespace — plain rm fails with "Permission denied".
         # Use podman unshare to enter the namespace and wipe them first, then
         # remove the rest as the host user.
+        # Only wipe containers/ — not the entire ~/.local/share/${_MACHINE_NAME}
+        # tree. The data/ subdirectory (which contains ga-kiro-auth) is handled
+        # by the data-dir cleanup step below, which correctly respects
+        # --purge-auth. Wiping the whole tree here would destroy ga-kiro-auth
+        # even without --purge-auth.
         podman unshare rm -rf "${HOME}/.local/share/${_MACHINE_NAME}/containers/storage/overlay" \
           2>/dev/null || true
-        rm -rf "${HOME}/.local/share/${_MACHINE_NAME}"
-        echo "  ✓ removed dedicated storage root: ${HOME}/.local/share/${_MACHINE_NAME}"
+        rm -rf "${HOME}/.local/share/${_MACHINE_NAME}/containers"
+        echo "  ✓ removed dedicated storage root: ${HOME}/.local/share/${_MACHINE_NAME}/containers"
       fi
       # Kill any stale rootlessport processes that were bound to this instance.
       # These survive container removal and hold the port open, blocking reinstall.
