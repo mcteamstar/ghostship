@@ -15,7 +15,7 @@
 #
 # Portable (pure unit tests, always run — mock PodmanClient, no socket):
 #   BundleUploadToolTests, FileUrlBaseResolutionTests, LifecycleRegressionTests,
-#   PickupTimeoutTests, PersonaValidationTests, TaskOrchestrationTests,
+#   NukeScheduleTests, PickupTimeoutTests, PersonaValidationTests, TaskOrchestrationTests,
 #   IdleMonitorActivityTests, CaptainStandingOrdersTests, FireImmediatelyTests,
 #   GatewayTokenAndProjectionTests, BearerAuthMiddlewareTests, StartupWiringTests,
 #   LoginLogoutTests, TestCrewTypeRegistry, TestCrewTypeHelpers, TestLaunchCrewType,
@@ -25,6 +25,7 @@
 #   ReconcileRegistryTests, IdleMonitorTests, FinishCrewSetupOrderingTests,
 #   LoginFlowEdgeCaseTests, LoginGuardClearTests  (trn-17 additions)
 #   ActiveCrewLimitTests  (trn-40 additions)
+#   NukeScheduleTests  (trn-59 additions)
 
 
 #   ScheduleMonitorTests, SchedulePersistenceTests  (trn-39 additions)
@@ -804,6 +805,155 @@ class LifecycleRegressionTests(unittest.TestCase):
         self.assertEqual(result["container"], "gs-half")
         self.assertIn("gs-vol-half", result["volumes"])
         self.assertIn("gs-home-half", result["volumes"])
+
+
+class NukeScheduleTests(unittest.TestCase):
+    """Tests for TRN-59 nuke schedule reporting and clearing."""
+
+    CREW = {
+        "container": "gs-demo",
+        "volume": "gs-vol-demo",
+        "home_volume": "gs-home-demo",
+    }
+
+    def _reg_with_schedules(self, schedules: list) -> dict:
+        return {"crews": {"demo": {**self.CREW, "schedules": schedules}}}
+
+    # ── 3.1: dry-run with two schedule entries ─────────────────────────────
+
+    def test_dry_run_reports_two_scheduled_jobs(self) -> None:
+        """3.1 — dry-run returns scheduled_jobs:2 and both names."""
+        schedules = [
+            {"job_id": "j1", "name": "daily-check", "interval_secs": 86400,
+             "cron_expr": None, "agent": "ghost", "enabled": True},
+            {"job_id": "j2", "name": "weekly-report", "interval_secs": None,
+             "cron_expr": "0 9 * * 1", "agent": "wraith", "enabled": True},
+        ]
+        reg = self._reg_with_schedules(schedules)
+        with (
+            patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(server, "_load_registry", return_value=reg),
+        ):
+            result = server.nuke("demo", confirm=False)
+
+        self.assertEqual(result["scheduled_jobs"], 2)
+        self.assertIn("daily-check", result["scheduled_job_names"])
+        self.assertIn("weekly-report", result["scheduled_job_names"])
+        self.assertIn("warning", result)
+
+    # ── 3.2: dry-run with no schedule entries ─────────────────────────────
+
+    def test_dry_run_reports_zero_scheduled_jobs(self) -> None:
+        """3.2 — dry-run returns scheduled_jobs:0 and empty list when no schedules."""
+        reg = self._reg_with_schedules([])
+        with (
+            patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(server, "_load_registry", return_value=reg),
+        ):
+            result = server.nuke("demo", confirm=False)
+
+        self.assertEqual(result["scheduled_jobs"], 0)
+        self.assertEqual(result["scheduled_job_names"], [])
+        self.assertIn("warning", result)
+
+    # ── 3.3: confirmed nuke issues DELETE for each schedule entry ──────────
+
+    def test_confirmed_nuke_cancels_each_schedule_before_cleanup(self) -> None:
+        """3.3 — confirmed nuke calls DELETE /api/crons/<id> for each entry before _cleanup_crew."""
+        schedules = [
+            {"job_id": "j1", "name": "check", "interval_secs": 300,
+             "cron_expr": None, "agent": "ghost", "enabled": True},
+            {"job_id": "j2", "name": "report", "interval_secs": None,
+             "cron_expr": "0 9 * * 1", "agent": "wraith", "enabled": True},
+        ]
+        reg = self._reg_with_schedules(schedules)
+        api_calls: list[tuple[str, str]] = []
+        cleanup_called_after: list[str] = []
+
+        def fake_crew_api(crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            return {}
+
+        def fake_cleanup(*args, **kwargs):
+            # Record which DELETE calls have been made by the time cleanup is called
+            cleanup_called_after.extend([p for m, p in api_calls if m == "DELETE"])
+
+        with (
+            patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_crew_api", side_effect=fake_crew_api),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_cleanup_crew", side_effect=fake_cleanup),
+        ):
+            result = server.nuke("demo", confirm=True)
+
+        self.assertEqual(result["status"], "nuked")
+        delete_paths = [p for m, p in api_calls if m == "DELETE"]
+        self.assertIn("/api/crons/j1", delete_paths)
+        self.assertIn("/api/crons/j2", delete_paths)
+        # Both DELETEs must have been issued before _cleanup_crew was invoked
+        self.assertIn("/api/crons/j1", cleanup_called_after)
+        self.assertIn("/api/crons/j2", cleanup_called_after)
+
+    # ── 3.4: DELETE failure does not block teardown ────────────────────────
+
+    def test_confirmed_nuke_delete_failure_does_not_block_teardown(self) -> None:
+        """3.4 — DELETE failure is caught, WARNING logged, and _cleanup_crew still called."""
+        schedules = [
+            {"job_id": "j1", "name": "check", "interval_secs": 300,
+             "cron_expr": None, "agent": "ghost", "enabled": True},
+        ]
+        reg = self._reg_with_schedules(schedules)
+
+        def failing_crew_api(crew, method, path, **kwargs):
+            if method == "DELETE":
+                raise RuntimeError("gateway unreachable")
+            return {}
+
+        with (
+            patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_crew_api", side_effect=failing_crew_api),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_cleanup_crew") as cleanup,
+            self.assertLogs("transport", level="WARNING") as log_ctx,
+        ):
+            result = server.nuke("demo", confirm=True)
+
+        self.assertEqual(result["status"], "nuked")
+        cleanup.assert_called_once()
+        self.assertTrue(any("nuke: failed to cancel cron" in msg for msg in log_ctx.output))
+        self.assertTrue(any("j1" in msg for msg in log_ctx.output))
+
+    # ── 3.5: confirmed nuke with no schedules issues no DELETE calls ───────
+
+    def test_confirmed_nuke_no_schedules_no_delete_calls(self) -> None:
+        """3.5 — confirmed nuke with no schedules issues no DELETE calls and teardown proceeds."""
+        reg = self._reg_with_schedules([])
+        api_calls: list[tuple[str, str]] = []
+
+        def fake_crew_api(crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            return {}
+
+        with (
+            patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_crew_api", side_effect=fake_crew_api),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_cleanup_crew") as cleanup,
+        ):
+            result = server.nuke("demo", confirm=True)
+
+        self.assertEqual(result["status"], "nuked")
+        cleanup.assert_called_once()
+        delete_calls = [(m, p) for m, p in api_calls if m == "DELETE"]
+        self.assertEqual(delete_calls, [])
 
 
 class PickupTimeoutTests(unittest.TestCase):
