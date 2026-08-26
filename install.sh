@@ -474,10 +474,10 @@ ${_PODMAN_CMD} pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
 
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
-echo "Building localhost/base-orientation:latest (orientation) ..."
-${_PODMAN_CMD} build -t localhost/base-orientation:latest \
-  "$GHOSTSHIP_DIR/crews/_base/orientation/" \
-  && echo "✓ orientation image built" || { echo "✗ orientation image build failed"; exit 1; }
+echo "Building localhost/base-admission:latest (admission) ..."
+${_PODMAN_CMD} build -t localhost/base-admission:latest \
+  "$GHOSTSHIP_DIR/crews/_base/admission/" \
+  && echo "✓ admission image built" || { echo "✗ admission image build failed"; exit 1; }
 
 echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \

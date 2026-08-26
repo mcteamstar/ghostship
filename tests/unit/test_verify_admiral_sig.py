@@ -1,4 +1,4 @@
-"""Tests for crews/_base/orientation/verify-admiral-sig exit codes (trn-44).
+"""Tests for crews/_base/admission/verify-admiral-sig exit codes (trn-44).
 
 Verifies:
   - Exit 0 when the secret matches the X-Admiral-Sig header
@@ -22,7 +22,7 @@ from pathlib import Path
 
 # Resolve the script path relative to the repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "crews" / "_base" / "orientation" / "verify-admiral-sig"
+SCRIPT_PATH = REPO_ROOT / "crews" / "_base" / "admission" / "verify-admiral-sig"
 
 
 def _make_message(body: str, sig: str | None = None) -> str:
