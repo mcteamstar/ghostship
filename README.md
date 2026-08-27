@@ -1,5 +1,4 @@
 ![Ghostship](docs/images/ghostship.png)
-![Ghostship](docs/images/ghostship.png)
 
 *Launch Ghostships from the Ghost Academy and command the crew.*
 
