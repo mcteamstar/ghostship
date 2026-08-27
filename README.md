@@ -75,7 +75,7 @@ Install the ghostship power from the Powers panel → Add Custom Power → Impor
 ```
 https://github.com/mcteamstar/ghostship
 ```
-The `ghostship-admin` skill walks you through the rest — Podman, `./install.sh`, auth, and connecting. See `plugin/PACKAGING.md` for keyed and remote installs.
+The `ghostship-admin` skill walks you through the rest — Podman, `./install.sh`, auth, and connecting. See `.claude-plugin/PACKAGING.md` for keyed and remote installs.
 
 **kiro-cli:**
 ```bash
