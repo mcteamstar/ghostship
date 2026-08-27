@@ -9,6 +9,8 @@ jobs:
     name: release-gate
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Check source branch is a release branch
         run: |
           branch="${{ github.head_ref }}"
