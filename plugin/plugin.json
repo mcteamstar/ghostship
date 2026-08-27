@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ghostship",
+  "version": "0.1.1",
+  "description": "Command Ghostship fleets over MCP from an agent client.",
+  "repository": "https://github.com/mcteamstar/ghostship",
+  "license": "MIT",
+  "keywords": ["ghostship", "mcp", "agent-plugin"]
+}
