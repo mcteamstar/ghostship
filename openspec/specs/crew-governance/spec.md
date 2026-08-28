@@ -170,29 +170,15 @@ contain a literal `$VAR` or `${VAR}` string.
   unexpanded variable reference
 
 ### Requirement: Env-declaring MCP servers are not pooled by default
+KiroCrew 0.4.0 SHALL not pool MCP servers that declare environment variables or auth headers. Ghostship's `_copy_agents()` SHALL automatically set `poolable: false` on any server entry that contains a `headers` field when writing that entry into a crew's `~/.kiro/mcp.json`. Catalogue entries do not need to declare `poolable: false` explicitly.
 
-KiroCrew 0.4.0 changes the default pooling behaviour: any MCP server spec that
-declares an `env` block is now pooled across agents by default, which breaks
-stateful servers. Any MCP server spec inside ghostship that declares an `env`
-block and whose state is per-agent or per-session SHALL include `"poolable": false`
-to opt out of the new default.
+#### Scenario: HTTP server with headers gets poolable: false
+- **WHEN** a catalogue entry contains a `headers` field
+- **THEN** the entry written into the crew's `mcp.json` includes `"poolable": false`
 
-#### Scenario: Stateful env-declaring server carries poolable=false
-- **WHEN** an MCP server spec in the ghostship crew configuration declares an
-  `env` block and manages per-session state
-- **THEN** the spec includes `"poolable": false` so KiroCrew 0.4.0 does not
-  pool it across agents
-
-#### Scenario: Stateless env-declaring server may omit poolable
-- **WHEN** an MCP server spec declares an `env` block and its state is fully
-  shared or idempotent across sessions
-- **THEN** the absence of `"poolable": false` is intentional and the server
-  may be pooled
-
-#### Scenario: MCP server without env block is unaffected
-- **WHEN** an MCP server spec declares no `env` block
-- **THEN** KiroCrew 0.4.0's new pooling default does not apply to it and no
-  change is required
+#### Scenario: HTTP server without headers is written as-is
+- **WHEN** a catalogue entry has no `headers` field
+- **THEN** the entry is written into `mcp.json` without a `poolable` key added
 
 ### Requirement: Containerfiles pin to kirocrew:0.4.0
 

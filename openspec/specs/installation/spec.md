@@ -290,9 +290,9 @@ The `org.ghostship.version` OCI label on each composition image SHALL be `<VERSI
 ### Requirement: Transport service definition generated as a Compose file
 `install.sh` SHALL generate a `compose.yml` in `${DATA_DIR}` after building images, containing the complete `ga-transport` service definition: image, ports, volumes, environment variables, network, restart policy, and security options. The Podman socket path and all machine-specific values SHALL be baked in at generation time so the file is self-contained and usable without re-running `install.sh`.
 
-`install.sh` SHALL copy the contents of `academy/` (subdirectories `agents`, `skills`, `steering`, `policies`, `orders`) and `crews/` from the ghostship repo into `${DATA_DIR}/academy/` and `${DATA_DIR}/crews/` respectively before writing `compose.yml`. These copies become the source of truth for the running transport container.
+`install.sh` SHALL copy the contents of `academy/` (subdirectories `agents`, `skills`, `steering`, `policies`, `orders`, `mcp`) and `crews/` from the ghostship repo into `${DATA_DIR}/academy/` and `${DATA_DIR}/crews/` respectively before writing `compose.yml`. These copies become the source of truth for the running transport container.
 
-The six volume entries in the generated `compose.yml` that previously referenced the host repo path (`${GHOSTSHIP_DIR}/academy/*` and `${GHOSTSHIP_DIR}/crews`) SHALL instead reference the corresponding paths inside `${DATA_DIR}` (`${DATA_DIR}/academy/agents`, etc.). The transport container's internal mount points (`/agents`, `/skills`, `/steering`, `/policies`, `/orders`, `/crews`) SHALL remain unchanged.
+The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DIR}/academy/mcp:/mcp:ro` alongside the existing academy and crews entries. The transport container's internal mount point for the catalogue SHALL be `/mcp`. The transport container's internal mount points (`/agents`, `/skills`, `/steering`, `/policies`, `/orders`, `/crews`) SHALL remain unchanged.
 
 `install.sh`, `start.sh`, and `uninstall.sh` SHALL all use `podman compose -f "${DATA_DIR}/compose.yml"` to manage the `ga-transport` container lifecycle, replacing raw `podman run`, `podman stop`, and `podman rm` calls.
 
@@ -302,11 +302,19 @@ The six volume entries in the generated `compose.yml` that previously referenced
 
 #### Scenario: install.sh copies academy and crews into data volume
 - **WHEN** `install.sh` completes the image build phase
-- **THEN** `${DATA_DIR}/academy/agents`, `${DATA_DIR}/academy/skills`, `${DATA_DIR}/academy/steering`, `${DATA_DIR}/academy/policies`, `${DATA_DIR}/academy/orders`, and `${DATA_DIR}/crews` all exist and contain the files from the corresponding repo directories
+- **THEN** `${DATA_DIR}/academy/agents`, `${DATA_DIR}/academy/skills`, `${DATA_DIR}/academy/steering`, `${DATA_DIR}/academy/policies`, `${DATA_DIR}/academy/orders`, `${DATA_DIR}/academy/mcp`, and `${DATA_DIR}/crews` all exist and contain the files from the corresponding repo directories
+
+#### Scenario: install.sh copies academy/mcp into data volume
+- **WHEN** `install.sh` completes the image build phase and `academy/mcp/` exists in the repo
+- **THEN** `${DATA_DIR}/academy/mcp/` exists and contains the files from `academy/mcp/`
 
 #### Scenario: install.sh generates compose.yml with data-volume mounts
 - **WHEN** `install.sh` completes the image build phase
-- **THEN** `${DATA_DIR}/compose.yml` contains volume entries sourced from `${DATA_DIR}/academy/*` and `${DATA_DIR}/crews` rather than the repo checkout path, while the container-internal mount points remain `/agents`, `/skills`, `/steering`, `/policies`, `/orders`, and `/crews`
+- **THEN** `${DATA_DIR}/compose.yml` contains volume entries sourced from `${DATA_DIR}/academy/*` and `${DATA_DIR}/crews` rather than the repo checkout path, while the container-internal mount points remain `/agents`, `/skills`, `/steering`, `/policies`, `/orders`, `/mcp`, and `/crews`
+
+#### Scenario: install.sh generates compose.yml with /mcp mount
+- **WHEN** `install.sh` completes the image build phase
+- **THEN** `${DATA_DIR}/compose.yml` contains a volume entry `${DATA_DIR}/academy/mcp:/mcp:ro`
 
 #### Scenario: Transport container has no runtime dependency on repo path
 - **WHEN** the ghostship repo is moved or deleted after `install.sh` has run
