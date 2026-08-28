@@ -82,3 +82,21 @@
 # GA_SPAWN_MIN_MEMORY_GB=1.5
 # GA_RESOURCE_PRESSURE_GB=2.0
 # GA_RESOURCE_CRITICAL_GB=1.0
+
+# ── Migration Pathfinder MCP proxy ────────────────────────────────────────────
+# Only used by `migration-assess` crews. Transport holds the Pathfinder
+# credential and proxies each crew's MCP traffic, so a Pathfinder token never
+# enters a crew container. See docs/migration-assess.md.
+#
+# Pathfinder origin.
+# GA_PATHFINDER_URL="https://pathfinder.staging.sca.versent.io"
+#
+# Unattended use — Cognito refresh grant. Set both, and write the refresh token
+# itself to <DATA_DIR>/ga-pathfinder-refresh (mode 600). Refresh tokens last
+# 7 days; access tokens are minted from it as needed.
+# GA_PATHFINDER_TOKEN_URL="https://<cognito-domain>/oauth2/token"
+# GA_PATHFINDER_CLIENT_ID=""
+#
+# Test runs only — a static access token, which expires in ~15 minutes and is
+# not viable for an unattended crew. Takes precedence over the refresh grant.
+# GA_PATHFINDER_ACCESS_TOKEN=""

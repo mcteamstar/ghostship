@@ -1,0 +1,12 @@
+{
+  "_comment": "MCP servers registered into every migration-assess crew at launch. Rendered by _copy_mcp_config: {{TRANSPORT_URL}}, {{CREW_ID}} and {{CREW_MCP_TOKEN}} are substituted per crew. The crew talks to transport, not to Pathfinder directly — transport holds the Cognito credential and swaps it in, so a Pathfinder token never enters a crew container.",
+  "mcpServers": {
+    "pathfinder": {
+      "url": "{{TRANSPORT_URL}}/pathfinder/{{CREW_ID}}/mcp",
+      "headers": {
+        "Authorization": "Bearer {{CREW_MCP_TOKEN}}"
+      },
+      "disabled": false
+    }
+  }
+}

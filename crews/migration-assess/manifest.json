@@ -1,0 +1,22 @@
+{
+  "agents": [
+    "sounder.json",
+    "ballast.json",
+    "ledger.json",
+    "chronicle.json",
+    "compass.json",
+    "tide.json",
+    "purser.json",
+    "steward.json",
+    "cartographer.json",
+    "raven.json"
+  ],
+  "skills": [
+    "pathfinder-assessment",
+    "ghostship-mail"
+  ],
+  "steering": [
+    "ASSESSMENT_ORDERS.md"
+  ],
+  "default_agent": "steward"
+}
