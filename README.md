@@ -70,6 +70,8 @@ cp config/ghostship.conf.example config/ghostship.conf
 
 To uninstall: `./uninstall.sh`. If ghostship stops after a reboot, run `./start.sh` to bring it back without reinstalling.
 
+**Updating academy/ and crews/** — `install.sh` snapshots `academy/` and `crews/` from the repo into the data volume. The transport has no runtime dependency on the repo checkout path. After editing files under `academy/` or `crews/`, re-run `./install.sh` for changes to take effect. See [Updating academy/ and crews/](docs/configuration.md#updating-academy-and-crews) in the configuration docs.
+
 Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
 
 ### Connecting to a harness

@@ -199,3 +199,22 @@ USER kirocrew
 
 The new image is built at install time. Existing crews continue using the
 old image until nuked and re-called-down.
+
+## Updating academy/ and crews/
+
+`install.sh` snapshots `academy/` (agents, skills, steering, policies, orders)
+and `crews/` from the repo into the data volume at install time. The transport
+container mounts these from the data volume — it has no runtime dependency on
+the repo checkout path.
+
+This means:
+
+- **Editing files under `academy/` or `crews/` in the repo takes effect only
+  after re-running `./install.sh`.** A running transport reads the snapshot in
+  the data volume, not the live repo.
+- **Moving or deleting the repo after install does not break the transport** —
+  the academy/crews content is fully self-contained in the data volume.
+- **Reinstalling is always safe** — `install.sh` uses `rsync --delete` (or
+  `rm -rf` + `cp -r` if rsync is absent) so the data-volume snapshot is always
+  an exact mirror of the repo at install time. Stale files from a previous
+  install are removed automatically.

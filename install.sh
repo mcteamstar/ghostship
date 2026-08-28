@@ -505,6 +505,32 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
+# ── Copy academy/ and crews/ into the data volume ────────────────────────────
+# Snapshot academy/ subdirectories and crews/ from the repo into DATA_DIR so
+# the transport container has no runtime dependency on the repo checkout path.
+# Changes to these directories require re-running install.sh to take effect.
+mkdir -p "${DATA_DIR}/academy"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/agents"    "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/skills"    "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/steering"  "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/policies"  "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/orders"    "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/crews"             "${DATA_DIR}/"
+else
+  echo "  rsync not found — falling back to cp (deletions from repo not mirrored until full reinstall)"
+  rm -rf "${DATA_DIR}/academy/agents" "${DATA_DIR}/academy/skills" \
+         "${DATA_DIR}/academy/steering" "${DATA_DIR}/academy/policies" \
+         "${DATA_DIR}/academy/orders" "${DATA_DIR}/crews"
+  cp -r "${GHOSTSHIP_DIR}/academy/agents"    "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/skills"    "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/steering"  "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/policies"  "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/orders"    "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/crews"             "${DATA_DIR}/"
+fi
+echo "✓ academy/ and crews/ copied to ${DATA_DIR}"
+
 # ── Generate compose.yml ──────────────────────────────────────────────────────
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and
 # not committed to the repo. start.sh and uninstall.sh both read it.
@@ -525,12 +551,12 @@ services:
       - ga-net
     volumes:
       - ${DATA_DIR}:/data
-      - ${GHOSTSHIP_DIR}/academy/agents:/agents:ro
-      - ${GHOSTSHIP_DIR}/academy/skills:/skills:ro
-      - ${GHOSTSHIP_DIR}/academy/steering:/steering:ro
-      - ${GHOSTSHIP_DIR}/academy/policies:/policies:ro
-      - ${GHOSTSHIP_DIR}/academy/orders:/orders:ro
-      - ${GHOSTSHIP_DIR}/crews:/crews:ro
+      - ${DATA_DIR}/academy/agents:/agents:ro
+      - ${DATA_DIR}/academy/skills:/skills:ro
+      - ${DATA_DIR}/academy/steering:/steering:ro
+      - ${DATA_DIR}/academy/policies:/policies:ro
+      - ${DATA_DIR}/academy/orders:/orders:ro
+      - ${DATA_DIR}/crews:/crews:ro
       - ${PODMAN_SOCK}:${PODMAN_SOCK}
     environment:
       PODMAN_SOCKET: ${PODMAN_SOCK}
