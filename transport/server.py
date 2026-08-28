@@ -2216,7 +2216,11 @@ def _load_crew_manifest(composition_entry: dict | None = None) -> dict[str, Any]
             manifest_path, e,
         )
         return default
-    return {key: data.get(key, "*") for key in default}
+    result = {key: data.get(key, "*") for key in default}
+    # Include mcpServers if declared; absent key → None (skip mcp.json creation)
+    if "mcpServers" in data:
+        result["mcpServers"] = data["mcpServers"]
+    return result
 
 
 def _manifest_selects(selection: Any, name: str) -> bool:
@@ -2225,15 +2229,51 @@ def _manifest_selects(selection: Any, name: str) -> bool:
     return selection == "*" or name in selection
 
 
+MCP_CATALOGUE_DIR = Path("/mcp")
+KIRO_MCP_JSON = "/home/kirocrew/.kiro/mcp.json"
+
+
+def _substitute_env_vars(value: Any, env: dict[str, str]) -> Any:
+    """Recursively substitute ${VAR} references in string values using env.
+
+    Logs a warning for any unset variable but continues, writing the literal
+    ${VAR} string as the value.
+    """
+    if isinstance(value, str):
+        def _replace(match: "re.Match[str]") -> str:
+            var_name = match.group(1)
+            if var_name in env:
+                return env[var_name]
+            logger.warning(
+                "mcp.json: environment variable ${%s} is not set — "
+                "writing literal string",
+                var_name,
+            )
+            return match.group(0)
+        return re.sub(r"\$\{([^}]+)\}", _replace, value)
+    if isinstance(value, dict):
+        return {k: _substitute_env_vars(v, env) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute_env_vars(item, env) for item in value]
+    return value
+
+
 def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
     """Copy the agent JSONs selected by the crew type's manifest from the
     Academy agents pool (academy/agents/, bind-mounted from the host) into
-    the crew container."""
+    the crew container.
+
+    Also writes ~/.kiro/mcp.json from the manifest's mcpServers array, if
+    present, by resolving each name against the /mcp catalogue, substituting
+    ${VAR} references from the transport environment, and setting
+    poolable: false on entries that contain a headers field.
+    """
     agents_src = Path("/agents")
     if not agents_src.exists():
         logger.warning("No /agents dir in transport container — skipping agent copy")
         return []
-    selection = _load_crew_manifest(composition_entry)["agents"]
+    manifest = _load_crew_manifest(composition_entry)
+    selection = manifest["agents"]
     copied = []
     for af in agents_src.glob("*.json"):
         if not _manifest_selects(selection, af.name):
@@ -2251,6 +2291,64 @@ def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict |
         except Exception as e:
             logger.warning("Failed to copy agent %s: %s", af.name, e)
     logger.info("Copied agents to %s: %s", container, copied)
+
+    # ── Write mcp.json from manifest.mcpServers ───────────────────────────────
+    mcp_servers_list = manifest.get("mcpServers")
+    if not mcp_servers_list:
+        # No mcpServers declared — skip mcp.json creation
+        return copied
+
+    env = dict(os.environ)
+    resolved_entries: dict[str, Any] = {}
+
+    for server_name in mcp_servers_list:
+        catalogue_path = MCP_CATALOGUE_DIR / f"{server_name}.json"
+        if not catalogue_path.is_file():
+            logger.warning(
+                "mcp.json: server %r not found in catalogue at %s — skipping",
+                server_name, catalogue_path,
+            )
+            continue
+        try:
+            entry = json.loads(catalogue_path.read_text())
+        except Exception as e:
+            logger.warning(
+                "mcp.json: failed to parse catalogue entry %s: %s — skipping",
+                catalogue_path, e,
+            )
+            continue
+
+        # Substitute ${VAR} references from transport environment
+        entry = _substitute_env_vars(entry, env)
+
+        # Auto-set poolable: false for entries with a headers field
+        if "headers" in entry:
+            entry["poolable"] = False
+
+        resolved_entries[server_name] = entry
+
+    if not resolved_entries:
+        logger.info("mcp.json: no valid server entries resolved — skipping write")
+        return copied
+
+    # Write ~/.kiro/mcp.json into the crew container
+    mcp_json_data = json.dumps({"mcpServers": resolved_entries}, indent=2).encode()
+    try:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            info = tarfile.TarInfo(name="mcp.json")
+            info.size = len(mcp_json_data)
+            tar.addfile(info, io.BytesIO(mcp_json_data))
+        buf.seek(0)
+        mcp_dest_dir = str(Path(KIRO_MCP_JSON).parent)
+        podman.container_archive_put(container, mcp_dest_dir, buf.read())
+        logger.info(
+            "Wrote mcp.json to %s with servers: %s",
+            container, list(resolved_entries.keys()),
+        )
+    except Exception as e:
+        logger.warning("Failed to write mcp.json to %s: %s", container, e)
+
     return copied
 
 

@@ -202,10 +202,10 @@ old image until nuked and re-called-down.
 
 ## Updating academy/ and crews/
 
-`install.sh` snapshots `academy/` (agents, skills, steering, policies, orders)
-and `crews/` from the repo into the data volume at install time. The transport
-container mounts these from the data volume — it has no runtime dependency on
-the repo checkout path.
+`install.sh` snapshots `academy/` (agents, skills, steering, policies, orders,
+mcp) and `crews/` from the repo into the data volume at install time. The
+transport container mounts these from the data volume — it has no runtime
+dependency on the repo checkout path.
 
 This means:
 
@@ -218,3 +218,111 @@ This means:
   `rm -rf` + `cp -r` if rsync is absent) so the data-volume snapshot is always
   an exact mirror of the repo at install time. Stale files from a previous
   install are removed automatically.
+
+## MCP server catalogue
+
+Crew agents can be given MCP servers (external tools) that vary by composition.
+Server definitions live in a **catalogue** at `academy/mcp/`, and compositions
+opt in to specific servers via their `manifest.json`.
+
+### Catalogue format (`academy/mcp/`)
+
+Each file in `academy/mcp/` is a named MCP server definition in JSON. The
+filename without the `.json` extension is the server name referenced from a
+manifest. `install.sh` snapshots `academy/mcp/` into the data volume and the
+transport container mounts it read-only at `/mcp`.
+
+Each JSON object conforms to the kiro-cli `mcpServers` entry format: at minimum
+a `type` field and either a `url` (HTTP/SSE) or a `command` (stdio) field.
+
+**Stdio server** — `academy/mcp/playwright.json` (shipped as an example, not
+wired into any composition by default):
+
+```json
+{
+  "type": "stdio",
+  "command": "npx",
+  "args": ["@playwright/mcp@latest"]
+}
+```
+
+**HTTP server:**
+
+```json
+{
+  "type": "streamable-http",
+  "url": "http://armory.example.com/mcp"
+}
+```
+
+**HTTP server with an auth header:**
+
+```json
+{
+  "type": "streamable-http",
+  "url": "http://nexus.example.com/mcp",
+  "headers": {
+    "Authorization": "Bearer ${NEXUS_API_KEY}"
+  }
+}
+```
+
+An empty catalogue (no JSON files) is valid — no `mcp.json` is written into
+crew containers and agents run with only their built-in tools.
+
+### Declaring servers in a composition (`manifest.json → mcpServers`)
+
+A composition's `crews/<name>/manifest.json` gains an optional `mcpServers`
+array of catalogue server names:
+
+```json
+{
+  "agents": "*",
+  "skills": "*",
+  "steering": "*",
+  "mcpServers": ["armory", "nexus"]
+}
+```
+
+At crew setup, `_copy_agents()` resolves each name against `/mcp/<name>.json`,
+substitutes any `${VAR}` references, and writes the resolved configs into
+`~/.kiro/mcp.json` inside the crew container. Agents reference these servers
+via `@<name>` in their `tools` list.
+
+Behaviour:
+
+- **No `mcpServers` key (or an empty array)** → no `mcp.json` is written.
+- **A name with no matching catalogue file** → a warning is logged and that
+  entry is skipped; the remaining servers are still written and crew setup
+  continues.
+- **An entry containing a `headers` field** → `poolable: false` is added
+  automatically when written into `mcp.json` (KiroCrew 0.4.0 must not pool
+  auth-bearing HTTP servers). The catalogue file does not need to declare it.
+
+### Secret substitution (`${VAR}`)
+
+Any `${VAR}` reference in a catalogue entry's string values is substituted from
+the **transport container's environment** at the point `_copy_agents()` writes
+the crew's `mcp.json`. This keeps secrets (API keys, tokens) out of committed
+files — the catalogue stores `${NEXUS_API_KEY}`, and the real token is injected
+at crew setup from the transport environment.
+
+- If the variable **is set**: its value is substituted into the written entry.
+- If the variable **is not set**: a warning is logged, the literal `${VAR}`
+  string is written, and crew setup continues (the server will auth-fail at
+  call time rather than blocking the crew from starting).
+
+Pass secrets into the transport container's environment via `install.sh`
+configuration (config file or environment the transport inherits at
+`podman run` time), the same mechanism used for other `GA_*` / `KIRO_*`
+runtime variables.
+
+### Per-agent servers
+
+Individual agent JSON files in `academy/agents/` may also declare their own
+`mcpServers` map for servers specific to that agent regardless of the
+composition. kiro-cli resolves the agent's own `mcpServers` entry before the
+composition-level `mcp.json`, so a name declared in both is served from the
+agent's entry (the `mcp.json` entry is shadowed — no error). An agent may set
+`includeMcpJson: false` to opt out of the composition-level `mcp.json`
+entirely.

@@ -6556,3 +6556,303 @@ class InstallEnvVarSyncTests(unittest.TestCase):
             f"Env vars read by server.py but missing from install.sh -e flags: {sorted(missing)}\n"
             "Add the missing -e lines to the podman run block in install.sh.",
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# trn-68: Per-composition MCP server config tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class SubstituteEnvVarsTests(unittest.TestCase):
+    """Unit tests for _substitute_env_vars (trn-68)."""
+
+    def test_string_substitution(self) -> None:
+        """String values have ${VAR} replaced from env."""
+        result = server._substitute_env_vars("Bearer ${TOKEN}", {"TOKEN": "abc123"})
+        self.assertEqual(result, "Bearer abc123")
+
+    def test_nested_dict_substitution(self) -> None:
+        """Recurses into nested dicts."""
+        result = server._substitute_env_vars(
+            {"headers": {"Authorization": "Bearer ${TOKEN}"}},
+            {"TOKEN": "secret"},
+        )
+        self.assertEqual(result["headers"]["Authorization"], "Bearer secret")
+
+    def test_list_substitution(self) -> None:
+        """Recurses into lists."""
+        result = server._substitute_env_vars(["${A}", "${B}"], {"A": "alpha", "B": "beta"})
+        self.assertEqual(result, ["alpha", "beta"])
+
+    def test_missing_var_writes_literal_and_warns(self) -> None:
+        """Missing variable writes literal ${VAR} and logs a warning."""
+        with self.assertLogs("transport", level="WARNING") as log_ctx:
+            result = server._substitute_env_vars("Bearer ${ABSENT_VAR}", {})
+        self.assertEqual(result, "Bearer ${ABSENT_VAR}")
+        self.assertTrue(any("ABSENT_VAR" in m for m in log_ctx.output))
+
+    def test_non_string_passthrough(self) -> None:
+        """Non-string values (int, None, bool) pass through unchanged."""
+        self.assertEqual(server._substitute_env_vars(42, {}), 42)
+        self.assertIsNone(server._substitute_env_vars(None, {}))
+        self.assertTrue(server._substitute_env_vars(True, {}))
+
+
+class CopyAgentsMcpTests(unittest.TestCase):
+    """Tests for the mcp.json writing logic in _copy_agents() (trn-68).
+
+    These tests call _copy_agents() with:
+    - _load_crew_manifest patched to return a specific manifest
+    - MCP_CATALOGUE_DIR patched to a temp directory containing catalogue files
+    - Path("/agents") patched to an empty temp directory
+    - PodmanClient mocked so container_archive_put calls are recorded
+
+    mcp.json is extracted from the archive PUT calls targeting ~/.kiro/.
+    """
+
+    def _extract_mcp_json_from_calls(self, mock_podman: Mock) -> "dict | None":
+        """Parse mcp.json content from container_archive_put call args, or None."""
+        import io as _io
+        import tarfile as _tarfile
+
+        for call in mock_podman.container_archive_put.call_args_list:
+            dest_dir: str = call.args[1]
+            tar_bytes: bytes = call.args[2]
+            if ".kiro" not in dest_dir:
+                continue
+            buf = _io.BytesIO(tar_bytes)
+            with _tarfile.open(fileobj=buf, mode="r") as tf:
+                for member in tf.getmembers():
+                    if member.name == "mcp.json":
+                        raw = tf.extractfile(member)
+                        return json.loads(raw.read())
+        return None
+
+    def _run(
+        self,
+        manifest: dict,
+        catalogue: dict[str, dict],
+        env: "dict[str, str] | None" = None,
+    ) -> "tuple[Mock, dict | None, list[str]]":
+        """Run _copy_agents and return (podman, mcp_json_or_None, warning_messages)."""
+        import tempfile as _tempfile
+
+        mock_podman = Mock()
+        mock_podman.container_archive_put = Mock()
+        mock_podman.container_exec = Mock(return_value="")
+
+        captured_warnings: list[str] = []
+
+        with _tempfile.TemporaryDirectory() as tmp:
+            mcp_dir = Path(tmp) / "mcp"
+            mcp_dir.mkdir()
+            for name, content in catalogue.items():
+                (mcp_dir / f"{name}.json").write_text(json.dumps(content))
+
+            agents_dir = Path(tmp) / "agents"
+            agents_dir.mkdir()
+
+            import logging as _logging
+
+            class _WarningCapture(_logging.Handler):
+                def emit(self, record: "_logging.LogRecord") -> None:
+                    if record.levelno >= _logging.WARNING:
+                        captured_warnings.append(record.getMessage())
+
+            handler = _WarningCapture()
+            server.logger.addHandler(handler)
+
+            real_path = Path
+
+            def _path_factory(p):
+                if str(p) == "/agents":
+                    return agents_dir
+                return real_path(p)
+
+            try:
+                with (
+                    patch.object(server, "_load_crew_manifest", return_value=manifest),
+                    patch.object(server, "MCP_CATALOGUE_DIR", mcp_dir),
+                    patch.dict(os.environ, env or {}, clear=False),
+                    patch("transport.server.Path", side_effect=_path_factory),
+                ):
+                    server._copy_agents(mock_podman, "gs-test", None)
+            finally:
+                server.logger.removeHandler(handler)
+
+        mcp_json = self._extract_mcp_json_from_calls(mock_podman)
+        return mock_podman, mcp_json, captured_warnings
+
+    # ── 3.1: manifest with mcpServers → mcp.json written ─────────────────────
+
+    def test_manifest_with_mcp_servers_writes_mcp_json(self) -> None:
+        """3.1 — manifest with mcpServers → correct mcp.json written with resolved entries."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["armory"],
+        }
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNotNone(mcp_json, "mcp.json was not written")
+        assert mcp_json is not None
+        self.assertIn("mcpServers", mcp_json)
+        self.assertIn("armory", mcp_json["mcpServers"])
+        self.assertEqual(mcp_json["mcpServers"]["armory"]["type"], "streamable-http")
+        self.assertEqual(
+            mcp_json["mcpServers"]["armory"]["url"], "http://armory.example.com/mcp"
+        )
+
+    # ── 3.2: no mcpServers → no mcp.json written ─────────────────────────────
+
+    def test_manifest_without_mcp_servers_no_mcp_json(self) -> None:
+        """3.2 — manifest with no mcpServers key → no mcp.json written."""
+        manifest = {"agents": "*", "skills": "*", "steering": "*"}
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNone(mcp_json, "mcp.json should NOT be written when mcpServers absent")
+
+    def test_manifest_with_empty_mcp_servers_no_mcp_json(self) -> None:
+        """3.2b — manifest with empty mcpServers list → no mcp.json written."""
+        manifest = {"agents": "*", "skills": "*", "steering": "*", "mcpServers": []}
+        catalogue = {}
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNone(mcp_json, "mcp.json should NOT be written for empty mcpServers")
+
+    # ── 3.3: unknown server → warning, others written, no exception ──────────
+
+    def test_unknown_server_name_warns_and_skips(self) -> None:
+        """3.3 — unknown server name → warning logged, other servers written, no exception."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["armory", "nonexistent"],
+        }
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+            # "nonexistent" is NOT in the catalogue
+        }
+        _, mcp_json, warnings = self._run(manifest, catalogue)
+
+        # mcp.json should still be written with the known server
+        self.assertIsNotNone(mcp_json, "mcp.json should be written for the valid server")
+        assert mcp_json is not None
+        self.assertIn("armory", mcp_json["mcpServers"])
+        self.assertNotIn("nonexistent", mcp_json["mcpServers"])
+
+        # A warning should have been logged for the missing server
+        self.assertTrue(
+            any("nonexistent" in w for w in warnings),
+            f"Expected warning about 'nonexistent'; warnings: {warnings}",
+        )
+
+    # ── 3.4: entry with headers → poolable: false added ──────────────────────
+
+    def test_headers_entry_gets_poolable_false(self) -> None:
+        """3.4 — catalogue entry with headers → poolable: false added automatically."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["nexus"],
+        }
+        catalogue = {
+            "nexus": {
+                "type": "streamable-http",
+                "url": "http://nexus.example.com/mcp",
+                "headers": {"Authorization": "Bearer token123"},
+            },
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNotNone(mcp_json)
+        assert mcp_json is not None
+        nexus_entry = mcp_json["mcpServers"]["nexus"]
+        self.assertFalse(
+            nexus_entry.get("poolable", True),
+            "Entry with headers should have poolable: false",
+        )
+
+    def test_no_headers_entry_no_poolable_added(self) -> None:
+        """3.4b — catalogue entry WITHOUT headers does NOT get poolable key added."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["armory"],
+        }
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNotNone(mcp_json)
+        assert mcp_json is not None
+        self.assertNotIn("poolable", mcp_json["mcpServers"]["armory"])
+
+    # ── 3.5: ${VAR} substituted when env var is set ───────────────────────────
+
+    def test_env_var_substituted_when_set(self) -> None:
+        """3.5 — catalogue entry with ${VAR} → substituted when env var is set."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["nexus"],
+        }
+        catalogue = {
+            "nexus": {
+                "type": "streamable-http",
+                "url": "http://nexus.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${NEXUS_API_KEY}"},
+            },
+        }
+        _, mcp_json, warnings = self._run(
+            manifest, catalogue, env={"NEXUS_API_KEY": "secret-token-xyz"}
+        )
+
+        self.assertIsNotNone(mcp_json)
+        assert mcp_json is not None
+        auth_header = mcp_json["mcpServers"]["nexus"]["headers"]["Authorization"]
+        self.assertEqual(auth_header, "Bearer secret-token-xyz")
+        # No warning for a successfully substituted variable
+        self.assertFalse(
+            any("NEXUS_API_KEY" in w and "not set" in w for w in warnings),
+            f"Should not warn about a set variable; warnings: {warnings}",
+        )
+
+    # ── 3.6: ${MISSING} → warning logged, literal string written ─────────────
+
+    def test_missing_env_var_warns_and_writes_literal(self) -> None:
+        """3.6 — catalogue entry with ${MISSING} → warning logged, literal string written,
+        setup continues."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["nexus"],
+        }
+        catalogue = {
+            "nexus": {
+                "type": "streamable-http",
+                "url": "http://nexus.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${TRN68_MISSING_TEST_VAR}"},
+            },
+        }
+        # Ensure the variable is NOT set
+        os.environ.pop("TRN68_MISSING_TEST_VAR", None)
+        _, mcp_json, warnings = self._run(manifest, catalogue, env={})
+
+        # mcp.json should still be written (setup continues)
+        self.assertIsNotNone(mcp_json, "mcp.json should be written even with missing vars")
+        assert mcp_json is not None
+        auth_header = mcp_json["mcpServers"]["nexus"]["headers"]["Authorization"]
+        # The literal string should be written
+        self.assertIn("${TRN68_MISSING_TEST_VAR}", auth_header)
+
+        # A warning should be logged
+        self.assertTrue(
+            any("TRN68_MISSING_TEST_VAR" in w for w in warnings),
+            f"Expected warning about TRN68_MISSING_TEST_VAR; warnings: {warnings}",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

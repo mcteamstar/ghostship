@@ -516,20 +516,23 @@ if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete "${GHOSTSHIP_DIR}/academy/steering"  "${DATA_DIR}/academy/"
   rsync -a --delete "${GHOSTSHIP_DIR}/academy/policies"  "${DATA_DIR}/academy/"
   rsync -a --delete "${GHOSTSHIP_DIR}/academy/orders"    "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/mcp"       "${DATA_DIR}/academy/"
   rsync -a --delete "${GHOSTSHIP_DIR}/crews"             "${DATA_DIR}/"
 else
   echo "  rsync not found — falling back to cp (deletions from repo not mirrored until full reinstall)"
   rm -rf "${DATA_DIR}/academy/agents" "${DATA_DIR}/academy/skills" \
          "${DATA_DIR}/academy/steering" "${DATA_DIR}/academy/policies" \
-         "${DATA_DIR}/academy/orders" "${DATA_DIR}/crews"
+         "${DATA_DIR}/academy/orders" "${DATA_DIR}/academy/mcp" "${DATA_DIR}/crews"
   cp -r "${GHOSTSHIP_DIR}/academy/agents"    "${DATA_DIR}/academy/"
   cp -r "${GHOSTSHIP_DIR}/academy/skills"    "${DATA_DIR}/academy/"
   cp -r "${GHOSTSHIP_DIR}/academy/steering"  "${DATA_DIR}/academy/"
   cp -r "${GHOSTSHIP_DIR}/academy/policies"  "${DATA_DIR}/academy/"
   cp -r "${GHOSTSHIP_DIR}/academy/orders"    "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/mcp"       "${DATA_DIR}/academy/"
   cp -r "${GHOSTSHIP_DIR}/crews"             "${DATA_DIR}/"
 fi
 echo "✓ academy/ and crews/ copied to ${DATA_DIR}"
+echo "✓ academy/mcp/ copied to ${DATA_DIR}"
 
 # ── Generate compose.yml ──────────────────────────────────────────────────────
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and
@@ -556,6 +559,7 @@ services:
       - ${DATA_DIR}/academy/steering:/steering:ro
       - ${DATA_DIR}/academy/policies:/policies:ro
       - ${DATA_DIR}/academy/orders:/orders:ro
+      - ${DATA_DIR}/academy/mcp:/mcp:ro
       - ${DATA_DIR}/crews:/crews:ro
       - ${PODMAN_SOCK}:${PODMAN_SOCK}
     environment:
