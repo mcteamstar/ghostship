@@ -17,7 +17,7 @@ See proposal.md — Why for the full motivation. KiroCrew 0.4.0 introduces four 
 
 1. ~~**OQ-1**: What is the exact agent template name to pass in `POST /api/chat/slots`?~~ **Resolved**: use `"kirocrew"` (the built-in default). This is a bootstrapping placeholder — `_copy_agents()` runs pre-gateway and overwrites the defaults with ghostship's custom agent JSONs before any dispatch ever occurs. The `"kirocrew"` template is never called in practice.
 2. ~~**OQ-2**: What is the reload-in-place endpoint path?~~ **Resolved**: `POST /api/chat/slots/{slot}/reload` — no request body. Confirmed in `src/kiro_crew/dashboard/routes/chat.py:83`. Returns 409 if a turn is in flight or subagents are attached. Conversation history preserved across reload.
-3. **OQ-3**: Does `spawn_min_memory_gb: 0` still work in 0.4.0 or has a floor been added? If floored, use `admission_gate: false` instead. Verify before task 5.1.
+3. ~~**OQ-3**: Does `spawn_min_memory_gb: 0` still work in 0.4.0 or has a floor been added?~~ **Resolved**: `0` is a documented sentinel — the field metadata reads "0 disables the check" (`config/loader.py:1855`). No floor bound. Ghostship's existing `spawn_min_memory_gb: 0` is safe.
 
 ## Decisions
 
