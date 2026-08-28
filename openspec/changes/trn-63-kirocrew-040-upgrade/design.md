@@ -15,17 +15,17 @@ See proposal.md — Why for the full motivation. KiroCrew 0.4.0 introduces four 
 
 ## Open Questions
 
-1. **OQ-1**: What is the exact agent template name to pass in `POST /api/chat/slots`? Likely `"kirocrew"` but must be confirmed from the 0.4.0 changelog or source. Blocks D1.
-2. **OQ-2**: What is the reload-in-place endpoint path? (`POST /api/chat/slots/{id}/reload`? `PATCH /api/sessions/{id}`?) Must be confirmed from 0.4.0 release notes. Blocks D6.
+1. ~~**OQ-1**: What is the exact agent template name to pass in `POST /api/chat/slots`?~~ **Resolved**: use `"kirocrew"` (the built-in default). This is a bootstrapping placeholder — `_copy_agents()` runs pre-gateway and overwrites the defaults with ghostship's custom agent JSONs before any dispatch ever occurs. The `"kirocrew"` template is never called in practice.
+2. ~~**OQ-2**: What is the reload-in-place endpoint path?~~ **Resolved**: `POST /api/chat/slots/{slot}/reload` — no request body. Confirmed in `src/kiro_crew/dashboard/routes/chat.py:83`. Returns 409 if a turn is in flight or subagents are attached. Conversation history preserved across reload.
 3. **OQ-3**: Does `spawn_min_memory_gb: 0` still work in 0.4.0 or has a floor been added? If floored, use `admission_gate: false` instead. Verify before task 5.1.
 
 ## Decisions
 
-### D1: Pass `"agent": "kirocrew"` on crew creation (pending OQ-1)
+### D1: Pass `"agent": "kirocrew"` on crew creation
 
-**Decision:** Add `"agent": "<template-name>"` to the `POST /api/chat/slots` payload in `_finish_crew_setup()` (or wherever ghostship creates the initial crew slot). Default value `"kirocrew"` pending OQ-1 confirmation.
+**Decision:** Add `"agent": "kirocrew"` to the `POST /api/chat/slots` payload in `_finish_crew_setup()`. `"kirocrew"` is the built-in default template and satisfies the 0.4.0 requirement. It acts as a bootstrapping placeholder only — `_copy_agents()` runs pre-gateway and overwrites the defaults with ghostship's custom agent JSONs before any dispatch ever occurs.
 
-**Rationale:** Minimal change — one field addition to the existing creation call. No other crew creation logic needs to change.
+**Rationale:** Minimal change — one field addition to the existing creation call. The `"kirocrew"` template is never called in practice after the custom agents are in place.
 
 ### D2: Keep `_copy_agents()` as filesystem writes, move timing before gateway start
 
@@ -54,11 +54,11 @@ See proposal.md — Why for the full motivation. KiroCrew 0.4.0 introduces four 
 
 **Rationale:** Ghostship's MCP tools operate on the transport's shared registry; there is no per-connection state. Pooling is safe and reduces overhead.
 
-### D6: Replace `_ensure_crew_running` stop/start with reload-in-place (pending OQ-2)
+### D6: Replace `_ensure_crew_running` stop/start with reload-in-place
 
-**Decision:** Once OQ-2 is resolved, replace the stop/start cycle in `_ensure_crew_running` with a call to the reload-in-place endpoint when the container is already running and only a config refresh is needed. Keep stop/start for cold-boot (container stopped or dead).
+**Decision:** Replace the stop/start cycle in `_ensure_crew_running` with a call to `POST /api/chat/slots/{slot}/reload` when the container is already running and only a config refresh is needed. Keep stop/start for cold-boot (container stopped or dead). The endpoint returns 409 if a turn is in-flight — handle gracefully by falling back to stop/start in that case.
 
-**Rationale:** Reload-in-place preserves slot identity and avoids the cold-start cost (~0.5s at 0.4.0 vs ~1.3s at 0.3.x). Worth doing while the surrounding code is being touched.
+**Rationale:** Reload-in-place preserves slot identity and avoids the cold-start cost. The endpoint is confirmed at `POST /api/chat/slots/{slot}/reload` (no request body required).
 
 ## Migration Plan
 
