@@ -140,18 +140,18 @@ See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. Th
 
 Registered as `ghostship`:
 
-| Tool | Description |
-|:-----|:------------|
-| `crews` | List all registered crews and their status. |
-| `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
-| `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
-| `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
-| `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
-| `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
-| `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
-| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
-| `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
-| `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
+|  | Tool | Description |
+|:-|:-----|:------------|
+| <img src="docs/images/tool-crews.png" width="64"> | `crews` | List all registered crews and their status. |
+| <img src="docs/images/tool-launch.png" width="64"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
+| <img src="docs/images/tool-supply.png" width="64"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
+| <img src="docs/images/tool-evac.png" width="64"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
+| <img src="docs/images/tool-nuke.png" width="64"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
+| <img src="docs/images/tool-captain.png" width="64"> | `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
+| <img src="docs/images/tool-schedule.png" width="64"> | `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
+| <img src="docs/images/tool-dispatch.png" width="64"> | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
+| <img src="docs/images/tool-steer.png" width="64"> | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
+| <img src="docs/images/tool-pickup.png" width="64"> | `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
 ## Further reading
 
