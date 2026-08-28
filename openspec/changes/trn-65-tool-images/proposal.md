@@ -4,7 +4,7 @@ The MCP Tools table in README.md lists 10 tools as text-only rows while the Agen
 
 ## What Changes
 
-- Generate 10 ghost-cartoon images (one per MCP tool) via warp-image (ComfyUI on gpc), stored as `docs/images/tool-{name}.png`
+- Generate 10 ghost-cartoon images (one per MCP tool), stored as `docs/images/tool-{name}.png`
 - Add an image column to the MCP Tools table in `README.md`, matching the 64 px inline style used in the Agents table
 - All images share the same ghost base silhouette as the existing agent images; props and background vary per tool to make each immediately recognisable even at 64 px thumbnail size
 

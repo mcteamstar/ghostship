@@ -13,7 +13,7 @@ Colleague demos revealed that ghostship's value and usage pattern aren't immedia
   - **SDD workflow** — Spectre → Ghost → Banshee → Reaper cycle with Captain/Raven orchestration (for `docs/architecture.md`)
   - **Agent roles overview** — the six personas in one visual showing what each owns in the workflow (for `docs/agents.md`)
 - Integrate all images into README and relevant `docs/` pages with appropriate placement and captions
-- All images generated via warp-image (ComfyUI), stored in `docs/images/`
+- All images generated stored in `docs/images/`
 
 **Tool descriptions (`transport/server.py`):**
 - Revise the docstrings for `launch`, `supply`, `evac`, `dispatch`, `pickup`, `steer`, `nuke`, and `captain` to reinforce the intended workflow order (launch → supply → dispatch → pickup → steer → nuke) and make relationships between tools explicit

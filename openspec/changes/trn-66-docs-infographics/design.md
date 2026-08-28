@@ -2,7 +2,7 @@
 
 See `proposal.md - Why` for motivation. This change touches three distinct surfaces:
 
-1. **Static images** (`docs/images/`) — generated via warp-image (ComfyUI), integrated into `README.md`, `docs/architecture.md`, and `docs/agents.md`
+1. **Static images** (`docs/images/`) — generated via image generation, integrated into `README.md`, `docs/architecture.md`, and `docs/agents.md`
 2. **Tool descriptions** (`transport/server.py`) — docstrings on the 8 core MCP tools + the server-level description
 3. **Plugin skill files** (`.claude-plugin/skills/`) — `ghostship-admin/SKILL.md` and `ghostship-command/SKILL.md`
 
@@ -15,7 +15,7 @@ The `.claude-plugin/skills/` directory is explicitly not copied into crews — i
 ## Goals / Non-Goals
 
 **Goals:**
-- Five ComfyUI-generated infographics that communicate distinct concepts at a glance (no one image tries to say everything)
+- Five generated infographics that communicate distinct concepts at a glance (no one image tries to say everything)
 - Tool docstrings that make workflow order and tool relationships explicit for an agent reading them cold
 - Skill files that let an agent follow the correct setup or operational path without consulting `docs/`
 - Delta specs that record the new spec-level requirements added by the tool description and skill contract changes
@@ -38,13 +38,13 @@ The `.claude-plugin/skills/` directory is explicitly not copied into crews — i
 
 **Alternative considered:** A two-panel or split-image approach for the README (one horizontal banner). Rejected: too wide for most GitHub README widths at a readable size.
 
-### D2 — warp-image (ComfyUI) for generation, not code-drawn diagrams
+### D2 — Image generation for visual consistency, not code-drawn diagrams
 
-**Decision:** Use the warp-image skill for all five images.
+**Decision:** Use image generation for all five images.
 
-**Rationale:** The existing agent portraits set a dark/tech/military aesthetic that code-drawn tools (Mermaid, Excalidraw, Graphviz) cannot match. Visual consistency with the established identity is the goal; the infographics are meant to feel like they belong with the portraits, not like a different product. ComfyUI gives direct control over style.
+**Rationale:** The existing agent portraits set a dark/tech/military aesthetic that code-drawn tools (Mermaid, Excalidraw, Graphviz) cannot match. Visual consistency with the established identity is the goal; the infographics are meant to feel like they belong with the portraits, not like a different product. Image generation gives direct control over style.
 
-**Alternative considered:** Mermaid or Excalidraw for the flow/hierarchy diagrams. Rejected for the README images (wrong aesthetic) but worth noting as a fallback if warp-image is unavailable — the architecture and usage flow diagrams are the highest-priority README additions and a clean code-drawn alternative is acceptable there if style consistency cannot be achieved.
+**Alternative considered:** Mermaid or Excalidraw for the flow/hierarchy diagrams. Rejected for the README images (wrong aesthetic) but worth noting as a fallback if image generation is unavailable — the architecture and usage flow diagrams are the highest-priority README additions and a clean code-drawn alternative is acceptable there if style consistency cannot be achieved.
 
 ### D3 — Image filenames and storage
 
@@ -93,7 +93,7 @@ The `.claude-plugin/skills/` directory is explicitly not copied into crews — i
 ![Agent roles: the six personas and what each owns in the OpenSpec workflow](docs/images/agent-roles-overview.png)
 ```
 
-### D6 — ComfyUI prompt strategy
+### D6 — Image generation prompt strategy
 
 The agent portrait images establish the reference aesthetic: dark backgrounds (near-black), cool blue/teal accent lighting, high-contrast, military/tech feeling, moody atmosphere. Each infographic must feel like it belongs in the same product.
 
@@ -152,7 +152,7 @@ Per-image subjects:
 
 ## Risks / Trade-offs
 
-**[Risk] warp-image output requires iteration to hit the right aesthetic** → The first generation run may not match the agent portrait style closely enough. Mitigation: use the existing portraits as style references in the prompt (provide their filenames for the tool to reference), budget 2–3 generation attempts per image before accepting the best result.
+**[Risk] Image generation output requires iteration to hit the right aesthetic** → The first generation run may not match the agent portrait style closely enough. Mitigation: use the existing portraits as style references in the prompt (provide their filenames for the tool to reference), budget 2–3 generation attempts per image before accepting the best result.
 
 **[Risk] Image sizes are large (existing portraits are 120–145 KB each)** → Five new images add ~600–700 KB to the repo. Mitigation: this is acceptable for a docs-only repo like ghostship. If repo size becomes a concern, they can be moved to Git LFS later without changing any markdown references.
 

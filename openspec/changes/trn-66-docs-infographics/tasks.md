@@ -5,11 +5,11 @@
 
 ## 2. Visual Infographics — Generate Images
 
-- [ ] 2.1 Read `docs/images/agent-ghost.png` and `docs/images/agent-spectre.png` as style references, then generate `docs/images/arch-system-placement.png` via warp-image — layered horizontal flow diagram showing harness (Admiral) → ghostship MCP transport → KiroCrew crew containers → agents, dark navy/black background with cyan accent lighting (see design.md D6 for full prompt guidance)
-- [ ] 2.2 Generate `docs/images/usage-flow.png` via warp-image — six-step circular or linear loop: install → connect → launch → dispatch → pickup → nuke, each step as a glowing node with a brief label (same dark tech aesthetic)
-- [ ] 2.3 Generate `docs/images/fleet-crew-hierarchy.png` via warp-image — vertical tree diagram: Admiral at top, fleet spanning multiple crew nodes below, each crew showing Captain → worker agent personas
-- [ ] 2.4 Generate `docs/images/sdd-workflow.png` via warp-image — circular SDD pipeline: Spectre (plan) → Ghost (implement) → Banshee (review) → Reaper (close), with Raven and Captain shown as the outer orchestration ring
-- [ ] 2.5 Generate `docs/images/agent-roles-overview.png` via warp-image — six-panel grid, one cell per persona, each showing persona name, silhouette-style avatar, and a two-word role label
+- [ ] 2.1 Read `docs/images/agent-ghost.png` and `docs/images/agent-spectre.png` as style references, then generate `docs/images/arch-system-placement.png` — layered horizontal flow diagram showing harness (Admiral) → ghostship MCP transport → KiroCrew crew containers → agents, dark navy/black background with cyan accent lighting (see design.md D6 for full prompt guidance)
+- [ ] 2.2 Generate `docs/images/usage-flow.png` — six-step circular or linear loop: install → connect → launch → dispatch → pickup → nuke, each step as a glowing node with a brief label (same dark tech aesthetic)
+- [ ] 2.3 Generate `docs/images/fleet-crew-hierarchy.png` — vertical tree diagram: Admiral at top, fleet spanning multiple crew nodes below, each crew showing Captain → worker agent personas
+- [ ] 2.4 Generate `docs/images/sdd-workflow.png` — circular SDD pipeline: Spectre (plan) → Ghost (implement) → Banshee (review) → Reaper (close), with Raven and Captain shown as the outer orchestration ring
+- [ ] 2.5 Generate `docs/images/agent-roles-overview.png` — six-panel grid, one cell per persona, each showing persona name, silhouette-style avatar, and a two-word role label
 
 ## 3. Visual Infographics — Insert into Docs
 
