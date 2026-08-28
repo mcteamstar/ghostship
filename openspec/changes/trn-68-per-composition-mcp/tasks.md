@@ -1,10 +1,10 @@
 ## 1. install.sh — add academy/mcp/ to copy step and compose.yml
 
 - [ ] 1.1 In `install.sh`, add `academy/mcp` to the rsync copy step (alongside `agents`, `skills`, etc.) so `${DATA_DIR}/academy/mcp/` is populated at install time; add the corresponding `cp -r` fallback line
-- [ ] 1.2 Create `academy/mcp/` in the repo (empty directory with a `.gitkeep`)
-- [ ] 1.3 In the `compose.yml` heredoc in `install.sh`, add `- ${DATA_DIR}/academy/mcp:/mcp:ro` as a new volume entry alongside the existing academy mounts
-- [ ] 1.4 Add a log line confirming the mcp copy (`echo "✓ academy/mcp/ copied to ${DATA_DIR}"`)
-
+- [ ] 1.2 Create `academy/mcp/` in the repo with a `README.md` documenting the catalogue convention (file naming, JSON format, `${VAR}` substitution, how to wire a server into a manifest)
+- [ ] 1.3 Add `academy/mcp/playwright.json` to the catalogue — stdio entry using `npx @playwright/mcp@latest`; not declared in any manifest by default
+- [ ] 1.4 In the `compose.yml` heredoc in `install.sh`, add `- ${DATA_DIR}/academy/mcp:/mcp:ro` as a new volume entry alongside the existing academy mounts
+- [ ] 1.5 Add a log line confirming the mcp copy (`echo "✓ academy/mcp/ copied to ${DATA_DIR}"`)
 ## 2. transport/server.py — write mcp.json from composition manifest
 
 - [ ] 2.1 In `_copy_agents()`, read the composition manifest's `mcpServers` array (if present); if absent or empty, skip `mcp.json` creation
@@ -27,7 +27,7 @@
 ## 4. Documentation
 
 - [ ] 4.1 In `docs/configuration.md`, add a section documenting the MCP server catalogue format, the `manifest.json → mcpServers` array, and the `${VAR}` substitution pattern for secrets
-- [ ] 4.2 Add an example `academy/mcp/example-server.json` (commented-out template) or document the format in `academy/mcp/.gitkeep` via a README alongside it
+- [ ] 4.2 Update `docs/configuration.md` with the full `playwright.json` entry as a worked example showing the stdio format alongside the HTTP format
 
 ## 5. Integration validation (requires live podman host)
 

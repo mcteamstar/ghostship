@@ -62,7 +62,7 @@ Or with auth headers:
 
 ### D3: `${VAR}` substitution at setup time
 
-**Decision:** Any `${VAR}` reference in a catalogue entry's `url` or `headers` values is substituted from the transport container's environment at the point `_copy_agents()` writes the crew's `mcp.json`.
+**Decision:** Any `${VAR}` reference in any string value in a catalogue entry is substituted from the transport container's environment at the point `_copy_agents()` writes the crew's `mcp.json`.
 
 **Rationale:** Secrets must never be written into committed files. The transport already has access to secrets via environment variables (e.g. `GA_API_KEY` pattern). This is the natural injection point.
 
