@@ -1736,11 +1736,18 @@ def _reconcile_registry() -> None:
             try:
                 podman.container_start(container)
                 crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+                # D-07: Apply config overrides before the gateway reads them,
+                # then restart so the gateway loads the patched values.
+                # Must mirror the _ensure_crew_running pattern:
+                #   patch → stop → start → wait
+                # Writing config after _wait_gateway means the gateway has
+                # already loaded config.local.json and will not see the patch
+                # until the next restart.
+                _patch_crew_config(podman, container)
+                podman.container_stop(container)
+                podman.container_start(container)
                 if _wait_gateway(crew_url, timeout=30):
                     new_cookie = _mint_cookie(podman, container, crew_url)
-                    # D-07: Apply config overrides on every reconcile restart,
-                    # symmetric with the _ensure_crew_running restart path.
-                    _patch_crew_config(podman, container)
                     updates[cid] = {
                         "status": "running",
                         "last_used": time.time(),

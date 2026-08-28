@@ -27,6 +27,10 @@
       → Every value is a Python-formatted numeric literal or a `json.dumps(...)` string; no `$VAR`. Enforced by `test_config_script_has_no_unexpanded_shell_vars`.
 - [x] 3.5 Document `GA_CREW_AGENT` in `docs/configuration.md` alongside the other `GA_*` env vars (also added to `install.sh` defaults + compose env map so the env-sync guard test passes)
 
+## 3b. Banshee finding: _reconcile_registry config-patch ordering bug (fixed)
+
+- [x] Banshee review found that `_reconcile_registry` applied `_patch_crew_config` **after** `_wait_gateway`, meaning the gateway had already loaded `config.local.json` before the patch ran — the `agent` field (and all 0.4.0-required numeric fields) were written but never loaded on the reconcile restart path. Fixed to mirror the `_ensure_crew_running` pattern: patch → stop → start → wait. Regression test added (`test_reconcile_patch_before_gateway_wait_ordering`). Unit suite: 348 green (+1).
+
 ## 4. transport/server.py — remove spawn_min_memory_gb workaround
 
 - [x] 4.1 In `_ensure_crew_running`, remove the triple-restart workaround block (the extra `_patch_crew_config` / `container_stop` / `container_start` sequence and its comment block) — replace with a single `_patch_crew_config` + one restart cycle matching the pattern used in `_finish_crew_setup`

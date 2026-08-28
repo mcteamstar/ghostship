@@ -4390,6 +4390,66 @@ class ReconcileRegistryTests(unittest.TestCase):
         self.assertEqual(posted_body.get("name"), "daily-report")
         self.assertEqual(posted_body.get("every"), 86400)
 
+    def test_reconcile_patch_before_gateway_wait_ordering(self) -> None:
+        """_reconcile_registry applies _patch_crew_config before _wait_gateway.
+
+        KiroCrew 0.4.0 requires config.local.json (including the required
+        'agent' field) to be present before the gateway starts reading it.
+        Writing the patch after _wait_gateway means the gateway has already
+        loaded config.local.json and will ignore the patch until the next
+        restart — a bug introduced if the D-07 comment is moved carelessly.
+
+        This test records the call order: patch → stop → start → wait.
+        """
+        podman = ReconcilePodman(
+            containers_exist={"gs-order": True},
+            containers_running={"gs-order": False},
+            all_containers=[],
+        )
+        crews = {"order-crew": {"container": "gs-order", "status": "stopped"}}
+        call_order: list[str] = []
+
+        def patched_patch(p, container):
+            call_order.append("patch")
+
+        def wait_gateway(url, timeout=30):
+            call_order.append("wait")
+            return True
+
+        def mint_cookie(p, container, url):
+            call_order.append("mint")
+            return "fresh-cookie"
+
+        with (
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_patch_crew_config", side_effect=patched_patch),
+            patch.object(server, "_wait_gateway", side_effect=wait_gateway),
+            patch.object(server, "_mint_cookie", side_effect=mint_cookie),
+        ):
+            server._reconcile_registry()
+
+        # patch must happen before wait (gateway must not have loaded config yet)
+        self.assertIn("patch", call_order, "patch was never called")
+        self.assertIn("wait", call_order, "_wait_gateway was never called")
+        patch_idx = call_order.index("patch")
+        wait_idx = call_order.index("wait")
+        self.assertLess(
+            patch_idx, wait_idx,
+            f"_patch_crew_config (idx {patch_idx}) must be called BEFORE "
+            f"_wait_gateway (idx {wait_idx}). Order was: {call_order}",
+        )
+        # The container must be stopped and restarted after patching so the
+        # gateway loads the new config.local.json on its next start.
+        self.assertIn("gs-order", podman.stops,
+                      "container must be stopped after patch so config is reloaded")
+        # Two starts: provisional start + post-patch restart
+        self.assertEqual(
+            podman.starts.count("gs-order"), 2,
+            f"expected 2 starts (provisional + post-patch); got {podman.starts}",
+        )
+
 
 # ── Task 4/5: _idle_monitor tests ────────────────────────────────────────────
 
