@@ -73,6 +73,14 @@ The transport container currently receives `academy/` and `crews/` via six bind-
 1. Run `./install.sh` — the copy step runs, `compose.yml` is regenerated with the new mount paths, and the transport container is restarted. No manual migration required.
 2. The old bind-mount entries (repo-path-based) disappear from `compose.yml` after regeneration. No rollback step — the previous `compose.yml` can be restored by reverting `install.sh` and re-running.
 
+## KiroCrew 0.4.0 Currency Check
+
+Reviewed against the TRN-63 upgrade (0.4.0, merged 2026-08-28). No changes required.
+
+**Write-protection of agent files in crew containers:** KiroCrew 0.4.0 write-protects the agents directory inside running crew containers at runtime. This is entirely separate from the `/agents` bind-mount into the *transport* container — that mount is the transport's copy of `academy/agents/`, used to configure crews at setup, and is not a crew-internal path. TRN-64's copy-on-install approach is unaffected.
+
+**`crews/` mount scope:** The transport reads only `registry.json` and `{dir}/manifest.json` from `/crews` at runtime (confirmed in `server.py`). The Containerfiles and build scripts in `crews/_base/` and `crews/spec-ops/` are copied into `DATA_DIR/crews/` but are never read by the running transport — they are only used by `install.sh` during image builds. This is correct and intentional; the full directory copy is simpler than a selective copy and causes no harm.
+
 ## Open Questions
 
 None — the approach is fully determined by the existing `DATA_DIR` structure and `compose.yml` generation pattern.
