@@ -3720,7 +3720,7 @@ class TestPolicyInjection(unittest.TestCase):
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(server, "_crew_api", return_value=[]),
-            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memFree": 4 * 1024**3}})),
+            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
         ):
             result = server.crews()
 
@@ -3746,7 +3746,7 @@ class TestPolicyInjection(unittest.TestCase):
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(server, "_crew_api", return_value=[]),
-            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memFree": 4 * 1024**3}})),
+            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
         ):
             result = server.crews()
 
@@ -3763,7 +3763,7 @@ class FakePodmanClient:
     """Test helper with configurable system_info() return values."""
 
     def __init__(self, mem_free_bytes_sequence: list[int] | None = None) -> None:
-        """mem_free_bytes_sequence: list of memFree values to return on successive calls."""
+        """mem_free_bytes_sequence: list of memAvailable values to return on successive calls."""
         self._mem_sequence = mem_free_bytes_sequence or [4 * 1024**3]
         self._call_index = 0
         self.system_info_calls = 0
@@ -3772,7 +3772,7 @@ class FakePodmanClient:
         self.system_info_calls += 1
         idx = min(self._call_index, len(self._mem_sequence) - 1)
         self._call_index += 1
-        return {"host": {"memFree": self._mem_sequence[idx]}}
+        return {"host": {"memAvailable": self._mem_sequence[idx]}}
 
     def container_start(self, name: str) -> None:
         pass
