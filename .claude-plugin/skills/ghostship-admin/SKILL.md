@@ -179,12 +179,12 @@ across every harness:
 - **Claude Code** reads skills from `~/.claude/skills/<name>/SKILL.md`
   (all your projects) or `.claude/skills/<name>/SKILL.md` (one project).
   Symlinks are followed natively, so link rather than copy to avoid drift:
-  `ln -s /path/to/ghostship/plugin/skills/ghostship-command ~/.claude/skills/ghostship-command`
+  `ln -s /path/to/ghostship/.claude-plugin/skills/ghostship-command ~/.claude/skills/ghostship-command`
   (and the same for `ghostship-admin`).
 - **An Agent-Plugins-compatible client** (Kiro Powers, others as they
-  land) can instead be pointed at the whole `plugin/` directory as one
-  package — `plugin.json` + `mcp.json` + `skills/` are discovered together
-  from there. See `plugin/PACKAGING.md`.
+  land) can instead be pointed at the whole `.claude-plugin/` directory as
+  one package — `plugin.json` + `mcp.json` + `skills/` are discovered
+  together from there. See `.claude-plugin/PACKAGING.md`.
 - Anything else: check that harness's own docs for where it reads
   `SKILL.md` files from. Ghostship doesn't install this for you.
 

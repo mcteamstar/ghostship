@@ -1,1 +1,8 @@
-mcp.json
+{
+  "mcpServers": {
+    "ghostship": {
+      "type": "streamable-http",
+      "url": "http://localhost:64057/mcp"
+    }
+  }
+}

@@ -13,5 +13,5 @@ to send inter-agent mail (`ghostship-mail`) or drive the OpenSpec lifecycle
 > **Not what you want if you're teaching an *external* agent how to drive
 > ghostship itself over MCP** (launch/dispatch/pickup/steer/evac/nuke, the
 > Admiral's side). That skill lives at
-> [`plugin/skills/`](../../plugin/skills/EXTERNAL_SKILLS.md) instead — it's
+> [`.claude-plugin/skills/`](../../.claude-plugin/skills/EXTERNAL_SKILLS.md) instead — it's
 > never copied into a crew, it's for whoever is holding the MCP connection.

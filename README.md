@@ -8,6 +8,13 @@ Runs locally and remotely on macOS or Linux using Podman.
 
 [![tests](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml/badge.svg)](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml)
 
+**Quick install (Claude Code plugin):**
+```bash
+claude plugin marketplace add mcteamstar/ghostship
+claude plugin install ghostship@ghostship
+```
+Use the skill `/ghostship-admin` for guided local setup. See [Install](#install) below for full steps.
+
 ## Why Ghostship?
 
 KiroCrew is designed for running teams of agents over long horizon tasks, but running KiroCrew on your desktop limits you to one instance, directly on your filesystem, with limited isolation between crewmates.
@@ -87,7 +94,18 @@ kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
   --headers '{"Authorization": "Bearer ${GHOSTSHIP_API_KEY}"}' --scope global
 ```
 
-**Claude Code** — add to `~/.claude.json`'s `mcpServers`:
+**Claude Code (plugin):** see the quick install command at the top of this
+README. It installs the `ghostship-admin` and `ghostship-command` skills
+plus an unauthenticated connection to `http://localhost:64057/mcp`. This
+only covers that local, unauthenticated default — for a keyed or remote
+deployment, skip the plugin and add the server manually instead (below).
+Don't do both: a manual `mcpServers` entry and the plugin both connecting to
+`ghostship` register as two separate MCP servers, not one. See
+[`.claude-plugin/PACKAGING.md`](.claude-plugin/PACKAGING.md) for how the
+packaging works.
+
+**Claude Code (manual, keyed, or remote)** — add to `~/.claude.json`'s
+`mcpServers`:
 ```json
 "ghostship": {
   "type": "http",
