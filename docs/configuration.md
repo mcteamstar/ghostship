@@ -45,6 +45,7 @@ process sees and what each default means:
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
+| `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.4.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Maximum seconds the transport holds an HTTP connection open during a `pickup(timeout_secs=N)` long-poll. When this cap fires before the caller's `timeout_secs` elapses, `pickup` returns a normal JSON response with `"reason": "timeout"` so the caller can re-poll — the MCP transport error path is never used for a clean timeout expiry. Set lower if your MCP client has a short read timeout; set higher if you have confirmed your client tolerates longer-lived connections |
 
 > **Internal constant — not user-settable:**
@@ -187,7 +188,7 @@ risks not redesigned by API-key authentication.
 Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew:0.3.0
+FROM ghcr.io/kirodotdev/kirocrew:0.4.0
 USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     nodejs npm \   # already included

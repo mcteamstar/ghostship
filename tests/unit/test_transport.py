@@ -3934,6 +3934,60 @@ class TestPatchCrewConfig(unittest.TestCase):
         finally:
             server.GA_SUBAGENT_MAX_TURNS = original
 
+    def test_agent_field_default_kiro(self) -> None:
+        """GA_CREW_AGENT unset → config.local.json gets agent: "kiro" (0.4.0 required field)."""
+        original = server.GA_CREW_AGENT
+        try:
+            server.GA_CREW_AGENT = "kiro"
+            exec_calls: list[tuple[str, list[str]]] = []
+
+            class CapturePodman:
+                def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                    exec_calls.append((name, cmd))
+                    return "patched config.local.json"
+
+            server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+            self.assertEqual(len(exec_calls), 1)
+            script = exec_calls[0][1][-1]
+            self.assertIn("a['agent'] = \"kiro\"", script)
+        finally:
+            server.GA_CREW_AGENT = original
+
+    def test_agent_field_from_env(self) -> None:
+        """GA_CREW_AGENT=custom-agent → agent field carries the override value."""
+        original = server.GA_CREW_AGENT
+        try:
+            server.GA_CREW_AGENT = "custom-agent"
+            exec_calls: list[tuple[str, list[str]]] = []
+
+            class CapturePodman:
+                def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                    exec_calls.append((name, cmd))
+                    return "patched config.local.json"
+
+            server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+            self.assertEqual(len(exec_calls), 1)
+            script = exec_calls[0][1][-1]
+            self.assertIn("a['agent'] = \"custom-agent\"", script)
+        finally:
+            server.GA_CREW_AGENT = original
+
+    def test_config_script_has_no_unexpanded_shell_vars(self) -> None:
+        """KiroCrew 0.4.0 rejects literal $VAR in config values — the exec script
+        must contain no unexpanded shell variable reference in any written value."""
+        import re
+        exec_calls: list[tuple[str, list[str]]] = []
+
+        class CapturePodman:
+            def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                exec_calls.append((name, cmd))
+                return "patched config.local.json"
+
+        server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+        script = exec_calls[0][1][-1]
+        # No literal $NAME or ${NAME} unexpanded shell/variable references.
+        self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", script))
+
     def test_kc_model_default_set_writes_default_model(self) -> None:
         """KC_MODEL_DEFAULT set → default_model written to config.local.json."""
         original = server.KC_MODEL_DEFAULT
