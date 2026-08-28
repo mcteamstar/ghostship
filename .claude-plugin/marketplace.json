@@ -1,0 +1,15 @@
+{
+  "name": "ghostship",
+  "owner": {
+    "name": "mcteamstar",
+    "url": "https://github.com/mcteamstar"
+  },
+  "plugins": [
+    {
+      "name": "ghostship",
+      "source": "./.claude-plugin",
+      "description": "Command Ghostship fleets over MCP from an agent client.",
+      "homepage": "https://github.com/mcteamstar/ghostship"
+    }
+  ]
+}

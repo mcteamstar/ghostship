@@ -1,4 +1,4 @@
-![Ghostship](docs/ghostship.png)
+![Ghostship](docs/images/ghostship.png)
 
 *Launch Ghostships from the Ghost Academy and command the crew.*
 
@@ -8,6 +8,13 @@ Runs locally and remotely on macOS or Linux using Podman.
 
 [![tests](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml/badge.svg)](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml)
 
+**Quick install (Claude Code plugin):**
+```bash
+claude plugin marketplace add mcteamstar/ghostship
+claude plugin install ghostship@ghostship
+```
+Use the skill `/ghostship-admin` for guided local setup. See [Install](#install) below for full steps.
+
 ## Why Ghostship?
 
 KiroCrew is designed for running teams of agents over long horizon tasks, but running KiroCrew on your desktop limits you to one instance, directly on your filesystem, with limited isolation between crewmates.
@@ -16,7 +23,7 @@ KiroCrew is designed for running teams of agents over long horizon tasks, but ru
 
 As the **Admiral** you can command your crews over MCP from any agent. Delegate orders to the crew's **Captain** or be the captain yourself. All the ships in your *fleet* run side by side without colliding, and can be tailored to your tactical needs.
 
-The built-in `spec-ops` loadout is designed for **Spectre-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is fast and cost-efficient at executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable and overridable (see [docs/configuration.md](docs/configuration.md)).
+The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Kiro is fast and cost-efficient at executing well-defined change specs, and is versatile enough to handle the whole SDD cycle when needed. Agents currently default to `gpt-5.6-luna` but this, amongst many other things, is configurable and overridable (see [docs/configuration.md](docs/configuration.md)).
 
 ### Why Not...
 
@@ -69,6 +76,14 @@ Full install options and environment variables: [docs/configuration.md](docs/con
 
 Before your first `launch`, complete the device auth flow — open the URL returned by `POST /login` or by calling `launch` without auth. See [docs/auth.md](docs/auth.md) for the walkthrough.
 
+**Kiro (via Power):**
+
+Install the ghostship power from the Powers panel → Add Custom Power → Import from GitHub:
+```
+https://github.com/mcteamstar/ghostship
+```
+The `ghostship-admin` skill walks you through the rest — Podman, `./install.sh`, auth, and connecting. See `.claude-plugin/PACKAGING.md` for keyed and remote installs.
+
 **kiro-cli:**
 ```bash
 # Without API key:
@@ -79,7 +94,18 @@ kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
   --headers '{"Authorization": "Bearer ${GHOSTSHIP_API_KEY}"}' --scope global
 ```
 
-**Claude Code** — add to `~/.claude.json`'s `mcpServers`:
+**Claude Code (plugin):** see the quick install command at the top of this
+README. It installs the `ghostship-admin` and `ghostship-command` skills
+plus an unauthenticated connection to `http://localhost:64057/mcp`. This
+only covers that local, unauthenticated default — for a keyed or remote
+deployment, skip the plugin and add the server manually instead (below).
+Don't do both: a manual `mcpServers` entry and the plugin both connecting to
+`ghostship` register as two separate MCP servers, not one. See
+[`.claude-plugin/PACKAGING.md`](.claude-plugin/PACKAGING.md) for how the
+packaging works.
+
+**Claude Code (manual, keyed, or remote)** — add to `~/.claude.json`'s
+`mcpServers`:
 ```json
 "ghostship": {
   "type": "http",
@@ -99,14 +125,14 @@ Every ghostship has access to the same crew curriculum: agent personas, skills, 
 
 There are six basic agent personas. The five worker personas split up the [OpenSpec](https://github.com/Fission-AI/OpenSpec) spec-driven workflow.
 
-| Agent | Role |
-|:------|:-----|
-| **Spectre** | Planning operative — investigates, scaffolds proposals, revises plans as understanding evolves |
-| **Ghost** | General-purpose operative — executes one well-scoped task or brief end to end |
-| **Banshee** | Independent review/fix operative — a second pair of eyes; finds bugs, runs tests, traces to root |
-| **Reaper** | Cleanup operative — closes out finished changes |
-| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code |
-| **Raven** | Watcher and messenger for the Captain's recurring loop — skims mailboxes, assesses the crew, dispatches bounded worker steps |
+| Agent | Name | Role |
+|:-:|:------|:-----|
+| <img src="docs/images/agent-spectre.png" width="64"> | **Spectre** | Planning operative — drives the front half of a change: explores problems, scaffolds proposals, revises plans as understanding evolves |
+| <img src="docs/images/agent-ghost.png" width="64"> | **Ghost** | General-purpose operative — executes one well-scoped task end to end; the only agent with all six OpenSpec operations, so a task can be driven from explore to archive without a hand-off |
+| <img src="docs/images/agent-banshee.png" width="64"> | **Banshee** | Independent review/fix operative — a second pair of eyes across the whole; finds bugs, runs tests, traces to root, and fixes what it finds before it ships |
+| <img src="docs/images/agent-reaper.png" width="64"> | **Reaper** | Cleanup operative — syncs delta specs to main specs and archives completed changes |
+| <img src="docs/images/agent-wraith.png" width="64"> | **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code and OpenSpec artifacts; may read OpenSpec context |
+| <img src="docs/images/agent-raven.png" width="64"> | **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, carries messages between personas and the Admiral; dispatches bounded next steps without implementing work |
 
 See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. The **Captain** tool uses Ravens to handle messaging and orders to the other agents. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
 

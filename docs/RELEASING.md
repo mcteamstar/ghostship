@@ -20,13 +20,19 @@ Consumers:
 | `GET /version`             | Returns `{"transport": "<semver>"}` (unauthenticated)            |
 | `transport://version`      | MCP resource with transport + per-crew image versions            |
 | `crews()` tool             | Includes `crew_image_version` per entry from registry            |
+| `.claude-plugin/plugin.json` | Agent Plugins manifest `version` field — update by hand         |
+| `.claude-plugin/.claude-plugin/plugin.json` | Claude Code plugin manifest `version` field — update by hand |
 
 ## Release Process
 
 1. **Bump the version**: edit `VERSION` to the new semver string (no leading `v`).
-2. **Commit**: `git commit -am "release: v<semver>"`
-3. **Tag**: `git tag v<semver>` on the release commit on `main`.
-4. **Build**: `install.sh` automatically passes the version to `podman build`.
+2. **Bump the plugin manifests**: set `version` to the same string in both
+   `.claude-plugin/plugin.json` and `.claude-plugin/.claude-plugin/plugin.json`.
+   The `release-gate` workflow fails the PR into `main` if either drifts from
+   `VERSION`.
+3. **Commit**: `git commit -am "release: v<semver>"`
+4. **Tag**: `git tag v<semver>` on the release commit on `main`.
+5. **Build**: `install.sh` automatically passes the version to `podman build`.
 
 ## Git Tag Convention
 

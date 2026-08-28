@@ -341,6 +341,17 @@ ghostship/
 │   │   └── STANDING_ORDERS.md
 │   ├── orders/            # built-in Captain standing-order templates (e.g. sdd)
 │   └── policies/          # governance policy templates (on-disk repo path; bind-mounted as /policies/<composition>.json inside the container at launch)
+├── .claude-plugin/        # dual-format plugin package (Agent Plugins v1.0.0 + Claude Code) — for whoever holds the MCP connection, never copied into a crew
+│   ├── plugin.json        # Agent Plugins manifest (name, version, description, ...)
+│   ├── .claude-plugin/plugin.json  # Claude Code manifest (nested per its own convention)
+│   ├── mcp.json            # Agent Plugins MCP entry — loopback default only, no secrets (spec-forbidden)
+│   ├── .mcp.json           # Claude Code MCP entry — same server, no $schema
+│   ├── marketplace.json    # Claude Code marketplace catalog entry
+│   ├── PACKAGING.md        # scope/caveats of the manifests above
+│   └── skills/
+│       ├── EXTERNAL_SKILLS.md # what this directory is, vs. academy/skills/
+│       ├── ghostship-admin/   # install, connect a client, upgrade, tear down — no MCP connection assumed
+│       └── ghostship-command/ # drives an already-connected fleet: launch, dispatch, pickup/steer, Captain, nuke
 ├── config/                # example config files (ghostship.conf.example)
 ├── crews/                 # crew type definitions — each composes a crew from academy/
 │   ├── registry.json      # registered crew types

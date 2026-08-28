@@ -9,6 +9,8 @@ jobs:
     name: release-gate
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Check source branch is a release branch
         run: |
           branch="${{ github.head_ref }}"
@@ -19,3 +21,18 @@ jobs:
             echo "  Only release/* branches may be merged into main."
             exit 1
           fi
+
+      - name: Check plugin manifest versions match VERSION
+        run: |
+          version="$(cat VERSION)"
+          fail=0
+          for manifest in .claude-plugin/plugin.json .claude-plugin/.claude-plugin/plugin.json; do
+            manifest_version="$(jq -r '.version' "$manifest")"
+            if [[ "$manifest_version" != "$version" ]]; then
+              echo "✗ $manifest has version '$manifest_version', VERSION file has '$version'."
+              fail=1
+            else
+              echo "✓ $manifest matches VERSION ($version)."
+            fi
+          done
+          exit "$fail"

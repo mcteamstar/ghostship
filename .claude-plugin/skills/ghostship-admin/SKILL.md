@@ -1,0 +1,240 @@
+---
+name: ghostship-admin
+description: Install, configure, connect a client to, upgrade, or tear down a ghostship transport — Podman prerequisites, `./install.sh`/`./start.sh`/`./uninstall.sh`, the transport's own API-key auth, and rebuilding images. Use when there's no MCP connection to `ghostship` yet, or when the task is about the transport host itself (bringing it up, connecting a new client, upgrading, tearing it down) rather than driving an already-running fleet — for that, use `ghostship-command` instead.
+metadata:
+  author: ghostship
+  version: "1.0"
+---
+
+# Ghostship Admin
+
+This skill is for standing a ghostship transport up, connecting a client to
+it, keeping it running, and taking it down — the host-level, shell-driven
+work that happens *before* an MCP connection exists. Once a client is
+connected and the `ghostship` MCP tools are available, switch to
+`ghostship-command` for everything about driving the fleet itself; nothing
+here duplicates that.
+
+Requires shell access (`Bash`) to the machine running ghostship — macOS or
+Linux, with Podman. This skill doesn't run over MCP, because at install
+time there usually isn't an MCP connection yet.
+
+## Two separate auth layers — don't conflate them
+
+Ghostship has two independent auth concerns, and both are this skill's job
+to set up — neither is `ghostship-command`'s:
+
+1. **The transport's own endpoint auth** — an optional API key that locks
+   down the MCP/REST/file-transfer endpoint itself. See "Lock down the
+   endpoint" below.
+2. **kiro-cli identity** (Builder ID or IAM Identity Center) — used by crew
+   containers to run Kiro. Set this up explicitly with the `/login` flow
+   below, before ever calling `launch()`. `launch()` does have its own
+   fallback device-auth trigger if you skip this — that's `ghostship-command`
+   territory once you're already connected — but it's a fallback, not the
+   recommended path, and it's actively broken for IAM Identity Center
+   installs (see the login section).
+
+## Prerequisites
+
+- macOS or Linux (cgroup v2, Podman rootless; verified on Ubuntu 22.04+).
+- **Podman >= 4.4** — `brew install podman` (macOS) or
+  `sudo apt-get install -y podman podman-compose` (Ubuntu/Debian).
+- **`podman-compose`** — `brew install podman-compose` on macOS; included
+  in the apt command above on Debian/Ubuntu.
+- A kiro-cli identity to authenticate with (Builder ID free tier, or IAM
+  Identity Center) — see layer 2 above; set it up with the `/login` flow
+  below.
+
+## Install
+
+```bash
+./install.sh
+```
+
+Builds the crew images and starts the `ga-transport` container, bound to
+`localhost:64057` — MCP, the REST API, and file transfer all share that one
+port.
+
+For a repeatable setup, copy the example config first:
+
+```bash
+cp config/ghostship.conf.example config/ghostship.conf
+# edit config/ghostship.conf, then:
+./install.sh --config config/ghostship.conf
+```
+
+## Log in — kiro-cli identity (do this before your first `launch`)
+
+The transport exposes three plain HTTP routes on the MCP port for
+academy-wide kiro-cli auth: `POST /login`, `GET /login`, `POST /logout`.
+These are **not** MCP tools — no agent can call them, only `curl`/shell.
+State machine:
+
+```
+UNAUTHENTICATED ──[POST /login]──► PENDING ──[GET /login → complete]──► AUTHENTICATED
+                ◄─────────────────────[POST /logout]──────────────────────────┘
+```
+
+Recommended first-time flow, **before your first `launch()` call**:
+
+```bash
+# 1. Start the device-auth flow
+curl -sX POST http://localhost:64057/login | jq
+# → { "status": "pending", "login_url": "...", "code": "XXXX-XXXX" }
+
+# 2. Open login_url in a browser, sign in, approve the device
+
+# 3. Poll until complete
+curl -s http://localhost:64057/login | jq .status
+# → "complete"
+
+# 4. Only now call launch()
+```
+
+Add `-H "Authorization: Bearer $GHOSTSHIP_API_KEY"` to every call above if
+you've enabled the endpoint API key (see below).
+
+**Don't skip this and call `launch()` first.** `launch()` has its own
+fallback auto-trigger for first-time auth, but attempting `launch` before
+auth is complete fails with `not_authenticated`, and any crew partially
+created in that state can't be salvaged — it has to be nuked. Worse, for
+`--license pro` (IAM Identity Center) installs, `launch()`'s fallback path
+uses a non-TTY exec that can fail *silently* against the IdC device flow
+(upstream bug [kirodotdev/Kiro#6120](https://github.com/kirodotdev/Kiro/issues/6120)).
+The explicit `POST /login` flow above doesn't have that problem — always
+use it, don't rely on `launch()` to bootstrap auth for you.
+
+**Logout / secret rotation** — `POST /logout` clears the stored auth and
+every running crew's kiro-cli auth rows, no nuke or relaunch required:
+
+```bash
+curl -sX POST http://localhost:64057/logout | jq
+# → { "status": "logged_out" }
+```
+
+Use it to force a fresh login (logout, then repeat the flow above) when
+tokens expire. Running crews get the new auth injected in place once
+`GET /login` reports `complete`.
+
+**Guards:** `POST /login` returns `409` if already authenticated (log out
+first) or if a login is already in progress (poll instead). `GET /login`
+returns `404` if no login is in progress. `POST /logout` returns `404` if
+not currently authenticated.
+
+## Lock down the endpoint — API key
+
+An optional static bearer credential protecting the MCP/REST/file-transfer
+endpoint itself (separate from kiro-cli identity above). Recommended for
+any non-local deployment, optional for a local one:
+
+```bash
+./install.sh --api-key <key>
+```
+
+Persisted across future `install.sh` runs — you don't need to pass it
+again. To rotate, run `./install.sh --api-key <new-key>` and update every
+client's header; to disable, run `./install.sh --api-key ""` (empty
+value). See `docs/auth.md` for how the key is stored and the full security
+notes.
+
+## Connect an MCP client
+
+Once the transport is up, register it as an MCP server in whatever client
+will drive it. Without a key:
+
+```bash
+kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp --scope global
+```
+
+With a key, the client needs the `Authorization` header configured too.
+kiro-cli:
+
+```bash
+kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
+  --headers '{"Authorization": "Bearer ${GHOSTSHIP_API_KEY}"}' --scope global
+```
+
+Claude Code — add to `~/.claude.json`'s `mcpServers`:
+
+```json
+"ghostship": {
+  "type": "http",
+  "url": "http://localhost:64057/mcp",
+  "headers": { "Authorization": "Bearer ${GHOSTSHIP_API_KEY}" }
+}
+```
+
+Omit `headers` entirely if the endpoint has no key. Once this is done — the
+`/login` flow above is complete and the client sees the `ghostship` tools —
+switch to `ghostship-command`.
+
+## Plumb the skill files into your agent
+
+Registering the MCP server makes the *tools* available; it doesn't make
+`ghostship-admin`/`ghostship-command` available as skills your agent will
+actually read. That's a separate step, and there's no single mechanism
+across every harness:
+
+- **Claude Code** reads skills from `~/.claude/skills/<name>/SKILL.md`
+  (all your projects) or `.claude/skills/<name>/SKILL.md` (one project).
+  Symlinks are followed natively, so link rather than copy to avoid drift:
+  `ln -s /path/to/ghostship/.claude-plugin/skills/ghostship-command ~/.claude/skills/ghostship-command`
+  (and the same for `ghostship-admin`).
+- **An Agent-Plugins-compatible client** (Kiro Powers, others as they
+  land) can instead be pointed at the whole `.claude-plugin/` directory as
+  one package — `plugin.json` + `mcp.json` + `skills/` are discovered
+  together from there. See `.claude-plugin/PACKAGING.md`.
+- Anything else: check that harness's own docs for where it reads
+  `SKILL.md` files from. Ghostship doesn't install this for you.
+
+## Keep it running
+
+`./start.sh` brings ghostship back up after a stop or reboot — starts the
+Podman service (or machine, on macOS) and the `ga-transport` container.
+Safe to run any time; it's a no-op if things are already running.
+
+```bash
+./start.sh                            # auto-discovers config
+./start.sh --config ~/ghostship.conf  # explicit config
+./start.sh --machine-name my-academy  # override machine name
+```
+
+Config is discovered in order: `<ghostship-dir>/ghostship.conf`, then
+`~/ghostship.conf`, then `~/.config/ghostship/ghostship.conf`. If none is
+found it prompts interactively; if several are found it lists them and
+asks.
+
+On Linux, `install.sh` enables linger (`loginctl enable-linger`) so a
+headless/SSH-only host's Podman service and transport container survive
+after the last login session ends — required for unattended operation, not
+optional.
+
+## Rebuild and upgrade
+
+`podman start` (what idle-stop recovery and transport-restart use) restarts
+an *existing* container from whatever image it was created from — it does
+**not** pick up a rebuilt image. Only a fresh `podman run` does that:
+
+| Rebuilt... | Needs recreating | How |
+|:-----------|:------------------|:----|
+| `transport/` (`localhost/transport:latest`) | The `ga-transport` container | `./install.sh` — removes and re-runs `ga-transport` unconditionally, no crew impact |
+| `crews/spec-ops/Containerfile` (`localhost/spec-ops:latest`) | Each existing crew container | `nuke(crew_id, confirm=True)` then `launch(crew_id)` per crew, over MCP — destroys that crew's volumes, so `evac` anything needed first. This step is `ghostship-command`'s tool surface, not this skill's — mentioned here only because the trigger (a rebuilt crew image) is an admin-side event. |
+
+## Uninstall
+
+```bash
+./uninstall.sh              # tears down transport
+./uninstall.sh --purge-auth # also removes kiro-cli credentials
+```
+
+## Beyond the common path
+
+This skill covers local install and the two connection modes (keyed and
+unkeyed). For anything past that — remote deployment, TLS, reverse
+proxying, IAM Identity Center configuration, secret rotation, the full
+environment-variable reference, or extending the crew image — read the
+live docs rather than relying on this file to be exhaustive:
+`docs/remote.md`, `docs/auth.md`, `docs/configuration.md` in the ghostship
+repository. Those change independently of this skill; trust them over any
+paraphrase here.

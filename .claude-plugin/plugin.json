@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ghostship",
+  "version": "0.1.2",
+  "description": "Command Ghostship fleets over MCP from an agent client.",
+  "author": {
+    "name": "mcteamstar",
+    "url": "https://github.com/mcteamstar"
+  },
+  "repository": "https://github.com/mcteamstar/ghostship",
+  "license": "MIT",
+  "keywords": ["ghostship", "fleet", "crew", "launch crew", "dispatch", "kirocrew", "agent fleet", "mcp agents", "spec-driven development", "sdd"]
+}
