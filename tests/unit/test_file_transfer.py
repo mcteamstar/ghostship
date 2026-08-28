@@ -33,6 +33,17 @@ def _install_import_stubs() -> None:
         def stream(self, *args: Any, **kwargs: Any) -> Any:
             pass
 
+        def build_request(self, *args: Any, **kwargs: Any) -> Any:
+            pass
+
+        async def send(self, *args: Any, **kwargs: Any) -> Any:
+            pass
+
+    class Timeout:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
     class HTTPTransport:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
@@ -55,6 +66,7 @@ def _install_import_stubs() -> None:
     httpx.HTTPStatusError = HTTPStatusError  # type: ignore[attr-defined]
     httpx.ConnectError = ConnectError  # type: ignore[attr-defined]
     httpx.ConnectTimeout = ConnectTimeout  # type: ignore[attr-defined]
+    httpx.Timeout = Timeout  # type: ignore[attr-defined]
     sys.modules["httpx"] = httpx
 
     mcp = types.ModuleType("mcp")
@@ -106,6 +118,11 @@ def _install_import_stubs() -> None:
                 self.body = content
             self.status_code = status_code
             self.kwargs = kwargs
+
+        def set_cookie(self, key: str, value: str = "", **kwargs: Any) -> None:
+            """Mirror starlette's Response.set_cookie (used by the crew UI proxy)."""
+            self.cookies = getattr(self, "cookies", {})
+            self.cookies[key] = {"value": value, **kwargs}
 
         async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
             """Make Response callable as an ASGI app (for proxy handler tests)."""
