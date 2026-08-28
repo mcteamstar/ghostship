@@ -111,6 +111,10 @@ GA_AUTH_FILE = "ga-kiro-auth"
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
+# KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json; crew
+# creation fails at the gateway with a 4xx if it is absent. Default "kiro" is
+# KiroCrew's built-in agent name; operators override for a differently-named agent.
+GA_CREW_AGENT = os.environ.get("GA_CREW_AGENT", "kiro")
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
 KC_MODEL_DEFAULT = os.environ.get("KC_MODEL_DEFAULT", "")
 GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
@@ -1738,11 +1742,18 @@ def _reconcile_registry() -> None:
             try:
                 podman.container_start(container)
                 crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+                # D-07: Apply config overrides before the gateway reads them,
+                # then restart so the gateway loads the patched values.
+                # Must mirror the _ensure_crew_running pattern:
+                #   patch → stop → start → wait
+                # Writing config after _wait_gateway means the gateway has
+                # already loaded config.local.json and will not see the patch
+                # until the next restart.
+                _patch_crew_config(podman, container)
+                podman.container_stop(container)
+                podman.container_start(container)
                 if _wait_gateway(crew_url, timeout=30):
                     new_cookie = _mint_cookie(podman, container, crew_url)
-                    # D-07: Apply config overrides on every reconcile restart,
-                    # symmetric with the _ensure_crew_running restart path.
-                    _patch_crew_config(podman, container)
                     updates[cid] = {
                         "status": "running",
                         "last_used": time.time(),
@@ -2101,27 +2112,15 @@ def _ensure_crew_running(
         podman.container_start(crew["container"])
         crew_url = _crew_url(crew)
 
-        # WORKAROUND: KiroCrew bug — spawn_min_memory_gb not read from config files
-        #
-        # KiroCrew's AgentConfig loader explicitly constructs AgentConfig from
-        # agent_data but never reads spawn_min_memory_gb from the dict. The field
-        # always falls back to its dataclass default of 4.0 GB, regardless of what
-        # config.json or config.local.json contain. This causes the spawn gate to
-        # refuse agent dispatches on machines with < 4 GB free (common under load).
-        #
-        # Other fields (resource_pressure_gb, resource_critical_gb) ARE read from
-        # config.local.json and work correctly. Only spawn_min_memory_gb is affected.
-        #
-        # Fix: start the container without waiting, then re-run _patch_crew_config
-        # (which writes spawn_min_memory_gb into config.local.json), stop it,
-        # start it again, and wait for the gateway. The sequence is
-        # start (no wait) -> exec-patch -> stop -> start -> wait. This survives
-        # restarts because this hook runs on every auto-restart via
-        # _ensure_crew_running.
-        #
-        # Remove this block when KiroCrew fixes the loader to read spawn_min_memory_gb
-        # from config.local.json (tracked: KiroCrew upstream issue, spawn gate ignores
-        # config file overrides for spawn_min_memory_gb).
+        # Apply config overrides on every stopped-crew restart, then a single
+        # restart cycle so the gateway loads them. KiroCrew 0.4.0 reads
+        # spawn_min_memory_gb (and the other numeric fields) from
+        # config.local.json correctly, so the previous start→patch→stop→start
+        # workaround for the 0.3.x loader bug is no longer needed and has been
+        # removed. This mirrors the patch+restart pattern in _finish_crew_setup.
+        # Note: only _patch_crew_config (a config file write) runs here — no
+        # agent JSON files are written on restart, so the 0.4.0 runtime
+        # write-protection of the agents directory is not a concern on this path.
         _patch_crew_config(podman, crew["container"])
         podman.container_stop(crew["container"])
         podman.container_start(crew["container"])
@@ -2991,8 +2990,19 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "p.parent.mkdir(parents=True, exist_ok=True); "
         "cfg = json.loads(p.read_text()) if p.exists() else {}; "
         "a = cfg.setdefault('agent', {}); "
+        # KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json.
+        # Sourced from GA_CREW_AGENT (default "kiro"). Absent → gateway 4xx at
+        # config read. Written as a fully-resolved Python literal (no $VAR).
+        f"a['agent'] = {json.dumps(GA_CREW_AGENT)}; "
+        # Bounds (KiroCrew 0.4.0, enforced with a 4xx on out-of-range):
+        #   spawn_min_memory_gb: >= 0 (0 disables the spawn memory gate); no upper
+        #   cap enforced by the gateway. Default 4.0; transport default 1.5.
         f"a['spawn_min_memory_gb'] = {GA_SPAWN_MIN_MEMORY_GB}; "
+        #   resource_pressure_gb: >= 0. Soft-pressure threshold; must be >=
+        #   resource_critical_gb to be meaningful. Transport default 2.0.
         f"a['resource_pressure_gb'] = {GA_RESOURCE_PRESSURE_GB}; "
+        #   resource_critical_gb: >= 0, and <= resource_pressure_gb. Transport
+        #   default 1.0 (below the 2.0 pressure threshold — in range).
         f"a['resource_critical_gb'] = {GA_RESOURCE_CRITICAL_GB}; "
         # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
         # permission guard for the agent running inside this crew container.
@@ -3004,7 +3014,10 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "a['dangerously_skip_permissions'] = True; "
         "a['default_agent'] = 'ghost'; "
         "a['reasoning_effort'] = 'max'; "
+        #   subagent_timeout_secs: > 0 (positive seconds). Transport default 3600.
         f"a['subagent_timeout_secs'] = {GA_SUBAGENT_TIMEOUT_SECS}; "
+        #   subagent_max_turns: >= 1; KiroCrew UI cap is 200. Transport default 200
+        #   (at the ceiling — in range).
         f"a['subagent_max_turns'] = {GA_SUBAGENT_MAX_TURNS}; "
         + default_model_line +
         "p.write_text(json.dumps(cfg, indent=2)); "
