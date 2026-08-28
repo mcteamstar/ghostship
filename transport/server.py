@@ -1034,10 +1034,16 @@ def _get_podman() -> PodmanClient:
 # ── Memory helpers ────────────────────────────────────────────────────────────
 
 def _get_host_memory_gb(podman: PodmanClient) -> float:
-    """Extract available memory (GB) from Podman system info."""
+    """Extract available memory (GB) from Podman system info.
+
+    Prefers memAvailable (accounts for reclaimable page cache / buffers) over
+    memFree (raw uncommitted pages only).  Falls back to memFree when the
+    kernel or Podman build does not expose memAvailable.
+    """
     info = podman.system_info()
-    mem_free = info.get("host", {}).get("memFree", 0)
-    return round(mem_free / (1024 ** 3), 1)
+    host = info.get("host", {})
+    mem_bytes = host.get("memAvailable", host.get("memFree", 0))
+    return round(mem_bytes / (1024 ** 3), 1)
 
 
 _host_memory_cache: tuple[float, float] | None = None
