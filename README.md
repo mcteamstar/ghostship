@@ -13,7 +13,7 @@ Runs locally and remotely on macOS or Linux using Podman.
 claude plugin marketplace add mcteamstar/ghostship
 claude plugin install ghostship@ghostship
 ```
-Use the skill `/ghostship-admin` for guided local setup. See [Install](#install) below for full steps.
+Use the skill `/ghostship-admin` for guided local setup, `/ghostship-capability` to customise the academy, and `/ghostship-command` to drive the fleet. See [Install](#install) below for full steps.
 
 ## Why Ghostship?
 
@@ -97,14 +97,11 @@ kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
 ```
 
 **Claude Code (plugin):** see the quick install command at the top of this
-README. It installs the `ghostship-admin` and `ghostship-command` skills
-plus an unauthenticated connection to `http://localhost:64057/mcp`. This
-only covers that local, unauthenticated default — for a keyed or remote
-deployment, skip the plugin and add the server manually instead (below).
-Don't do both: a manual `mcpServers` entry and the plugin both connecting to
-`ghostship` register as two separate MCP servers, not one. See
-[`.claude-plugin/PACKAGING.md`](.claude-plugin/PACKAGING.md) for how the
-packaging works.
+README. It installs the `ghostship-admin`, `ghostship-command`, and
+`ghostship-capability` skills plus an unauthenticated connection to
+`http://localhost:64057/mcp`. `ghostship-admin` guides installation and
+connecting; `ghostship-command` is the Admiral's fleet playbook;
+`ghostship-capability` covers academy and crew customisation.
 
 **Claude Code (manual, keyed, or remote)** — add to `~/.claude.json`'s
 `mcpServers`:

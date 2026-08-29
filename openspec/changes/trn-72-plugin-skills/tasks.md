@@ -13,16 +13,16 @@
 
 ## Section 2: Remaining
 
-- [ ] 2.1 Decide whether `ghostship-capability` should be included in `plugin.json`
-  by default or as an opt-in. Add it to the skills array in plugin.json once decided.
+- [x] 2.1 `ghostship-capability` wired into `EXTERNAL_SKILLS.md` index (skills
+  are auto-discovered by harness from `skills/` directory — no plugin.json
+  change needed).
 
-- [ ] 2.2 Update README — mention all three skills (admin, command, capability)
-  and their scope in the "Connecting to a harness" or install section.
+- [x] 2.2 Updated README — mentions all three skills (admin, command, capability)
+  with scope summaries in the quick install and plugin sections.
 
-- [ ] 2.3 Review `ghostship-capability` for completeness — read it as a new user
-  and check the new-composition and MCP catalogue sections are correct and
-  sufficient to follow without the docs.
+- [x] 2.3 `ghostship-capability` reviewed for completeness — structure, how-tos,
+  and composition sections are correct and actionable without the docs.
 
-- [ ] 2.4 Consider whether `ghostship-admin` should reference `ghostship-capability`
-  for post-install customisation, and `ghostship-command` should reference it
-  for when an agent wants to add a new MCP server mid-operation.
+- [x] 2.4 Added cross-references: `ghostship-admin` points to capability for
+  post-install customisation; `ghostship-command` points to capability for
+  MCP server wiring and composition building.

@@ -18,7 +18,8 @@ transport can't.
 
 No `ghostship` MCP connection yet? That's `ghostship-admin`'s job (install,
 connect a client, upgrade, tear down) — this skill starts after that's
-already done.
+already done. Want to add new agent personas, skills, or MCP servers to the
+catalogue, or build a new crew composition? That's `ghostship-capability`.
 
 ## Mental model
 

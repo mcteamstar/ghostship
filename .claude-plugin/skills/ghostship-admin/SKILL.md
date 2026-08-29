@@ -268,11 +268,9 @@ an *existing* container from whatever image it was created from — it does
 
 ## Beyond the common path
 
-This skill covers local install and the two connection modes (keyed and
-unkeyed). For anything past that — remote deployment, TLS, reverse
-proxying, IAM Identity Center configuration, secret rotation, the full
-environment-variable reference, or extending the crew image — read the
-live docs rather than relying on this file to be exhaustive:
-`docs/remote.md`, `docs/auth.md`, `docs/configuration.md` in the ghostship
-repository. Those change independently of this skill; trust them over any
-paraphrase here.
+Once ghostship is running and a client is connected, use **`ghostship-command`**
+for all fleet operations (launch, dispatch, pickup, steer, captain, evac, nuke).
+
+To configure what crews can do after installation — adding agent personas,
+skills, MCP servers, or building new crew compositions — use
+**`ghostship-capability`**.
