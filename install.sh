@@ -538,8 +538,7 @@ else
   cp -r "${GHOSTSHIP_DIR}/academy/mcp"       "${DATA_DIR}/academy/"
   cp -r "${GHOSTSHIP_DIR}/crews"             "${DATA_DIR}/"
 fi
-echo "✓ academy/ and crews/ copied to ${DATA_DIR}"
-echo "✓ academy/mcp/ copied to ${DATA_DIR}"
+echo "✓ academy/ (agents, skills, steering, policies, orders, mcp) and crews/ copied to ${DATA_DIR}"
 
 # ── Generate compose.yml ──────────────────────────────────────────────────────
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and

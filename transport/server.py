@@ -5153,8 +5153,6 @@ def _verify_file_token(
         payload = f"{crew_id}:{path}:{exp}:GET:{ref or ''}:{flags}"
     expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
-    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, sig)
 
 
 
