@@ -18,14 +18,23 @@ three are clear:
    persona. A non-stale intent means the persona is already dispatched.
 2. **Task-description marker signal (secondary):** the agent SHALL cross-check the
    `task` field in `kirocrew spawn list` for an in-flight task whose description
-   begins with `SDD dispatch <change> <persona> <intent_id>`, matching change,
-   persona, and intent token. The `agent` field MUST NOT be used for this check.
+   begins with `SDD dispatch <change> <persona>`, matching change and persona. The
+   `intent_id` portion MUST NOT be required to match because `kirocrew spawn list`
+   truncates task descriptions to 80 characters and the full `SDD dispatch <change>
+   <persona> <intent_id>` marker always exceeds that limit; matching on the
+   change+persona prefix is both necessary and sufficient for the secondary signal.
+   The `agent` field MUST NOT be used for this check.
 3. **Agent-field signal (tertiary):** the agent MAY check the `agent` field in
    `kirocrew spawn list` as a final confirmation only. Because it is populated
    asynchronously, it MUST NOT be the sole dispatch guard.
 
 If any signal indicates an in-flight or recently dispatched task, the agent SHALL
 hold and reassess on the next check-in rather than dispatch.
+
+If the mailbox (`raven@localhost`) cannot be read due to unavailability or an
+access error, the agent SHALL treat this as a hold condition and MUST NOT dispatch.
+A missing or unreadable mailbox is never a green light; the check-in reassesses on
+the next cycle.
 
 #### Scenario: All signals clear
 - **WHEN** the mailbox has no non-stale intent, `spawn list` has no matching
@@ -40,7 +49,7 @@ hold and reassess on the next check-in rather than dispatch.
 
 #### Scenario: Task-description marker blocks re-dispatch
 - **WHEN** `kirocrew spawn list` shows an in-flight task whose description begins
-  with `SDD dispatch <change> <persona> <intent_id>` for the same change and persona
+  with `SDD dispatch <change> <persona>` for the same change and persona
 - **THEN** the dispatching agent holds and does not dispatch
 
 #### Scenario: Agent field alone does not authorize a dispatch
@@ -48,6 +57,11 @@ hold and reassess on the next check-in rather than dispatch.
   task-description marker exists
 - **THEN** the dispatching agent holds; a clear agent field alone is insufficient
   to proceed
+
+#### Scenario: Mailbox unavailable is a hold condition
+- **WHEN** the mailbox (`raven@localhost`) cannot be read (unavailable or access error)
+- **THEN** the dispatching agent holds and does not dispatch; a missing or
+  unreadable mailbox is treated the same as a blocking signal, not as a clear one
 
 ### Requirement: Intent-marker dispatch protocol
 
