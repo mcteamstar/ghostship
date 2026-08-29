@@ -44,6 +44,8 @@ Install these before running `install.sh`:
 - **`podman-compose`** — `brew install podman-compose` (macOS); included in the apt command above
 - A kiro-cli identity — Builder ID (free tier) or an IAM Identity Center login (see [docs/auth.md](docs/auth.md))
 
+> **Free tier works great.** Builder ID is a free social login (GitHub or Google) — no subscription needed. The default model is `gpt-5.6-luna`, which is fast and cost-efficient: a full SDD cycle (Spectre → Ghost → Banshee → Reaper) is practical on free credits. [Sign up for Builder ID →](https://kiro.dev)
+
 Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup v2 and Podman rootless. Verified on Ubuntu 22.04+.
 
 ### Setup
