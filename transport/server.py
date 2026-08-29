@@ -5137,7 +5137,7 @@ def _sign_file_url(
     """Return a short-lived presigned URL for a crew workspace file or bundle."""
     expires = int(time.time()) + GA_FILE_TTL_SECS
     payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{expires}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     url = f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
     if ref:
@@ -5169,7 +5169,7 @@ def _verify_file_token(
         payload = f"{crew_id}:{path}::{mode}:{exp}"
     else:
         payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{exp}"
-    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
 
 
@@ -5599,7 +5599,7 @@ def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool
     expires = int(time.time()) + GA_FILE_TTL_SECS
     mode = "unpack" if unpack else ("bundle" if bundle else "")
     payload = f"{crew_id}:{path}::{mode}:{expires}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     return f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
 
