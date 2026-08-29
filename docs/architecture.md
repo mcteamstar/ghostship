@@ -19,7 +19,7 @@ volumes: a workspace volume (`gs-vol-<id>`) and a home volume
 `ga-net` so transport can reach them by container name
 (`http://gs-<id>:5476`).
 
-**Crew image** (`crews/spec-ops/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:0.3.0`
+**Crew image** (`crews/spec-ops/Containerfile`) — extends the official `ghcr.io/kirodotdev/kirocrew:0.4.0`
 (Debian 12 bookworm, Python 3.12, git, curl). Adds Node.js 24 LTS via NodeSource, and
 the `openspec` CLI (`@fission-ai/openspec`) that the `openspec-*` skills shell
 out to. Built locally at install time (`localhost/spec-ops:latest`) as part of
@@ -28,7 +28,7 @@ a three-stage build:
 1. **`base-admission`** (`crews/_base/admission/`) — mail stack and auth
    layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, and
    adds `maildeliver` and `verify-admiral-sig`. Extends
-   `ghcr.io/kirodotdev/kirocrew:0.3.0`.
+   `ghcr.io/kirodotdev/kirocrew:0.4.0`.
 2. **`spec-ops` composition** (`crews/spec-ops/`) — adds Node.js 24 LTS and
    the `openspec` CLI. Extends `base-admission`.
 3. **`base-graduation`** (`crews/_base/graduation/`) — runs `seed_kiro_db.py`
@@ -356,7 +356,7 @@ ghostship/
 ├── crews/                 # crew type definitions — each composes a crew from academy/
 │   ├── registry.json      # registered crew types
 │   ├── _base/
-│   │   ├── admission/     # stage 1: mail stack + auth layer (extends ghcr.io/kirodotdev/kirocrew:0.3.0)
+│   │   ├── admission/     # stage 1: mail stack + auth layer (extends ghcr.io/kirodotdev/kirocrew:0.4.0)
 │   │   └── graduation/    # stage 3: kiro-cli DB pre-seed (seed_kiro_db.py)
 │   └── spec-ops/          # stage 2: the one crew type today — adds Node.js 24 LTS + openspec CLI
 │       ├── Containerfile

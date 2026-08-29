@@ -4,8 +4,9 @@ Baked into the crew image at build time so kiro-cli finds the DB already
 initialised — transport only needs to INSERT auth_kv rows at launch,
 with no migration wait and no restart cycle.
 
-⚠️  Migration schema from kirocrew 0.2.0 (10 rows, versions 0-9).
-    If kiro-cli adds migrations in a future release, update this file.
+⚠️  Migration schema from kiro-cli 2.20.0 / KiroCrew 0.4.0 (10 rows, versions 0-9).
+    Verified current as of 2026-08-28. If kiro-cli adds migrations in a future
+    release, update this file to include the new rows.
     See crews/_base/Containerfile for the upgrade checklist.
 """
 import os

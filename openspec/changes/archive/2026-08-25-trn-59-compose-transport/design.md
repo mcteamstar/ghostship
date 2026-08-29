@@ -64,6 +64,6 @@ All values are substituted by the heredoc in `install.sh` — no shell variable 
 
 ## Risks / Trade-offs
 
-**[Risk] `podman compose` behaviour differences across versions** — compose output format and error messages vary. Mitigation: version-gate at 4.4+ and test on both 4.x and 5.x (vm23 runs 5.7).
+**[Risk] `podman compose` behaviour differences across versions** — compose output format and error messages vary. Mitigation: version-gate at 4.4+ and test on both 4.x and 5.x (<host> runs 5.7).
 
 **[Risk] `--project-name` handling** — different compose versions may name containers differently. Mitigation: always pass `--project-name ga` and `container_name: ga-transport` explicitly to force the name.

@@ -40,25 +40,6 @@ class TestLoadApiKey(unittest.TestCase):
             result = server._load_api_key()
             self.assertEqual(result, "test-secret-key-123")
 
-    def test_falls_back_to_env_var_with_deprecation_warning(self):
-        """5.4: transport falls back to env var with deprecation warning when file absent."""
-        original_is_file = Path.is_file
-
-        def mock_is_file(self):
-            if str(self) == "/run/secrets/ga-api-key":
-                return False
-            return original_is_file(self)
-
-        with patch.object(Path, "is_file", mock_is_file), \
-             patch.dict(os.environ, {"GA_API_KEY": "env-key-456"}), \
-             patch("logging.getLogger") as mock_get_logger:
-            mock_logger = MagicMock()
-            mock_get_logger.return_value = mock_logger
-            result = server._load_api_key()
-            self.assertEqual(result, "env-key-456")
-            mock_logger.warning.assert_called_once()
-            self.assertIn("DEPRECATED", mock_logger.warning.call_args[0][0])
-
     def test_no_key_returns_empty(self):
         """Neither secret file nor env var → empty string, auth disabled."""
         original_is_file = Path.is_file
@@ -76,7 +57,7 @@ class TestLoadApiKey(unittest.TestCase):
                 mock_get_logger.return_value = mock_logger
                 result = server._load_api_key()
                 self.assertEqual(result, "")
-                mock_logger.info.assert_called_once()
+                mock_logger.warning.assert_called_once()
         finally:
             if env_backup is not None:
                 os.environ["GA_API_KEY"] = env_backup

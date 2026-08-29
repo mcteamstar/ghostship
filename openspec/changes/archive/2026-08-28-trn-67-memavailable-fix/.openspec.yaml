@@ -1,0 +1,4 @@
+schema: spec-driven
+ticket: TRN-67
+skip_specs: true
+created: 2026-08-28

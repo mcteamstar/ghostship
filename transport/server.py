@@ -56,7 +56,6 @@ import select
 import socket
 import tarfile
 import textwrap
-import warnings
 import json
 import logging
 import os
@@ -77,6 +76,11 @@ from starlette.responses import Response, StreamingResponse, PlainTextResponse, 
 from starlette.routing import Route, Mount
 import uvicorn
 import asyncio
+
+try:
+    import security as _security  # container: both files flat in /app
+except ModuleNotFoundError:
+    from transport import security as _security  # local dev: transport/ is a package dir
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -103,7 +107,7 @@ PODMAN_SOCK = os.environ.get(
 KC_IMAGE = os.environ.get("KC_IMAGE", "localhost/spec-ops:latest")
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
-KC_BASE_IMAGE = os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:stable")
+KC_BASE_IMAGE = os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:0.4.0")
 GA_NETWORK = "ga-net"
 GA_MAX_CREWS = int(os.environ.get("GA_MAX_CREWS", "20"))
 GA_MAX_ACTIVE_CREWS = int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3"))
@@ -111,6 +115,10 @@ GA_AUTH_FILE = "ga-kiro-auth"
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
+# KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json; crew
+# creation fails at the gateway with a 4xx if it is absent. Default "kiro" is
+# KiroCrew's built-in agent name; operators override for a differently-named agent.
+GA_CREW_AGENT = os.environ.get("GA_CREW_AGENT", "kiro")
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
 KC_MODEL_DEFAULT = os.environ.get("KC_MODEL_DEFAULT", "")
 GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
@@ -123,6 +131,27 @@ GA_SUBAGENT_TIMEOUT_SECS = int(os.environ.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"
 GA_SUBAGENT_MAX_TURNS = int(os.environ.get("GA_SUBAGENT_MAX_TURNS", "200"))
 GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
+
+# ── Transport security (TRN-70) ───────────────────────────────────────────────
+# TLS is terminated at the edge (see design.md); the app still emits HSTS and
+# security headers so protection does not depend solely on edge config. These
+# flags let each protection be toggled via config for a staged rollout and
+# config-only rollback.
+#
+# GA_TLS_MIN_VERSION: minimum TLS version enforced when the app terminates TLS
+#   directly (ssl_version passed to uvicorn). Values: "1.2" or "1.3".
+# GA_TLS_CERTFILE / GA_TLS_KEYFILE: enable direct TLS termination when set.
+# GA_ENABLE_SECURITY_HEADERS: emit baseline security headers (default on).
+# GA_ENFORCE_HTTPS_REDIRECT: 301-redirect plaintext HTTP to HTTPS (staged;
+#   default off until the monitored plaintext window + client notice is done).
+# GA_CSP_ENFORCE: send CSP as enforcing rather than report-only (staged;
+#   default off until report-only violations are triaged).
+GA_TLS_MIN_VERSION = os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip()
+GA_TLS_CERTFILE = os.environ.get("GA_TLS_CERTFILE", "").strip()
+GA_TLS_KEYFILE = os.environ.get("GA_TLS_KEYFILE", "").strip()
+GA_ENABLE_SECURITY_HEADERS = os.environ.get("GA_ENABLE_SECURITY_HEADERS", "1").strip() not in ("0", "false", "")
+GA_ENFORCE_HTTPS_REDIRECT = os.environ.get("GA_ENFORCE_HTTPS_REDIRECT", "0").strip() in ("1", "true")
+GA_CSP_ENFORCE = os.environ.get("GA_CSP_ENFORCE", "0").strip() in ("1", "true")
 
 # ── Version ───────────────────────────────────────────────────────────────────
 
@@ -170,31 +199,25 @@ def _load_or_create_file_secret() -> str:
     return new_secret
 
 _FILE_SECRET = _load_or_create_file_secret()
+_security.register_secret(_FILE_SECRET)
 
 
 def _load_api_key() -> str:
-    """Load GA_API_KEY from Podman secret file, falling back to env var (deprecated)."""
+    """Load GA_API_KEY from Podman secret file."""
     _logger = logging.getLogger(__name__)
     secret_path = Path("/run/secrets/ga-api-key")
     try:
         if secret_path.is_file():
             key = secret_path.read_text().strip()
             if key:
+                _security.register_secret(key)
                 return key
     except Exception:
         pass
 
-    # Deprecated fallback: environment variable
-    env_key = os.environ.get("GA_API_KEY", "").strip()
-    if env_key:
-        _logger.warning(
-            "GA_API_KEY loaded from environment variable (DEPRECATED). "
-            "Re-run install.sh to migrate to Podman secrets."
-        )
-        return env_key
-
-    _logger.info("No API key configured (neither /run/secrets/ga-api-key nor GA_API_KEY env var). "
-                 "MCP API-key authentication disabled.")
+    _logger.warning("GA_API_KEY is not set — transport is running WITHOUT authentication. "
+                    "All MCP tools and file endpoints are publicly accessible. "
+                    "Set GA_API_KEY to require Bearer token auth.")
     return ""
 
 
@@ -335,6 +358,10 @@ def _resolve_image(entry: dict) -> str:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Scrub any registered secret value from every log record (TRN-70
+# secrets-management: secrets excluded from logs and errors).
+_security.install_redaction_filter()
 
 COMPOSITION_REGISTRY: dict[str, dict] = _load_composition_registry()
 
@@ -647,18 +674,18 @@ class BearerAuthMiddleware:
 
         # Reject: missing, duplicated, or malformed
         if len(auth_values) != 1:
-            await self._reject(send)
+            await self._reject(send, scope)
             return
 
         value = auth_values[0]
         # Must be "Bearer <token>" (case-insensitive scheme)
         if not value[:7].lower() == "bearer " or " " in value[7:].strip():
-            await self._reject(send)
+            await self._reject(send, scope)
             return
 
         token = value[7:].strip()
         if not token or not hmac.compare_digest(token, self._key):
-            await self._reject(send)
+            await self._reject(send, scope)
             return
 
         # Auth passed — check login/logout routes before falling through to MCP
@@ -697,7 +724,26 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
     @staticmethod
-    async def _reject(send) -> None:
+    async def _reject(send, scope=None) -> None:
+        # Audit the authorization denial (TRN-70 audit logging). No token value
+        # is ever included — only outcome, source, and timestamp.
+        try:
+            source = None
+            if scope is not None:
+                for k, v in scope.get("headers", []):
+                    if k == b"x-forwarded-for":
+                        source = v.decode("latin-1").split(",")[0].strip()
+                        break
+                if source is None:
+                    client = scope.get("client")
+                    if client:
+                        source = client[0]
+            _security.audit_auth_event(
+                action="api_request", outcome="denied", account=None,
+                source=source, emit=logger.info,
+            )
+        except Exception:
+            pass
         await send({
             "type": "http.response.start",
             "status": 401,
@@ -710,6 +756,125 @@ class BearerAuthMiddleware:
             "type": "http.response.body",
             "body": b"Unauthorized",
         })
+
+
+# ── Transport security middleware (TRN-70) ────────────────────────────────────
+
+class SecurityHeadersMiddleware:
+    """ASGI middleware enforcing transport-security guarantees.
+
+    - Redirects plaintext HTTP to HTTPS with a 301 when the redirect is enabled
+      (staged rollout: off until the monitored plaintext window + client notice
+      is complete).
+    - Emits the baseline security headers on every response
+      (``X-Content-Type-Options: nosniff``, clickjacking protection, and a
+      Content-Security-Policy) and, on HTTPS responses, an HSTS header with a
+      non-zero max-age.
+
+    HTTPS is detected from the ASGI scheme or the ``x-forwarded-proto`` header,
+    since TLS is terminated at the edge and the app sees forwarded requests.
+    """
+
+    def __init__(
+        self,
+        app,
+        *,
+        enable_headers: bool = True,
+        enforce_redirect: bool = False,
+        csp_enforce: bool = False,
+    ) -> None:
+        self.app = app
+        self._enable_headers = enable_headers
+        self._enforce_redirect = enforce_redirect
+        self._csp_enforce = csp_enforce
+
+    @staticmethod
+    def _is_https(scope) -> bool:
+        if scope.get("scheme") == "https":
+            return True
+        for k, v in scope.get("headers", []):
+            if k == b"x-forwarded-proto" and v.split(b",")[0].strip().lower() == b"https":
+                return True
+        return False
+
+    @staticmethod
+    def _host(scope) -> str:
+        for k, v in scope.get("headers", []):
+            if k == b"host":
+                return v.decode("latin-1")
+        server = scope.get("server") or ("localhost", None)
+        return server[0]
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        https = self._is_https(scope)
+
+        # Log plaintext HTTP traffic during the monitoring window (TRN-70 task 3.4).
+        # When enforce_redirect is off, we are in the monitored window phase — log
+        # every non-health plaintext hit so operators can identify affected clients
+        # before flipping GA_ENFORCE_HTTPS_REDIRECT. Once enforce_redirect is on,
+        # the redirect itself is the record of the hit.
+        if not https and scope.get("path") != "/health":
+            source = None
+            for k, v in scope.get("headers", []):
+                if k == b"x-forwarded-for":
+                    source = v.decode("latin-1").split(",")[0].strip()
+                    break
+            if source is None:
+                client = scope.get("client")
+                if client:
+                    source = client[0]
+            logger.info(
+                "plaintext HTTP hit: method=%s path=%s source=%s "
+                "(enforce_redirect=%s)",
+                scope.get("method", "?"),
+                scope.get("path", "/"),
+                source or "-",
+                "on" if self._enforce_redirect else "off",
+            )
+
+        # Plaintext → HTTPS 301 redirect (staged; skip health probes).
+        if self._enforce_redirect and not https and scope.get("path") != "/health":
+            host = self._host(scope)
+            path = scope.get("path", "/")
+            qs = scope.get("query_string", b"")
+            target = f"https://{host}{path}"
+            if qs:
+                target += "?" + qs.decode("latin-1")
+            await send({
+                "type": "http.response.start",
+                "status": 301,
+                "headers": [
+                    (b"location", target.encode("latin-1")),
+                    (b"content-length", b"0"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        if not self._enable_headers:
+            await self.app(scope, receive, send)
+            return
+
+        extra = _security.security_headers(
+            https=https,
+            csp_report_only=not self._csp_enforce,
+        )
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {k.lower() for k, _ in headers}
+                for name, value in extra:
+                    if name not in present:
+                        headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 # ── Podman client ─────────────────────────────────────────────────────────────
@@ -1034,10 +1199,16 @@ def _get_podman() -> PodmanClient:
 # ── Memory helpers ────────────────────────────────────────────────────────────
 
 def _get_host_memory_gb(podman: PodmanClient) -> float:
-    """Extract available memory (GB) from Podman system info."""
+    """Extract available memory (GB) from Podman system info.
+
+    Prefers memAvailable (accounts for reclaimable page cache / buffers) over
+    memFree (raw uncommitted pages only).  Falls back to memFree when the
+    kernel or Podman build does not expose memAvailable.
+    """
     info = podman.system_info()
-    mem_free = info.get("host", {}).get("memFree", 0)
-    return round(mem_free / (1024 ** 3), 1)
+    host = info.get("host", {})
+    mem_bytes = host.get("memAvailable", host.get("memFree", 0))
+    return round(mem_bytes / (1024 ** 3), 1)
 
 
 _host_memory_cache: tuple[float, float] | None = None
@@ -1732,11 +1903,18 @@ def _reconcile_registry() -> None:
             try:
                 podman.container_start(container)
                 crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+                # D-07: Apply config overrides before the gateway reads them,
+                # then restart so the gateway loads the patched values.
+                # Must mirror the _ensure_crew_running pattern:
+                #   patch → stop → start → wait
+                # Writing config after _wait_gateway means the gateway has
+                # already loaded config.local.json and will not see the patch
+                # until the next restart.
+                _patch_crew_config(podman, container)
+                podman.container_stop(container)
+                podman.container_start(container)
                 if _wait_gateway(crew_url, timeout=30):
                     new_cookie = _mint_cookie(podman, container, crew_url)
-                    # D-07: Apply config overrides on every reconcile restart,
-                    # symmetric with the _ensure_crew_running restart path.
-                    _patch_crew_config(podman, container)
                     updates[cid] = {
                         "status": "running",
                         "last_used": time.time(),
@@ -2095,27 +2273,15 @@ def _ensure_crew_running(
         podman.container_start(crew["container"])
         crew_url = _crew_url(crew)
 
-        # WORKAROUND: KiroCrew bug — spawn_min_memory_gb not read from config files
-        #
-        # KiroCrew's AgentConfig loader explicitly constructs AgentConfig from
-        # agent_data but never reads spawn_min_memory_gb from the dict. The field
-        # always falls back to its dataclass default of 4.0 GB, regardless of what
-        # config.json or config.local.json contain. This causes the spawn gate to
-        # refuse agent dispatches on machines with < 4 GB free (common under load).
-        #
-        # Other fields (resource_pressure_gb, resource_critical_gb) ARE read from
-        # config.local.json and work correctly. Only spawn_min_memory_gb is affected.
-        #
-        # Fix: start the container without waiting, then re-run _patch_crew_config
-        # (which writes spawn_min_memory_gb into config.local.json), stop it,
-        # start it again, and wait for the gateway. The sequence is
-        # start (no wait) -> exec-patch -> stop -> start -> wait. This survives
-        # restarts because this hook runs on every auto-restart via
-        # _ensure_crew_running.
-        #
-        # Remove this block when KiroCrew fixes the loader to read spawn_min_memory_gb
-        # from config.local.json (tracked: KiroCrew upstream issue, spawn gate ignores
-        # config file overrides for spawn_min_memory_gb).
+        # Apply config overrides on every stopped-crew restart, then a single
+        # restart cycle so the gateway loads them. KiroCrew 0.4.0 reads
+        # spawn_min_memory_gb (and the other numeric fields) from
+        # config.local.json correctly, so the previous start→patch→stop→start
+        # workaround for the 0.3.x loader bug is no longer needed and has been
+        # removed. This mirrors the patch+restart pattern in _finish_crew_setup.
+        # Note: only _patch_crew_config (a config file write) runs here — no
+        # agent JSON files are written on restart, so the 0.4.0 runtime
+        # write-protection of the agents directory is not a concern on this path.
         _patch_crew_config(podman, crew["container"])
         podman.container_stop(crew["container"])
         podman.container_start(crew["container"])
@@ -2211,7 +2377,11 @@ def _load_crew_manifest(composition_entry: dict | None = None) -> dict[str, Any]
             manifest_path, e,
         )
         return default
-    return {key: data.get(key, "*") for key in default}
+    result = {key: data.get(key, "*") for key in default}
+    # Include mcpServers if declared; absent key → None (skip mcp.json creation)
+    if "mcpServers" in data:
+        result["mcpServers"] = data["mcpServers"]
+    return result
 
 
 def _manifest_selects(selection: Any, name: str) -> bool:
@@ -2220,15 +2390,51 @@ def _manifest_selects(selection: Any, name: str) -> bool:
     return selection == "*" or name in selection
 
 
+MCP_CATALOGUE_DIR = Path("/mcp")
+KIRO_MCP_JSON = "/home/kirocrew/.kiro/mcp.json"
+
+
+def _substitute_env_vars(value: Any, env: dict[str, str]) -> Any:
+    """Recursively substitute ${VAR} references in string values using env.
+
+    Logs a warning for any unset variable but continues, writing the literal
+    ${VAR} string as the value.
+    """
+    if isinstance(value, str):
+        def _replace(match: "re.Match[str]") -> str:
+            var_name = match.group(1)
+            if var_name in env:
+                return env[var_name]
+            logger.warning(
+                "mcp.json: environment variable ${%s} is not set — "
+                "writing literal string",
+                var_name,
+            )
+            return match.group(0)
+        return re.sub(r"\$\{([^}]+)\}", _replace, value)
+    if isinstance(value, dict):
+        return {k: _substitute_env_vars(v, env) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute_env_vars(item, env) for item in value]
+    return value
+
+
 def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
     """Copy the agent JSONs selected by the crew type's manifest from the
     Academy agents pool (academy/agents/, bind-mounted from the host) into
-    the crew container."""
+    the crew container.
+
+    Also writes ~/.kiro/mcp.json from the manifest's mcpServers array, if
+    present, by resolving each name against the /mcp catalogue, substituting
+    ${VAR} references from the transport environment, and setting
+    poolable: false on entries that contain a headers field.
+    """
     agents_src = Path("/agents")
     if not agents_src.exists():
         logger.warning("No /agents dir in transport container — skipping agent copy")
         return []
-    selection = _load_crew_manifest(composition_entry)["agents"]
+    manifest = _load_crew_manifest(composition_entry)
+    selection = manifest["agents"]
     copied = []
     for af in agents_src.glob("*.json"):
         if not _manifest_selects(selection, af.name):
@@ -2246,6 +2452,64 @@ def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict |
         except Exception as e:
             logger.warning("Failed to copy agent %s: %s", af.name, e)
     logger.info("Copied agents to %s: %s", container, copied)
+
+    # ── Write mcp.json from manifest.mcpServers ───────────────────────────────
+    mcp_servers_list = manifest.get("mcpServers")
+    if not mcp_servers_list:
+        # No mcpServers declared — skip mcp.json creation
+        return copied
+
+    env = dict(os.environ)
+    resolved_entries: dict[str, Any] = {}
+
+    for server_name in mcp_servers_list:
+        catalogue_path = MCP_CATALOGUE_DIR / f"{server_name}.json"
+        if not catalogue_path.is_file():
+            logger.warning(
+                "mcp.json: server %r not found in catalogue at %s — skipping",
+                server_name, catalogue_path,
+            )
+            continue
+        try:
+            entry = json.loads(catalogue_path.read_text())
+        except Exception as e:
+            logger.warning(
+                "mcp.json: failed to parse catalogue entry %s: %s — skipping",
+                catalogue_path, e,
+            )
+            continue
+
+        # Substitute ${VAR} references from transport environment
+        entry = _substitute_env_vars(entry, env)
+
+        # Auto-set poolable: false for entries with a headers field
+        if "headers" in entry:
+            entry["poolable"] = False
+
+        resolved_entries[server_name] = entry
+
+    if not resolved_entries:
+        logger.info("mcp.json: no valid server entries resolved — skipping write")
+        return copied
+
+    # Write ~/.kiro/mcp.json into the crew container
+    mcp_json_data = json.dumps({"mcpServers": resolved_entries}, indent=2).encode()
+    try:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            info = tarfile.TarInfo(name="mcp.json")
+            info.size = len(mcp_json_data)
+            tar.addfile(info, io.BytesIO(mcp_json_data))
+        buf.seek(0)
+        mcp_dest_dir = str(Path(KIRO_MCP_JSON).parent)
+        podman.container_archive_put(container, mcp_dest_dir, buf.read())
+        logger.info(
+            "Wrote mcp.json to %s with servers: %s",
+            container, list(resolved_entries.keys()),
+        )
+    except Exception as e:
+        logger.warning("Failed to write mcp.json to %s: %s", container, e)
+
     return copied
 
 
@@ -2615,6 +2879,17 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     return {"login_url": login_url, "code": login_code}
 
 
+def _request_source(request: Request) -> str | None:
+    """Best-effort client source (IP) for audit events; None if unavailable."""
+    try:
+        client = getattr(request, "client", None)
+        if client is not None:
+            return getattr(client, "host", None) or (client[0] if isinstance(client, (tuple, list)) else None)
+    except Exception:
+        pass
+    return None
+
+
 async def _handle_login_post(request: Request) -> Response:
     """POST /login — initiate kiro-cli device auth via an ephemeral temp container.
 
@@ -2710,6 +2985,11 @@ async def _handle_login_get(request: Request) -> Response:
         if _login_pending is not None and _login_pending.get("container") == pending["container"]:
             _login_pending = None
 
+    _security.audit_auth_event(
+        action="login", outcome="success", account="academy",
+        source=_request_source(request),
+        emit=logger.info,
+    )
     return JSONResponse({"status": "complete"})
 
 
@@ -2721,6 +3001,11 @@ async def _handle_logout_post(request: Request) -> Response:
     """
     if not _read_auth_file():
         return PlainTextResponse("Not authenticated.", status_code=404)
+
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="academy",
+        source=_request_source(request), emit=logger.info,
+    )
 
     try:
         podman = _get_podman()
@@ -2812,6 +3097,17 @@ def crews() -> dict:
                         "last_tool": a.get("last_tool", ""),
                     }
                     for a in tasks
+                ]
+            elif isinstance(tasks, dict):
+                entry["agents"] = [
+                    {
+                        "task_id": a.get("id"),
+                        "agent": a.get("agent", ""),
+                        "done": a.get("done", False),
+                        "elapsed_secs": int(a.get("elapsed", 0)),
+                        "last_tool": a.get("last_tool", ""),
+                    }
+                    for a in tasks.get("agents", [])
                 ]
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
@@ -2985,8 +3281,19 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "p.parent.mkdir(parents=True, exist_ok=True); "
         "cfg = json.loads(p.read_text()) if p.exists() else {}; "
         "a = cfg.setdefault('agent', {}); "
+        # KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json.
+        # Sourced from GA_CREW_AGENT (default "kiro"). Absent → gateway 4xx at
+        # config read. Written as a fully-resolved Python literal (no $VAR).
+        f"a['agent'] = {json.dumps(GA_CREW_AGENT)}; "
+        # Bounds (KiroCrew 0.4.0, enforced with a 4xx on out-of-range):
+        #   spawn_min_memory_gb: >= 0 (0 disables the spawn memory gate); no upper
+        #   cap enforced by the gateway. Default 4.0; transport default 1.5.
         f"a['spawn_min_memory_gb'] = {GA_SPAWN_MIN_MEMORY_GB}; "
+        #   resource_pressure_gb: >= 0. Soft-pressure threshold; must be >=
+        #   resource_critical_gb to be meaningful. Transport default 2.0.
         f"a['resource_pressure_gb'] = {GA_RESOURCE_PRESSURE_GB}; "
+        #   resource_critical_gb: >= 0, and <= resource_pressure_gb. Transport
+        #   default 1.0 (below the 2.0 pressure threshold — in range).
         f"a['resource_critical_gb'] = {GA_RESOURCE_CRITICAL_GB}; "
         # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
         # permission guard for the agent running inside this crew container.
@@ -2998,7 +3305,10 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "a['dangerously_skip_permissions'] = True; "
         "a['default_agent'] = 'ghost'; "
         "a['reasoning_effort'] = 'max'; "
+        #   subagent_timeout_secs: > 0 (positive seconds). Transport default 3600.
         f"a['subagent_timeout_secs'] = {GA_SUBAGENT_TIMEOUT_SECS}; "
+        #   subagent_max_turns: >= 1; KiroCrew UI cap is 200. Transport default 200
+        #   (at the ceiling — in range).
         f"a['subagent_max_turns'] = {GA_SUBAGENT_MAX_TURNS}; "
         + default_model_line +
         "p.write_text(json.dumps(cfg, indent=2)); "
@@ -3072,7 +3382,7 @@ def _inject_policy(
         # threat model around admiral_secret exposure.
         "admission_body = json.dumps({\n"
         "    'require_policy_signature': True,\n"
-        f"    'trust_keys': {{'ghostship': '{admiral_secret}'}},\n"
+        f"    'trust_keys': {{'ghostship': base64.b64decode('{secret_b64}').decode()}},\n"
         "}, indent=2)\n"
         "crew_dir = pathlib.Path('/home/kirocrew/.kiro/crew')\n"
         "crew_dir.mkdir(parents=True, exist_ok=True)\n"
@@ -3329,7 +3639,7 @@ def evac(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    url = _sign_file_url(crew_id, path, ref, bundle)
+    url = _sign_file_url(crew_id, clean, ref, bundle)
     result = {
         "crew_id": crew_id,
         "path": path,
@@ -3471,7 +3781,7 @@ def captain(
     change_name: str | None = None,
     cron: str | None = None,
     interval: int | None = None,
-    timezone: str = "Australia/Sydney",
+    timezone: str = "UTC",
     fire_immediately: bool | None = None,
 ) -> dict:
     """Manage the single Raven-backed standing-orders Captain for a crew.
@@ -3531,7 +3841,7 @@ def captain(
     elif any(
         value is not None
         for value in (message, template, change_name, cron, interval, fire_immediately)
-    ) or timezone != "Australia/Sydney":
+    ) or timezone != "UTC":
         return {
             "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, or timezone"
         }
@@ -3745,7 +4055,7 @@ def schedule(
     interval: int | None = None,
     delay: int | None = None,
     agent: str = "ghost",
-    timezone: str = "Australia/Sydney",
+    timezone: str = "UTC",
     fire_immediately: bool | None = None,
     action: str = "create",
     job_id: str | None = None,
@@ -4065,10 +4375,13 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    result = _crew_api_with_recovery(
-        crew, crew_id, "POST", "/api/spawn",
-        json={"task": task, "agent": agent, "keep": True},
-    )
+    try:
+        result = _crew_api_with_recovery(
+            crew, crew_id, "POST", "/api/spawn",
+            json={"task": task, "agent": agent, "keep": True},
+        )
+    except CrewUnresponsiveError as e:
+        return {"error": str(e)}
     return {
         "task_id": result.get("id"),
         "crew_id": crew_id,
@@ -4105,19 +4418,31 @@ def steer(
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
-    s = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+    try:
+        s = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+    except CrewUnresponsiveError as e:
+        return {"error": str(e)}
     if s.get("done", False):
-        r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                      json={"task": message})
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
+                          json={"task": message})
+        except CrewUnresponsiveError as e:
+            return {"error": str(e)}
         return {"task_id": r.get("id", task_id), "crew_id": crew_id,
                 "action": "redeployed", "message": message}
     if force:
-        _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/spawn/{task_id}")
-        r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                      json={"task": message})
+        try:
+            _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/spawn/{task_id}")
+            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
+                          json={"task": message})
+        except CrewUnresponsiveError as e:
+            return {"error": str(e)}
         return {"task_id": r.get("id", task_id), "crew_id": crew_id,
                 "action": "force_redeployed", "message": message}
-    _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer", json={"message": message})
+    try:
+        _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer", json={"message": message})
+    except CrewUnresponsiveError as e:
+        return {"error": str(e)}
     return {"task_id": task_id, "crew_id": crew_id, "action": "steered", "message": message}
 
 
@@ -4187,7 +4512,10 @@ def _pickup_single(
     deadline = time.monotonic() + timeout_secs
 
     while True:
-        r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+        except CrewUnresponsiveError as e:
+            return {"error": str(e), "task_id": task_id, "crew_id": crew_id}
         done = r.get("done", False)
 
         # Single exec reads all mailboxes at once.
@@ -4258,7 +4586,10 @@ def _pickup_list(
     deadline = time.monotonic() + timeout_secs
 
     while True:
-        r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
+        except CrewUnresponsiveError as e:
+            return {"error": str(e), "crew_id": crew_id}
         agents = r.get("agents", [])
 
         # Check if any task is done
@@ -4551,6 +4882,25 @@ def _schedule_monitor() -> None:
                                 break
                         _save_registry(reg)
 
+                    # H-2: For one-shot (delay) jobs, delete the cron from the
+                    # gateway so its annual cron expression never fires again.
+                    if sched.get("one_shot"):
+                        job_id = sched.get("job_id")
+                        if job_id:
+                            try:
+                                _crew_api_with_recovery(
+                                    crew, crew_id, "DELETE", f"/api/crons/{job_id}"
+                                )
+                                logger.info(
+                                    "Schedule monitor: deleted one-shot cron %s from gateway after fire",
+                                    job_id,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Schedule monitor: could not delete one-shot cron %s from gateway: %s",
+                                    job_id, e,
+                                )
+
         except Exception as e:
             logger.warning("Schedule monitor error: %s", e)
 
@@ -4746,24 +5096,11 @@ def _idle_monitor() -> None:
 def _resolve_public_url_base() -> str:
     """Return the public URL base for presigned file URLs.
 
-    Precedence: GA_HOST_URL > GA_MCP_PUBLIC_URL (deprecated fallback) >
-    http://localhost:{PORT}.
+    Precedence: GA_HOST_URL > http://localhost:{PORT}.
     """
     base = os.environ.get("GA_HOST_URL")
     if base:
         return base.rstrip("/")
-    # Deprecated fallback
-    legacy = os.environ.get("GA_MCP_PUBLIC_URL")
-    if legacy:
-        warnings.warn(
-            "GA_MCP_PUBLIC_URL is deprecated; set GA_HOST_URL instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        logger.warning(
-            "GA_MCP_PUBLIC_URL is deprecated — set GA_HOST_URL instead"
-        )
-        return legacy.rstrip("/")
     return f"http://localhost:{PORT}"
 
 
@@ -4775,8 +5112,9 @@ def _sign_file_url(
 ) -> str:
     """Return a short-lived presigned URL for a crew workspace file or bundle."""
     expires = int(time.time()) + GA_FILE_TTL_SECS
-    payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{expires}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    flags = ":".join(sorted(f for f in ["bundle"] if bundle))
+    payload = f"{crew_id}:{path}:{expires}:GET:{ref or ''}:{flags}"
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     url = f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
     if ref:
@@ -4793,7 +5131,7 @@ def _verify_file_token(
     sig: str,
     ref: str | None = None,
     bundle: bool = False,
-    mode: str = "",
+    mode: str | None = None,
 ) -> bool:
     """Verify a presigned file URL token. Returns False if invalid or expired."""
     try:
@@ -4802,13 +5140,18 @@ def _verify_file_token(
         return False
     if time.time() > exp:
         return False
-    # Upload tokens use mode-based payload; download tokens use ref/bundle payload.
-    # The caller passes either (ref, bundle) for GET or mode for PUT.
-    if mode:
-        payload = f"{crew_id}:{path}::{mode}:{exp}"
+    # Unified payload format: {crew_id}:{path}:{expires}:{method}:{ref}:{flags}
+    # flags is a sorted colon-joined set of active boolean options (bundle, unpack).
+    # mode=None means GET (download); mode is a string ("", "unpack", "bundle") for POST (upload).
+    if mode is not None:
+        # Upload (POST) path — reconstruct flags the same way _sign_upload_url does
+        flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and mode == "bundle") or (f == "unpack" and mode == "unpack")))
+        payload = f"{crew_id}:{path}:{exp}:POST::{flags}"
     else:
-        payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{exp}"
-    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+        # Download (GET) path
+        flags = ":".join(sorted(f for f in ["bundle"] if bundle))
+        payload = f"{crew_id}:{path}:{exp}:GET:{ref or ''}:{flags}"
+    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
 
 
@@ -5236,9 +5579,9 @@ def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool
     signed for a plain write cannot be replayed as an unpack or bundle clone.
     """
     expires = int(time.time()) + GA_FILE_TTL_SECS
-    mode = "unpack" if unpack else ("bundle" if bundle else "")
-    payload = f"{crew_id}:{path}::{mode}:{expires}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and bundle) or (f == "unpack" and unpack)))
+    payload = f"{crew_id}:{path}:{expires}:POST::{flags}"
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     return f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
 
@@ -5294,11 +5637,56 @@ if __name__ == "__main__":
     )
     _file_starlette = Starlette(routes=file_routes)
     app = BearerAuthMiddleware(mcp_app, api_key=GA_API_KEY, file_app=_file_starlette)
+    # Transport-security wrapper: security headers, HSTS, and the staged
+    # HTTP→HTTPS redirect (TRN-70). Outermost so headers land on every response
+    # and the redirect precedes auth.
+    app = SecurityHeadersMiddleware(
+        app,
+        enable_headers=GA_ENABLE_SECURITY_HEADERS,
+        enforce_redirect=GA_ENFORCE_HTTPS_REDIRECT,
+        csp_enforce=GA_CSP_ENFORCE,
+    )
     if GA_API_KEY:
         logger.info("MCP API-key authentication: enabled")
     else:
         logger.info("MCP API-key authentication: disabled (GA_API_KEY unset)")
+    logger.info(
+        "Transport security: headers=%s https_redirect=%s csp=%s",
+        "on" if GA_ENABLE_SECURITY_HEADERS else "off",
+        "enforced" if GA_ENFORCE_HTTPS_REDIRECT else "staged-off",
+        "enforce" if GA_CSP_ENFORCE else "report-only",
+    )
 
-    config = uvicorn.Config(app, host=HOST, port=PORT, log_level="info")
+    # Enforce a minimum TLS version when the app terminates TLS directly.
+    # (In production TLS is terminated at the edge; these apply for non-edge
+    # deployments that set GA_TLS_CERTFILE / GA_TLS_KEYFILE.)
+    _uvicorn_kwargs: dict[str, Any] = {}
+    if GA_TLS_CERTFILE and GA_TLS_KEYFILE:
+        import ssl as _ssl
+
+        _tls_certfile = GA_TLS_CERTFILE
+        _tls_keyfile = GA_TLS_KEYFILE
+        _tls_min_version = GA_TLS_MIN_VERSION
+
+        def _ssl_context_factory(_cfg, _default_factory):  # type: ignore[return]
+            """Build an SSLContext with an explicit minimum TLS version floor.
+
+            Using ssl_context_factory rather than ssl_version + ssl_ciphers
+            lets us call ctx.minimum_version directly, which is the only
+            reliable way to enforce a TLS floor across OpenSSL versions.
+            """
+            ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(_tls_certfile, _tls_keyfile)
+            if _tls_min_version == "1.3":
+                ctx.minimum_version = _ssl.TLSVersion.TLSv1_3
+            else:
+                # Enforce TLS 1.2 explicitly — do not rely on the OpenSSL default.
+                ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
+            return ctx
+
+        _uvicorn_kwargs["ssl_context_factory"] = _ssl_context_factory
+        logger.info("Direct TLS termination enabled (min TLS %s)", GA_TLS_MIN_VERSION)
+
+    config = uvicorn.Config(app, host=HOST, port=PORT, log_level="info", **_uvicorn_kwargs)
     server = uvicorn.Server(config)
     asyncio.run(server.serve())

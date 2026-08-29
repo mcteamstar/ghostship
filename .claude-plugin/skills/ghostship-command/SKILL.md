@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "1.0"
+  version: "0.2.0"
 ---
 
 # Ghostship Command
@@ -18,7 +18,8 @@ transport can't.
 
 No `ghostship` MCP connection yet? That's `ghostship-admin`'s job (install,
 connect a client, upgrade, tear down) — this skill starts after that's
-already done.
+already done. Want to add new agent personas, skills, or MCP servers to the
+catalogue, or build a new crew composition? That's `ghostship-capability`.
 
 ## Mental model
 
@@ -38,6 +39,9 @@ Fleet (you, the Admiral, over MCP)
   crew do not share a working directory. They *do* share one OpenSpec store
   at the workspace root and can reach each other over the crew's internal
   mail.
+- **Sessions persist after completion** until the crew is nuked — `steer` on
+  a finished task continues it with full prior context intact. Don't nuke a
+  crew just to "clean up" completed tasks; those sessions are valuable.
 - **composition** (e.g. `spec-ops`) selects what a crew is built from —
   which agents/skills/steering it ships with. Not the same axis as *persona*
   (which agent a given task runs on).
@@ -52,8 +56,8 @@ read the live state instead of hardcoding it:
 - resource `transport://compositions` — available `composition` values for `launch`.
 - resource `transport://agents` — the real roster and description for `dispatch`'s `agent` values.
 - resource `transport://orders` — built-in `captain(template=...)` bodies, in full.
-- resource `transport://jobs` — every scheduled job across every crew; the authoritative thing to check against `schedule`'s and `captain`'s own `list`/`status` actions.
-- resource `transport://version` — transport version and each running crew's image version; relevant to the image-rebuild guardrail below.
+- resource `transport://jobs` — every scheduled job across every crew.
+- resource `transport://version` — transport version and each running crew's image version.
 
 Treat the tables in this skill as the common case, not a guarantee.
 
@@ -71,64 +75,52 @@ nuke(crew_id, confirm=True)         → destroys container + BOTH volumes
 
 ### 1. `launch(crew_id, composition="spec-ops")`
 
-`crew_id` is yours to name (lowercase letters/digits/hyphens, 1–50 chars) —
-pick something meaningful to the work, e.g. `srv-69-rate-limit`, not a
-random id. One crew can be reused across many features; only launch a new
-one when you actually want workspace isolation from an existing crew.
+Name `crew_id` after the work — lowercase letters/digits/hyphens, 1–50 chars.
+There's no single required convention; pick whatever makes the crew's purpose
+obvious at a glance. A rough hierarchy of what to anchor to:
 
-First-ever use on an install needs kiro-cli identity set up first — that's
-`ghostship-admin`'s `/login` flow, done once via shell before any of this.
-If it was skipped, `launch` falls back to its own device-auth trigger and
-returns `login_url`/`code` instead of a ready crew; surface that URL/code
-to your human operator to complete, then call `launch` again with the same
-`crew_id`. Don't rely on this fallback if you have a choice — it's known to
-fail silently for IAM Identity Center installs, and any crew partially
-created while unauthenticated can't be salvaged, only nuked. Prefer
-confirming auth is already done (or asking your operator to run
-`ghostship-admin`'s login flow) over hitting this path.
+1. **Repo-scoped work** — use the repo name or a short form: `ghostship`, `hermes-fix`
+2. **Ticket-scoped work** — use the ticket ID: `trn-70-impl`, `srv-69-rate-limit`
+3. **Topic/purpose** — use a verb-noun or descriptive slug: `review-security`, `icon-eval`, `auth-research`
 
-A crew that idled out (no activity for five minutes by default) is not
-gone — the next call against it (`dispatch`, `pickup`, `steer`, `evac`,
-`supply`, `schedule`) restarts it transparently. Don't `nuke` a crew just
+Any of these work; the main goal is that `crews()` output makes sense at a
+glance. One crew can be reused across related work; only launch a new one
+when you genuinely want workspace isolation from an existing one.
+
+A crew that idled out (no activity for ~5 min by default) is not gone — the
+next call against it restarts it transparently. Don't `nuke` a crew just
 because `crews()` shows it stopped; `nuke` is for when you want the
-workspace gone.
+workspace permanently gone.
 
 ### 2. Seed the workspace — `supply`
 
-**A freshly launched crew's workspace is empty** except the shared
-`openspec/` store `launch` seeds automatically — no repo, no files. If the
-work you're about to `dispatch` needs a codebase (almost all OpenSpec
-work does), run `supply` first. Skipping this and dispatching straight
-into an empty crew is a real failure mode, not a hypothetical one — the
-agent lands with nothing to explore, read, or edit, and either stalls or
-invents context that isn't there. Confirm you've seeded a repo before your
-first repo-touching `dispatch` in a crew.
+**A freshly launched crew's workspace is empty.** `launch` only seeds the
+shared `openspec/` store automatically — not a repo, not any code. If the
+work you're about to `dispatch` needs a codebase, run `supply` first.
+Dispatching into an empty crew is the single most common mistake — the agent
+lands with nothing to read or edit and either stalls or invents context.
 
 `supply` (and `evac`) do **not** move bytes through the MCP call itself —
-the tool call only returns a presigned URL. You then have to actually
-transfer the bytes with an HTTP client (`curl` from wherever you're
-running, e.g. via Bash):
+the tool call returns a presigned URL. You then POST the bytes yourself with
+`curl` or equivalent:
 
 ```bash
 # Single file
 curl -X POST "<url>" --data-binary @./config.json
 
-# Directory tree — set unpack=True on the supply() call, then POST a tar
+# Directory tree (set unpack=True on the supply() call)
 tar -czf - ./myrepo | curl -X POST "<url>&unpack=1" --data-binary @-
 
-# Real git history — set bundle=True on the supply() call, then POST the bundle
-git bundle create ./myrepo.bundle --all
-curl -X POST "<url>&bundle=1" --data-binary @./myrepo.bundle
+# Full git history — recommended for SDD work (set bundle=True on the supply() call)
+git bundle create /tmp/myrepo.bundle --all
+curl -X POST "<url>&bundle=1" --data-binary @/tmp/myrepo.bundle
 ```
 
-Deliver a repo to `path="repo"` — the working tree location every persona
-and skill expects. It sits as a sibling to the crew's shared `openspec/`
-store, never inside it, so seeding never touches OpenSpec state.
-
-`evac` is the same pattern in reverse: `evac(path, crew_id, ref=..., bundle=...)`
-returns a download URL; `ref` alone (no `bundle`) gets you a diff, `bundle=True`
-gets you a full git bundle to clone/fetch locally, and a bare `path` gets
-you that one file.
+Always deliver the repo to `path="ghostship"` or `path="repo"` — a sibling
+to the crew's shared `openspec/` store, never inside it. Every persona and
+skill looks for the repo at this level. Using `bundle=True` is preferred
+over `unpack=True` because it preserves full git history and lets the agent
+run `git log`, `git diff`, and `git bundle` for `evac`.
 
 ### 3. Do work — `dispatch`
 
@@ -137,27 +129,26 @@ dispatch(task, agent="ghost", crew_id) → { task_id, ... }
 ```
 
 The dispatched agent has **no context beyond `task`** — no memory of this
-conversation, no idea what you're trying to accomplish beyond what you
-write. Be specific: what to do, what "done" looks like, and anything about
-prior work it needs to know (a change name, a commit hash, a mail address
-to report back to).
+conversation, no idea what you're trying to accomplish beyond what you wrote.
+Be specific: state what to do, what "done" looks like, the relevant file
+paths or change names, and anything about prior work it needs to know.
 
 Persona roster (confirm against `transport://agents` — this is the
 `spec-ops` default):
 
 | Agent | Use for |
 |:------|:--------|
-| **ghost** | One well-scoped task end to end — including the full OpenSpec cycle if the task is self-contained enough not to need a hand-off |
+| **ghost** | One well-scoped task end to end — including the full OpenSpec cycle if the task is self-contained enough |
 | **spectre** | Front half of a change — explore, propose, revise the plan |
-| **banshee** | Independent review — a second pair of eyes across the whole change, not just one task; fixes what it finds via `openspec-update-change`/`openspec-propose`, hands the formal close-out to reaper |
-| **wraith** | Research and docs — read-only over code, writes report/doc files only |
+| **banshee** | Independent review — a second pair of eyes; finds bugs, runs tests, fixes what it finds, gives a formal verdict |
+| **wraith** | Research, docs, investigation — read-only over code, writes reports only; no edits |
 | **reaper** | Sync specs and archive a finished change |
-| **raven** | Watches mailboxes, checks task state, dispatches bounded next steps. Also the one Captain autopilot runs (see below) |
+| **raven** | Watches mailboxes, checks task state, dispatches bounded next steps; used by Captain autopilot |
 
-Small work doesn't need the full five-persona relay — a single `ghost`
-dispatch is enough for a self-contained task. Reach for the fuller cycle
-(spectre → ghost → banshee → reaper) for anything that benefits from a
-plan, an implementer, and an independent reviewer being different passes.
+Small work doesn't need the full relay — a single `ghost` dispatch is enough
+for a self-contained task. Use the fuller cycle (spectre → ghost → banshee →
+reaper) for anything that benefits from a plan, an implementer, and an
+independent reviewer being separate passes.
 
 ### 4. Watch and guide — `pickup` / `steer`
 
@@ -167,9 +158,8 @@ pickup(task_id, crew_id, timeout_secs=N)      → poll every 3s up to N, or unti
 pickup(crew_id=...)                           → list every task in the crew (no task_id)
 ```
 
-Polling returns early with `reason: "admiral_mail"` if new mail lands in
-your (Admiral) mailbox mid-poll — treat that as a signal to go read it, not
-noise.
+Polling returns early with `reason: "admiral_mail"` if new mail lands
+mid-poll — treat that as a signal to read mail, not noise.
 
 ```
 steer(task_id, message, crew_id)              → running task: redirected mid-flight
@@ -177,11 +167,15 @@ steer(task_id, message, crew_id)              → running task: redirected mid-f
 steer(task_id, message, crew_id, force=True)  → hard-stop a running task first, then resume
 ```
 
-Sessions persist after completion until the crew is nuked — `steer` on a
-finished task is a real continuation, not a fresh start. A `job_id` from
-`schedule`/`captain` lives in a different namespace than `task_id`, so
-`steer` can't touch a scheduled check-in; use `captain(action="stop")` or
-`schedule(action="cancel")` for those instead.
+Sessions persist after completion — `steer` on a finished task is a real
+continuation with full history intact. When a task times out or produces the
+wrong output, `steer` it rather than dispatching fresh — you keep the agent's
+full working context. Only dispatch fresh if the task is truly done and you
+want a new scope.
+
+A `job_id` from `schedule`/`captain` lives in a different namespace than
+`task_id` — `steer` cannot touch scheduled jobs; use `captain(action="stop")`
+or `schedule(action="cancel")` for those.
 
 ### 5. Recurring or delayed work — `schedule`
 
@@ -191,137 +185,176 @@ schedule(action="list" | "cancel", ...)
 ```
 
 Both `dispatch` and `schedule` default to `ghost`; pass `agent=` explicitly
-for anything else. `interval` jobs fire once immediately on creation by
-default (`fire_immediately`); `cron` jobs don't. Minimum `interval` is 60s.
-A `cron` expression is interpreted in `timezone`, which defaults to
-`Australia/Sydney` — pass it explicitly if you mean a different zone. Same
-default applies to `captain`'s `cron` below.
+for anything else. `interval` jobs fire immediately on creation by default;
+`cron` jobs don't. Minimum `interval` is 60s. Pass `timezone` explicitly if
+you don't mean UTC (the default).
 
-## Autopilot — Captain
+## Autopilot — Captain (prefer this for non-trivial work)
 
-Manual relay (you calling `dispatch`/`pickup`/`steer` yourself, persona by
-persona) is the default and always available. `captain` is the one opt-in
-autonomous mechanism per crew: it books a recurring job that dispatches
-**raven** in a persistent session to watch the crew and move work forward
-on its own.
+**Captain is the default for any work expected to take more than ~20 minutes.**
+A single `dispatch` has a 60-minute hard timeout and no automatic recovery —
+if the agent times out, you manually intervene. Captain survives timeouts,
+crashes, and container restarts: Raven picks up where it left off on the
+next check-in cycle.
 
 ```
-captain(crew_id, action="order", template="sdd", change_name="<change>", interval=60)
-captain(crew_id, action="order", message="<free-form standing order>", cron="0 * * * *")
-captain(crew_id, action="status")   # job enabled?, last-run summary, Captain + Admiral mailbox counts
-captain(crew_id, action="stop")     # pauses the job, keeps its history/mailbox
+captain(crew_id, action="order", template="sdd", change_name="<change>", interval=300)
+captain(crew_id, action="order", message="<free-form standing order>", interval=300)
+captain(crew_id, action="status")   # job state, last-run summary, unread mail counts
+captain(crew_id, action="stop")     # pauses the job without deleting it
 ```
 
-The built-in `sdd` template (full body via `transport://orders`) has Raven
-read real OpenSpec + `tasks.md` state each check-in, then dispatch spectre
-while planning is incomplete, ghost while tasks are unchecked, and banshee
-for review. After one unresolved fix/re-review cycle, it escalates to you
-rather than looping forever.
+Use `interval=300` (5 min) for SDD work — comfortably inside the idle-stop
+window. A scheduled check-in existing does **not** by itself keep a crew
+warm between runs; only actual dispatch/cron activity refreshes the idle timer.
 
-Use `interval=60` for check-ins on active SDD work — comfortably inside the
-300s idle-stop window, so the container never idles out mid-cycle. A
-scheduled check-in existing does **not** by itself keep a crew warm between
-runs; only actual dispatch/cron activity refreshes the idle timer.
+The built-in `sdd` template (full body via `transport://orders`) drives Raven
+to read real OpenSpec + `tasks.md` state each check-in, then dispatch spectre
+while planning is incomplete, ghost while tasks are unchecked, banshee for
+review, and reaper to archive. After one unresolved fix/re-review cycle, it
+escalates to you rather than looping forever. Raven self-pauses the cron
+once the lifecycle is complete — `captain status` will show `status: paused`.
+
+For monitoring orders (watch a one-shot task, report when done), write a
+free-form message and Raven will pause the cron after sending the completion
+report.
+
+**Checking on a captained crew:**
+
+```
+captain(crew_id, action="status")   # last Raven cycle summary + unread mail counts
+crews()                             # see active tasks across all crews
+pickup(crew_id=...)                 # full task list including Raven cycles
+```
+
+## Extracting work — `evac` and merging
+
+`evac` returns a presigned download URL. You then GET the bytes yourself.
+The most common pattern is extracting a git bundle and inspecting commits:
+
+```bash
+# 1. Get the URL
+evac(path="ghostship", crew_id="...", ref="release/0.2.0", bundle=True)
+
+# 2. Download
+curl -s "<url>" -o /tmp/bundle.bundle
+
+# 3. Fetch into your local repo (creates a remote ref)
+cd /path/to/local/repo
+git fetch /tmp/bundle.bundle 'refs/heads/release/0.2.0:refs/remotes/crew/release/0.2.0'
+
+# 4. Inspect new commits
+git log release/0.2.0..crew/release/0.2.0 --oneline
+
+# 5. Diff stat
+git diff release/0.2.0..crew/release/0.2.0 --stat
+
+# 6. Cherry-pick or merge selectively
+git cherry-pick <commit-hash>
+```
+
+Always inspect before merging — the crew may have commits you don't want
+(e.g. tool image replacements if you have your own versions, or planning
+artifacts the crew modified). Cherry-pick individual commits rather than
+merging the whole branch when in doubt.
 
 ## Mail
 
-Personas talk to each other and to you over Maildir mailboxes inside the
-container — you don't reach in and read `/var/mail/*` directly (see
-guardrails). Two ways to see mail state without opening a mailbox yourself:
+Personas communicate over Maildir mailboxes inside the container.
+You don't reach in and read `/var/mail/*` directly (see guardrails).
 
-- Every `pickup` response includes mail counts (`agent_mail`/`admiral_mail`
-  single-task; `mail_summary`/`admiral_mail` for a list).
-- `captain(action="status")` reports Captain + Admiral mailbox counts.
+Two ways to see mail state without a dispatch:
 
-To actually **read** mail content, dispatch **raven** with a task asking it
-to check the relevant mailbox and report back — raven is the
-watcher/messenger persona and is what the crew's own `ghostship-mail` skill
-is written for. Don't dispatch `ghost` for a mail-reading task; that's not
-what it's for and it won't know the mail conventions the way raven's
-prompt does.
+- Every `pickup` response includes mail counts (`admiral_mail`, `captain_subjects`).
+- `captain(action="status")` reports Captain + Admiral mailbox unread counts and the last Raven cycle summary — usually enough to know what's happening without a full dispatch.
+
+To read full mail content, dispatch **raven** with a task asking it to check
+a specific mailbox and report back. Raven is the watcher/messenger persona;
+don't use ghost for mail-reading tasks.
 
 ## Guardrails
 
-- **Never `dispatch` repo-touching work into an unseeded crew.** `launch`
-  only seeds the shared `openspec/` store, not a repo — check you've run
-  `supply(path="repo", ...)` (or confirm one's already there, e.g. via a
-  prior task's result) before dispatching anything that expects a
-  codebase. This is the single most common way to waste a dispatch.
-- **Stay on the transport.** Every interaction with a crew goes through
-  these MCP tools — never reach for a direct `podman exec` into a crew
-  container. The container is ghostship's actual security boundary:
-  governance policy, mail delivery, idle-timer accounting, and task/session
-  tracking are all transport-mediated, and going around it breaks all of
-  that silently. If a legitimate need forces a direct exec, that's a gap in
-  the transport's tool surface, not something to route around.
-- **`nuke` destroys both volumes, no residue.** `evac` anything you need —
-  a diff, a bundle, a file — before nuking. There's no undo.
-- **`nuke(crew_id)` alone is a preview**, not a no-op skip: it shows what
-  would be destroyed. You need `confirm=True` to actually destroy.
-- **`crew_id` is required on almost everything** except `crews()` (lists
-  all) and reading resources. `dispatch`/`schedule` accept `crew_id=None` in
-  their signature but will error without one in practice — always pass it.
-- **Rebuilding the crew image doesn't touch running/existing crews** — a
-  container is bound to whatever image existed at its `launch` time.
-  Picking up an image change means `nuke` + `launch` for that crew
-  specifically (pull anything needed out first).
+- **Never dispatch repo-touching work into an unseeded crew.** `launch` only
+  seeds the shared `openspec/` store. Confirm you've run `supply(path="...",
+  bundle=True)` before dispatching anything that expects code.
+- **Stay on the transport.** Never reach for `podman exec` into a crew
+  container. Container exec bypasses governance policy, mail delivery, idle
+  accounting, and task tracking — silently breaking all of it.
+- **`nuke` destroys both volumes, no residue.** `evac` everything you need
+  before nuking. There is no undo.
+- **`nuke(crew_id)` without `confirm=True` is a preview only**, not a no-op.
+  Add `confirm=True` to actually destroy.
+- **Rebuilding the crew image doesn't touch existing crews.** A container is
+  bound to the image it was launched with. Picking up a new crew image means
+  `evac` + `nuke` + `launch` for that crew.
 
 ## Common pitfalls
 
 | Symptom | Cause |
 |:--------|:------|
-| Dispatched agent reports there's nothing to work on / no code found | The crew was never seeded — `launch` alone gives you an empty workspace plus the shared `openspec/` store, nothing else. Run `supply(path="repo", ...)` before dispatching repo-touching work |
-| `supply`/`evac` "succeeded" but no file appeared / download 404s | Forgot the second step — you have to actually POST/GET bytes against the returned URL, the tool call alone doesn't transfer data |
-| Dispatched agent does something off-base | `task` was underspecified — it has zero context beyond what you wrote in that string |
-| `steer` seems to do nothing / errors oddly | Wrong task_id, or trying to `steer` a `job_id` from `schedule`/`captain` — those aren't `steer`'s namespace |
-| Crew "won't respond" after a while | It idle-stopped (300s default with no activity) — this is expected; the next call against it restarts it transparently, just costs a beat |
-| Repo seeding landed in the wrong place | Should be `path="repo"`, a sibling of the shared `openspec/` store, not nested inside it |
-| Nuked a crew and lost something | Should have `evac`'d first — nuke has no undo |
+| Agent reports nothing to work on / no code found | Crew not seeded — run `supply(path="...", bundle=True)` before dispatching |
+| `supply`/`evac` "succeeded" but nothing appeared | Forgot the second step — you must POST/GET bytes against the returned URL |
+| `steer` errors oddly or does nothing | Wrong task_id, or trying to `steer` a `job_id` from `schedule`/`captain` |
+| Crew won't respond after a while | Idle-stopped (expected) — next call restarts it transparently |
+| Repo landed in wrong place | Use `path="ghostship"` or `path="repo"`, not nested inside `openspec/` |
+| Nuked a crew and lost work | Should have `evac`'d first — no undo |
+| Agent did wrong thing despite timeout steer | Used fresh `dispatch` instead of `steer` — lost full prior context |
+| Captain sending many duplicate admiral mails | Raven correctly reporting completion each cycle; Raven self-pauses on SDD template — check `captain status` for `paused`. For free-form orders, the dedup check prevents most repeats but a manual `captain(action="stop")` may be needed |
 
-## Worked example — manual relay, one feature
+## Worked example — captain autopilot (recommended for non-trivial work)
 
+```python
+# 1. Launch + seed
+launch(crew_id="trn-70-impl")
+supply(path="ghostship", crew_id="trn-70-impl", bundle=True)
+# → POST /tmp/myrepo.bundle to the returned URL
+
+# 2. Optional: start spectre to kick off planning if OpenSpec change doesn't exist yet
+dispatch(task="Create an OpenSpec change for TRN-70: ...", agent="spectre", crew_id="trn-70-impl")
+pickup(task_id=..., crew_id="trn-70-impl", timeout_secs=600)
+
+# 3. Set captain to drive the full SDD lifecycle
+captain(crew_id="trn-70-impl", action="order", template="sdd",
+        change_name="trn-70-security-hardening", interval=300)
+
+# 4. Monitor periodically
+captain(crew_id="trn-70-impl", action="status")   # summary + mail counts
+crews()                                            # active tasks
+
+# 5. When captain status shows paused (lifecycle complete):
+evac(path="ghostship", crew_id="trn-70-impl", ref="release/0.2.0", bundle=True)
+# → curl -s "<url>" -o /tmp/bundle.bundle
+# → git fetch /tmp/bundle.bundle ... && git log ... && git cherry-pick <hash>
+nuke(crew_id="trn-70-impl", confirm=True)
 ```
+
+## Worked example — manual relay (full control)
+
+```python
 launch(crew_id="srv-69-rate-limit")
-supply(path="repo", crew_id="srv-69-rate-limit", bundle=True) → POST the git bundle
+supply(path="repo", crew_id="srv-69-rate-limit", bundle=True)  # POST the bundle
 
-dispatch(task="Explore and propose a change for SRV-69: add per-IP upload rate
-  limiting to the upload handler. Investigate current handler code first.",
-  agent="spectre", crew_id="srv-69-rate-limit") → task_id A
-pickup(task_id=A, crew_id="srv-69-rate-limit", timeout_secs=300)
+dispatch(task="Explore and propose a change for SRV-69: add per-IP upload rate "
+         "limiting. Investigate the current upload handler first.",
+         agent="spectre", crew_id="srv-69-rate-limit")  # → task_id A
+pickup(task_id=A, crew_id="srv-69-rate-limit", timeout_secs=600)
 
-# pull the actual change name from task A's result (spectre names it when
-# it runs `openspec new change`) — don't paste a placeholder literally
-dispatch(task="Implement the tasks in openspec change srv-69-rate-limit for SRV-69.",
-  agent="ghost", crew_id="srv-69-rate-limit") → task_id B
-pickup(task_id=B, crew_id="srv-69-rate-limit", timeout_secs=600)
+# Use the exact change name from task A's result — don't invent it
+dispatch(task="Implement all tasks in openspec change srv-69-rate-limit.",
+         agent="ghost", crew_id="srv-69-rate-limit")  # → task_id B
+pickup(task_id=B, crew_id="srv-69-rate-limit", timeout_secs=3600)
+# If ghost times out: steer(task_id=B, message="Continue from where you left off...", ...)
 
-dispatch(task="Independently review the SRV-69 change for bugs and test gaps.",
-  agent="banshee", crew_id="srv-69-rate-limit") → task_id C
-pickup(task_id=C, crew_id="srv-69-rate-limit", timeout_secs=300)
+dispatch(task="Independently review the SRV-69 change. Fix any findings. "
+         "Give a verdict: APPROVED or UNRESOLVED FINDINGS.",
+         agent="banshee", crew_id="srv-69-rate-limit")  # → task_id C
+pickup(task_id=C, crew_id="srv-69-rate-limit", timeout_secs=600)
 
 dispatch(task="Sync specs and archive the SRV-69 change.",
-  agent="reaper", crew_id="srv-69-rate-limit") → task_id D
-pickup(task_id=D, crew_id="srv-69-rate-limit", timeout_secs=180)
+         agent="reaper", crew_id="srv-69-rate-limit")   # → task_id D
+pickup(task_id=D, crew_id="srv-69-rate-limit", timeout_secs=300)
 
-evac(path="repo", crew_id="srv-69-rate-limit", bundle=True) → GET the result
-# keep the crew if you'll return to it; nuke(crew_id=..., confirm=True) if not
-```
-
-## Worked example — autopilot
-
-```
-launch(crew_id="srv-69-rate-limit")
-supply(path="repo", crew_id="srv-69-rate-limit", bundle=True) → POST the git bundle
-dispatch(task="Create the SRV-69 rate-limiting change.", agent="spectre",
-  crew_id="srv-69-rate-limit")   # or let Raven's first check-in start it
-
-captain(crew_id="srv-69-rate-limit", action="order", template="sdd",
-  change_name="srv-69-rate-limit", interval=60)
-
-# later, periodically:
-captain(crew_id="srv-69-rate-limit", action="status")
-crews()   # or pickup(crew_id="srv-69-rate-limit") to see active tasks
-
-# when status shows the change archived:
 evac(path="repo", crew_id="srv-69-rate-limit", bundle=True)
+# → curl, git fetch, inspect, cherry-pick
+nuke(crew_id="srv-69-rate-limit", confirm=True)
 ```

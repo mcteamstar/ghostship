@@ -25,8 +25,6 @@ KIRO_IDENTITY_PROVIDER="https://config-idp.example.com"
 KIRO_REGION="us-west-2"
 KIRO_LICENSE="pro"
 KC_MODEL_OVERRIDE="config-model"
-GA_FILE_PUBLIC_URL="https://config-files.example.com"
-GA_MCP_PUBLIC_URL="https://config-mcp.example.com"
 EOF
 
 # Extract only the argument-parsing section from install.sh for isolated testing.
@@ -39,8 +37,6 @@ test_parse() {
   local KIRO_REGION=""
   local KIRO_LICENSE=""
   local KC_MODEL_OVERRIDE=""
-  local GA_FILE_PUBLIC_URL=""
-  local GA_MCP_PUBLIC_URL=""
   local API_KEY_FLAG_PASSED=0
   local GA_API_KEY=""
   local _args=("$@")
@@ -77,8 +73,6 @@ test_parse() {
       --port) PORT="$2"; shift 2 ;;
       --model) KC_MODEL_OVERRIDE="$2"; shift 2 ;;
       --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
-      --file-public-url) GA_FILE_PUBLIC_URL="$2"; shift 2 ;;
-      --mcp-public-url) GA_MCP_PUBLIC_URL="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; return 1 ;;
     esac
   done
@@ -89,8 +83,6 @@ test_parse() {
   echo "KIRO_REGION=$KIRO_REGION"
   echo "KIRO_LICENSE=$KIRO_LICENSE"
   echo "KC_MODEL_OVERRIDE=$KC_MODEL_OVERRIDE"
-  echo "GA_FILE_PUBLIC_URL=$GA_FILE_PUBLIC_URL"
-  echo "GA_MCP_PUBLIC_URL=$GA_MCP_PUBLIC_URL"
   echo "GA_API_KEY=$GA_API_KEY"
 }
 
@@ -104,8 +96,6 @@ echo "$OUTPUT" | grep -q "KIRO_IDENTITY_PROVIDER=https://config-idp.example.com"
 echo "$OUTPUT" | grep -q "KIRO_REGION=us-west-2" && pass "REGION from config" || fail "REGION from config"
 echo "$OUTPUT" | grep -q "KIRO_LICENSE=pro" && pass "LICENSE from config" || fail "LICENSE from config"
 echo "$OUTPUT" | grep -q "KC_MODEL_OVERRIDE=config-model" && pass "MODEL from config" || fail "MODEL from config"
-echo "$OUTPUT" | grep -q "GA_FILE_PUBLIC_URL=https://config-files.example.com" && pass "FILE_PUBLIC_URL from config" || fail "FILE_PUBLIC_URL from config"
-echo "$OUTPUT" | grep -q "GA_MCP_PUBLIC_URL=https://config-mcp.example.com" && pass "MCP_PUBLIC_URL from config" || fail "MCP_PUBLIC_URL from config"
 
 # ── Test 2: Flags override config values ──────────────────────────────────────
 echo ""
@@ -115,17 +105,13 @@ OUTPUT=$(test_parse --config "$TMPDIR/test.conf" \
   --identity-provider "https://flag-idp.example.com" \
   --region "eu-west-1" \
   --license "enterprise" \
-  --model "flag-model" \
-  --file-public-url "https://flag-files.example.com" \
-  --mcp-public-url "https://flag-mcp.example.com")
+  --model "flag-model")
 
 echo "$OUTPUT" | grep -q "PORT=8080" && pass "PORT flag overrides config" || fail "PORT flag overrides config (got: $(echo "$OUTPUT" | grep PORT))"
 echo "$OUTPUT" | grep -q "KIRO_IDENTITY_PROVIDER=https://flag-idp.example.com" && pass "IDP flag overrides config" || fail "IDP flag overrides config"
 echo "$OUTPUT" | grep -q "KIRO_REGION=eu-west-1" && pass "REGION flag overrides config" || fail "REGION flag overrides config"
 echo "$OUTPUT" | grep -q "KIRO_LICENSE=enterprise" && pass "LICENSE flag overrides config" || fail "LICENSE flag overrides config"
 echo "$OUTPUT" | grep -q "KC_MODEL_OVERRIDE=flag-model" && pass "MODEL flag overrides config" || fail "MODEL flag overrides config"
-echo "$OUTPUT" | grep -q "GA_FILE_PUBLIC_URL=https://flag-files.example.com" && pass "FILE_PUBLIC_URL flag overrides config" || fail "FILE_PUBLIC_URL flag overrides config"
-echo "$OUTPUT" | grep -q "GA_MCP_PUBLIC_URL=https://flag-mcp.example.com" && pass "MCP_PUBLIC_URL flag overrides config" || fail "MCP_PUBLIC_URL flag overrides config"
 
 # ── Test 3: Missing config file errors ────────────────────────────────────────
 echo ""
@@ -148,8 +134,6 @@ echo "--- Test 5: No config, no flags → defaults ---"
 OUTPUT=$(test_parse)
 echo "$OUTPUT" | grep -q "PORT=64057" && pass "PORT default" || fail "PORT default (got: $(echo "$OUTPUT" | grep PORT))"
 echo "$OUTPUT" | grep -q "KIRO_IDENTITY_PROVIDER=$" && pass "IDP empty by default" || fail "IDP empty by default"
-echo "$OUTPUT" | grep -q "GA_FILE_PUBLIC_URL=$" && pass "FILE_PUBLIC_URL empty by default" || fail "FILE_PUBLIC_URL empty by default"
-echo "$OUTPUT" | grep -q "GA_MCP_PUBLIC_URL=$" && pass "MCP_PUBLIC_URL empty by default" || fail "MCP_PUBLIC_URL empty by default"
 
 # ── Test 6: Partial override (config sets many, flag overrides one) ───────────
 echo ""
@@ -157,7 +141,6 @@ echo "--- Test 6: Partial override — flag overrides one, config keeps the rest
 OUTPUT=$(test_parse --config "$TMPDIR/test.conf" --port 7777)
 echo "$OUTPUT" | grep -q "PORT=7777" && pass "PORT flag overrides" || fail "PORT flag overrides"
 echo "$OUTPUT" | grep -q "KIRO_IDENTITY_PROVIDER=https://config-idp.example.com" && pass "IDP kept from config" || fail "IDP kept from config"
-echo "$OUTPUT" | grep -q "GA_FILE_PUBLIC_URL=https://config-files.example.com" && pass "FILE_PUBLIC_URL kept from config" || fail "FILE_PUBLIC_URL kept from config"
 
 # ── Test 7: Dedicated machine config variables have defaults ──────────────────
 echo ""
@@ -406,6 +389,61 @@ echo "$OUTPUT" | grep -q "GA_MAX_CREWS=42" \
 
 # Clean up exported vars
 unset KIRO_IDENTITY_PROVIDER GA_MACHINE_NAME GA_MAX_CREWS
+
+# ── Test 13: Auto-detection finds config in repo-adjacent locations ───────────
+echo ""
+echo "--- Test 13: Auto-detection — repo root then config/ subdirectory ---"
+
+# Simulates install.sh auto-detection: checks GHOSTSHIP_DIR/ghostship.conf
+# then GHOSTSHIP_DIR/config/ghostship.conf, sources first match.
+test_autodetect() {
+  local ghostship_dir="$1"
+  local PORT=64057
+  local KIRO_REGION=""
+  local CONFIG_FILE=""
+
+  for _candidate in \
+    "${ghostship_dir}/ghostship.conf" \
+    "${ghostship_dir}/config/ghostship.conf"
+  do
+    if [[ -f "$_candidate" ]]; then
+      CONFIG_FILE="$_candidate"
+      # shellcheck source=/dev/null
+      source "$_candidate"
+      break
+    fi
+  done
+
+  echo "CONFIG_FILE=$CONFIG_FILE"
+  echo "PORT=$PORT"
+  echo "KIRO_REGION=$KIRO_REGION"
+}
+
+# Sub-test: config at repo root takes priority
+_DIR1="$(mktemp -d)"
+mkdir -p "${_DIR1}/config"
+printf 'PORT=1111\nKIRO_REGION="root-region"\n' > "${_DIR1}/ghostship.conf"
+printf 'PORT=2222\nKIRO_REGION="config-region"\n' > "${_DIR1}/config/ghostship.conf"
+OUTPUT=$(test_autodetect "$_DIR1")
+echo "$OUTPUT" | grep -q "CONFIG_FILE=${_DIR1}/ghostship.conf" && pass "Repo root ghostship.conf preferred over config/" || fail "Repo root not preferred (got: $(echo "$OUTPUT" | grep CONFIG_FILE))"
+echo "$OUTPUT" | grep -q "PORT=1111" && pass "Values loaded from repo root" || fail "Values not from repo root"
+rm -rf "$_DIR1"
+
+# Sub-test: falls back to config/ when root config absent
+_DIR2="$(mktemp -d)"
+mkdir -p "${_DIR2}/config"
+printf 'PORT=3333\nKIRO_REGION="config-subdir-region"\n' > "${_DIR2}/config/ghostship.conf"
+OUTPUT=$(test_autodetect "$_DIR2")
+echo "$OUTPUT" | grep -q "CONFIG_FILE=${_DIR2}/config/ghostship.conf" && pass "Falls back to config/ghostship.conf" || fail "Fallback to config/ failed (got: $(echo "$OUTPUT" | grep CONFIG_FILE))"
+echo "$OUTPUT" | grep -q "PORT=3333" && pass "Values loaded from config/" || fail "Values not from config/"
+rm -rf "$_DIR2"
+
+# Sub-test: no config found — defaults unchanged
+_DIR3="$(mktemp -d)"
+OUTPUT=$(test_autodetect "$_DIR3")
+echo "$OUTPUT" | grep -q "CONFIG_FILE=$" && pass "No config found — CONFIG_FILE empty" || fail "CONFIG_FILE unexpectedly set (got: $(echo "$OUTPUT" | grep CONFIG_FILE))"
+echo "$OUTPUT" | grep -q "PORT=64057" && pass "Default PORT unchanged when no config" || fail "Default PORT changed unexpectedly"
+rm -rf "$_DIR3"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

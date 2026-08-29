@@ -556,7 +556,7 @@ class BundleHardeningTests(unittest.TestCase):
             for key, values in parse_qs(urlsplit(url).query).items()
         }
         self.assertTrue(
-            server._verify_file_token("demo", "repo", query["expires"], query["sig"])
+            server._verify_file_token("demo", "repo", query["expires"], query["sig"], mode="")
         )
 
     @unittest.skipUnless(shutil.which("git"), "git is required for bundle regression")
@@ -574,7 +574,7 @@ class BundleHardeningTests(unittest.TestCase):
 
 
 class FileUrlBaseResolutionTests(unittest.TestCase):
-    """GA_HOST_URL > GA_MCP_PUBLIC_URL (deprecated) > localhost default (trn-32)."""
+    """GA_HOST_URL > localhost default."""
 
     def _url_base(self, url: str) -> str:
         parts = urlsplit(url)
@@ -587,33 +587,12 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
             url = server._sign_file_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
-    def test_sign_file_url_falls_back_to_ga_mcp_public_url_with_warning(self) -> None:
-        env = {"GA_MCP_PUBLIC_URL": "http://legacy:8001"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            import warnings as _w
-            with _w.catch_warnings(record=True) as caught:
-                _w.simplefilter("always")
-                url = server._sign_file_url("demo", "repo")
-            self.assertTrue(url.startswith("http://legacy:8001/"), url)
-            deprecation_msgs = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-            self.assertTrue(deprecation_msgs, "Expected DeprecationWarning for GA_MCP_PUBLIC_URL fallback")
-
-    def test_sign_file_url_uses_localhost_default_when_both_unset(self) -> None:
+    def test_sign_file_url_uses_localhost_default_when_unset(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GA_HOST_URL", None)
             os.environ.pop("GA_MCP_PUBLIC_URL", None)
             url = server._sign_file_url("demo", "repo")
         self.assertIn("localhost", url, url)
-
-    def test_sign_file_url_ga_public_url_wins_over_ga_mcp_public_url(self) -> None:
-        env = {
-            "GA_HOST_URL": "https://academy.example.com",
-            "GA_MCP_PUBLIC_URL": "http://legacy:8001",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            url = server._sign_file_url("demo", "repo")
-        self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_sign_upload_url_uses_ga_public_url_when_set(self) -> None:
         env = {"GA_HOST_URL": "https://academy.example.com"}
@@ -622,40 +601,13 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
             url = server._sign_upload_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
-    def test_sign_upload_url_falls_back_to_ga_mcp_public_url(self) -> None:
-        env = {"GA_MCP_PUBLIC_URL": "http://legacy:8001"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            import warnings as _w
-            with _w.catch_warnings(record=True) as caught:
-                _w.simplefilter("always")
-                url = server._sign_upload_url("demo", "repo")
-            self.assertTrue(url.startswith("http://legacy:8001/"), url)
-
     def test_evac_presigned_url_uses_ga_public_url_base(self) -> None:
-        """Task 4.2: evac() presigned URL uses GA_HOST_URL base."""
         env = {"GA_HOST_URL": "https://cdn.example.com"}
         with patch.dict(os.environ, env, clear=False):
             os.environ.pop("GA_MCP_PUBLIC_URL", None)
             url = server._sign_file_url("crew1", "workspace/bundle.tar")
         self.assertEqual(self._url_base(url), "https://cdn.example.com")
         self.assertIn("/files/crew1/workspace/bundle.tar", url)
-
-    def test_fallback_to_ga_mcp_public_url_emits_deprecation_warning(self) -> None:
-        """Task 4.3: fallback to GA_MCP_PUBLIC_URL emits deprecation warning."""
-        env = {"GA_MCP_PUBLIC_URL": "http://old-mcp:9000"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            import warnings as _w
-            with _w.catch_warnings(record=True) as caught:
-                _w.simplefilter("always")
-                server._resolve_public_url_base()
-            deprecation_msgs = [
-                w for w in caught
-                if issubclass(w.category, DeprecationWarning) and "GA_MCP_PUBLIC_URL" in str(w.message)
-            ]
-            self.assertEqual(len(deprecation_msgs), 1)
-            self.assertIn("GA_HOST_URL", str(deprecation_msgs[0].message))
 
 
 class LifecycleRegressionTests(unittest.TestCase):
@@ -3720,7 +3672,7 @@ class TestPolicyInjection(unittest.TestCase):
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(server, "_crew_api", return_value=[]),
-            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memFree": 4 * 1024**3}})),
+            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
         ):
             result = server.crews()
 
@@ -3746,7 +3698,7 @@ class TestPolicyInjection(unittest.TestCase):
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(server, "_crew_api", return_value=[]),
-            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memFree": 4 * 1024**3}})),
+            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
         ):
             result = server.crews()
 
@@ -3763,7 +3715,7 @@ class FakePodmanClient:
     """Test helper with configurable system_info() return values."""
 
     def __init__(self, mem_free_bytes_sequence: list[int] | None = None) -> None:
-        """mem_free_bytes_sequence: list of memFree values to return on successive calls."""
+        """mem_free_bytes_sequence: list of memAvailable values to return on successive calls."""
         self._mem_sequence = mem_free_bytes_sequence or [4 * 1024**3]
         self._call_index = 0
         self.system_info_calls = 0
@@ -3772,7 +3724,7 @@ class FakePodmanClient:
         self.system_info_calls += 1
         idx = min(self._call_index, len(self._mem_sequence) - 1)
         self._call_index += 1
-        return {"host": {"memFree": self._mem_sequence[idx]}}
+        return {"host": {"memAvailable": self._mem_sequence[idx]}}
 
     def container_start(self, name: str) -> None:
         pass
@@ -3933,6 +3885,60 @@ class TestPatchCrewConfig(unittest.TestCase):
             self.assertIn("'subagent_max_turns'] = 300", script)
         finally:
             server.GA_SUBAGENT_MAX_TURNS = original
+
+    def test_agent_field_default_kiro(self) -> None:
+        """GA_CREW_AGENT unset → config.local.json gets agent: "kiro" (0.4.0 required field)."""
+        original = server.GA_CREW_AGENT
+        try:
+            server.GA_CREW_AGENT = "kiro"
+            exec_calls: list[tuple[str, list[str]]] = []
+
+            class CapturePodman:
+                def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                    exec_calls.append((name, cmd))
+                    return "patched config.local.json"
+
+            server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+            self.assertEqual(len(exec_calls), 1)
+            script = exec_calls[0][1][-1]
+            self.assertIn("a['agent'] = \"kiro\"", script)
+        finally:
+            server.GA_CREW_AGENT = original
+
+    def test_agent_field_from_env(self) -> None:
+        """GA_CREW_AGENT=custom-agent → agent field carries the override value."""
+        original = server.GA_CREW_AGENT
+        try:
+            server.GA_CREW_AGENT = "custom-agent"
+            exec_calls: list[tuple[str, list[str]]] = []
+
+            class CapturePodman:
+                def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                    exec_calls.append((name, cmd))
+                    return "patched config.local.json"
+
+            server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+            self.assertEqual(len(exec_calls), 1)
+            script = exec_calls[0][1][-1]
+            self.assertIn("a['agent'] = \"custom-agent\"", script)
+        finally:
+            server.GA_CREW_AGENT = original
+
+    def test_config_script_has_no_unexpanded_shell_vars(self) -> None:
+        """KiroCrew 0.4.0 rejects literal $VAR in config values — the exec script
+        must contain no unexpanded shell variable reference in any written value."""
+        import re
+        exec_calls: list[tuple[str, list[str]]] = []
+
+        class CapturePodman:
+            def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+                exec_calls.append((name, cmd))
+                return "patched config.local.json"
+
+        server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
+        script = exec_calls[0][1][-1]
+        # No literal $NAME or ${NAME} unexpanded shell/variable references.
+        self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", script))
 
     def test_kc_model_default_set_writes_default_model(self) -> None:
         """KC_MODEL_DEFAULT set → default_model written to config.local.json."""
@@ -4335,6 +4341,66 @@ class ReconcileRegistryTests(unittest.TestCase):
         posted_body = post_calls[0][2].get("json", {})
         self.assertEqual(posted_body.get("name"), "daily-report")
         self.assertEqual(posted_body.get("every"), 86400)
+
+    def test_reconcile_patch_before_gateway_wait_ordering(self) -> None:
+        """_reconcile_registry applies _patch_crew_config before _wait_gateway.
+
+        KiroCrew 0.4.0 requires config.local.json (including the required
+        'agent' field) to be present before the gateway starts reading it.
+        Writing the patch after _wait_gateway means the gateway has already
+        loaded config.local.json and will ignore the patch until the next
+        restart — a bug introduced if the D-07 comment is moved carelessly.
+
+        This test records the call order: patch → stop → start → wait.
+        """
+        podman = ReconcilePodman(
+            containers_exist={"gs-order": True},
+            containers_running={"gs-order": False},
+            all_containers=[],
+        )
+        crews = {"order-crew": {"container": "gs-order", "status": "stopped"}}
+        call_order: list[str] = []
+
+        def patched_patch(p, container):
+            call_order.append("patch")
+
+        def wait_gateway(url, timeout=30):
+            call_order.append("wait")
+            return True
+
+        def mint_cookie(p, container, url):
+            call_order.append("mint")
+            return "fresh-cookie"
+
+        with (
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_patch_crew_config", side_effect=patched_patch),
+            patch.object(server, "_wait_gateway", side_effect=wait_gateway),
+            patch.object(server, "_mint_cookie", side_effect=mint_cookie),
+        ):
+            server._reconcile_registry()
+
+        # patch must happen before wait (gateway must not have loaded config yet)
+        self.assertIn("patch", call_order, "patch was never called")
+        self.assertIn("wait", call_order, "_wait_gateway was never called")
+        patch_idx = call_order.index("patch")
+        wait_idx = call_order.index("wait")
+        self.assertLess(
+            patch_idx, wait_idx,
+            f"_patch_crew_config (idx {patch_idx}) must be called BEFORE "
+            f"_wait_gateway (idx {wait_idx}). Order was: {call_order}",
+        )
+        # The container must be stopped and restarted after patching so the
+        # gateway loads the new config.local.json on its next start.
+        self.assertIn("gs-order", podman.stops,
+                      "container must be stopped after patch so config is reloaded")
+        # Two starts: provisional start + post-patch restart
+        self.assertEqual(
+            podman.starts.count("gs-order"), 2,
+            f"expected 2 starts (provisional + post-patch); got {podman.starts}",
+        )
 
 
 # ── Task 4/5: _idle_monitor tests ────────────────────────────────────────────
@@ -5382,16 +5448,16 @@ class TestTrn38SecurityHardening(unittest.TestCase):
     # ── 9.1 HMAC token length is now 32 hex chars (128-bit) ──────────────────
 
     def test_sign_file_url_hmac_is_32_hex_chars(self) -> None:
-        """_sign_file_url produces a 32-char hex sig (not 16)."""
+        """_sign_file_url produces a 64-char hex sig (not 32)."""
         url = server._sign_file_url("demo", "repo/file.txt")
         query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertEqual(len(query["sig"]), 32, f"sig length {len(query['sig'])} != 32: {query['sig']}")
+        self.assertEqual(len(query["sig"]), 64, f"sig length {len(query['sig'])} != 32: {query['sig']}")
 
     def test_sign_upload_url_hmac_is_32_hex_chars(self) -> None:
-        """_sign_upload_url produces a 32-char hex sig (not 16)."""
+        """_sign_upload_url produces a 64-char hex sig (not 32)."""
         url = server._sign_upload_url("demo", "repo")
         query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertEqual(len(query["sig"]), 32, f"sig length {len(query['sig'])} != 32: {query['sig']}")
+        self.assertEqual(len(query["sig"]), 64, f"sig length {len(query['sig'])} != 32: {query['sig']}")
 
     def test_16_char_sig_rejected_by_verify_file_token(self) -> None:
         """A legacy 16-char sig is rejected by _verify_file_token (length mismatch)."""
@@ -6442,3 +6508,303 @@ class InstallEnvVarSyncTests(unittest.TestCase):
             f"Env vars read by server.py but missing from install.sh -e flags: {sorted(missing)}\n"
             "Add the missing -e lines to the podman run block in install.sh.",
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# trn-68: Per-composition MCP server config tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class SubstituteEnvVarsTests(unittest.TestCase):
+    """Unit tests for _substitute_env_vars (trn-68)."""
+
+    def test_string_substitution(self) -> None:
+        """String values have ${VAR} replaced from env."""
+        result = server._substitute_env_vars("Bearer ${TOKEN}", {"TOKEN": "abc123"})
+        self.assertEqual(result, "Bearer abc123")
+
+    def test_nested_dict_substitution(self) -> None:
+        """Recurses into nested dicts."""
+        result = server._substitute_env_vars(
+            {"headers": {"Authorization": "Bearer ${TOKEN}"}},
+            {"TOKEN": "secret"},
+        )
+        self.assertEqual(result["headers"]["Authorization"], "Bearer secret")
+
+    def test_list_substitution(self) -> None:
+        """Recurses into lists."""
+        result = server._substitute_env_vars(["${A}", "${B}"], {"A": "alpha", "B": "beta"})
+        self.assertEqual(result, ["alpha", "beta"])
+
+    def test_missing_var_writes_literal_and_warns(self) -> None:
+        """Missing variable writes literal ${VAR} and logs a warning."""
+        with self.assertLogs("transport", level="WARNING") as log_ctx:
+            result = server._substitute_env_vars("Bearer ${ABSENT_VAR}", {})
+        self.assertEqual(result, "Bearer ${ABSENT_VAR}")
+        self.assertTrue(any("ABSENT_VAR" in m for m in log_ctx.output))
+
+    def test_non_string_passthrough(self) -> None:
+        """Non-string values (int, None, bool) pass through unchanged."""
+        self.assertEqual(server._substitute_env_vars(42, {}), 42)
+        self.assertIsNone(server._substitute_env_vars(None, {}))
+        self.assertTrue(server._substitute_env_vars(True, {}))
+
+
+class CopyAgentsMcpTests(unittest.TestCase):
+    """Tests for the mcp.json writing logic in _copy_agents() (trn-68).
+
+    These tests call _copy_agents() with:
+    - _load_crew_manifest patched to return a specific manifest
+    - MCP_CATALOGUE_DIR patched to a temp directory containing catalogue files
+    - Path("/agents") patched to an empty temp directory
+    - PodmanClient mocked so container_archive_put calls are recorded
+
+    mcp.json is extracted from the archive PUT calls targeting ~/.kiro/.
+    """
+
+    def _extract_mcp_json_from_calls(self, mock_podman: Mock) -> "dict | None":
+        """Parse mcp.json content from container_archive_put call args, or None."""
+        import io as _io
+        import tarfile as _tarfile
+
+        for call in mock_podman.container_archive_put.call_args_list:
+            dest_dir: str = call.args[1]
+            tar_bytes: bytes = call.args[2]
+            if ".kiro" not in dest_dir:
+                continue
+            buf = _io.BytesIO(tar_bytes)
+            with _tarfile.open(fileobj=buf, mode="r") as tf:
+                for member in tf.getmembers():
+                    if member.name == "mcp.json":
+                        raw = tf.extractfile(member)
+                        return json.loads(raw.read())
+        return None
+
+    def _run(
+        self,
+        manifest: dict,
+        catalogue: dict[str, dict],
+        env: "dict[str, str] | None" = None,
+    ) -> "tuple[Mock, dict | None, list[str]]":
+        """Run _copy_agents and return (podman, mcp_json_or_None, warning_messages)."""
+        import tempfile as _tempfile
+
+        mock_podman = Mock()
+        mock_podman.container_archive_put = Mock()
+        mock_podman.container_exec = Mock(return_value="")
+
+        captured_warnings: list[str] = []
+
+        with _tempfile.TemporaryDirectory() as tmp:
+            mcp_dir = Path(tmp) / "mcp"
+            mcp_dir.mkdir()
+            for name, content in catalogue.items():
+                (mcp_dir / f"{name}.json").write_text(json.dumps(content))
+
+            agents_dir = Path(tmp) / "agents"
+            agents_dir.mkdir()
+
+            import logging as _logging
+
+            class _WarningCapture(_logging.Handler):
+                def emit(self, record: "_logging.LogRecord") -> None:
+                    if record.levelno >= _logging.WARNING:
+                        captured_warnings.append(record.getMessage())
+
+            handler = _WarningCapture()
+            server.logger.addHandler(handler)
+
+            real_path = Path
+
+            def _path_factory(p):
+                if str(p) == "/agents":
+                    return agents_dir
+                return real_path(p)
+
+            try:
+                with (
+                    patch.object(server, "_load_crew_manifest", return_value=manifest),
+                    patch.object(server, "MCP_CATALOGUE_DIR", mcp_dir),
+                    patch.dict(os.environ, env or {}, clear=False),
+                    patch("transport.server.Path", side_effect=_path_factory),
+                ):
+                    server._copy_agents(mock_podman, "gs-test", None)
+            finally:
+                server.logger.removeHandler(handler)
+
+        mcp_json = self._extract_mcp_json_from_calls(mock_podman)
+        return mock_podman, mcp_json, captured_warnings
+
+    # ── 3.1: manifest with mcpServers → mcp.json written ─────────────────────
+
+    def test_manifest_with_mcp_servers_writes_mcp_json(self) -> None:
+        """3.1 — manifest with mcpServers → correct mcp.json written with resolved entries."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["armory"],
+        }
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNotNone(mcp_json, "mcp.json was not written")
+        assert mcp_json is not None
+        self.assertIn("mcpServers", mcp_json)
+        self.assertIn("armory", mcp_json["mcpServers"])
+        self.assertEqual(mcp_json["mcpServers"]["armory"]["type"], "streamable-http")
+        self.assertEqual(
+            mcp_json["mcpServers"]["armory"]["url"], "http://armory.example.com/mcp"
+        )
+
+    # ── 3.2: no mcpServers → no mcp.json written ─────────────────────────────
+
+    def test_manifest_without_mcp_servers_no_mcp_json(self) -> None:
+        """3.2 — manifest with no mcpServers key → no mcp.json written."""
+        manifest = {"agents": "*", "skills": "*", "steering": "*"}
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNone(mcp_json, "mcp.json should NOT be written when mcpServers absent")
+
+    def test_manifest_with_empty_mcp_servers_no_mcp_json(self) -> None:
+        """3.2b — manifest with empty mcpServers list → no mcp.json written."""
+        manifest = {"agents": "*", "skills": "*", "steering": "*", "mcpServers": []}
+        catalogue = {}
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNone(mcp_json, "mcp.json should NOT be written for empty mcpServers")
+
+    # ── 3.3: unknown server → warning, others written, no exception ──────────
+
+    def test_unknown_server_name_warns_and_skips(self) -> None:
+        """3.3 — unknown server name → warning logged, other servers written, no exception."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["armory", "nonexistent"],
+        }
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+            # "nonexistent" is NOT in the catalogue
+        }
+        _, mcp_json, warnings = self._run(manifest, catalogue)
+
+        # mcp.json should still be written with the known server
+        self.assertIsNotNone(mcp_json, "mcp.json should be written for the valid server")
+        assert mcp_json is not None
+        self.assertIn("armory", mcp_json["mcpServers"])
+        self.assertNotIn("nonexistent", mcp_json["mcpServers"])
+
+        # A warning should have been logged for the missing server
+        self.assertTrue(
+            any("nonexistent" in w for w in warnings),
+            f"Expected warning about 'nonexistent'; warnings: {warnings}",
+        )
+
+    # ── 3.4: entry with headers → poolable: false added ──────────────────────
+
+    def test_headers_entry_gets_poolable_false(self) -> None:
+        """3.4 — catalogue entry with headers → poolable: false added automatically."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["nexus"],
+        }
+        catalogue = {
+            "nexus": {
+                "type": "streamable-http",
+                "url": "http://nexus.example.com/mcp",
+                "headers": {"Authorization": "Bearer token123"},
+            },
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNotNone(mcp_json)
+        assert mcp_json is not None
+        nexus_entry = mcp_json["mcpServers"]["nexus"]
+        self.assertFalse(
+            nexus_entry.get("poolable", True),
+            "Entry with headers should have poolable: false",
+        )
+
+    def test_no_headers_entry_no_poolable_added(self) -> None:
+        """3.4b — catalogue entry WITHOUT headers does NOT get poolable key added."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["armory"],
+        }
+        catalogue = {
+            "armory": {"type": "streamable-http", "url": "http://armory.example.com/mcp"},
+        }
+        _, mcp_json, _ = self._run(manifest, catalogue)
+
+        self.assertIsNotNone(mcp_json)
+        assert mcp_json is not None
+        self.assertNotIn("poolable", mcp_json["mcpServers"]["armory"])
+
+    # ── 3.5: ${VAR} substituted when env var is set ───────────────────────────
+
+    def test_env_var_substituted_when_set(self) -> None:
+        """3.5 — catalogue entry with ${VAR} → substituted when env var is set."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["nexus"],
+        }
+        catalogue = {
+            "nexus": {
+                "type": "streamable-http",
+                "url": "http://nexus.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${NEXUS_API_KEY}"},
+            },
+        }
+        _, mcp_json, warnings = self._run(
+            manifest, catalogue, env={"NEXUS_API_KEY": "secret-token-xyz"}
+        )
+
+        self.assertIsNotNone(mcp_json)
+        assert mcp_json is not None
+        auth_header = mcp_json["mcpServers"]["nexus"]["headers"]["Authorization"]
+        self.assertEqual(auth_header, "Bearer secret-token-xyz")
+        # No warning for a successfully substituted variable
+        self.assertFalse(
+            any("NEXUS_API_KEY" in w and "not set" in w for w in warnings),
+            f"Should not warn about a set variable; warnings: {warnings}",
+        )
+
+    # ── 3.6: ${MISSING} → warning logged, literal string written ─────────────
+
+    def test_missing_env_var_warns_and_writes_literal(self) -> None:
+        """3.6 — catalogue entry with ${MISSING} → warning logged, literal string written,
+        setup continues."""
+        manifest = {
+            "agents": "*", "skills": "*", "steering": "*",
+            "mcpServers": ["nexus"],
+        }
+        catalogue = {
+            "nexus": {
+                "type": "streamable-http",
+                "url": "http://nexus.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${TRN68_MISSING_TEST_VAR}"},
+            },
+        }
+        # Ensure the variable is NOT set
+        os.environ.pop("TRN68_MISSING_TEST_VAR", None)
+        _, mcp_json, warnings = self._run(manifest, catalogue, env={})
+
+        # mcp.json should still be written (setup continues)
+        self.assertIsNotNone(mcp_json, "mcp.json should be written even with missing vars")
+        assert mcp_json is not None
+        auth_header = mcp_json["mcpServers"]["nexus"]["headers"]["Authorization"]
+        # The literal string should be written
+        self.assertIn("${TRN68_MISSING_TEST_VAR}", auth_header)
+
+        # A warning should be logged
+        self.assertTrue(
+            any("TRN68_MISSING_TEST_VAR" in w for w in warnings),
+            f"Expected warning about TRN68_MISSING_TEST_VAR; warnings: {warnings}",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

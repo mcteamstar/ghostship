@@ -13,7 +13,7 @@ Runs locally and remotely on macOS or Linux using Podman.
 claude plugin marketplace add mcteamstar/ghostship
 claude plugin install ghostship@ghostship
 ```
-Use the skill `/ghostship-admin` for guided local setup. See [Install](#install) below for full steps.
+Use the skill `/ghostship-admin` for guided local setup, `/ghostship-capability` to customise the academy, and `/ghostship-command` to drive the fleet. See [Install](#install) below for full steps.
 
 ## Why Ghostship?
 
@@ -42,9 +42,11 @@ Install these before running `install.sh`:
 - macOS or Linux
 - **Podman >= 4.4** — `brew install podman` (macOS), `sudo apt-get install -y podman podman-compose` (Ubuntu/Debian)
 - **`podman-compose`** — `brew install podman-compose` (macOS); included in the apt command above
-- A kiro-cli identity — Builder ID (free tier) or an IAM Identity Center login (see [docs/auth.md](docs/auth.md))
+- A kiro-cli identity — Builder ID / Social Login, or an IAM Identity Center account (see [docs/auth.md](docs/auth.md))
 
 Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup v2 and Podman rootless. Verified on Ubuntu 22.04+.
+
+> **Model access:** Ghostship defaults to `gpt-5.6-luna`, which requires a Pro subscription or higher. See [kiro.dev/docs/models](https://kiro.dev/docs/models/) for available models by tier, and [docs/configuration.md](docs/configuration.md) for how to override.
 
 ### Setup
 
@@ -70,7 +72,16 @@ cp config/ghostship.conf.example config/ghostship.conf
 
 To uninstall: `./uninstall.sh`. If ghostship stops after a reboot, run `./start.sh` to bring it back without reinstalling.
 
+**Updating academy/ and crews/** — `install.sh` snapshots `academy/` and `crews/` from the repo into the data volume. The transport has no runtime dependency on the repo checkout path. After editing files under `academy/` or `crews/`, re-run `./install.sh` for changes to take effect. See [Updating academy/ and crews/](docs/configuration.md#updating-academy-and-crews) in the configuration docs.
+
 Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
+
+### Customising and forking
+
+Run it as-is or make it your own. Once you start adding agent personas,
+skills, or new crew compositions, that configuration belongs in your own
+fork. See [docs/forks.md](docs/forks.md) for the fork model, visibility
+options, and how to keep your fork current with upstream.
 
 ### Connecting to a harness
 
@@ -95,14 +106,11 @@ kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
 ```
 
 **Claude Code (plugin):** see the quick install command at the top of this
-README. It installs the `ghostship-admin` and `ghostship-command` skills
-plus an unauthenticated connection to `http://localhost:64057/mcp`. This
-only covers that local, unauthenticated default — for a keyed or remote
-deployment, skip the plugin and add the server manually instead (below).
-Don't do both: a manual `mcpServers` entry and the plugin both connecting to
-`ghostship` register as two separate MCP servers, not one. See
-[`.claude-plugin/PACKAGING.md`](.claude-plugin/PACKAGING.md) for how the
-packaging works.
+README. It installs the `ghostship-admin`, `ghostship-command`, and
+`ghostship-capability` skills plus an unauthenticated connection to
+`http://localhost:64057/mcp`. `ghostship-admin` guides installation and
+connecting; `ghostship-command` is the Admiral's fleet playbook;
+`ghostship-capability` covers academy and crew customisation.
 
 **Claude Code (manual, keyed, or remote)** — add to `~/.claude.json`'s
 `mcpServers`:
@@ -140,18 +148,18 @@ See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. Th
 
 Registered as `ghostship`:
 
-| Tool | Description |
-|:-----|:------------|
-| `crews` | List all registered crews and their status. |
-| `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
-| `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
-| `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
-| `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
-| `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
-| `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
-| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
-| `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
-| `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
+|  | Tool | Description |
+|:-|:-----|:------------|
+| <img src="docs/images/tool-crews.png" width="64"> | `crews` | List all registered crews and their status. |
+| <img src="docs/images/tool-launch.png" width="64"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
+| <img src="docs/images/tool-supply.png" width="64"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
+| <img src="docs/images/tool-evac.png" width="64"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
+| <img src="docs/images/tool-nuke.png" width="64"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
+| <img src="docs/images/tool-captain.png" width="64"> | `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
+| <img src="docs/images/tool-schedule.png" width="64"> | `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
+| <img src="docs/images/tool-dispatch.png" width="64"> | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
+| <img src="docs/images/tool-steer.png" width="64"> | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
+| <img src="docs/images/tool-pickup.png" width="64"> | `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
 ## Further reading
 
@@ -159,4 +167,5 @@ Registered as `ghostship`:
 - [docs/agents.md](docs/agents.md) — the six agent personas, what each owns in the OpenSpec workflow, and how that's enforced (and isn't)
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
+- [docs/forks.md](docs/forks.md) — fork model: private/internal/public visibility, keeping your fork current with upstream
 - [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations

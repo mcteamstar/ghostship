@@ -50,8 +50,6 @@ OS="$(uname -s)"
 # A literal assignment here ensures an ambient env var from the invoking shell
 # is unconditionally overwritten — only the config file or a flag can override.
 PORT=64057
-GA_FILE_PUBLIC_URL=""
-GA_MCP_PUBLIC_URL=""
 KIRO_IDENTITY_PROVIDER=""
 KIRO_REGION=""
 KIRO_LICENSE=""
@@ -70,6 +68,7 @@ GA_IDLE_TIMEOUT_SECS=300
 GA_FILE_TTL_SECS=300
 GA_SUBAGENT_TIMEOUT_SECS=3600
 GA_SUBAGENT_MAX_TURNS=200
+GA_CREW_AGENT=kiro
 GA_PICKUP_MAX_POLL_SECS=30
 KC_GATEWAY_TOKEN_TTL=24h
 GA_MIN_FREE_MEM_GB=2.0
@@ -106,6 +105,19 @@ if [[ -n "$CONFIG_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
   echo "✓ Sourced config file: $CONFIG_FILE"
+else
+  # Auto-detect config from standard locations (no --config flag passed).
+  for _candidate in \
+    "${GHOSTSHIP_DIR}/ghostship.conf" \
+    "${GHOSTSHIP_DIR}/config/ghostship.conf"
+  do
+    if [[ -f "$_candidate" ]]; then
+      # shellcheck source=/dev/null
+      source "$_candidate"
+      echo "✓ Sourced config file: $_candidate"
+      break
+    fi
+  done
 fi
 
 # ── Flag parsing (runs AFTER config sourcing — flags override config) ────────
@@ -119,8 +131,6 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="$2"; shift 2 ;;
     --model) KC_MODEL_OVERRIDE="$2"; shift 2 ;;
     --model-default) KC_MODEL_DEFAULT="$2"; shift 2 ;;
-    --file-public-url) GA_FILE_PUBLIC_URL="$2"; shift 2 ;;
-    --mcp-public-url) GA_MCP_PUBLIC_URL="$2"; shift 2 ;;
     --public-url) GA_HOST_URL="$2"; shift 2 ;;
     --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
@@ -469,8 +479,6 @@ fi
 
 # ── Pre-warm + build images ──────────────────────────────────────────────────
 
-${_PODMAN_CMD} pull ghcr.io/kirodotdev/kirocrew:stable -q 2>/dev/null \
-  && echo "✓ KiroCrew image pre-warmed" || echo "⚠ KiroCrew image pull failed (offline?)"
 
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
@@ -504,6 +512,34 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
+# ── Copy academy/ and crews/ into the data volume ────────────────────────────
+# Snapshot academy/ subdirectories and crews/ from the repo into DATA_DIR so
+# the transport container has no runtime dependency on the repo checkout path.
+# Changes to these directories require re-running install.sh to take effect.
+mkdir -p "${DATA_DIR}/academy"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/agents"    "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/skills"    "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/steering"  "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/policies"  "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/orders"    "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/academy/mcp"       "${DATA_DIR}/academy/"
+  rsync -a --delete "${GHOSTSHIP_DIR}/crews"             "${DATA_DIR}/"
+else
+  echo "  rsync not found — falling back to cp (deletions from repo not mirrored until full reinstall)"
+  rm -rf "${DATA_DIR}/academy/agents" "${DATA_DIR}/academy/skills" \
+         "${DATA_DIR}/academy/steering" "${DATA_DIR}/academy/policies" \
+         "${DATA_DIR}/academy/orders" "${DATA_DIR}/academy/mcp" "${DATA_DIR}/crews"
+  cp -r "${GHOSTSHIP_DIR}/academy/agents"    "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/skills"    "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/steering"  "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/policies"  "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/orders"    "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/academy/mcp"       "${DATA_DIR}/academy/"
+  cp -r "${GHOSTSHIP_DIR}/crews"             "${DATA_DIR}/"
+fi
+echo "✓ academy/ (agents, skills, steering, policies, orders, mcp) and crews/ copied to ${DATA_DIR}"
+
 # ── Generate compose.yml ──────────────────────────────────────────────────────
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and
 # not committed to the repo. start.sh and uninstall.sh both read it.
@@ -524,26 +560,26 @@ services:
       - ga-net
     volumes:
       - ${DATA_DIR}:/data
-      - ${GHOSTSHIP_DIR}/academy/agents:/agents:ro
-      - ${GHOSTSHIP_DIR}/academy/skills:/skills:ro
-      - ${GHOSTSHIP_DIR}/academy/steering:/steering:ro
-      - ${GHOSTSHIP_DIR}/academy/policies:/policies:ro
-      - ${GHOSTSHIP_DIR}/academy/orders:/orders:ro
-      - ${GHOSTSHIP_DIR}/crews:/crews:ro
+      - ${DATA_DIR}/academy/agents:/agents:ro
+      - ${DATA_DIR}/academy/skills:/skills:ro
+      - ${DATA_DIR}/academy/steering:/steering:ro
+      - ${DATA_DIR}/academy/policies:/policies:ro
+      - ${DATA_DIR}/academy/orders:/orders:ro
+      - ${DATA_DIR}/academy/mcp:/mcp:ro
+      - ${DATA_DIR}/crews:/crews:ro
       - ${PODMAN_SOCK}:${PODMAN_SOCK}
     environment:
       PODMAN_SOCKET: ${PODMAN_SOCK}
       HOST: ${HOST:-0.0.0.0}
       PORT: "${PORT}"
       GA_HOST_URL: "${GA_HOST_URL:-http://localhost:${PORT}}"
-      GA_FILE_PUBLIC_URL: "${GA_FILE_PUBLIC_URL:-}"
-      GA_MCP_PUBLIC_URL: "${GA_MCP_PUBLIC_URL:-}"
       GA_MAX_CREWS: "${GA_MAX_CREWS:-20}"
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
       GA_IDLE_TIMEOUT_SECS: "${GA_IDLE_TIMEOUT_SECS:-300}"
       GA_FILE_TTL_SECS: "${GA_FILE_TTL_SECS:-300}"
       GA_SUBAGENT_TIMEOUT_SECS: "${GA_SUBAGENT_TIMEOUT_SECS:-3600}"
       GA_SUBAGENT_MAX_TURNS: "${GA_SUBAGENT_MAX_TURNS:-200}"
+      GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
       GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       KC_GATEWAY_TOKEN_TTL: "${KC_GATEWAY_TOKEN_TTL:-24h}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
@@ -556,6 +592,12 @@ services:
       GA_SPAWN_MIN_MEMORY_GB: "${GA_SPAWN_MIN_MEMORY_GB:-1.5}"
       GA_RESOURCE_PRESSURE_GB: "${GA_RESOURCE_PRESSURE_GB:-2.0}"
       GA_RESOURCE_CRITICAL_GB: "${GA_RESOURCE_CRITICAL_GB:-1.0}"
+      GA_ENABLE_SECURITY_HEADERS: "${GA_ENABLE_SECURITY_HEADERS:-1}"
+      GA_ENFORCE_HTTPS_REDIRECT: "${GA_ENFORCE_HTTPS_REDIRECT:-0}"
+      GA_CSP_ENFORCE: "${GA_CSP_ENFORCE:-0}"
+      GA_TLS_MIN_VERSION: "${GA_TLS_MIN_VERSION:-1.2}"
+      GA_TLS_CERTFILE: "${GA_TLS_CERTFILE:-}"
+      GA_TLS_KEYFILE: "${GA_TLS_KEYFILE:-}"
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
 networks:
   ga-net:

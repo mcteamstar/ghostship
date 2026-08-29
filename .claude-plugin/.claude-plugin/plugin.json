@@ -1,6 +1,6 @@
 {
   "name": "ghostship",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Command Ghostship fleets over MCP from an agent client.",
   "author": {
     "name": "mcteamstar",
@@ -8,5 +8,16 @@
   },
   "repository": "https://github.com/mcteamstar/ghostship",
   "license": "MIT",
-  "keywords": ["ghostship", "fleet", "crew", "launch crew", "dispatch", "kirocrew", "agent fleet", "mcp agents", "spec-driven development", "sdd"]
+  "keywords": [
+    "ghostship",
+    "fleet",
+    "crew",
+    "launch crew",
+    "dispatch",
+    "kirocrew",
+    "agent fleet",
+    "mcp agents",
+    "spec-driven development",
+    "sdd"
+  ]
 }

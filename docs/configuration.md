@@ -15,7 +15,7 @@ process sees and what each default means:
 | `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host regardless of this value. |
 | `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
-| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:stable` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
+| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.4.0` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
 | `GA_MAX_CREWS` | `20` | Maximum number of registered crews (running + stopped). Stopped crews cost no memory, so this is primarily a housekeeping limit on how many persistent workspaces you keep around. Raise it freely on unconstrained hosts |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum number of simultaneously running (active) crew containers. Enforced when a stopped crew is restarted — if the running count already equals this limit, the restart is refused until another crew idles out. Set to `0` to disable the active limit entirely. At ~2–3 GB per running crew, the default of 3 fits comfortably on an 8 GB host |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
@@ -23,17 +23,15 @@ process sees and what each default means:
 | `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json`. Applies when no per-agent model field overrides it. Lower precedence than `KC_MODEL_OVERRIDE` and per-agent model field. Set via `install.sh --model-default <model>`. Full precedence order: `KC_MODEL_OVERRIDE` > per-agent model > `KC_MODEL_DEFAULT` > KiroCrew built-in. Omit to leave KiroCrew's built-in default unchanged. |
 | `TRANSPORT_DATA_DIR` | `/data` | Registry + data dir |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path — on Linux this is your host uid (`id -u`); on macOS it's the `podman machine` guest's uid (`podman machine ssh -- id -u`), which is often different |
-| `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Replaces the deprecated `GA_MCP_PUBLIC_URL` and `GA_FILE_PUBLIC_URL` variables — set this single var for all externally-reachable URLs |
-| `GA_MCP_PUBLIC_URL` | _(unset)_ | **DEPRECATED.** Legacy fallback for `GA_HOST_URL`. If `GA_HOST_URL` is unset and this is set, it is used with a deprecation warning. Migrate to `GA_HOST_URL` |
-| `GA_FILE_PUBLIC_URL` | _(unset)_ | **DEPRECATED.** No longer read by the transport — passing it via `-e` to the container has no effect. `install.sh --file-public-url` still accepts this flag and stores the value for backward-compatible config files, but the transport ignores it at runtime. Migrate to `GA_HOST_URL` / `--public-url`. |
+| `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links — set this for all externally-reachable deployments |
 | `GA_FILE_TTL_SECS` | `300` | Seconds a presigned `evac`/`supply` URL stays valid before expiring |
 | `KC_GATEWAY_TOKEN_TTL` | `24h` | Duration passed to `kirocrew token --ttl` when setup, restart recovery, or startup reconciliation mints a gateway session token; independent of file URL expiry |
 | `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs — set explicitly if you need presigned URLs to survive a transport restart |
-| `GA_API_KEY` | _(unset)_ | **DEPRECATED as an env var.** The API key is now delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). The env var is a deprecated fallback for pre-migration installs — a warning is logged at startup when it is used. Re-run `install.sh` to migrate. Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration and rollback. |
+| `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins — see [auth.md](auth.md) |
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum free memory (GB) required before starting a crew container. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
+| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) required before starting a crew container. Compared against `MemAvailable` from `/proc/meminfo` (which includes reclaimable page cache and buffers), with a fallback to `MemFree` on kernels that do not expose `MemAvailable`. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) exclusively for Ghost Academy. Crew containers are fully isolated from the host's default Podman runtime. Set to `false` to use the default socket instead |
 | `GA_MACHINE_CPUS` | `8` | vCPUs allocated to the dedicated Podman machine VM (macOS only) — a cap on concurrent vCPU threads, not a reservation; the host scheduler time-shares real cores across them like any other process. Ignored on Linux |
 | `GA_MACHINE_MEMORY` | `16384` | Memory in MB allocated to the dedicated Podman machine VM (macOS only) — a ceiling, not an upfront reservation (Apple's Virtualization.framework backs guest RAM on demand, so idle usage stays far below this). Ignored on Linux |
@@ -45,6 +43,7 @@ process sees and what each default means:
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
+| `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.4.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Maximum seconds the transport holds an HTTP connection open during a `pickup(timeout_secs=N)` long-poll. When this cap fires before the caller's `timeout_secs` elapses, `pickup` returns a normal JSON response with `"reason": "timeout"` so the caller can re-poll — the MCP transport error path is never used for a clean timeout expiry. Set lower if your MCP client has a short read timeout; set higher if you have confirmed your client tolerates longer-lived connections |
 
 > **Internal constant — not user-settable:**
@@ -104,8 +103,6 @@ nor the flag sets them, the built-in default applies.
 | `KC_MODEL_DEFAULT` | `--model-default` |
 | `GA_API_KEY` | `--api-key` |
 | `GA_HOST_URL` | `--public-url` |
-| `GA_FILE_PUBLIC_URL` | `--file-public-url` _(deprecated, migrate to `GA_HOST_URL`)_ |
-| `GA_MCP_PUBLIC_URL` | `--mcp-public-url` _(deprecated, migrate to `GA_HOST_URL`)_ |
 
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`) are **config-file-only** — they
@@ -130,30 +127,6 @@ PORT=9000
 KC_MODEL_OVERRIDE="anthropic/claude-sonnet-4-20250514"
 GA_HOST_URL="https://academy.example.com"
 ```
-
-> **Migration note (prior-release operators):** The following environment
-> variable names changed in this release. Rename them in your
-> `compose.yml`, systemd unit, or config file before upgrading:
->
-> | Old name | New name |
-> |:---------|:---------|
-> | `KC_MAX_CREWS` | `GA_MAX_CREWS` |
-> | `KC_IDLE_TIMEOUT_SECS` | `GA_IDLE_TIMEOUT_SECS` |
-> | `KC_FILE_SECRET` | `GA_FILE_SECRET` |
-> | `KC_FILE_TTL_SECS` | `GA_FILE_TTL_SECS` |
-> | `KC_PUBLIC_URL` | `GA_HOST_URL` |
-> | `KC_FILE_PUBLIC_URL` | `GA_FILE_PUBLIC_URL` |
-> | `KC_MCP_PUBLIC_URL` | `GA_MCP_PUBLIC_URL` |
->
-> Until renamed, deployments that set these variables will silently fall back
-> to built-in defaults.
->
-> **Port unification (trn-32):** The file-transfer routes now share the same
-> port as MCP (`PORT`, default 64057). There is no longer a separate file
-> server on `PORT+1`. Replace `GA_FILE_PUBLIC_URL` and `GA_MCP_PUBLIC_URL`
-> with a single `GA_HOST_URL` pointing at the unified endpoint.
-> `GA_MCP_PUBLIC_URL` still works as a deprecated fallback (with a warning);
-> `GA_FILE_PUBLIC_URL` is no longer read by the transport.
 
 Then override any single value at the command line:
 
@@ -187,7 +160,7 @@ risks not redesigned by API-key authentication.
 Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew:0.3.0
+FROM ghcr.io/kirodotdev/kirocrew:0.4.0
 USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     nodejs npm \   # already included
@@ -198,3 +171,130 @@ USER kirocrew
 
 The new image is built at install time. Existing crews continue using the
 old image until nuked and re-called-down.
+
+## Updating academy/ and crews/
+
+`install.sh` snapshots `academy/` (agents, skills, steering, policies, orders,
+mcp) and `crews/` from the repo into the data volume at install time. The
+transport container mounts these from the data volume — it has no runtime
+dependency on the repo checkout path.
+
+This means:
+
+- **Editing files under `academy/` or `crews/` in the repo takes effect only
+  after re-running `./install.sh`.** A running transport reads the snapshot in
+  the data volume, not the live repo.
+- **Moving or deleting the repo after install does not break the transport** —
+  the academy/crews content is fully self-contained in the data volume.
+- **Reinstalling is always safe** — `install.sh` uses `rsync --delete` (or
+  `rm -rf` + `cp -r` if rsync is absent) so the data-volume snapshot is always
+  an exact mirror of the repo at install time. Stale files from a previous
+  install are removed automatically.
+
+## MCP server catalogue
+
+Crew agents can be given MCP servers (external tools) that vary by composition.
+Server definitions live in a **catalogue** at `academy/mcp/`, and compositions
+opt in to specific servers via their `manifest.json`.
+
+### Catalogue format (`academy/mcp/`)
+
+Each file in `academy/mcp/` is a named MCP server definition in JSON. The
+filename without the `.json` extension is the server name referenced from a
+manifest. `install.sh` snapshots `academy/mcp/` into the data volume and the
+transport container mounts it read-only at `/mcp`.
+
+Each JSON object conforms to the kiro-cli `mcpServers` entry format: at minimum
+a `type` field and either a `url` (HTTP/SSE) or a `command` (stdio) field.
+
+**Stdio server** — `academy/mcp/playwright.json` (shipped as an example, not
+wired into any composition by default):
+
+```json
+{
+  "type": "stdio",
+  "command": "npx",
+  "args": ["@playwright/mcp@latest"]
+}
+```
+
+**HTTP server:**
+
+```json
+{
+  "type": "streamable-http",
+  "url": "http://armory.example.com/mcp"
+}
+```
+
+**HTTP server with an auth header:**
+
+```json
+{
+  "type": "streamable-http",
+  "url": "http://nexus.example.com/mcp",
+  "headers": {
+    "Authorization": "Bearer ${NEXUS_API_KEY}"
+  }
+}
+```
+
+An empty catalogue (no JSON files) is valid — no `mcp.json` is written into
+crew containers and agents run with only their built-in tools.
+
+### Declaring servers in a composition (`manifest.json → mcpServers`)
+
+A composition's `crews/<name>/manifest.json` gains an optional `mcpServers`
+array of catalogue server names:
+
+```json
+{
+  "agents": "*",
+  "skills": "*",
+  "steering": "*",
+  "mcpServers": ["armory", "nexus"]
+}
+```
+
+At crew setup, `_copy_agents()` resolves each name against `/mcp/<name>.json`,
+substitutes any `${VAR}` references, and writes the resolved configs into
+`~/.kiro/mcp.json` inside the crew container. Agents reference these servers
+via `@<name>` in their `tools` list.
+
+Behaviour:
+
+- **No `mcpServers` key (or an empty array)** → no `mcp.json` is written.
+- **A name with no matching catalogue file** → a warning is logged and that
+  entry is skipped; the remaining servers are still written and crew setup
+  continues.
+- **An entry containing a `headers` field** → `poolable: false` is added
+  automatically when written into `mcp.json` (KiroCrew 0.4.0 must not pool
+  auth-bearing HTTP servers). The catalogue file does not need to declare it.
+
+### Secret substitution (`${VAR}`)
+
+Any `${VAR}` reference in a catalogue entry's string values is substituted from
+the **transport container's environment** at the point `_copy_agents()` writes
+the crew's `mcp.json`. This keeps secrets (API keys, tokens) out of committed
+files — the catalogue stores `${NEXUS_API_KEY}`, and the real token is injected
+at crew setup from the transport environment.
+
+- If the variable **is set**: its value is substituted into the written entry.
+- If the variable **is not set**: a warning is logged, the literal `${VAR}`
+  string is written, and crew setup continues (the server will auth-fail at
+  call time rather than blocking the crew from starting).
+
+Pass secrets into the transport container's environment via `install.sh`
+configuration (config file or environment the transport inherits at
+`podman run` time), the same mechanism used for other `GA_*` / `KIRO_*`
+runtime variables.
+
+### Per-agent servers
+
+Individual agent JSON files in `academy/agents/` may also declare their own
+`mcpServers` map for servers specific to that agent regardless of the
+composition. kiro-cli resolves the agent's own `mcpServers` entry before the
+composition-level `mcp.json`, so a name declared in both is served from the
+agent's entry (the `mcp.json` entry is shadowed — no error). An agent may set
+`includeMcpJson: false` to opt out of the composition-level `mcp.json`
+entirely.

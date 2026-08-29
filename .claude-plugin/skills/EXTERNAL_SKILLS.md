@@ -5,13 +5,18 @@ Skill files for whoever is holding the MCP connection to `ghostship` — the
 `pickup`/`steer`/`evac`/`supply`/`captain`/`schedule`/`nuke`/`crews`. Nothing
 under here is ever copied into a crew container.
 
-Two skills, split by whether an MCP connection to `ghostship` already
-exists:
+Three skills covering the three phases of ghostship operation:
 
 - [`ghostship-admin`](ghostship-admin/SKILL.md) — install, connect a
-  client, upgrade, tear down. Shell-driven, no MCP connection assumed.
-- [`ghostship-command`](ghostship-command/SKILL.md) — the fleet lifecycle
-  itself once connected: launch, dispatch, pickup/steer, Captain, nuke.
+  client, upgrade, tear down. Shell-driven, no MCP connection assumed. Start
+  here if ghostship isn't installed yet.
+- [`ghostship-capability`](ghostship-capability/SKILL.md) — configure what
+  crews can do: agent personas, skills, steering, orders, MCP server
+  catalogue, and crew compositions. Use after installation to customise the
+  academy to your needs.
+- [`ghostship-command`](ghostship-command/SKILL.md) — fleet operations once
+  connected: launch, seed, dispatch, pickup/steer, Captain autopilot, evac,
+  nuke. The Admiral's playbook for driving the fleet.
 
 > **Not what you want if you're teaching a *dispatched* agent persona
 > something** (ghost, spectre, banshee, wraith, reaper, raven — work that

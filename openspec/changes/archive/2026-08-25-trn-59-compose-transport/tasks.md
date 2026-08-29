@@ -26,6 +26,6 @@
 ## 6. Verification
 
 - [x] 6.1 Run `bash tests/run.sh --unit` — all tests pass.
-- [x] 6.2 Deploy to vm23 and verify `install.sh` generates `compose.yml` and transport starts cleanly.
+- [x] 6.2 Deploy to <host> and verify `install.sh` generates `compose.yml` and transport starts cleanly.
 - [x] 6.3 Stop the transport manually, run `start.sh`, confirm it comes back up via compose.
-- [x] 6.4 Reboot vm23, confirm `start.sh` (run manually) brings everything back via compose with no fallback needed.
+- [x] 6.4 Reboot <host>, confirm `start.sh` (run manually) brings everything back via compose with no fallback needed.

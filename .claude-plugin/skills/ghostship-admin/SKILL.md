@@ -3,10 +3,39 @@ name: ghostship-admin
 description: Install, configure, connect a client to, upgrade, or tear down a ghostship transport — Podman prerequisites, `./install.sh`/`./start.sh`/`./uninstall.sh`, the transport's own API-key auth, and rebuilding images. Use when there's no MCP connection to `ghostship` yet, or when the task is about the transport host itself (bringing it up, connecting a new client, upgrading, tearing it down) rather than driving an already-running fleet — for that, use `ghostship-command` instead.
 metadata:
   author: ghostship
-  version: "1.0"
+  version: "0.2.0"
 ---
 
 # Ghostship Admin
+
+## Get ghostship
+
+Before anything else, check whether ghostship is already installed:
+
+```bash
+ls ~/.ghostship/ghostship 2>/dev/null && echo "already cloned" || echo "not yet cloned"
+```
+
+If it's already there, skip to [Install](#install) or [Connect an MCP client](#connect-an-mcp-client)
+depending on what you need.
+
+If not, **ask the user where they'd like to store ghostship.** The recommended
+default is `~/.ghostship` — it's a clean, predictable home for the repo and
+any future persistent data (config, credentials cache, etc.):
+
+```bash
+# Default — recommended
+mkdir -p ~/.ghostship
+git clone https://github.com/mcteamstar/ghostship.git ~/.ghostship/ghostship
+cd ~/.ghostship/ghostship
+```
+
+If the user prefers a different location (e.g. `~/development/ghostship` or
+`~/projects/ghostship`), clone there instead — just make sure to note the
+path, as `./install.sh` must be run from inside it and `./start.sh` needs to
+find it again later.
+
+
 
 This skill is for standing a ghostship transport up, connecting a client to
 it, keeping it running, and taking it down — the host-level, shell-driven
@@ -173,20 +202,29 @@ switch to `ghostship-command`.
 
 Registering the MCP server makes the *tools* available; it doesn't make
 `ghostship-admin`/`ghostship-command` available as skills your agent will
-actually read. That's a separate step, and there's no single mechanism
-across every harness:
+actually read. That's a separate step. There's no single mechanism across
+every harness — check your harness's own docs for where it reads `SKILL.md`
+files from. Common paths:
 
 - **Claude Code** reads skills from `~/.claude/skills/<name>/SKILL.md`
-  (all your projects) or `.claude/skills/<name>/SKILL.md` (one project).
-  Symlinks are followed natively, so link rather than copy to avoid drift:
-  `ln -s /path/to/ghostship/.claude-plugin/skills/ghostship-command ~/.claude/skills/ghostship-command`
-  (and the same for `ghostship-admin`).
-- **An Agent-Plugins-compatible client** (Kiro Powers, others as they
-  land) can instead be pointed at the whole `.claude-plugin/` directory as
-  one package — `plugin.json` + `mcp.json` + `skills/` are discovered
-  together from there. See `.claude-plugin/PACKAGING.md`.
-- Anything else: check that harness's own docs for where it reads
-  `SKILL.md` files from. Ghostship doesn't install this for you.
+  (global) or `.claude/skills/<name>/SKILL.md` (project-scoped).
+  Symlinks are followed, so link rather than copy to avoid drift:
+  ```bash
+  ln -s /path/to/ghostship/.claude-plugin/skills/ghostship-command \
+        ~/.claude/skills/ghostship-command
+  ln -s /path/to/ghostship/.claude-plugin/skills/ghostship-admin \
+        ~/.claude/skills/ghostship-admin
+  ```
+- **Kiro** reads skills from `~/.kiro/skills/<name>/SKILL.md` (global).
+  Same symlink pattern applies.
+- **An Agent-Plugins-compatible client** can be pointed at the whole
+  `.claude-plugin/` directory — `plugin.json` + `mcp.json` + `skills/`
+  are discovered together. See `.claude-plugin/PACKAGING.md`.
+
+Once skills are wired, your agent will use `ghostship-command` for all fleet
+operations and `ghostship-admin` only for host-level work (install, auth,
+upgrade). You should rarely need to invoke `ghostship-admin` after initial
+setup is complete.
 
 ## Keep it running
 
@@ -230,11 +268,9 @@ an *existing* container from whatever image it was created from — it does
 
 ## Beyond the common path
 
-This skill covers local install and the two connection modes (keyed and
-unkeyed). For anything past that — remote deployment, TLS, reverse
-proxying, IAM Identity Center configuration, secret rotation, the full
-environment-variable reference, or extending the crew image — read the
-live docs rather than relying on this file to be exhaustive:
-`docs/remote.md`, `docs/auth.md`, `docs/configuration.md` in the ghostship
-repository. Those change independently of this skill; trust them over any
-paraphrase here.
+Once ghostship is running and a client is connected, use **`ghostship-command`**
+for all fleet operations (launch, dispatch, pickup, steer, captain, evac, nuke).
+
+To configure what crews can do after installation — adding agent personas,
+skills, MCP servers, or building new crew compositions — use
+**`ghostship-capability`**.
