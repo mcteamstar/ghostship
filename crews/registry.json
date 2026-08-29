@@ -5,6 +5,12 @@
             "name": "spec-ops",
             "description": "Default spec-ops crew \u2014 full agent/skill/steering set",
             "dir": "spec-ops"
+        },
+        {
+            "name": "migration-assess",
+            "description": "Migration assessment crew \u2014 nine discovery and assessment personas working a Migration Pathfinder project over MCP",
+            "dir": "migration-assess",
+            "image": "localhost/migration-assess:latest"
         }
     ]
 }

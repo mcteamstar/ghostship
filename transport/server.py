@@ -67,7 +67,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from mcp.server.mcpserver.server import MCPServer
@@ -92,6 +92,11 @@ REGISTRY_PATH = DATA_DIR / "crews.json"
 
 # KiroCrew gateway port — fixed by upstream, not configurable from this transport.
 CREW_GATEWAY_PORT = 5476
+# How a crew container reaches transport from inside ga-net. Written into the
+# crew's own MCP client config at launch (see _copy_mcp_config).
+GA_TRANSPORT_INTERNAL_URL = os.environ.get(
+    "GA_TRANSPORT_INTERNAL_URL", f"http://ga-transport:{PORT}"
+)
 CREW_CONTAINER_PREFIX = "gs-"
 CREW_VOLUME_PREFIX = "gs-vol-"
 CREW_HOME_VOLUME_PREFIX = "gs-home-"
@@ -108,8 +113,15 @@ GA_NETWORK = "ga-net"
 GA_MAX_CREWS = int(os.environ.get("GA_MAX_CREWS", "20"))
 GA_MAX_ACTIVE_CREWS = int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3"))
 GA_AUTH_FILE = "ga-kiro-auth"
+# Fallback persona roster. A crew type declares its own roster through its
+# manifest's `agents` selection; this tuple is what a crew type selecting "*"
+# resolves to, and what legacy crews registered before rosters became
+# manifest-driven fall back to. See _personas_for_composition.
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
+# Mailboxes that exist in every crew regardless of its persona roster.
+# captain is a role rather than a persona; admiral is written by transport only.
+NON_PERSONA_MAILBOXES = ("captain", "admiral")
 GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
 KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
 KC_MODEL_DEFAULT = os.environ.get("KC_MODEL_DEFAULT", "")
@@ -123,6 +135,30 @@ GA_SUBAGENT_TIMEOUT_SECS = int(os.environ.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"
 GA_SUBAGENT_MAX_TURNS = int(os.environ.get("GA_SUBAGENT_MAX_TURNS", "200"))
 GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
+
+# ── Migration Pathfinder MCP proxy ────────────────────────────────────────────
+# Transport proxies a crew's Pathfinder MCP traffic so that Pathfinder
+# credentials never enter a crew container. A crew authenticates to the proxy
+# with its own per-crew token (minted at launch, stored in the registry, dies
+# with the crew); transport swaps that for a real Pathfinder access token on
+# the way out. Same posture as admiral_secret and ga-kiro-auth: the agent has
+# no path to the credential it is ultimately using.
+#
+# GA_PATHFINDER_URL       — Pathfinder origin, e.g. https://pathfinder.staging.sca.versent.io
+# GA_PATHFINDER_TOKEN_URL — Cognito token endpoint, e.g. https://<domain>/oauth2/token
+# GA_PATHFINDER_CLIENT_ID — Cognito app client id used for the refresh grant
+# GA_PATHFINDER_ACCESS_TOKEN — a static access token; bypasses the refresh grant.
+#     Access tokens are ~15 minutes long, so this is for a bounded test run only,
+#     never an unattended crew.
+GA_PATHFINDER_URL = os.environ.get("GA_PATHFINDER_URL", "").rstrip("/")
+GA_PATHFINDER_TOKEN_URL = os.environ.get("GA_PATHFINDER_TOKEN_URL", "")
+GA_PATHFINDER_CLIENT_ID = os.environ.get("GA_PATHFINDER_CLIENT_ID", "")
+GA_PATHFINDER_ACCESS_TOKEN = os.environ.get("GA_PATHFINDER_ACCESS_TOKEN", "")
+# Refresh token lives on disk in DATA_DIR rather than in the environment, so it
+# survives a transport restart and never appears in `podman inspect` output.
+GA_PATHFINDER_REFRESH_FILE = "ga-pathfinder-refresh"
+# Refresh this many seconds before the cached access token actually expires.
+_PATHFINDER_TOKEN_SKEW_SECS = 90
 
 # ── Version ───────────────────────────────────────────────────────────────────
 
@@ -254,6 +290,7 @@ KIRO_CLI_DB = "/home/kirocrew/.local/share/kiro-cli/data.sqlite3"
 KIRO_AGENTS_DIR = "/home/kirocrew/.kiro/agents"
 KIRO_SKILLS_DIR = "/home/kirocrew/.kiro/crew/skills"
 KIRO_STEERING_DIR = "/home/kirocrew/.kiro/steering"
+KIRO_SETTINGS_DIR = "/home/kirocrew/.kiro/settings"
 KIRO_WORKSPACE_ROOT = "/home/kirocrew/workplace/kirocrew-workspace"
 
 _CREW_REGISTRY_PATH = Path("/crews/registry.json")
@@ -453,11 +490,18 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
             # Read body fully so we can close the upstream context; for large
             # responses this is acceptable given the 60 s timeout constraint.
             body = await upstream_resp.aread()
-        return Response(
+        response = Response(
             content=body,
             status_code=upstream_resp.status_code,
             headers=response_headers,
         )
+        # Remember which crew this browser is looking at, so root-absolute
+        # requests that arrive without a Referer (notably service-worker
+        # fetches) can still be routed to it.
+        response.set_cookie(
+            GA_CREW_UI_COOKIE, crew_id, path="/", httponly=True, samesite="lax",
+        )
+        return response
     except Exception as e:
         logger.warning("UI proxy error for crew %s: %s", crew_id, e)
         return PlainTextResponse(f"Proxy error: {e}", status_code=502)
@@ -498,11 +542,18 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
         api_path = f"{api_path}?{query.decode('latin-1')}"
     upstream_full = f"{upstream_base}{api_path}"
 
-    # Forward headers minus host, then inject session cookie
+    # Forward headers minus host, then inject the crew session cookie.
+    #
+    # Any inbound cookie is dropped rather than merged. Starlette yields header
+    # names lowercased, so assigning "Cookie" alongside a surviving "cookie" key
+    # sends two cookie headers and the gateway reads the wrong one — it answers
+    # 403 {"error": "Token required"}. That stayed hidden until the crew UI
+    # started setting a cookie of its own (GA_CREW_UI_COOKIE), at which point
+    # every proxied API call from a browser began failing.
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() != "host"
+        if k.lower() not in ("host", "cookie")
     }
     forward_headers["Cookie"] = _crew_cookie(crew)
 
@@ -546,6 +597,319 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
 
 
+
+
+# ── Migration Pathfinder MCP proxy ────────────────────────────────────────────
+
+# Long-lived client for the Pathfinder proxy. MCP streamable HTTP holds a
+# response open for the duration of a stream, so this client must not impose a
+# read timeout the way the 60s _async_http client does.
+_pathfinder_http = httpx.AsyncClient(
+    timeout=httpx.Timeout(connect=15.0, read=None, write=60.0, pool=60.0)
+)
+
+_pathfinder_token_lock = threading.Lock()
+# Cached Cognito access token: {"token": str, "expires_at": float}
+_pathfinder_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
+
+# Headers transport supplies itself on the upstream request; anything the crew
+# sends under these names is dropped rather than forwarded. `authorization` is
+# the important one — the crew authenticates to transport with its own
+# per-crew token, and must never be able to influence the credential transport
+# presents to Pathfinder.
+_PATHFINDER_STRIPPED_REQUEST_HEADERS: frozenset[str] = frozenset({
+    "host", "authorization", "content-length",
+}) | _HOP_BY_HOP_HEADERS
+
+
+def _pathfinder_refresh_token() -> str:
+    """Read the Cognito refresh token from DATA_DIR, if one has been placed there."""
+    try:
+        path = DATA_DIR / GA_PATHFINDER_REFRESH_FILE
+        if path.is_file():
+            return path.read_text().strip()
+    except Exception as e:
+        logger.warning("Could not read Pathfinder refresh token: %s", e)
+    return ""
+
+
+def _pathfinder_access_token() -> str:
+    """Return a usable Pathfinder access token, refreshing it when near expiry.
+
+    A static GA_PATHFINDER_ACCESS_TOKEN wins when set — that is the bounded
+    test-run path, where an operator pastes a token from their own session.
+    Otherwise this exchanges the stored refresh token for a fresh access token
+    via the Cognito token endpoint. Access tokens are short (~15 minutes), so
+    an unattended crew needs the refresh path, not the static one.
+
+    Raises RuntimeError with an actionable message when neither is configured.
+    """
+    if GA_PATHFINDER_ACCESS_TOKEN:
+        return GA_PATHFINDER_ACCESS_TOKEN
+
+    with _pathfinder_token_lock:
+        cached = _pathfinder_token_cache
+        if cached["token"] and time.time() < cached["expires_at"]:
+            return str(cached["token"])
+
+        refresh = _pathfinder_refresh_token()
+        if not refresh:
+            raise RuntimeError(
+                "No Pathfinder credential configured. Set GA_PATHFINDER_ACCESS_TOKEN "
+                f"for a short test run, or write a refresh token to "
+                f"{DATA_DIR / GA_PATHFINDER_REFRESH_FILE} for unattended use."
+            )
+        if not GA_PATHFINDER_TOKEN_URL or not GA_PATHFINDER_CLIENT_ID:
+            raise RuntimeError(
+                "GA_PATHFINDER_TOKEN_URL and GA_PATHFINDER_CLIENT_ID must both be "
+                "set to exchange a Pathfinder refresh token."
+            )
+
+        resp = httpx.post(
+            GA_PATHFINDER_TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "client_id": GA_PATHFINDER_CLIENT_ID,
+                "refresh_token": refresh,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            # Deliberately does not log the response body — it can echo the
+            # credential back on some error paths.
+            raise RuntimeError(
+                f"Pathfinder token refresh failed with HTTP {resp.status_code}. "
+                "The refresh token may have expired (they last 7 days); "
+                "re-authenticate and replace it."
+            )
+        payload = resp.json()
+        token = payload.get("access_token", "")
+        if not token:
+            raise RuntimeError("Pathfinder token refresh returned no access_token.")
+        expires_in = int(payload.get("expires_in", 900))
+        _pathfinder_token_cache["token"] = token
+        _pathfinder_token_cache["expires_at"] = (
+            time.time() + max(expires_in - _PATHFINDER_TOKEN_SKEW_SECS, 30)
+        )
+        logger.info("Refreshed Pathfinder access token (expires in %ss)", expires_in)
+        return token
+
+
+def _extract_pathfinder_parts(path: str) -> tuple[str, str] | None:
+    """Parse /pathfinder/{crew_id}/mcp[/{sub_path}] into (crew_id, sub_path)."""
+    parts = path.lstrip("/").split("/")
+    if len(parts) < 3 or parts[0] != "pathfinder" or parts[2] != "mcp":
+        return None
+    return parts[1], "/".join(parts[3:])
+
+
+# Proxy calls are frequent (one per MCP tool call), so the idle-timer refresh
+# they trigger is throttled rather than writing the registry on every request.
+_pathfinder_touch_lock = threading.Lock()
+_pathfinder_last_touch: dict[str, float] = {}
+_PATHFINDER_TOUCH_INTERVAL_SECS = 30.0
+
+
+def _touch_crew_throttled(crew_id: str) -> None:
+    """Refresh a crew's idle timer, at most once per throttle interval.
+
+    A crew running a long Pathfinder-heavy task makes no transport calls of its
+    own, so without this the idle monitor could stop a container that is busy.
+    """
+    now = time.monotonic()
+    with _pathfinder_touch_lock:
+        last = _pathfinder_last_touch.get(crew_id, 0.0)
+        if now - last < _PATHFINDER_TOUCH_INTERVAL_SECS:
+            return
+        _pathfinder_last_touch[crew_id] = now
+    try:
+        _touch_crew(crew_id)
+    except Exception as e:
+        logger.debug("Idle-timer refresh failed for crew %s: %s", crew_id, e)
+
+
+async def _handle_pathfinder_proxy(request: Request) -> Response:
+    """Authenticating reverse proxy from a crew to its Migration Pathfinder MCP.
+
+    Route: /pathfinder/{crew_id}/mcp[/{path}]
+        →  {GA_PATHFINDER_URL}/mcp/{project_id}[/{path}]
+
+    Pathfinder's MCP server authenticates with short-lived Cognito access
+    tokens obtained through a browser OAuth flow, which a headless crew
+    container cannot complete. Transport holds the credential instead and swaps
+    it in here, so the crew never sees it — the same posture as admiral_secret.
+
+    The crew authenticates with its own per-crew token, minted at launch and
+    destroyed with the crew, so a leaked crew token grants access to exactly one
+    project and can be revoked by nuking that crew.
+
+    Responses are streamed rather than buffered, because MCP streamable HTTP
+    holds the response open (SSE) for the duration of a call.
+    """
+    parsed = _extract_pathfinder_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, sub_path = parsed
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # Per-crew bearer auth. Constant-time, and it fails the same way for a crew
+    # with no token configured as for a wrong one.
+    expected = crew.get("mcp_token", "")
+    presented = ""
+    header = request.headers.get("authorization", "")
+    if header[:7].lower() == "bearer ":
+        presented = header[7:].strip()
+    if not expected or not presented or not hmac.compare_digest(presented, expected):
+        return PlainTextResponse(
+            "Unauthorized", status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    project_id = crew.get("pathfinder_project", "")
+    if not project_id:
+        return PlainTextResponse(
+            f"Crew '{crew_id}' has no Pathfinder project bound. Relaunch it with "
+            "pathfinder_project set — an MCP connection is scoped to one project "
+            "for the life of the crew.",
+            status_code=503,
+        )
+    if not GA_PATHFINDER_URL:
+        return PlainTextResponse(
+            "GA_PATHFINDER_URL is not configured on this transport.",
+            status_code=503,
+        )
+
+    try:
+        # Off the event loop: a cache miss makes a blocking Cognito call, and
+        # stalling every other transport request behind it — for up to the 30s
+        # timeout if Cognito is unreachable — is not acceptable for something
+        # that happens on a timer.
+        access_token = await asyncio.to_thread(_pathfinder_access_token)
+    except RuntimeError as e:
+        logger.warning("Pathfinder proxy for crew %s: %s", crew_id, e)
+        return PlainTextResponse(str(e), status_code=503)
+
+    upstream = f"{GA_PATHFINDER_URL}/mcp/{project_id}"
+    if sub_path:
+        upstream = f"{upstream}/{sub_path}"
+    query = request.scope.get("query_string", b"")
+    if query:
+        upstream = f"{upstream}?{query.decode('latin-1')}"
+
+    forward_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _PATHFINDER_STRIPPED_REQUEST_HEADERS
+    }
+    forward_headers["Authorization"] = f"Bearer {access_token}"
+
+    # Only a POST is work. In MCP streamable HTTP a POST carries the JSON-RPC
+    # call; a GET is the server-to-client notification stream, which an idle
+    # kiro-cli holds open and reconnects indefinitely. Treating that GET as
+    # activity refreshed the idle timer forever, so a crew with nothing to do
+    # never idle-stopped — observed keeping a crew and its VM alive for 17
+    # hours after its last task finished.
+    if request.method == "POST":
+        await asyncio.to_thread(_touch_crew_throttled, crew_id)
+
+    try:
+        upstream_req = _pathfinder_http.build_request(
+            request.method, upstream,
+            headers=forward_headers,
+            content=await request.body(),
+        )
+        upstream_resp = await _pathfinder_http.send(upstream_req, stream=True)
+    except Exception as e:
+        logger.warning("Pathfinder proxy error for crew %s: %s", crew_id, e)
+        return PlainTextResponse(f"Proxy error: {e}", status_code=502)
+
+    async def _stream():
+        try:
+            async for chunk in upstream_resp.aiter_raw():
+                yield chunk
+        finally:
+            await upstream_resp.aclose()
+
+    response_headers = {
+        k: v for k, v in upstream_resp.headers.items()
+        if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() != "content-length"
+    }
+    return StreamingResponse(
+        _stream(),
+        status_code=upstream_resp.status_code,
+        headers=response_headers,
+    )
+
+
+# Transport's own routes. A root-absolute request on any other path may belong
+# to a crew UI (see _crew_id_from_referer) and is routed there instead of 404ing.
+_TRANSPORT_ROUTE_PREFIXES: tuple[str, ...] = (
+    "/mcp", "/health", "/version", "/login", "/logout", "/files", "/pathfinder",
+    "/crews",
+)
+
+
+# Set when a crew UI page is served, and used to route root-absolute requests
+# that arrive without a Referer. The page registers a service worker, and
+# service-worker-initiated fetches frequently carry no Referer at all, so
+# Referer alone leaves the UI half-working.
+GA_CREW_UI_COOKIE = "ga_crew_ui"
+
+
+def _crew_id_from_cookie(cookie_header: str) -> str | None:
+    """Extract the crew id from the ga_crew_ui cookie, if present and sane."""
+    if not cookie_header:
+        return None
+    for part in cookie_header.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == GA_CREW_UI_COOKIE:
+            value = value.strip()
+            return value if CREW_ID_RE.match(value) else None
+    return None
+
+
+def _crew_id_from_referer(referer: str) -> str | None:
+    """Extract the crew id from a Referer pointing at a crew UI page.
+
+    The KiroCrew SPA is built with root-absolute asset and API paths
+    (`/assets/App-*.js`, `/api/knowledge`). Served under `/crews/{id}/ui`, the
+    browser therefore requests those from transport's root, where they do not
+    exist, and the page renders blank. The Referer is what says which crew the
+    request actually belongs to — and it distinguishes correctly when several
+    crew UIs are open in different tabs, which a cookie or "last crew" global
+    would not.
+    """
+    if not referer:
+        return None
+    try:
+        path = urlsplit(referer).path
+    except Exception:
+        return None
+    parts = path.lstrip("/").split("/")
+    if len(parts) >= 3 and parts[0] == "crews" and parts[2] == "ui":
+        return parts[1]
+    return None
+
+
+async def _handle_crew_referer_route(request: Request, crew_id: str) -> Response:
+    """Serve a root-absolute crew UI request by rewriting it onto the crew proxy.
+
+    `/api/...` goes to the API proxy (which injects the crew session cookie);
+    everything else is a static asset and goes to the UI proxy.
+    """
+    path = request.scope["path"]
+    scope = dict(request.scope)
+    if path.startswith("/api/"):
+        scope["path"] = f"/crews/{crew_id}/api/{path[len('/api/'):]}"
+        rewritten = Request(scope, request.receive)
+        return await _handle_crew_api_proxy(rewritten)
+    scope["path"] = f"/crews/{crew_id}/ui{path}"
+    rewritten = Request(scope, request.receive)
+    return await _handle_crew_ui_proxy(rewritten)
 
 
 async def _handle_version_get(request: Request) -> Response:
@@ -602,6 +966,16 @@ class BearerAuthMiddleware:
                 await self._file_app(scope, receive, send)
                 return
 
+            # Pathfinder MCP proxy — carries its own per-crew bearer token
+            # rather than the global API key, so it is dispatched here for
+            # both keyed and unkeyed deployments. The handler rejects any
+            # request whose token does not match the named crew's.
+            if scope["path"].startswith("/pathfinder/"):
+                request = Request(scope, receive)
+                response = await _handle_pathfinder_proxy(request)
+                await response(scope, receive, send)
+                return
+
         if not self._key or scope["type"] != "http":
             # No API key — still need to check login/logout routes
             if scope["type"] == "http":
@@ -625,6 +999,8 @@ class BearerAuthMiddleware:
                     request = Request(scope, receive)
                     response = await _handle_crew_api_proxy(request)
                     await response(scope, receive, send)
+                    return
+                if await self._try_crew_referer_route(scope, receive, send):
                     return
             await self.app(scope, receive, send)
             return
@@ -694,7 +1070,36 @@ class BearerAuthMiddleware:
             await response(scope, receive, send)
             return
 
+        # Root-absolute asset/API request from a crew UI page.
+        if await self._try_crew_referer_route(scope, receive, send):
+            return
+
         await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _try_crew_referer_route(scope, receive, send) -> bool:
+        """Route a root-absolute crew-UI asset or API request, if that is what
+        this is. Returns True when the request was served."""
+        path = scope["path"]
+        if any(path == p or path.startswith(p + "/") for p in _TRANSPORT_ROUTE_PREFIXES):
+            return False
+        referer = ""
+        cookie = ""
+        for k, v in scope.get("headers", []):
+            if k == b"referer":
+                referer = v.decode("latin-1")
+            elif k == b"cookie":
+                cookie = v.decode("latin-1")
+        # Referer first: it is per-request, so two crew UIs in two tabs route
+        # independently. The cookie is the fallback for requests that carry no
+        # Referer, and is last-crew-wins.
+        crew_id = _crew_id_from_referer(referer) or _crew_id_from_cookie(cookie)
+        if crew_id is None:
+            return False
+        request = Request(scope, receive)
+        response = await _handle_crew_referer_route(request, crew_id)
+        await response(scope, receive, send)
+        return True
 
     @staticmethod
     async def _reject(send) -> None:
@@ -1243,7 +1648,7 @@ def _substitute_placeholders(body: str) -> str:
     return result
 
 
-_CAPTAIN_CHECKIN_TASK = f"""You are Raven. The Captain is this recurring loop itself, not you — you're the persona it dispatches each check-in to watch over the crew and carry its messages. This is a recurring check-in in a persistent session, so standing orders live in the generic /var/mail/captain mailbox rather than in this prompt.
+_CAPTAIN_CHECKIN_TASK_TEMPLATE = f"""You are Raven. The Captain is this recurring loop itself, not you — you're the persona it dispatches each check-in to watch over the crew and carry its messages. This is a recurring check-in in a persistent session, so standing orders live in the generic /var/mail/captain mailbox rather than in this prompt.
 
 First read /var/mail/captain and identify orders that are new since your prior check-in. Distinguish by source: messages From: admiral@localhost are standing orders; messages From: <persona>@localhost are crew correspondence (status reports, escalations). Never conflate the two — a persona cannot issue standing orders by mailing captain. Assess the whole current crew state against all standing orders, not merely the latest delta or the last run result.
 
@@ -1256,11 +1661,29 @@ When new standing orders arrive while a previously-dispatched persona task is st
 {_RAVEN_SELF_CANCEL}
 
 Take exactly one of these actions this cycle:
-1. If a clear next atomic step is needed and within your authority, dispatch that step to exactly one of ghost, spectre, banshee, wraith, or reaper.
+1. If a clear next atomic step is needed and within your authority, dispatch that step to exactly one of <<PERSONA_ROSTER>>.
 2. If there is no outstanding action, or a safe retry is not yet warranted, hold and let the existing schedule continue.
 3. If the next decision needs permission or judgment outside your authority, escalate to the Admiral at admiral@localhost instead of guessing or proceeding unilaterally, then hold that point until a later check-in receives direction.
 
 Do not implement work yourself, edit files, or use a second channel to change standing orders. Retry transient failures only when retrying is safe; otherwise hold or escalate as described above."""
+
+
+def _captain_checkin_task(crew: dict | None = None) -> str:
+    """The Raven check-in prompt, with this crew's own dispatch roster.
+
+    Raven dispatches the crew's worker personas and is not itself dispatchable
+    by the loop, so it is excluded from the roster it is handed. A spec-ops crew
+    gets ghost/spectre/banshee/wraith/reaper; a migration-assess crew gets its
+    nine assessment personas.
+    """
+    workers = [p for p in _crew_personas(crew) if p != "raven"]
+    if not workers:
+        workers = [p for p in PERSONA_NAMES if p != "raven"]
+    if len(workers) > 1:
+        roster = ", ".join(workers[:-1]) + f", or {workers[-1]}"
+    else:
+        roster = workers[0]
+    return _CAPTAIN_CHECKIN_TASK_TEMPLATE.replace("<<PERSONA_ROSTER>>", roster)
 
 
 _CHANGE_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -1436,15 +1859,16 @@ def _mail_count(
         return 0
 
 
-# All mailboxes checked in a single exec per pickup poll cycle.
-_ALL_MAIL_MAILBOXES = (
-    "ghost", "spectre", "banshee", "wraith", "reaper", "raven", "captain", "admiral"
-)
+# Default mailbox set, used when a caller has no crew in hand. A crew's real
+# set comes from _crew_mailboxes(crew) — its manifest roster plus captain and
+# admiral — so a migration-assess crew's mailboxes get read, not spec-ops's.
+_ALL_MAIL_MAILBOXES = PERSONA_NAMES + NON_PERSONA_MAILBOXES
 
 
 def _read_all_mail_counts(
     podman: PodmanClient,
     container: str,
+    mailboxes: tuple[str, ...] = _ALL_MAIL_MAILBOXES,
 ) -> dict[str, int]:
     """Read all relevant mailboxes in one container exec and return counts.
 
@@ -1462,7 +1886,7 @@ def _read_all_mail_counts(
             f"else len(re.findall(r'(?m)^From [^\\n]*$',open(_p).read())) "
             f"if os.path.isfile(_p) else 0); "
             f"counts['{name}']=_n if _n else None; "
-            for name in _ALL_MAIL_MAILBOXES
+            for name in mailboxes
         )
         + "print(json.dumps({k:v for k,v in counts.items() if v}))"
     )
@@ -1479,6 +1903,7 @@ def _read_all_mail_counts(
 def _read_all_mail_subjects(
     podman: PodmanClient,
     container: str,
+    mailboxes: tuple[str, ...] = _ALL_MAIL_MAILBOXES,
 ) -> dict[str, list[str]]:
     """Read subject lines from all mailboxes in one container exec.
 
@@ -1524,7 +1949,7 @@ def _read_all_mail_subjects(
         f"import base64,sys; "
         f"exec(base64.b64decode('{encoded}').decode())"
     )
-    mailboxes_json = json.dumps(list(_ALL_MAIL_MAILBOXES))
+    mailboxes_json = json.dumps(list(mailboxes))
     raw = podman.container_exec_checked(
         container, ["python3", "-c", decode_and_run, mailboxes_json]
     )
@@ -1736,7 +2161,7 @@ def _reconcile_registry() -> None:
                     new_cookie = _mint_cookie(podman, container, crew_url)
                     # D-07: Apply config overrides on every reconcile restart,
                     # symmetric with the _ensure_crew_running restart path.
-                    _patch_crew_config(podman, container)
+                    _patch_crew_config(podman, container, _crew_default_agent(info))
                     updates[cid] = {
                         "status": "running",
                         "last_used": time.time(),
@@ -1993,9 +2418,16 @@ def _require_crew(crew_id: str | None) -> dict:
     return _get_crew(crew_id)
 
 
-def _validate_agent(agent: str) -> None:
-    if agent not in PERSONA_ALLOWLIST:
-        accepted = ", ".join(PERSONA_NAMES)
+def _validate_agent(agent: str, crew: dict | None = None) -> None:
+    """Reject an agent name the target crew does not carry.
+
+    Validated against that crew's own roster, not a global allowlist — a
+    migration-assess crew has no `ghost`, and a spec-ops crew has no `compass`.
+    Without a crew (legacy call sites) this falls back to the shared roster.
+    """
+    allowed = _crew_personas(crew)
+    if agent not in allowed:
+        accepted = ", ".join(allowed)
         raise ValueError(
             f"Invalid agent {agent!r}; expected one of: {accepted}"
         )
@@ -2116,7 +2548,7 @@ def _ensure_crew_running(
         # Remove this block when KiroCrew fixes the loader to read spawn_min_memory_gb
         # from config.local.json (tracked: KiroCrew upstream issue, spawn gate ignores
         # config file overrides for spawn_min_memory_gb).
-        _patch_crew_config(podman, crew["container"])
+        _patch_crew_config(podman, crew["container"], _crew_default_agent(crew))
         podman.container_stop(crew["container"])
         podman.container_start(crew["container"])
         if not _wait_gateway(crew_url, timeout=30):
@@ -2193,7 +2625,9 @@ def _load_crew_manifest(composition_entry: dict | None = None) -> dict[str, Any]
     crew. A missing manifest file, a missing key, or invalid JSON all
     degrade to "*" for the affected section(s) rather than failing
     crew setup."""
-    default: dict[str, Any] = {"agents": "*", "skills": "*", "steering": "*"}
+    default: dict[str, Any] = {
+        "agents": "*", "skills": "*", "steering": "*", "default_agent": None,
+    }
     if composition_entry is None:
         composition_entry = _resolve_composition("kirocrew") or {"dir": "kirocrew"}
     manifest_path = _resolve_manifest_path(composition_entry)
@@ -2218,6 +2652,82 @@ def _manifest_selects(selection: Any, name: str) -> bool:
     """True if `name` should be copied per a manifest section's selection
     ("*", or an explicit list of exact names)."""
     return selection == "*" or name in selection
+
+
+def _personas_for_composition(composition_entry: dict | None) -> tuple[str, ...]:
+    """Persona names a crew type's manifest selects.
+
+    The manifest already declares which agent JSONs get copied into the crew,
+    so it is also the authoritative statement of that crew's persona roster —
+    deriving one from the other keeps them from drifting. A crew type selecting
+    "*" gets the shared Academy roster (PERSONA_NAMES). An explicit selection
+    yields its filenames minus the .json suffix, in manifest order.
+    """
+    selection = _load_crew_manifest(composition_entry)["agents"]
+    if selection == "*":
+        return PERSONA_NAMES
+    names = [
+        entry[: -len(".json")]
+        for entry in selection
+        if isinstance(entry, str) and entry.endswith(".json")
+    ]
+    if not names:
+        logger.warning(
+            "Crew manifest selects no usable agent filenames — falling back to %s",
+            list(PERSONA_NAMES),
+        )
+        return PERSONA_NAMES
+    return tuple(names)
+
+
+def _default_agent_for_composition(
+    composition_entry: dict | None, personas: tuple[str, ...]
+) -> str:
+    """The crew's default persona: manifest `default_agent` when it names one
+    of the crew's own personas, otherwise the first persona in the roster."""
+    declared = _load_crew_manifest(composition_entry).get("default_agent")
+    if isinstance(declared, str) and declared in personas:
+        return declared
+    if declared:
+        logger.warning(
+            "Crew manifest default_agent %r is not in this crew's roster %s — "
+            "using %r instead", declared, list(personas), personas[0],
+        )
+    return personas[0]
+
+
+def _crew_personas(crew: dict | None) -> tuple[str, ...]:
+    """The persona roster for an already-registered crew.
+
+    Read from the registry entry written at launch rather than re-derived from
+    the manifest, so a manifest edited after launch cannot invalidate a running
+    crew's roster. Crews registered before rosters became manifest-driven have
+    no `personas` key and fall back to the shared Academy roster.
+    """
+    if crew:
+        stored = crew.get("personas")
+        if isinstance(stored, list) and stored:
+            return tuple(stored)
+    return PERSONA_NAMES
+
+
+def _crew_default_agent(crew: dict | None) -> str:
+    """The default persona written into a crew's KiroCrew config.
+
+    Recorded in the registry at launch. Restart paths re-patch config.local.json
+    and must not regress a crew back to spec-ops's `ghost`, which does not exist
+    in every composition.
+    """
+    if crew:
+        stored = crew.get("default_agent")
+        if isinstance(stored, str) and stored:
+            return stored
+    return "ghost"
+
+
+def _crew_mailboxes(crew: dict | None) -> tuple[str, ...]:
+    """Every mailbox that exists in a crew: its personas, plus captain and admiral."""
+    return _crew_personas(crew) + NON_PERSONA_MAILBOXES
 
 
 def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
@@ -2317,6 +2827,126 @@ def _copy_steering(podman: PodmanClient, container: str, composition_entry: dict
     return copied
 
 
+def _copy_mcp_config(
+    podman: PodmanClient,
+    container: str,
+    crew_id: str,
+    composition_entry: dict | None,
+    mcp_token: str,
+) -> list[str]:
+    """Give the crew its own outbound MCP client connections.
+
+    A crew type declares the MCP servers its personas need in
+    `crews/<dir>/mcp.json`, in kiro-cli's own `mcpServers` shape. Three
+    placeholders are substituted per crew:
+
+        {{TRANSPORT_URL}}     — how this crew reaches transport on ga-net
+        {{CREW_ID}}           — this crew's id
+        {{CREW_MCP_TOKEN}}    — this crew's proxy token, minted at launch
+
+    Registration goes through `kiro-cli mcp add --scope global` where possible,
+    because that writes whatever on-disk shape the installed kiro-cli actually
+    reads; writing the file directly is the fallback when the CLI rejects the
+    call. Global scope matters: every dispatched task runs in its own
+    `subagent_*/` directory, so a workspace-scoped server would be invisible to
+    all of them.
+
+    A crew type with no mcp.json (spec-ops) is a no-op.
+    """
+    if composition_entry is None:
+        return []
+    template_path = Path(f"/crews/{composition_entry['dir']}/mcp.json")
+    if not template_path.exists():
+        return []
+
+    try:
+        raw = template_path.read_text()
+    except Exception as e:
+        logger.warning("Could not read MCP template %s: %s", template_path, e)
+        return []
+
+    rendered = (
+        raw.replace("{{TRANSPORT_URL}}", GA_TRANSPORT_INTERNAL_URL)
+           .replace("{{CREW_ID}}", crew_id)
+           .replace("{{CREW_MCP_TOKEN}}", mcp_token)
+    )
+    try:
+        config = json.loads(rendered)
+        servers = config.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("mcpServers is not an object")
+    except Exception as e:
+        logger.error("Invalid MCP template %s: %s — crew has no MCP servers", template_path, e)
+        return []
+
+    registered: list[str] = []
+    cli_failed = False
+    for name, spec in servers.items():
+        if not isinstance(spec, dict) or not spec.get("url"):
+            # Only http servers are registerable via the CLI path; anything
+            # else falls through to the file write below.
+            cli_failed = True
+            continue
+        cmd = [
+            "kiro-cli", "mcp", "add",
+            "--name", name,
+            "--url", spec["url"],
+            "--scope", "global",
+        ]
+        headers = spec.get("headers")
+        if headers:
+            cmd += ["--headers", json.dumps(headers)]
+        try:
+            out = podman.container_exec_checked(container, cmd)
+            registered.append(name)
+            logger.info("Registered MCP server %r in %s: %s", name, container, out.strip()[:200])
+        except Exception as e:
+            logger.warning(
+                "kiro-cli mcp add failed for %r in %s (%s) — falling back to writing %s/mcp.json",
+                name, container, e, KIRO_SETTINGS_DIR,
+            )
+            cli_failed = True
+
+    if cli_failed:
+        # Write the rendered template verbatim. Doing this after the CLI
+        # attempts means a partial CLI success is overwritten by the complete,
+        # declared configuration rather than left half-registered.
+        try:
+            b64 = base64.b64encode(
+                json.dumps({"mcpServers": servers}, indent=2).encode()
+            ).decode()
+            podman.container_exec_checked(container, [
+                "python3", "-c",
+                f"import base64, pathlib; "
+                f"d = pathlib.Path('{KIRO_SETTINGS_DIR}'); d.mkdir(parents=True, exist_ok=True); "
+                f"p = d / 'mcp.json'; p.write_bytes(base64.b64decode('{b64}')); "
+                f"p.chmod(0o600); print('wrote', p)"
+            ])
+            registered = list(servers.keys())
+            logger.info("Wrote MCP config directly for %s: %s", container, registered)
+        except Exception as e:
+            logger.error("Failed to write MCP config for %s: %s", container, e)
+
+    return registered
+
+
+def _composition_uses_openspec(composition_entry: dict | None) -> bool:
+    """Whether a crew type's manifest selects any openspec-* skill.
+
+    The shared OpenSpec store only exists to let separately-dispatched tasks
+    resolve `openspec` commands to one place. A crew type that selects none of
+    those skills (migration-assess records its work in Pathfinder instead) has
+    no use for the store, so seeding one would just leave an unused directory at
+    its workspace root.
+    """
+    selection = _load_crew_manifest(composition_entry)["skills"]
+    if selection == "*":
+        return True
+    return any(
+        isinstance(name, str) and name.startswith("openspec-") for name in selection
+    )
+
+
 def _seed_openspec_store(podman: PodmanClient, container: str) -> None:
     """Init a shared OpenSpec store at the workspace root.
 
@@ -2396,8 +3026,33 @@ def _mint_cookie(podman: PodmanClient, container: str, crew_url: str) -> str | N
         return None
 
 
+def _auth_rows_are_complete(rows: list) -> bool:
+    """Whether captured auth_kv rows represent a *finished* login.
+
+    kiro-cli writes its `...:odic:device-registration` row at the START of a
+    device flow, before the operator has approved anything in the browser, and
+    only adds `...:odic:token` once the exchange completes. Treating "any row"
+    as success therefore captures a registration with no token: the login flow
+    reports complete, the auth file is written, and every crew launched from it
+    comes up with the agent runtime reporting "kiro-cli is not logged in".
+
+    Requiring a token row is what actually distinguishes a completed login from
+    one still waiting on the browser.
+    """
+    return any(
+        isinstance(row, (list, tuple)) and len(row) >= 1
+        and isinstance(row[0], str) and row[0].endswith(":token")
+        for row in rows
+    )
+
+
 def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
-    """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON."""
+    """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON.
+
+    Returns None while the login is still in progress — see
+    _auth_rows_are_complete for why "some rows exist" is not the same thing as
+    "the operator has finished logging in".
+    """
     extract = (
         "import sqlite3, json, base64; "
         f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
@@ -2409,8 +3064,13 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
         b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
         if b64:
             rows = json.loads(base64.b64decode(b64).decode())
-            if rows:
+            if _auth_rows_are_complete(rows):
                 return b64
+            if rows:
+                logger.info(
+                    "Login still pending for %s: %d auth row(s) but no token yet",
+                    container, len(rows),
+                )
     except Exception as e:
         logger.warning("Auth read failed: %s", e)
     return None
@@ -2799,6 +3459,11 @@ def crews() -> dict:
         }
         if "policy_version" in info:
             entry["policy_version"] = info["policy_version"]
+        # The persona roster is composition-specific, so a caller cannot know
+        # which agent names `dispatch` will accept without being told.
+        entry["personas"] = list(_crew_personas(info))
+        if "pathfinder_project" in info:
+            entry["pathfinder_project"] = info["pathfinder_project"]
         # Try to fetch active tasks from the gateway
         try:
             tasks = _crew_api(info, "GET", "/api/spawn")
@@ -2844,7 +3509,11 @@ def resource_compositions() -> str:
 
 
 @mcp.tool()
-def launch(crew_id: str, composition: str = "spec-ops") -> dict:
+def launch(
+    crew_id: str,
+    composition: str = "spec-ops",
+    pathfinder_project: str | None = None,
+) -> dict:
     """Summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
@@ -2860,11 +3529,28 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
                  unique. Use lowercase letters, numbers, hyphens.
         composition: Crew composition to launch (default: "spec-ops"). See the
                      transport://compositions resource for available compositions.
+        pathfinder_project: Migration Pathfinder project UUID this crew works on.
+                     Only meaningful for a composition that registers a
+                     Pathfinder MCP server (migration-assess). A Pathfinder MCP
+                     connection is bound to one project permanently, so this is
+                     fixed for the life of the crew — a second project needs a
+                     second crew.
 
-    Returns crew_id and status once the gateway is ready (~30s).
+    Returns crew_id, its persona roster, and status once the gateway is
+    ready (~30s).
     """
     if not re.match(r'^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$', crew_id):
         return {"error": "crew_id must be lowercase alphanumeric/hyphens, 1-50 chars"}
+
+    if pathfinder_project is not None:
+        # Validated here rather than at first use: a typo should fail the launch,
+        # not surface much later as an opaque 404 from Pathfinder.
+        if not re.match(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            pathfinder_project.strip().lower(),
+        ):
+            return {"error": "pathfinder_project must be a project UUID"}
+        pathfinder_project = pathfinder_project.strip().lower()
 
     # Resolve crew type from registry
     composition_entry = _resolve_composition(composition)
@@ -2922,7 +3608,7 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             name=container,
             image=image,
             env={
-                "KIROCREW_CORS_ORIGINS": f"http://{container}:{CREW_GATEWAY_PORT}",
+                "KIROCREW_CORS_ORIGINS": _crew_cors_origins(container),
                 "KIROCREW_ALLOW_UNSANDBOXED": "1",
             },
             network=GA_NETWORK,
@@ -2941,7 +3627,10 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 30s for crew {crew_id}"}
 
-        return _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
+        return _finish_crew_setup(
+            podman, crew_id, container, volume, home_volume, auth_b64,
+            composition, composition_entry, pathfinder_project,
+        )
 
     except Exception as e:
         logger.error("Launch failed for %s: %s", crew_id, e)
@@ -2956,7 +3645,9 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         return {"error": f"Launch failed: {e}"}
 
 
-def _patch_crew_config(podman: PodmanClient, container: str) -> None:
+def _patch_crew_config(
+    podman: PodmanClient, container: str, default_agent: str = "ghost"
+) -> None:
     """Patch KiroCrew config while the container is running.
 
     The stopped-crew recovery path calls this immediately after a provisional
@@ -2996,7 +3687,7 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         # (b) the flag is scoped to this crew's config.local.json patch only
         # and does not affect the transport process itself.
         "a['dangerously_skip_permissions'] = True; "
-        "a['default_agent'] = 'ghost'; "
+        f"a['default_agent'] = {json.dumps(default_agent)}; "
         "a['reasoning_effort'] = 'max'; "
         f"a['subagent_timeout_secs'] = {GA_SUBAGENT_TIMEOUT_SECS}; "
         f"a['subagent_max_turns'] = {GA_SUBAGENT_MAX_TURNS}; "
@@ -3096,9 +3787,20 @@ def _finish_crew_setup(
     auth_b64: str,
     composition: str = "spec-ops",
     composition_entry: dict | None = None,
+    pathfinder_project: str | None = None,
 ) -> dict:
     """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
     crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+
+    # This crew type's persona roster, resolved once here and then recorded in
+    # the registry — every later dispatch, mailbox read and restart re-patch
+    # reads it from there rather than re-deriving it, so a manifest edited after
+    # launch cannot invalidate a running crew.
+    personas = _personas_for_composition(composition_entry)
+    default_agent = _default_agent_for_composition(composition_entry, personas)
+    # Per-crew credential for transport's Pathfinder MCP proxy. Minted here,
+    # never leaves this crew, and dies with it on nuke.
+    mcp_token = secrets.token_urlsafe(32)
 
     # depends on: container running (pre-restart)
     if not _wait_gateway(crew_url, timeout=10):
@@ -3129,7 +3831,7 @@ def _finish_crew_setup(
         logger.warning("Failed to inject admiral secret for %s: %s", container, e)
 
     # depends on: gateway (pre-restart); gateway seeds config on first start
-    _patch_crew_config(podman, container)
+    _patch_crew_config(podman, container, default_agent)
 
     # depends on: auth + admiral_secret + config all committed before workers start
     podman.container_stop(container)
@@ -3145,7 +3847,12 @@ def _finish_crew_setup(
     # depends on: gateway (post-restart)
     _copy_steering(podman, container, composition_entry)
     # depends on: gateway (post-restart)
-    _seed_openspec_store(podman, container)
+    mcp_servers = _copy_mcp_config(
+        podman, container, crew_id, composition_entry, mcp_token
+    )
+    # depends on: gateway (post-restart)
+    if _composition_uses_openspec(composition_entry):
+        _seed_openspec_store(podman, container)
 
     # depends on: admiral_secret (already generated above), filesystem
     policy_version = None
@@ -3199,7 +3906,12 @@ def _finish_crew_setup(
             "last_used": time.time(),
             "admiral_secret": admiral_secret,
             "crew_image_version": crew_image_version,
+            "personas": list(personas),
+            "default_agent": default_agent,
+            "mcp_token": mcp_token,
         }
+        if pathfinder_project:
+            crew_entry["pathfinder_project"] = pathfinder_project
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
         reg["crews"][crew_id] = crew_entry
@@ -3211,7 +3923,19 @@ def _finish_crew_setup(
         "container": container,
         "gateway_url": crew_url,
         "status": "ready",
+        "personas": list(personas),
     }
+    if mcp_servers:
+        result["mcp_servers"] = mcp_servers
+    if pathfinder_project:
+        result["pathfinder_project"] = pathfinder_project
+    elif mcp_servers:
+        result["pathfinder_warning"] = (
+            "This crew has a Pathfinder MCP server registered but no project "
+            "bound, so every Pathfinder call will return 503. An MCP connection "
+            "is scoped to one project for the life of the crew — nuke and "
+            "relaunch with pathfinder_project set."
+        )
     if policy_version is not None:
         result["policy_version"] = policy_version
     if policy_warning is not None:
@@ -3541,6 +4265,17 @@ def captain(
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
 
+    # The Captain loop is a recurring Raven dispatch. A crew type whose manifest
+    # omits raven cannot run one, and would otherwise fail later with an opaque
+    # gateway error about an unknown agent.
+    if "raven" not in _crew_personas(crew):
+        return {
+            "error": (
+                f"Crew '{crew_id}' has no raven persona, so it cannot run a Captain "
+                f"check-in. Its roster is: {', '.join(_crew_personas(crew))}."
+            )
+        }
+
     if action == "order":
         try:
             crew = _ensure_crew_running(crew, crew_id)
@@ -3567,7 +4302,7 @@ def captain(
             if job is None:
                 body: dict[str, Any] = {
                     "name": _CAPTAIN_CHECKIN_JOB_NAME,
-                    "message": _CAPTAIN_CHECKIN_TASK,
+                    "message": _captain_checkin_task(crew),
                     "agent": "raven",
                 }
                 if cron:
@@ -3605,7 +4340,7 @@ def captain(
                 "cron_expr": cron,
                 "next_fire_at": time.time() + (interval or 60),
                 "agent": "raven",
-                "message": _CAPTAIN_CHECKIN_TASK,
+                "message": _captain_checkin_task(crew),
                 "enabled": True,
             }
             try:
@@ -3643,7 +4378,7 @@ def captain(
                     try:
                         _crew_api_with_recovery(
                             crew, crew_id, "POST", "/api/spawn",
-                            json={"task": _CAPTAIN_CHECKIN_TASK, "agent": "raven", "keep": True},
+                            json={"task": _captain_checkin_task(crew), "agent": "raven", "keep": True},
                         )
                     except Exception as exc:
                         result["immediate_dispatch_error"] = str(exc)
@@ -3796,8 +4531,8 @@ def schedule(
     if not message:
         return {"error": "message is required for action='create'"}
     try:
-        _validate_agent(agent)
-    except ValueError as e:
+        _validate_agent(agent, _require_crew(crew_id))
+    except (ValueError, KeyError) as e:
         return {"error": str(e)}
     if name == _CAPTAIN_CHECKIN_JOB_NAME:
         return {
@@ -4043,25 +4778,27 @@ def _schedule_list(crew_id: str | None) -> dict:
 def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dict:
     """Spawn a task on a KiroCrew agent, dispatched for autonomous execution.
 
-    Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
-    research, coding, shell commands, file edits, anything that can run
-    unattended. Always immediate — returns a task_id. For delayed execution,
-    use schedule(delay=N) instead.
+    Use this to send work to one of the target crew's personas — research,
+    coding, shell commands, file edits, anything that can run unattended. The
+    valid agent names depend on the crew's composition: a spec-ops crew carries
+    ghost, spectre, banshee, wraith, reaper and raven; other compositions carry
+    their own roster, and `crews` reports it per crew. Always immediate —
+    returns a task_id. For delayed execution, use schedule(delay=N) instead.
     Also: dropoff, send, assign.
 
     Returns a task_id to use with status/pickup/update.
 
     Args:
         task: What to do. Be specific — the agent has no other context.
-        agent: Which agent to use. Default is 'ghost' (general-purpose).
+        agent: Which agent to use. Default is 'ghost', which only exists in a
+               spec-ops crew — name one of the target crew's own personas for
+               any other composition (see `crews`).
         crew_id: Which crew to dispatch to. Required — use launch first.
     """
     try:
-        _validate_agent(agent)
-    except ValueError as e:
-        return {"error": str(e)}
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+        crew = _require_crew(crew_id)
+        _validate_agent(agent, crew)
+        crew = _ensure_crew_running(crew, crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
@@ -4180,7 +4917,7 @@ def _pickup_single(
     # Capture initial admiral mail count for early-return detection using a
     # single batched exec rather than a dedicated _mail_count call.
     if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
+        initial_counts = _read_all_mail_counts(podman, container, _crew_mailboxes(crew))
         initial_admiral_mail = initial_counts.get("admiral", 0)
     else:
         initial_admiral_mail = 0
@@ -4191,8 +4928,8 @@ def _pickup_single(
         done = r.get("done", False)
 
         # Single exec reads all mailboxes at once.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
+        mail_counts = _read_all_mail_counts(podman, container, _crew_mailboxes(crew))
+        mail_subjects = _read_all_mail_subjects(podman, container, _crew_mailboxes(crew))
         agent_persona = r.get("agent", "")
         agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
         admiral_mail = mail_counts.get("admiral", 0)
@@ -4251,7 +4988,7 @@ def _pickup_list(
     # Capture initial admiral mail count for early-return detection using a
     # single batched exec rather than a dedicated _mail_count call.
     if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
+        initial_counts = _read_all_mail_counts(podman, container, _crew_mailboxes(crew))
         initial_admiral_mail = initial_counts.get("admiral", 0)
     else:
         initial_admiral_mail = 0
@@ -4266,8 +5003,8 @@ def _pickup_list(
 
         # Single exec reads all mailboxes at once; split into persona summary
         # and admiral count for the response surface.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
+        mail_counts = _read_all_mail_counts(podman, container, _crew_mailboxes(crew))
+        mail_subjects = _read_all_mail_subjects(podman, container, _crew_mailboxes(crew))
         mail_summary: dict[str, int] = {
             name: mail_counts[name]
             for name in PERSONA_NAMES
@@ -4613,131 +5350,162 @@ def _idle_monitor() -> None:
     while True:
         time.sleep(max(GA_IDLE_TIMEOUT_SECS, 10))
         try:
-            podman = _get_podman()
+            _idle_monitor_pass()
+        except Exception:
+            # This thread is a daemon with no supervisor. Before this guard, an
+            # exception anywhere outside the narrow inner try/except killed it
+            # silently: idle management stopped for the life of the process,
+            # with no log line, and crews ran indefinitely. Observed in practice
+            # — a crew and its 12 GiB VM stayed up 17 hours with no work to do.
+            # Log and keep looping instead.
+            logger.exception("Idle monitor pass failed — continuing")
+
+
+def _idle_monitor_pass() -> None:
+    """One sweep of the idle monitor. Separated so the loop can guard it."""
+    podman = _get_podman()
+
+    with _registry_lock:
+        reg = _load_registry()
+        crew_items = list(reg["crews"].items())
+
+    now = time.time()
+    for crew_id, info in crew_items:
+        if info.get("status") == "auth_required":
+            continue
+        if not podman.container_is_running(info["container"]):
+            continue
+
+        last_used = info.get("last_used", 0)
+        idle_secs = now - last_used
+        if idle_secs < GA_IDLE_TIMEOUT_SECS:
+            continue
+
+        crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
+        cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
+
+        # Check for active dispatched tasks before stopping.
+        try:
+            r = _http.get(
+                f"{crew_url}/api/spawn",
+                headers={"Cookie": cookie, "Origin": crew_url},
+                timeout=5.0,
+            )
+            if r.status_code in (401, 403):
+                # Stale session. The gateway answers 403 as well as 401 here, and
+                # handling only 401 meant a 403 fell through to the fail-open
+                # branch below and disabled idle-stopping for this crew
+                # permanently and silently. Observed keeping a finished crew and
+                # its VM running for 17 hours after its last task completed.
+                new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                if new_cookie:
+                    cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                    with _registry_lock:
+                        reg = _load_registry()
+                        if crew_id in reg["crews"]:
+                            reg["crews"][crew_id]["cookie"] = new_cookie
+                            _save_registry(reg)
+                    r = _http.get(
+                        f"{crew_url}/api/spawn",
+                        headers={"Cookie": cookie, "Origin": crew_url},
+                        timeout=5.0,
+                    )
+                else:
+                    # Can't verify activity — skip this crew (fail-open)
+                    continue
+            if r.status_code != 200:
+                # Activity is unknown after any non-success response, so fail
+                # open and leave the crew running. Logged, because failing open
+                # forever is indistinguishable from a healthy idle monitor until
+                # somebody notices the resource bill.
+                logger.warning(
+                    "Idle check for %s: /api/spawn returned %d — leaving crew "
+                    "running (idle-stop disabled until this clears)",
+                    crew_id, r.status_code,
+                )
+                continue
+            payload = r.json()
+            if not isinstance(payload, dict):
+                # A successful response with an unusable shape is still unknown activity.
+                continue
+            agents = payload.get("agents")
+            if not isinstance(agents, list):
+                continue
+            active = [
+                agent for agent in agents
+                if isinstance(agent, dict) and not agent.get("done")
+            ]
+            if active:
+                # Tasks still running — update last_used and skip.
+                _touch_crew(crew_id)
+                continue
         except Exception:
             continue
 
+        # Cron executions do not appear in /api/spawn.  The gateway exposes
+        # their running and last-completed timestamps through /api/crons —
+        # and an enabled job that hasn't fired yet (its interval can
+        # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
+        # just one that already has.
+        try:
+            r = _http.get(
+                f"{crew_url}/api/crons",
+                headers={"Cookie": cookie, "Origin": crew_url},
+                timeout=5.0,
+            )
+            if r.status_code in (401, 403):
+                # Stale session. The gateway answers 403 as well as 401 here, and
+                # handling only 401 meant a 403 fell through to the fail-open
+                # branch below and disabled idle-stopping for this crew
+                # permanently and silently. Observed keeping a finished crew and
+                # its VM running for 17 hours after its last task completed.
+                new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                if new_cookie:
+                    cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                    with _registry_lock:
+                        reg = _load_registry()
+                        if crew_id in reg["crews"]:
+                            reg["crews"][crew_id]["cookie"] = new_cookie
+                            _save_registry(reg)
+                    r = _http.get(
+                        f"{crew_url}/api/crons",
+                        headers={"Cookie": cookie, "Origin": crew_url},
+                        timeout=5.0,
+                    )
+                else:
+                    # Can't verify activity — skip this crew (fail-open)
+                    continue
+            if r.status_code != 200:
+                logger.warning(
+                    "Idle check for %s: /api/crons returned %d — leaving crew "
+                    "running (idle-stop disabled until this clears)",
+                    crew_id, r.status_code,
+                )
+                continue
+            cron_payload = r.json()
+            if not isinstance(cron_payload, dict):
+                # A successful response with an unusable shape is still unknown activity.
+                continue
+            if not isinstance(cron_payload.get("jobs"), list):
+                continue
+            if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
+                cron_payload
+            ):
+                _touch_crew(crew_id)
+                continue
+        except Exception:
+            continue
+
+        logger.info(
+            "Crew %s idle for %.0fs — stopping container",
+            crew_id, idle_secs,
+        )
+        podman.container_stop(info["container"])
         with _registry_lock:
             reg = _load_registry()
-            crew_items = list(reg["crews"].items())
-
-        now = time.time()
-        for crew_id, info in crew_items:
-            if info.get("status") == "auth_required":
-                continue
-            if not podman.container_is_running(info["container"]):
-                continue
-
-            last_used = info.get("last_used", 0)
-            idle_secs = now - last_used
-            if idle_secs < GA_IDLE_TIMEOUT_SECS:
-                continue
-
-            crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
-            cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
-
-            # Check for active dispatched tasks before stopping.
-            try:
-                r = _http.get(
-                    f"{crew_url}/api/spawn",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code == 401:
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/spawn",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                payload = r.json()
-                if not isinstance(payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                agents = payload.get("agents")
-                if not isinstance(agents, list):
-                    continue
-                active = [
-                    agent for agent in agents
-                    if isinstance(agent, dict) and not agent.get("done")
-                ]
-                if active:
-                    # Tasks still running — update last_used and skip.
-                    _touch_crew(crew_id)
-                    continue
-            except Exception:
-                continue
-
-            # Cron executions do not appear in /api/spawn.  The gateway exposes
-            # their running and last-completed timestamps through /api/crons —
-            # and an enabled job that hasn't fired yet (its interval can
-            # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
-            # just one that already has.
-            try:
-                r = _http.get(
-                    f"{crew_url}/api/crons",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code == 401:
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/crons",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                cron_payload = r.json()
-                if not isinstance(cron_payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                if not isinstance(cron_payload.get("jobs"), list):
-                    continue
-                if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
-                    cron_payload
-                ):
-                    _touch_crew(crew_id)
-                    continue
-            except Exception:
-                continue
-
-            logger.info(
-                "Crew %s idle for %.0fs — stopping container",
-                crew_id, idle_secs,
-            )
-            podman.container_stop(info["container"])
-            with _registry_lock:
-                reg = _load_registry()
-                if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["status"] = "stopped"
-                    _save_registry(reg)
+            if crew_id in reg["crews"]:
+                reg["crews"][crew_id]["status"] = "stopped"
+                _save_registry(reg)
 
 
 # ── File transfer endpoints ───────────────────────────────────────────────────
@@ -4765,6 +5533,27 @@ def _resolve_public_url_base() -> str:
         )
         return legacy.rstrip("/")
     return f"http://localhost:{PORT}"
+
+
+def _crew_cors_origins(container: str) -> str:
+    """Origins the crew gateway will accept browser requests from.
+
+    The gateway CSRF-checks the Origin header against KIROCREW_CORS_ORIGINS
+    (kiro_crew/dashboard/urls.py, comma-separated). A crew created with only its
+    own internal origin rejects every request from a browser pointed at
+    transport's crew-UI proxy with "CSRF check failed: request origin not
+    allowed" — the page loads and then refuses to do anything.
+
+    Transport's browser-facing origin is therefore added alongside the crew's
+    own. Both loopback spellings are included because a browser sends whichever
+    one is in the address bar, and they are distinct origins.
+    """
+    origins = [f"http://{container}:{CREW_GATEWAY_PORT}"]
+    public = _resolve_public_url_base()
+    for origin in (public, f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"):
+        if origin and origin not in origins:
+            origins.append(origin)
+    return ",".join(origins)
 
 
 def _sign_file_url(

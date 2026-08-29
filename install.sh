@@ -67,6 +67,13 @@ GA_MACHINE_NAME=ghost-academy
 GA_MAX_CREWS=20
 GA_MAX_ACTIVE_CREWS=3
 GA_IDLE_TIMEOUT_SECS=300
+# Migration Pathfinder MCP proxy (migration-assess crews only). Leave empty to
+# disable — a migration-assess crew still launches, its Pathfinder calls just
+# return 503 until these are set. See docs/migration-assess.md.
+GA_PATHFINDER_URL=""
+GA_PATHFINDER_TOKEN_URL=""
+GA_PATHFINDER_CLIENT_ID=""
+GA_PATHFINDER_ACCESS_TOKEN=""
 GA_FILE_TTL_SECS=300
 GA_SUBAGENT_TIMEOUT_SECS=3600
 GA_SUBAGENT_MAX_TURNS=200
@@ -488,6 +495,15 @@ ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   "$GHOSTSHIP_DIR/crews/_base/graduation/" \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
+echo "Building localhost/migration-assess:latest ..."
+${_PODMAN_CMD} build -t localhost/migration-assess-mid:latest \
+  --build-arg VERSION="${VERSION}-migration-assess" \
+  "$GHOSTSHIP_DIR/crews/migration-assess/" \
+  && ${_PODMAN_CMD} build -t localhost/migration-assess:latest \
+  --build-arg MID_IMAGE=localhost/migration-assess-mid:latest \
+  "$GHOSTSHIP_DIR/crews/_base/graduation/" \
+  && echo "✓ migration-assess crew image built" || { echo "✗ migration-assess crew image build failed"; exit 1; }
+
 echo "Building localhost/transport:latest ..."
 ${_PODMAN_CMD} build -t localhost/transport:latest \
   --build-arg VERSION="${VERSION}" \
@@ -556,6 +572,11 @@ services:
       GA_SPAWN_MIN_MEMORY_GB: "${GA_SPAWN_MIN_MEMORY_GB:-1.5}"
       GA_RESOURCE_PRESSURE_GB: "${GA_RESOURCE_PRESSURE_GB:-2.0}"
       GA_RESOURCE_CRITICAL_GB: "${GA_RESOURCE_CRITICAL_GB:-1.0}"
+      GA_TRANSPORT_INTERNAL_URL: "${GA_TRANSPORT_INTERNAL_URL:-http://ga-transport:${PORT}}"
+      GA_PATHFINDER_URL: "${GA_PATHFINDER_URL:-}"
+      GA_PATHFINDER_TOKEN_URL: "${GA_PATHFINDER_TOKEN_URL:-}"
+      GA_PATHFINDER_CLIENT_ID: "${GA_PATHFINDER_CLIENT_ID:-}"
+      GA_PATHFINDER_ACCESS_TOKEN: "${GA_PATHFINDER_ACCESS_TOKEN:-}"
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
 networks:
   ga-net:

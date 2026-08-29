@@ -1,0 +1,45 @@
+# Migration-assess crew image — AWS migration assessment against a
+# Migration Pathfinder project, reached over its MCP server.
+#
+# Inherits the mail stack and auth layer from localhost/base-admission.
+# Deliberately does NOT install Node.js or the OpenSpec CLI: this crew type
+# produces its record of work in Pathfinder (change proposals, workload notes)
+# and in an assessment document, not as OpenSpec change artefacts.
+#
+# USER kirocrew is restored by the base-graduation layer applied by install.sh
+# after this image is built. Do not add USER kirocrew here.
+#
+# Built locally at install time — not pushed to any registry.
+FROM localhost/base-admission:latest
+
+USER root
+
+# jq — the assessment personas work almost entirely in JSON coming back from
+# Pathfinder read tools and from `kirocrew spawn list`. Without it every filter
+# and count becomes a bespoke python3 -c one-liner.
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends jq && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Maildir mailboxes for this crew type's personas.
+#
+# base-admission provisions mailboxes for the spec-ops roster only
+# (ghost/spectre/banshee/wraith/reaper/raven/captain), because that roster is
+# hardcoded there. This crew type carries a different roster, so its own
+# mailboxes are provisioned in its own layer. raven and captain already exist
+# from the base layer and are not repeated.
+#
+# If persona rosters become manifest-driven end to end (see
+# docs/migration-assess.md), this belongs in base-admission as a build arg
+# instead of here.
+RUN for mb in sounder ballast ledger chronicle compass tide purser steward cartographer; do \
+        install -d -o kirocrew -g kirocrew -m 700 \
+        /var/mail/$mb \
+        /var/mail/$mb/new \
+        /var/mail/$mb/cur \
+        /var/mail/$mb/tmp; \
+    done
+
+ARG VERSION=0.0.0-dev
+LABEL org.ghostship.version=$VERSION

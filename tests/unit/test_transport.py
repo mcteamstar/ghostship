@@ -1143,7 +1143,7 @@ class PickupTimeoutTests(unittest.TestCase):
         def advance(seconds: float) -> None:
             clock[0] += seconds
 
-        def mock_read_all_mail_counts(_podman, _container):
+        def mock_read_all_mail_counts(_podman, _container, _mailboxes=None):
             # First call: initial capture (admiral=0).
             # Second call: first poll iteration (admiral=0).
             # Third call: second poll iteration (admiral=1 — new mail arrived).
@@ -1200,12 +1200,20 @@ class PersonaValidationTests(unittest.TestCase):
             self.assertEqual(result["status"], "scheduled")
             self.assertEqual(api.call_args.kwargs["json"]["agent"], agent)
 
-    def test_rejected_agents_do_not_lookup_or_call_crew(self) -> None:
+    def test_rejected_agents_do_not_wake_or_call_crew(self) -> None:
+        """A bad agent name is rejected without waking or contacting the crew.
+
+        The registry lookup (_require_crew) does happen, and has to: rosters are
+        per-composition, so which names are valid is a property of the target
+        crew rather than a global constant. That lookup is an in-memory registry
+        read. What must not happen is the expensive part — starting a stopped
+        container (_ensure_crew_running) or calling its gateway (_crew_api).
+        """
         rejected = ("spec-ops", "kirocrew-default", "custom-agent", "unknown")
         for agent in rejected:
             with self.subTest(agent=agent):
                 with (
-                    patch.object(server, "_require_crew") as require,
+                    patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
                     patch.object(server, "_ensure_crew_running") as ensure,
                     patch.object(server, "_crew_api") as api,
                 ):
@@ -1216,9 +1224,51 @@ class PersonaValidationTests(unittest.TestCase):
 
                 self.assertIn("Invalid agent", dispatched["error"])
                 self.assertIn("Invalid agent", scheduled["error"])
-                require.assert_not_called()
                 ensure.assert_not_called()
                 api.assert_not_called()
+
+    def test_agent_validated_against_the_target_crews_own_roster(self) -> None:
+        """A crew carrying its own roster accepts those names and rejects others.
+
+        This is the whole point of per-crew rosters: `ghost` is meaningless in a
+        migration-assess crew, and `chronicle` is meaningless in a spec-ops one.
+        """
+        assess_crew = {
+            "container": "gs-demo",
+            "personas": ["chronicle", "compass", "steward", "raven"],
+        }
+        with (
+            patch.object(server, "_require_crew", return_value=assess_crew),
+            patch.object(server, "_ensure_crew_running", return_value=assess_crew),
+            patch.object(server, "_crew_api", return_value={"id": "task"}) as api,
+        ):
+            accepted = server.dispatch("compose workloads", agent="chronicle", crew_id="demo")
+        self.assertEqual(accepted["status"], "dispatched")
+        self.assertEqual(api.call_args.kwargs["json"]["agent"], "chronicle")
+
+        with (
+            patch.object(server, "_require_crew", return_value=assess_crew),
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_crew_api") as api,
+        ):
+            rejected = server.dispatch("do work", agent="ghost", crew_id="demo")
+        self.assertIn("Invalid agent", rejected["error"])
+        # The error names the crew's real roster, not the shared Academy one.
+        self.assertIn("chronicle", rejected["error"])
+        self.assertNotIn("spectre", rejected["error"])
+        ensure.assert_not_called()
+        api.assert_not_called()
+
+    def test_legacy_crew_without_roster_falls_back_to_academy_personas(self) -> None:
+        """A crew registered before rosters were manifest-driven still works."""
+        legacy_crew = {"container": "gs-demo"}
+        with (
+            patch.object(server, "_require_crew", return_value=legacy_crew),
+            patch.object(server, "_ensure_crew_running", return_value=legacy_crew),
+            patch.object(server, "_crew_api", return_value={"id": "task"}),
+        ):
+            result = server.dispatch("do work", agent="ghost", crew_id="demo")
+        self.assertEqual(result["status"], "dispatched")
 
 
 class TaskOrchestrationTests(unittest.TestCase):
@@ -1606,7 +1656,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertNotIn("native in-session spawn tooling", prompt)
 
         # Verify self-cancel and store-resolution live in the Captain check-in task
-        checkin = server._CAPTAIN_CHECKIN_TASK
+        checkin = server._captain_checkin_task()
         self.assertIn("pause your own check-in job", checkin)
         self.assertIn("the only one in this crew", checkin)
 
@@ -1658,7 +1708,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("subagent_*", sdd_body)
         self.assertIn("--store <id>", sdd_body)
         # Also in the Captain check-in task.
-        checkin = server._CAPTAIN_CHECKIN_TASK
+        checkin = server._captain_checkin_task()
         self.assertIn("openspec store list --json", checkin)
         self.assertIn("openspec store register", checkin)
 
@@ -1748,7 +1798,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertEqual(api.call_args_list[1].kwargs["json"]["agent"], "raven")
         self.assertEqual(
             api.call_args_list[1].kwargs["json"]["message"],
-            server._CAPTAIN_CHECKIN_TASK,
+            server._captain_checkin_task(),
         )
 
     def test_order_cron_passes_through_custom_timezone(self) -> None:
