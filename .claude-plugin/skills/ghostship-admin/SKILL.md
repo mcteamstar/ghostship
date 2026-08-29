@@ -8,6 +8,35 @@ metadata:
 
 # Ghostship Admin
 
+## Get ghostship
+
+Before anything else, check whether ghostship is already installed:
+
+```bash
+ls ~/.ghostship/ghostship 2>/dev/null && echo "already cloned" || echo "not yet cloned"
+```
+
+If it's already there, skip to [Install](#install) or [Connect an MCP client](#connect-an-mcp-client)
+depending on what you need.
+
+If not, **ask the user where they'd like to store ghostship.** The recommended
+default is `~/.ghostship` — it's a clean, predictable home for the repo and
+any future persistent data (config, credentials cache, etc.):
+
+```bash
+# Default — recommended
+mkdir -p ~/.ghostship
+git clone https://github.com/mcteamstar/ghostship.git ~/.ghostship/ghostship
+cd ~/.ghostship/ghostship
+```
+
+If the user prefers a different location (e.g. `~/development/ghostship` or
+`~/projects/ghostship`), clone there instead — just make sure to note the
+path, as `./install.sh` must be run from inside it and `./start.sh` needs to
+find it again later.
+
+
+
 This skill is for standing a ghostship transport up, connecting a client to
 it, keeping it running, and taking it down — the host-level, shell-driven
 work that happens *before* an MCP connection exists. Once a client is
