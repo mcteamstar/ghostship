@@ -105,6 +105,20 @@ if [[ -n "$CONFIG_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
   echo "✓ Sourced config file: $CONFIG_FILE"
+else
+  # Auto-detect config from standard locations (no --config flag passed).
+  # Check repo root first, then config/ subdirectory.
+  for _candidate in \
+    "${GHOSTSHIP_DIR}/ghostship.conf" \
+    "${GHOSTSHIP_DIR}/config/ghostship.conf"
+  do
+    if [[ -f "$_candidate" ]]; then
+      # shellcheck source=/dev/null
+      source "$_candidate"
+      echo "✓ Sourced config file: $_candidate"
+      break
+    fi
+  done
 fi
 
 # ── Flag parsing (runs AFTER config sourcing — flags override config) ────────
