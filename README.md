@@ -134,6 +134,19 @@ There are six basic agent personas. The five worker personas split up the [OpenS
 | <img src="docs/images/agent-wraith.png" width="64"> | **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code and OpenSpec artifacts; may read OpenSpec context |
 | <img src="docs/images/agent-raven.png" width="64"> | **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, carries messages between personas and the Admiral; dispatches bounded next steps without implementing work |
 
+### Loadouts
+
+| Loadout | For | Personas |
+|:--------|:----|:---------|
+| `spec-ops` (default) | Spec-driven development through OpenSpec | The six personas above |
+| `migration-assess` | AWS migration assessment against a [Migration Pathfinder](docs/migration-assess.md) project, reached over its MCP server | Nine assessment personas (Chronicle, Sounder, Ballast, Ledger, Compass, Tide, Purser, Steward, Cartographer) plus Raven |
+
+A `migration-assess` crew works one Pathfinder project — its completion state is
+defined as ten gates queried back out of Pathfinder, and everything it finds is
+filed as a change proposal a human confirms in the app. Transport proxies the
+crew's Pathfinder MCP traffic so a Pathfinder credential never enters a crew
+container. See [docs/migration-assess.md](docs/migration-assess.md).
+
 See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. The **Captain** tool uses Ravens to handle messaging and orders to the other agents. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
 
 ### MCP Tools
@@ -143,13 +156,13 @@ Registered as `ghostship`:
 | Tool | Description |
 |:-----|:------------|
 | `crews` | List all registered crews and their status. |
-| `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
+| `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). `pathfinder_project` binds a `migration-assess` crew to one Migration Pathfinder project. Repository seeding is a separate step. |
 | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
 | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
 | `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
 | `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
-| `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
+| `dispatch` | Spawn a task on one of the target crew's personas. Valid names depend on the crew's loadout — `crews` reports each crew's roster. Always immediate — returns a `task_id`. |
 | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
 | `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
@@ -157,6 +170,8 @@ Registered as `ghostship`:
 
 - [docs/architecture.md](docs/architecture.md) — components, crew lifecycle, idle-stop/auto-restart, reboot recovery, project layout
 - [docs/agents.md](docs/agents.md) — the six agent personas, what each owns in the OpenSpec workflow, and how that's enforced (and isn't)
+- [docs/migration-assess.md](docs/migration-assess.md) — the migration-assessment loadout: its nine personas, the ten-gate coverage model, and how transport proxies Pathfinder MCP traffic
+- [docs/migration-assess-runbook.md](docs/migration-assess-runbook.md) — operational sequence for a migration assessment: stand up, launch, initiate, watch, retrieve artefacts
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
 - [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations
