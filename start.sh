@@ -36,12 +36,13 @@ _load_config() {
 if [[ -n "$_CONFIG_FLAG" ]]; then
   _load_config "$_CONFIG_FLAG"
 else
-  # Scan candidate locations in preference order; use first match
+  # Scan candidate locations in preference order; use first match.
+  # Repo-adjacent configs take priority; ~/.ghostship is the persistent fallback.
   _CANDIDATES=()
   for _f in \
-    "${HOME}/.ghostship/ghostship.conf" \
     "${GHOSTSHIP_DIR}/ghostship.conf" \
-    "${GHOSTSHIP_DIR}/config/ghostship.conf"
+    "${GHOSTSHIP_DIR}/config/ghostship.conf" \
+    "${HOME}/.ghostship/ghostship.conf"
   do
     [[ -f "$_f" ]] && _CANDIDATES+=("$_f") || true
   done
@@ -60,9 +61,9 @@ else
   if [[ ${#_UNIQUE[@]} -eq 0 ]]; then
     if [[ -t 0 ]]; then
       echo "No ghostship.conf found in:"
-      echo "  ${HOME}/.ghostship/ghostship.conf"
       echo "  ${GHOSTSHIP_DIR}/ghostship.conf"
       echo "  ${GHOSTSHIP_DIR}/config/ghostship.conf"
+      echo "  ${HOME}/.ghostship/ghostship.conf"
       echo ""
       read -rp "Path to config (blank = use defaults): " _CONFIG_FLAG
       [[ -n "$_CONFIG_FLAG" ]] && _load_config "$_CONFIG_FLAG" || echo "  (using built-in defaults)"
