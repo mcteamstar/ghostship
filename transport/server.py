@@ -2916,6 +2916,17 @@ def crews() -> dict:
                     }
                     for a in tasks
                 ]
+            elif isinstance(tasks, dict):
+                entry["agents"] = [
+                    {
+                        "task_id": a.get("id"),
+                        "agent": a.get("agent", ""),
+                        "done": a.get("done", False),
+                        "elapsed_secs": int(a.get("elapsed", 0)),
+                        "last_tool": a.get("last_tool", ""),
+                    }
+                    for a in tasks.get("agents", [])
+                ]
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
         result.append(entry)
@@ -3189,7 +3200,7 @@ def _inject_policy(
         # threat model around admiral_secret exposure.
         "admission_body = json.dumps({\n"
         "    'require_policy_signature': True,\n"
-        f"    'trust_keys': {{'ghostship': '{admiral_secret}'}},\n"
+        f"    'trust_keys': {{'ghostship': base64.b64decode('{secret_b64}').decode()}},\n"
         "}, indent=2)\n"
         "crew_dir = pathlib.Path('/home/kirocrew/.kiro/crew')\n"
         "crew_dir.mkdir(parents=True, exist_ok=True)\n"
@@ -3446,7 +3457,7 @@ def evac(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    url = _sign_file_url(crew_id, path, ref, bundle)
+    url = _sign_file_url(crew_id, clean, ref, bundle)
     result = {
         "crew_id": crew_id,
         "path": path,
@@ -3588,7 +3599,7 @@ def captain(
     change_name: str | None = None,
     cron: str | None = None,
     interval: int | None = None,
-    timezone: str = "Australia/Sydney",
+    timezone: str = "UTC",
     fire_immediately: bool | None = None,
 ) -> dict:
     """Manage the single Raven-backed standing-orders Captain for a crew.
@@ -3648,7 +3659,7 @@ def captain(
     elif any(
         value is not None
         for value in (message, template, change_name, cron, interval, fire_immediately)
-    ) or timezone != "Australia/Sydney":
+    ) or timezone != "UTC":
         return {
             "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, or timezone"
         }
@@ -3862,7 +3873,7 @@ def schedule(
     interval: int | None = None,
     delay: int | None = None,
     agent: str = "ghost",
-    timezone: str = "Australia/Sydney",
+    timezone: str = "UTC",
     fire_immediately: bool | None = None,
     action: str = "create",
     job_id: str | None = None,
@@ -4182,10 +4193,13 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    result = _crew_api_with_recovery(
-        crew, crew_id, "POST", "/api/spawn",
-        json={"task": task, "agent": agent, "keep": True},
-    )
+    try:
+        result = _crew_api_with_recovery(
+            crew, crew_id, "POST", "/api/spawn",
+            json={"task": task, "agent": agent, "keep": True},
+        )
+    except CrewUnresponsiveError as e:
+        return {"error": str(e)}
     return {
         "task_id": result.get("id"),
         "crew_id": crew_id,
@@ -4222,19 +4236,31 @@ def steer(
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
-    s = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+    try:
+        s = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+    except CrewUnresponsiveError as e:
+        return {"error": str(e)}
     if s.get("done", False):
-        r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                      json={"task": message})
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
+                          json={"task": message})
+        except CrewUnresponsiveError as e:
+            return {"error": str(e)}
         return {"task_id": r.get("id", task_id), "crew_id": crew_id,
                 "action": "redeployed", "message": message}
     if force:
-        _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/spawn/{task_id}")
-        r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                      json={"task": message})
+        try:
+            _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/spawn/{task_id}")
+            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
+                          json={"task": message})
+        except CrewUnresponsiveError as e:
+            return {"error": str(e)}
         return {"task_id": r.get("id", task_id), "crew_id": crew_id,
                 "action": "force_redeployed", "message": message}
-    _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer", json={"message": message})
+    try:
+        _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer", json={"message": message})
+    except CrewUnresponsiveError as e:
+        return {"error": str(e)}
     return {"task_id": task_id, "crew_id": crew_id, "action": "steered", "message": message}
 
 
@@ -4304,7 +4330,10 @@ def _pickup_single(
     deadline = time.monotonic() + timeout_secs
 
     while True:
-        r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+        except CrewUnresponsiveError as e:
+            return {"error": str(e), "task_id": task_id, "crew_id": crew_id}
         done = r.get("done", False)
 
         # Single exec reads all mailboxes at once.
@@ -4375,7 +4404,10 @@ def _pickup_list(
     deadline = time.monotonic() + timeout_secs
 
     while True:
-        r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
+        except CrewUnresponsiveError as e:
+            return {"error": str(e), "crew_id": crew_id}
         agents = r.get("agents", [])
 
         # Check if any task is done
@@ -4667,6 +4699,25 @@ def _schedule_monitor() -> None:
                                 s["next_fire_at"] = sched["next_fire_at"]
                                 break
                         _save_registry(reg)
+
+                    # H-2: For one-shot (delay) jobs, delete the cron from the
+                    # gateway so its annual cron expression never fires again.
+                    if sched.get("one_shot"):
+                        job_id = sched.get("job_id")
+                        if job_id:
+                            try:
+                                _crew_api_with_recovery(
+                                    crew, crew_id, "DELETE", f"/api/crons/{job_id}"
+                                )
+                                logger.info(
+                                    "Schedule monitor: deleted one-shot cron %s from gateway after fire",
+                                    job_id,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Schedule monitor: could not delete one-shot cron %s from gateway: %s",
+                                    job_id, e,
+                                )
 
         except Exception as e:
             logger.warning("Schedule monitor error: %s", e)
