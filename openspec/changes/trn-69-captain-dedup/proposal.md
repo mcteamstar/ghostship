@@ -1,56 +1,54 @@
-# TRN-69 — Captain Standing Orders: Suppress Repeated Escalation
+## Why
 
-## Problem
+When Raven runs a captain check-in cycle, two concurrent or overlapping check-in
+instances can each observe an empty `kirocrew spawn list` and both proceed to
+dispatch the same persona task for the same SDD transition. The result is
+duplicate dispatches that waste compute, race on shared state (two tasks checking
+off the same `tasks.md` items or advancing the same OpenSpec artifact), and
+require manual cancellation. A single lifecycle transition must produce exactly
+one dispatch, even under overlapping check-ins.
 
-When Raven monitors a one-shot task (Banshee review, Ghost implementation) and the task
-completes, Raven correctly sends a completion summary to admiral mail and holds. But on the
-next check-in — 5 minutes later — Raven has no memory of having already reported. It reads
-the same completed task, determines the standing order is still active, and sends another
-summary. In a 4-hour window this produces 19–24 near-identical admiral mails per crew.
+## What Changes
 
-The SDD captain template avoids this because Raven pauses the cron immediately after
-confirming the lifecycle is complete (`_RAVEN_SELF_CANCEL`). Free-form monitoring orders
-don't have a clear lifecycle-complete signal, so Raven can't know when to pause.
+- Introduce a **layered 3-signal dispatch-coordination protocol** that Raven MUST
+  apply, in order, before every persona dispatch:
+  1. **Mailbox intent signal (primary):** a pending or confirmed dispatch-intent
+     message in `raven@localhost` for the target persona blocks re-dispatch.
+  2. **Task-description marker signal (secondary):** an in-flight `spawn list`
+     task whose `task` description begins with the stable marker
+     `SDD dispatch <change> <persona> <intent_id>` blocks re-dispatch.
+  3. **Agent-field signal (tertiary):** the asynchronous `agent` field in
+     `spawn list` is a final confirmation only, never the sole guard.
+- Define a **pending-marker election**: after writing its pending intent, a
+  check-in re-scans the mailbox and yields to any older unconfirmed pending marker
+  for the same persona, so overlapping check-ins cannot both spawn.
+- Define **intent lifecycle and staleness**: `intent-<uuid>` tokens, pending →
+  confirmed transition keyed on the gateway-assigned spawn task ID, and the exact
+  conditions under which a pending or confirmed intent becomes stale and stops
+  blocking.
+- Document the protocol authoritatively in the SDD order and reference it from the
+  `## Avoid duplicate dispatches` section of the crew standing orders.
+- Add validation / test steps that exercise the overlapping-check-in race.
 
-### Root cause
+## Capabilities
 
-Raven has no durable "already escalated" state. Each check-in starts from scratch. Without a
-record that a specific task's result has already been sent to the admiral, every cycle that
-sees a completed task looks like a new completion.
+### New Capabilities
+- `crew-orchestration/dispatch-coordination`: the rules a dispatching agent
+  (Raven) must follow to guarantee at-most-one dispatch per lifecycle transition —
+  the 3-signal pre-dispatch check, the intent-marker mailbox protocol, the
+  pending-marker election, and intent staleness semantics.
 
-## Solution
+### Modified Capabilities
+<!-- None: no existing spec under openspec/specs/ describes dispatch behavior yet. -->
 
-Two complementary fixes:
+## Impact
 
-### Fix 1: Raven instruction — report-and-pause pattern
-
-Extend `_RAVEN_SELF_CANCEL` (the instruction already injected into every check-in) with an
-explicit rule: **once you have sent a completion report to the admiral for a specific task,
-pause the captain cron immediately**. The rule applies to any standing order whose work is
-a single task or a bounded set of tasks — not an open-ended watch.
-
-The SDD template already does this correctly. The free-form captain prompt needs the same
-instruction made explicit: "if you sent a completion report this cycle, pause now."
-
-### Fix 2 (optional, belt-and-suspenders): Sent-mail deduplication check
-
-Before sending a completion report, Raven checks whether a report for the same task ID
-already exists in the admiral mailbox (via `/var/mail/admiral/`). If a matching prior mail is
-found (same task_id in body), skip the send and pause instead.
-
-This handles the edge case where Fix 1 fails — e.g. the cron fires again before Raven's pause
-command takes effect, or two concurrent Raven check-ins both see a completed task.
-
-## Decision
-
-Implement Fix 1 as a change to `_RAVEN_SELF_CANCEL` and `_CAPTAIN_CHECKIN_TASK` in
-`transport/server.py`. Fix 2 is implemented as guidance in the Raven check-in prompt — Raven
-should scan the admiral mailbox for prior reports before re-sending.
-
-No new transport data structures required. No change to the captain API surface.
-
-## Relationship to TRN-51
-
-TRN-51 (transport-side Maildir access, `captain status` redesign) will eventually let the
-transport read sent-mail state directly. TRN-69 is a lower-cost fix at the instruction level
-that can ship independently without waiting for TRN-51's infrastructure work.
+- **Standing orders / prompts:** `academy/orders/sdd.md` (authoritative protocol
+  text) and the `## Avoid duplicate dispatches` section of `STANDING_ORDERS.md`
+  (cross-reference).
+- **Crew runtime:** the mailbox (Maildir under `/var/mail/`) is the coordination
+  substrate; `kirocrew spawn list` supplies the task-description and agent-field
+  signals; `/api/spawn` returns the confirming task ID. No new services are
+  required — the protocol is layered on existing primitives.
+- **Behavior:** a lifecycle transition produces exactly one dispatch even when
+  check-ins overlap; a losing check-in holds and reassesses on the next cycle.
