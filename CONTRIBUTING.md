@@ -22,6 +22,38 @@ The `ghostship-capability` skill covers everything you need: adding agent
 personas, skills, steering, orders, MCP servers, and building new
 compositions from scratch.
 
+## Choosing a fork visibility
+
+**Private** — visible only to you and the people you explicitly invite.
+Right for solo operators, small teams, or anyone whose academy configuration
+is sensitive (persona prompts, internal MCP servers, or compositions that
+encode internal architecture). Zero contribution path back upstream, but
+that's fine — you're a consumer. Pull upstream patches on your own schedule.
+
+**Internal** — visible to your whole organisation, but not the public.
+On GitHub this is an internal repository (GitHub Enterprise/Teams) or a
+private org repo shared across teams. Right for companies where multiple
+teams use ghostship but the configuration is internal IP. You can run a
+proper internal release cadence, let teams contribute their own compositions,
+and still pull upstream improvements. Treat it like a public fork but
+scoped to your org — with its own CONTRIBUTING guide for internal
+contributors if you want one.
+
+**Public** — open to the world, can send PRs upstream, can be listed in the
+Known Forks table below. Right for consultancies, platforms, or products
+built on ghostship where visibility is an asset. The upstream relationship
+becomes a two-way street: you benefit from core improvements and can
+contribute general-purpose fixes back. A good public fork signals to your
+clients and the community that you're investing in the ecosystem.
+
+All three are equally valid ways to run ghostship. The only thing that
+changes is who can see your academy curriculum and whether you can
+contribute back upstream.
+
+> **Note:** GitHub's "internal" visibility is a GitHub Enterprise / Teams
+> feature. If you don't have Enterprise, a private org repo shared with
+> your teams achieves the same thing in practice.
+
 ## Maintaining your fork
 
 A fork is only useful if it stays current. Upstream ships bug fixes,
