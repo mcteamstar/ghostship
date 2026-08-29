@@ -1,5 +1,6 @@
 {
   "agents": "*",
   "skills": "*",
-  "steering": "*"
+  "steering": "*",
+  "mcpServers": []
 }
