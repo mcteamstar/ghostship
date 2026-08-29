@@ -78,7 +78,7 @@ from starlette.routing import Route, Mount
 import uvicorn
 import asyncio
 
-from transport import security as _security
+import security as _security  # sibling module — both files live at WORKDIR /app
 
 # ── Config ────────────────────────────────────────────────────────────────────
 

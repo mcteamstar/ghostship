@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server
-COPY server.py .
+COPY server.py security.py ./
 
 # Version baked in at build time via --build-arg VERSION=<semver>
 ARG VERSION=0.0.0-dev
