@@ -470,9 +470,6 @@ fi
 
 # ── Pre-warm + build images ──────────────────────────────────────────────────
 
-echo "Pulling KiroCrew base image (first run may take a minute)..."
-${_PODMAN_CMD} pull ghcr.io/kirodotdev/kirocrew:0.4.0 -q 2>/dev/null \
-  && echo "✓ KiroCrew image pre-warmed" || echo "⚠ KiroCrew image pull failed (offline?)"
 
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
