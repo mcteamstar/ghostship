@@ -21,3 +21,19 @@ jobs:
 
       - name: Run tests
         run: tests/run.sh --unit
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # TRN-70 secrets-management 1.4 + input-validation 4.4: fail the build on
+      # a committed live secret or on string-built SQL.
+      - name: Security scan (secrets + unsafe queries)
+        run: python3 tests/security_scan.py
+

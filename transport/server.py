@@ -78,6 +78,8 @@ from starlette.routing import Route, Mount
 import uvicorn
 import asyncio
 
+from transport import security as _security
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 HOST = os.environ.get("HOST", "0.0.0.0")  # Binds all interfaces inside the container.
@@ -128,6 +130,27 @@ GA_SUBAGENT_MAX_TURNS = int(os.environ.get("GA_SUBAGENT_MAX_TURNS", "200"))
 GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
 KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
 
+# ── Transport security (TRN-70) ───────────────────────────────────────────────
+# TLS is terminated at the edge (see design.md); the app still emits HSTS and
+# security headers so protection does not depend solely on edge config. These
+# flags let each protection be toggled via config for a staged rollout and
+# config-only rollback.
+#
+# GA_TLS_MIN_VERSION: minimum TLS version enforced when the app terminates TLS
+#   directly (ssl_version passed to uvicorn). Values: "1.2" or "1.3".
+# GA_TLS_CERTFILE / GA_TLS_KEYFILE: enable direct TLS termination when set.
+# GA_ENABLE_SECURITY_HEADERS: emit baseline security headers (default on).
+# GA_ENFORCE_HTTPS_REDIRECT: 301-redirect plaintext HTTP to HTTPS (staged;
+#   default off until the monitored plaintext window + client notice is done).
+# GA_CSP_ENFORCE: send CSP as enforcing rather than report-only (staged;
+#   default off until report-only violations are triaged).
+GA_TLS_MIN_VERSION = os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip()
+GA_TLS_CERTFILE = os.environ.get("GA_TLS_CERTFILE", "").strip()
+GA_TLS_KEYFILE = os.environ.get("GA_TLS_KEYFILE", "").strip()
+GA_ENABLE_SECURITY_HEADERS = os.environ.get("GA_ENABLE_SECURITY_HEADERS", "1").strip() not in ("0", "false", "")
+GA_ENFORCE_HTTPS_REDIRECT = os.environ.get("GA_ENFORCE_HTTPS_REDIRECT", "0").strip() in ("1", "true")
+GA_CSP_ENFORCE = os.environ.get("GA_CSP_ENFORCE", "0").strip() in ("1", "true")
+
 # ── Version ───────────────────────────────────────────────────────────────────
 
 def _read_transport_version() -> str:
@@ -174,6 +197,7 @@ def _load_or_create_file_secret() -> str:
     return new_secret
 
 _FILE_SECRET = _load_or_create_file_secret()
+_security.register_secret(_FILE_SECRET)
 
 
 def _load_api_key() -> str:
@@ -184,6 +208,7 @@ def _load_api_key() -> str:
         if secret_path.is_file():
             key = secret_path.read_text().strip()
             if key:
+                _security.register_secret(key)
                 return key
     except Exception:
         pass
@@ -195,6 +220,7 @@ def _load_api_key() -> str:
             "GA_API_KEY loaded from environment variable (DEPRECATED). "
             "Re-run install.sh to migrate to Podman secrets."
         )
+        _security.register_secret(env_key)
         return env_key
 
     _logger.info("No API key configured (neither /run/secrets/ga-api-key nor GA_API_KEY env var). "
@@ -339,6 +365,10 @@ def _resolve_image(entry: dict) -> str:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Scrub any registered secret value from every log record (TRN-70
+# secrets-management: secrets excluded from logs and errors).
+_security.install_redaction_filter()
 
 COMPOSITION_REGISTRY: dict[str, dict] = _load_composition_registry()
 
@@ -651,18 +681,18 @@ class BearerAuthMiddleware:
 
         # Reject: missing, duplicated, or malformed
         if len(auth_values) != 1:
-            await self._reject(send)
+            await self._reject(send, scope)
             return
 
         value = auth_values[0]
         # Must be "Bearer <token>" (case-insensitive scheme)
         if not value[:7].lower() == "bearer " or " " in value[7:].strip():
-            await self._reject(send)
+            await self._reject(send, scope)
             return
 
         token = value[7:].strip()
         if not token or not hmac.compare_digest(token, self._key):
-            await self._reject(send)
+            await self._reject(send, scope)
             return
 
         # Auth passed — check login/logout routes before falling through to MCP
@@ -701,7 +731,26 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
     @staticmethod
-    async def _reject(send) -> None:
+    async def _reject(send, scope=None) -> None:
+        # Audit the authorization denial (TRN-70 audit logging). No token value
+        # is ever included — only outcome, source, and timestamp.
+        try:
+            source = None
+            if scope is not None:
+                for k, v in scope.get("headers", []):
+                    if k == b"x-forwarded-for":
+                        source = v.decode("latin-1").split(",")[0].strip()
+                        break
+                if source is None:
+                    client = scope.get("client")
+                    if client:
+                        source = client[0]
+            _security.audit_auth_event(
+                action="api_request", outcome="denied", account=None,
+                source=source, emit=logger.info,
+            )
+        except Exception:
+            pass
         await send({
             "type": "http.response.start",
             "status": 401,
@@ -714,6 +763,125 @@ class BearerAuthMiddleware:
             "type": "http.response.body",
             "body": b"Unauthorized",
         })
+
+
+# ── Transport security middleware (TRN-70) ────────────────────────────────────
+
+class SecurityHeadersMiddleware:
+    """ASGI middleware enforcing transport-security guarantees.
+
+    - Redirects plaintext HTTP to HTTPS with a 301 when the redirect is enabled
+      (staged rollout: off until the monitored plaintext window + client notice
+      is complete).
+    - Emits the baseline security headers on every response
+      (``X-Content-Type-Options: nosniff``, clickjacking protection, and a
+      Content-Security-Policy) and, on HTTPS responses, an HSTS header with a
+      non-zero max-age.
+
+    HTTPS is detected from the ASGI scheme or the ``x-forwarded-proto`` header,
+    since TLS is terminated at the edge and the app sees forwarded requests.
+    """
+
+    def __init__(
+        self,
+        app,
+        *,
+        enable_headers: bool = True,
+        enforce_redirect: bool = False,
+        csp_enforce: bool = False,
+    ) -> None:
+        self.app = app
+        self._enable_headers = enable_headers
+        self._enforce_redirect = enforce_redirect
+        self._csp_enforce = csp_enforce
+
+    @staticmethod
+    def _is_https(scope) -> bool:
+        if scope.get("scheme") == "https":
+            return True
+        for k, v in scope.get("headers", []):
+            if k == b"x-forwarded-proto" and v.split(b",")[0].strip().lower() == b"https":
+                return True
+        return False
+
+    @staticmethod
+    def _host(scope) -> str:
+        for k, v in scope.get("headers", []):
+            if k == b"host":
+                return v.decode("latin-1")
+        server = scope.get("server") or ("localhost", None)
+        return server[0]
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        https = self._is_https(scope)
+
+        # Log plaintext HTTP traffic during the monitoring window (TRN-70 task 3.4).
+        # When enforce_redirect is off, we are in the monitored window phase — log
+        # every non-health plaintext hit so operators can identify affected clients
+        # before flipping GA_ENFORCE_HTTPS_REDIRECT. Once enforce_redirect is on,
+        # the redirect itself is the record of the hit.
+        if not https and scope.get("path") != "/health":
+            source = None
+            for k, v in scope.get("headers", []):
+                if k == b"x-forwarded-for":
+                    source = v.decode("latin-1").split(",")[0].strip()
+                    break
+            if source is None:
+                client = scope.get("client")
+                if client:
+                    source = client[0]
+            logger.info(
+                "plaintext HTTP hit: method=%s path=%s source=%s "
+                "(enforce_redirect=%s)",
+                scope.get("method", "?"),
+                scope.get("path", "/"),
+                source or "-",
+                "on" if self._enforce_redirect else "off",
+            )
+
+        # Plaintext → HTTPS 301 redirect (staged; skip health probes).
+        if self._enforce_redirect and not https and scope.get("path") != "/health":
+            host = self._host(scope)
+            path = scope.get("path", "/")
+            qs = scope.get("query_string", b"")
+            target = f"https://{host}{path}"
+            if qs:
+                target += "?" + qs.decode("latin-1")
+            await send({
+                "type": "http.response.start",
+                "status": 301,
+                "headers": [
+                    (b"location", target.encode("latin-1")),
+                    (b"content-length", b"0"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        if not self._enable_headers:
+            await self.app(scope, receive, send)
+            return
+
+        extra = _security.security_headers(
+            https=https,
+            csp_report_only=not self._csp_enforce,
+        )
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {k.lower() for k, _ in headers}
+                for name, value in extra:
+                    if name not in present:
+                        headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 # ── Podman client ─────────────────────────────────────────────────────────────
@@ -2718,6 +2886,17 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     return {"login_url": login_url, "code": login_code}
 
 
+def _request_source(request: Request) -> str | None:
+    """Best-effort client source (IP) for audit events; None if unavailable."""
+    try:
+        client = getattr(request, "client", None)
+        if client is not None:
+            return getattr(client, "host", None) or (client[0] if isinstance(client, (tuple, list)) else None)
+    except Exception:
+        pass
+    return None
+
+
 async def _handle_login_post(request: Request) -> Response:
     """POST /login — initiate kiro-cli device auth via an ephemeral temp container.
 
@@ -2813,6 +2992,11 @@ async def _handle_login_get(request: Request) -> Response:
         if _login_pending is not None and _login_pending.get("container") == pending["container"]:
             _login_pending = None
 
+    _security.audit_auth_event(
+        action="login", outcome="success", account="academy",
+        source=_request_source(request),
+        emit=logger.info,
+    )
     return JSONResponse({"status": "complete"})
 
 
@@ -2824,6 +3008,11 @@ async def _handle_logout_post(request: Request) -> Response:
     """
     if not _read_auth_file():
         return PlainTextResponse("Not authenticated.", status_code=404)
+
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="academy",
+        source=_request_source(request), emit=logger.info,
+    )
 
     try:
         podman = _get_podman()
@@ -5462,11 +5651,56 @@ if __name__ == "__main__":
     )
     _file_starlette = Starlette(routes=file_routes)
     app = BearerAuthMiddleware(mcp_app, api_key=GA_API_KEY, file_app=_file_starlette)
+    # Transport-security wrapper: security headers, HSTS, and the staged
+    # HTTP→HTTPS redirect (TRN-70). Outermost so headers land on every response
+    # and the redirect precedes auth.
+    app = SecurityHeadersMiddleware(
+        app,
+        enable_headers=GA_ENABLE_SECURITY_HEADERS,
+        enforce_redirect=GA_ENFORCE_HTTPS_REDIRECT,
+        csp_enforce=GA_CSP_ENFORCE,
+    )
     if GA_API_KEY:
         logger.info("MCP API-key authentication: enabled")
     else:
         logger.info("MCP API-key authentication: disabled (GA_API_KEY unset)")
+    logger.info(
+        "Transport security: headers=%s https_redirect=%s csp=%s",
+        "on" if GA_ENABLE_SECURITY_HEADERS else "off",
+        "enforced" if GA_ENFORCE_HTTPS_REDIRECT else "staged-off",
+        "enforce" if GA_CSP_ENFORCE else "report-only",
+    )
 
-    config = uvicorn.Config(app, host=HOST, port=PORT, log_level="info")
+    # Enforce a minimum TLS version when the app terminates TLS directly.
+    # (In production TLS is terminated at the edge; these apply for non-edge
+    # deployments that set GA_TLS_CERTFILE / GA_TLS_KEYFILE.)
+    _uvicorn_kwargs: dict[str, Any] = {}
+    if GA_TLS_CERTFILE and GA_TLS_KEYFILE:
+        import ssl as _ssl
+
+        _tls_certfile = GA_TLS_CERTFILE
+        _tls_keyfile = GA_TLS_KEYFILE
+        _tls_min_version = GA_TLS_MIN_VERSION
+
+        def _ssl_context_factory(_cfg, _default_factory):  # type: ignore[return]
+            """Build an SSLContext with an explicit minimum TLS version floor.
+
+            Using ssl_context_factory rather than ssl_version + ssl_ciphers
+            lets us call ctx.minimum_version directly, which is the only
+            reliable way to enforce a TLS floor across OpenSSL versions.
+            """
+            ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(_tls_certfile, _tls_keyfile)
+            if _tls_min_version == "1.3":
+                ctx.minimum_version = _ssl.TLSVersion.TLSv1_3
+            else:
+                # Enforce TLS 1.2 explicitly — do not rely on the OpenSSL default.
+                ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
+            return ctx
+
+        _uvicorn_kwargs["ssl_context_factory"] = _ssl_context_factory
+        logger.info("Direct TLS termination enabled (min TLS %s)", GA_TLS_MIN_VERSION)
+
+    config = uvicorn.Config(app, host=HOST, port=PORT, log_level="info", **_uvicorn_kwargs)
     server = uvicorn.Server(config)
     asyncio.run(server.serve())
