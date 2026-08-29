@@ -39,6 +39,7 @@ else
   # Scan candidate locations in preference order; use first match
   _CANDIDATES=()
   for _f in \
+    "${HOME}/.ghostship/ghostship.conf" \
     "${GHOSTSHIP_DIR}/ghostship.conf" \
     "${GHOSTSHIP_DIR}/config/ghostship.conf"
   do
@@ -59,6 +60,7 @@ else
   if [[ ${#_UNIQUE[@]} -eq 0 ]]; then
     if [[ -t 0 ]]; then
       echo "No ghostship.conf found in:"
+      echo "  ${HOME}/.ghostship/ghostship.conf"
       echo "  ${GHOSTSHIP_DIR}/ghostship.conf"
       echo "  ${GHOSTSHIP_DIR}/config/ghostship.conf"
       echo ""

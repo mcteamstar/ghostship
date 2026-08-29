@@ -107,8 +107,9 @@ if [[ -n "$CONFIG_FILE" ]]; then
   echo "✓ Sourced config file: $CONFIG_FILE"
 else
   # Auto-detect config from standard locations (no --config flag passed).
-  # Check repo root first, then config/ subdirectory.
+  # Check ~/.ghostship first (persistent, survives repo updates), then repo-adjacent.
   for _candidate in \
+    "${HOME}/.ghostship/ghostship.conf" \
     "${GHOSTSHIP_DIR}/ghostship.conf" \
     "${GHOSTSHIP_DIR}/config/ghostship.conf"
   do
