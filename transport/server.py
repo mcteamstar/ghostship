@@ -56,7 +56,6 @@ import select
 import socket
 import tarfile
 import textwrap
-import warnings
 import json
 import logging
 import os
@@ -108,7 +107,7 @@ PODMAN_SOCK = os.environ.get(
 KC_IMAGE = os.environ.get("KC_IMAGE", "localhost/spec-ops:latest")
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
-KC_BASE_IMAGE = os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:stable")
+KC_BASE_IMAGE = os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:0.4.0")
 GA_NETWORK = "ga-net"
 GA_MAX_CREWS = int(os.environ.get("GA_MAX_CREWS", "20"))
 GA_MAX_ACTIVE_CREWS = int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3"))
@@ -204,7 +203,7 @@ _security.register_secret(_FILE_SECRET)
 
 
 def _load_api_key() -> str:
-    """Load GA_API_KEY from Podman secret file, falling back to env var (deprecated)."""
+    """Load GA_API_KEY from Podman secret file."""
     _logger = logging.getLogger(__name__)
     secret_path = Path("/run/secrets/ga-api-key")
     try:
@@ -215,16 +214,6 @@ def _load_api_key() -> str:
                 return key
     except Exception:
         pass
-
-    # Deprecated fallback: environment variable
-    env_key = os.environ.get("GA_API_KEY", "").strip()
-    if env_key:
-        _logger.warning(
-            "GA_API_KEY loaded from environment variable (DEPRECATED). "
-            "Re-run install.sh to migrate to Podman secrets."
-        )
-        _security.register_secret(env_key)
-        return env_key
 
     _logger.warning("GA_API_KEY is not set — transport is running WITHOUT authentication. "
                     "All MCP tools and file endpoints are publicly accessible. "
@@ -5107,24 +5096,11 @@ def _idle_monitor() -> None:
 def _resolve_public_url_base() -> str:
     """Return the public URL base for presigned file URLs.
 
-    Precedence: GA_HOST_URL > GA_MCP_PUBLIC_URL (deprecated fallback) >
-    http://localhost:{PORT}.
+    Precedence: GA_HOST_URL > http://localhost:{PORT}.
     """
     base = os.environ.get("GA_HOST_URL")
     if base:
         return base.rstrip("/")
-    # Deprecated fallback
-    legacy = os.environ.get("GA_MCP_PUBLIC_URL")
-    if legacy:
-        warnings.warn(
-            "GA_MCP_PUBLIC_URL is deprecated; set GA_HOST_URL instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        logger.warning(
-            "GA_MCP_PUBLIC_URL is deprecated — set GA_HOST_URL instead"
-        )
-        return legacy.rstrip("/")
     return f"http://localhost:{PORT}"
 
 

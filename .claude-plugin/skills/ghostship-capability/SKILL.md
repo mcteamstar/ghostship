@@ -292,7 +292,7 @@ Key variables (full reference: `docs/configuration.md`):
 |:---------|:--------|
 | `KC_MODEL_OVERRIDE` | Force a specific model for all crew agents |
 | `KC_MODEL_DEFAULT` | Global model fallback (lower precedence than per-agent `model`) |
-| `GA_API_KEY` | Bearer key locking the MCP/REST endpoint |
+| `GA_API_KEY` | Bearer key locking the MCP/REST endpoint — set via `install.sh --api-key <key>`, delivered as a Podman secret |
 | `GA_MAX_ACTIVE_CREWS` | Max simultaneously running crew containers |
 | `GA_MIN_FREE_MEM_GB` | Memory floor before a new crew is allowed to start |
 | `GA_IDLE_STOP_SECS` | Seconds idle before a crew container is stopped |

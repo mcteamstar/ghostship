@@ -159,15 +159,10 @@ be configurable via `GA_PORT` (default 8000).
 ### Requirement: Single public URL configuration
 
 The transport SHALL accept a single `GA_HOST_URL` environment variable as the
-base URL for all externally-reachable endpoints, replacing the previous split
-between `GA_MCP_PUBLIC_URL` and `GA_FILE_PUBLIC_URL`. Presigned file URLs
+base URL for all externally-reachable endpoints. Presigned file URLs
 (supply and evac) SHALL use `GA_HOST_URL` as their base.
 
 #### Scenario: Presigned URLs use GA_HOST_URL
 - **WHEN** the Admiral calls `evac()` or `supply()`
 - **THEN** the returned URL uses `GA_HOST_URL` as its base (e.g. `https://my-host.example.com/files/...`)
-
-#### Scenario: Legacy vars ignored
-- **WHEN** `GA_MCP_PUBLIC_URL` or `GA_FILE_PUBLIC_URL` are set but `GA_HOST_URL` is not
-- **THEN** the transport logs a deprecation warning and falls back to `GA_MCP_PUBLIC_URL` for backward compatibility
 

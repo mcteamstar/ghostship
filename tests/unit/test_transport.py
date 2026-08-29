@@ -574,7 +574,7 @@ class BundleHardeningTests(unittest.TestCase):
 
 
 class FileUrlBaseResolutionTests(unittest.TestCase):
-    """GA_HOST_URL > GA_MCP_PUBLIC_URL (deprecated) > localhost default (trn-32)."""
+    """GA_HOST_URL > localhost default."""
 
     def _url_base(self, url: str) -> str:
         parts = urlsplit(url)
@@ -587,33 +587,12 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
             url = server._sign_file_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
-    def test_sign_file_url_falls_back_to_ga_mcp_public_url_with_warning(self) -> None:
-        env = {"GA_MCP_PUBLIC_URL": "http://legacy:8001"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            import warnings as _w
-            with _w.catch_warnings(record=True) as caught:
-                _w.simplefilter("always")
-                url = server._sign_file_url("demo", "repo")
-            self.assertTrue(url.startswith("http://legacy:8001/"), url)
-            deprecation_msgs = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-            self.assertTrue(deprecation_msgs, "Expected DeprecationWarning for GA_MCP_PUBLIC_URL fallback")
-
-    def test_sign_file_url_uses_localhost_default_when_both_unset(self) -> None:
+    def test_sign_file_url_uses_localhost_default_when_unset(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GA_HOST_URL", None)
             os.environ.pop("GA_MCP_PUBLIC_URL", None)
             url = server._sign_file_url("demo", "repo")
         self.assertIn("localhost", url, url)
-
-    def test_sign_file_url_ga_public_url_wins_over_ga_mcp_public_url(self) -> None:
-        env = {
-            "GA_HOST_URL": "https://academy.example.com",
-            "GA_MCP_PUBLIC_URL": "http://legacy:8001",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            url = server._sign_file_url("demo", "repo")
-        self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_sign_upload_url_uses_ga_public_url_when_set(self) -> None:
         env = {"GA_HOST_URL": "https://academy.example.com"}
@@ -622,40 +601,13 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
             url = server._sign_upload_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
-    def test_sign_upload_url_falls_back_to_ga_mcp_public_url(self) -> None:
-        env = {"GA_MCP_PUBLIC_URL": "http://legacy:8001"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            import warnings as _w
-            with _w.catch_warnings(record=True) as caught:
-                _w.simplefilter("always")
-                url = server._sign_upload_url("demo", "repo")
-            self.assertTrue(url.startswith("http://legacy:8001/"), url)
-
     def test_evac_presigned_url_uses_ga_public_url_base(self) -> None:
-        """Task 4.2: evac() presigned URL uses GA_HOST_URL base."""
         env = {"GA_HOST_URL": "https://cdn.example.com"}
         with patch.dict(os.environ, env, clear=False):
             os.environ.pop("GA_MCP_PUBLIC_URL", None)
             url = server._sign_file_url("crew1", "workspace/bundle.tar")
         self.assertEqual(self._url_base(url), "https://cdn.example.com")
         self.assertIn("/files/crew1/workspace/bundle.tar", url)
-
-    def test_fallback_to_ga_mcp_public_url_emits_deprecation_warning(self) -> None:
-        """Task 4.3: fallback to GA_MCP_PUBLIC_URL emits deprecation warning."""
-        env = {"GA_MCP_PUBLIC_URL": "http://old-mcp:9000"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            import warnings as _w
-            with _w.catch_warnings(record=True) as caught:
-                _w.simplefilter("always")
-                server._resolve_public_url_base()
-            deprecation_msgs = [
-                w for w in caught
-                if issubclass(w.category, DeprecationWarning) and "GA_MCP_PUBLIC_URL" in str(w.message)
-            ]
-            self.assertEqual(len(deprecation_msgs), 1)
-            self.assertIn("GA_HOST_URL", str(deprecation_msgs[0].message))
 
 
 class LifecycleRegressionTests(unittest.TestCase):

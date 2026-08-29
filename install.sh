@@ -50,8 +50,6 @@ OS="$(uname -s)"
 # A literal assignment here ensures an ambient env var from the invoking shell
 # is unconditionally overwritten — only the config file or a flag can override.
 PORT=64057
-GA_FILE_PUBLIC_URL=""
-GA_MCP_PUBLIC_URL=""
 KIRO_IDENTITY_PROVIDER=""
 KIRO_REGION=""
 KIRO_LICENSE=""
@@ -120,8 +118,6 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="$2"; shift 2 ;;
     --model) KC_MODEL_OVERRIDE="$2"; shift 2 ;;
     --model-default) KC_MODEL_DEFAULT="$2"; shift 2 ;;
-    --file-public-url) GA_FILE_PUBLIC_URL="$2"; shift 2 ;;
-    --mcp-public-url) GA_MCP_PUBLIC_URL="$2"; shift 2 ;;
     --public-url) GA_HOST_URL="$2"; shift 2 ;;
     --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
@@ -565,8 +561,6 @@ services:
       HOST: ${HOST:-0.0.0.0}
       PORT: "${PORT}"
       GA_HOST_URL: "${GA_HOST_URL:-http://localhost:${PORT}}"
-      GA_FILE_PUBLIC_URL: "${GA_FILE_PUBLIC_URL:-}"
-      GA_MCP_PUBLIC_URL: "${GA_MCP_PUBLIC_URL:-}"
       GA_MAX_CREWS: "${GA_MAX_CREWS:-20}"
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
       GA_IDLE_TIMEOUT_SECS: "${GA_IDLE_TIMEOUT_SECS:-300}"

@@ -298,14 +298,6 @@ installs — the Podman secret is recreated from it on each `install.sh` run.
 
 No downtime is required beyond the container restart (~2s).
 
-#### Deprecated: environment variable fallback
-
-If `/run/secrets/ga-api-key` is not present (e.g. the operator upgraded the
-transport image but has not yet re-run `install.sh`), the transport falls
-back to reading `GA_API_KEY` from the environment and logs a deprecation
-warning at startup. Re-run `install.sh` to migrate to the secrets-based
-delivery. The env-var fallback will be removed in a future release.
-
 ### Client configuration
 
 After enabling, add the bearer header to each MCP client. See the

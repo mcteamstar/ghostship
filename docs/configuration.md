@@ -15,7 +15,7 @@ process sees and what each default means:
 | `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host regardless of this value. |
 | `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
-| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:stable` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
+| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.4.0` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
 | `GA_MAX_CREWS` | `20` | Maximum number of registered crews (running + stopped). Stopped crews cost no memory, so this is primarily a housekeeping limit on how many persistent workspaces you keep around. Raise it freely on unconstrained hosts |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum number of simultaneously running (active) crew containers. Enforced when a stopped crew is restarted — if the running count already equals this limit, the restart is refused until another crew idles out. Set to `0` to disable the active limit entirely. At ~2–3 GB per running crew, the default of 3 fits comfortably on an 8 GB host |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
@@ -23,13 +23,11 @@ process sees and what each default means:
 | `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json`. Applies when no per-agent model field overrides it. Lower precedence than `KC_MODEL_OVERRIDE` and per-agent model field. Set via `install.sh --model-default <model>`. Full precedence order: `KC_MODEL_OVERRIDE` > per-agent model > `KC_MODEL_DEFAULT` > KiroCrew built-in. Omit to leave KiroCrew's built-in default unchanged. |
 | `TRANSPORT_DATA_DIR` | `/data` | Registry + data dir |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path — on Linux this is your host uid (`id -u`); on macOS it's the `podman machine` guest's uid (`podman machine ssh -- id -u`), which is often different |
-| `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Replaces the deprecated `GA_MCP_PUBLIC_URL` and `GA_FILE_PUBLIC_URL` variables — set this single var for all externally-reachable URLs |
-| `GA_MCP_PUBLIC_URL` | _(unset)_ | **DEPRECATED.** Legacy fallback for `GA_HOST_URL`. If `GA_HOST_URL` is unset and this is set, it is used with a deprecation warning. Migrate to `GA_HOST_URL` |
-| `GA_FILE_PUBLIC_URL` | _(unset)_ | **DEPRECATED.** No longer read by the transport — passing it via `-e` to the container has no effect. `install.sh --file-public-url` still accepts this flag and stores the value for backward-compatible config files, but the transport ignores it at runtime. Migrate to `GA_HOST_URL` / `--public-url`. |
+| `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links — set this for all externally-reachable deployments |
 | `GA_FILE_TTL_SECS` | `300` | Seconds a presigned `evac`/`supply` URL stays valid before expiring |
 | `KC_GATEWAY_TOKEN_TTL` | `24h` | Duration passed to `kirocrew token --ttl` when setup, restart recovery, or startup reconciliation mints a gateway session token; independent of file URL expiry |
 | `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs — set explicitly if you need presigned URLs to survive a transport restart |
-| `GA_API_KEY` | _(unset)_ | **DEPRECATED as an env var.** The API key is now delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). The env var is a deprecated fallback for pre-migration installs — a warning is logged at startup when it is used. Re-run `install.sh` to migrate. Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration and rollback. |
+| `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins — see [auth.md](auth.md) |
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
@@ -105,8 +103,6 @@ nor the flag sets them, the built-in default applies.
 | `KC_MODEL_DEFAULT` | `--model-default` |
 | `GA_API_KEY` | `--api-key` |
 | `GA_HOST_URL` | `--public-url` |
-| `GA_FILE_PUBLIC_URL` | `--file-public-url` _(deprecated, migrate to `GA_HOST_URL`)_ |
-| `GA_MCP_PUBLIC_URL` | `--mcp-public-url` _(deprecated, migrate to `GA_HOST_URL`)_ |
 
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`) are **config-file-only** — they
@@ -131,30 +127,6 @@ PORT=9000
 KC_MODEL_OVERRIDE="anthropic/claude-sonnet-4-20250514"
 GA_HOST_URL="https://academy.example.com"
 ```
-
-> **Migration note (prior-release operators):** The following environment
-> variable names changed in this release. Rename them in your
-> `compose.yml`, systemd unit, or config file before upgrading:
->
-> | Old name | New name |
-> |:---------|:---------|
-> | `KC_MAX_CREWS` | `GA_MAX_CREWS` |
-> | `KC_IDLE_TIMEOUT_SECS` | `GA_IDLE_TIMEOUT_SECS` |
-> | `KC_FILE_SECRET` | `GA_FILE_SECRET` |
-> | `KC_FILE_TTL_SECS` | `GA_FILE_TTL_SECS` |
-> | `KC_PUBLIC_URL` | `GA_HOST_URL` |
-> | `KC_FILE_PUBLIC_URL` | `GA_FILE_PUBLIC_URL` |
-> | `KC_MCP_PUBLIC_URL` | `GA_MCP_PUBLIC_URL` |
->
-> Until renamed, deployments that set these variables will silently fall back
-> to built-in defaults.
->
-> **Port unification (trn-32):** The file-transfer routes now share the same
-> port as MCP (`PORT`, default 64057). There is no longer a separate file
-> server on `PORT+1`. Replace `GA_FILE_PUBLIC_URL` and `GA_MCP_PUBLIC_URL`
-> with a single `GA_HOST_URL` pointing at the unified endpoint.
-> `GA_MCP_PUBLIC_URL` still works as a deprecated fallback (with a warning);
-> `GA_FILE_PUBLIC_URL` is no longer read by the transport.
 
 Then override any single value at the command line:
 

@@ -14,9 +14,8 @@ so a rollback needs no code change.
 
 - **Single accessor.** All secret reads go through `security.get_secret(...)`
   (and the transport's `_load_api_key` / `_load_or_create_file_secret`, which
-  register their values for redaction). Resolution order is managed secret file
-  → injected env var (deprecated, warns) → empty. The API key is a Podman secret
-  mounted at `/run/secrets/ga-api-key`; the env-var path is deprecated.
+  register their values for redaction). The API key is a Podman secret
+  mounted at `/run/secrets/ga-api-key`.
 - **Redaction.** `SecretRedactionFilter` is installed on the root logger at
   startup. Any value passed to `security.register_secret` is scrubbed from every
   log record, error, and audit line (replaced with `***REDACTED***`).
