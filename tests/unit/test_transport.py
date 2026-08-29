@@ -5496,16 +5496,16 @@ class TestTrn38SecurityHardening(unittest.TestCase):
     # ── 9.1 HMAC token length is now 32 hex chars (128-bit) ──────────────────
 
     def test_sign_file_url_hmac_is_32_hex_chars(self) -> None:
-        """_sign_file_url produces a 32-char hex sig (not 16)."""
+        """_sign_file_url produces a 64-char hex sig (not 32)."""
         url = server._sign_file_url("demo", "repo/file.txt")
         query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertEqual(len(query["sig"]), 32, f"sig length {len(query['sig'])} != 32: {query['sig']}")
+        self.assertEqual(len(query["sig"]), 64, f"sig length {len(query['sig'])} != 32: {query['sig']}")
 
     def test_sign_upload_url_hmac_is_32_hex_chars(self) -> None:
-        """_sign_upload_url produces a 32-char hex sig (not 16)."""
+        """_sign_upload_url produces a 64-char hex sig (not 32)."""
         url = server._sign_upload_url("demo", "repo")
         query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertEqual(len(query["sig"]), 32, f"sig length {len(query['sig'])} != 32: {query['sig']}")
+        self.assertEqual(len(query["sig"]), 64, f"sig length {len(query['sig'])} != 32: {query['sig']}")
 
     def test_16_char_sig_rejected_by_verify_file_token(self) -> None:
         """A legacy 16-char sig is rejected by _verify_file_token (length mismatch)."""
