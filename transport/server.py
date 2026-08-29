@@ -78,7 +78,10 @@ from starlette.routing import Route, Mount
 import uvicorn
 import asyncio
 
-import security as _security  # sibling module — both files live at WORKDIR /app
+try:
+    import security as _security  # container: both files flat in /app
+except ModuleNotFoundError:
+    from transport import security as _security  # local dev: transport/ is a package dir
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -223,8 +226,9 @@ def _load_api_key() -> str:
         _security.register_secret(env_key)
         return env_key
 
-    _logger.info("No API key configured (neither /run/secrets/ga-api-key nor GA_API_KEY env var). "
-                 "MCP API-key authentication disabled.")
+    _logger.warning("GA_API_KEY is not set — transport is running WITHOUT authentication. "
+                    "All MCP tools and file endpoints are publicly accessible. "
+                    "Set GA_API_KEY to require Bearer token auth.")
     return ""
 
 

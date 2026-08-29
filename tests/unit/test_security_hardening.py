@@ -76,7 +76,7 @@ class TestLoadApiKey(unittest.TestCase):
                 mock_get_logger.return_value = mock_logger
                 result = server._load_api_key()
                 self.assertEqual(result, "")
-                mock_logger.info.assert_called_once()
+                mock_logger.warning.assert_called_once()
         finally:
             if env_backup is not None:
                 os.environ["GA_API_KEY"] = env_backup
