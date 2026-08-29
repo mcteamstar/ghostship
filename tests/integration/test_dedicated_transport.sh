@@ -66,10 +66,11 @@ fi
 echo ""
 echo "--- Test 2: Socket path respects GA_MACHINE_NAME ---"
 
+# Mirrors the real implementation: dedicated path is $RUNTIME/$NAME/podman.sock
 resolve_socket_path() {
   local name="${1:-ghost-academy}"
   local runtime="${2:-/run/user/1000}"
-  echo "${runtime}/podman/${name}.sock"
+  echo "${runtime}/${name}/podman.sock"
 }
 
 RESULT=$(resolve_socket_path "ghost-academy" "/run/user/1000")
@@ -78,8 +79,8 @@ RESULT=$(resolve_socket_path "ghost-academy" "/run/user/1000")
   || fail "Default name path (got: $RESULT)"
 
 RESULT=$(resolve_socket_path "academy" "/run/user/1000")
-[[ "$RESULT" == "/run/user/1000/podman/academy.sock" ]] \
-  && pass "Custom name → /run/user/1000/podman/academy.sock" \
+[[ "$RESULT" == "/run/user/1000/academy/podman.sock" ]] \
+  && pass "Custom name → /run/user/1000/academy/podman.sock" \
   || fail "Custom name path (got: $RESULT)"
 
 # ── Test 3: Idempotency — running install twice doesn't fail ──────────────────
