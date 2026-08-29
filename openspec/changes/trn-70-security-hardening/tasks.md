@@ -35,5 +35,5 @@
 
 ## Section 5: Integration
 
-- [ ] 5.1 Deploy to vm23 and run a full supply/evac round-trip to confirm presigned URLs still work after token format change.
+- [ ] 5.1 Deploy to <host> and run a full supply/evac round-trip to confirm presigned URLs still work after token format change.
 - [ ] 5.2 Confirm `evac(ref="--output=/tmp/pwned")` returns a validation error.

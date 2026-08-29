@@ -46,7 +46,7 @@ Ghostship currently writes no `mcp.json` into crew containers. Agent JSON files 
 ```json
 {
   "type": "streamable-http",
-  "url": "http://armory.penguin-piano.ts.net/mcp"
+  "url": "http://armory.example.com/mcp"
 }
 ```
 Or with auth headers:
