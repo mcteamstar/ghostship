@@ -48,7 +48,8 @@ distinct concern from installing (admin) or driving (command).
   check — all skill `version:` fields must match `VERSION`.
 - **VERSION + manifests**: bumped to `0.2.0` to match the release branch.
 
-## Out of scope
-- `ghostship-capability` wired into `plugin.json` distribution — deferred
-  (decide whether it's default or opt-in first).
-- README/docs update to reflect three-skill structure — deferred.
+## Out of scope for initial implementation
+- `ghostship-capability` wired into `plugin.json` distribution — open
+  decision: include by default vs opt-in. Design recommends default inclusion
+  (task 2.1).
+- README/docs update to reflect three-skill structure — deferred (task 2.2).
