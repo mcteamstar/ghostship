@@ -40,12 +40,14 @@ Call it:
 1. In `evac()` (MCP tool) before `_sign_file_url` — rejects at the tool layer.
 2. In `_handle_file_get` before the git exec — defence-in-depth at the HTTP layer.
 
-Also add `--` before `ref` in all git invocations:
+Also add `--` as an option terminator in git invocations. For `bundle create`, `--` goes
+before the ref (git bundle accepts `--` to end options). For `diff`, `--` goes before the
+**path** (not the ref) — the ref is a positional argument, paths follow `--`:
 ```python
-# bundle:
+# bundle: -- before ref
 ["git", "-C", repo_root, "bundle", "create", bundle_path, "--", bundle_ref]
-# diff:
-["git", "-C", repo_path, "diff", "--", ref, "--", file_path]
+# diff: ref before --, path after --
+["git", "-C", repo_path, "diff", ref, "--", file_path]
 ```
 
 ## D3: Path canonicalisation (H-1)
@@ -63,6 +65,12 @@ def _safe_path(workspace_root: Path, user_path: str) -> Path:
         raise ValueError(f"Path escapes workspace root: {user_path!r}")
     return resolved
 ```
+
+Note: `Path.resolve()` follows symlinks — a symlink inside the workspace pointing outside it
+would pass this check. The workspace volumes are operator-controlled and crew containers run
+as `kirocrew`, so symlink-escape is a low-probability vector in practice. A future hardening
+pass should add `lstat()` and reject symlinks on the resolved path, or use `--no-dereference`
+semantics. Document this as a known limitation.
 
 Apply in:
 - `evac()` and `supply()` MCP tool functions
@@ -113,18 +121,29 @@ In the crew proxy handler, replace raw query string forwarding:
 upstream_url = f"{gateway_url}{path}?{raw_query}"
 
 # After:
-PROXY_QUERY_ALLOWLIST = {"timeout", "agent", "task_id"}  # extend as needed
-
 def _safe_proxy_query(raw: str) -> str:
-    """Forward only allowlisted, control-char-clean query params."""
+    """Sanitise a query string before forwarding to the crew gateway.
+
+    Primary defence: reject CRLF/NUL characters that enable header injection.
+    Secondary: strip any parameter whose name contains control characters.
+
+    The KiroCrew gateway API uses many parameters (keep, agent, task_id, etc.)
+    that vary by endpoint. Rather than a closed allowlist (which would break
+    legitimate proxy paths), we reject control characters and pass the rest
+    through. A closed allowlist can be added once all proxied params are
+    documented.
+    """
     if any(c in raw for c in ("\r", "\n", "\x00")):
-        return ""
+        raise ValueError("Query string contains control characters")
+    # re-parse and re-encode to normalise encoding and drop malformed params
     params = parse_qs(raw, keep_blank_values=True)
-    safe = {k: v for k, v in params.items() if k in PROXY_QUERY_ALLOWLIST}
-    return urlencode(safe, doseq=True)
+    return urlencode(params, doseq=True)
 
 upstream_url = f"{gateway_url}{path}?{_safe_proxy_query(raw_query)}"
 ```
+
+A closed allowlist is the stronger long-term fix but requires auditing every proxied endpoint
+first. That audit is a follow-up task; note it in a TODO comment at the call site.
 
 ## Affected Files
 

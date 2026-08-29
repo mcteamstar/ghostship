@@ -37,3 +37,39 @@ MUST pass `--` before any user-supplied ref as an additional defence-in-depth me
 ### Requirement: Token expiry
 Presigned URLs MUST include a server-side expiry timestamp. Expired tokens MUST be rejected
 regardless of HMAC validity.
+
+### Requirement: Path canonicalisation — known limitation
+`Path.resolve()` follows symlinks. A symlink planted inside the workspace pointing outside it
+would bypass the resolve-and-compare check. This is accepted as a residual risk for 0.2.0
+(workspace volumes are operator-controlled; crew containers run as a non-root user). A future
+hardening pass SHOULD add lstat-based symlink detection or equivalent.
+
+---
+
+# Delta Spec: Transport Auth
+
+Target: `openspec/specs/crew-governance/spec.md`
+Action: modify — add to auth section
+
+---
+
+### Requirement: Auth-disabled startup warning
+When the transport starts without an API key configured, it MUST emit a WARNING-level log
+entry clearly stating that all endpoints are publicly accessible. An INFO-level message is
+not sufficient. The warning MUST appear before any request is served.
+
+---
+
+# Delta Spec: Crew Proxy
+
+Target: `openspec/specs/crew-governance/spec.md`
+Action: modify — add to proxy section
+
+---
+
+### Requirement: Query string sanitisation
+The transport MUST sanitise query strings before forwarding them to crew gateways. At minimum,
+query strings containing CR, LF, or NUL characters MUST be rejected. Re-encoding via a
+parse-then-encode round-trip is required to normalise encoding. A closed parameter allowlist
+is the preferred long-term approach and SHOULD be added once all proxied parameters are
+documented.

@@ -52,8 +52,11 @@ URL. This enables CRLF injection and exposes internal gateway parameters to exte
 - **H-2**: Prefix the HMAC payload with the operation type: `"get:crew_id:path:..."` for
   downloads, `"put:crew_id:path:..."` for uploads. All three sign/verify sites must align.
 - **H-3**: Downgrade to `WARNING` when `GA_API_KEY` is unset. Add a visible banner to the
-  startup log. No functional change to default-open behaviour (breaking change to require auth
-  by default is deferred to a separate major-version ticket).
+  startup log. **This is not a complete fix** — the transport still starts unauthenticated by
+  default. The warning is the minimum acceptable change for 0.2.0 given that the default-open
+  behaviour is intentional for local installs. Requiring `GA_API_KEY` for non-local deployments
+  or flipping the default to auth-required is deferred to a separate breaking-change ticket
+  (0.3.0 candidate).
 - **H-4**: Forward only a known-safe allowlist of query parameters to the crew gateway
   (`task_id`, `timeout`, `agent` — whatever is legitimately proxied). Strip everything else.
   Reject query strings containing CR or LF characters.
