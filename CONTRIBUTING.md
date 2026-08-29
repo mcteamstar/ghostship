@@ -50,10 +50,6 @@ All three are equally valid ways to run ghostship. The only thing that
 changes is who can see your academy curriculum and whether you can
 contribute back upstream.
 
-> **Note:** GitHub's "internal" visibility is a GitHub Enterprise / Teams
-> feature. If you don't have Enterprise, a private org repo shared with
-> your teams achieves the same thing in practice.
-
 ## Maintaining your fork
 
 A fork is only useful if it stays current. Upstream ships bug fixes,
