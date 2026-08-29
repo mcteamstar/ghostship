@@ -36,3 +36,18 @@ jobs:
             fi
           done
           exit "$fail"
+
+      - name: Check skill versions match VERSION
+        run: |
+          version="$(cat VERSION)"
+          fail=0
+          for skill in .claude-plugin/skills/*/SKILL.md; do
+            skill_version="$(grep -m1 '^  version:' "$skill" | sed 's/.*version: "\(.*\)"/\1/')"
+            if [[ "$skill_version" != "$version" ]]; then
+              echo "✗ $skill has version '$skill_version', VERSION file has '$version'."
+              fail=1
+            else
+              echo "✓ $skill matches VERSION ($version)."
+            fi
+          done
+          exit "$fail"
