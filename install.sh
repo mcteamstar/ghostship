@@ -107,11 +107,9 @@ if [[ -n "$CONFIG_FILE" ]]; then
   echo "✓ Sourced config file: $CONFIG_FILE"
 else
   # Auto-detect config from standard locations (no --config flag passed).
-  # Repo-adjacent configs take priority; ~/.ghostship is the persistent fallback.
   for _candidate in \
     "${GHOSTSHIP_DIR}/ghostship.conf" \
-    "${GHOSTSHIP_DIR}/config/ghostship.conf" \
-    "${HOME}/.ghostship/ghostship.conf"
+    "${GHOSTSHIP_DIR}/config/ghostship.conf"
   do
     if [[ -f "$_candidate" ]]; then
       # shellcheck source=/dev/null
