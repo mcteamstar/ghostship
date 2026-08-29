@@ -525,11 +525,11 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
         api_path = f"{api_path}?{query.decode('latin-1')}"
     upstream_full = f"{upstream_base}{api_path}"
 
-    # Forward headers minus host, then inject session cookie
+    # Forward headers minus host and cookie, then inject session cookie
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() != "host"
+        if k.lower() != "host" and k.lower() != "cookie"
     }
     forward_headers["Cookie"] = _crew_cookie(crew)
 
@@ -2673,7 +2673,7 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
         b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
         if b64:
             rows = json.loads(base64.b64decode(b64).decode())
-            if rows:
+            if rows and any(r[1] for r in rows if len(r) > 1):
                 return b64
     except Exception as e:
         logger.warning("Auth read failed: %s", e)
@@ -4993,7 +4993,7 @@ def _idle_monitor() -> None:
                     headers={"Cookie": cookie, "Origin": crew_url},
                     timeout=5.0,
                 )
-                if r.status_code == 401:
+                if r.status_code in (401, 403):
                     # Cookie expired — attempt refresh and retry
                     new_cookie = _mint_cookie(podman, info["container"], crew_url)
                     if new_cookie:
@@ -5043,7 +5043,7 @@ def _idle_monitor() -> None:
                     headers={"Cookie": cookie, "Origin": crew_url},
                     timeout=5.0,
                 )
-                if r.status_code == 401:
+                if r.status_code in (401, 403):
                     # Cookie expired — attempt refresh and retry
                     new_cookie = _mint_cookie(podman, info["container"], crew_url)
                     if new_cookie:

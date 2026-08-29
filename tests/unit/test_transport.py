@@ -26,6 +26,7 @@
 #   LoginFlowEdgeCaseTests, LoginGuardClearTests  (trn-17 additions)
 #   ActiveCrewLimitTests  (trn-40 additions)
 #   NukeScheduleTests  (trn-59 additions)
+#   ReadAuthFromCrewTests  (trn-78 additions)
 
 
 #   ScheduleMonitorTests, SchedulePersistenceTests  (trn-39 additions)
@@ -2838,6 +2839,51 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertTrue(any("DELETE FROM auth_kv" in call.args[1][2] for call in podman.container_exec.call_args_list))
 
 
+# ── _read_auth_from_crew unit tests (trn-78 tasks 1.2–1.3) ───────────────────
+
+class ReadAuthFromCrewTests(unittest.TestCase):
+    """Unit tests for _read_auth_from_crew (trn-78 bug fixes)."""
+
+    def _b64_rows(self, rows: list) -> str:
+        """Encode a list of row tuples into the b64 JSON format the function expects."""
+        import base64
+        return base64.b64encode(json.dumps(rows).encode()).decode()
+
+    def test_returns_none_when_auth_kv_has_only_registration_row_empty_value(self) -> None:
+        """1.2: returns None when auth_kv has only a registration row with empty value."""
+        # Simulate the device-flow registration row: value is empty/null
+        rows_empty_value = [["registration", ""]]
+        b64 = self._b64_rows(rows_empty_value)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_auth_kv_has_only_registration_row_null_value(self) -> None:
+        """1.2 (null variant): returns None when auth_kv has only a row with null value."""
+        rows_null_value = [["registration", None]]
+        b64 = self._b64_rows(rows_null_value)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertIsNone(result)
+
+    def test_returns_b64_payload_when_auth_kv_has_row_with_non_empty_value(self) -> None:
+        """1.3: returns the b64 payload when auth_kv has a row with a non-empty value."""
+        rows_with_token = [["registration", ""], ["access_token", "eyJhbGciOiJSUzI1NiJ9.payload"]]
+        b64 = self._b64_rows(rows_with_token)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertEqual(result, b64)
+
+
 # ── Crew-Type Registry Tests ──────────────────────────────────────────────────
 
 
@@ -4657,6 +4703,45 @@ class IdleMonitorTests(unittest.TestCase):
         self.assertEqual(result["stops"], [], "crew should not be stopped after cron 401 retry")
         self.assertIn("cron401-crew", result["touched"])
 
+    def test_403_triggers_cookie_refresh_and_retry_on_spawn(self) -> None:
+        """2.2 (trn-78): 403 response on spawn triggers cookie refresh and retry."""
+        podman = IdleMonitorPodman(containers_running={"gs-403spawn": True})
+        # First spawn call returns 403 (CSRF mismatch), retry returns 200 with active task
+        spawn_403 = MockHTTPResponse(403)
+        spawn_ok = MockHTTPResponse(200, {"agents": [{"done": False}]})
+        crew_items = [("spawn-403-crew", {
+            "container": "gs-403spawn", "status": "running", "cookie": "old", "last_used": 0,
+        })]
+        result = self._run_one_iteration(
+            crew_items, podman, [spawn_403, spawn_ok],
+            mint_cookie_return="new-cookie",
+        )
+
+        # Crew has active task after retry — must not be stopped
+        self.assertEqual(result["stops"], [])
+        self.assertIn("spawn-403-crew", result["touched"])
+
+    def test_403_with_successful_cookie_refresh_stops_idle_crew(self) -> None:
+        """2.3 (trn-78): idle monitor stops crew after successful cookie refresh following 403."""
+        podman = IdleMonitorPodman(containers_running={"gs-403idle": True})
+        # spawn: first 403, then (after cookie refresh) 200 with empty agents
+        # crons: 200 with empty jobs list → crew is genuinely idle → gets stopped
+        spawn_403 = MockHTTPResponse(403)
+        spawn_ok = MockHTTPResponse(200, {"agents": []})
+        cron_ok = MockHTTPResponse(200, {"jobs": []})
+        crew_items = [("idle-403-crew", {
+            "container": "gs-403idle", "status": "running", "cookie": "old", "last_used": 0,
+        })]
+        result = self._run_one_iteration(
+            crew_items, podman, [spawn_403, spawn_ok, cron_ok],
+            mint_cookie_return="new-cookie",
+        )
+
+        # Cookie refresh succeeded, no active tasks — crew should be stopped
+        self.assertIn("gs-403idle", result["stops"])
+        self.assertTrue(result["saved_regs"])
+        self.assertEqual(result["saved_regs"][-1]["crews"]["idle-403-crew"]["status"], "stopped")
+
 
 
 # ── Task 6: _finish_crew_setup ordering tests ────────────────────────────────
@@ -6450,6 +6535,83 @@ class ProxyHandlerTests(unittest.TestCase):
         self.assertIsNone(server._extract_crew_proxy_parts("/mcp"))
         self.assertIsNone(server._extract_crew_proxy_parts("/crews"))
         self.assertIsNone(server._extract_crew_proxy_parts("/crews/demo"))
+
+    # ── Cookie header deduplication (trn-78 tasks 3.2–3.3) ───────────────────
+
+    def test_api_proxy_strips_inbound_cookie_header_to_prevent_duplicates(self) -> None:
+        """3.2 (trn-78): inbound lowercase 'cookie' header is stripped — no duplicate Cookie in forwarded request."""
+        captured_headers: list[dict] = []
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+            ):
+                # Inbound request carries a browser cookie header (lowercase, as Starlette normalises)
+                request = _FakeStreamRequest(
+                    path="/crews/demo/api/spawn",
+                    headers={"cookie": "session=browser-session-id; theme=dark"},
+                )
+
+                class FakeHTTP:
+                    async def request(self_inner, method, url, headers=None, content=None):
+                        captured_headers.append(dict(headers or {}))
+                        resp = Mock()
+                        resp.status_code = 200
+                        resp.content = b"{}"
+                        resp.headers = {}
+                        return resp
+
+                with patch.object(server, "_async_http", FakeHTTP()):
+                    return await server._handle_crew_api_proxy(request)
+
+        asyncio.run(run())
+        self.assertTrue(captured_headers)
+        fwd = captured_headers[0]
+        # Count Cookie / cookie occurrences — must be exactly one
+        cookie_keys = [k for k in fwd if k.lower() == "cookie"]
+        self.assertEqual(len(cookie_keys), 1, "Exactly one Cookie header must be forwarded, not duplicated")
+        # The inbound browser cookie must NOT be forwarded
+        cookie_val = fwd[cookie_keys[0]]
+        self.assertNotIn("browser-session-id", cookie_val)
+
+    def test_api_proxy_injected_session_cookie_present_when_inbound_had_cookie_header(self) -> None:
+        """3.3 (trn-78): injected mc_token_5476 cookie is correct even when inbound request had a 'cookie' header."""
+        captured_headers: list[dict] = []
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+            ):
+                request = _FakeStreamRequest(
+                    path="/crews/demo/api/spawn",
+                    headers={"cookie": "old=stale-val"},
+                )
+
+                class FakeHTTP:
+                    async def request(self_inner, method, url, headers=None, content=None):
+                        captured_headers.append(dict(headers or {}))
+                        resp = Mock()
+                        resp.status_code = 200
+                        resp.content = b"{}"
+                        resp.headers = {}
+                        return resp
+
+                with patch.object(server, "_async_http", FakeHTTP()):
+                    return await server._handle_crew_api_proxy(request)
+
+        asyncio.run(run())
+        self.assertTrue(captured_headers)
+        fwd = captured_headers[0]
+        cookie_keys = [k for k in fwd if k.lower() == "cookie"]
+        self.assertEqual(len(cookie_keys), 1)
+        cookie_val = fwd[cookie_keys[0]]
+        # The injected session cookie must be present
+        self.assertIn("mc_token_5476", cookie_val)
+        self.assertIn("test-cookie-val", cookie_val)
+        # The stale inbound cookie must NOT be present
+        self.assertNotIn("stale-val", cookie_val)
 
 
 class InstallEnvVarSyncTests(unittest.TestCase):
