@@ -196,3 +196,32 @@ pull an incompatible base image that does not carry the 0.4.0 API fixes.
   after this change is applied
 - **THEN** the build CI job fails or the resulting image is flagged as
   incompatible during the regression test pass
+
+### Requirement: Auth-disabled startup warning
+When the transport starts without an API key configured, it MUST emit a WARNING-level log
+entry clearly stating that all endpoints are publicly accessible. An INFO-level message is
+not sufficient. The warning MUST appear before any request is served.
+
+#### Scenario: Auth disabled at startup emits WARNING
+- **WHEN** the transport starts with `GA_API_KEY` unset or empty
+- **THEN** a WARNING-level log entry is emitted before the first request is handled
+- **AND** the message states that all endpoints are publicly accessible
+
+#### Scenario: Auth enabled at startup does not emit warning
+- **WHEN** the transport starts with `GA_API_KEY` set to a non-empty value
+- **THEN** no auth-disabled warning is emitted
+
+### Requirement: Query string sanitisation
+The transport MUST sanitise query strings before forwarding them to crew gateways. At minimum,
+query strings containing CR, LF, or NUL characters MUST be rejected. Re-encoding via a
+parse-then-encode round-trip is required to normalise encoding. A closed parameter allowlist
+is the preferred long-term approach and SHOULD be added once all proxied parameters are
+documented.
+
+#### Scenario: CRLF in query string is rejected
+- **WHEN** a request is proxied to a crew gateway with a query string containing CR or LF characters
+- **THEN** the transport strips or rejects the offending characters before forwarding
+
+#### Scenario: Clean query string passes through
+- **WHEN** a request is proxied with a well-formed query string containing no control characters
+- **THEN** the query string is forwarded to the crew gateway unchanged
