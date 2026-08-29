@@ -44,9 +44,9 @@ Install these before running `install.sh`:
 - **`podman-compose`** — `brew install podman-compose` (macOS); included in the apt command above
 - A kiro-cli identity — Builder ID / Social Login, or an IAM Identity Center account (see [docs/auth.md](docs/auth.md))
 
-> **Model access:** Ghostship defaults to `gpt-5.6-luna`, which requires a kiro-cli Pro subscription or higher. Free tier users will need to override the model — set `KC_MODEL_DEFAULT` in `config/ghostship.conf`, or override the `model` field in individual agent JSON files in your fork. See [docs/configuration.md](docs/configuration.md) and [kiro.dev/docs/models](https://kiro.dev/docs/models/) for available models by tier.
-
 Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup v2 and Podman rootless. Verified on Ubuntu 22.04+.
+
+> **Model access:** Ghostship defaults to `gpt-5.6-luna`, which requires a Pro subscription or higher. See [kiro.dev/docs/models](https://kiro.dev/docs/models/) for available models by tier, and [docs/configuration.md](docs/configuration.md) for how to override.
 
 ### Setup
 
