@@ -556,7 +556,7 @@ class BundleHardeningTests(unittest.TestCase):
             for key, values in parse_qs(urlsplit(url).query).items()
         }
         self.assertTrue(
-            server._verify_file_token("demo", "repo", query["expires"], query["sig"])
+            server._verify_file_token("demo", "repo", query["expires"], query["sig"], mode="")
         )
 
     @unittest.skipUnless(shutil.which("git"), "git is required for bundle regression")

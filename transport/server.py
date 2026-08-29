@@ -5136,7 +5136,8 @@ def _sign_file_url(
 ) -> str:
     """Return a short-lived presigned URL for a crew workspace file or bundle."""
     expires = int(time.time()) + GA_FILE_TTL_SECS
-    payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{expires}"
+    flags = ":".join(sorted(f for f in ["bundle"] if bundle))
+    payload = f"{crew_id}:{path}:{expires}:GET:{ref or ''}:{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     url = f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
@@ -5154,7 +5155,7 @@ def _verify_file_token(
     sig: str,
     ref: str | None = None,
     bundle: bool = False,
-    mode: str = "",
+    mode: str | None = None,
 ) -> bool:
     """Verify a presigned file URL token. Returns False if invalid or expired."""
     try:
@@ -5163,12 +5164,19 @@ def _verify_file_token(
         return False
     if time.time() > exp:
         return False
-    # Upload tokens use mode-based payload; download tokens use ref/bundle payload.
-    # The caller passes either (ref, bundle) for GET or mode for PUT.
-    if mode:
-        payload = f"{crew_id}:{path}::{mode}:{exp}"
+    # Unified payload format: {crew_id}:{path}:{expires}:{method}:{ref}:{flags}
+    # flags is a sorted colon-joined set of active boolean options (bundle, unpack).
+    # mode=None means GET (download); mode is a string ("", "unpack", "bundle") for POST (upload).
+    if mode is not None:
+        # Upload (POST) path — reconstruct flags the same way _sign_upload_url does
+        flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and mode == "bundle") or (f == "unpack" and mode == "unpack")))
+        payload = f"{crew_id}:{path}:{exp}:POST::{flags}"
     else:
-        payload = f"{crew_id}:{path}:{ref or ''}:{'bundle' if bundle else ''}:{exp}"
+        # Download (GET) path
+        flags = ":".join(sorted(f for f in ["bundle"] if bundle))
+        payload = f"{crew_id}:{path}:{exp}:GET:{ref or ''}:{flags}"
+    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
     expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
 
@@ -5597,8 +5605,8 @@ def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool
     signed for a plain write cannot be replayed as an unpack or bundle clone.
     """
     expires = int(time.time()) + GA_FILE_TTL_SECS
-    mode = "unpack" if unpack else ("bundle" if bundle else "")
-    payload = f"{crew_id}:{path}::{mode}:{expires}"
+    flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and bundle) or (f == "unpack" and unpack)))
+    payload = f"{crew_id}:{path}:{expires}:POST::{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     return f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
