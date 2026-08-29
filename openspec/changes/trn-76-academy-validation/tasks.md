@@ -1,6 +1,6 @@
 ## 1. Implement _validate_academy()
 
-- [ ] 1.1 Add `_validate_academy()` function in `server.py` that returns a list of warning strings
+- [ ] 1.1 Add `_validate_academy()` function in `server.py` that returns a list of warning strings; use `_AGENTS_DIR` (line ~4662) for agents and `_get_orders_dir()` (line ~1356) for orders
 - [ ] 1.2 Validate every `*.json` in the agents path parses as JSON and has `name`, `description`, `tools` fields; collect a warning for each violation
 - [ ] 1.3 Validate every loaded manifest's explicit agent/skill/steering arrays reference only names that exist in the corresponding Academy pool; collect a warning for each unknown name
 - [ ] 1.4 Validate every `*.md` in the orders path has parseable YAML front-matter and at least one `{{...}}` placeholder; collect a warning for each violation

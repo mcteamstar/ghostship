@@ -9,7 +9,8 @@
 - [ ] 2.1 Replace all `os.environ.get("GA_*", ...)` calls in `server.py` with `cfg.<field>` reads
 - [ ] 2.2 Replace all `os.environ.get("KC_*", ...)` calls with `cfg.<field>` reads
 - [ ] 2.3 Replace remaining `os.environ.get()` calls (PORT, HOST, etc.) with `cfg.<field>` reads
-- [ ] 2.4 Verify no `os.environ.get()` calls remain in `server.py` (except any inside `Config.from_env()`)
+- [ ] 2.4 Check `transport/security.py` for any `os.environ.get()` calls and replace with `cfg.<field>` reads if present
+- [ ] 2.5 Verify no `os.environ.get()` calls remain in `server.py` or `security.py` (except inside `Config.from_env()`)
 
 ## 3. Sync ghostship.conf.example
 
