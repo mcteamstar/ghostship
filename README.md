@@ -135,12 +135,12 @@ There are six basic agent personas. The five worker personas split up the [OpenS
 
 | Agent | Name | Role |
 |:-:|:------|:-----|
-| <img src="docs/images/agent-spectre.png" width="64"> | **Spectre** | Planning operative — drives the front half of a change: explores problems, scaffolds proposals, revises plans as understanding evolves |
-| <img src="docs/images/agent-ghost.png" width="64"> | **Ghost** | General-purpose operative — executes one well-scoped task end to end; the only agent with all six OpenSpec operations, so a task can be driven from explore to archive without a hand-off |
-| <img src="docs/images/agent-banshee.png" width="64"> | **Banshee** | Independent review/fix operative — a second pair of eyes across the whole; finds bugs, runs tests, traces to root, and fixes what it finds before it ships |
-| <img src="docs/images/agent-reaper.png" width="64"> | **Reaper** | Cleanup operative — syncs delta specs to main specs and archives completed changes |
-| <img src="docs/images/agent-wraith.png" width="64"> | **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code and OpenSpec artifacts; may read OpenSpec context |
-| <img src="docs/images/agent-raven.png" width="64"> | **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, carries messages between personas and the Admiral; dispatches bounded next steps without implementing work |
+| <img src="docs/images/agent-spectre.png" width="256"> | **Spectre** | Planning operative — drives the front half of a change: explores problems, scaffolds proposals, revises plans as understanding evolves |
+| <img src="docs/images/agent-ghost.png" width="256"> | **Ghost** | General-purpose operative — executes one well-scoped task end to end; the only agent with all six OpenSpec operations, so a task can be driven from explore to archive without a hand-off |
+| <img src="docs/images/agent-banshee.png" width="256"> | **Banshee** | Independent review/fix operative — a second pair of eyes across the whole; finds bugs, runs tests, traces to root, and fixes what it finds before it ships |
+| <img src="docs/images/agent-reaper.png" width="256"> | **Reaper** | Cleanup operative — syncs delta specs to main specs and archives completed changes |
+| <img src="docs/images/agent-wraith.png" width="256"> | **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code and OpenSpec artifacts; may read OpenSpec context |
+| <img src="docs/images/agent-raven.png" width="256"> | **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, carries messages between personas and the Admiral; dispatches bounded next steps without implementing work |
 
 See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. The **Captain** tool uses Ravens to handle messaging and orders to the other agents. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
 
@@ -150,16 +150,16 @@ Registered as `ghostship`:
 
 |  | Tool | Description |
 |:-|:-----|:------------|
-| <img src="docs/images/tool-crews.png" width="64"> | `crews` | List all registered crews and their status. |
-| <img src="docs/images/tool-launch.png" width="64"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
-| <img src="docs/images/tool-supply.png" width="64"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
-| <img src="docs/images/tool-evac.png" width="64"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
-| <img src="docs/images/tool-nuke.png" width="64"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
-| <img src="docs/images/tool-captain.png" width="64"> | `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
-| <img src="docs/images/tool-schedule.png" width="64"> | `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
-| <img src="docs/images/tool-dispatch.png" width="64"> | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
-| <img src="docs/images/tool-steer.png" width="64"> | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
-| <img src="docs/images/tool-pickup.png" width="64"> | `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
+| <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
+| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
+| <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
+| <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
+| <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
+| <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
+| <img src="docs/images/tool-schedule.png" width="256"> | `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
+| <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
+| <img src="docs/images/tool-steer.png" width="256"> | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
+| <img src="docs/images/tool-pickup.png" width="256"> | `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
 ## Further reading
 
