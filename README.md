@@ -76,6 +76,13 @@ To uninstall: `./uninstall.sh`. If ghostship stops after a reboot, run `./start.
 
 Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
 
+### Customising and forking
+
+Run it as-is or make it your own. Once you start adding agent personas,
+skills, or new crew compositions, that configuration belongs in your own
+fork. See [docs/forks.md](docs/forks.md) for the fork model, visibility
+options, and how to keep your fork current with upstream.
+
 ### Connecting to a harness
 
 Before your first `launch`, complete the device auth flow — open the URL returned by `POST /login` or by calling `launch` without auth. See [docs/auth.md](docs/auth.md) for the walkthrough.
@@ -160,4 +167,5 @@ Registered as `ghostship`:
 - [docs/agents.md](docs/agents.md) — the six agent personas, what each owns in the OpenSpec workflow, and how that's enforced (and isn't)
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
+- [docs/forks.md](docs/forks.md) — fork model: private/internal/public visibility, keeping your fork current with upstream
 - [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations
