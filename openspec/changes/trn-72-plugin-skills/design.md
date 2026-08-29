@@ -19,12 +19,17 @@ need command.
 
 ```
 .claude-plugin/
-  plugin.json                          ← skills array lists distributed skills
+  plugin.json                          ← plugin metadata and version
   skills/
+    EXTERNAL_SKILLS.md                 ← index of consumer-facing skills
     ghostship-admin/SKILL.md
     ghostship-command/SKILL.md
     ghostship-capability/SKILL.md      ← new (TRN-72)
 ```
+
+Skills are auto-discovered by the harness from the `skills/` directory —
+no explicit skills array in `plugin.json` is required. `EXTERNAL_SKILLS.md`
+is the human-readable index that documents what each skill covers.
 
 Each SKILL.md carries a `version:` field in its YAML frontmatter that must
 match the repo's `VERSION` file. This is enforced by the release gate before
@@ -43,30 +48,27 @@ the following must match:
 The `.github/workflows/release-gate.yml` CI check validates all four. A
 mismatch blocks the PR from merging into main.
 
-## D4: `ghostship-capability` distribution decision
+## D4: `ghostship-capability` distribution
 
-**Decision: include by default in `plugin.json`.**
+**Decision: include by default — auto-discovered alongside the other two skills.**
 
-Rationale: the skill is keyword-triggered, not always-on — it doesn't
-bloat context for users who never ask about academy configuration. New
-operators benefit from having it available without a separate install step.
-Advanced users who don't want it can ignore it.
+Skills are discovered automatically from the `skills/` directory — no
+explicit registration needed. `ghostship-capability` is available to any
+agent that has the plugin installed, just like `ghostship-admin` and
+`ghostship-command`. It's keyword-triggered, not always-on, so it doesn't
+bloat context for users who never ask about academy configuration.
 
-Implementation: add `ghostship-capability` to the `skills` array in
-`.claude-plugin/plugin.json` and `.claude-plugin/.claude-plugin/plugin.json`.
+`EXTERNAL_SKILLS.md` is updated to index all three skills with scope
+summaries.
 
-## D5: Cross-references between skills (task 2.4)
+## D5: Cross-references between skills
 
-After ghostship-capability is wired in, add brief cross-references:
+Brief one-line pointers added to each skill:
 
-- `ghostship-admin` — at the end of the install section, note:
-  "To configure what crews can do (agents, skills, MCP servers), use
-  `ghostship-capability` after installation."
-- `ghostship-command` — in the MCP server / composition context, note:
-  "To add new MCP servers to the catalogue or build new compositions,
-  use `ghostship-capability`."
-
-These are one-line pointers, not content duplication.
+- `ghostship-admin` — end of the "Beyond the common path" section points to
+  `ghostship-capability` for post-install academy customisation.
+- `ghostship-command` — opening paragraph points to `ghostship-capability`
+  for MCP server wiring and composition building.
 
 ## D6: `~/.ghostship` as the persistent data home
 
@@ -85,7 +87,9 @@ default install location) is the operator config file.
 - `.claude-plugin/skills/ghostship-admin/SKILL.md` — updated
 - `.claude-plugin/skills/ghostship-command/SKILL.md` — rewritten
 - `.claude-plugin/skills/ghostship-capability/SKILL.md` — created
-- `.claude-plugin/plugin.json` — version bump; capability skill to be added
-- `.claude-plugin/.claude-plugin/plugin.json` — same
+- `.claude-plugin/skills/EXTERNAL_SKILLS.md` — updated to index all three skills
+- `.claude-plugin/plugin.json` — version bump to 0.2.0
+- `.claude-plugin/.claude-plugin/plugin.json` — version bump to 0.2.0
 - `VERSION` — bumped to 0.2.0
+- `README.md` — three-skill mentions in quick install and plugin sections
 - `.github/workflows/release-gate.yml` — skill version check added

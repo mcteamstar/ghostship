@@ -48,8 +48,10 @@ distinct concern from installing (admin) or driving (command).
   check — all skill `version:` fields must match `VERSION`.
 - **VERSION + manifests**: bumped to `0.2.0` to match the release branch.
 
-## Out of scope for initial implementation
-- `ghostship-capability` wired into `plugin.json` distribution — open
-  decision: include by default vs opt-in. Design recommends default inclusion
-  (task 2.1).
-- README/docs update to reflect three-skill structure — deferred (task 2.2).
+## Completed scope
+
+All items implemented:
+- `ghostship-capability` auto-discovered via `skills/` directory (no plugin.json
+  change needed); indexed in `EXTERNAL_SKILLS.md`.
+- README updated to mention all three skills.
+- Cross-references added between admin↔capability and command↔capability.
