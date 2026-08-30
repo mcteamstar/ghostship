@@ -1,7 +1,5 @@
 # Architecture
 
-![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](docs/images/docs-fleet-hierarchy.png)
-
 ## Components
 
 **ga-transport** — the MCP server (`transport/server.py`). Runs as a plain
@@ -41,6 +39,8 @@ a three-stage build:
 See [configuration.md](configuration.md#extending-the-crew-image) to add packages.
 
 ## Ghost Academy
+
+![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](docs/images/docs-fleet-hierarchy.png)
 
 Every ghostship is built from the same foundation: [`academy/agents/`](../academy/agents/),
 [`academy/skills/`](../academy/skills/), and
