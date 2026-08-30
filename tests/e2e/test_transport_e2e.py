@@ -23,7 +23,6 @@ import httpx
 GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "").rstrip("/")
 GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
 
-_SKIP = not GHOSTSHIP_E2E_URL
 _SKIP_REASON = "GHOSTSHIP_E2E_URL not set"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -79,7 +78,7 @@ def _mcp_call(tool: str, *, api_key: str = "", **kwargs) -> dict:
 # ── 2. Health check ───────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(not _SKIP, _SKIP_REASON)
+@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
 class TestHealthCheck(unittest.TestCase):
     def test_health(self):
         resp = httpx.get(f"{GHOSTSHIP_E2E_URL}/health", timeout=10.0)
@@ -100,7 +99,7 @@ class TestHealthCheck(unittest.TestCase):
 # ── 3. Crew lifecycle ─────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(not _SKIP, _SKIP_REASON)
+@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
 class TestCrewLifecycle(unittest.TestCase):
     CREW_ID = "e2e-lifecycle"
 
@@ -141,7 +140,7 @@ class TestCrewLifecycle(unittest.TestCase):
 # ── 4. Dispatch + pickup ──────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(not _SKIP, _SKIP_REASON)
+@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
 class TestDispatchPickup(unittest.TestCase):
     CREW_ID = "e2e-dispatch"
 
@@ -189,7 +188,7 @@ class TestDispatchPickup(unittest.TestCase):
 # ── 5. Supply + evac round-trip ───────────────────────────────────────────────
 
 
-@unittest.skipUnless(not _SKIP, _SKIP_REASON)
+@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
 class TestSupplyEvac(unittest.TestCase):
     CREW_ID = "e2e-files"
     TEST_PAYLOAD = b"hello e2e ghostship"
@@ -221,8 +220,8 @@ class TestSupplyEvac(unittest.TestCase):
 
         # Get presigned download URL
         evac = _mcp_call("evac", crew_id=self.CREW_ID, path=self.TEST_PATH)
-        download_url = evac.get("download_url") or evac.get("url")
-        self.assertIsNotNone(download_url, f"No download_url in evac response: {evac}")
+        download_url = evac.get("url")
+        self.assertIsNotNone(download_url, f"No url in evac response: {evac}")
 
         # Download and verify
         down = httpx.get(download_url, timeout=30.0)
@@ -234,7 +233,7 @@ class TestSupplyEvac(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    not _SKIP and bool(GHOSTSHIP_API_KEY),
+    GHOSTSHIP_E2E_URL and GHOSTSHIP_API_KEY,
     "GHOSTSHIP_E2E_URL and GHOSTSHIP_API_KEY both required",
 )
 class TestAuthGate(unittest.TestCase):
