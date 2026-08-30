@@ -485,9 +485,17 @@ fi
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
 echo "Building localhost/base-admission:latest (admission) ..."
+# Copy container-side helper scripts into the admission build context so they
+# are baked into the crew image at /scripts/ (TRN-74). Uses a temp copy to
+# avoid polluting the source tree with generated files.
+_ADMISSION_CTX="$(mktemp -d)"
+cp -r "$GHOSTSHIP_DIR/crews/_base/admission/." "$_ADMISSION_CTX/"
+mkdir -p "$_ADMISSION_CTX/container_scripts"
+cp "$GHOSTSHIP_DIR/transport/container_scripts/"*.py "$_ADMISSION_CTX/container_scripts/"
 ${_PODMAN_CMD} build -t localhost/base-admission:latest \
-  "$GHOSTSHIP_DIR/crews/_base/admission/" \
-  && echo "✓ admission image built" || { echo "✗ admission image build failed"; exit 1; }
+  "$_ADMISSION_CTX/" \
+  && echo "✓ admission image built" || { echo "✗ admission image build failed"; rm -rf "$_ADMISSION_CTX"; exit 1; }
+rm -rf "$_ADMISSION_CTX"
 
 echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
