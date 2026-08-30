@@ -18,14 +18,18 @@ For each migration step: move the class, update patch targets to the owning modu
 - [ ] 2.5 Migrate lifecycle tests (`_ensure_crew_running`, `_finish_crew_setup`, `_crew_api_with_recovery`, `_patch_crew_config`, etc.) → `test_lifecycle.py`; patch via `transport.lifecycle`
 - [ ] 2.6 Migrate MCP tool tests (`crews`, `launch`, `dispatch`, `pickup`, `steer`, `nuke`, `captain`, `schedule`, `evac`, `supply`) and login state machine tests → `test_server.py`
 
+Each migration step in section 2 ends with its own commit:
+- `refactor(trn-85): migrate registry tests to test_registry.py`
+- `refactor(trn-85): migrate podman tests to test_podman.py`
+- etc.
+
 ## 3. Cleanup
 
-- [ ] 3.1 Run full suite `bash tests/run.sh` — all pass, no duplicate test IDs
-- [ ] 3.2 Delete `tests/unit/test_transport.py`
-- [ ] 3.3 Run full suite again to confirm nothing was missed
-- [ ] 3.4 Commit: `refactor: split test_transport.py into per-module test files`
+- [ ] 3.1 Delete `tests/unit/test_transport.py` (now empty after all classes removed)
+- [ ] 3.2 Run full suite `bash tests/run.sh` — all pass, no duplicate test IDs
+- [ ] 3.3 Commit: `refactor(trn-85): delete test_transport.py — migration complete`
 
 ## 4. Verification
 
-- [ ] 4.1 Confirm test count is the same or higher (no tests lost in migration)
-- [ ] 4.2 Confirm no `patch.object(server, "X")` where X is defined in another module
+- [ ] 4.1 Confirm test count is the same or higher (no tests lost in migration): compare `Ran N tests` before and after
+- [ ] 4.2 Confirm no stale server patches remain: `grep -r 'patch.object(server' tests/unit/test_registry.py tests/unit/test_podman.py tests/unit/test_files.py tests/unit/test_captain.py tests/unit/test_lifecycle.py` — should return nothing

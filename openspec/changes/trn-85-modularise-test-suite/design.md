@@ -41,8 +41,8 @@ This avoids a big-bang rewrite and keeps the suite green throughout.
 ### 5. test_transport.py deletion
 
 The file is deleted in the final commit of the change, not incrementally, to avoid
-having duplicate tests running during migration. Classes are commented out of
-`test_transport.py` as they are moved, keeping the file present until the last class
+having duplicate tests running during migration. Classes are deleted from
+`test_transport.py` as they are moved, keeping it present as an empty shell until the last class
 is done.
 
 ## Risks

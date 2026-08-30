@@ -12,7 +12,7 @@ This creates two concrete problems:
    which is brittle and hard to maintain.
 
 2. **Navigation and ownership are unclear.** An 8000-line test file with no internal
-   structure makes it hard to find tests for a specific module, and makes it obvious which
+   structure makes it hard to find tests for a specific module, and makes it unclear which
    tests belong to which module.
 
 ## Proposal
