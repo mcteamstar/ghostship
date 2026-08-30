@@ -1,35 +1,106 @@
 ## Prerequisites
 
-- [ ] 0.1 TRN-71 fully landed (lifecycle.py committed, all tests passing)
+- [ ] 0.1 TRN-71 fully landed — `transport/lifecycle.py` committed, all 421 unit tests passing
 
-## 1. Setup
+## 1. Inventory and setup
 
-- [ ] 1.1 Create `tests/unit/helpers.py` — move any shared mock factories or setUp helpers from `test_transport.py` that are used by multiple test classes
-- [ ] 1.2 Create empty stub files: `test_registry.py`, `test_podman.py`, `test_files.py`, `test_captain.py`, `test_lifecycle.py`, `test_server.py` — each with a comment indicating which module it covers and imports for that module
+- [ ] 1.1 Get full class list: `grep -n "^class " tests/unit/test_transport.py` — note each class name and line number
+- [ ] 1.2 For each class, determine destination file using the call-site principle from design.md §2 and the class inventory in design.md §3
+- [ ] 1.3 Run the ownership introspection to confirm which names need lifecycle vs server patches:
+  ```python
+  import transport.lifecycle as lc
+  import transport.server as srv
+  from unittest.mock import patch, Mock
+  needs_lifecycle = []
+  for name in dir(lc):
+      if not name.startswith('_'): continue
+      if hasattr(srv, name):
+          fake = Mock()
+          with patch.object(srv, name, fake):
+              if getattr(lc, name) is not fake:
+                  needs_lifecycle.append(name)
+  print(needs_lifecycle)
+  ```
+- [ ] 1.4 Create `tests/unit/helpers.py` — move shared mock factories and setUp helpers from `test_transport.py` (look for module-level functions and base classes used by multiple test classes)
+- [ ] 1.5 Create stub files with correct imports:
+  - `tests/unit/test_registry.py` — `import transport.registry as registry`
+  - `tests/unit/test_podman.py` — `import transport.podman as podman`
+  - `tests/unit/test_files.py` — `import transport.files as files_mod`
+  - `tests/unit/test_captain.py` — `import transport.captain as captain_mod`
+  - `tests/unit/test_lifecycle.py` — `import transport.lifecycle as lifecycle`
+  - `tests/unit/test_server.py` — `import transport.server as server; import transport.lifecycle as lifecycle`
 
 ## 2. Migrate test classes
 
-For each migration step: move the class, update patch targets to the owning module, remove dual-patch workarounds, run `bash tests/run.sh --unit`, comment out the class from `test_transport.py`.
+For each class: move → update patch targets → delete from test_transport.py → run suite → commit.
 
-- [ ] 2.1 Migrate registry tests → `test_registry.py`; patch via `transport.registry`
-- [ ] 2.2 Migrate podman/http tests → `test_podman.py`; patch via `transport.podman`
-- [ ] 2.3 Migrate file transfer tests → `test_files.py`; patch via `transport.files`
-- [ ] 2.4 Migrate captain tests → `test_captain.py`; patch via `transport.captain`
-- [ ] 2.5 Migrate lifecycle tests (`_ensure_crew_running`, `_finish_crew_setup`, `_crew_api_with_recovery`, `_patch_crew_config`, etc.) → `test_lifecycle.py`; patch via `transport.lifecycle`
-- [ ] 2.6 Migrate MCP tool tests (`crews`, `launch`, `dispatch`, `pickup`, `steer`, `nuke`, `captain`, `schedule`, `evac`, `supply`) and login state machine tests → `test_server.py`
+**Patch rule recap:**
+- Function defined in `lifecycle.py` → patch `lifecycle.X`; lifecycle gets `as alias`
+- MCP tool in `server.py` calling lifecycle functions → patch `server.X` for the
+  call-site intercept; patch `lifecycle.X` for any dep *inside* the lifecycle function
+- Remove all dual-patch pairs where both targets do the same thing; keep legitimate
+  two-level patches (server call site + lifecycle internal dep)
 
-Each migration step in section 2 ends with its own commit:
-- `refactor(trn-85): migrate registry tests to test_registry.py`
-- `refactor(trn-85): migrate podman tests to test_podman.py`
-- etc.
+### → test_registry.py
+
+- [ ] 2.1 Migrate `AdvanceNextFireAtTests` → `test_registry.py`; patch via `transport.registry`
+- [ ] 2.2 Commit: `refactor(trn-85): migrate registry tests to test_registry.py`
+
+### → test_podman.py
+
+- [ ] 2.3 Migrate `MemoryThresholdTests` → `test_podman.py`; patch via `transport.podman`
+- [ ] 2.4 Migrate any podman/http recovery tests → `test_podman.py`
+- [ ] 2.5 Commit: `refactor(trn-85): migrate podman tests to test_podman.py`
+
+### → test_captain.py
+
+- [ ] 2.6 Migrate `CaptainStandingOrdersTests` → `test_captain.py`; patch via `transport.captain` and `transport.lifecycle` (captain calls lifecycle's `_crew_api_with_recovery`)
+- [ ] 2.7 Migrate `CaptainMailHelperTests` (or equivalent) → `test_captain.py`
+- [ ] 2.8 Commit: `refactor(trn-85): migrate captain tests to test_captain.py`
+
+### → test_lifecycle.py
+
+- [ ] 2.9 Migrate `SetupRegistrationTests` → `test_lifecycle.py`; patch via `transport.lifecycle`
+- [ ] 2.10 Migrate `LifecycleRegressionTests` → `test_lifecycle.py`
+- [ ] 2.11 Migrate `ReconcileRegistryTests` → `test_lifecycle.py`
+- [ ] 2.12 Migrate `ActiveCrewLimitTests` → `test_lifecycle.py`; note `_wait_gateway` and `_patch_crew_config` need `lifecycle` patches
+- [ ] 2.13 Migrate `CopyAgentsMcpTests` → `test_lifecycle.py`; note `transport.lifecycle.Path` is the right patch target (not `transport.server.Path`), and lifecycle's logger needs the warning handler
+- [ ] 2.14 Migrate `LoginLogoutTests` → `test_lifecycle.py`; note `_nuke_login_container` is in lifecycle but called from server's `_handle_login_*` bodies — patch `server._nuke_login_container` for the assertion
+- [ ] 2.15 Migrate `LoginFlowEdgeCaseTests` → `test_lifecycle.py`
+- [ ] 2.16 Commit: `refactor(trn-85): migrate lifecycle tests to test_lifecycle.py`
+
+### → test_server.py
+
+- [ ] 2.17 Migrate `TaskOrchestrationTests` → `test_server.py`; these test MCP tools (`dispatch`, `steer`) — patch `server.X` for call-site mocks, `lifecycle.X` for internal deps
+- [ ] 2.18 Migrate `PickupTimeoutTests` → `test_server.py`; `_crew_api` is called via `_crew_api_with_recovery` in lifecycle — patch `lifecycle._crew_api as api`
+- [ ] 2.19 Migrate `PersonaValidationTests` → `test_server.py`
+- [ ] 2.20 Migrate `TestCrewTypesTool` → `test_server.py`; `COMPOSITION_REGISTRY` lives in lifecycle — patch both `lifecycle.COMPOSITION_REGISTRY` and `server.COMPOSITION_REGISTRY`
+- [ ] 2.21 Migrate `ResourceJobsTests` → `test_server.py`
+- [ ] 2.22 Migrate any remaining MCP tool test classes → `test_server.py`
+- [ ] 2.23 Commit: `refactor(trn-85): migrate server/MCP tool tests to test_server.py`
 
 ## 3. Cleanup
 
-- [ ] 3.1 Delete `tests/unit/test_transport.py` (now empty after all classes removed)
-- [ ] 3.2 Run full suite `bash tests/run.sh` — all pass, no duplicate test IDs
-- [ ] 3.3 Commit: `refactor(trn-85): delete test_transport.py — migration complete`
+- [ ] 3.1 Confirm `test_transport.py` is empty (only imports and comments remain)
+- [ ] 3.2 Run `bash tests/run.sh --unit 2>&1 | grep "^Ran"` — record count; must match or exceed pre-migration count (421)
+- [ ] 3.3 Delete `tests/unit/test_transport.py`
+- [ ] 3.4 Run full suite: `bash tests/run.sh` — all pass
+- [ ] 3.5 Commit: `refactor(trn-85): delete test_transport.py — migration complete`
 
 ## 4. Verification
 
-- [ ] 4.1 Confirm test count is the same or higher (no tests lost in migration): compare `Ran N tests` before and after
-- [ ] 4.2 Confirm no stale server patches remain: `grep -r 'patch.object(server' tests/unit/test_registry.py tests/unit/test_podman.py tests/unit/test_files.py tests/unit/test_captain.py tests/unit/test_lifecycle.py` — should return nothing
+- [ ] 4.1 No stale server patches in module-owned files:
+  ```bash
+  grep -rn 'patch.object(server' tests/unit/test_registry.py \
+    tests/unit/test_podman.py tests/unit/test_files.py \
+    tests/unit/test_captain.py tests/unit/test_lifecycle.py
+  ```
+  Should return nothing (or only legitimate cross-module patches with a comment explaining why).
+- [ ] 4.2 Test count at or above 421: `bash tests/run.sh --unit 2>&1 | grep "^Ran"`
+- [ ] 4.3 No dual-patch pairs remain where both patches target the same logical name:
+  ```bash
+  grep -A1 'patch.object(lifecycle' tests/unit/test_server.py | \
+    grep 'patch.object(server'
+  ```
+  Any hits should be reviewed — legitimate if the two patches serve different purposes
+  (call-site vs internal dep), a bug if they duplicate each other.
