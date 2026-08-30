@@ -72,14 +72,14 @@ For each class: move → update patch targets → delete from test_transport.py 
 
 ### → test_academy.py (requires TRN-86 ✅ done)
 
-- [ ] 2.9a Migrate the following to `test_academy.py`, all patching via `transport.academy`:
+- [x] 2.9a Migrate the following to `test_academy.py`, all patching via `transport.academy`:
   - `TestLaunchCrewType` from `test_transport.py` — composition resolution tests; patch `transport.academy.COMPOSITION_REGISTRY`, `_resolve_composition`, `_resolve_image` (the dual-patches on lifecycle/server for these are now wrong; collapse to single `transport.academy` patches)
   - `TestCrewTypesTool` from `test_transport.py` — `compositions` MCP tool; patch `transport.academy.COMPOSITION_REGISTRY`
   - Any `CrewTypeRegistryTests` — `_load_composition_registry`, `_resolve_manifest_path`
   - All classes from `test_academy_validation.py` — already patching `transport.academy` correctly (no changes needed, just move/import)
   - All classes from `test_crew_types.py` — `_load_crew_manifest`, `_manifest_selects`, `_substitute_env_vars`; update any remaining lifecycle/server patches to `transport.academy`
   - **Note on `CopyAgentsMcpTests`:** stays in `test_lifecycle.py` — it tests `_copy_agents` (lifecycle), which calls academy functions as deps. The academy patches in `_run()` helper (`_load_crew_manifest`, `Path`, logger) are correct as written after TRN-86 test fixes.
-- [ ] 2.9b Commit: `refactor(trn-85): migrate academy tests to test_academy.py`
+- [x] 2.9b Commit: `refactor(trn-85): migrate academy tests to test_academy.py`
 
 ### → test_lifecycle.py
 
