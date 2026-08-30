@@ -15,9 +15,9 @@ The Admiral sets up Captain with a standing order that drives the three phases. 
 
 ## 1. Inventory and setup
 
-- [ ] 1.1 Get full class list: `grep -n "^class " tests/unit/test_transport.py` — note each class name and line number
-- [ ] 1.2 For each class, determine destination file using the call-site principle from design.md §2 and the class inventory in design.md §3
-- [ ] 1.3 Run the ownership introspection to confirm which names need lifecycle vs server patches:
+- [x] 1.1 Get full class list: `grep -n "^class " tests/unit/test_transport.py` — note each class name and line number
+- [x] 1.2 For each class, determine destination file using the call-site principle from design.md §2 and the class inventory in design.md §3
+- [x] 1.3 Run the ownership introspection to confirm which names need lifecycle vs server patches:
   ```python
   import transport.lifecycle as lc
   import transport.server as srv
@@ -32,8 +32,8 @@ The Admiral sets up Captain with a standing order that drives the three phases. 
                   needs_lifecycle.append(name)
   print(needs_lifecycle)
   ```
-- [ ] 1.4 Create `tests/unit/helpers.py` — move shared mock factories and setUp helpers from `test_transport.py` (look for module-level functions and base classes used by multiple test classes)
-- [ ] 1.5 Create stub files with correct imports:
+- [x] 1.4 Create `tests/unit/helpers.py` — move shared mock factories and setUp helpers from `test_transport.py` (look for module-level functions and base classes used by multiple test classes)
+- [x] 1.5 Create stub files with correct imports:
   - `tests/unit/test_registry.py` — `import transport.registry as registry`
   - `tests/unit/test_podman.py` — `import transport.podman as podman`
   - `tests/unit/test_files.py` — `import transport.files as files_mod`
