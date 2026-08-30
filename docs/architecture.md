@@ -40,7 +40,7 @@ See [configuration.md](configuration.md#extending-the-crew-image) to add package
 
 ## Ghost Academy
 
-![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](docs/images/docs-fleet-hierarchy.png)
+![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](images/docs-fleet-hierarchy.png)
 
 Every ghostship is built from the same foundation: [`academy/agents/`](../academy/agents/),
 [`academy/skills/`](../academy/skills/), and
@@ -70,7 +70,7 @@ standing-orders work. See [agents.md](agents.md) for what each persona owns,
 and [Steering](#steering) below for the crew-wide context every persona gets
 regardless of its own prompt.
 
-![SDD workflow: Spectre → Ghost → Banshee → Reaper, with Raven/Captain orchestration](docs/images/docs-sdd-workflow.png)
+![SDD workflow: Spectre → Ghost → Banshee → Reaper, with Raven/Captain orchestration](images/docs-sdd-workflow.png)
 
 ## Crew lifecycle
 
