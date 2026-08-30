@@ -114,3 +114,21 @@ For each class: move → update patch targets → delete from test_transport.py 
   ```
   Any hits should be reviewed — legitimate if the two patches serve different purposes
   (call-site vs internal dep), a bug if they duplicate each other.
+
+## 5. Nits from TRN-71 code review (fix during migration)
+
+These were flagged by Banshee during the TRN-71 review. Non-blocking individually but
+worth cleaning up as part of TRN-85's patch cleanup pass.
+
+- [ ] 5.1 `transport/podman.py` line 12 — remove unused `import select` (dead import)
+- [ ] 5.2 `transport/podman.py` — `server.py` imports `_host_memory_cache` by name, but
+  this global is reassigned inside `_get_host_memory_gb_cached`, so server's binding
+  captures the initial `None` and never sees cache updates. Verify server.py isn't
+  relying on a stale binding; if it is, change the import to read through the module
+  (`podman._host_memory_cache`) or call `_get_host_memory_gb_cached()` instead.
+- [ ] 5.3 `transport/registry.py` — `_advance_next_fire_at` has two untested branches:
+  the malformed-cron `+60s` fallback and the unknown-schedule-type → `_NEVER_FIRE_AT`
+  path. Add direct tests for these in `test_registry.py` during migration.
+- [ ] 5.4 `transport/podman.py` — memory helpers (`_get_host_memory_gb`,
+  `_get_host_memory_gb_cached`) have no direct unit tests. Add basic coverage in
+  `test_podman.py` during migration (mock `system_info()`).
