@@ -16,5 +16,5 @@
 
 ## 3. Verification
 
-- [x] 3.1 Run `GHOSTSHIP_E2E_URL=http://academy.penguin-piano.ts.net bash tests/run.sh --e2e` — all tests pass, progress output visible during run
+- [x] 3.1 Run `GHOSTSHIP_E2E_URL=http://your-academy-host bash tests/run.sh --e2e` — all tests pass, progress output visible during run
 - [x] 3.2 Run `bash tests/run.sh --e2e` (no env var) — all 25 tests skip cleanly
