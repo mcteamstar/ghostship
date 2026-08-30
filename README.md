@@ -15,8 +15,6 @@ claude plugin install ghostship@ghostship
 ```
 Use the skill `/ghostship-admin` for guided local setup, `/ghostship-capability` to customise the academy, and `/ghostship-command` to drive the fleet. See [Install](#install) below for full steps.
 
-![Ghostship architecture: harness → transport → crews → agents](docs/images/docs-arch-system.png)
-
 ## Why Ghostship?
 
 KiroCrew is designed for running teams of agents over long horizon tasks, but running KiroCrew on your desktop limits you to one instance, directly on your filesystem, with limited isolation between crewmates.
