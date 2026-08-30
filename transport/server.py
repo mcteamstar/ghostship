@@ -423,7 +423,6 @@ _security.install_redaction_filter()
 
 try:
     from lifecycle import (  # container: flat /app/
-        COMPOSITION_REGISTRY,
         CREW_CONTAINER_PREFIX,
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
@@ -439,8 +438,6 @@ try:
         KIRO_STEERING_DIR,
         MCP_CATALOGUE_DIR,
         SCRIPTS_DIR,
-        _AGENTS_DIR,
-        _CREW_REGISTRY_PATH,
         _SCHEDULE_MONITOR_INTERVAL,
         _cleanup_crew,
         _copy_agents,
@@ -459,9 +456,6 @@ try:
         _inject_auth,
         _inject_git_identity,
         _inject_policy,
-        _load_composition_registry,
-        _load_crew_manifest,
-        _manifest_selects,
         _mint_cookie,
         _nuke_login_container,
         _patch_crew_config,
@@ -474,22 +468,16 @@ try:
         _refresh_cookie,
         _require_crew,
         _reseed_crew_schedules,
-        _resolve_composition,
-        _resolve_image,
-        _resolve_manifest_path,
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
         _startup_events,
         _startup_events_lock,
-        _substitute_env_vars,
-        _validate_academy,
         _validate_agent,
         _wait_gateway,
     )
 except ModuleNotFoundError:
     from transport.lifecycle import (  # local dev
-        COMPOSITION_REGISTRY,
         CREW_CONTAINER_PREFIX,
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
@@ -505,8 +493,6 @@ except ModuleNotFoundError:
         KIRO_STEERING_DIR,
         MCP_CATALOGUE_DIR,
         SCRIPTS_DIR,
-        _AGENTS_DIR,
-        _CREW_REGISTRY_PATH,
         _SCHEDULE_MONITOR_INTERVAL,
         _cleanup_crew,
         _copy_agents,
@@ -525,9 +511,6 @@ except ModuleNotFoundError:
         _inject_auth,
         _inject_git_identity,
         _inject_policy,
-        _load_composition_registry,
-        _load_crew_manifest,
-        _manifest_selects,
         _mint_cookie,
         _nuke_login_container,
         _patch_crew_config,
@@ -540,18 +523,54 @@ except ModuleNotFoundError:
         _refresh_cookie,
         _require_crew,
         _reseed_crew_schedules,
-        _resolve_composition,
-        _resolve_image,
-        _resolve_manifest_path,
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
         _startup_events,
         _startup_events_lock,
-        _substitute_env_vars,
-        _validate_academy,
         _validate_agent,
         _wait_gateway,
+    )
+
+# Academy composition/manifest/validation surface — extracted from lifecycle
+# to transport/academy.py (TRN-86). server reads COMPOSITION_REGISTRY (in
+# resource_compositions), _AGENTS_DIR (in resource_agents), and the helper
+# functions. It imports them from academy directly rather than re-through
+# lifecycle. Note (pending TRN-85): tests still dual-patch these names on
+# BOTH `lifecycle` and `server` (e.g. patch.object(lifecycle,
+# "COMPOSITION_REGISTRY") + patch.object(server, ...)) and also patch
+# transport.academy; that dual/triple-patch is intentional until TRN-85
+# migrates the academy tests to patch transport.academy exclusively.
+try:
+    from academy import (  # container: flat /app/
+        COMPOSITION_REGISTRY,
+        _AGENTS_DIR,
+        _CREW_REGISTRY_PATH,
+        _load_composition_registry,
+        _load_crew_manifest,
+        _manifest_selects,
+        _resolve_composition,
+        _resolve_image,
+        _resolve_manifest_path,
+        _substitute_env_vars,
+        _validate_academy,
+    )
+except ImportError:
+    # See the ImportError note in lifecycle.py: the repo-root academy/ assets
+    # directory shadows the flat-path module as a namespace package in local
+    # dev, so `from academy import <name>` raises ImportError there.
+    from transport.academy import (  # local dev
+        COMPOSITION_REGISTRY,
+        _AGENTS_DIR,
+        _CREW_REGISTRY_PATH,
+        _load_composition_registry,
+        _load_crew_manifest,
+        _manifest_selects,
+        _resolve_composition,
+        _resolve_image,
+        _resolve_manifest_path,
+        _substitute_env_vars,
+        _validate_academy,
     )
 
 mcp = MCPServer(
