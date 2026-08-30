@@ -7110,5 +7110,128 @@ class CopyAgentsMcpTests(unittest.TestCase):
         )
 
 
+# ── TRN-77: Git author identity injection tests ───────────────────────────────
+
+
+class GitIdentityInjectionTests(unittest.TestCase):
+    """Unit tests for _inject_git_identity (TRN-77 tasks 4.1 and 4.2)."""
+
+    def _run_inject(
+        self,
+        author_name: str,
+        author_email: str,
+    ) -> list[tuple[str, list[str]]]:
+        """Run _inject_git_identity with the given GA_ vars, return exec_checked calls."""
+        exec_calls: list[tuple[str, list[str]]] = []
+
+        podman = Mock()
+
+        def track_exec_checked(container: str, cmd: list[str]) -> str:
+            exec_calls.append((container, cmd))
+            return "git identity injected"
+
+        podman.container_exec_checked = Mock(side_effect=track_exec_checked)
+
+        with (
+            patch.object(server, "GA_GIT_AUTHOR_NAME", author_name),
+            patch.object(server, "GA_GIT_AUTHOR_EMAIL", author_email),
+        ):
+            server._inject_git_identity(podman, "gs-test")
+
+        return exec_calls
+
+    # ── 4.1: both vars set → all four git env vars injected ─────────────────
+
+    def test_both_vars_set_injects_all_four_git_vars(self) -> None:
+        """4.1 — when GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are set,
+        container_exec_checked is called and the script writes all four
+        GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL vars."""
+        exec_calls = self._run_inject("Ada Lovelace", "ada@example.com")
+
+        # exec_checked must be called exactly once
+        self.assertEqual(len(exec_calls), 1)
+        container, cmd = exec_calls[0]
+        self.assertEqual(container, "gs-test")
+
+        # Command must be a python3 -c invocation
+        self.assertEqual(cmd[0], "python3")
+        self.assertEqual(cmd[1], "-c")
+        script = cmd[2]
+
+        # The script must reference all four git identity vars
+        self.assertIn("GIT_AUTHOR_NAME", script)
+        self.assertIn("GIT_AUTHOR_EMAIL", script)
+        self.assertIn("GIT_COMMITTER_NAME", script)
+        self.assertIn("GIT_COMMITTER_EMAIL", script)
+
+        # The configured values must appear in the script
+        self.assertIn("Ada Lovelace", script)
+        self.assertIn("ada@example.com", script)
+
+    def test_both_vars_set_injects_into_etc_environment(self) -> None:
+        """4.1 — script writes to /etc/environment (persists for all processes)."""
+        exec_calls = self._run_inject("Test User", "test@example.com")
+
+        self.assertEqual(len(exec_calls), 1)
+        script = exec_calls[0][1][2]
+        self.assertIn("/etc/environment", script)
+
+    # ── 4.2: GA_GIT_AUTHOR_NAME unset → no injection ─────────────────────────
+
+    def test_author_name_unset_no_injection(self) -> None:
+        """4.2 — when GA_GIT_AUTHOR_NAME is unset, exec_checked is not called."""
+        exec_calls = self._run_inject("", "test@example.com")
+        self.assertEqual(exec_calls, [], "No injection should occur when author name is unset")
+
+    def test_author_email_unset_no_injection(self) -> None:
+        """4.2 — when GA_GIT_AUTHOR_EMAIL is unset, exec_checked is not called."""
+        exec_calls = self._run_inject("Test User", "")
+        self.assertEqual(exec_calls, [], "No injection should occur when author email is unset")
+
+    def test_both_vars_unset_no_injection(self) -> None:
+        """4.2 — when both vars are unset, exec_checked is not called."""
+        exec_calls = self._run_inject("", "")
+        self.assertEqual(exec_calls, [], "No injection should occur when both vars are unset")
+
+    # ── Integration: _finish_crew_setup calls _inject_git_identity ───────────
+
+    def test_finish_crew_setup_calls_inject_git_identity(self) -> None:
+        """_inject_git_identity is called during _finish_crew_setup."""
+        inject_called: list[bool] = []
+
+        podman = Mock()
+        podman.container_stop = Mock()
+        podman.container_start = Mock()
+        podman.container_exec = Mock(return_value="ready")
+        podman.container_exec_checked = Mock(return_value="ok")
+        podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
+
+        def fake_inject_git_identity(p: Any, container: str) -> None:
+            inject_called.append(True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(server, "DATA_DIR", Path(tmp)),
+                patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
+                patch.object(server, "_wait_gateway", return_value=True),
+                patch.object(server, "_inject_auth", return_value=True),
+                patch.object(server, "_patch_crew_config"),
+                patch.object(server, "_copy_agents", return_value=[]),
+                patch.object(server, "_copy_skills", return_value=[]),
+                patch.object(server, "_copy_steering", return_value=[]),
+                patch.object(server, "_seed_openspec_store"),
+                patch.object(server, "_inject_git_identity", side_effect=fake_inject_git_identity),
+                patch.object(server, "_inject_policy", return_value="1"),
+                patch.object(server, "_patch_models"),
+                patch.object(server, "_mint_cookie", return_value="test-cookie"),
+            ):
+                result = server._finish_crew_setup(
+                    podman, "test", "gs-test", "vol", "home", "auth"
+                )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(inject_called, [True], "_inject_git_identity must be called once")
+
+
 if __name__ == "__main__":
     unittest.main()

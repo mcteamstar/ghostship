@@ -272,6 +272,48 @@ To read full mail content, dispatch **raven** with a task asking it to check
 a specific mailbox and report back. Raven is the watcher/messenger persona;
 don't use ghost for mail-reading tasks.
 
+## Git author identity
+
+By default, each agent commits under its own persona identity (e.g.
+`Ghost <ghost@localhost>`). When you evac and cherry-pick those commits into
+your local repo, the persona labels appear in your history.
+
+**Option 1 — configure upfront (recommended).** Add to your `ghostship.conf`:
+
+```bash
+GA_GIT_AUTHOR_NAME="Your Name"
+GA_GIT_AUTHOR_EMAIL="you@example.com"
+```
+
+Then reinstall (`./install.sh --config ghostship.conf`). All agents in every
+new crew will commit under your identity. Existing crews are not affected —
+nuke and relaunch to pick up the change.
+
+**Option 2 — rewrite after cherry-pick.** If you've already evac'd commits
+with persona labels, rewrite them in your local repo:
+
+```bash
+# Rewrite the last N commits (adjust as needed)
+git rebase --onto HEAD~N HEAD~N --exec \
+  'GIT_COMMITTER_NAME="Your Name" GIT_COMMITTER_EMAIL="you@example.com" \
+   git commit --amend --reset-author --no-edit'
+
+# Or for a range of commits:
+git filter-branch --env-filter '
+  GIT_AUTHOR_NAME="Your Name"
+  GIT_AUTHOR_EMAIL="you@example.com"
+  GIT_COMMITTER_NAME="Your Name"
+  GIT_COMMITTER_EMAIL="you@example.com"
+' -- <first-commit>^..HEAD
+```
+
+Or using `git-filter-repo` (preferred, faster):
+
+```bash
+git filter-repo --name-callback 'return b"Your Name"' \
+                --email-callback 'return b"you@example.com"'
+```
+
 ## Guardrails
 
 - **Never dispatch repo-touching work into an unseeded crew.** `launch` only

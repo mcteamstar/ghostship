@@ -51,6 +51,8 @@ process sees and what each default means:
 | `GA_ENABLE_SECURITY_HEADERS` | `1` | Emit baseline security response headers (HSTS, etc.). On unless set to `0`, `false`, or empty |
 | `GA_ENFORCE_HTTPS_REDIRECT` | `0` | 301-redirect plaintext HTTP requests to HTTPS. Staged rollout — default off until the monitored plaintext window and client notice are complete. Enable with `1` or `true` |
 | `GA_CSP_ENFORCE` | `0` | Send the Content-Security-Policy header as enforcing rather than report-only. Staged rollout — default off until report-only violations are triaged. Enable with `1` or `true` |
+| `GA_GIT_AUTHOR_NAME` | _(unset)_ | Operator name injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup time. When set together with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. When unset, per-persona git identity is used (e.g. `Ghost <ghost@localhost>`). Config-file-only — no CLI flag |
+| `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Operator email injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` into every crew container at setup time. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only — no CLI flag |
 
 > **Internal constant — not user-settable:**
 > `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each
@@ -111,7 +113,7 @@ nor the flag sets them, the built-in default applies.
 | `GA_HOST_URL` | `--public-url` |
 
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
-`GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`) are **config-file-only** — they
+`GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`) are **config-file-only** — they
 have no CLI flag and no ambient-environment-variable input.
 
 ### Error handling

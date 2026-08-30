@@ -144,6 +144,13 @@ GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 GA_PICKUP_MAX_POLL_SECS = cfg.ga_pickup_max_poll_secs
 KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
+# ── Git author identity passthrough (TRN-77) ─────────────────────────────────
+# When both vars are set, all four git identity env vars are injected into
+# each crew container at setup time so commits carry the operator's identity.
+# When unset, per-persona identity (e.g. Ghost <ghost@localhost>) is preserved.
+GA_GIT_AUTHOR_NAME = os.environ.get("GA_GIT_AUTHOR_NAME", "").strip()
+GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
+
 # ── Transport security (TRN-70) ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
 # security headers so protection does not depend solely on edge config. These
@@ -3387,6 +3394,42 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
+def _inject_git_identity(podman: PodmanClient, container: str) -> None:
+    """Inject operator-configured git identity env vars into the crew container.
+
+    When GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are both set, writes all
+    four git identity env vars (GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL,
+    GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL) to /etc/environment inside the
+    container so they persist for all agent processes.
+
+    When either var is unset, this function is a no-op and per-persona git
+    identity (e.g. "Ghost <ghost@localhost>") is preserved.
+    """
+    if not (GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL):
+        return
+    name_literal = json.dumps(GA_GIT_AUTHOR_NAME)
+    email_literal = json.dumps(GA_GIT_AUTHOR_EMAIL)
+    script = (
+        "import json, pathlib; "
+        "p = pathlib.Path('/etc/environment'); "
+        "lines = p.read_text().splitlines() if p.exists() else []; "
+        # Remove any existing GIT_* identity lines to avoid duplicates on re-setup
+        "lines = [l for l in lines if not l.startswith(('GIT_AUTHOR_NAME=', "
+        "    'GIT_AUTHOR_EMAIL=', 'GIT_COMMITTER_NAME=', 'GIT_COMMITTER_EMAIL='))]; "
+        f"lines.append('GIT_AUTHOR_NAME=' + {name_literal}); "
+        f"lines.append('GIT_AUTHOR_EMAIL=' + {email_literal}); "
+        f"lines.append('GIT_COMMITTER_NAME=' + {name_literal}); "
+        f"lines.append('GIT_COMMITTER_EMAIL=' + {email_literal}); "
+        "p.write_text('\\n'.join(lines) + '\\n'); "
+        "print('git identity injected')"
+    )
+    try:
+        podman.container_exec_checked(container, ["python3", "-c", script])
+        logger.info("Git identity injected for %s (%s)", container, GA_GIT_AUTHOR_EMAIL)
+    except Exception as e:
+        logger.warning("Git identity injection failed for %s: %s", container, e)
+
+
 def _inject_policy(
     podman: PodmanClient,
     container: str,
@@ -3522,6 +3565,9 @@ def _finish_crew_setup(
     _copy_steering(podman, container, composition_entry)
     # depends on: gateway (post-restart)
     _seed_openspec_store(podman, container)
+
+    # depends on: GA_GIT_AUTHOR_NAME / GA_GIT_AUTHOR_EMAIL (transport env)
+    _inject_git_identity(podman, container)
 
     # depends on: admiral_secret (already generated above), filesystem
     policy_version = None

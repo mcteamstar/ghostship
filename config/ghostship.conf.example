@@ -135,3 +135,11 @@
 
 # Send CSP as enforcing rather than report-only. Staged rollout; default off.
 # GA_CSP_ENFORCE=0
+
+# ── Git author identity ───────────────────────────────────────────────────────
+# When both vars are set, all crew commits carry the operator's identity as
+# both author and committer. Unset → per-persona identity is used (default).
+# Note: this applies to ALL agents — Ghost, Banshee, etc. will all commit as
+# the configured operator. Leave unset to keep per-persona differentiation.
+# GA_GIT_AUTHOR_NAME="Your Name"
+# GA_GIT_AUTHOR_EMAIL="you@example.com"
