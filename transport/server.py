@@ -5604,6 +5604,117 @@ login_routes = [
 ]
 
 
+# ── Academy validation (trn-76) ───────────────────────────────────────────────
+
+def _validate_academy() -> list[str]:
+    """Validate the loaded Academy assets and return a list of warning strings.
+
+    Runs once at transport startup (not per-launch). Never raises and never
+    halts startup: operators may intentionally have a partial academy during
+    development, so every problem is reported as a warning string for the
+    caller to log at WARNING level. Three checks:
+
+      1. Agent JSON schema — every ``*.json`` in the agents pool parses as JSON
+         and carries ``name``, ``description`` and ``tools`` fields.
+      2. Manifest cross-reference — every explicit name in a crew type's
+         ``agents``/``skills``/``steering`` arrays exists in the corresponding
+         Academy pool. A section set to ``"*"`` is skipped.
+      3. Order template front-matter — every ``*.md`` in the orders pool has
+         parseable YAML front-matter and at least one ``{{...}}`` placeholder.
+
+    Pool locations mirror the copy paths: ``_AGENTS_DIR`` (``/agents``),
+    ``/skills``, ``/steering``, and ``_resolve_orders_dir()`` for orders.
+    """
+    import yaml
+
+    warnings: list[str] = []
+
+    # ── 1. Agent JSON schema ──────────────────────────────────────────────────
+    agents_dir = _AGENTS_DIR
+    # The set of valid agent names for the manifest cross-reference below is
+    # built from the *.json filenames (manifests list names as "<agent>.json").
+    agent_pool: set[str] = set()
+    if agents_dir.is_dir():
+        for path in sorted(agents_dir.glob("*.json")):
+            agent_pool.add(path.name)
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                warnings.append(
+                    f"Academy agent {path.name}: not valid JSON ({e})"
+                )
+                continue
+            if not isinstance(data, dict):
+                warnings.append(
+                    f"Academy agent {path.name}: top-level JSON is not an object"
+                )
+                continue
+            for field in ("name", "description", "tools"):
+                if field not in data:
+                    warnings.append(
+                        f"Academy agent {path.name}: missing required field {field!r}"
+                    )
+
+    # ── 2. Manifest cross-reference ───────────────────────────────────────────
+    skills_pool: set[str] = set()
+    skills_dir = Path("/skills")
+    if skills_dir.is_dir():
+        skills_pool = {p.name for p in skills_dir.iterdir() if p.is_dir()}
+
+    steering_pool: set[str] = set()
+    steering_dir = Path("/steering")
+    if steering_dir.is_dir():
+        steering_pool = {p.name for p in steering_dir.glob("*.md")}
+
+    pools = {"agents": agent_pool, "skills": skills_pool, "steering": steering_pool}
+
+    for crew_type, entry in COMPOSITION_REGISTRY.items():
+        manifest = _load_crew_manifest(entry)
+        for section, pool in pools.items():
+            selection = manifest.get(section, "*")
+            if selection == "*" or not isinstance(selection, list):
+                continue
+            for name in selection:
+                if name not in pool:
+                    warnings.append(
+                        f"Crew type {crew_type!r}: manifest {section} references "
+                        f"unknown name {name!r} not present in the Academy "
+                        f"{section} pool"
+                    )
+
+    # ── 3. Order template front-matter ────────────────────────────────────────
+    orders_dir = _resolve_orders_dir()
+    if orders_dir.is_dir():
+        for path in sorted(p for p in orders_dir.glob("*.md") if not p.name.startswith(".")):
+            try:
+                content = path.read_text(encoding="utf-8")
+            except Exception as e:
+                warnings.append(f"Academy order {path.name}: could not read ({e})")
+                continue
+            front_matter = None
+            if content.startswith("---\n"):
+                end = content.find("\n---\n", 4)
+                if end != -1:
+                    front_matter = content[4:end]
+            if front_matter is None:
+                warnings.append(
+                    f"Academy order {path.name}: missing YAML front-matter delimited by '---'"
+                )
+            else:
+                try:
+                    yaml.safe_load(front_matter)
+                except Exception as e:
+                    warnings.append(
+                        f"Academy order {path.name}: front-matter is not parseable YAML ({e})"
+                    )
+            if not re.search(r"\{\{[^}]+\}\}", content):
+                warnings.append(
+                    f"Academy order {path.name}: no {{{{...}}}} placeholder found"
+                )
+
+    return warnings
+
+
 # ── Health endpoint ───────────────────────────────────────────────────────────
 
 async def _handle_health(request: Request) -> Response:
@@ -5621,6 +5732,8 @@ if __name__ == "__main__":
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
     _reconcile_registry()
+    for _warning in _validate_academy():
+        logger.warning("Academy validation: %s", _warning)
     threading.Thread(target=_idle_monitor, daemon=True, name="idle-monitor").start()
     threading.Thread(target=_schedule_monitor, daemon=True, name="schedule-monitor").start()
 
