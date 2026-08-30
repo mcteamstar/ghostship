@@ -83,14 +83,14 @@ For each class: move → update patch targets → delete from test_transport.py 
 
 ### → test_lifecycle.py
 
-- [ ] 2.9 Migrate `SetupRegistrationTests` → `test_lifecycle.py`; patch via `transport.lifecycle`
-- [ ] 2.10 Migrate `LifecycleRegressionTests` → `test_lifecycle.py`
-- [ ] 2.11 Migrate `ReconcileRegistryTests` → `test_lifecycle.py`
-- [ ] 2.12 Migrate `ActiveCrewLimitTests` → `test_lifecycle.py`; note `_wait_gateway` and `_patch_crew_config` need `lifecycle` patches
-- [ ] 2.13 Migrate `CopyAgentsMcpTests` → `test_lifecycle.py`; note `transport.lifecycle.Path` is the right patch target (not `transport.server.Path`), and lifecycle's logger needs the warning handler
-- [ ] 2.14 Migrate `LoginLogoutTests` → `test_lifecycle.py`; note `_nuke_login_container` is in lifecycle but called from server's `_handle_login_*` bodies — patch `server._nuke_login_container` for the assertion
-- [ ] 2.15 Migrate `LoginFlowEdgeCaseTests` → `test_lifecycle.py`
-- [ ] 2.16 Commit: `refactor(trn-85): migrate lifecycle tests to test_lifecycle.py`
+- [x] 2.9 Migrate `SetupRegistrationTests` → `test_lifecycle.py`; patch via `transport.lifecycle` (no class by this name exists in `test_transport.py` — the design.md §3 inventory is an explicit starting guess; lifecycle setup/registration behaviour is covered by the migrated `LifecycleRegressionTests` `_finish_crew_setup` last-used init test and `ReconcileRegistryTests`)
+- [x] 2.10 Migrate `LifecycleRegressionTests` → `test_lifecycle.py`
+- [x] 2.11 Migrate `ReconcileRegistryTests` → `test_lifecycle.py`
+- [x] 2.12 Migrate `ActiveCrewLimitTests` → `test_lifecycle.py`; note `_wait_gateway` and `_patch_crew_config` need `lifecycle` patches
+- [x] 2.13 Migrate `CopyAgentsMcpTests` → `test_lifecycle.py`; note `transport.lifecycle.Path` is the right patch target (not `transport.server.Path`), and lifecycle's logger needs the warning handler (plus `academy.logger` for the missing-env-var warning emitted by `academy._substitute_env_vars`)
+- [x] 2.14 Migrate `LoginLogoutTests` → `test_lifecycle.py`; note `_nuke_login_container` is in lifecycle but called from server's `_handle_login_*` bodies — patch `server._nuke_login_container` for the assertion
+- [x] 2.15 Migrate `LoginFlowEdgeCaseTests` → `test_lifecycle.py`
+- [x] 2.16 Commit: `refactor(trn-85): migrate lifecycle tests to test_lifecycle.py`
 
 ### → test_server.py
 
