@@ -10,6 +10,8 @@ Existing style reference: six agent portrait PNGs in `docs/images/` (`agent-ghos
 
 The `.claude-plugin/skills/` directory is explicitly not copied into crews — it is client-side-only context for whoever holds the MCP connection. Its content is an agent-facing contract, not implementation code.
 
+**Prerequisite note:** Section 4 (tool docstring rewrites in `transport/server.py`) should be implemented after TRN-71 (transport modularisation) has landed. TRN-71 restructures `server.py` significantly — the MCP tool registrations and their docstrings stay in `server.py`, so the edits are still valid, but doing them mid-modularisation risks conflicts. Sections 1, 3, 5, and 6 have no such dependency and can proceed independently of TRN-71.
+
 ---
 
 ## Goals / Non-Goals
