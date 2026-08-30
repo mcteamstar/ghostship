@@ -5487,6 +5487,154 @@ class ScheduleMonitorTests(unittest.TestCase):
         self.assertEqual(len(post_calls), 1)
 
 
+# ── TRN-82: _reseed_crew_schedules reconcile pass tests ─────────────────────
+
+class ReseedCronReconcileTests(unittest.TestCase):
+    """Tests for the gateway→registry reconcile pass in _reseed_crew_schedules (TRN-82)."""
+
+    def _make_reg(self, schedules):
+        return {"crews": {"demo": {
+            "container": "gs-demo", "cookie": "cookie",
+            "schedules": schedules,
+        }}}
+
+    def test_reconcile_paused_job_updates_registry(self) -> None:
+        """2.1 — gateway reports job enabled=false → registry updated, job not re-registered."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,  # stale: registry says enabled
+        }])
+        api_calls = []
+
+        def api(_crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": [{"id": "j1", "enabled": False, "every_secs": 300}]}
+            return {}
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(json.loads(json.dumps(r)))
+
+        with (
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # Registry should have been saved with enabled=False
+        self.assertTrue(saved, "Registry should have been saved after reconcile")
+        sched = saved[-1]["crews"]["demo"]["schedules"][0]
+        self.assertFalse(sched["enabled"], "Registry entry should be updated to enabled=False")
+
+        # No POST to re-register the paused job
+        post_calls = [p for m, p in api_calls if m == "POST"]
+        self.assertEqual(post_calls, [], "Paused job should not be re-registered")
+
+    def test_reconcile_absent_job_left_for_reseed(self) -> None:
+        """2.2 — gateway does not include job → entry kept in registry, reseeded as bootstrap."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,
+        }])
+        api_calls = []
+
+        def api(_crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": []}  # Job absent — bootstrap case
+            if method == "POST" and path == "/api/crons":
+                return {"id": "j1"}
+            return {}
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(json.loads(json.dumps(r)))
+
+        with (
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # Job should be reseeded (POST) — absent from gateway is the bootstrap case
+        post_calls = [p for m, p in api_calls if m == "POST" and p == "/api/crons"]
+        self.assertEqual(len(post_calls), 1, "Absent enabled job should be reseeded")
+
+    def test_reseed_missing_job_registered_in_gateway(self) -> None:
+        """2.3 — registry has enabled job absent from gateway → job registered (bootstrap)."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,
+        }])
+        api_calls = []
+
+        def api(_crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": []}  # Missing from gateway — bootstrap case
+            if method == "POST" and path == "/api/crons":
+                return {"id": "j1-new"}
+            return {}
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(json.loads(json.dumps(r)))
+
+        with (
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # POST should have been made to register the missing job
+        post_calls = [p for m, p in api_calls if m == "POST" and p == "/api/crons"]
+        self.assertEqual(len(post_calls), 1, "Missing enabled job should be re-registered")
+
+    def test_reconcile_gateway_error_skips_both_passes(self) -> None:
+        """2.4 — gateway /api/crons returns error → both passes skipped, registry unchanged."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,
+        }])
+
+        def api(_crew, method, path, **kwargs):
+            raise RuntimeError("gateway unavailable")
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(r)
+
+        with (
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # Registry should not have been touched
+        self.assertEqual(saved, [], "Registry should not be saved when gateway errors")
+
+
 # ── TRN-39: _advance_next_fire_at tests ─────────────────────────────────────
 
 class AdvanceNextFireAtTests(unittest.TestCase):

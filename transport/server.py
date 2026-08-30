@@ -1816,8 +1816,17 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
 def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
     """Re-register tracked jobs from the transport registry into the gateway.
 
-    For each job in the registry schedules list, check if it exists in the
-    gateway (GET /api/crons); if not, re-register it.
+    Runs in two passes:
+
+    1. **Reconcile pass** — reads the gateway's current cron state and updates
+       the registry to match.  The gateway is the source of truth; the registry
+       is a reseed bootstrap cache only.  Any job paused, resumed, or deleted
+       inside the container is reflected back into the registry here so that
+       subsequent idle-stop checks see the correct enabled state.
+
+    2. **Reseed pass** — for each enabled registry entry that has no matching
+       job in the gateway (the true bootstrap case: fresh container, empty
+       gateway), re-register it.
     """
     with _registry_lock:
         reg = _load_registry()
@@ -1835,6 +1844,51 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
         logger.warning("Could not list gateway crons for re-seed on crew %s: %s", crew_id, e)
         return
 
+    # ── Reconcile pass: gateway → registry ────────────────────────────────────
+    # Build a map of job_id → gateway_job for O(1) lookup.
+    gateway_map = {j.get("id"): j for j in gateway_jobs if j.get("id")}
+
+    registry_changed = False
+    with _registry_lock:
+        reg = _load_registry()
+        crew_scheds = _get_crew_schedules(reg, crew_id)
+        for sched in crew_scheds:
+            job_id = sched.get("job_id")
+            if job_id not in gateway_map:
+                # Job absent from gateway — either a fresh container (bootstrap
+                # case, will be reseeded below) or deleted inside the container.
+                # We cannot distinguish the two from a single snapshot, so leave
+                # the registry entry intact; the reseed pass will re-register it
+                # if enabled.  A future improvement could track explicit deletes.
+                continue
+            # Job exists in gateway — sync enabled state and schedule type.
+            gw = gateway_map[job_id]
+            new_enabled = bool(gw.get("enabled", True))
+            new_interval = gw.get("every_secs") or gw.get("interval_secs")
+            new_cron = gw.get("cron_expr")
+            changed = False
+            if sched.get("enabled", True) != new_enabled:
+                sched["enabled"] = new_enabled
+                changed = True
+            if new_interval is not None and sched.get("interval_secs") != new_interval:
+                sched["interval_secs"] = new_interval
+                changed = True
+            if new_cron is not None and sched.get("cron_expr") != new_cron:
+                sched["cron_expr"] = new_cron
+                changed = True
+            if changed:
+                registry_changed = True
+                logger.info(
+                    "Reconciled schedule %s on crew %s from gateway (enabled=%s)",
+                    sched.get("name"), crew_id, new_enabled,
+                )
+
+        if registry_changed:
+            _save_registry(reg)
+        # Reload schedules for the reseed pass (may have been mutated above).
+        schedules = _get_crew_schedules(reg, crew_id)
+
+    # ── Reseed pass: registry → gateway (bootstrap only) ──────────────────────
     for sched in schedules:
         if not sched.get("enabled", True):
             continue
