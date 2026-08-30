@@ -32,3 +32,36 @@ import transport.files as files_mod  # noqa: F401  (re-exported)
 import transport.captain as captain_mod  # noqa: F401  (re-exported)
 import transport.academy as academy  # noqa: F401  (re-exported)
 import transport.lifecycle as lifecycle  # noqa: F401  (re-exported)
+
+
+class FakePodmanClient:
+    """Podman client stand-in with a scripted ``system_info()`` memory sequence.
+
+    Shared by ``test_podman.py`` (memory-gate / cache tests) and
+    ``test_lifecycle.py`` (``ActiveCrewLimitTests`` and the memory-gate-disabled
+    path drive ``_ensure_crew_running`` through it).
+    """
+
+    def __init__(self, mem_free_bytes_sequence: list[int] | None = None) -> None:
+        """mem_free_bytes_sequence: list of memAvailable values to return on successive calls."""
+        self._mem_sequence = mem_free_bytes_sequence or [4 * 1024**3]
+        self._call_index = 0
+        self.system_info_calls = 0
+
+    def system_info(self) -> dict:
+        self.system_info_calls += 1
+        idx = min(self._call_index, len(self._mem_sequence) - 1)
+        self._call_index += 1
+        return {"host": {"memAvailable": self._mem_sequence[idx]}}
+
+    def container_start(self, name: str) -> None:
+        pass
+
+    def container_stop(self, name: str) -> None:
+        pass
+
+    def container_is_running(self, name: str) -> bool:
+        return False
+
+    def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
+        return "ready"

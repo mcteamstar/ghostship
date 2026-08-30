@@ -61,6 +61,12 @@ import transport.podman as _podman_mod
 import transport.files as _files_mod
 import transport.captain as _captain_mod
 
+# TRN-85: FakePodmanClient moved to tests/unit/helpers.py during the podman
+# migration; still used by not-yet-migrated classes in this file (e.g.
+# ActiveCrewLimitTests → test_lifecycle.py). This import disappears once those
+# classes migrate.
+from tests.unit.helpers import FakePodmanClient  # noqa: E402
+
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
 # transport/container_scripts/ instead of inline `python3 -c` strings. Import
@@ -4146,123 +4152,6 @@ class TestPolicyInjection(unittest.TestCase):
 
 
 
-# ── Memory-aware spawn tests ──────────────────────────────────────────────────
-
-
-class FakePodmanClient:
-    """Test helper with configurable system_info() return values."""
-
-    def __init__(self, mem_free_bytes_sequence: list[int] | None = None) -> None:
-        """mem_free_bytes_sequence: list of memAvailable values to return on successive calls."""
-        self._mem_sequence = mem_free_bytes_sequence or [4 * 1024**3]
-        self._call_index = 0
-        self.system_info_calls = 0
-
-    def system_info(self) -> dict:
-        self.system_info_calls += 1
-        idx = min(self._call_index, len(self._mem_sequence) - 1)
-        self._call_index += 1
-        return {"host": {"memAvailable": self._mem_sequence[idx]}}
-
-    def container_start(self, name: str) -> None:
-        pass
-
-    def container_stop(self, name: str) -> None:
-        pass
-
-    def container_is_running(self, name: str) -> bool:
-        return False
-
-    def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
-        return "ready"
-
-
-class TestMemoryGate(unittest.TestCase):
-    """Tests for the pre-launch memory gate."""
-
-    def test_memory_available_immediately(self) -> None:
-        """Gate passes with no sleep when memory is sufficient."""
-        # 4 GB free, requires 2 GB
-        fake = FakePodmanClient([4 * 1024**3])
-        result = server._wait_for_memory(fake, 2.0, 60)
-        self.assertGreaterEqual(result, 2.0)
-        self.assertEqual(fake.system_info_calls, 1)
-
-    def test_memory_frees_after_two_polls(self) -> None:
-        """Gate passes after memory appears on second poll."""
-        # First poll: 1 GB (insufficient), second poll: 3 GB (sufficient)
-        fake = FakePodmanClient([
-            1 * 1024**3,
-            1 * 1024**3,
-            3 * 1024**3,
-        ])
-        with patch("time.sleep"):
-            result = server._wait_for_memory(fake, 2.0, 60)
-        self.assertGreaterEqual(result, 2.0)
-        self.assertEqual(fake.system_info_calls, 3)
-
-    def test_timeout_expires(self) -> None:
-        """RuntimeError raised when memory stays below threshold."""
-        # Always reports 0.5 GB
-        fake = FakePodmanClient([int(0.5 * 1024**3)])
-        with patch("time.sleep"), patch("time.monotonic", side_effect=[
-            0.0,    # deadline = 0 + 5 = 5
-            0.0,    # first check
-            3.0,    # after first sleep
-            3.0,    # second check
-            6.0,    # exceeds deadline
-        ]):
-            result = server._wait_for_memory(fake, 2.0, 5)
-        # Returns the last observed free GB (0.5), which is below the required 2.0
-        self.assertAlmostEqual(result, 0.5, delta=0.1)
-
-    def test_gate_skipped_when_disabled(self) -> None:
-        """GA_MIN_FREE_MEM_GB=0 skips _wait_for_memory in _ensure_crew_running."""
-        crew = {"container": "gs-demo", "cookie": "cookie"}
-        fake_podman = FakePodmanClient([int(0.1 * 1024**3)])
-
-        # Make the container appear stopped (so it would trigger memory gate)
-        fake_podman.container_is_running = lambda name: False  # type: ignore[method-assign]
-
-        original = server.GA_MIN_FREE_MEM_GB
-        try:
-            server.GA_MIN_FREE_MEM_GB = 0.0
-            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
-            import contextlib
-            with contextlib.ExitStack() as _stack:
-                _stack.enter_context(patch.object(lifecycle, "_get_podman", return_value=fake_podman))
-                _stack.enter_context(patch.object(server, "_get_podman", return_value=fake_podman))
-                _stack.enter_context(patch.object(lifecycle, "_wait_for_memory"))
-                mock_wait = _stack.enter_context(patch.object(server, "_wait_for_memory"))
-                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"))
-                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="new-cookie"))
-                _stack.enter_context(patch.object(lifecycle, "_load_registry", return_value={
-                    "crews": {"demo": {"container": "gs-demo", "cookie": "cookie", "status": "stopped"}}
-                }))
-                _stack.enter_context(patch.object(server, "_load_registry", return_value={
-                    "crews": {"demo": {"container": "gs-demo", "cookie": "cookie", "status": "stopped"}}
-                }))
-                _stack.enter_context(patch.object(lifecycle, "_save_registry"))
-                _stack.enter_context(patch.object(server, "_save_registry"))
-                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
-                _stack.enter_context(patch.object(server, "_patch_crew_config"))
-                _stack.enter_context(patch.object(lifecycle, "_touch_crew"))
-                _stack.enter_context(patch.object(server, "_touch_crew"))
-                _stack.enter_context(patch.object(lifecycle, "_probe_gateway", return_value=True))
-                _stack.enter_context(patch.object(server, "_probe_gateway", return_value=True))
-                # _ensure_crew_running should succeed without calling _wait_for_memory
-                try:
-                    server._ensure_crew_running(crew, "demo", touch=False)
-                except Exception:
-                    pass  # may raise for other reasons; we only care about mock_wait
-            # The memory gate must never have been called
-            mock_wait.assert_not_called()
-        finally:
-            server.GA_MIN_FREE_MEM_GB = original
-            lifecycle.GA_MIN_FREE_MEM_GB = original
-
 
 def _decode_overrides(cmd: list[str]) -> dict:
     """Decode the base64 JSON overrides argv passed to patch_crew_config.py.
@@ -4460,76 +4349,6 @@ class TestPatchCrewConfig(unittest.TestCase):
         finally:
             server.KC_MODEL_DEFAULT = original
             lifecycle.KC_MODEL_DEFAULT = original
-
-
-class TestCrewsMemoryField(unittest.TestCase):
-    """Tests for host_memory_available_gb in crews() response."""
-
-    def test_crews_includes_memory_field(self) -> None:
-        """crews() response includes host_memory_available_gb."""
-        reg = {"crews": {}}
-        fake = FakePodmanClient([int(3.5 * 1024**3)])
-        # Clear cache to force fresh read (cache global lives in transport.podman)
-        _podman_mod._host_memory_cache = None
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_get_podman", return_value=fake),
-            patch.object(server, "_get_podman", return_value=fake),
-        ):
-            result = server.crews()
-        self.assertIn("host_memory_available_gb", result)
-        self.assertIsNotNone(result["host_memory_available_gb"])
-        self.assertAlmostEqual(result["host_memory_available_gb"], 3.5, places=0)
-
-    def test_crews_memory_null_on_failure(self) -> None:
-        """host_memory_available_gb is None when Podman info fails."""
-        reg = {"crews": {}}
-
-        class BrokenPodman:
-            def system_info(self) -> dict:
-                raise RuntimeError("connection refused")
-
-        _podman_mod._host_memory_cache = None
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_get_podman", return_value=BrokenPodman()),
-            patch.object(server, "_get_podman", return_value=BrokenPodman()),
-        ):
-            result = server.crews()
-        self.assertIn("host_memory_available_gb", result)
-        self.assertIsNone(result["host_memory_available_gb"])
-
-
-class TestMemoryCache(unittest.TestCase):
-    """Tests for _get_host_memory_gb_cached TTL behavior."""
-
-    def test_cache_ttl_avoids_repeated_calls(self) -> None:
-        """Second call within 5s does not invoke system_info() again."""
-        fake = FakePodmanClient([int(4 * 1024**3)])
-        _podman_mod._host_memory_cache = None
-
-        with patch("time.monotonic", return_value=100.0):
-            val1 = _podman_mod._get_host_memory_gb_cached(fake)
-        with patch("time.monotonic", return_value=103.0):
-            val2 = _podman_mod._get_host_memory_gb_cached(fake)
-
-        self.assertEqual(val1, val2)
-        self.assertEqual(fake.system_info_calls, 1)
-
-    def test_cache_expires_after_ttl(self) -> None:
-        """After 5s, a fresh system_info() call is made."""
-        fake = FakePodmanClient([int(4 * 1024**3), int(3 * 1024**3)])
-        _podman_mod._host_memory_cache = None
-
-        with patch("time.monotonic", return_value=100.0):
-            _podman_mod._get_host_memory_gb_cached(fake)
-        with patch("time.monotonic", return_value=106.0):
-            _podman_mod._get_host_memory_gb_cached(fake)
-
-        self.assertEqual(fake.system_info_calls, 2)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # trn-17: New test coverage classes
