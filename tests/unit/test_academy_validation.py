@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.unit.test_file_transfer import server
+import transport.lifecycle as lifecycle
 
 
 def _write(dir_path: Path, name: str, content: str) -> None:
@@ -42,11 +43,14 @@ class _AcademyValidationBase(unittest.TestCase):
         # By default no crew type is registered (no manifest cross-ref) so the
         # schema/order tests are undisturbed. Manifest tests override these.
         self._patchers = [
+            patch.object(lifecycle, "_AGENTS_DIR", self.agents_dir),
             patch.object(server, "_AGENTS_DIR", self.agents_dir),
+            patch.object(lifecycle, "_resolve_orders_dir", return_value=self.orders_dir),
             patch.object(server, "_resolve_orders_dir", return_value=self.orders_dir),
+            patch.object(lifecycle, "COMPOSITION_REGISTRY", {}),
             patch.object(server, "COMPOSITION_REGISTRY", {}),
             # Point the hardcoded pool literals at our empty temp dirs.
-            patch.object(server, "Path", self._path_shim()),
+            patch.object(lifecycle, "Path", self._path_shim()),
         ]
         for p in self._patchers:
             p.start()
@@ -109,11 +113,18 @@ class TestManifestCrossReference(_AcademyValidationBase):
     def _register_crew(self, manifest: dict) -> None:
         server.COMPOSITION_REGISTRY.clear()
         server.COMPOSITION_REGISTRY["spec-ops"] = {"name": "spec-ops", "dir": "spec-ops"}
+        lifecycle.COMPOSITION_REGISTRY.clear()
+        lifecycle.COMPOSITION_REGISTRY["spec-ops"] = {"name": "spec-ops", "dir": "spec-ops"}
         self._manifest_patch = patch.object(
+            lifecycle, "_load_crew_manifest", return_value=manifest
+        )
+        self._manifest_patch2 = patch.object(
             server, "_load_crew_manifest", return_value=manifest
         )
         self._manifest_patch.start()
+        self._manifest_patch2.start()
         self.addCleanup(self._manifest_patch.stop)
+        self.addCleanup(self._manifest_patch2.stop)
 
     def test_unknown_agent_name_warns(self) -> None:
         """Task 2.4: manifest referencing an unknown agent name → a warning."""
