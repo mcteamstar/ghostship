@@ -8,14 +8,14 @@
 - [x] 1.1 Create `transport/registry.py` with `_registry_lock`, `REGISTRY_PATH`, `_load_registry()`, `_save_registry()`, `_get_crew_schedules()`, `_upsert_crew_schedule()`, `_remove_crew_schedule()`, `_advance_next_fire_at()`, `_get_crew()`, `_touch_crew()`
 - [x] 1.2 Update `server.py` to import from `registry` — remove the moved definitions
 - [x] 1.3 Run `bash tests/run.sh --unit` — all pass
-- [ ] 1.4 Commit: `refactor: extract registry.py from server.py`
+- [x] 1.4 Commit: `refactor: extract registry.py from server.py`
 
 ## 2. Extract podman.py
 
-- [ ] 2.1 Create `transport/podman.py` with `PodmanClient` class, `ContainerRuntime` ABC, `_podman` singleton + `_get_podman()`, `_http`, `_async_http`, `_host_memory_cache`, `_host_memory_cache_lock`, `_get_host_memory_gb()`, `_get_host_memory_gb_cached()`, `_wait_for_memory()`
-- [ ] 2.2 Update `server.py` to import from `podman` — remove moved definitions
-- [ ] 2.3 Run `bash tests/run.sh --unit` — all pass
-- [ ] 2.4 Commit: `refactor: extract podman.py from server.py`
+- [x] 2.1 Create `transport/podman.py` with `PodmanClient` class, `ContainerRuntime` ABC, `_podman` singleton + `_get_podman()`, `_http`, `_async_http`, `_host_memory_cache`, `_host_memory_cache_lock`, `_get_host_memory_gb()`, `_get_host_memory_gb_cached()`, `_wait_for_memory()`
+- [x] 2.2 Update `server.py` to import from `podman` — remove moved definitions
+- [x] 2.3 Run `bash tests/run.sh --unit` — all pass
+- [x] 2.4 Commit: `refactor: extract podman.py from server.py`
 
 ## 3. Extract files.py
 

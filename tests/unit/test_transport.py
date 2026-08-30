@@ -55,6 +55,7 @@ from tests.unit.test_file_transfer import server
 
 import httpx
 import transport.registry as _registry_mod
+import transport.podman as _podman_mod
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -4067,8 +4068,8 @@ class TestCrewsMemoryField(unittest.TestCase):
         """crews() response includes host_memory_available_gb."""
         reg = {"crews": {}}
         fake = FakePodmanClient([int(3.5 * 1024**3)])
-        # Clear cache to force fresh read
-        server._host_memory_cache = None
+        # Clear cache to force fresh read (cache global lives in transport.podman)
+        _podman_mod._host_memory_cache = None
         with (
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_get_podman", return_value=fake),
@@ -4086,7 +4087,7 @@ class TestCrewsMemoryField(unittest.TestCase):
             def system_info(self) -> dict:
                 raise RuntimeError("connection refused")
 
-        server._host_memory_cache = None
+        _podman_mod._host_memory_cache = None
         with (
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_get_podman", return_value=BrokenPodman()),
@@ -4102,12 +4103,12 @@ class TestMemoryCache(unittest.TestCase):
     def test_cache_ttl_avoids_repeated_calls(self) -> None:
         """Second call within 5s does not invoke system_info() again."""
         fake = FakePodmanClient([int(4 * 1024**3)])
-        server._host_memory_cache = None
+        _podman_mod._host_memory_cache = None
 
         with patch("time.monotonic", return_value=100.0):
-            val1 = server._get_host_memory_gb_cached(fake)
+            val1 = _podman_mod._get_host_memory_gb_cached(fake)
         with patch("time.monotonic", return_value=103.0):
-            val2 = server._get_host_memory_gb_cached(fake)
+            val2 = _podman_mod._get_host_memory_gb_cached(fake)
 
         self.assertEqual(val1, val2)
         self.assertEqual(fake.system_info_calls, 1)
@@ -4115,12 +4116,12 @@ class TestMemoryCache(unittest.TestCase):
     def test_cache_expires_after_ttl(self) -> None:
         """After 5s, a fresh system_info() call is made."""
         fake = FakePodmanClient([int(4 * 1024**3), int(3 * 1024**3)])
-        server._host_memory_cache = None
+        _podman_mod._host_memory_cache = None
 
         with patch("time.monotonic", return_value=100.0):
-            server._get_host_memory_gb_cached(fake)
+            _podman_mod._get_host_memory_gb_cached(fake)
         with patch("time.monotonic", return_value=106.0):
-            server._get_host_memory_gb_cached(fake)
+            _podman_mod._get_host_memory_gb_cached(fake)
 
         self.assertEqual(fake.system_info_calls, 2)
 
