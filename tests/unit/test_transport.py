@@ -582,30 +582,24 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
         return f"{parts.scheme}://{parts.netloc}"
 
     def test_sign_file_url_uses_ga_public_url_when_set(self) -> None:
-        env = {"GA_HOST_URL": "https://academy.example.com"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        # TRN-75: GA_HOST_URL is read once at startup into cfg.ga_host_url;
+        # patch the resolved config field rather than os.environ.
+        with patch.object(server.cfg, "ga_host_url", "https://academy.example.com"):
             url = server._sign_file_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_sign_file_url_uses_localhost_default_when_unset(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        with patch.object(server.cfg, "ga_host_url", ""):
             url = server._sign_file_url("demo", "repo")
         self.assertIn("localhost", url, url)
 
     def test_sign_upload_url_uses_ga_public_url_when_set(self) -> None:
-        env = {"GA_HOST_URL": "https://academy.example.com"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        with patch.object(server.cfg, "ga_host_url", "https://academy.example.com"):
             url = server._sign_upload_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_evac_presigned_url_uses_ga_public_url_base(self) -> None:
-        env = {"GA_HOST_URL": "https://cdn.example.com"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        with patch.object(server.cfg, "ga_host_url", "https://cdn.example.com"):
             url = server._sign_file_url("crew1", "workspace/bundle.tar")
         self.assertEqual(self._url_base(url), "https://cdn.example.com")
         self.assertIn("/files/crew1/workspace/bundle.tar", url)

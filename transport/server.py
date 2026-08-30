@@ -82,16 +82,30 @@ try:
 except ModuleNotFoundError:
     from transport import security as _security  # local dev: transport/ is a package dir
 
-# ── Config ────────────────────────────────────────────────────────────────────
+try:
+    from config import Config  # container: both files flat in /app
+except ImportError:
+    # Local dev: transport/ is a package dir, and a bare `import config` can
+    # resolve to the repo-root config/ namespace package (which has no Config),
+    # raising ImportError rather than ModuleNotFoundError — fall back either way.
+    from transport.config import Config
 
-HOST = os.environ.get("HOST", "0.0.0.0")  # Binds all interfaces inside the container.
+# ── Config ────────────────────────────────────────────────────────────────────
+# All runtime configuration is read from the environment in exactly one place —
+# Config.from_env() (see transport/config.py). The module-level names below are
+# thin cfg.<field> reads kept for readability and backwards compatibility with
+# the many call sites throughout this module; none of them read os.environ
+# directly any more.
+cfg = Config.from_env()
+
+HOST = cfg.host  # Binds all interfaces inside the container.
 # The host-side protection is in install.sh: -p "127.0.0.1:PORT:PORT" ensures
 # the published port is only reachable from localhost on the host, regardless
 # of what the container binds internally. Set HOST=127.0.0.1 only for
 # non-containerised installs where you want loopback-only binding.
-PORT = int(os.environ.get("PORT", "64057"))
+PORT = cfg.port
 
-DATA_DIR = Path(os.environ.get("TRANSPORT_DATA_DIR", "/data"))
+DATA_DIR = Path(cfg.transport_data_dir)
 REGISTRY_PATH = DATA_DIR / "crews.json"
 
 # KiroCrew gateway port — fixed by upstream, not configurable from this transport.
@@ -100,37 +114,35 @@ CREW_CONTAINER_PREFIX = "gs-"
 CREW_VOLUME_PREFIX = "gs-vol-"
 CREW_HOME_VOLUME_PREFIX = "gs-home-"
 
-PODMAN_SOCK = os.environ.get(
-    "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
-)
+PODMAN_SOCK = cfg.podman_socket
 
-KC_IMAGE = os.environ.get("KC_IMAGE", "localhost/spec-ops:latest")
+KC_IMAGE = cfg.kc_image
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
-KC_BASE_IMAGE = os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:0.4.0")
+KC_BASE_IMAGE = cfg.kc_base_image
 GA_NETWORK = "ga-net"
-GA_MAX_CREWS = int(os.environ.get("GA_MAX_CREWS", "20"))
-GA_MAX_ACTIVE_CREWS = int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3"))
+GA_MAX_CREWS = cfg.ga_max_crews
+GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
-GA_IDLE_TIMEOUT_SECS = int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300"))
+GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 # KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json; crew
 # creation fails at the gateway with a 4xx if it is absent. Default "kiro" is
 # KiroCrew's built-in agent name; operators override for a differently-named agent.
-GA_CREW_AGENT = os.environ.get("GA_CREW_AGENT", "kiro")
-KC_MODEL_OVERRIDE = os.environ.get("KC_MODEL_OVERRIDE", "")
-KC_MODEL_DEFAULT = os.environ.get("KC_MODEL_DEFAULT", "")
-GA_FILE_TTL_SECS = int(os.environ.get("GA_FILE_TTL_SECS", "300"))  # 5 min default
-GA_MIN_FREE_MEM_GB = float(os.environ.get("GA_MIN_FREE_MEM_GB", "2.0"))
-GA_MEMORY_WAIT_SECS = int(os.environ.get("GA_MEMORY_WAIT_SECS", "60"))
-GA_SPAWN_MIN_MEMORY_GB = float(os.environ.get("GA_SPAWN_MIN_MEMORY_GB", "1.5"))
-GA_RESOURCE_PRESSURE_GB = float(os.environ.get("GA_RESOURCE_PRESSURE_GB", "2.0"))
-GA_RESOURCE_CRITICAL_GB = float(os.environ.get("GA_RESOURCE_CRITICAL_GB", "1.0"))
-GA_SUBAGENT_TIMEOUT_SECS = int(os.environ.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"))
-GA_SUBAGENT_MAX_TURNS = int(os.environ.get("GA_SUBAGENT_MAX_TURNS", "200"))
-GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
-KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
+GA_CREW_AGENT = cfg.ga_crew_agent
+KC_MODEL_OVERRIDE = cfg.kc_model_override
+KC_MODEL_DEFAULT = cfg.kc_model_default
+GA_FILE_TTL_SECS = cfg.ga_file_ttl_secs  # 5 min default
+GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
+GA_MEMORY_WAIT_SECS = cfg.ga_memory_wait_secs
+GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
+GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
+GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
+GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
+GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
+GA_PICKUP_MAX_POLL_SECS = cfg.ga_pickup_max_poll_secs
+KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
 # ── Transport security (TRN-70) ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
@@ -146,12 +158,12 @@ KC_GATEWAY_TOKEN_TTL = os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")
 #   default off until the monitored plaintext window + client notice is done).
 # GA_CSP_ENFORCE: send CSP as enforcing rather than report-only (staged;
 #   default off until report-only violations are triaged).
-GA_TLS_MIN_VERSION = os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip()
-GA_TLS_CERTFILE = os.environ.get("GA_TLS_CERTFILE", "").strip()
-GA_TLS_KEYFILE = os.environ.get("GA_TLS_KEYFILE", "").strip()
-GA_ENABLE_SECURITY_HEADERS = os.environ.get("GA_ENABLE_SECURITY_HEADERS", "1").strip() not in ("0", "false", "")
-GA_ENFORCE_HTTPS_REDIRECT = os.environ.get("GA_ENFORCE_HTTPS_REDIRECT", "0").strip() in ("1", "true")
-GA_CSP_ENFORCE = os.environ.get("GA_CSP_ENFORCE", "0").strip() in ("1", "true")
+GA_TLS_MIN_VERSION = cfg.ga_tls_min_version
+GA_TLS_CERTFILE = cfg.ga_tls_certfile
+GA_TLS_KEYFILE = cfg.ga_tls_keyfile
+GA_ENABLE_SECURITY_HEADERS = cfg.ga_enable_security_headers
+GA_ENFORCE_HTTPS_REDIRECT = cfg.ga_enforce_https_redirect
+GA_CSP_ENFORCE = cfg.ga_csp_enforce
 
 # ── Version ───────────────────────────────────────────────────────────────────
 
@@ -269,9 +281,9 @@ def _write_auth_file(value: str, _path: Path | None = None) -> None:
 # org's IAM Identity Center Pro tenant. Set these to match whatever identity
 # an org's own kiro-cli install already authenticates against (see
 # `kiro-cli whoami`).
-KIRO_LICENSE = os.environ.get("KIRO_LICENSE", "")
-KIRO_IDENTITY_PROVIDER = os.environ.get("KIRO_IDENTITY_PROVIDER", "")
-KIRO_REGION = os.environ.get("KIRO_REGION", "")
+KIRO_LICENSE = cfg.kiro_license
+KIRO_IDENTITY_PROVIDER = cfg.kiro_identity_provider
+KIRO_REGION = cfg.kiro_region
 
 KIRO_CLI_DB = "/home/kirocrew/.local/share/kiro-cli/data.sqlite3"
 KIRO_AGENTS_DIR = "/home/kirocrew/.kiro/agents"
@@ -5098,7 +5110,7 @@ def _resolve_public_url_base() -> str:
 
     Precedence: GA_HOST_URL > http://localhost:{PORT}.
     """
-    base = os.environ.get("GA_HOST_URL")
+    base = cfg.ga_host_url
     if base:
         return base.rstrip("/")
     return f"http://localhost:{PORT}"

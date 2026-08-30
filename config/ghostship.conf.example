@@ -9,6 +9,11 @@
 # Port the transport listens on (MCP + file transfer on the same port).
 # PORT=64057
 
+# Interface the transport binds inside the container. Default 0.0.0.0 binds all
+# interfaces; host-side install.sh publishes to 127.0.0.1 only. Set to 127.0.0.1
+# for loopback-only binding on non-containerised installs.
+# HOST=0.0.0.0
+
 # Public URL baked into presigned evac/supply links.
 # For local installs, leave unset (defaults to http://localhost:<PORT>).
 # For remote installs, set to the publicly reachable address.
@@ -82,3 +87,51 @@
 # GA_SPAWN_MIN_MEMORY_GB=1.5
 # GA_RESOURCE_PRESSURE_GB=2.0
 # GA_RESOURCE_CRITICAL_GB=1.0
+
+# ── Storage / runtime paths ───────────────────────────────────────────────────
+# Directory the transport uses for its persistent state (crews.json, secrets).
+# Inside the container this is the /data mount; rarely overridden.
+# TRANSPORT_DATA_DIR=/data
+
+# Path to the Podman API socket the transport talks to.
+# PODMAN_SOCKET=/run/user/1000/podman/podman.sock
+
+# ── Container images ──────────────────────────────────────────────────────────
+# Crew container image used for spec-ops crews.
+# KC_IMAGE=localhost/spec-ops:latest
+
+# Upstream base image used for ephemeral kiro-cli-only containers (e.g. login).
+# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.4.0
+
+# ── Crew agent ────────────────────────────────────────────────────────────────
+# KiroCrew agent name written to config.local.json inside each crew. Must be
+# non-empty (KiroCrew 0.4.0 requires it). Override for a differently-named agent.
+# GA_CREW_AGENT=kiro
+
+# ── File transfer ─────────────────────────────────────────────────────────────
+# TTL (seconds) for presigned evac/supply file URLs.
+# GA_FILE_TTL_SECS=300
+
+# Max seconds to poll for a pickup file to appear before giving up.
+# GA_PICKUP_MAX_POLL_SECS=30
+
+# ── Gateway ───────────────────────────────────────────────────────────────────
+# TTL for the KiroCrew gateway token minted for each crew.
+# KC_GATEWAY_TOKEN_TTL=24h
+
+# ── Transport TLS / security headers (TRN-70) ─────────────────────────────────
+# Minimum TLS version enforced when the app terminates TLS directly ("1.2"/"1.3").
+# GA_TLS_MIN_VERSION=1.2
+
+# Enable direct TLS termination by pointing these at a cert/key pair.
+# GA_TLS_CERTFILE=""
+# GA_TLS_KEYFILE=""
+
+# Emit baseline security headers (HSTS, etc.). Default on.
+# GA_ENABLE_SECURITY_HEADERS=1
+
+# 301-redirect plaintext HTTP to HTTPS. Staged rollout; default off.
+# GA_ENFORCE_HTTPS_REDIRECT=0
+
+# Send CSP as enforcing rather than report-only. Staged rollout; default off.
+# GA_CSP_ENFORCE=0
