@@ -26,11 +26,11 @@
 
 ## 4. Extract captain.py
 
-- [ ] 4.1 Create `transport/captain.py` with `_captain_order_locks`, `_captain_order_locks_lock`, captain constants (`_CAPTAIN_MAILBOX_PATH`, `_ADMIRAL_MAILBOX_PATH`, `_CAPTAIN_CHECKIN_JOB_NAME`, `_RAVEN_*`, `_CAPTAIN_CHECKIN_TASK`), `_resolve_orders_dir()`, `_load_order_template()`, `_substitute_placeholders()`, `_validate_captain_change_name()`, `_resolve_order_template()`, `_format_captain_mail()`, `_append_captain_mail()`, `_mail_count()`, `_read_all_mail_counts()`, `_read_all_mail_subjects()`, `_captain_jobs()`, `_captain_checkin_job()`, `_captain_order_lock()`, `_captain_standing_view()`
-- [ ] 4.2 Update `server.py` to import from `captain` — remove moved definitions
-- [ ] 4.3 Verify no circular imports between `captain` → `registry`/`podman` and back
-- [ ] 4.4 Run `bash tests/run.sh --unit` — all pass
-- [ ] 4.5 Commit: `refactor: extract captain.py from server.py`
+- [x] 4.1 Create `transport/captain.py` with `_captain_order_locks`, `_captain_order_locks_lock`, captain constants (`_CAPTAIN_MAILBOX_PATH`, `_ADMIRAL_MAILBOX_PATH`, `_CAPTAIN_CHECKIN_JOB_NAME`, `_RAVEN_*`, `_CAPTAIN_CHECKIN_TASK`), `_resolve_orders_dir()`, `_load_order_template()`, `_substitute_placeholders()`, `_validate_captain_change_name()`, `_resolve_order_template()`, `_format_captain_mail()`, `_append_captain_mail()`, `_mail_count()`, `_read_all_mail_counts()`, `_read_all_mail_subjects()`, `_captain_jobs()`, `_captain_checkin_job()`, `_captain_order_lock()`, `_captain_standing_view()`
+- [x] 4.2 Update `server.py` to import from `captain` — remove moved definitions
+- [x] 4.3 Verify no circular imports between `captain` → `registry`/`podman` and back
+- [x] 4.4 Run `bash tests/run.sh --unit` — all pass
+- [x] 4.5 Commit: `refactor: extract captain.py from server.py`
 
 ## 5. Extract lifecycle.py
 
