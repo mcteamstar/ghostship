@@ -55,7 +55,6 @@ import posixpath
 import select
 import socket
 import tarfile
-import textwrap
 import json
 import logging
 import os
@@ -297,6 +296,12 @@ KIRO_AGENTS_DIR = "/home/kirocrew/.kiro/agents"
 KIRO_SKILLS_DIR = "/home/kirocrew/.kiro/crew/skills"
 KIRO_STEERING_DIR = "/home/kirocrew/.kiro/steering"
 KIRO_WORKSPACE_ROOT = "/home/kirocrew/workplace/kirocrew-workspace"
+KIRO_CREW_DIR = "/home/kirocrew/.kiro/crew"
+
+# Container-side helper scripts baked into the crew image at /scripts/ by the
+# Containerfile (see transport/container_scripts/, TRN-74). server.py invokes
+# them via `python3 <SCRIPTS_DIR>/<name>.py` instead of inline `python3 -c`.
+SCRIPTS_DIR = "/scripts"
 
 _CREW_REGISTRY_PATH = Path("/crews/registry.json")
 
@@ -1581,18 +1586,10 @@ def _append_captain_mail(
 
     # Pipe through sendmail inside the container for Maildir delivery (I/O — outside lock)
     payload = base64.b64encode(message.encode("utf-8")).decode("ascii")
-    script = f"""\
-import base64, subprocess
-msg = base64.b64decode("{payload}")
-proc = subprocess.run(
-    ["/usr/local/bin/maildeliver", "captain@localhost"],
-    input=msg, capture_output=True
-)
-if proc.returncode != 0:
-    raise RuntimeError(f"maildeliver failed: {{proc.stderr.decode()}}")
-print("captain mail delivered via MTA")
-"""
-    podman.container_exec_checked(container, ["python3", "-c", script])
+    podman.container_exec_checked(
+        container,
+        ["python3", f"{SCRIPTS_DIR}/append_captain_mail.py", payload],
+    )
 
 
 
@@ -1642,21 +1639,10 @@ def _read_all_mail_counts(
     where the count is zero. Supports both Maildir (new/ + cur/) and
     legacy mbox format for backward compatibility.
     """
-    script = (
-        "import json, os, re; "
-        "counts = {}; "
-        + "".join(
-            f"_p='/var/mail/{name}'; "
-            f"_n=(len(os.listdir(_p+'/new'))+len(os.listdir(_p+'/cur')) "
-            f"if os.path.isdir(_p+'/new') "
-            f"else len(re.findall(r'(?m)^From [^\\n]*$',open(_p).read())) "
-            f"if os.path.isfile(_p) else 0); "
-            f"counts['{name}']=_n if _n else None; "
-            for name in _ALL_MAIL_MAILBOXES
-        )
-        + "print(json.dumps({k:v for k,v in counts.items() if v}))"
+    mailboxes_json = json.dumps(list(_ALL_MAIL_MAILBOXES))
+    raw = podman.container_exec_checked(
+        container, ["python3", f"{SCRIPTS_DIR}/read_mail_counts.py", mailboxes_json]
     )
-    raw = podman.container_exec_checked(container, ["python3", "-c", script])
     try:
         result = json.loads(raw.strip())
         if isinstance(result, dict):
@@ -1676,47 +1662,9 @@ def _read_all_mail_subjects(
     Empty mailboxes yield an empty list. Reading never modifies the files.
     Supports both Maildir and legacy mbox format.
     """
-    # Build the script as a base64-encoded payload to avoid any quoting issues
-    # with mailbox names or path separators inside the inline Python string.
-    _read_subjects_src = textwrap.dedent("""\
-        import json, os, re, sys
-
-        def read_mailbox(path):
-            \"\"\"Return concatenated raw text of all messages in path.
-            Supports Maildir (directory with new/ and cur/) and legacy mbox (file).
-            \"\"\"
-            if os.path.isdir(os.path.join(path, "new")):
-                parts = []
-                for subdir in ("new", "cur"):
-                    d = os.path.join(path, subdir)
-                    for fname in os.listdir(d):
-                        try:
-                            parts.append(open(os.path.join(d, fname)).read())
-                        except OSError:
-                            pass
-                return "".join(parts)
-            elif os.path.isfile(path):
-                try:
-                    return open(path).read()
-                except OSError:
-                    return ""
-            return ""
-
-        mailboxes = json.loads(sys.argv[1])
-        subjects = {}
-        for name in mailboxes:
-            raw = read_mailbox(f"/var/mail/{name}")
-            subjects[name] = re.findall(r"(?m)^Subject: (.+)$", raw)
-        print(json.dumps(subjects))
-    """)
-    encoded = base64.b64encode(_read_subjects_src.encode()).decode()
-    decode_and_run = (
-        f"import base64,sys; "
-        f"exec(base64.b64decode('{encoded}').decode())"
-    )
     mailboxes_json = json.dumps(list(_ALL_MAIL_MAILBOXES))
     raw = podman.container_exec_checked(
-        container, ["python3", "-c", decode_and_run, mailboxes_json]
+        container, ["python3", f"{SCRIPTS_DIR}/read_mail_subjects.py", mailboxes_json]
     )
     try:
         result = json.loads(raw.strip())
@@ -2394,15 +2342,10 @@ def _inject_auth(podman: PodmanClient, container: str, auth_b64: str) -> bool:
     finds them already applied — direct INSERT, no migration wait needed.
     Returns True if successful.
     """
-    inject = (
-        "import sqlite3, json, base64; "
-        f"rows = json.loads(base64.b64decode('{auth_b64}').decode()); "
-        f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
-        "conn.executemany('INSERT OR REPLACE INTO auth_kv (key, value) VALUES (?, ?)', rows); "
-        "conn.commit(); conn.close(); "
-        "print(f'injected {len(rows)} auth rows')"
+    podman.container_exec_checked(
+        container,
+        ["python3", f"{SCRIPTS_DIR}/inject_auth.py", KIRO_CLI_DB, auth_b64],
     )
-    podman.container_exec_checked(container, ["python3", "-c", inject])
     logger.info("Auth injected for %s", container)
     return True
 
@@ -2640,12 +2583,9 @@ def _copy_steering(podman: PodmanClient, container: str, composition_entry: dict
             continue
         try:
             b64 = base64.b64encode(doc.read_bytes()).decode()
-            dest_file = f"{KIRO_STEERING_DIR}/{doc.name}"
             podman.container_exec(container, [
-                "python3", "-c",
-                f"import base64, pathlib; "
-                f"pathlib.Path(\'{KIRO_STEERING_DIR}\').mkdir(parents=True, exist_ok=True); "
-                f"open(\'{dest_file}\','wb').write(base64.b64decode(\'{b64}\'))"
+                "python3", f"{SCRIPTS_DIR}/copy_steering.py",
+                KIRO_STEERING_DIR, doc.name, b64,
             ])
             copied.append(doc.name)
         except Exception as e:
@@ -2685,21 +2625,11 @@ def _patch_models(podman: PodmanClient, container: str) -> None:
     model = KC_MODEL_OVERRIDE
     if not model:
         return
-    model_literal = json.dumps(model)
-    script = (
-        "import json, pathlib; "
-        f"d = pathlib.Path('{KIRO_AGENTS_DIR}'); "
-        f"model = {model_literal}; "
-        "patched = []; "
-        "[patched.append(p.name) or p.write_text(json.dumps("
-        "{**json.loads(p.read_text()), 'model': model}, indent=2)) "
-        "for p in d.glob('*.json') if p.exists() and not p.name.startswith('._') "
-        "and json.loads(p.read_text()).get('model') "
-        "not in (model, 'auto', None)]; "
-        "print('patched:', patched)"
-    )
     try:
-        result = podman.container_exec(container, ["python3", "-c", script])
+        result = podman.container_exec(
+            container,
+            ["python3", f"{SCRIPTS_DIR}/patch_models.py", KIRO_AGENTS_DIR, model],
+        )
         logger.info("Model override patch %s: %s", container, result.strip())
     except Exception as e:
         logger.warning("Model override patch failed for %s: %s", container, e)
@@ -2735,15 +2665,10 @@ def _mint_cookie(podman: PodmanClient, container: str, crew_url: str) -> str | N
 
 def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
     """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON."""
-    extract = (
-        "import sqlite3, json, base64; "
-        f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
-        "rows = conn.execute('SELECT key, value FROM auth_kv').fetchall(); "
-        "conn.close(); "
-        "print(base64.b64encode(json.dumps(rows).encode()).decode())"
-    )
     try:
-        b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
+        b64 = podman.container_exec(
+            container, ["python3", f"{SCRIPTS_DIR}/read_auth.py", KIRO_CLI_DB]
+        ).strip()
         if b64:
             rows = json.loads(base64.b64decode(b64).decode())
             if rows and any(r[1] for r in rows if len(r) > 1):
@@ -3094,19 +3019,15 @@ async def _handle_logout_post(request: Request) -> Response:
         logger.warning("Could not delete ga-kiro-auth: %s", e)
 
     # Wipe auth rows from all running crews
-    wipe_script = (
-        "import sqlite3; "
-        f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
-        "conn.execute('DELETE FROM auth_kv'); "
-        "conn.commit(); conn.close(); "
-        "print('auth_kv cleared')"
-    )
     with _registry_lock:
         reg = _load_registry()
     for cid, info in reg["crews"].items():
         if info.get("status") == "running":
             try:
-                podman.container_exec(info["container"], ["python3", "-c", wipe_script])
+                podman.container_exec(
+                    info["container"],
+                    ["python3", f"{SCRIPTS_DIR}/wipe_auth.py", KIRO_CLI_DB],
+                )
                 logger.info("Cleared auth_kv from crew %s", cid)
             except Exception as e:
                 logger.warning("Could not clear auth from crew %s: %s", cid, e)
@@ -3350,57 +3271,50 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     start). The gateway deep-merges config.local.json over config.json on every
     load, so these overrides are permanent without needing to re-patch.
     """
-    # Build the optional default_model assignment line.
+    # Build the agent-config overrides as a plain dict, then hand them to
+    # patch_crew_config.py (which deep-merges them into config.local.json).
+    #
+    # KiroCrew 0.4.0 requires a non-empty `agent` field, sourced from
+    # GA_CREW_AGENT (default "kiro"). Bounds enforced by the gateway with a 4xx
+    # on out-of-range:
+    #   spawn_min_memory_gb: >= 0 (0 disables the spawn memory gate); no upper cap.
+    #   resource_pressure_gb: >= 0; must be >= resource_critical_gb.
+    #   resource_critical_gb: >= 0, and <= resource_pressure_gb.
+    #   subagent_timeout_secs: > 0. subagent_max_turns: >= 1 (UI cap 200).
+    #
+    # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
+    # permission guard for the agent running inside this crew container. This is
+    # intentional and safe: (a) the crew container is an isolated Podman sandbox
+    # — normal permission enforcement would block config writes because the
+    # transport and gateway run as different UIDs; (b) the flag is scoped to
+    # this crew's config.local.json patch only and does not affect the transport
+    # process itself.
+    agent_overrides: dict[str, Any] = {
+        "agent": GA_CREW_AGENT,
+        "spawn_min_memory_gb": GA_SPAWN_MIN_MEMORY_GB,
+        "resource_pressure_gb": GA_RESOURCE_PRESSURE_GB,
+        "resource_critical_gb": GA_RESOURCE_CRITICAL_GB,
+        "dangerously_skip_permissions": True,
+        "default_agent": "ghost",
+        "reasoning_effort": "max",
+        "subagent_timeout_secs": GA_SUBAGENT_TIMEOUT_SECS,
+        "subagent_max_turns": GA_SUBAGENT_MAX_TURNS,
+    }
     # KC_MODEL_DEFAULT sets agent.default_model — a global fallback that applies
-    # when no per-agent model field overrides it.  Precedence (high→low):
+    # when no per-agent model field overrides it. Precedence (high→low):
     #   KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
     # Only write the field when the env var is set and non-empty; omitting it
     # leaves KiroCrew's built-in default intact for existing installs.
-    default_model_line = ""
     if KC_MODEL_DEFAULT:
-        default_model_literal = json.dumps(KC_MODEL_DEFAULT)
-        default_model_line = f"a['default_model'] = {default_model_literal}; "
-    script = (
-        "import json, pathlib; "
-        "p = pathlib.Path('/home/kirocrew/.kiro/crew/config.local.json'); "
-        "p.parent.mkdir(parents=True, exist_ok=True); "
-        "cfg = json.loads(p.read_text()) if p.exists() else {}; "
-        "a = cfg.setdefault('agent', {}); "
-        # KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json.
-        # Sourced from GA_CREW_AGENT (default "kiro"). Absent → gateway 4xx at
-        # config read. Written as a fully-resolved Python literal (no $VAR).
-        f"a['agent'] = {json.dumps(GA_CREW_AGENT)}; "
-        # Bounds (KiroCrew 0.4.0, enforced with a 4xx on out-of-range):
-        #   spawn_min_memory_gb: >= 0 (0 disables the spawn memory gate); no upper
-        #   cap enforced by the gateway. Default 4.0; transport default 1.5.
-        f"a['spawn_min_memory_gb'] = {GA_SPAWN_MIN_MEMORY_GB}; "
-        #   resource_pressure_gb: >= 0. Soft-pressure threshold; must be >=
-        #   resource_critical_gb to be meaningful. Transport default 2.0.
-        f"a['resource_pressure_gb'] = {GA_RESOURCE_PRESSURE_GB}; "
-        #   resource_critical_gb: >= 0, and <= resource_pressure_gb. Transport
-        #   default 1.0 (below the 2.0 pressure threshold — in range).
-        f"a['resource_critical_gb'] = {GA_RESOURCE_CRITICAL_GB}; "
-        # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
-        # permission guard for the agent running inside this crew container.
-        # This is intentional and safe: (a) the crew container is an isolated
-        # Podman sandbox — normal permission enforcement would block config
-        # writes because the transport and gateway run as different UIDs;
-        # (b) the flag is scoped to this crew's config.local.json patch only
-        # and does not affect the transport process itself.
-        "a['dangerously_skip_permissions'] = True; "
-        "a['default_agent'] = 'ghost'; "
-        "a['reasoning_effort'] = 'max'; "
-        #   subagent_timeout_secs: > 0 (positive seconds). Transport default 3600.
-        f"a['subagent_timeout_secs'] = {GA_SUBAGENT_TIMEOUT_SECS}; "
-        #   subagent_max_turns: >= 1; KiroCrew UI cap is 200. Transport default 200
-        #   (at the ceiling — in range).
-        f"a['subagent_max_turns'] = {GA_SUBAGENT_MAX_TURNS}; "
-        + default_model_line +
-        "p.write_text(json.dumps(cfg, indent=2)); "
-        "print('patched config.local.json')"
-    )
+        agent_overrides["default_model"] = KC_MODEL_DEFAULT
+
+    overrides_b64 = base64.b64encode(json.dumps(agent_overrides).encode()).decode()
+    config_path = f"{KIRO_CREW_DIR}/config.local.json"
     try:
-        result = podman.container_exec(container, ["python3", "-c", script])
+        result = podman.container_exec(
+            container,
+            ["python3", f"{SCRIPTS_DIR}/patch_crew_config.py", config_path, overrides_b64],
+        )
         logger.info("Config patch for %s: %s", container, result.strip())
     except Exception as e:
         logger.warning("Config patch failed for %s: %s", container, e)
@@ -3452,51 +3366,18 @@ def _inject_policy(
     # 2. Add identity block (without signature yet) and pass everything into
     # the container to sign.  Signing runs inside the container so the
     # canonicalization is always the same version as the verifier.
-    # admiral_secret is passed via base64 to avoid interpolating it as a
-    # Python literal in the exec script.
+    # The policy + admiral_secret are passed as a single base64-encoded JSON
+    # payload to avoid interpolating the secret as a Python literal.
     policy["identity"] = {"issuer": "ghostship"}
-    policy_b64 = base64.b64encode(
-        json.dumps(policy).encode("utf-8")
+    payload_b64 = base64.b64encode(
+        json.dumps({"policy": policy, "admiral_secret": admiral_secret}).encode("utf-8")
     ).decode()
-    secret_b64 = base64.b64encode(admiral_secret.encode()).decode()
 
-    # 3. Build exec script — inlines the KiroCrew canonicalization rather than
-    # importing kiro_crew (avoids import side-effects during setup and keeps
-    # the signing independent of the internal module path).
-    script = (
-        "import base64, json, hmac, hashlib, pathlib, os\n"
-        f"policy = json.loads(base64.b64decode('{policy_b64}').decode())\n"
-        f"secret = base64.b64decode('{secret_b64}').decode()\n"
-        # Build signing payload: whole document minus identity.signature.
-        # identity.issuer IS covered so an attacker cannot re-label a signed policy.
-        "body = {k: v for k, v in policy.items() if k != 'identity'}\n"
-        "identity = policy.get('identity', {})\n"
-        "rest = {k: v for k, v in identity.items() if k != 'signature'}\n"
-        "if rest:\n"
-        "    body['identity'] = rest\n"
-        "payload = json.dumps(body, sort_keys=True, separators=(',', ':')).encode('utf-8')\n"
-        "sig = hmac.new(secret.encode('utf-8'), payload, hashlib.sha256).hexdigest()\n"
-        "policy['identity']['signature'] = sig\n"
-        "policy_body = json.dumps(policy, indent=2)\n"
-        # admission_policy.json stores the verification flag and trust key.
-        # The trust_keys field is required by KiroCrew's governance API to verify
-        # the security policy signature — without it the gateway rejects the policy.
-        # Note: admission_policy.json is written with mode 0600 (see below), but
-        # agents running as kirocrew can still read it. See docs/auth.md for the
-        # threat model around admiral_secret exposure.
-        "admission_body = json.dumps({\n"
-        "    'require_policy_signature': True,\n"
-        f"    'trust_keys': {{'ghostship': base64.b64decode('{secret_b64}').decode()}},\n"
-        "}, indent=2)\n"
-        "crew_dir = pathlib.Path('/home/kirocrew/.kiro/crew')\n"
-        "crew_dir.mkdir(parents=True, exist_ok=True)\n"
-        "for fname, content in [('security_policy.json', policy_body), ('admission_policy.json', admission_body)]:\n"
-        "    p = crew_dir / fname\n"
-        "    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
-        "    os.write(fd, content.encode('utf-8')); os.close(fd)\n"
-        f"print('policy injected version={policy_version}')\n"
+    # Signing runs inside the container (see inject_policy.py).
+    result = podman.container_exec_checked(
+        container,
+        ["python3", f"{SCRIPTS_DIR}/inject_policy.py", KIRO_CREW_DIR, payload_b64],
     )
-    result = podman.container_exec_checked(container, ["python3", "-c", script])
     logger.info("Injected security policy for %s: %s", container, result.strip())
     return policy_version
 
@@ -3528,16 +3409,14 @@ def _finish_crew_setup(
     # depends on: container running (pre-restart); must be written before restart
     # so the secret is on the home volume before the post-restart gateway starts
     admiral_secret = secrets.token_hex(32)
-    secret_inject_script = (
-        "import os, pathlib; "
-        f"p = pathlib.Path('/home/kirocrew/.kiro/crew/.admiral_secret'); "
-        f"p.parent.mkdir(parents=True, exist_ok=True); "
-        f"fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600); "
-        f"os.write(fd, b'{admiral_secret}'); os.fsync(fd); os.close(fd); "
-        "print('admiral secret injected')"
-    )
     try:
-        podman.container_exec_checked(container, ["python3", "-c", secret_inject_script])
+        podman.container_exec_checked(
+            container,
+            [
+                "python3", f"{SCRIPTS_DIR}/inject_admiral_secret.py",
+                f"{KIRO_CREW_DIR}/.admiral_secret", admiral_secret,
+            ],
+        )
         logger.info("Injected admiral signing secret for %s", container)
     except Exception as e:
         logger.warning("Failed to inject admiral secret for %s: %s", container, e)
@@ -3578,9 +3457,7 @@ def _finish_crew_setup(
     # depends on: gateway (post-restart); poll until gateway writes built-in kirocrew*.json files before patching
     for _ in range(20):
         check = podman.container_exec(container, [
-            "python3", "-c",
-            f"import pathlib; "
-            f"print('ready' if any(pathlib.Path('{KIRO_AGENTS_DIR}').glob('kirocrew*.json')) else 'wait')"
+            "python3", f"{SCRIPTS_DIR}/check_gateway_ready.py", KIRO_AGENTS_DIR,
         ])
         if "ready" in check:
             break
@@ -5265,56 +5142,6 @@ def _verify_file_token(
 
 
 
-_RAW_TRANSFER_SCRIPT = """\
-import os
-import pathlib
-import shutil
-
-source = pathlib.Path(os.environ["GA_TRANSFER_SOURCE"])
-destination = pathlib.Path(os.environ["GA_TRANSFER_DEST"])
-stage = pathlib.Path(os.environ["GA_TRANSFER_STAGE"])
-try:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with source.open("rb") as source_file, destination.open("wb") as destination_file:
-        while True:
-            chunk = source_file.read(1024 * 1024)
-            if not chunk:
-                break
-            destination_file.write(chunk)
-            count += len(chunk)
-    print(f"wrote {count} bytes to {destination}")
-finally:
-    shutil.rmtree(stage, ignore_errors=True)
-"""
-
-_ARCHIVE_TRANSFER_SCRIPT = """\
-import os
-import pathlib
-import shutil
-import tarfile
-
-source = pathlib.Path(os.environ["GA_TRANSFER_SOURCE"])
-destination = pathlib.Path(os.environ["GA_TRANSFER_DEST"])
-stage = pathlib.Path(os.environ["GA_TRANSFER_STAGE"])
-try:
-    destination.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(source, mode="r|*") as archive:
-        archive.extractall(destination, filter="data")
-    print(f"unpacked to {destination}")
-finally:
-    shutil.rmtree(stage, ignore_errors=True)
-"""
-
-_CLEANUP_TRANSFER_SCRIPT = """\
-import os
-import pathlib
-import shutil
-
-shutil.rmtree(pathlib.Path(os.environ["GA_TRANSFER_STAGE"]), ignore_errors=True)
-"""
-
-
 def _build_outer_transfer_tar(
     body: bytes,
     workspace: str,
@@ -5345,7 +5172,7 @@ def _cleanup_transfer_stage(
     try:
         podman.container_exec_checked(
             container,
-            ["python3", "-c", _CLEANUP_TRANSFER_SCRIPT],
+            ["python3", f"{SCRIPTS_DIR}/transfer_cleanup.py"],
             env={"GA_TRANSFER_STAGE": stage_dir},
         )
     except Exception:
@@ -5382,10 +5209,12 @@ def _transfer_upload(
             _cleanup_transfer_stage(podman, container, stage_dir)
 
     try:
-        script = _ARCHIVE_TRANSFER_SCRIPT if unpack else _RAW_TRANSFER_SCRIPT
+        cmd = ["python3", f"{SCRIPTS_DIR}/transfer_raw.py"]
+        if unpack:
+            cmd.append("--unpack")
         return podman.container_exec_checked(
             container,
-            ["python3", "-c", script],
+            cmd,
             env={
                 "GA_TRANSFER_SOURCE": staged_file,
                 "GA_TRANSFER_DEST": destination,

@@ -9,6 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy server
 COPY server.py security.py config.py ./
 
+# Container-side helper scripts, baked into the image at /scripts/.
+# server.py invokes these via `podman exec ... python3 /scripts/<name>.py`
+# instead of building inline `python3 -c "..."` strings. See TRN-74.
+COPY container_scripts/ /scripts/
+
 # Version baked in at build time via --build-arg VERSION=<semver>
 ARG VERSION=0.0.0-dev
 ENV TRANSPORT_VERSION=${VERSION}
