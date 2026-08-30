@@ -130,9 +130,7 @@ class FileGetRegressionTests(unittest.TestCase):
     def _signed_request(self, path: str, ref: str) -> Request:
         crew = {"container": "gs-demo"}
         with (
-            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             result = server.evac(path, ref=ref, crew_id="demo")
@@ -160,9 +158,7 @@ class FileGetRegressionTests(unittest.TestCase):
         with (
             patch.object(files_mod, "KIRO_WORKSPACE_ROOT", str(workspace)),
             patch.object(lifecycle, "_require_crew", return_value=crew),
-            patch.object(server, "_require_crew", return_value=crew),
             patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_ensure_crew_running", return_value=crew),
             patch.object(files_mod, "_get_podman", return_value=podman),
         ):
             return asyncio.run(server._handle_file_get(request))
@@ -209,10 +205,8 @@ class FileGetRegressionTests(unittest.TestCase):
 class BundleUploadToolTests(unittest.TestCase):
     def test_supply_rejects_conflicting_modes_before_lookup_or_signing(self) -> None:
         with (
-            patch.object(lifecycle, "_require_crew") as require,
             patch.object(server, "_require_crew") as require,
-            patch.object(lifecycle, "_ensure_crew_running") as ensure,
-            patch.object(server, "_ensure_crew_running"),
+            patch.object(server, "_ensure_crew_running") as ensure,
             patch.object(server, "_sign_upload_url") as sign,
         ):
             result = server.supply(
@@ -233,9 +227,7 @@ class BundleUploadToolTests(unittest.TestCase):
             {"error": "Invalid path — no traversal allowed"},
         )
         with (
-            patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
-            patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(
                 server,
@@ -282,9 +274,7 @@ class BundleGetRegressionTests(unittest.TestCase):
     @staticmethod
     def _signed_bundle_request(ref: str | None = None) -> Request:
         with (
-            patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
-            patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
         ):
             result = server.evac("repo", ref=ref, crew_id="demo", bundle=True)
@@ -324,9 +314,7 @@ class BundleGetRegressionTests(unittest.TestCase):
         with (
             patch.object(files_mod, "KIRO_WORKSPACE_ROOT", str(workspace)),
             patch.object(lifecycle, "_require_crew", return_value=crew),
-            patch.object(server, "_require_crew", return_value=crew),
             patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_ensure_crew_running", return_value=crew),
             patch.object(files_mod, "_get_podman", return_value=podman),
         ):
             return asyncio.run(server._handle_file_get(request))
@@ -438,9 +426,7 @@ class BundleGetRegressionTests(unittest.TestCase):
             workspace = Path(temporary) / "workspace"
             workspace.mkdir()
             with (
-                patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
                 patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
-                patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
                 patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             ):
                 result = server.evac(
@@ -465,9 +451,7 @@ class BundleHardeningTests(unittest.TestCase):
     def test_bundle_url_round_trips_url_significant_ref(self) -> None:
         ref = "feature&client#linux"
         with (
-            patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
-            patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
         ):
             result = server.evac("repo", ref=ref, crew_id="demo", bundle=True)
