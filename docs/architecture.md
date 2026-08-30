@@ -1,5 +1,7 @@
 # Architecture
 
+![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](docs/images/fleet-crew-hierarchy.png)
+
 ## Components
 
 **ga-transport** — the MCP server (`transport/server.py`). Runs as a plain
@@ -67,6 +69,8 @@ change. Raven is the sixth, coordination-only persona for recurring
 standing-orders work. See [agents.md](agents.md) for what each persona owns,
 and [Steering](#steering) below for the crew-wide context every persona gets
 regardless of its own prompt.
+
+![SDD workflow: Spectre → Ghost → Banshee → Reaper, with Raven/Captain orchestration](docs/images/sdd-workflow.png)
 
 ## Crew lifecycle
 

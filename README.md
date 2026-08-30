@@ -15,6 +15,8 @@ claude plugin install ghostship@ghostship
 ```
 Use the skill `/ghostship-admin` for guided local setup, `/ghostship-capability` to customise the academy, and `/ghostship-command` to drive the fleet. See [Install](#install) below for full steps.
 
+![Ghostship architecture: harness → transport → crews → agents](docs/images/arch-system-placement.png)
+
 ## Why Ghostship?
 
 KiroCrew is designed for running teams of agents over long horizon tasks, but running KiroCrew on your desktop limits you to one instance, directly on your filesystem, with limited isolation between crewmates.
@@ -171,6 +173,8 @@ There are six basic agent personas. The five worker personas split up the [OpenS
 See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. The **Captain** tool uses Ravens to handle messaging and orders to the other agents. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
 
 ### MCP Tools
+
+![Usage flow: install → connect → launch → dispatch → pickup → nuke](docs/images/usage-flow.png)
 
 Registered as `ghostship`:
 

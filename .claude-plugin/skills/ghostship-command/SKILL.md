@@ -23,6 +23,14 @@ catalogue, or build a new crew composition? That's `ghostship-capability`.
 
 ## Mental model
 
+**Intended workflow order:** `launch → supply → dispatch → pickup/steer → evac → nuke`.
+That is the spine of everything below — a crew is launched, seeded with a
+repo, given tasks, watched (and redirected) while they run, its output pulled
+out, and finally torn down. For any non-trivial work (more than ~20 min),
+don't drive that relay by hand — hand it to **Captain autopilot** (a recurring
+Raven check-in that runs the whole SDD lifecycle and survives timeouts and
+restarts); see [Autopilot — Captain](#autopilot--captain-prefer-this-for-non-trivial-work).
+
 ```
 Fleet (you, the Admiral, over MCP)
  └─ Crew ("gs-<id>", one per launch(crew_id))     ← isolated container + 2 volumes
@@ -46,11 +54,12 @@ Fleet (you, the Admiral, over MCP)
   which agents/skills/steering it ships with. Not the same axis as *persona*
   (which agent a given task runs on).
 
-## Discover before assuming anything
+## Step 0 — Discover before assuming anything
 
-Compositions, personas, and standing-order templates are configurable per
-install and can differ from what's described below. Before planning work,
-read the live state instead of hardcoding it:
+Before you `launch`, `dispatch`, or plan any of the workflow steps above,
+read the live state. Compositions, personas, and standing-order templates are
+configurable per install and can differ from what's described below. Don't
+hardcode them:
 
 - `crews()` — every live crew, its status, and its currently running tasks.
 - resource `transport://compositions` — available `composition` values for `launch`.

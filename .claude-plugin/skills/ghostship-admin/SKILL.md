@@ -77,6 +77,30 @@ to set up — neither is `ghostship-command`'s:
 
 ## Install
 
+> ⚠️ **Authenticate before your first `launch`.** The `/login` kiro-cli
+> auth flow (step 3 below) must complete *before* you ever call `launch()`.
+> Calling `launch()` first fails with `not_authenticated`, and any crew
+> partially created in that state can't be salvaged — it has to be nuked.
+> Don't rely on `launch()`'s fallback auto-trigger to bootstrap auth for
+> you; it's a fallback, not the recommended path, and it's actively broken
+> for IAM Identity Center installs. Do the explicit `/login` flow first.
+
+Setup is a five-step sequence — do them in order:
+
+1. **Install Podman prerequisites** — see [Prerequisites](#prerequisites)
+   below (Podman >= 4.4 and `podman-compose`).
+2. **Run `./install.sh`** — builds images and starts the transport (this
+   section).
+3. **Complete the `/login` auth flow** — set up the kiro-cli identity
+   *before your first `launch()`* (see [Log in](#log-in--kiro-cli-identity-do-this-before-your-first-launch)).
+4. **Register the MCP client** — point your harness at the transport (see
+   [Connect an MCP client](#connect-an-mcp-client)), then switch to
+   `ghostship-command`.
+5. **Switch to `ghostship-command`** — once the tools are visible, all fleet
+   operations live there; this skill is only for host-level work after that.
+
+### Step 2: run `./install.sh`
+
 ```bash
 ./install.sh
 ```
@@ -93,7 +117,7 @@ cp config/ghostship.conf.example config/ghostship.conf
 ./install.sh --config config/ghostship.conf
 ```
 
-## Log in — kiro-cli identity (do this before your first `launch`)
+## Step 3: Log in — kiro-cli identity (do this before your first `launch`)
 
 The transport exposes three plain HTTP routes on the MCP port for
 academy-wide kiro-cli auth: `POST /login`, `GET /login`, `POST /logout`.
@@ -167,7 +191,7 @@ client's header; to disable, run `./install.sh --api-key ""` (empty
 value). See `docs/auth.md` for how the key is stored and the full security
 notes.
 
-## Connect an MCP client
+## Step 4: Connect an MCP client
 
 Once the transport is up, register it as an MCP server in whatever client
 will drive it. Without a key:
@@ -196,7 +220,10 @@ Claude Code — add to `~/.claude.json`'s `mcpServers`:
 
 Omit `headers` entirely if the endpoint has no key. Once this is done — the
 `/login` flow above is complete and the client sees the `ghostship` tools —
-switch to `ghostship-command`.
+**setup is finished: switch to `ghostship-command` for all fleet operations
+(launch, supply, dispatch, pickup, steer, captain, evac, nuke).** You should
+rarely return to `ghostship-admin` after this point, and only for host-level
+work (upgrade, re-auth, teardown).
 
 ## Plumb the skill files into your agent
 
