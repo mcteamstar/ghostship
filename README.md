@@ -125,6 +125,32 @@ Omit `headers` if API-key auth is disabled.
 
 For remote deployments, IAM Identity Center config, and TLS setup: [docs/remote.md](docs/remote.md) and [docs/auth.md](docs/auth.md).
 
+### Skills
+
+> **Strongly recommended:** install the `ghostship-command` skill into your agent. Without it, your agent has the MCP tools but no guidance on how to use them effectively — `ghostship-command` is the Admiral's fleet playbook.
+
+The ghostship skills follow the [Agent Skills](https://agentskills.io) standard and work in Claude Code, Kiro, and any harness that supports `SKILL.md`. The repo ships three skills:
+
+| Skill | What it does |
+|:------|:-------------|
+| `ghostship-command` | Drive the fleet — launch, seed, dispatch, steer, poll, autopilot, tear down. **Install this one.** |
+| `ghostship-admin` | Install, configure, and connect a ghostship transport. Useful during setup. |
+| `ghostship-capability` | Configure agent personas, skills, crew compositions, MCP catalogue. |
+
+**If you cloned the repo**, skills are already wired up under `.claude/skills/` (Claude Code) and `.kiro/skills/` (Kiro) and activate automatically when you work in this directory.
+
+**For global install** (so your agent knows how to use ghostship from any project), copy or link the skill to your agent's global skills directory:
+
+```bash
+# Claude Code
+ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.claude/skills/ghostship-command
+
+# Kiro
+ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.kiro/skills/ghostship-command
+```
+
+The plugin install path (Claude Code plugin, Kiro Power) handles this automatically.
+
 ## Ghost Academy
 
 Every ghostship has access to the same crew curriculum: agent personas, skills, and steering.
