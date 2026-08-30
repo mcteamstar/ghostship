@@ -34,19 +34,19 @@
 
 ## 5. Extract lifecycle.py
 
-- [ ] 5.1 Create `transport/lifecycle.py` with `_startup_events`, `_startup_events_lock`, `_recovery_locks`, `_recovery_locks_lock`, `CrewUnresponsiveError`, `_ensure_crew_running()`, `_reconcile_registry()`, `_finish_crew_setup()`, `_cleanup_crew()`, `_inject_auth()`, `_wait_gateway()`, `_copy_agents()`, `_copy_skills()`, `_copy_steering()`, `_seed_openspec_store()`, `_patch_models()`, `_load_crew_manifest()`, `_manifest_selects()`, `_substitute_env_vars()`, `_patch_crew_config()`, `_inject_policy()`, `_inject_git_identity()`, `_mint_cookie()`, `_read_auth_from_crew()`, `_reseed_crew_schedules()`, `_probe_gateway()`, `_refresh_cookie()`, `_crew_api_with_recovery()`, `_crew_api()`, `_crew_url()`, `_crew_cookie()`, `_get_recovery_lock()`, `_require_crew()`, `_validate_agent()`, `_validate_academy()`, `_cron_activity_since()`, `_cron_has_enabled_job()`, `_schedule_monitor()` body, `_idle_monitor()` body
-- [ ] 5.2 Update `server.py` to import from `lifecycle` — remove moved definitions; keep thread-start calls in `server.py`
-- [ ] 5.3 Verify no circular imports: `lifecycle` → `registry`, `podman`, `captain`; none back
-- [ ] 5.4 Run `bash tests/run.sh --unit` — all pass
-- [ ] 5.5 Commit: `refactor: extract lifecycle.py from server.py`
+- [x] 5.1 Create `transport/lifecycle.py` with `_startup_events`, `_startup_events_lock`, `_recovery_locks`, `_recovery_locks_lock`, `CrewUnresponsiveError`, `_ensure_crew_running()`, `_reconcile_registry()`, `_finish_crew_setup()`, `_cleanup_crew()`, `_inject_auth()`, `_wait_gateway()`, `_copy_agents()`, `_copy_skills()`, `_copy_steering()`, `_seed_openspec_store()`, `_patch_models()`, `_load_crew_manifest()`, `_manifest_selects()`, `_substitute_env_vars()`, `_patch_crew_config()`, `_inject_policy()`, `_inject_git_identity()`, `_mint_cookie()`, `_read_auth_from_crew()`, `_reseed_crew_schedules()`, `_probe_gateway()`, `_refresh_cookie()`, `_crew_api_with_recovery()`, `_crew_api()`, `_crew_url()`, `_crew_cookie()`, `_get_recovery_lock()`, `_require_crew()`, `_validate_agent()`, `_validate_academy()`, `_cron_activity_since()`, `_cron_has_enabled_job()`, `_schedule_monitor()` body, `_idle_monitor()` body
+- [x] 5.2 Update `server.py` to import from `lifecycle` — remove moved definitions; keep thread-start calls in `server.py`
+- [x] 5.3 Verify no circular imports: `lifecycle` → `registry`, `podman`, `captain`; none back
+- [x] 5.4 Run `bash tests/run.sh --unit` — all pass
+- [x] 5.5 Commit: `refactor: extract lifecycle.py from server.py`
 
 ## 6. server.py cleanup + Containerfile
 
-- [ ] 6.1 Verify `server.py` now contains only: ASGI app, route definitions, middleware wiring, MCP tool + resource registration, login state machine, HTTP proxy handlers, background thread starts
-- [ ] 6.2 Update `transport/Containerfile` — replace individual `COPY` lines (`COPY server.py .`, `COPY security.py .`, `COPY config.py .`) with `COPY transport/ /app/`; then add `RUN rm -rf /app/container_scripts/` to exclude the crew-side scripts from the transport image (those belong in the crew image via `crews/_base/admission/Containerfile`, not here)
-- [ ] 6.3 Update all test files that import from `transport.server` to import from the correct new modules where needed
-- [ ] 6.4 Run `bash tests/run.sh` (unit + integration) — all pass
-- [ ] 6.5 Commit: `refactor: slim server.py to thin orchestration layer, update Containerfile`
+- [x] 6.1 Verify `server.py` now contains only: ASGI app, route definitions, middleware wiring, MCP tool + resource registration, login state machine, HTTP proxy handlers, background thread starts
+- [x] 6.2 Update `transport/Containerfile` — switch to `COPY . /app/` then `RUN rm -rf /app/container_scripts/` (Containerfile lives inside transport/, so `.` is the transport package root)
+- [x] 6.3 Update all test files that import from `transport.server` to import from the correct new modules where needed
+- [x] 6.4 Run `bash tests/run.sh` (unit + integration) — all pass
+- [x] 6.5 Commit: `refactor: slim server.py to thin orchestration layer, update Containerfile`
 
 ## 7. Verification
 
