@@ -47,6 +47,7 @@ from tests.unit.test_file_transfer import server
 
 _ensure_httpx_exceptions()
 import httpx
+import transport.registry as _registry_mod
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -418,7 +419,9 @@ class TestCallSiteMigration(unittest.TestCase):
         with (
             patch.object(server, "_get_podman") as mock_podman_fn,
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(
                 server,

@@ -54,6 +54,7 @@ from unittest.mock import Mock, patch
 from tests.unit.test_file_transfer import server
 
 import httpx
+import transport.registry as _registry_mod
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -697,6 +698,8 @@ class LifecycleRegressionTests(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", data_dir),
                 patch.object(server, "REGISTRY_PATH", registry),
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry),
                 patch.object(server, "_wait_gateway", return_value=True),
                 patch.object(server, "_inject_auth"),
                 patch.object(server, "_patch_crew_config"),
@@ -4830,6 +4833,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", Path(tmp)),
                 patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
+                patch.object(_registry_mod, "DATA_DIR", Path(tmp)),
+                patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"),
                 patch.object(server, "_wait_gateway", side_effect=wait_gw),
                 patch.object(server, "_inject_auth", side_effect=inject_auth),
                 patch.object(server, "_patch_crew_config", side_effect=patch_config),
@@ -4907,6 +4912,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", Path(tmp)),
                 patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
+                patch.object(_registry_mod, "DATA_DIR", Path(tmp)),
+                patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"),
                 patch.object(server, "_wait_gateway", return_value=True),
                 patch.object(server, "_inject_auth"),
                 patch.object(server, "_patch_crew_config"),
@@ -4963,6 +4970,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", Path(tmp)),
                 patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
+                patch.object(_registry_mod, "DATA_DIR", Path(tmp)),
+                patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"),
                 patch.object(server, "_wait_gateway", return_value=True),
                 patch.object(server, "_inject_auth"),
                 patch.object(server, "_patch_crew_config"),
@@ -5920,6 +5929,8 @@ class TestTrn38SecurityHardening(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", Path(tmp)),
                 patch.object(server, "REGISTRY_PATH", registry_path),
+                patch.object(_registry_mod, "DATA_DIR", Path(tmp)),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
             ):
                 server._save_registry(reg)
 
@@ -7316,6 +7327,8 @@ class GitIdentityInjectionTests(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", Path(tmp)),
                 patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
+                patch.object(_registry_mod, "DATA_DIR", Path(tmp)),
+                patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"),
                 patch.object(server, "_wait_gateway", return_value=True),
                 patch.object(server, "_inject_auth", return_value=True),
                 patch.object(server, "_patch_crew_config"),

@@ -89,6 +89,35 @@ except ImportError:
     # raising ImportError rather than ModuleNotFoundError — fall back either way.
     from transport.config import Config
 
+try:
+    from registry import (  # container: flat /app/
+        REGISTRY_PATH,
+        _NEVER_FIRE_AT,
+        _registry_lock,
+        _load_registry,
+        _save_registry,
+        _get_crew_schedules,
+        _upsert_crew_schedule,
+        _remove_crew_schedule,
+        _advance_next_fire_at,
+        _get_crew,
+        _touch_crew,
+    )
+except ModuleNotFoundError:
+    from transport.registry import (  # local dev
+        REGISTRY_PATH,
+        _NEVER_FIRE_AT,
+        _registry_lock,
+        _load_registry,
+        _save_registry,
+        _get_crew_schedules,
+        _upsert_crew_schedule,
+        _remove_crew_schedule,
+        _advance_next_fire_at,
+        _get_crew,
+        _touch_crew,
+    )
+
 # ── Config ────────────────────────────────────────────────────────────────────
 # All runtime configuration is read from the environment in exactly one place —
 # Config.from_env() (see transport/config.py). The module-level names below are
@@ -105,7 +134,8 @@ HOST = cfg.host  # Binds all interfaces inside the container.
 PORT = cfg.port
 
 DATA_DIR = Path(cfg.transport_data_dir)
-REGISTRY_PATH = DATA_DIR / "crews.json"
+# REGISTRY_PATH is imported from transport.registry
+
 
 # KiroCrew gateway port — fixed by upstream, not configurable from this transport.
 CREW_GATEWAY_PORT = 5476
@@ -1276,92 +1306,10 @@ def _wait_for_memory(podman: PodmanClient, required_gb: float, timeout_secs: int
 
 # ── Crew registry ─────────────────────────────────────────────────────────────
 
-# Sentinel for "this job never fires again" (one-shot done, unknown type).
-# float("inf") is non-finite and raises ValueError in json.dumps; this value
-# (≈ year 2286 Unix timestamp) is finite, JSON-serialisable, and practically
-# unreachable as a real schedule time.
-_NEVER_FIRE_AT: float = 9_999_999_999.0
-
-_registry_lock = threading.Lock()
 # Per-crew startup locks: prevent concurrent restarts racing each other.
 # Maps crew_id → threading.Event that is set once the crew is running.
 _startup_events: dict[str, threading.Event] = {}
 _startup_events_lock = threading.Lock()
-
-
-def _load_registry() -> dict:
-    try:
-        if REGISTRY_PATH.exists():
-            return json.loads(REGISTRY_PATH.read_text())
-    except Exception as e:
-        logger.warning("Failed to load registry: %s", e)
-    return {"crews": {}}
-
-
-def _save_registry(reg: dict) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = REGISTRY_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(reg, indent=2))
-    os.replace(tmp, REGISTRY_PATH)
-    os.chmod(REGISTRY_PATH, 0o600)
-
-
-# ── Schedule registry helpers (TRN-29) ───────────────────────────────────────
-
-def _get_crew_schedules(reg: dict, crew_id: str) -> list:
-    """Return the schedules list for a crew, defaulting to []."""
-    crew_entry = reg.get("crews", {}).get(crew_id, {})
-    return crew_entry.get("schedules", [])
-
-
-def _upsert_crew_schedule(reg: dict, crew_id: str, job: dict) -> None:
-    """Insert or update a schedule entry by job_id."""
-    crew_entry = reg.get("crews", {}).get(crew_id)
-    if crew_entry is None:
-        return
-    schedules = crew_entry.setdefault("schedules", [])
-    job_id = job.get("job_id")
-    for i, existing in enumerate(schedules):
-        if existing.get("job_id") == job_id:
-            schedules[i] = job
-            return
-    schedules.append(job)
-
-
-def _remove_crew_schedule(reg: dict, crew_id: str, job_id: str) -> None:
-    """Remove a schedule entry by job_id."""
-    crew_entry = reg.get("crews", {}).get(crew_id)
-    if crew_entry is None:
-        return
-    schedules = crew_entry.get("schedules", [])
-    crew_entry["schedules"] = [s for s in schedules if s.get("job_id") != job_id]
-
-
-def _advance_next_fire_at(job: dict) -> None:
-    """Mutate next_fire_at based on interval_secs or next cron tick."""
-    if job.get("one_shot"):
-        # One-shot job (delay-based): mark as fired by setting far future.
-        job["next_fire_at"] = _NEVER_FIRE_AT
-        return
-    interval = job.get("interval_secs")
-    if interval:
-        job["next_fire_at"] = time.time() + interval
-    elif job.get("cron_expr"):
-        # Compute true next fire time using croniter.  Fall back to +60s for
-        # malformed expressions (same cadence as before, but now only for
-        # genuinely invalid cron strings).
-        from croniter import croniter as _croniter
-        try:
-            job["next_fire_at"] = _croniter(job["cron_expr"], time.time()).get_next(float)
-        except Exception as _cron_err:
-            logger.warning(
-                "croniter failed for cron_expr %r, falling back to +60s: %s",
-                job.get("cron_expr"), _cron_err,
-            )
-            job["next_fire_at"] = time.time() + 60
-    else:
-        # Unknown schedule type: mark as fired to avoid infinite re-fire.
-        job["next_fire_at"] = _NEVER_FIRE_AT
 
 
 # ── Captain standing orders ──────────────────────────────────────────────────
@@ -1969,17 +1917,6 @@ def _reconcile_registry() -> None:
     logger.info("Registry reconciled. Live crews: %s", list(reg["crews"].keys()))
 
 
-def _get_crew(crew_id: str) -> dict:
-    with _registry_lock:
-        reg = _load_registry()
-    crew = reg["crews"].get(crew_id)
-    if not crew:
-        raise KeyError(
-            f"Crew '{crew_id}' not found. "
-            f"Use launch to create it first."
-        )
-    return crew
-
 
 def _crew_url(crew: dict) -> str:
     return f"http://{crew["container"]}:{CREW_GATEWAY_PORT}"
@@ -2199,14 +2136,6 @@ def _validate_agent(agent: str) -> None:
             f"Invalid agent {agent!r}; expected one of: {accepted}"
         )
 
-
-def _touch_crew(crew_id: str) -> None:
-    """Update last_used timestamp for a crew."""
-    with _registry_lock:
-        reg = _load_registry()
-        if crew_id in reg["crews"]:
-            reg["crews"][crew_id]["last_used"] = time.time()
-            _save_registry(reg)
 
 
 def _ensure_crew_running(

@@ -1,13 +1,13 @@
 ## Prerequisites
 
-- [ ] 0.1 Confirm `release/0.2.1` is at latest — TRN-74, 75, 76, 77, 78, 82 all landed; rebase on latest before starting
-- [ ] 0.2 Add `transport/__init__.py` (empty file to make transport a package)
+- [x] 0.1 Confirm `release/0.2.1` is at latest — TRN-74, 75, 76, 77, 78, 82 all landed; rebase on latest before starting
+- [x] 0.2 Add `transport/__init__.py` (empty file to make transport a package)
 
 ## 1. Extract registry.py
 
-- [ ] 1.1 Create `transport/registry.py` with `_registry_lock`, `REGISTRY_PATH`, `_load_registry()`, `_save_registry()`, `_get_crew_schedules()`, `_upsert_crew_schedule()`, `_remove_crew_schedule()`, `_advance_next_fire_at()`, `_get_crew()`, `_touch_crew()`
-- [ ] 1.2 Update `server.py` to import from `registry` — remove the moved definitions
-- [ ] 1.3 Run `bash tests/run.sh --unit` — all pass
+- [x] 1.1 Create `transport/registry.py` with `_registry_lock`, `REGISTRY_PATH`, `_load_registry()`, `_save_registry()`, `_get_crew_schedules()`, `_upsert_crew_schedule()`, `_remove_crew_schedule()`, `_advance_next_fire_at()`, `_get_crew()`, `_touch_crew()`
+- [x] 1.2 Update `server.py` to import from `registry` — remove the moved definitions
+- [x] 1.3 Run `bash tests/run.sh --unit` — all pass
 - [ ] 1.4 Commit: `refactor: extract registry.py from server.py`
 
 ## 2. Extract podman.py
