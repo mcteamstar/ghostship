@@ -5625,7 +5625,16 @@ def _validate_academy() -> list[str]:
     Pool locations mirror the copy paths: ``_AGENTS_DIR`` (``/agents``),
     ``/skills``, ``/steering``, and ``_resolve_orders_dir()`` for orders.
     """
-    import yaml
+    try:
+        import yaml as _yaml
+        _yaml_safe_load = _yaml.safe_load
+    except ImportError:
+        # pyyaml not available (e.g. local dev without container deps) —
+        # fall back to a minimal check: front-matter is non-empty text.
+        def _yaml_safe_load(text: str) -> object:  # type: ignore[misc]
+            if not text.strip():
+                raise ValueError("empty front-matter")
+            return text
 
     warnings: list[str] = []
 
@@ -5702,7 +5711,7 @@ def _validate_academy() -> list[str]:
                 )
             else:
                 try:
-                    yaml.safe_load(front_matter)
+                    _yaml_safe_load(front_matter)
                 except Exception as e:
                     warnings.append(
                         f"Academy order {path.name}: front-matter is not parseable YAML ({e})"
