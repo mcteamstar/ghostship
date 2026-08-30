@@ -46,6 +46,24 @@ class AdvanceNextFireAtTests(unittest.TestCase):
         registry._advance_next_fire_at(job)
         self.assertEqual(job["next_fire_at"], registry._NEVER_FIRE_AT)
 
+    def test_malformed_cron_falls_back_to_60s(self) -> None:
+        """Malformed cron expression falls back to +60s (nit 5.3)."""
+        now = time.time()
+        job = {"job_id": "j4", "interval_secs": None, "cron_expr": "not-a-cron", "one_shot": False}
+        with self.assertLogs("transport", level="WARNING") as log_ctx:
+            registry._advance_next_fire_at(job)
+        self.assertAlmostEqual(job["next_fire_at"], now + 60, delta=2.0)
+        self.assertTrue(
+            any("croniter failed" in msg and "not-a-cron" in msg for msg in log_ctx.output),
+            "Expected warning mentioning 'croniter failed' and the expression",
+        )
+
+    def test_unknown_schedule_type_sets_never_fire_at(self) -> None:
+        """No interval_secs, no cron_expr, no one_shot → _NEVER_FIRE_AT (nit 5.3)."""
+        job = {"job_id": "j5", "interval_secs": None, "cron_expr": None, "one_shot": False}
+        registry._advance_next_fire_at(job)
+        self.assertEqual(job["next_fire_at"], registry._NEVER_FIRE_AT)
+
 
 if __name__ == "__main__":
     unittest.main()

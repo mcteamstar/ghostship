@@ -132,5 +132,43 @@ class MemoryCacheTests(unittest.TestCase):
         self.assertEqual(fake.system_info_calls, 2)
 
 
+class HostMemoryHelpersTests(unittest.TestCase):
+    """Direct unit tests for _get_host_memory_gb and _get_host_memory_gb_cached (nit 5.4)."""
+
+    def test_get_host_memory_gb_returns_available_in_gb(self) -> None:
+        """_get_host_memory_gb converts memAvailable bytes to GB."""
+        fake = FakePodmanClient([int(8 * 1024**3)])
+        result = podman._get_host_memory_gb(fake)
+        self.assertAlmostEqual(result, 8.0, places=1)
+        self.assertEqual(fake.system_info_calls, 1)
+
+    def test_get_host_memory_gb_fractional_value(self) -> None:
+        """_get_host_memory_gb handles fractional GB correctly."""
+        fake = FakePodmanClient([int(2.5 * 1024**3)])
+        result = podman._get_host_memory_gb(fake)
+        self.assertAlmostEqual(result, 2.5, places=1)
+
+    def test_get_host_memory_gb_cached_returns_fresh_value_on_empty_cache(self) -> None:
+        """_get_host_memory_gb_cached fetches fresh value when cache is empty."""
+        podman._host_memory_cache = None
+        fake = FakePodmanClient([int(4 * 1024**3)])
+        with patch("time.monotonic", return_value=200.0):
+            result = podman._get_host_memory_gb_cached(fake)
+        self.assertAlmostEqual(result, 4.0, places=1)
+        self.assertEqual(fake.system_info_calls, 1)
+
+    def test_get_host_memory_gb_cached_returns_none_on_failure(self) -> None:
+        """_get_host_memory_gb_cached returns None when system_info() raises."""
+
+        class FailingPodman:
+            def system_info(self) -> dict:
+                raise RuntimeError("no socket")
+
+        podman._host_memory_cache = None
+        with patch("time.monotonic", return_value=300.0):
+            result = podman._get_host_memory_gb_cached(FailingPodman())
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()
