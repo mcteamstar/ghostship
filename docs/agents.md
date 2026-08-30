@@ -20,8 +20,6 @@ installs the `openspec` CLI; the `openspec-*` skills under
 | **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code, may explore OpenSpec context via openspec-explore | `read grep glob shell web_search web_fetch` | `openspec-explore` |
 | **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, and carries messages between personas and the Admiral. Dispatches bounded next steps without implementing work. Captain-loop behaviour is injected via standing order template, not baked into the persona. | `read grep glob shell` | dispatch via the `kirocrew` CLI and the crew gateway's REST API |
 
-![Agent roles: the six personas and what each owns in the OpenSpec workflow](docs/images/docs-agent-roles.png)
-
 The five worker personas form the OpenSpec cycle: Spectre explores and
 proposes, Ghost implements, Banshee independently reviews and fixes, Reaper
 syncs specs and archives the change, and Wraith researches and documents what
