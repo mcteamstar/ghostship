@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy transport package (all modules)
-COPY transport/ /app/
+COPY . /app/
 # Exclude crew-side scripts (those belong in the crew image via admission layer)
 RUN rm -rf /app/container_scripts/
 
