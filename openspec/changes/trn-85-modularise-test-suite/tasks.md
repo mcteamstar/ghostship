@@ -55,20 +55,20 @@ For each class: move → update patch targets → delete from test_transport.py 
 
 ### → test_registry.py
 
-- [ ] 2.1 Migrate `AdvanceNextFireAtTests` → `test_registry.py`; patch via `transport.registry`
-- [ ] 2.2 Commit: `refactor(trn-85): migrate registry tests to test_registry.py`
+- [x] 2.1 Migrate `AdvanceNextFireAtTests` → `test_registry.py`; patch via `transport.registry`
+- [x] 2.2 Commit: `refactor(trn-85): migrate registry tests to test_registry.py`
 
 ### → test_podman.py
 
-- [ ] 2.3 Migrate `MemoryThresholdTests` → `test_podman.py`; patch via `transport.podman`
-- [ ] 2.4 Migrate any podman/http recovery tests → `test_podman.py`
-- [ ] 2.5 Commit: `refactor(trn-85): migrate podman tests to test_podman.py`
+- [x] 2.3 Migrate `MemoryThresholdTests` → `test_podman.py`; patch via `transport.podman` (actual classes: `TestMemoryGate`→`MemoryGateTests`, `TestMemoryCache`→`MemoryCacheTests`, `TestCrewsMemoryField`→`CrewsMemoryFieldTests`)
+- [x] 2.4 Migrate any podman/http recovery tests → `test_podman.py` (n/a — no standalone podman http/recovery classes; `_http`/`_async_http` paths live in server-bound `ProxyHandlerTests`/`PickupTimeoutTests` → test_server.py)
+- [x] 2.5 Commit: `refactor(trn-85): migrate podman tests to test_podman.py`
 
 ### → test_captain.py
 
-- [ ] 2.6 Migrate `CaptainStandingOrdersTests` → `test_captain.py`; patch via `transport.captain` and `transport.lifecycle` (captain calls lifecycle's `_crew_api_with_recovery`)
-- [ ] 2.7 Migrate `CaptainMailHelperTests` (or equivalent) → `test_captain.py`
-- [ ] 2.8 Commit: `refactor(trn-85): migrate captain tests to test_captain.py`
+- [x] 2.6 Migrate `CaptainStandingOrdersTests` → `test_captain.py`; patch via `transport.captain` and `transport.lifecycle` (captain calls lifecycle's `_crew_api_with_recovery`)
+- [x] 2.7 Migrate `CaptainMailHelperTests` (or equivalent) → `test_captain.py` (no separate class — the `_format_captain_mail`/`_append_captain_mail`/`_mail_count` helper tests are methods within `CaptainStandingOrdersTests`, migrated together)
+- [x] 2.8 Commit: `refactor(trn-85): migrate captain tests to test_captain.py`
 
 ### → test_academy.py (requires TRN-86 ✅ done)
 
