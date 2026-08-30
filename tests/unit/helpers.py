@@ -34,6 +34,27 @@ import transport.academy as academy  # noqa: F401  (re-exported)
 import transport.lifecycle as lifecycle  # noqa: F401  (re-exported)
 
 
+class Request:
+    """Minimal HTTP request stub used by file-transfer and server tests.
+
+    Shared between test_files.py and test_server.py — both need it.
+    """
+
+    def __init__(
+        self,
+        crew_id: str,
+        path: str,
+        body: bytes,
+        query_params: dict[str, str] | None = None,
+    ) -> None:
+        self.path_params = {"crew_id": crew_id, "path": path}
+        self.query_params = query_params or {}
+        self._body = body
+
+    async def body(self) -> bytes:
+        return self._body
+
+
 class FakePodmanClient:
     """Podman client stand-in with a scripted ``system_info()`` memory sequence.
 
