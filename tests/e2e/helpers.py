@@ -11,7 +11,7 @@ GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
 _SKIP_REASON = "GHOSTSHIP_E2E_URL not set"
 
 
-def mcp_call(tool: str, *, api_key: str = "", **kwargs) -> dict:
+def mcp_call(tool: str, *, api_key: str = GHOSTSHIP_API_KEY, **kwargs) -> dict:
     """POST a JSON-RPC tool call to /mcp, parse the SSE envelope, return result dict.
 
     The transport uses Streamable HTTP (MCP spec): a plain POST returns an SSE
