@@ -1,7 +1,7 @@
 ## Prerequisites
 
-- [ ] 0.1 TRN-71 fully landed — `transport/lifecycle.py` committed, all 421 unit tests passing
-- [ ] 0.2 TRN-86 fully landed — `transport/academy.py` extracted from `lifecycle.py`; test target for academy functions is `test_academy.py` not `test_lifecycle.py`
+- [x] 0.1 TRN-71 fully landed — `transport/lifecycle.py` committed, all 421 unit tests passing
+- [x] 0.2 TRN-86 fully landed — `transport/academy.py` extracted from `lifecycle.py`; test target for academy functions is `test_academy.py` not `test_lifecycle.py`
 
 ## 0. Captain standing order
 
@@ -38,9 +38,9 @@ The Admiral sets up Captain with a standing order that drives the three phases. 
   - `tests/unit/test_podman.py` — `import transport.podman as podman`
   - `tests/unit/test_files.py` — `import transport.files as files_mod`
   - `tests/unit/test_captain.py` — `import transport.captain as captain_mod`
-  - `tests/unit/test_academy.py` — `import transport.academy as academy` (TRN-86 module: `COMPOSITION_REGISTRY`, `_load_composition_registry`, `_resolve_composition`, `_load_crew_manifest`, `_manifest_selects`, `_validate_academy` etc.)
-  - `tests/unit/test_lifecycle.py` — `import transport.lifecycle as lifecycle` (lifecycle proper, excluding academy functions)
-  - `tests/unit/test_server.py` — `import transport.server as server; import transport.lifecycle as lifecycle`
+  - `tests/unit/test_academy.py` — `import transport.academy as academy` (TRN-86 module: `COMPOSITION_REGISTRY`, `_load_composition_registry`, `_resolve_composition`, `_resolve_manifest_path`, `_resolve_image`, `_load_crew_manifest`, `_manifest_selects`, `_substitute_env_vars`, `_validate_academy`, `_AGENTS_DIR`, `_CREW_REGISTRY_PATH` — absorbs `test_academy_validation.py` and `test_crew_types.py`)
+  - `tests/unit/test_lifecycle.py` — `import transport.lifecycle as lifecycle` (lifecycle proper: `_ensure_crew_running`, `_finish_crew_setup`, `_copy_agents`, `_copy_skills`, etc. — **not** academy functions)
+  - `tests/unit/test_server.py` — `import transport.server as server; import transport.lifecycle as lifecycle; import transport.academy as academy`
 
 ## 2. Migrate test classes
 
@@ -70,9 +70,15 @@ For each class: move → update patch targets → delete from test_transport.py 
 - [ ] 2.7 Migrate `CaptainMailHelperTests` (or equivalent) → `test_captain.py`
 - [ ] 2.8 Commit: `refactor(trn-85): migrate captain tests to test_captain.py`
 
-### → test_academy.py (requires TRN-86)
+### → test_academy.py (requires TRN-86 ✅ done)
 
-- [ ] 2.9a Migrate `TestCrewTypesTool` and any composition/manifest test classes → `test_academy.py`; patch via `transport.academy`
+- [ ] 2.9a Migrate the following to `test_academy.py`, all patching via `transport.academy`:
+  - `TestLaunchCrewType` from `test_transport.py` — composition resolution tests; patch `transport.academy.COMPOSITION_REGISTRY`, `_resolve_composition`, `_resolve_image` (the dual-patches on lifecycle/server for these are now wrong; collapse to single `transport.academy` patches)
+  - `TestCrewTypesTool` from `test_transport.py` — `compositions` MCP tool; patch `transport.academy.COMPOSITION_REGISTRY`
+  - Any `CrewTypeRegistryTests` — `_load_composition_registry`, `_resolve_manifest_path`
+  - All classes from `test_academy_validation.py` — already patching `transport.academy` correctly (no changes needed, just move/import)
+  - All classes from `test_crew_types.py` — `_load_crew_manifest`, `_manifest_selects`, `_substitute_env_vars`; update any remaining lifecycle/server patches to `transport.academy`
+  - **Note on `CopyAgentsMcpTests`:** stays in `test_lifecycle.py` — it tests `_copy_agents` (lifecycle), which calls academy functions as deps. The academy patches in `_run()` helper (`_load_crew_manifest`, `Path`, logger) are correct as written after TRN-86 test fixes.
 - [ ] 2.9b Commit: `refactor(trn-85): migrate academy tests to test_academy.py`
 
 ### → test_lifecycle.py

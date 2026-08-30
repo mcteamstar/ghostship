@@ -46,15 +46,25 @@ Split `tests/unit/test_transport.py` into one test file per transport module:
 - `tests/unit/test_podman.py`
 - `tests/unit/test_files.py`
 - `tests/unit/test_captain.py`
+- `tests/unit/test_academy.py` — composition registry, manifest helpers, academy validation (TRN-86 module)
 - `tests/unit/test_lifecycle.py`
 - `tests/unit/test_server.py` — MCP tool handlers, routes, login state machine
 
 Each file patches only its own module. Dual-patch pairs collapse to single patches on
 the canonical module. The `as alias` confusion disappears — there is only one mock.
 
-The existing `test_self_healing.py`, `test_academy_validation.py`, `test_crew_types.py`,
-and `test_file_transfer.py` stay as-is (they are already well-scoped and their patch
-targets are unambiguous).
+**TRN-86 context:** `transport/academy.py` was extracted from `lifecycle.py` as part of
+TRN-86. The existing `test_academy_validation.py` covers `_validate_academy` and is
+absorbed into `test_academy.py`. Composition/manifest tests currently in
+`test_crew_types.py` and `test_transport.py` (`TestLaunchCrewType`, `TestCrewTypesTool`,
+`CrewTypeRegistryTests`) move to `test_academy.py` since those functions now live in
+`transport.academy`. The patch targets for all academy functions are `transport.academy.*`,
+not `transport.lifecycle.*` or `transport.server.*`.
+
+The existing `test_self_healing.py`, `test_crew_types.py`, and `test_file_transfer.py`
+are absorbed or superseded rather than left as-is: `test_crew_types.py` moves to
+`test_academy.py`; the others can be absorbed into their canonical module test file or
+kept if they test integration behaviour spanning multiple modules.
 
 `test_transport.py` is deleted once all classes are migrated and the suite passes.
 
