@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.unit.test_file_transfer import server
+import transport.academy as academy
 import transport.lifecycle as lifecycle
 
 
@@ -43,13 +44,17 @@ class _AcademyValidationBase(unittest.TestCase):
         # By default no crew type is registered (no manifest cross-ref) so the
         # schema/order tests are undisturbed. Manifest tests override these.
         self._patchers = [
+            patch.object(academy, "_AGENTS_DIR", self.agents_dir),
             patch.object(lifecycle, "_AGENTS_DIR", self.agents_dir),
             patch.object(server, "_AGENTS_DIR", self.agents_dir),
+            patch.object(academy, "_resolve_orders_dir", return_value=self.orders_dir),
             patch.object(lifecycle, "_resolve_orders_dir", return_value=self.orders_dir),
             patch.object(server, "_resolve_orders_dir", return_value=self.orders_dir),
+            patch.object(academy, "COMPOSITION_REGISTRY", {}),
             patch.object(lifecycle, "COMPOSITION_REGISTRY", {}),
             patch.object(server, "COMPOSITION_REGISTRY", {}),
             # Point the hardcoded pool literals at our empty temp dirs.
+            patch.object(academy, "Path", self._path_shim()),
             patch.object(lifecycle, "Path", self._path_shim()),
         ]
         for p in self._patchers:
@@ -115,16 +120,23 @@ class TestManifestCrossReference(_AcademyValidationBase):
         server.COMPOSITION_REGISTRY["spec-ops"] = {"name": "spec-ops", "dir": "spec-ops"}
         lifecycle.COMPOSITION_REGISTRY.clear()
         lifecycle.COMPOSITION_REGISTRY["spec-ops"] = {"name": "spec-ops", "dir": "spec-ops"}
+        academy.COMPOSITION_REGISTRY.clear()
+        academy.COMPOSITION_REGISTRY["spec-ops"] = {"name": "spec-ops", "dir": "spec-ops"}
         self._manifest_patch = patch.object(
-            lifecycle, "_load_crew_manifest", return_value=manifest
+            academy, "_load_crew_manifest", return_value=manifest
         )
         self._manifest_patch2 = patch.object(
+            lifecycle, "_load_crew_manifest", return_value=manifest
+        )
+        self._manifest_patch3 = patch.object(
             server, "_load_crew_manifest", return_value=manifest
         )
         self._manifest_patch.start()
         self._manifest_patch2.start()
+        self._manifest_patch3.start()
         self.addCleanup(self._manifest_patch.stop)
         self.addCleanup(self._manifest_patch2.stop)
+        self.addCleanup(self._manifest_patch3.stop)
 
     def test_unknown_agent_name_warns(self) -> None:
         """Task 2.4: manifest referencing an unknown agent name → a warning."""

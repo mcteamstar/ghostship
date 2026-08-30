@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import patch, MagicMock
 
 from tests.unit.test_file_transfer import server
+import transport.academy as academy
 import transport.lifecycle as lifecycle
 
 
@@ -49,6 +50,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
 
         # Patch the registry path and ensure both dirs "exist"
         with (
+            patch.object(academy, "_CREW_REGISTRY_PATH", tmp_path),
             patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path),
             patch.object(server, "_CREW_REGISTRY_PATH", tmp_path),
             patch("pathlib.Path.is_dir", return_value=True),
@@ -65,7 +67,10 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
     def test_missing_file_returns_fallback(self) -> None:
         """Missing registry file returns single kirocrew fallback."""
         nonexistent = Path("/nonexistent/registry.json")
-        with patch.object(lifecycle, "_CREW_REGISTRY_PATH", nonexistent):
+        with (
+            patch.object(academy, "_CREW_REGISTRY_PATH", nonexistent),
+            patch.object(lifecycle, "_CREW_REGISTRY_PATH", nonexistent),
+        ):
             result = server._load_composition_registry()
 
         self.assertEqual(list(result.keys()), ["spec-ops"])
@@ -79,7 +84,10 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
             f.flush()
             tmp_path = Path(f.name)
 
-        with patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path):
+        with (
+            patch.object(academy, "_CREW_REGISTRY_PATH", tmp_path),
+            patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path),
+        ):
             result = server._load_composition_registry()
 
         self.assertEqual(list(result.keys()), ["spec-ops"])
@@ -115,6 +123,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
             return "gooddir" in str(self)
 
         with (
+            patch.object(academy, "_CREW_REGISTRY_PATH", tmp_path),
             patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path),
             patch.object(server, "_CREW_REGISTRY_PATH", tmp_path),
             patch("pathlib.Path.is_dir", _is_dir_side_effect),
@@ -135,7 +144,10 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
             f.flush()
             tmp_path = Path(f.name)
 
-        with patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path):
+        with (
+            patch.object(academy, "_CREW_REGISTRY_PATH", tmp_path),
+            patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path),
+        ):
             result = server._load_composition_registry()
 
         self.assertEqual(list(result.keys()), ["spec-ops"])
@@ -208,6 +220,7 @@ class TestLaunchComposition(unittest.TestCase):
 
         # Mock everything to isolate the composition resolution and image usage
         with (
+            patch.object(academy, "COMPOSITION_REGISTRY", custom_registry),
             patch.object(lifecycle, "COMPOSITION_REGISTRY", custom_registry),
             patch.object(server, "COMPOSITION_REGISTRY", custom_registry),
             patch.object(lifecycle, "_get_podman", return_value=mock_podman),
@@ -279,6 +292,7 @@ class TestCompositionsResource(unittest.TestCase):
             },
         }
         with (
+            patch.object(academy, "COMPOSITION_REGISTRY", mock_registry),
             patch.object(lifecycle, "COMPOSITION_REGISTRY", mock_registry),
             patch.object(server, "COMPOSITION_REGISTRY", mock_registry),
         ):

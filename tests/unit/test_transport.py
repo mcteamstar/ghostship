@@ -52,6 +52,7 @@ from urllib.parse import parse_qs, urlsplit
 from unittest.mock import Mock, patch
 
 from tests.unit.test_file_transfer import server
+import transport.academy as academy
 import transport.lifecycle as lifecycle
 
 import httpx
@@ -3251,8 +3252,9 @@ class TestCrewTypeRegistry(unittest.TestCase):
 
             # We test by patching the path and directory checks
             with patch.object(lifecycle, "_CREW_REGISTRY_PATH", reg_path):
-                with patch("pathlib.Path.is_dir", return_value=True):
-                    result = server._load_composition_registry()
+                with patch.object(academy, "_CREW_REGISTRY_PATH", reg_path):
+                    with patch("pathlib.Path.is_dir", return_value=True):
+                        result = server._load_composition_registry()
 
         self.assertIn("spec-ops", result)
         self.assertIn("custom", result)
@@ -3336,6 +3338,7 @@ class TestLaunchCrewType(unittest.TestCase):
         with (
             patch.object(lifecycle, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
             patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
+            patch("transport.academy.COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
             patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
@@ -3381,6 +3384,7 @@ class TestLaunchCrewType(unittest.TestCase):
         with (
             patch.object(lifecycle, "COMPOSITION_REGISTRY", {"custom": test_entry}),
             patch.object(server, "COMPOSITION_REGISTRY", {"custom": test_entry}),
+            patch("transport.academy.COMPOSITION_REGISTRY", {"custom": test_entry}),
             patch.object(lifecycle, "_get_podman") as mock_get_podman,
             patch.object(server, "_get_podman") as mock_get_podman,
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
@@ -7614,9 +7618,12 @@ class CopyAgentsMcpTests(unittest.TestCase):
                 return real_path(p)
 
             try:
+                import transport.academy as _academy_mod
+                _academy_mod.logger.addHandler(handler)
                 with (
                     patch.object(lifecycle, "_load_crew_manifest", return_value=manifest),
                     patch.object(server, "_load_crew_manifest", return_value=manifest),
+                    patch.object(_academy_mod, "_load_crew_manifest", return_value=manifest),
                     patch.object(lifecycle, "MCP_CATALOGUE_DIR", mcp_dir),
                     patch.object(server, "MCP_CATALOGUE_DIR", mcp_dir),
                     patch.dict(os.environ, env or {}, clear=False),
@@ -7627,6 +7634,7 @@ class CopyAgentsMcpTests(unittest.TestCase):
             finally:
                 server.logger.removeHandler(handler)
                 _lc_mod.logger.removeHandler(handler)
+                _academy_mod.logger.removeHandler(handler)
 
         mcp_json = self._extract_mcp_json_from_calls(mock_podman)
         return mock_podman, mcp_json, captured_warnings
