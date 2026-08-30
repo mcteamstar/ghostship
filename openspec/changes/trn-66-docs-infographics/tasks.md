@@ -11,6 +11,10 @@
 - [x] 2.4 Generate `docs/images/sdd-workflow.png` — circular SDD pipeline: Spectre (plan) → Ghost (implement) → Banshee (review) → Reaper (close), with Raven and Captain shown as the outer orchestration ring
 - [x] 2.5 Generate `docs/images/agent-roles-overview.png` — six-panel grid, one cell per persona, each showing persona name, silhouette-style avatar, and a two-word role label
 
+## 2b. Image Fixes (post-review)
+
+- [ ] 2b.1 Fix `docs-agent-roles.png` — Wraith label is "spec syncer" (incorrect — that's Reaper); should be "researcher" or "recon". Raven label is "crew coordinator" (incorrect — Raven is the messenger/watcher, Captain is the coordinator); should be "messenger" or "watcher"
+
 ## 3. Visual Infographics — Insert into Docs
 
 - [x] 3.1 Insert `arch-system-placement.png` into `README.md` — after the introductory paragraph ("A multi-agent orchestration system...") and before the "## Why Ghostship?" heading, using: `![Ghostship architecture: harness → transport → crews → agents](docs/images/arch-system-placement.png)`
