@@ -1,7 +1,7 @@
 ## 1. Replace placeholder with real test file
 
 - [ ] 1.1 Delete `tests/e2e/test_placeholder.py`
-- [ ] 1.2 Create `tests/e2e/test_transport_e2e.py` with a module-level skip guard: `GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "")` — all test classes decorated with `@unittest.skipUnless(GHOSTSHIP_E2E_URL, "GHOSTSHIP_E2E_URL not set")`
+- [ ] 1.2 Create `tests/e2e/test_transport_e2e.py` with a module-level skip guard: `GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "")` — all test classes decorated with `@unittest.skipUnless(GHOSTSHIP_E2E_URL, "GHOSTSHIP_E2E_URL not set")`; add a `_mcp_call(url, tool, api_key=None, **kwargs)` helper that POSTs `{"jsonrpc":"2.0","method":"tools/call","params":{"name":tool,"arguments":kwargs},"id":1}` to `POST /mcp` and returns the result
 
 ## 2. Health check tests
 

@@ -16,7 +16,11 @@
 
 ### Direct HTTP, not MCP client
 
-**Decision:** Call the transport's REST endpoints directly with `httpx` rather than wrapping the MCP tools. The MCP layer is tested via the unit suite; e2e tests care about transport behaviour end-to-end. This keeps tests simpler and avoids an MCP client dependency.
+**Decision:** Call the transport's endpoints directly with `httpx` rather than wrapping an MCP client library. Two endpoint styles:
+- **REST endpoints** (`/health`, `/version`) — plain `GET` requests
+- **MCP tools** (`launch`, `nuke`, `crews`, `dispatch`, `pickup`, `supply`, `evac`) — `POST /mcp` with the standard MCP JSON-RPC envelope: `{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "<tool>", "arguments": {...}}, "id": 1}`
+
+This keeps tests simple with no extra MCP client dependency. A small helper `_mcp_call(tool, **kwargs)` in the test file wraps the JSON-RPC boilerplate.
 
 ### Crew naming
 
