@@ -3287,13 +3287,25 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         podman.volume_create(home_volume)
         logger.info("Created volumes %s, %s", volume, home_volume)
 
+        # Build container env — always include CORS and sandbox flag.
+        # When GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are both set, inject
+        # all four git identity vars so they are part of the container's process
+        # environment from startup and inherited by the gateway and every kiro-cli
+        # child it spawns.  /etc/environment is NOT used because it is only read
+        # by PAM login sessions, not by non-login processes like the gateway.
+        container_env: dict[str, str] = {
+            "KIROCREW_CORS_ORIGINS": f"http://{container}:{CREW_GATEWAY_PORT}",
+            "KIROCREW_ALLOW_UNSANDBOXED": "1",
+        }
+        if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
+            container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
+            container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL
+            container_env["GIT_COMMITTER_NAME"] = GA_GIT_AUTHOR_NAME
+            container_env["GIT_COMMITTER_EMAIL"] = GA_GIT_AUTHOR_EMAIL
         podman.container_create(
             name=container,
             image=image,
-            env={
-                "KIROCREW_CORS_ORIGINS": f"http://{container}:{CREW_GATEWAY_PORT}",
-                "KIROCREW_ALLOW_UNSANDBOXED": "1",
-            },
+            env=container_env,
             network=GA_NETWORK,
             workspace_volume=volume,
             home_volume=home_volume,
@@ -3395,39 +3407,22 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
 
 
 def _inject_git_identity(podman: PodmanClient, container: str) -> None:
-    """Inject operator-configured git identity env vars into the crew container.
+    """No-op. Git identity is now injected at container_create time.
 
-    When GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are both set, writes all
-    four git identity env vars (GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL,
-    GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL) to /etc/environment inside the
-    container so they persist for all agent processes.
+    The original implementation wrote GIT_AUTHOR_NAME/EMAIL/GIT_COMMITTER_NAME/
+    GIT_COMMITTER_EMAIL to /etc/environment inside the container.  That approach
+    does not work: /etc/environment is only read by PAM login sessions (pam_env),
+    not by the non-login gateway process or the kiro-cli subprocesses it spawns.
+    The gateway builds its child environment from ``{**os.environ}`` which was
+    fixed at container-create time — writes to /etc/environment after that are
+    invisible to any running or future subprocess.
 
-    When either var is unset, this function is a no-op and per-persona git
-    identity (e.g. "Ghost <ghost@localhost>") is preserved.
+    The vars are now passed in the container_create env= dict (see launch()),
+    so they are in the gateway's process env from startup and inherited by every
+    kiro-cli child through the ``{**os.environ}`` chain in AcpRuntime.spawn().
+    Container stop/start cycles preserve the create-time env, so idle-stop
+    recovery via _ensure_crew_running also works correctly.
     """
-    if not (GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL):
-        return
-    name_literal = json.dumps(GA_GIT_AUTHOR_NAME)
-    email_literal = json.dumps(GA_GIT_AUTHOR_EMAIL)
-    script = (
-        "import json, pathlib; "
-        "p = pathlib.Path('/etc/environment'); "
-        "lines = p.read_text().splitlines() if p.exists() else []; "
-        # Remove any existing GIT_* identity lines to avoid duplicates on re-setup
-        "lines = [l for l in lines if not l.startswith(('GIT_AUTHOR_NAME=', "
-        "    'GIT_AUTHOR_EMAIL=', 'GIT_COMMITTER_NAME=', 'GIT_COMMITTER_EMAIL='))]; "
-        f"lines.append('GIT_AUTHOR_NAME=' + {name_literal}); "
-        f"lines.append('GIT_AUTHOR_EMAIL=' + {email_literal}); "
-        f"lines.append('GIT_COMMITTER_NAME=' + {name_literal}); "
-        f"lines.append('GIT_COMMITTER_EMAIL=' + {email_literal}); "
-        "p.write_text('\\n'.join(lines) + '\\n'); "
-        "print('git identity injected')"
-    )
-    try:
-        podman.container_exec_checked(container, ["python3", "-c", script])
-        logger.info("Git identity injected for %s (%s)", container, GA_GIT_AUTHOR_EMAIL)
-    except Exception as e:
-        logger.warning("Git identity injection failed for %s: %s", container, e)
 
 
 def _inject_policy(
@@ -3566,7 +3561,9 @@ def _finish_crew_setup(
     # depends on: gateway (post-restart)
     _seed_openspec_store(podman, container)
 
-    # depends on: GA_GIT_AUTHOR_NAME / GA_GIT_AUTHOR_EMAIL (transport env)
+    # Git identity vars (GA_GIT_AUTHOR_NAME/EMAIL) are injected at container_create
+    # time so they are part of the process env from startup.  _inject_git_identity
+    # is a no-op kept for call-site symmetry; the real work is done in launch().
     _inject_git_identity(podman, container)
 
     # depends on: admiral_secret (already generated above), filesystem

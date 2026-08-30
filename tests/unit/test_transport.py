@@ -7111,92 +7111,141 @@ class CopyAgentsMcpTests(unittest.TestCase):
 
 
 # ── TRN-77: Git author identity injection tests ───────────────────────────────
+#
+# The correct mechanism: GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL / GIT_COMMITTER_NAME /
+# GIT_COMMITTER_EMAIL are injected into the container_create env= dict so they
+# are part of the container's process environment from startup.  The gateway
+# inherits them and kiro-cli subprocesses inherit them via {**os.environ} in
+# AcpRuntime.spawn().
+#
+# /etc/environment is NOT used: it is only read by PAM login sessions, not by
+# non-login processes like the KiroCrew gateway.
 
 
 class GitIdentityInjectionTests(unittest.TestCase):
-    """Unit tests for _inject_git_identity (TRN-77 tasks 4.1 and 4.2)."""
+    """Unit tests for git author identity passthrough (TRN-77 tasks 4.1 and 4.2).
 
-    def _run_inject(
+    The identity vars must appear in the container_create env= dict so they are
+    part of the process environment from container startup and inherited by the
+    gateway and every kiro-cli child it spawns.
+    """
+
+    def _capture_create_calls(
         self,
         author_name: str,
         author_email: str,
-    ) -> list[tuple[str, list[str]]]:
-        """Run _inject_git_identity with the given GA_ vars, return exec_checked calls."""
-        exec_calls: list[tuple[str, list[str]]] = []
+    ) -> list[dict]:
+        """Run launch() up to container_create with the given GA_ vars.
+
+        Returns the list of keyword-argument dicts passed to container_create.
+        Aborts after the create call so we do not need a full environment.
+        """
+        create_calls: list[dict] = []
+
+        class _StopAfterCreate(Exception):
+            pass
+
+        def fake_container_create(**kwargs: Any) -> dict:
+            create_calls.append(kwargs)
+            raise _StopAfterCreate
 
         podman = Mock()
-
-        def track_exec_checked(container: str, cmd: list[str]) -> str:
-            exec_calls.append((container, cmd))
-            return "git identity injected"
-
-        podman.container_exec_checked = Mock(side_effect=track_exec_checked)
+        podman.container_create = Mock(side_effect=fake_container_create)
+        podman.volume_create = Mock()
+        podman.network_create = Mock()
 
         with (
             patch.object(server, "GA_GIT_AUTHOR_NAME", author_name),
             patch.object(server, "GA_GIT_AUTHOR_EMAIL", author_email),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_read_auth_file", return_value="fake-auth"),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops"}),
+            patch.object(server, "_registry_lock"),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
+        ):
+            try:
+                server.launch("test-crew")
+            except _StopAfterCreate:
+                pass
+
+        return create_calls
+
+    # ── 4.1: both vars set → all four git env vars in container_create env ──
+
+    def test_both_vars_set_includes_all_four_git_vars_in_create_env(self) -> None:
+        """4.1 — when GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are set,
+        container_create receives all four GIT_* identity vars in its env dict."""
+        create_calls = self._capture_create_calls("Ada Lovelace", "ada@example.com")
+
+        self.assertEqual(len(create_calls), 1)
+        env = create_calls[0]["env"]
+
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "Ada Lovelace")
+        self.assertEqual(env["GIT_AUTHOR_EMAIL"], "ada@example.com")
+        self.assertEqual(env["GIT_COMMITTER_NAME"], "Ada Lovelace")
+        self.assertEqual(env["GIT_COMMITTER_EMAIL"], "ada@example.com")
+
+    def test_both_vars_set_preserves_existing_env_keys(self) -> None:
+        """4.1 — git identity vars are additive; KIROCREW_CORS_ORIGINS and
+        KIROCREW_ALLOW_UNSANDBOXED are still present alongside them."""
+        create_calls = self._capture_create_calls("Test User", "test@example.com")
+        env = create_calls[0]["env"]
+
+        self.assertIn("KIROCREW_CORS_ORIGINS", env)
+        self.assertIn("KIROCREW_ALLOW_UNSANDBOXED", env)
+
+    # ── 4.2: GA_GIT_AUTHOR_NAME unset → git vars absent from create env ──────
+
+    def test_author_name_unset_git_vars_absent_from_create_env(self) -> None:
+        """4.2 — when GA_GIT_AUTHOR_NAME is unset, no GIT_* vars appear in
+        the container_create env dict."""
+        create_calls = self._capture_create_calls("", "test@example.com")
+        env = create_calls[0]["env"]
+
+        self.assertNotIn("GIT_AUTHOR_NAME", env)
+        self.assertNotIn("GIT_AUTHOR_EMAIL", env)
+        self.assertNotIn("GIT_COMMITTER_NAME", env)
+        self.assertNotIn("GIT_COMMITTER_EMAIL", env)
+
+    def test_author_email_unset_git_vars_absent_from_create_env(self) -> None:
+        """4.2 — when GA_GIT_AUTHOR_EMAIL is unset, no GIT_* vars appear."""
+        create_calls = self._capture_create_calls("Test User", "")
+        env = create_calls[0]["env"]
+
+        self.assertNotIn("GIT_AUTHOR_NAME", env)
+        self.assertNotIn("GIT_COMMITTER_NAME", env)
+
+    def test_both_vars_unset_git_vars_absent_from_create_env(self) -> None:
+        """4.2 — when both vars are unset, no GIT_* vars appear."""
+        create_calls = self._capture_create_calls("", "")
+        env = create_calls[0]["env"]
+
+        self.assertNotIn("GIT_AUTHOR_NAME", env)
+        self.assertNotIn("GIT_COMMITTER_NAME", env)
+
+    # ── _inject_git_identity is a no-op ──────────────────────────────────────
+
+    def test_inject_git_identity_is_noop_does_not_exec(self) -> None:
+        """_inject_git_identity must never call container_exec_checked.
+        The /etc/environment approach is removed; identity is in process env."""
+        podman = Mock()
+        podman.container_exec_checked = Mock()
+
+        with (
+            patch.object(server, "GA_GIT_AUTHOR_NAME", "Ada Lovelace"),
+            patch.object(server, "GA_GIT_AUTHOR_EMAIL", "ada@example.com"),
         ):
             server._inject_git_identity(podman, "gs-test")
 
-        return exec_calls
+        podman.container_exec_checked.assert_not_called()
 
-    # ── 4.1: both vars set → all four git env vars injected ─────────────────
-
-    def test_both_vars_set_injects_all_four_git_vars(self) -> None:
-        """4.1 — when GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are set,
-        container_exec_checked is called and the script writes all four
-        GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL vars."""
-        exec_calls = self._run_inject("Ada Lovelace", "ada@example.com")
-
-        # exec_checked must be called exactly once
-        self.assertEqual(len(exec_calls), 1)
-        container, cmd = exec_calls[0]
-        self.assertEqual(container, "gs-test")
-
-        # Command must be a python3 -c invocation
-        self.assertEqual(cmd[0], "python3")
-        self.assertEqual(cmd[1], "-c")
-        script = cmd[2]
-
-        # The script must reference all four git identity vars
-        self.assertIn("GIT_AUTHOR_NAME", script)
-        self.assertIn("GIT_AUTHOR_EMAIL", script)
-        self.assertIn("GIT_COMMITTER_NAME", script)
-        self.assertIn("GIT_COMMITTER_EMAIL", script)
-
-        # The configured values must appear in the script
-        self.assertIn("Ada Lovelace", script)
-        self.assertIn("ada@example.com", script)
-
-    def test_both_vars_set_injects_into_etc_environment(self) -> None:
-        """4.1 — script writes to /etc/environment (persists for all processes)."""
-        exec_calls = self._run_inject("Test User", "test@example.com")
-
-        self.assertEqual(len(exec_calls), 1)
-        script = exec_calls[0][1][2]
-        self.assertIn("/etc/environment", script)
-
-    # ── 4.2: GA_GIT_AUTHOR_NAME unset → no injection ─────────────────────────
-
-    def test_author_name_unset_no_injection(self) -> None:
-        """4.2 — when GA_GIT_AUTHOR_NAME is unset, exec_checked is not called."""
-        exec_calls = self._run_inject("", "test@example.com")
-        self.assertEqual(exec_calls, [], "No injection should occur when author name is unset")
-
-    def test_author_email_unset_no_injection(self) -> None:
-        """4.2 — when GA_GIT_AUTHOR_EMAIL is unset, exec_checked is not called."""
-        exec_calls = self._run_inject("Test User", "")
-        self.assertEqual(exec_calls, [], "No injection should occur when author email is unset")
-
-    def test_both_vars_unset_no_injection(self) -> None:
-        """4.2 — when both vars are unset, exec_checked is not called."""
-        exec_calls = self._run_inject("", "")
-        self.assertEqual(exec_calls, [], "No injection should occur when both vars are unset")
-
-    # ── Integration: _finish_crew_setup calls _inject_git_identity ───────────
+    # ── Integration: _finish_crew_setup still calls _inject_git_identity ─────
 
     def test_finish_crew_setup_calls_inject_git_identity(self) -> None:
-        """_inject_git_identity is called during _finish_crew_setup."""
+        """_inject_git_identity is called during _finish_crew_setup (no-op, but
+        the call must remain so the call-site comment stays accurate)."""
         inject_called: list[bool] = []
 
         podman = Mock()
