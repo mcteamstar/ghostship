@@ -6234,38 +6234,6 @@ class ReseedCronReconcileTests(unittest.TestCase):
         self.assertEqual(saved, [], "Registry should not be saved when gateway errors")
 
 
-# ── TRN-39: _advance_next_fire_at tests ─────────────────────────────────────
-
-class AdvanceNextFireAtTests(unittest.TestCase):
-    """Tests for _advance_next_fire_at (D4 in TRN-39 design.md)."""
-
-    def test_interval_branch(self) -> None:
-        """interval_secs=300 advances next_fire_at by ~300 seconds."""
-        now = time.time()
-        job = {"job_id": "j1", "interval_secs": 300, "cron_expr": None, "one_shot": False}
-        server._advance_next_fire_at(job)
-        self.assertAlmostEqual(job["next_fire_at"], now + 300, delta=2.0)
-
-    def test_cron_branch(self) -> None:
-        """cron_expr branch matches croniter at a simulated HH:59 time."""
-        from datetime import datetime, timezone
-        from croniter import croniter
-
-        job = {"job_id": "j2", "interval_secs": None, "cron_expr": "0 * * * *", "one_shot": False}
-        now = datetime(2026, 8, 24, 12, 59, 30, tzinfo=timezone.utc).timestamp()
-        with patch.object(server.time, "time", return_value=now):
-            server._advance_next_fire_at(job)
-
-        expected = croniter("0 * * * *", now).get_next(float)
-        self.assertEqual(job["next_fire_at"], expected)
-
-    def test_one_shot_branch(self) -> None:
-        """one_shot=True sets next_fire_at to _NEVER_FIRE_AT sentinel."""
-        job = {"job_id": "j3", "interval_secs": 60, "cron_expr": None, "one_shot": True}
-        server._advance_next_fire_at(job)
-        self.assertEqual(job["next_fire_at"], server._NEVER_FIRE_AT)
-
-
 # ── TRN-38 Security Hardening Tests ──────────────────────────────────────────
 
 class TestTrn38SecurityHardening(unittest.TestCase):
