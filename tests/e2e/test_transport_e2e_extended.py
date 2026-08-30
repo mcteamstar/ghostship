@@ -197,12 +197,16 @@ class TestSteerTool(unittest.TestCase):
         # Poll until the task is actually running (done=false, elapsed > 0)
         print(f"[e2e] waiting for task {task_id} to start...", flush=True)
         deadline = time.time() + 30
+        started = False
         while time.time() < deadline:
             status = _mcp_call("pickup", crew_id=self.CREW_ID, task_id=task_id)
             if not status.get("done") and status.get("elapsed_secs", 0) > 0:
                 print(f"[e2e] task running ({status.get('elapsed_secs')}s), steering...", flush=True)
+                started = True
                 break
             time.sleep(2)
+
+        self.assertTrue(started, f"Task {task_id} never started within 30s")
 
         # Steer — verify the transport accepted the call with the right shape
         steer_result = _mcp_call(
@@ -229,7 +233,11 @@ class TestSteerTool(unittest.TestCase):
 
 @unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
 class TestResponseSchemas(unittest.TestCase):
-    """Verify all expected fields are present on tool responses."""
+    """Verify all expected fields are present on tool responses.
+
+    Uses setUpClass/tearDownClass so the crew is launched once for all
+    five schema tests rather than once per test (~4 min saving).
+    """
 
     CREW_ID = "e2e-schema"
     _CREW_FIELDS = {
@@ -238,19 +246,22 @@ class TestResponseSchemas(unittest.TestCase):
         "agents", "policy_version",
     }
 
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
-        print(f"\n[e2e] setUp: launching {self.CREW_ID}...", flush=True)
-        result = _mcp_call("launch", crew_id=self.CREW_ID)
-        self.assertEqual(result.get("status"), "ready")
-        print(f"[e2e] {self.CREW_ID} ready", flush=True)
+        print(f"\n[e2e] setUpClass: launching {cls.CREW_ID}...", flush=True)
+        result = _mcp_call("launch", crew_id=cls.CREW_ID)
+        if result.get("status") != "ready":
+            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
+        print(f"[e2e] {cls.CREW_ID} ready", flush=True)
 
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
 
