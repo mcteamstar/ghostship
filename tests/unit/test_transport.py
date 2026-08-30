@@ -35,11 +35,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import stat
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -52,6 +54,33 @@ from unittest.mock import Mock, patch
 from tests.unit.test_file_transfer import server
 
 import httpx
+
+# ── container_scripts import (TRN-74) ────────────────────────────────────────
+# _inject_policy / _patch_crew_config now invoke baked scripts under
+# transport/container_scripts/ instead of inline `python3 -c` strings. Import
+# the policy signer directly so policy-injection tests can run the SAME code
+# the container runs, decoding the base64 payload from the captured argv.
+import importlib as _importlib
+
+_CONTAINER_SCRIPTS_DIR = (
+    Path(__file__).resolve().parents[2] / "transport" / "container_scripts"
+)
+if str(_CONTAINER_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONTAINER_SCRIPTS_DIR))
+_inject_policy_script = _importlib.import_module("inject_policy")
+
+
+def _run_inject_policy_script(cmd: list[str], crew_dir: str) -> str:
+    """Decode the payload argv from a captured inject_policy.py invocation and
+    run the real script logic against ``crew_dir``.
+
+    ``cmd`` is the argv captured from container_exec_checked, of the form
+    ``["python3", ".../inject_policy.py", <crew_dir>, <payload_b64>]``.
+    """
+    payload = json.loads(base64.b64decode(cmd[-1]).decode())
+    return _inject_policy_script.inject_policy(
+        crew_dir, payload["policy"], payload["admiral_secret"]
+    )
 
 
 class Request:
@@ -1840,12 +1869,13 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         podman = Mock()
         server._append_captain_mail(podman, "gs-demo", "first order")
         command = podman.container_exec_checked.call_args.args[1]
-        self.assertEqual(command[:2], ["python3", "-c"])
-        script = command[2]
-        self.assertIn("maildeliver", script)
-        self.assertIn("captain@localhost", script)
-        self.assertNotIn("os.fchmod", script)
-        self.assertNotIn("os.O_APPEND", script)
+        # Now invokes the baked-in script by path, with the message as a
+        # base64 argv arg (no inline -c script, no shell-quoting hazard).
+        self.assertEqual(command[0], "python3")
+        self.assertTrue(command[1].endswith("/append_captain_mail.py"))
+        decoded = base64.b64decode(command[2]).decode()
+        # The delivered RFC822 message carries the captain order body.
+        self.assertIn("first order", decoded)
 
     def test_mail_count_returns_zero_for_missing_mailbox(self) -> None:
         missing = Mock()
@@ -2829,8 +2859,13 @@ class LoginLogoutTests(unittest.TestCase):
         exec_calls = [call.args[1] for call in podman.container_exec.call_args_list]
         containers_cleared = [call.args[0] for call in podman.container_exec.call_args_list]
         self.assertEqual(containers_cleared, ["gs-crew1"])
-        # Verify DELETE FROM auth_kv was in the script
-        self.assertTrue(any("DELETE FROM auth_kv" in call.args[1][2] for call in podman.container_exec.call_args_list))
+        # Verify the wipe_auth script was invoked against the kiro-cli DB
+        self.assertTrue(
+            any(
+                call.args[1][1].endswith("/wipe_auth.py")
+                for call in podman.container_exec.call_args_list
+            )
+        )
 
 
 # ── _read_auth_from_crew unit tests (trn-78 tasks 1.2–1.3) ───────────────────
@@ -3516,11 +3551,16 @@ class TestPolicyInjection(unittest.TestCase):
                 mock_podman, "gs-test", "spec-ops", "secret123"
             )
 
-        # The script writes both files — verify the script content
+        # _inject_policy now invokes the baked inject_policy.py script. Run the
+        # same script logic against a temp crew dir and verify both files land.
         call_args = mock_podman.container_exec_checked.call_args
-        script = call_args[0][1][2]  # ["python3", "-c", script]
-        self.assertIn("security_policy.json", script)
-        self.assertIn("admission_policy.json", script)
+        cmd = call_args[0][1]  # ["python3", ".../inject_policy.py", crew_dir, payload_b64]
+        self.assertEqual(cmd[0], "python3")
+        self.assertTrue(cmd[1].endswith("inject_policy.py"))
+        with tempfile.TemporaryDirectory() as td:
+            _run_inject_policy_script(cmd, td)
+            self.assertTrue((Path(td) / "security_policy.json").exists())
+            self.assertTrue((Path(td) / "admission_policy.json").exists())
 
     def test_inject_policy_admission_enables_signature_verification(self) -> None:
         """Admission policy sets require_policy_signature=True with trust_keys dict."""
@@ -3528,13 +3568,11 @@ class TestPolicyInjection(unittest.TestCase):
         secret = "fixed-secret-for-test"
 
         mock_podman = Mock()
-        mock_podman.container_exec_checked = Mock(return_value="policy injected version=1")
 
-        captured_scripts: list[str] = []
+        captured_cmds: list[list[str]] = []
 
         def exec_capture(container, cmd):
-            if cmd[0] == "python3" and cmd[1] == "-c":
-                captured_scripts.append(cmd[2])
+            captured_cmds.append(cmd)
             return "policy injected version=1"
 
         mock_podman.container_exec_checked = Mock(side_effect=exec_capture)
@@ -3553,20 +3591,12 @@ class TestPolicyInjection(unittest.TestCase):
 
             server._inject_policy(mock_podman, "gs-test", "test", secret)
 
-        # Execute the captured script locally to inspect what it would write
-        self.assertEqual(len(captured_scripts), 1)
-        script = captured_scripts[0]
-
-        # Simulate what the script does: run it with a fake crew_dir
-        import tempfile, os as _os
+        # Run the real inject_policy.py logic against a temp crew dir to inspect
+        # what it writes.
+        self.assertEqual(len(captured_cmds), 1)
         with tempfile.TemporaryDirectory() as td:
             fake_crew_dir = Path(td)
-            patched = script.replace(
-                "pathlib.Path('/home/kirocrew/.kiro/crew')",
-                f"pathlib.Path('{fake_crew_dir}')",
-            )
-            exec(compile(patched, "<test>", "exec"))  # noqa: S102
-
+            _run_inject_policy_script(captured_cmds[0], td)
             policy_out = json.loads((fake_crew_dir / "security_policy.json").read_text())
             admission_out = json.loads((fake_crew_dir / "admission_policy.json").read_text())
 
@@ -3589,11 +3619,10 @@ class TestPolicyInjection(unittest.TestCase):
         secret = "test-secret-abc123"
 
         mock_podman = Mock()
-        captured_scripts: list[str] = []
+        captured_cmds: list[list[str]] = []
 
         def exec_capture(container, cmd):
-            if cmd[0] == "python3" and cmd[1] == "-c":
-                captured_scripts.append(cmd[2])
+            captured_cmds.append(cmd)
             return "policy injected version=1"
 
         mock_podman.container_exec_checked = Mock(side_effect=exec_capture)
@@ -3611,16 +3640,11 @@ class TestPolicyInjection(unittest.TestCase):
             MockPath.side_effect = path_side_effect
             server._inject_policy(mock_podman, "gs-test", "spec-ops", secret)
 
-        self.assertEqual(len(captured_scripts), 1)
-        script = captured_scripts[0]
+        self.assertEqual(len(captured_cmds), 1)
 
         with tempfile.TemporaryDirectory() as td:
             fake_crew_dir = Path(td)
-            patched = script.replace(
-                "pathlib.Path('/home/kirocrew/.kiro/crew')",
-                f"pathlib.Path('{fake_crew_dir}')",
-            )
-            exec(compile(patched, "<test>", "exec"))  # noqa: S102
+            _run_inject_policy_script(captured_cmds[0], td)
             policy_out = json.loads((fake_crew_dir / "security_policy.json").read_text())
 
         # Re-derive the expected signature: whole doc minus identity.signature
@@ -3853,6 +3877,19 @@ class TestMemoryGate(unittest.TestCase):
             server.GA_MIN_FREE_MEM_GB = original
 
 
+def _decode_overrides(cmd: list[str]) -> dict:
+    """Decode the base64 JSON overrides argv passed to patch_crew_config.py.
+
+    _patch_crew_config now invokes ``python3 /scripts/patch_crew_config.py
+    <config_path> <overrides_b64>``; the overrides are the final argv element,
+    a base64-encoded JSON object deep-merged into config.local.json.
+    """
+    import base64 as _b64
+    import json as _json
+
+    return _json.loads(_b64.b64decode(cmd[-1]).decode())
+
+
 class TestPatchCrewConfig(unittest.TestCase):
     """Tests for _patch_crew_config memory threshold patching."""
 
@@ -3872,17 +3909,14 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]  # last arg to python3 -c
-            self.assertIn("2.5", script)
-            self.assertIn("3.0", script)
-            self.assertIn("1.5", script)
-            self.assertIn("p.parent.mkdir(parents=True, exist_ok=True)", script)
-            self.assertNotIn("'spawn_min_memory_gb'] = 0", script)
-            # Verify subagent_timeout_secs and subagent_max_turns are present with defaults
-            self.assertIn("subagent_timeout_secs", script)
-            self.assertIn("subagent_max_turns", script)
-            self.assertIn("3600", script)
-            self.assertIn("200", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["spawn_min_memory_gb"], 2.5)
+            self.assertEqual(overrides["resource_pressure_gb"], 3.0)
+            self.assertEqual(overrides["resource_critical_gb"], 1.5)
+            self.assertNotEqual(overrides["spawn_min_memory_gb"], 0)
+            # Verify subagent_timeout_secs and subagent_max_turns carry defaults
+            self.assertEqual(overrides["subagent_timeout_secs"], 3600)
+            self.assertEqual(overrides["subagent_max_turns"], 200)
         finally:
             server.GA_SPAWN_MIN_MEMORY_GB = original
             server.GA_RESOURCE_PRESSURE_GB = 2.0
@@ -3902,8 +3936,8 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("'subagent_timeout_secs'] = 7200", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["subagent_timeout_secs"], 7200)
         finally:
             server.GA_SUBAGENT_TIMEOUT_SECS = original
 
@@ -3921,8 +3955,8 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("'subagent_max_turns'] = 300", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["subagent_max_turns"], 300)
         finally:
             server.GA_SUBAGENT_MAX_TURNS = original
 
@@ -3940,8 +3974,8 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("a['agent'] = \"kiro\"", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["agent"], "kiro")
         finally:
             server.GA_CREW_AGENT = original
 
@@ -3959,14 +3993,15 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("a['agent'] = \"custom-agent\"", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["agent"], "custom-agent")
         finally:
             server.GA_CREW_AGENT = original
 
     def test_config_script_has_no_unexpanded_shell_vars(self) -> None:
-        """KiroCrew 0.4.0 rejects literal $VAR in config values — the exec script
-        must contain no unexpanded shell variable reference in any written value."""
+        """KiroCrew 0.4.0 rejects literal $VAR in config values — the decoded
+        overrides must contain no unexpanded shell variable reference in any
+        written value."""
         import re
         exec_calls: list[tuple[str, list[str]]] = []
 
@@ -3976,9 +4011,10 @@ class TestPatchCrewConfig(unittest.TestCase):
                 return "patched config.local.json"
 
         server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
-        script = exec_calls[0][1][-1]
-        # No literal $NAME or ${NAME} unexpanded shell/variable references.
-        self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", script))
+        overrides = _decode_overrides(exec_calls[0][1])
+        for value in overrides.values():
+            if isinstance(value, str):
+                self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", value))
 
     def test_kc_model_default_set_writes_default_model(self) -> None:
         """KC_MODEL_DEFAULT set → default_model written to config.local.json."""
@@ -3994,9 +4030,10 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("default_model", script)
-            self.assertIn("anthropic/claude-sonnet-4-20250514", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(
+                overrides["default_model"], "anthropic/claude-sonnet-4-20250514"
+            )
         finally:
             server.KC_MODEL_DEFAULT = original
 
@@ -4014,8 +4051,8 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertNotIn("default_model", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertNotIn("default_model", overrides)
         finally:
             server.KC_MODEL_DEFAULT = original
 
@@ -4905,13 +4942,15 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
 
     def test_admiral_secret_injection_script_contains_fsync(self) -> None:
         """6.4 (trn-36 2.2): the admiral secret injection script contains os.fsync."""
-        captured_scripts: list[str] = []
+        captured_cmds: list[list[str]] = []
 
         podman = Mock()
 
         def capture_exec_checked(container: str, cmd: list[str]) -> str:
-            if len(cmd) >= 3 and "admiral_secret" in cmd[2]:
-                captured_scripts.append(cmd[2])
+            if len(cmd) >= 3 and cmd[0] == "python3" and cmd[1].endswith(
+                "/inject_admiral_secret.py"
+            ):
+                captured_cmds.append(cmd)
             return "ok"
 
         podman.container_exec_checked = Mock(side_effect=capture_exec_checked)
@@ -4939,9 +4978,24 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                     podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
                 )
 
-        self.assertEqual(len(captured_scripts), 1, "Expected exactly one admiral secret injection call")
-        script = captured_scripts[0]
-        self.assertIn("os.fsync", script, "Secret injection script must call os.fsync for durability")
+        self.assertEqual(
+            len(captured_cmds), 1, "Expected exactly one admiral secret injection call"
+        )
+        cmd = captured_cmds[0]
+        # The call passes the secret file path as argv; the fsync durability
+        # guarantee now lives in the baked inject_admiral_secret.py script.
+        self.assertTrue(cmd[2].endswith("/.admiral_secret"))
+        script_path = (
+            Path(server.__file__).resolve().parent
+            / "container_scripts"
+            / "inject_admiral_secret.py"
+        )
+        script_src = script_path.read_text()
+        self.assertIn(
+            "os.fsync",
+            script_src,
+            "Secret injection script must call os.fsync for durability",
+        )
 
     def test_gateway_failure_after_restart_triggers_cleanup(self) -> None:
         """6.2: gateway failure after auth restart triggers cleanup and returns error."""

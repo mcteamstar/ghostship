@@ -32,6 +32,8 @@ def read_mailbox(path: str) -> str:
         parts = []
         for subdir in ("new", "cur"):
             d = os.path.join(path, subdir)
+            if not os.path.isdir(d):
+                continue
             for fname in os.listdir(d):
                 try:
                     with open(os.path.join(d, fname)) as fh:

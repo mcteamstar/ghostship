@@ -22,9 +22,12 @@ import sys
 def count_mailbox(path: str) -> int:
     """Count messages in a Maildir dir or legacy mbox file at ``path``."""
     if os.path.isdir(os.path.join(path, "new")):
-        return len(os.listdir(os.path.join(path, "new"))) + len(
-            os.listdir(os.path.join(path, "cur"))
-        )
+        total = 0
+        for subdir in ("new", "cur"):
+            d = os.path.join(path, subdir)
+            if os.path.isdir(d):
+                total += len(os.listdir(d))
+        return total
     if os.path.isfile(path):
         with open(path) as fh:
             return len(re.findall(r"(?m)^From [^\n]*$", fh.read()))

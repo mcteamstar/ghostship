@@ -39,14 +39,14 @@
 
 ## 4. Unit tests
 
-- [ ] 4.1 Add tests for `inject_auth.py` — inserts rows into a temp SQLite DB
-- [ ] 4.2 Add tests for `read_auth.py` — reads rows; returns None equivalent for empty/registration-only DB (aligns with TRN-78 Bug 1 fix)
-- [ ] 4.3 Add tests for `wipe_auth.py` — deletes rows from temp SQLite DB
-- [ ] 4.4 Add tests for `read_mail_counts.py` — counts messages in a mock Maildir tree
-- [ ] 4.5 Add tests for `read_mail_subjects.py` — reads subjects from a mock Maildir tree
-- [ ] 4.6 Add tests for `patch_models.py` — updates model field in mock agent JSON files
+- [x] 4.1 Add tests for `inject_auth.py` — inserts rows into a temp SQLite DB
+- [x] 4.2 Add tests for `read_auth.py` — reads rows; returns None equivalent for empty/registration-only DB (aligns with TRN-78 Bug 1 fix)
+- [x] 4.3 Add tests for `wipe_auth.py` — deletes rows from temp SQLite DB
+- [x] 4.4 Add tests for `read_mail_counts.py` — counts messages in a mock Maildir tree
+- [x] 4.5 Add tests for `read_mail_subjects.py` — reads subjects from a mock Maildir tree
+- [x] 4.6 Add tests for `patch_models.py` — updates model field in mock agent JSON files
 
 ## 5. Verification
 
-- [ ] 5.1 Run `bash tests/run.sh --unit` — all tests pass
-- [ ] 5.2 Run `bash tests/run.sh --integration` — all tests pass
+- [x] 5.1 Run `bash tests/run.sh --unit` — all tests pass
+- [x] 5.2 Run `bash tests/run.sh --integration` — all tests pass

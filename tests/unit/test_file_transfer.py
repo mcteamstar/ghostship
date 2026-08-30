@@ -4,6 +4,7 @@ import base64
 import hashlib
 import importlib
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -165,6 +166,13 @@ try:
 except ModuleNotFoundError:
     _install_import_stubs()
     server = importlib.import_module("transport.server")
+
+
+# Real on-disk location of the container scripts, so tests can run the
+# transfer scripts locally in place of their baked-in /scripts/ path.
+_CONTAINER_SCRIPTS_DIR = (
+    Path(__file__).resolve().parents[2] / "transport" / "container_scripts"
+)
 
 
 class FakeResponse:
@@ -362,7 +370,7 @@ class RecordingTransferPodman:
     ) -> str:
         values = dict(env or {})
         self.exec_calls.append((container, cmd, values))
-        if cmd[2] == server._CLEANUP_TRANSFER_SCRIPT:
+        if cmd[1].endswith("/transfer_cleanup.py"):
             self._remove_stage(values["GA_TRANSFER_STAGE"])
             return ""
         if self.fail_transfer:
@@ -371,7 +379,8 @@ class RecordingTransferPodman:
         source = values["GA_TRANSFER_SOURCE"]
         payload = self.files[source]
         destination = Path(values["GA_TRANSFER_DEST"])
-        if cmd[2] == server._RAW_TRANSFER_SCRIPT:
+        unpack = "--unpack" in cmd[2:]
+        if not unpack:
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(payload)
             result = f"wrote {len(payload)} bytes to {destination}"
@@ -427,7 +436,9 @@ class UploadRegressionTests(unittest.TestCase):
             self.assertEqual(Path(destination, "tree", "file.bin").read_bytes(), payload)
             self.assertTrue(fake.removed_stages)
             command, env = fake.exec_calls[0][1:]
-            self.assertEqual(command[0:2], ["python3", "-c"])
+            self.assertEqual(command[0], "python3")
+            self.assertTrue(command[1].endswith("/transfer_raw.py"))
+            self.assertIn("--unpack", command[2:])
             self.assertEqual(env["GA_TRANSFER_DEST"], destination)
 
     def test_failed_exec_preserves_error_and_attempts_cleanup(self) -> None:
@@ -445,7 +456,7 @@ class UploadRegressionTests(unittest.TestCase):
                     unpack=False,
                 )
         self.assertTrue(fake.removed_stages)
-        self.assertEqual(fake.exec_calls[-1][1][2], server._CLEANUP_TRANSFER_SCRIPT)
+        self.assertTrue(fake.exec_calls[-1][1][1].endswith("/transfer_cleanup.py"))
 
 
 class BundleTransferPodman:
@@ -473,15 +484,22 @@ class BundleTransferPodman:
     ) -> str:
         values = dict(env or {})
         self.exec_calls.append((container, cmd, values))
-        if cmd[:2] == ["python3", "-c"] and len(cmd) > 2:
-            if cmd[2] == server._CLEANUP_TRANSFER_SCRIPT:
+        if cmd[0] == "python3" and len(cmd) > 1:
+            script_name = os.path.basename(cmd[1])
+            if script_name == "transfer_cleanup.py":
                 shutil.rmtree(values["GA_TRANSFER_STAGE"], ignore_errors=True)
                 return ""
+            # Rewrite the baked-in /scripts/ path to the real script file in
+            # the repo so the transfer scripts actually run in the test host.
+            local = _CONTAINER_SCRIPTS_DIR / script_name
+            if local.exists():
+                cmd = ["python3", str(local), *cmd[2:]]
         completed = subprocess.run(
             cmd,
             check=False,
             capture_output=True,
             text=True,
+            env={**os.environ, **values},
         )
         output = completed.stdout + completed.stderr
         if completed.returncode:
