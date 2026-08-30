@@ -3,7 +3,7 @@ name: ghostship-admin
 description: Install, configure, connect a client to, upgrade, or tear down a ghostship transport — Podman prerequisites, `./install.sh`/`./start.sh`/`./uninstall.sh`, the transport's own API-key auth, and rebuilding images. Use when there's no MCP connection to `ghostship` yet, or when the task is about the transport host itself (bringing it up, connecting a new client, upgrading, tearing it down) rather than driving an already-running fleet — for that, use `ghostship-command` instead.
 metadata:
   author: ghostship
-  version: "0.2.0"
+  version: "0.2.1"
 ---
 
 # Ghostship Admin

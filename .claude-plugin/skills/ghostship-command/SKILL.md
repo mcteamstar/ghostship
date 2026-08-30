@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.2.0"
+  version: "0.2.1"
 ---
 
 # Ghostship Command
