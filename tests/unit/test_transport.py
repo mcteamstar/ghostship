@@ -57,6 +57,7 @@ import httpx
 import transport.registry as _registry_mod
 import transport.podman as _podman_mod
 import transport.files as _files_mod
+import transport.captain as _captain_mod
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -1803,7 +1804,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {}}}),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_mail_count", return_value=2),
+            patch.object(_captain_mod, "_mail_count", return_value=2),
             patch.object(
                 server,
                 "_crew_api",
@@ -1910,7 +1911,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_mail_count", side_effect=[3, 2]) as mail_count,
+            patch.object(_captain_mod, "_mail_count", side_effect=[3, 2]) as mail_count,
             patch.object(server, "_crew_api", return_value={"jobs": [existing]}),
         ):
             result = server.captain("demo", "status")
@@ -2048,7 +2049,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {}}}),
             patch.object(server, "_ensure_crew_running", return_value=refreshed),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_mail_count", return_value=1),
+            patch.object(_captain_mod, "_mail_count", return_value=1),
             patch.object(
                 server,
                 "_crew_api",
