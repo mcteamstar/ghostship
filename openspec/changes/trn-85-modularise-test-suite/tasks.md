@@ -1,6 +1,7 @@
 ## Prerequisites
 
 - [ ] 0.1 TRN-71 fully landed — `transport/lifecycle.py` committed, all 421 unit tests passing
+- [ ] 0.2 TRN-86 fully landed — `transport/academy.py` extracted from `lifecycle.py`; test target for academy functions is `test_academy.py` not `test_lifecycle.py`
 
 ## 0. Captain standing order
 
@@ -37,7 +38,8 @@ The Admiral sets up Captain with a standing order that drives the three phases. 
   - `tests/unit/test_podman.py` — `import transport.podman as podman`
   - `tests/unit/test_files.py` — `import transport.files as files_mod`
   - `tests/unit/test_captain.py` — `import transport.captain as captain_mod`
-  - `tests/unit/test_lifecycle.py` — `import transport.lifecycle as lifecycle`
+  - `tests/unit/test_academy.py` — `import transport.academy as academy` (TRN-86 module: `COMPOSITION_REGISTRY`, `_load_composition_registry`, `_resolve_composition`, `_load_crew_manifest`, `_manifest_selects`, `_validate_academy` etc.)
+  - `tests/unit/test_lifecycle.py` — `import transport.lifecycle as lifecycle` (lifecycle proper, excluding academy functions)
   - `tests/unit/test_server.py` — `import transport.server as server; import transport.lifecycle as lifecycle`
 
 ## 2. Migrate test classes
@@ -68,6 +70,11 @@ For each class: move → update patch targets → delete from test_transport.py 
 - [ ] 2.7 Migrate `CaptainMailHelperTests` (or equivalent) → `test_captain.py`
 - [ ] 2.8 Commit: `refactor(trn-85): migrate captain tests to test_captain.py`
 
+### → test_academy.py (requires TRN-86)
+
+- [ ] 2.9a Migrate `TestCrewTypesTool` and any composition/manifest test classes → `test_academy.py`; patch via `transport.academy`
+- [ ] 2.9b Commit: `refactor(trn-85): migrate academy tests to test_academy.py`
+
 ### → test_lifecycle.py
 
 - [ ] 2.9 Migrate `SetupRegistrationTests` → `test_lifecycle.py`; patch via `transport.lifecycle`
@@ -83,8 +90,7 @@ For each class: move → update patch targets → delete from test_transport.py 
 
 - [ ] 2.17 Migrate `TaskOrchestrationTests` → `test_server.py`; these test MCP tools (`dispatch`, `steer`) — patch `server.X` for call-site mocks, `lifecycle.X` for internal deps
 - [ ] 2.18 Migrate `PickupTimeoutTests` → `test_server.py`; `_crew_api` is called via `_crew_api_with_recovery` in lifecycle — patch `lifecycle._crew_api as api`
-- [ ] 2.19 Migrate `PersonaValidationTests` → `test_server.py`
-- [ ] 2.20 Migrate `TestCrewTypesTool` → `test_server.py`; `COMPOSITION_REGISTRY` lives in lifecycle — patch both `lifecycle.COMPOSITION_REGISTRY` and `server.COMPOSITION_REGISTRY`
+- [ ] 2.20 Migrate `PersonaValidationTests` → `test_server.py`
 - [ ] 2.21 Migrate `ResourceJobsTests` → `test_server.py`
 - [ ] 2.22 Migrate any remaining MCP tool test classes → `test_server.py`
 - [ ] 2.23 Commit: `refactor(trn-85): migrate server/MCP tool tests to test_server.py`
