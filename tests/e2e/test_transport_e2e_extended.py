@@ -3,7 +3,7 @@
 Extends the smoke suite from TRN-79. Same skip guard: set GHOSTSHIP_E2E_URL
 to a live transport to run, unset to skip cleanly.
 
-    GHOSTSHIP_E2E_URL=http://academy.penguin-piano.ts.net bash tests/run.sh --e2e
+    GHOSTSHIP_E2E_URL=http://your-academy-host bash tests/run.sh --e2e
 """
 
 import os

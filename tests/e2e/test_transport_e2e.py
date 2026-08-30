@@ -2,7 +2,7 @@
 
 Requires a live transport and GHOSTSHIP_E2E_URL env var:
 
-    GHOSTSHIP_E2E_URL=http://academy.penguin-piano.ts.net bash tests/run.sh --e2e
+    GHOSTSHIP_E2E_URL=http://your-academy-host bash tests/run.sh --e2e
 
 All test classes skip cleanly when GHOSTSHIP_E2E_URL is unset — safe for CI
 runs that don't have a transport provisioned.
