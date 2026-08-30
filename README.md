@@ -148,8 +148,8 @@ See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. Th
 
 Registered as `ghostship`:
 
-|  | Tool | Description |
-|:-|:-----|:------------|
+| Tool | Name | Description |
+|:-:|:------|:-----|
 | <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
 | <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
