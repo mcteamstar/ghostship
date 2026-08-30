@@ -1,6 +1,6 @@
 ## Prerequisites
 
-- [ ] 0.1 Confirm `release/0.2.1` includes TRN-74 (container scripts) — TRN-75, 76, 77, 78, 82 already landed; rebase on latest before starting
+- [ ] 0.1 Confirm `release/0.2.1` is at latest — TRN-74, 75, 76, 77, 78, 82 all landed; rebase on latest before starting
 - [ ] 0.2 Add `transport/__init__.py` (empty file to make transport a package)
 
 ## 1. Extract registry.py
@@ -43,7 +43,7 @@
 ## 6. server.py cleanup + Containerfile
 
 - [ ] 6.1 Verify `server.py` now contains only: ASGI app, route definitions, middleware wiring, MCP tool + resource registration, login state machine, HTTP proxy handlers, background thread starts
-- [ ] 6.2 Update `transport/Containerfile` — replace individual `COPY` lines (`COPY server.py .`, `COPY security.py .`, `COPY config.py .`) with `COPY transport/ /app/`
+- [ ] 6.2 Update `transport/Containerfile` — replace individual `COPY` lines (`COPY server.py .`, `COPY security.py .`, `COPY config.py .`) with `COPY transport/ /app/`; then add `RUN rm -rf /app/container_scripts/` to exclude the crew-side scripts from the transport image (those belong in the crew image via `crews/_base/admission/Containerfile`, not here)
 - [ ] 6.3 Update all test files that import from `transport.server` to import from the correct new modules where needed
 - [ ] 6.4 Run `bash tests/run.sh` (unit + integration) — all pass
 - [ ] 6.5 Commit: `refactor: slim server.py to thin orchestration layer, update Containerfile`

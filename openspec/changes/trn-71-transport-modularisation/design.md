@@ -1,6 +1,6 @@
 ## Context
 
-`transport/server.py` (~5900 lines as of release/0.2.1 after TRN-74–78 merged) + `transport/security.py` (already extracted in TRN-70) + `transport/config.py` (already extracted in TRN-75). See proposal.md for motivation. This design captures the decisions made before implementation to guide Ghost through the extraction.
+`transport/server.py` (~5750 lines as of release/0.2.1 after TRN-74–78 merged) + `transport/security.py` (already extracted in TRN-70) + `transport/config.py` (already extracted in TRN-75) + `transport/container_scripts/` (14 helper scripts baked into the crew image at `/scripts/`, extracted in TRN-74 — not part of the modularisation, stays as-is). See proposal.md for motivation. This design captures the decisions made before implementation to guide Ghost through the extraction.
 
 ## Goals / Non-Goals
 
@@ -13,6 +13,7 @@
 **Pre-existing modules (do not create — import from them):**
 - `transport/config.py` — `Config` dataclass, all env var defaults (extracted in TRN-75)
 - `transport/security.py` — policy signing/verification (extracted in TRN-70)
+- `transport/container_scripts/` — 14 helper scripts baked into crew images at `/scripts/` (extracted in TRN-74); these are **not** Python modules imported by server.py — they are exec'd inside crew containers via `podman exec ... python3 /scripts/name.py`; do not move or rename them
 
 ### Handler modules (own mutable state)
 
@@ -35,7 +36,7 @@
 - Note: `_http` and `_async_http` also used by proxy handlers in `server.py` — import from `podman` there
 
 **`files.py`**
-- Owns: `_FILE_SECRET`, `_sign_file_url()`, `_sign_upload_url()`, `_verify_file_token()`, `_resolve_public_url_base()`, `_build_outer_transfer_tar()`, `_cleanup_transfer_stage()`, `_transfer_upload()`, `_TarMemberStream`, `_ResponseChunkReader`, `_handle_file_get()`, `_handle_file_put()`; after TRN-74 the inline shell script constants are replaced by file-based scripts in `transport/container_scripts/`
+- Owns: `_FILE_SECRET`, `_sign_file_url()`, `_sign_upload_url()`, `_verify_file_token()`, `_resolve_public_url_base()`, `_build_outer_transfer_tar()`, `_cleanup_transfer_stage()`, `_transfer_upload()`, `_TarMemberStream`, `_ResponseChunkReader`, `_handle_file_get()`, `_handle_file_put()`; TRN-74 replaced inline shell script constants with calls to `/scripts/transfer_raw.py` and `/scripts/transfer_cleanup.py` — no inline script constants remain
 - Depends on: `podman`, `registry`, `config`
 
 ### Thin orchestration (stays in server.py)
@@ -90,6 +91,8 @@ to:
 COPY transport/ /app/
 ```
 This requires `transport/__init__.py` to exist (added in step 1). All test imports of `transport.server` continue to work; new imports like `transport.registry` work from step 1 onwards.
+
+Note: `transport/container_scripts/` must be excluded from the transport image — those scripts are baked into the **crew image** by `install.sh` (via `crews/_base/admission/Containerfile`), not the transport image. Add a `.dockerignore` or use an explicit `COPY transport/*.py /app/` + `COPY transport/*/ /app/` pattern that excludes `container_scripts/`. The simplest approach: `COPY transport/ /app/` then `RUN rm -rf /app/container_scripts/` in the Containerfile. Alternatively keep the individual `COPY` lines for each module.
 
 ## Constraints
 
