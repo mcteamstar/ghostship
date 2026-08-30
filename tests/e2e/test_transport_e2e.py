@@ -11,79 +11,13 @@ Optional:
     GHOSTSHIP_API_KEY — if set, the auth gate test also runs.
 """
 
-import json
 import os
 import time
 import unittest
 
 import httpx
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
-GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "").rstrip("/")
-GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
-
-_SKIP_REASON = "GHOSTSHIP_E2E_URL not set"
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _mcp_call(tool: str, *, api_key: str = "", **kwargs) -> dict:
-    """POST a JSON-RPC tool call to /mcp and return the parsed result dict.
-
-    The transport uses Streamable HTTP (MCP spec): a plain POST returns an SSE
-    response with a single ``event: message`` frame containing the JSON-RPC
-    response.  This helper peels off the SSE envelope and returns the
-    ``result`` field (or raises on error).
-    """
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {"name": tool, "arguments": kwargs},
-        "id": 1,
-    }
-
-    resp = httpx.post(
-        f"{GHOSTSHIP_E2E_URL}/mcp",
-        json=payload,
-        headers=headers,
-        timeout=60.0,
-    )
-    resp.raise_for_status()
-
-    # Parse SSE envelope: lines like "event: message" and "data: {...}"
-    data_line = None
-    for line in resp.text.splitlines():
-        if line.startswith("data:"):
-            data_line = line[len("data:"):].strip()
-            break
-
-    if data_line is None:
-        raise ValueError(f"No data line in SSE response: {resp.text!r}")
-
-    rpc = json.loads(data_line)
-    if "error" in rpc:
-        raise RuntimeError(f"MCP error: {rpc['error']}")
-
-    # result.content is a list of {text, type} blocks — unwrap the first text
-    mcp_result = rpc["result"]
-    content = mcp_result.get("content", [])
-    text = content[0]["text"] if content else ""
-
-    if mcp_result.get("isError"):
-        return {"error": text}
-
-    if not text:
-        return {}
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"error": text}
+from tests.e2e.helpers import GHOSTSHIP_E2E_URL, GHOSTSHIP_API_KEY, _SKIP_REASON, mcp_call as _mcp_call, is_error as _is_error
 
 
 # ── 2. Health check ───────────────────────────────────────────────────────────
@@ -116,6 +50,7 @@ class TestCrewLifecycle(unittest.TestCase):
 
     def setUp(self):
         # Nuke any stale crew from a previous failed test
+        print(f"\n[e2e] setUp: nuking stale {self.CREW_ID}...", flush=True)
         try:
             _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
         except Exception:
@@ -129,6 +64,7 @@ class TestCrewLifecycle(unittest.TestCase):
 
     def test_launch_and_nuke(self):
         # Launch
+        print(f"\n[e2e] launching {self.CREW_ID}...", flush=True)
         result = _mcp_call("launch", crew_id=self.CREW_ID)
         self.assertEqual(result.get("crew_id"), self.CREW_ID)
         self.assertEqual(result.get("status"), "ready")
@@ -179,6 +115,7 @@ class TestDispatchPickup(unittest.TestCase):
         )
         task_id = dispatch.get("task_id")
         self.assertIsNotNone(task_id)
+        print(f"[e2e] task dispatched: {task_id}", flush=True)
 
         # Poll until done (5s interval, 120s max)
         deadline = time.time() + 120
@@ -188,6 +125,7 @@ class TestDispatchPickup(unittest.TestCase):
             if status.get("done"):
                 result = status
                 break
+            print(f"[e2e] polling {task_id} ({int(status.get('elapsed_secs', 0))}s)...", flush=True)
             time.sleep(5)
 
         self.assertIsNotNone(result, "Task did not complete within 120s")
