@@ -94,12 +94,12 @@ For each class: move → update patch targets → delete from test_transport.py 
 
 ### → test_server.py
 
-- [ ] 2.17 Migrate `TaskOrchestrationTests` → `test_server.py`; these test MCP tools (`dispatch`, `steer`) — patch `server.X` for call-site mocks, `lifecycle.X` for internal deps
-- [ ] 2.18 Migrate `PickupTimeoutTests` → `test_server.py`; `_crew_api` is called via `_crew_api_with_recovery` in lifecycle — patch `lifecycle._crew_api as api`
-- [ ] 2.20 Migrate `PersonaValidationTests` → `test_server.py`
-- [ ] 2.21 Migrate `ResourceJobsTests` → `test_server.py`
-- [ ] 2.22 Migrate any remaining MCP tool test classes → `test_server.py`
-- [ ] 2.23 Commit: `refactor(trn-85): migrate server/MCP tool tests to test_server.py`
+- [x] 2.17 Migrate `TaskOrchestrationTests` → `test_server.py`; these test MCP tools (`dispatch`, `steer`) — patch `server.X` for call-site mocks, `lifecycle.X` for internal deps
+- [x] 2.18 Migrate `PickupTimeoutTests` → `test_server.py`; `_crew_api` is called via `_crew_api_with_recovery` in lifecycle — patch `lifecycle._crew_api as api`
+- [x] 2.20 Migrate `PersonaValidationTests` → `test_server.py`
+- [x] 2.21 Migrate `ResourceJobsTests` → `test_server.py`
+- [x] 2.22 Migrate any remaining MCP tool test classes → `test_server.py` (none remaining — `TestCrewTypesTool` correctly migrated to `test_academy.py` by the academy Ghost; no `CrewsToolTests` exists in `test_transport.py`. All server-owned MCP-tool classes from design.md §3 accounted for)
+- [x] 2.23 Commit: `refactor(trn-85): migrate server/MCP tool tests to test_server.py`
 
 ## 3. Cleanup
 
