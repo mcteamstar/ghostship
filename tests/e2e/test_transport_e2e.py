@@ -70,9 +70,20 @@ def _mcp_call(tool: str, *, api_key: str = "", **kwargs) -> dict:
         raise RuntimeError(f"MCP error: {rpc['error']}")
 
     # result.content is a list of {text, type} blocks — unwrap the first text
-    content = rpc["result"]["content"]
-    text = content[0]["text"] if content else "{}"
-    return json.loads(text)
+    mcp_result = rpc["result"]
+    content = mcp_result.get("content", [])
+    text = content[0]["text"] if content else ""
+
+    if mcp_result.get("isError"):
+        return {"error": text}
+
+    if not text:
+        return {}
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"error": text}
 
 
 # ── 2. Health check ───────────────────────────────────────────────────────────
