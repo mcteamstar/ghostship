@@ -19,10 +19,10 @@
 
 ## 3. Extract files.py
 
-- [ ] 3.1 Create `transport/files.py` with `_FILE_SECRET`, `_sign_file_url()`, `_sign_upload_url()`, `_verify_file_token()`, `_resolve_public_url_base()`, `_build_outer_transfer_tar()`, `_cleanup_transfer_stage()`, `_transfer_upload()`, `_TarMemberStream`, `_ResponseChunkReader`, `_handle_file_get()`, `_handle_file_put()`; remove now-unused transfer script constants if TRN-74 has landed
-- [ ] 3.2 Update `server.py` to import from `files` — remove moved definitions
-- [ ] 3.3 Run `bash tests/run.sh --unit` — all pass
-- [ ] 3.4 Commit: `refactor: extract files.py from server.py`
+- [x] 3.1 Create `transport/files.py` with `_FILE_SECRET`, `_sign_file_url()`, `_sign_upload_url()`, `_verify_file_token()`, `_resolve_public_url_base()`, `_build_outer_transfer_tar()`, `_cleanup_transfer_stage()`, `_transfer_upload()`, `_TarMemberStream`, `_ResponseChunkReader`, `_handle_file_get()`, `_handle_file_put()`; remove now-unused transfer script constants if TRN-74 has landed
+- [x] 3.2 Update `server.py` to import from `files` — remove moved definitions
+- [x] 3.3 Run `bash tests/run.sh --unit` — all pass
+- [x] 3.4 Commit: `refactor: extract files.py from server.py`
 
 ## 4. Extract captain.py
 

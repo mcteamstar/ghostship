@@ -56,6 +56,7 @@ from tests.unit.test_file_transfer import server
 import httpx
 import transport.registry as _registry_mod
 import transport.podman as _podman_mod
+import transport.files as _files_mod
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -210,10 +211,10 @@ class FileGetRegressionTests(unittest.TestCase):
     ) -> Any:
         crew = {"container": "gs-demo"}
         with (
-            patch.object(server, "KIRO_WORKSPACE_ROOT", str(workspace)),
+            patch.object(_files_mod, "KIRO_WORKSPACE_ROOT", str(workspace)),
             patch.object(server, "_require_crew", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(_files_mod, "_get_podman", return_value=podman),
         ):
             return asyncio.run(server._handle_file_get(request))
 
@@ -414,10 +415,10 @@ class BundleGetRegressionTests(unittest.TestCase):
     ) -> Any:
         crew = {"container": "gs-demo"}
         with (
-            patch.object(server, "KIRO_WORKSPACE_ROOT", str(workspace)),
+            patch.object(_files_mod, "KIRO_WORKSPACE_ROOT", str(workspace)),
             patch.object(server, "_require_crew", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(_files_mod, "_get_podman", return_value=podman),
         ):
             return asyncio.run(server._handle_file_get(request))
 
@@ -615,22 +616,23 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
     def test_sign_file_url_uses_ga_public_url_when_set(self) -> None:
         # TRN-75: GA_HOST_URL is read once at startup into cfg.ga_host_url;
         # patch the resolved config field rather than os.environ.
-        with patch.object(server.cfg, "ga_host_url", "https://academy.example.com"):
+        # TRN-71: _resolve_public_url_base moved to transport.files — patch its cfg.
+        with patch.object(_files_mod.cfg, "ga_host_url", "https://academy.example.com"):
             url = server._sign_file_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_sign_file_url_uses_localhost_default_when_unset(self) -> None:
-        with patch.object(server.cfg, "ga_host_url", ""):
+        with patch.object(_files_mod.cfg, "ga_host_url", ""):
             url = server._sign_file_url("demo", "repo")
         self.assertIn("localhost", url, url)
 
     def test_sign_upload_url_uses_ga_public_url_when_set(self) -> None:
-        with patch.object(server.cfg, "ga_host_url", "https://academy.example.com"):
+        with patch.object(_files_mod.cfg, "ga_host_url", "https://academy.example.com"):
             url = server._sign_upload_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_evac_presigned_url_uses_ga_public_url_base(self) -> None:
-        with patch.object(server.cfg, "ga_host_url", "https://cdn.example.com"):
+        with patch.object(_files_mod.cfg, "ga_host_url", "https://cdn.example.com"):
             url = server._sign_file_url("crew1", "workspace/bundle.tar")
         self.assertEqual(self._url_base(url), "https://cdn.example.com")
         self.assertIn("/files/crew1/workspace/bundle.tar", url)
@@ -678,11 +680,11 @@ class LifecycleRegressionTests(unittest.TestCase):
         request = Request("demo", "repo/file", b"payload")
         crew = {"container": "gs-demo"}
         with (
-            patch.object(server, "_verify_file_token", return_value=True),
+            patch.object(_files_mod, "_verify_file_token", return_value=True),
             patch.object(server, "_require_crew", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew) as ensure,
-            patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_transfer_upload", return_value="wrote payload"),
+            patch.object(_files_mod, "_get_podman", return_value=Mock()),
+            patch.object(_files_mod, "_transfer_upload", return_value="wrote payload"),
         ):
             response = asyncio.run(server._handle_file_put(request))
 
