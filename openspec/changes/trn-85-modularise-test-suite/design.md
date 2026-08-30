@@ -109,16 +109,36 @@ Check `test_transport.py` for module-level helper functions before creating stub
 
 ### 5. Migration strategy
 
-Class-by-class, one commit per module file, suite green after each commit:
+This change is structured for Captain-driven parallel execution:
 
-1. `grep -n "^class " tests/unit/test_transport.py` — get full class list
-2. Move one class at a time to the destination file
-3. Collapse dual-patches to single patches (lifecycle owns the alias)
-4. Delete the class from `test_transport.py`
-5. `bash tests/run.sh --unit` — must pass before committing
-6. Commit: `refactor(trn-85): migrate <ClassName> to test_<module>.py`
+```
+Phase 1 (serial):   Ghost does inventory + stubs + shared helpers (tasks 1.1–1.5)
+                    → mails captain "phase 1 done"
+Phase 2 (parallel): Captain dispatches 5 Ghosts simultaneously:
+    Ghost A → test_registry.py   (tasks 2.1–2.2)
+    Ghost B → test_podman.py     (tasks 2.3–2.5)
+    Ghost C → test_captain.py    (tasks 2.6–2.8)
+    Ghost D → test_lifecycle.py  (tasks 2.9–2.16)  ← largest batch
+    Ghost E → test_server.py     (tasks 2.17–2.23)
+                    each mails captain "<module> migration done"
+Phase 3 (serial):   Captain dispatches cleanup Ghost after all 5 report in
+                    (tasks 3.1–3.5)
+```
 
-Final commit: delete `test_transport.py`, run full suite, commit.
+Each Phase 2 Ghost should:
+1. Read `design.md` before touching anything — the patch rules are critical
+2. Record baseline: `bash tests/run.sh --unit 2>&1 | grep "^Ran"`
+3. Migrate one class at a time, run `bash tests/run.sh --unit` after each class
+4. Commit after all classes for that module are done
+5. Mail `captain@localhost` with subject `trn-85 <module> done` and pass/fail summary
+
+Parallel Ghosts running `bash tests/run.sh --unit` simultaneously is safe — tests are
+read-only and don't mutate shared state.
+
+Captain's standing order should: dispatch Phase 1 Ghost on first cycle, wait for
+"phase 1 done" mail, then dispatch all 5 Phase 2 Ghosts simultaneously, collect all
+5 "<module> migration done" mails, then dispatch the Phase 3 cleanup Ghost, and
+escalate to the Admiral on any failure.
 
 ### 6. Verification
 

@@ -2,6 +2,16 @@
 
 - [ ] 0.1 TRN-71 fully landed — `transport/lifecycle.py` committed, all 421 unit tests passing
 
+## 0. Captain standing order
+
+The Admiral sets up Captain with a standing order that drives the three phases. Captain dispatches Ghosts, collects their mail, and advances phases automatically.
+
+- [ ] 0.2 Launch a crew, seed with `release/0.2.1`, and set Captain's standing order:
+  - **Phase 1:** On first cycle (no "phase 1 done" mail yet), dispatch Ghost to do inventory + stubs (tasks 1.1–1.5). Ghost mails `captain@localhost` with subject `trn-85 phase 1 done` when complete.
+  - **Phase 2:** When "phase 1 done" received and no Phase 2 Ghosts dispatched yet, dispatch 5 Ghosts simultaneously — one per module (tasks 2.x). Each Ghost mails `captain@localhost` with subject `trn-85 <module> done`.
+  - **Phase 3:** When all 5 `trn-85 * done` mails received, dispatch a single Ghost for cleanup (tasks 3.1–3.5). Ghost mails `captain@localhost` with subject `trn-85 cleanup done`.
+  - **On failure:** Any Ghost that reports a failure → escalate to `admiral@localhost` with the failing module and error summary.
+
 ## 1. Inventory and setup
 
 - [ ] 1.1 Get full class list: `grep -n "^class " tests/unit/test_transport.py` — note each class name and line number
