@@ -174,8 +174,6 @@ See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. Th
 
 ### MCP Tools
 
-![Usage flow: install → connect → launch → dispatch → pickup → nuke](docs/images/docs-usage-flow.png)
-
 Registered as `ghostship`:
 
 | Tool | Name | Description |
