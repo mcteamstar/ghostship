@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.2.0"
+  version: "0.2.1"
 ---
 
 # Ghostship Command
@@ -22,6 +22,14 @@ already done. Want to add new agent personas, skills, or MCP servers to the
 catalogue, or build a new crew composition? That's `ghostship-capability`.
 
 ## Mental model
+
+**Intended workflow order:** `launch → supply → dispatch → pickup/steer → evac → nuke`.
+That is the spine of everything below — a crew is launched, seeded with a
+repo, given tasks, watched (and redirected) while they run, its output pulled
+out, and finally torn down. For any non-trivial work (more than ~20 min),
+don't drive that relay by hand — hand it to **Captain autopilot** (a recurring
+Raven check-in that runs the whole SDD lifecycle and survives timeouts and
+restarts); see [Autopilot — Captain](#autopilot--captain-prefer-this-for-non-trivial-work).
 
 ```
 Fleet (you, the Admiral, over MCP)
@@ -46,11 +54,12 @@ Fleet (you, the Admiral, over MCP)
   which agents/skills/steering it ships with. Not the same axis as *persona*
   (which agent a given task runs on).
 
-## Discover before assuming anything
+## Step 0 — Discover before assuming anything
 
-Compositions, personas, and standing-order templates are configurable per
-install and can differ from what's described below. Before planning work,
-read the live state instead of hardcoding it:
+Before you `launch`, `dispatch`, or plan any of the workflow steps above,
+read the live state. Compositions, personas, and standing-order templates are
+configurable per install and can differ from what's described below. Don't
+hardcode them:
 
 - `crews()` — every live crew, its status, and its currently running tasks.
 - resource `transport://compositions` — available `composition` values for `launch`.
@@ -271,6 +280,48 @@ Two ways to see mail state without a dispatch:
 To read full mail content, dispatch **raven** with a task asking it to check
 a specific mailbox and report back. Raven is the watcher/messenger persona;
 don't use ghost for mail-reading tasks.
+
+## Git author identity
+
+By default, each agent commits under its own persona identity (e.g.
+`Ghost <ghost@localhost>`). When you evac and cherry-pick those commits into
+your local repo, the persona labels appear in your history.
+
+**Option 1 — configure upfront (recommended).** Add to your `ghostship.conf`:
+
+```bash
+GA_GIT_AUTHOR_NAME="Your Name"
+GA_GIT_AUTHOR_EMAIL="you@example.com"
+```
+
+Then reinstall (`./install.sh --config ghostship.conf`). All agents in every
+new crew will commit under your identity. Existing crews are not affected —
+nuke and relaunch to pick up the change.
+
+**Option 2 — rewrite after cherry-pick.** If you've already evac'd commits
+with persona labels, rewrite them in your local repo:
+
+```bash
+# Rewrite the last N commits (adjust as needed)
+git rebase --onto HEAD~N HEAD~N --exec \
+  'GIT_COMMITTER_NAME="Your Name" GIT_COMMITTER_EMAIL="you@example.com" \
+   git commit --amend --reset-author --no-edit'
+
+# Or for a range of commits:
+git filter-branch --env-filter '
+  GIT_AUTHOR_NAME="Your Name"
+  GIT_AUTHOR_EMAIL="you@example.com"
+  GIT_COMMITTER_NAME="Your Name"
+  GIT_COMMITTER_EMAIL="you@example.com"
+' -- <first-commit>^..HEAD
+```
+
+Or using `git-filter-repo` (preferred, faster):
+
+```bash
+git filter-repo --name-callback 'return b"Your Name"' \
+                --email-callback 'return b"you@example.com"'
+```
 
 ## Guardrails
 

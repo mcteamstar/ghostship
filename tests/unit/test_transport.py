@@ -26,6 +26,7 @@
 #   LoginFlowEdgeCaseTests, LoginGuardClearTests  (trn-17 additions)
 #   ActiveCrewLimitTests  (trn-40 additions)
 #   NukeScheduleTests  (trn-59 additions)
+#   ReadAuthFromCrewTests  (trn-78 additions)
 
 
 #   ScheduleMonitorTests, SchedulePersistenceTests  (trn-39 additions)
@@ -34,11 +35,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import stat
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -49,8 +52,40 @@ from urllib.parse import parse_qs, urlsplit
 from unittest.mock import Mock, patch
 
 from tests.unit.test_file_transfer import server
+import transport.lifecycle as lifecycle
 
 import httpx
+import transport.registry as _registry_mod
+import transport.podman as _podman_mod
+import transport.files as _files_mod
+import transport.captain as _captain_mod
+
+# ── container_scripts import (TRN-74) ────────────────────────────────────────
+# _inject_policy / _patch_crew_config now invoke baked scripts under
+# transport/container_scripts/ instead of inline `python3 -c` strings. Import
+# the policy signer directly so policy-injection tests can run the SAME code
+# the container runs, decoding the base64 payload from the captured argv.
+import importlib as _importlib
+
+_CONTAINER_SCRIPTS_DIR = (
+    Path(__file__).resolve().parents[2] / "transport" / "container_scripts"
+)
+if str(_CONTAINER_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONTAINER_SCRIPTS_DIR))
+_inject_policy_script = _importlib.import_module("inject_policy")
+
+
+def _run_inject_policy_script(cmd: list[str], crew_dir: str) -> str:
+    """Decode the payload argv from a captured inject_policy.py invocation and
+    run the real script logic against ``crew_dir``.
+
+    ``cmd`` is the argv captured from container_exec_checked, of the form
+    ``["python3", ".../inject_policy.py", <crew_dir>, <payload_b64>]``.
+    """
+    payload = json.loads(base64.b64decode(cmd[-1]).decode())
+    return _inject_policy_script.inject_policy(
+        crew_dir, payload["policy"], payload["admiral_secret"]
+    )
 
 
 class Request:
@@ -152,7 +187,9 @@ class FileGetRegressionTests(unittest.TestCase):
     def _signed_request(self, path: str, ref: str) -> Request:
         crew = {"container": "gs-demo"}
         with (
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             result = server.evac(path, ref=ref, crew_id="demo")
@@ -178,10 +215,12 @@ class FileGetRegressionTests(unittest.TestCase):
     ) -> Any:
         crew = {"container": "gs-demo"}
         with (
-            patch.object(server, "KIRO_WORKSPACE_ROOT", str(workspace)),
+            patch.object(_files_mod, "KIRO_WORKSPACE_ROOT", str(workspace)),
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(_files_mod, "_get_podman", return_value=podman),
         ):
             return asyncio.run(server._handle_file_get(request))
 
@@ -275,8 +314,10 @@ class BundleGetPodman:
 class BundleUploadToolTests(unittest.TestCase):
     def test_supply_rejects_conflicting_modes_before_lookup_or_signing(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew") as require,
             patch.object(server, "_require_crew") as require,
-            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(lifecycle, "_ensure_crew_running") as ensure,
+            patch.object(server, "_ensure_crew_running"),
             patch.object(server, "_sign_upload_url") as sign,
         ):
             result = server.supply(
@@ -297,7 +338,9 @@ class BundleUploadToolTests(unittest.TestCase):
             {"error": "Invalid path — no traversal allowed"},
         )
         with (
+            patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
+            patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(
                 server,
@@ -344,7 +387,9 @@ class BundleGetRegressionTests(unittest.TestCase):
     @staticmethod
     def _signed_bundle_request(ref: str | None = None) -> Request:
         with (
+            patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
+            patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
         ):
             result = server.evac("repo", ref=ref, crew_id="demo", bundle=True)
@@ -382,10 +427,12 @@ class BundleGetRegressionTests(unittest.TestCase):
     ) -> Any:
         crew = {"container": "gs-demo"}
         with (
-            patch.object(server, "KIRO_WORKSPACE_ROOT", str(workspace)),
+            patch.object(_files_mod, "KIRO_WORKSPACE_ROOT", str(workspace)),
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(_files_mod, "_get_podman", return_value=podman),
         ):
             return asyncio.run(server._handle_file_get(request))
 
@@ -496,7 +543,9 @@ class BundleGetRegressionTests(unittest.TestCase):
             workspace = Path(temporary) / "workspace"
             workspace.mkdir()
             with (
+                patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
                 patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
+                patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
                 patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             ):
                 result = server.evac(
@@ -527,7 +576,9 @@ class BundleHardeningTests(unittest.TestCase):
     def test_bundle_url_round_trips_url_significant_ref(self) -> None:
         ref = "feature&client#linux"
         with (
+            patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
+            patch.object(lifecycle, "_ensure_crew_running", return_value={"container": "gs-demo"}),
             patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo"}),
         ):
             result = server.evac("repo", ref=ref, crew_id="demo", bundle=True)
@@ -581,30 +632,25 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
         return f"{parts.scheme}://{parts.netloc}"
 
     def test_sign_file_url_uses_ga_public_url_when_set(self) -> None:
-        env = {"GA_HOST_URL": "https://academy.example.com"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        # TRN-75: GA_HOST_URL is read once at startup into cfg.ga_host_url;
+        # patch the resolved config field rather than os.environ.
+        # TRN-71: _resolve_public_url_base moved to transport.files — patch its cfg.
+        with patch.object(_files_mod.cfg, "ga_host_url", "https://academy.example.com"):
             url = server._sign_file_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_sign_file_url_uses_localhost_default_when_unset(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GA_HOST_URL", None)
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        with patch.object(_files_mod.cfg, "ga_host_url", ""):
             url = server._sign_file_url("demo", "repo")
         self.assertIn("localhost", url, url)
 
     def test_sign_upload_url_uses_ga_public_url_when_set(self) -> None:
-        env = {"GA_HOST_URL": "https://academy.example.com"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        with patch.object(_files_mod.cfg, "ga_host_url", "https://academy.example.com"):
             url = server._sign_upload_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
 
     def test_evac_presigned_url_uses_ga_public_url_base(self) -> None:
-        env = {"GA_HOST_URL": "https://cdn.example.com"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GA_MCP_PUBLIC_URL", None)
+        with patch.object(_files_mod.cfg, "ga_host_url", "https://cdn.example.com"):
             url = server._sign_file_url("crew1", "workspace/bundle.tar")
         self.assertEqual(self._url_base(url), "https://cdn.example.com")
         self.assertIn("/files/crew1/workspace/bundle.tar", url)
@@ -624,7 +670,9 @@ class LifecycleRegressionTests(unittest.TestCase):
             return "http://localhost/files/demo/repo/file"
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
+            patch.object(lifecycle, "_ensure_crew_running", side_effect=ensure),
             patch.object(server, "_ensure_crew_running", side_effect=ensure),
             patch.object(server, "_sign_upload_url", side_effect=sign),
         ):
@@ -635,6 +683,7 @@ class LifecycleRegressionTests(unittest.TestCase):
 
     def test_supply_returns_restart_runtime_error_without_signing(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(server, "_require_crew", return_value={"container": "gs-demo"}),
             patch.object(
                 server,
@@ -652,11 +701,13 @@ class LifecycleRegressionTests(unittest.TestCase):
         request = Request("demo", "repo/file", b"payload")
         crew = {"container": "gs-demo"}
         with (
-            patch.object(server, "_verify_file_token", return_value=True),
+            patch.object(_files_mod, "_verify_file_token", return_value=True),
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
-            patch.object(server, "_ensure_crew_running", return_value=crew) as ensure,
-            patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_transfer_upload", return_value="wrote payload"),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew) as ensure,
+            patch.object(server, "_ensure_crew_running", return_value=crew),
+            patch.object(_files_mod, "_get_podman", return_value=Mock()),
+            patch.object(_files_mod, "_transfer_upload", return_value="wrote payload"),
         ):
             response = asyncio.run(server._handle_file_put(request))
 
@@ -673,24 +724,41 @@ class LifecycleRegressionTests(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", data_dir),
                 patch.object(server, "REGISTRY_PATH", registry),
-                patch.object(server, "_wait_gateway", return_value=True),
-                patch.object(server, "_inject_auth"),
-                patch.object(server, "_patch_crew_config"),
-                patch.object(server, "_copy_agents"),
-                patch.object(server, "_copy_skills"),
-                patch.object(server, "_copy_steering"),
-                patch.object(server, "_seed_openspec_store"),
-                patch.object(server, "_patch_models"),
-                patch.object(server, "_mint_cookie", return_value="cookie"),
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry),
             ):
-                result = server._finish_crew_setup(
-                    podman,
-                    "demo",
-                    "gs-demo",
-                    "gs-vol-demo",
-                    "gs-home-demo",
-                    "auth-b64",
-                )
+                _patches = [
+                    patch.object(lifecycle, "_wait_gateway", return_value=True),
+                    patch.object(server, "_wait_gateway", return_value=True),
+                    patch.object(lifecycle, "_inject_auth"),
+                    patch.object(server, "_inject_auth"),
+                    patch.object(lifecycle, "_patch_crew_config"),
+                    patch.object(server, "_patch_crew_config"),
+                    patch.object(lifecycle, "_copy_agents"),
+                    patch.object(server, "_copy_agents"),
+                    patch.object(lifecycle, "_copy_skills"),
+                    patch.object(server, "_copy_skills"),
+                    patch.object(lifecycle, "_copy_steering"),
+                    patch.object(server, "_copy_steering"),
+                    patch.object(lifecycle, "_seed_openspec_store"),
+                    patch.object(server, "_seed_openspec_store"),
+                    patch.object(lifecycle, "_patch_models"),
+                    patch.object(server, "_patch_models"),
+                    patch.object(lifecycle, "_mint_cookie", return_value="cookie"),
+                    patch.object(server, "_mint_cookie", return_value="cookie"),
+                ]
+                import contextlib
+                with contextlib.ExitStack() as stack:
+                    for p in _patches:
+                        stack.enter_context(p)
+                    result = server._finish_crew_setup(
+                        podman,
+                        "demo",
+                        "gs-demo",
+                        "gs-vol-demo",
+                        "gs-home-demo",
+                        "auth-b64",
+                    )
 
             self.assertEqual(result["status"], "ready")
             record = registry.read_text()
@@ -708,10 +776,15 @@ class LifecycleRegressionTests(unittest.TestCase):
         server._captain_order_locks["demo"] = threading.Lock()
         try:
             with (
+                patch.object(lifecycle, "_get_crew", return_value=crew),
                 patch.object(server, "_get_crew", return_value=crew),
+                patch.object(lifecycle, "_get_podman", return_value=Mock()),
                 patch.object(server, "_get_podman", return_value=Mock()),
+                patch.object(lifecycle, "_cleanup_crew"),
                 patch.object(server, "_cleanup_crew"),
+                patch.object(lifecycle, "_load_registry", return_value=registry),
                 patch.object(server, "_load_registry", return_value=registry),
+                patch.object(lifecycle, "_save_registry"),
                 patch.object(server, "_save_registry"),
             ):
                 result = server.nuke("demo", confirm=True)
@@ -731,9 +804,13 @@ class LifecycleRegressionTests(unittest.TestCase):
         registry = {"crews": {"half": partial_crew}}
         mock_podman = Mock()
         with (
+            patch.object(lifecycle, "_get_crew", return_value=partial_crew),
             patch.object(server, "_get_crew", return_value=partial_crew),
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
             patch.object(server, "_get_podman", return_value=mock_podman),
+            patch.object(lifecycle, "_load_registry", return_value=registry),
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
             result = server.nuke("half", confirm=True)
@@ -750,7 +827,10 @@ class LifecycleRegressionTests(unittest.TestCase):
             "container": "gs-half",
             "status": "launching",
         }
-        with patch.object(server, "_get_crew", return_value=partial_crew):
+        with (
+            patch.object(lifecycle, "_get_crew", return_value=partial_crew),
+            patch.object(server, "_get_crew", return_value=partial_crew),
+        ):
             result = server.nuke("half", confirm=False)
 
         self.assertIn("warning", result)
@@ -783,8 +863,11 @@ class NukeScheduleTests(unittest.TestCase):
         ]
         reg = self._reg_with_schedules(schedules)
         with (
+            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
             patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value={"agents": []}),
             patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
         ):
             result = server.nuke("demo", confirm=False)
@@ -800,8 +883,11 @@ class NukeScheduleTests(unittest.TestCase):
         """3.2 — dry-run returns scheduled_jobs:0 and empty list when no schedules."""
         reg = self._reg_with_schedules([])
         with (
+            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
             patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value={"agents": []}),
             patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
         ):
             result = server.nuke("demo", confirm=False)
@@ -833,11 +919,17 @@ class NukeScheduleTests(unittest.TestCase):
             cleanup_called_after.extend([p for m, p in api_calls if m == "DELETE"])
 
         with (
+            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
             patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(lifecycle, "_crew_api", side_effect=fake_crew_api),
             patch.object(server, "_crew_api", side_effect=fake_crew_api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_cleanup_crew", side_effect=fake_cleanup),
             patch.object(server, "_cleanup_crew", side_effect=fake_cleanup),
         ):
             result = server.nuke("demo", confirm=True)
@@ -866,11 +958,17 @@ class NukeScheduleTests(unittest.TestCase):
             return {}
 
         with (
+            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
             patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(lifecycle, "_crew_api", side_effect=failing_crew_api),
             patch.object(server, "_crew_api", side_effect=failing_crew_api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_cleanup_crew") as cleanup,
             patch.object(server, "_cleanup_crew") as cleanup,
             self.assertLogs("transport", level="WARNING") as log_ctx,
         ):
@@ -893,11 +991,17 @@ class NukeScheduleTests(unittest.TestCase):
             return {}
 
         with (
+            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
             patch.object(server, "_get_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(lifecycle, "_crew_api", side_effect=fake_crew_api),
             patch.object(server, "_crew_api", side_effect=fake_crew_api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_cleanup_crew") as cleanup,
             patch.object(server, "_cleanup_crew") as cleanup,
         ):
             result = server.nuke("demo", confirm=True)
@@ -930,9 +1034,13 @@ class PickupTimeoutTests(unittest.TestCase):
     def test_pickup_timeout_zero_returns_immediately_single_task(self) -> None:
         """5.1 — pickup with timeout_secs=0 returns immediately for single-task."""
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api", return_value=self._task_response(False)) as api,
+            patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)) as api,
+            patch.object(server, "_crew_api", return_value=self._task_response(False)),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
             patch.object(server, "_read_all_mail_subjects", return_value={}),
@@ -952,9 +1060,13 @@ class PickupTimeoutTests(unittest.TestCase):
         """5.1 — pickup with timeout_secs=0 returns immediately for list-all."""
         agents = [{"id": "a", "done": False, "task": "t1", "agent": "ghost", "elapsed": 5}]
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api", return_value={"agents": agents}) as api,
+            patch.object(lifecycle, "_crew_api", return_value={"agents": agents}) as api,
+            patch.object(server, "_crew_api", return_value={"agents": agents}),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
             patch.object(server, "_read_all_mail_subjects", return_value={}),
@@ -976,13 +1088,21 @@ class PickupTimeoutTests(unittest.TestCase):
             clock[0] += seconds
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[self._task_response(False), self._task_response(True)],
+            ) as api,
             patch.object(
                 server,
                 "_crew_api",
                 side_effect=[self._task_response(False), self._task_response(True)],
-            ) as api,
+            ) ,
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
             patch.object(server, "_read_all_mail_subjects", return_value={}),
@@ -1004,9 +1124,13 @@ class PickupTimeoutTests(unittest.TestCase):
             clock[0] += seconds
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_crew_api", return_value=self._task_response(False)),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
             patch.object(server, "_read_all_mail_subjects", return_value={}),
@@ -1030,9 +1154,13 @@ class PickupTimeoutTests(unittest.TestCase):
             clock[0] += seconds
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_crew_api", return_value=self._task_response(False)),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={}),
             patch.object(server, "_read_all_mail_subjects", return_value={}),
@@ -1053,9 +1181,13 @@ class PickupTimeoutTests(unittest.TestCase):
     def test_pickup_mail_counts_present_single_task(self) -> None:
         """5.4 — mail counts present in single-task response."""
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=self._task_response(True, agent="ghost")),
             patch.object(server, "_crew_api", return_value=self._task_response(True, agent="ghost")),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={"ghost": 3, "admiral": 1}),
             patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["hello"], "admiral": ["order1"]}),
@@ -1072,9 +1204,13 @@ class PickupTimeoutTests(unittest.TestCase):
         agents = [{"id": "a", "done": True, "task": "t1", "agent": "ghost", "elapsed": 5}]
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
             patch.object(server, "_crew_api", return_value={"agents": agents}),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={"ghost": 2, "admiral": 1}),
             patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["done"], "admiral": ["check"]}),
@@ -1105,9 +1241,13 @@ class PickupTimeoutTests(unittest.TestCase):
             return {"admiral": 1}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_crew_api", return_value=self._task_response(False)),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", side_effect=mock_read_all_mail_counts),
             patch.object(server, "_read_all_mail_subjects", return_value={}),
@@ -1127,9 +1267,12 @@ class PersonaValidationTests(unittest.TestCase):
         for agent in server.PERSONA_NAMES:
             with (
                 self.subTest(agent=agent),
+                patch.object(lifecycle, "_require_crew", return_value=crew),
                 patch.object(server, "_require_crew", return_value=crew),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
                 patch.object(server, "_ensure_crew_running", return_value=crew),
-                patch.object(server, "_crew_api", return_value={"id": "task"}) as api,
+                patch.object(lifecycle, "_crew_api", return_value={"id": "task"}) as api,
+                patch.object(server, "_crew_api", return_value={"id": "task"}),
             ):
                 result = server.dispatch("do work", agent=agent, crew_id="demo")
 
@@ -1141,9 +1284,12 @@ class PersonaValidationTests(unittest.TestCase):
         for agent in server.PERSONA_NAMES:
             with (
                 self.subTest(agent=agent),
+                patch.object(lifecycle, "_require_crew", return_value=crew),
                 patch.object(server, "_require_crew", return_value=crew),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
                 patch.object(server, "_ensure_crew_running", return_value=crew),
-                patch.object(server, "_crew_api", return_value={"id": "job"}) as api,
+                patch.object(lifecycle, "_crew_api", return_value={"id": "job"}) as api,
+                patch.object(server, "_crew_api", return_value={"id": "job"}),
             ):
                 result = server.schedule(
                     "job", "do work", crew_id="demo", interval=60, agent=agent
@@ -1157,9 +1303,12 @@ class PersonaValidationTests(unittest.TestCase):
         for agent in rejected:
             with self.subTest(agent=agent):
                 with (
+                    patch.object(lifecycle, "_require_crew") as require,
                     patch.object(server, "_require_crew") as require,
-                    patch.object(server, "_ensure_crew_running") as ensure,
-                    patch.object(server, "_crew_api") as api,
+                    patch.object(lifecycle, "_ensure_crew_running") as ensure,
+                    patch.object(server, "_ensure_crew_running"),
+                    patch.object(lifecycle, "_crew_api") as api,
+                    patch.object(server, "_crew_api"),
                 ):
                     dispatched = server.dispatch("do work", agent=agent, crew_id="demo")
                     scheduled = server.schedule(
@@ -1178,18 +1327,24 @@ class TaskOrchestrationTests(unittest.TestCase):
 
     def _steer_with_api(self, responses: list[dict], *, force: bool) -> tuple[dict, Mock]:
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api", side_effect=responses) as api,
+            patch.object(lifecycle, "_crew_api", side_effect=responses) as api,
+            patch.object(server, "_crew_api", side_effect=responses),
         ):
             result = server.steer("task", "follow up", crew_id="demo", force=force)
         return result, api
 
     def test_dispatch_requests_a_dedicated_retained_run(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api", return_value={"id": "task"}) as api,
+            patch.object(lifecycle, "_crew_api", return_value={"id": "task"}) as api,
+            patch.object(server, "_crew_api", return_value={"id": "task"}),
         ):
             result = server.dispatch("do work", agent="ghost", crew_id="demo")
 
@@ -1213,8 +1368,11 @@ class TaskOrchestrationTests(unittest.TestCase):
             return {"id": "continued-task"}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.steer("task", "follow up", crew_id="demo", force=True)
@@ -1328,15 +1486,23 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         podman = Mock()
         expected = server._resolve_order_template("sdd", "demo-change")
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail") as append,
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": []}, {"id": "job-1", "enabled": True}, {"id": "immediate"}],
+            )  as api,
             patch.object(
                 server,
                 "_crew_api",
                 side_effect=[{"jobs": []}, {"id": "job-1", "enabled": True}, {"id": "immediate"}],
-            ) as api,
+            ) ,
         ):
             result = server.captain(
                 "demo",
@@ -1371,10 +1537,14 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             raise AssertionError((method, path, kwargs))
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail", side_effect=append),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.captain(
@@ -1430,10 +1600,14 @@ class CaptainStandingOrdersTests(unittest.TestCase):
                 errors.append(exc)
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             threads = [threading.Thread(target=invoke) for _ in range(2)]
@@ -1454,6 +1628,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_order_rejects_unknown_template_before_mail_write(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew") as require,
             patch.object(server, "_require_crew") as require,
             patch.object(server, "_append_captain_mail") as append,
         ):
@@ -1471,6 +1646,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_order_rejects_invalid_change_name_before_mail_write(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew") as require,
             patch.object(server, "_require_crew") as require,
             patch.object(server, "_append_captain_mail") as append,
         ):
@@ -1487,7 +1663,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         append.assert_not_called()
 
     def test_order_requires_exactly_one_message_or_template(self) -> None:
-        with patch.object(server, "_require_crew") as require:
+        with patch.object(lifecycle, "_require_crew") as require:
             both = server.captain(
                 "demo",
                 "order",
@@ -1664,9 +1840,12 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_order_without_existing_job_requires_schedule_before_mail(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api", return_value={"jobs": []}) as api,
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": []}) as api,
+            patch.object(server, "_crew_api", return_value={"jobs": []}),
             patch.object(server, "_append_captain_mail") as append,
         ):
             result = server.captain("demo", "order", message="hold")
@@ -1678,15 +1857,23 @@ class CaptainStandingOrdersTests(unittest.TestCase):
     def test_order_creates_raven_job_when_no_job_exists(self) -> None:
         podman = Mock()
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail") as append,
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": []}, {"id": "job-1", "enabled": True}],
+            ) as api,
             patch.object(
                 server,
                 "_crew_api",
                 side_effect=[{"jobs": []}, {"id": "job-1", "enabled": True}],
-            ) as api,
+            ),
         ):
             result = server.captain(
                 "demo", "order", message="implement the objective", interval=120
@@ -1706,15 +1893,23 @@ class CaptainStandingOrdersTests(unittest.TestCase):
     def test_order_cron_passes_through_custom_timezone(self) -> None:
         podman = Mock()
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": []}, {"id": "job-1", "enabled": True}],
+            )  as api,
             patch.object(
                 server,
                 "_crew_api",
                 side_effect=[{"jobs": []}, {"id": "job-1", "enabled": True}],
-            ) as api,
+            ) ,
         ):
             result = server.captain(
                 "demo",
@@ -1730,7 +1925,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         )
 
     def test_stop_rejects_non_default_timezone(self) -> None:
-        with patch.object(server, "_require_crew") as require:
+        with patch.object(lifecycle, "_require_crew") as require:
             result = server.captain("demo", "stop", timezone="America/New_York")
 
         self.assertIn("does not accept", result["error"])
@@ -1747,11 +1942,15 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         }
         podman = Mock()
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail") as append,
-            patch.object(server, "_crew_api", return_value={"jobs": [existing]}) as api,
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}) as api,
+            patch.object(server, "_crew_api", return_value={"jobs": [existing]}),
         ):
             result = server.captain("demo", "order", message="new order")
 
@@ -1769,16 +1968,25 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         }
         podman = Mock()
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {}}}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {}}}),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_mail_count", return_value=2),
+            patch.object(_captain_mod, "_mail_count", return_value=2),
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": [existing]}, {"ok": True}],
+            )  as api,
             patch.object(
                 server,
                 "_crew_api",
                 side_effect=[{"jobs": [existing]}, {"ok": True}],
-            ) as api,
+            ) ,
         ):
             result = server.captain("demo", "stop")
 
@@ -1845,12 +2053,13 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         podman = Mock()
         server._append_captain_mail(podman, "gs-demo", "first order")
         command = podman.container_exec_checked.call_args.args[1]
-        self.assertEqual(command[:2], ["python3", "-c"])
-        script = command[2]
-        self.assertIn("maildeliver", script)
-        self.assertIn("captain@localhost", script)
-        self.assertNotIn("os.fchmod", script)
-        self.assertNotIn("os.O_APPEND", script)
+        # Now invokes the baked-in script by path, with the message as a
+        # base64 argv arg (no inline -c script, no shell-quoting hazard).
+        self.assertEqual(command[0], "python3")
+        self.assertTrue(command[1].endswith("/append_captain_mail.py"))
+        decoded = base64.b64decode(command[2]).decode()
+        # The delivered RFC822 message carries the captain order body.
+        self.assertIn("first order", decoded)
 
     def test_mail_count_returns_zero_for_missing_mailbox(self) -> None:
         missing = Mock()
@@ -1876,10 +2085,14 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         }
         podman = Mock()
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_mail_count", side_effect=[3, 2]) as mail_count,
+            patch.object(_captain_mod, "_mail_count", side_effect=[3, 2]) as mail_count,
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}),
             patch.object(server, "_crew_api", return_value={"jobs": [existing]}),
         ):
             result = server.captain("demo", "status")
@@ -1894,9 +2107,12 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_schedule_defaults_to_ghost_and_allowlist_accepts_raven(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api", return_value={"id": "job"}) as api,
+            patch.object(lifecycle, "_crew_api", return_value={"id": "job"}) as api,
+            patch.object(server, "_crew_api", return_value={"id": "job"}),
         ):
             result = server.schedule("job", "check", crew_id="demo", interval=60)
 
@@ -1907,9 +2123,12 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_schedule_rejects_reserved_captain_job_name(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running") as ensure_running,
             patch.object(server, "_ensure_crew_running") as ensure_running,
-            patch.object(server, "_crew_api") as api,
+            patch.object(lifecycle, "_crew_api") as api,
+            patch.object(server, "_crew_api"),
         ):
             result = server.schedule(
                 server._CAPTAIN_CHECKIN_JOB_NAME, "unrelated", crew_id="demo", interval=60
@@ -1937,15 +2156,23 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         }
         podman = Mock()
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail") as append,
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": [existing]}, {"ok": True}],
+            )  as api,
             patch.object(
                 server,
                 "_crew_api",
                 side_effect=[{"jobs": [existing]}, {"ok": True}],
-            ) as api,
+            ) ,
         ):
             result = server.captain("demo", "order", message="resume this")
 
@@ -1966,10 +2193,18 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             "enabled": False,
         }
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_append_captain_mail"),
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": [existing]}, {"ok": False}],
+            ),
             patch.object(
                 server,
                 "_crew_api",
@@ -1988,11 +2223,20 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             "enabled": True,
         }
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {}}}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {}}}),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_mail_count", return_value=1),
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": [existing]}, {"ok": False}],
+            ),
             patch.object(
                 server,
                 "_crew_api",
@@ -2013,16 +2257,25 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         stale = {"container": "gs-demo", "cookie": "old-cookie"}
         refreshed = {"container": "gs-demo", "cookie": "new-cookie"}
         with (
+            patch.object(lifecycle, "_require_crew", return_value=stale),
             patch.object(server, "_require_crew", return_value=stale),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {}}}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {}}}),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=refreshed),
             patch.object(server, "_ensure_crew_running", return_value=refreshed),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_mail_count", return_value=1),
+            patch.object(_captain_mod, "_mail_count", return_value=1),
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": [existing]}, {"ok": True}],
+            )  as api,
             patch.object(
                 server,
                 "_crew_api",
                 side_effect=[{"jobs": [existing]}, {"ok": True}],
-            ) as api,
+            ) ,
         ):
             result = server.captain("demo", "stop")
 
@@ -2031,9 +2284,12 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
     def test_schedule_uses_gateway_cron_field(self) -> None:
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api", return_value={"id": "cron-job"}) as api,
+            patch.object(lifecycle, "_crew_api", return_value={"id": "cron-job"}) as api,
+            patch.object(server, "_crew_api", return_value={"id": "cron-job"}),
         ):
             result = server.schedule(
                 "weekday-check",
@@ -2065,8 +2321,11 @@ class FireImmediatelyTests(unittest.TestCase):
             return {"id": "job-1"}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.schedule("task", "do work", crew_id="demo", interval=120)
@@ -2084,8 +2343,11 @@ class FireImmediatelyTests(unittest.TestCase):
             return {"id": "job-1"}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.schedule(
@@ -2107,8 +2369,11 @@ class FireImmediatelyTests(unittest.TestCase):
             return {"id": "job-1"}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.schedule(
@@ -2129,8 +2394,11 @@ class FireImmediatelyTests(unittest.TestCase):
             return {"id": "job-1"}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.schedule(
@@ -2156,8 +2424,11 @@ class FireImmediatelyTests(unittest.TestCase):
             return {}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.schedule("task", "do work", crew_id="demo", interval=120)
@@ -2187,10 +2458,14 @@ class FireImmediatelyTests(unittest.TestCase):
             return {}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.captain("demo", "order", message="hold", interval=120)
@@ -2218,10 +2493,14 @@ class FireImmediatelyTests(unittest.TestCase):
             return {"ok": True}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.captain("demo", "order", message="resume this")
@@ -2239,8 +2518,9 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         podman.container_exec.return_value = "token=abc123"
         old_ttl = server.KC_GATEWAY_TOKEN_TTL
         try:
-            with patch.object(server, "_http", CookieHTTP()):
+            with patch.object(lifecycle, "_http", CookieHTTP()):
                 server.KC_GATEWAY_TOKEN_TTL = "24h"
+                lifecycle.KC_GATEWAY_TOKEN_TTL = "24h"
                 self.assertEqual(
                     server._mint_cookie(podman, "gs-demo", "http://gs-demo:5476"),
                     "session-cookie",
@@ -2248,6 +2528,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
                 self.assertEqual(podman.container_exec.call_args.args[1][-1], "24h")
 
                 server.KC_GATEWAY_TOKEN_TTL = "2h"
+                lifecycle.KC_GATEWAY_TOKEN_TTL = "2h"
                 self.assertEqual(
                     server._mint_cookie(podman, "gs-demo", "http://gs-demo:5476"),
                     "session-cookie",
@@ -2255,6 +2536,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
                 self.assertEqual(podman.container_exec.call_args.args[1][-1], "2h")
         finally:
             server.KC_GATEWAY_TOKEN_TTL = old_ttl
+            lifecycle.KC_GATEWAY_TOKEN_TTL = old_ttl
 
     def test_read_auth_file_missing_returns_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2277,9 +2559,12 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
     def test_missing_auth_file_returns_not_authenticated_error(self) -> None:
         """launch fails fast when no auth is available — returns login_url inline."""
         with (
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_initiate_login", return_value={
                 "login_url": "https://example.com/device?user_code=ABCD-1234",
@@ -2307,9 +2592,12 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
     def test_launch_not_authenticated_returns_login_url(self) -> None:
         """launch with no auth returns not_authenticated + login_url inline."""
         with (
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_initiate_login", return_value={
                 "login_url": "https://example.com/device?user_code=TEST-1234",
@@ -2326,9 +2614,12 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
     def test_launch_not_authenticated_login_already_pending(self) -> None:
         """launch with no auth and a pending flow returns login_pending: True."""
         with (
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_initiate_login", return_value={"login_pending": True}),
         ):
@@ -2347,9 +2638,12 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             save_calls.append(reg)
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_load_registry", return_value=registry),
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(lifecycle, "_save_registry", side_effect=mock_save),
             patch.object(server, "_save_registry", side_effect=mock_save),
             patch.object(server, "_initiate_login", return_value={
                 "login_url": "https://example.com/device",
@@ -2583,7 +2877,9 @@ class LoginLogoutTests(unittest.TestCase):
 
         with (
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
             patch.object(server, "_start_login_container", return_value=container_name),
             patch.object(server, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
@@ -2647,7 +2943,9 @@ class LoginLogoutTests(unittest.TestCase):
         with (
             patch.object(server, "KIRO_IDENTITY_PROVIDER", ""),
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
             patch.object(server, "_start_login_container", return_value=container_name),
             patch.object(server, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
@@ -2710,9 +3008,13 @@ class LoginLogoutTests(unittest.TestCase):
 
         with (
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
             patch.object(server, "_start_login_container", return_value=container_name),
+            patch.object(lifecycle, "_nuke_login_container"),
             patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "time") as mock_time,
             patch.object(server, "time") as mock_time,
             patch.object(server, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
@@ -2747,7 +3049,9 @@ class LoginLogoutTests(unittest.TestCase):
 
         podman = Mock()
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_read_auth_from_crew", return_value=None),
             patch.object(server, "_read_auth_from_crew", return_value=None),
         ):
             request = Mock()
@@ -2774,11 +3078,16 @@ class LoginLogoutTests(unittest.TestCase):
 
         podman = Mock()
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_read_auth_from_crew", return_value=auth_b64),
             patch.object(server, "_read_auth_from_crew", return_value=auth_b64),
             patch.object(server, "_write_auth_file") as write_auth,
+            patch.object(lifecycle, "_load_registry", return_value=registry),
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(lifecycle, "_inject_auth") as inject,
             patch.object(server, "_inject_auth") as inject,
+            patch.object(lifecycle, "_nuke_login_container"),
             patch.object(server, "_nuke_login_container") as nuke,
         ):
             request = Mock()
@@ -2820,7 +3129,9 @@ class LoginLogoutTests(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", data_dir),
                 patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
+                patch.object(lifecycle, "_get_podman", return_value=podman),
                 patch.object(server, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_load_registry", return_value=registry),
                 patch.object(server, "_load_registry", return_value=registry),
             ):
                 request = Mock()
@@ -2834,8 +3145,58 @@ class LoginLogoutTests(unittest.TestCase):
         exec_calls = [call.args[1] for call in podman.container_exec.call_args_list]
         containers_cleared = [call.args[0] for call in podman.container_exec.call_args_list]
         self.assertEqual(containers_cleared, ["gs-crew1"])
-        # Verify DELETE FROM auth_kv was in the script
-        self.assertTrue(any("DELETE FROM auth_kv" in call.args[1][2] for call in podman.container_exec.call_args_list))
+        # Verify the wipe_auth script was invoked against the kiro-cli DB
+        self.assertTrue(
+            any(
+                call.args[1][1].endswith("/wipe_auth.py")
+                for call in podman.container_exec.call_args_list
+            )
+        )
+
+
+# ── _read_auth_from_crew unit tests (trn-78 tasks 1.2–1.3) ───────────────────
+
+class ReadAuthFromCrewTests(unittest.TestCase):
+    """Unit tests for _read_auth_from_crew (trn-78 bug fixes)."""
+
+    def _b64_rows(self, rows: list) -> str:
+        """Encode a list of row tuples into the b64 JSON format the function expects."""
+        import base64
+        return base64.b64encode(json.dumps(rows).encode()).decode()
+
+    def test_returns_none_when_auth_kv_has_only_registration_row_empty_value(self) -> None:
+        """1.2: returns None when auth_kv has only a registration row with empty value."""
+        # Simulate the device-flow registration row: value is empty/null
+        rows_empty_value = [["registration", ""]]
+        b64 = self._b64_rows(rows_empty_value)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_auth_kv_has_only_registration_row_null_value(self) -> None:
+        """1.2 (null variant): returns None when auth_kv has only a row with null value."""
+        rows_null_value = [["registration", None]]
+        b64 = self._b64_rows(rows_null_value)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertIsNone(result)
+
+    def test_returns_b64_payload_when_auth_kv_has_row_with_non_empty_value(self) -> None:
+        """1.3: returns the b64 payload when auth_kv has a row with a non-empty value."""
+        rows_with_token = [["registration", ""], ["access_token", "eyJhbGciOiJSUzI1NiJ9.payload"]]
+        b64 = self._b64_rows(rows_with_token)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertEqual(result, b64)
 
 
 # ── Crew-Type Registry Tests ──────────────────────────────────────────────────
@@ -2861,8 +3222,9 @@ class TestCrewTypeRegistry(unittest.TestCase):
             custom_dir.mkdir()
 
             with (
+                patch.object(lifecycle, "_CREW_REGISTRY_PATH", registry_path),
                 patch.object(server, "_CREW_REGISTRY_PATH", registry_path),
-                patch("transport.server.Path") as MockPath,
+                patch("transport.lifecycle.Path") as MockPath,
             ):
                 # Make Path(f"/crews/{dir}").is_dir() return True for our dirs
                 def path_side_effect(p):
@@ -2888,7 +3250,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
             custom_dir2 = Path(tmp).parent / "crews" / "custom"
 
             # We test by patching the path and directory checks
-            with patch.object(server, "_CREW_REGISTRY_PATH", reg_path):
+            with patch.object(lifecycle, "_CREW_REGISTRY_PATH", reg_path):
                 with patch("pathlib.Path.is_dir", return_value=True):
                     result = server._load_composition_registry()
 
@@ -2899,7 +3261,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
 
     def test_missing_file_returns_fallback(self) -> None:
         """_load_composition_registry() returns fallback when file is missing."""
-        with patch.object(server, "_CREW_REGISTRY_PATH", Path("/nonexistent/registry.json")):
+        with patch.object(lifecycle, "_CREW_REGISTRY_PATH", Path("/nonexistent/registry.json")):
             result = server._load_composition_registry()
 
         self.assertEqual(list(result.keys()), ["spec-ops"])
@@ -2911,7 +3273,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
             f.write("{not valid json!!!")
             f.flush()
             try:
-                with patch.object(server, "_CREW_REGISTRY_PATH", Path(f.name)):
+                with patch.object(lifecycle, "_CREW_REGISTRY_PATH", Path(f.name)):
                     result = server._load_composition_registry()
                 self.assertEqual(list(result.keys()), ["spec-ops"])
             finally:
@@ -2930,6 +3292,7 @@ class TestCrewTypeRegistry(unittest.TestCase):
             f.flush()
             try:
                 with (
+                    patch.object(lifecycle, "_CREW_REGISTRY_PATH", Path(f.name)),
                     patch.object(server, "_CREW_REGISTRY_PATH", Path(f.name)),
                     patch("pathlib.Path.is_dir", return_value=True),
                 ):
@@ -2971,12 +3334,18 @@ class TestLaunchCrewType(unittest.TestCase):
         """launch() with a valid composition resolves image and manifest correctly."""
         test_entry = {"name": "spec-ops", "dir": "spec-ops", "description": "Default"}
         with (
+            patch.object(lifecycle, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
             patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_finish_crew_setup", return_value={"status": "ready"}) as mock_setup,
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}) as mock_setup,
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
         ):
             mock_podman = server._get_podman.return_value
@@ -2997,6 +3366,7 @@ class TestLaunchCrewType(unittest.TestCase):
     def test_launch_with_unknown_composition_errors(self) -> None:
         """launch() with unknown composition returns error listing available types."""
         with (
+            patch.object(lifecycle, "COMPOSITION_REGISTRY", {"spec-ops": {"name": "spec-ops"}}),
             patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": {"name": "spec-ops"}}),
         ):
             result = server.launch("test-crew", composition="nonexistent")
@@ -3009,12 +3379,18 @@ class TestLaunchCrewType(unittest.TestCase):
         """launch() passes the resolved image to container_create."""
         test_entry = {"name": "custom", "dir": "custom", "description": "Custom", "image": "custom:v3"}
         with (
+            patch.object(lifecycle, "COMPOSITION_REGISTRY", {"custom": test_entry}),
             patch.object(server, "COMPOSITION_REGISTRY", {"custom": test_entry}),
+            patch.object(lifecycle, "_get_podman") as mock_get_podman,
             patch.object(server, "_get_podman") as mock_get_podman,
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_finish_crew_setup", return_value={"status": "ready"}),
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}),
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
         ):
             mock_podman = Mock()
@@ -3037,7 +3413,10 @@ class TestCrewTypesTool(unittest.TestCase):
             "spec-ops": {"name": "spec-ops", "dir": "spec-ops", "description": "Default KiroCrew"},
             "custom": {"name": "custom", "dir": "custom", "description": "Custom crew type"},
         }
-        with patch.object(server, "COMPOSITION_REGISTRY", test_registry):
+        with (
+            patch.object(lifecycle, "COMPOSITION_REGISTRY", test_registry),
+            patch.object(server, "COMPOSITION_REGISTRY", test_registry),
+        ):
             result = server.resource_compositions()
 
         self.assertIsInstance(result, str)
@@ -3085,10 +3464,15 @@ class ScheduleCancelTests(unittest.TestCase):
             raise AssertionError((method, path, kwargs))
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
         ):
             result = server.schedule(action="cancel", job_id="job-abc", crew_id="demo")
@@ -3117,10 +3501,15 @@ class ScheduleCancelTests(unittest.TestCase):
             raise AssertionError((method, path, kwargs))
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
             result = server.schedule(action="cancel", job_id="nonexistent", crew_id="demo")
@@ -3138,8 +3527,11 @@ class ScheduleCancelTests(unittest.TestCase):
         jobs_listing = {"jobs": [captain_job]}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value=jobs_listing),
             patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
         ):
             result = server.schedule(action="cancel", job_id="captain-job-id", crew_id="demo")
@@ -3149,7 +3541,9 @@ class ScheduleCancelTests(unittest.TestCase):
     def test_cancel_requires_job_id(self) -> None:
         """cancel without job_id returns error."""
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
         ):
             result = server.schedule(action="cancel", crew_id="demo")
@@ -3186,8 +3580,11 @@ class ScheduleListTests(unittest.TestCase):
         ]}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value=jobs_listing),
             patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
         ):
             result = server.schedule(action="list", crew_id="demo")
@@ -3203,8 +3600,11 @@ class ScheduleListTests(unittest.TestCase):
     def test_list_empty(self) -> None:
         """4.3 — list returns empty jobs list when no jobs exist."""
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value={"jobs": []}),
             patch.object(server, "_crew_api_with_recovery", return_value={"jobs": []}),
         ):
             result = server.schedule(action="list", crew_id="demo")
@@ -3221,9 +3621,13 @@ class ScheduleListTests(unittest.TestCase):
         ]}
 
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg_empty),
             patch.object(server, "_load_registry", return_value=reg_empty),
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value=gateway_jobs) as api_mock,
             patch.object(server, "_crew_api_with_recovery", return_value=gateway_jobs) as api_mock,
         ):
             result = server.schedule(action="list", crew_id="demo")
@@ -3247,10 +3651,15 @@ class DispatchFireAfterTests(unittest.TestCase):
     def test_delay_creates_one_shot_via_schedule(self) -> None:
         """6.3 — schedule(delay=N) creates a one-shot cron job."""
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value={"id": "delayed-job-1"}) as api,
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "delayed-job-1"}) as api,
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
             result = server.schedule(
@@ -3273,7 +3682,9 @@ class DispatchFireAfterTests(unittest.TestCase):
     def test_delay_zero_rejected(self) -> None:
         """6.3 — schedule(delay=0) returns validation error."""
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
         ):
             result = server.schedule(
@@ -3285,7 +3696,9 @@ class DispatchFireAfterTests(unittest.TestCase):
     def test_delay_negative_rejected(self) -> None:
         """6.3 — schedule(delay=-5) returns validation error."""
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
         ):
             result = server.schedule(
@@ -3319,7 +3732,9 @@ class ResourceJobsTests(unittest.TestCase):
             return crew_b_jobs
 
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.resource_jobs()
@@ -3334,7 +3749,10 @@ class ResourceJobsTests(unittest.TestCase):
     def test_resource_jobs_no_running_crews(self) -> None:
         """4.6 — resource_jobs shows stopped crews with registry data (TRN-29)."""
         reg = {"crews": {"stopped": {"container": "gs-stopped", "status": "stopped"}}}
-        with patch.object(server, "_load_registry", return_value=reg):
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_load_registry", return_value=reg),
+        ):
             result = server.resource_jobs()
 
         self.assertIn("## stopped", result)
@@ -3345,7 +3763,9 @@ class ResourceJobsTests(unittest.TestCase):
         reg = {"crews": {"bad": {"container": "gs-bad", "status": "running", "cookie": "c"}}}
 
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_crew_api", side_effect=RuntimeError("connection refused")),
             patch.object(server, "_crew_api", side_effect=RuntimeError("connection refused")),
         ):
             result = server.resource_jobs()
@@ -3358,7 +3778,9 @@ class ResourceJobsTests(unittest.TestCase):
         """4.6 — resource_jobs shows 'No scheduled jobs' for crew without jobs."""
         reg = {"crews": {"empty": {"container": "gs-empty", "status": "running", "cookie": "c"}}}
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": []}),
             patch.object(server, "_crew_api", return_value={"jobs": []}),
         ):
             result = server.resource_jobs()
@@ -3400,7 +3822,7 @@ class TestPolicyInjection(unittest.TestCase):
         mock_podman = Mock()
         mock_podman.container_exec_checked = Mock(return_value="policy injected version=2")
 
-        with patch("transport.server.Path") as MockPath:
+        with patch("transport.lifecycle.Path") as MockPath:
             # Make Path("/policies/spec-ops.json") exist and return the composition template
             composition_path = Mock()
             composition_path.exists.return_value = True
@@ -3431,7 +3853,7 @@ class TestPolicyInjection(unittest.TestCase):
         mock_podman = Mock()
         mock_podman.container_exec_checked = Mock(return_value="policy injected version=1")
 
-        with patch("transport.server.Path") as MockPath:
+        with patch("transport.lifecycle.Path") as MockPath:
             composition_path = Mock()
             composition_path.exists.return_value = False
 
@@ -3460,7 +3882,7 @@ class TestPolicyInjection(unittest.TestCase):
         mock_podman = Mock()
         mock_podman.container_exec_checked = Mock(return_value="policy injected version=1")
 
-        with patch("transport.server.Path") as MockPath:
+        with patch("transport.lifecycle.Path") as MockPath:
             composition_path = Mock()
             composition_path.exists.return_value = True
             composition_path.read_text.return_value = json.dumps(self.default_policy)
@@ -3476,11 +3898,16 @@ class TestPolicyInjection(unittest.TestCase):
                 mock_podman, "gs-test", "spec-ops", "secret123"
             )
 
-        # The script writes both files — verify the script content
+        # _inject_policy now invokes the baked inject_policy.py script. Run the
+        # same script logic against a temp crew dir and verify both files land.
         call_args = mock_podman.container_exec_checked.call_args
-        script = call_args[0][1][2]  # ["python3", "-c", script]
-        self.assertIn("security_policy.json", script)
-        self.assertIn("admission_policy.json", script)
+        cmd = call_args[0][1]  # ["python3", ".../inject_policy.py", crew_dir, payload_b64]
+        self.assertEqual(cmd[0], "python3")
+        self.assertTrue(cmd[1].endswith("inject_policy.py"))
+        with tempfile.TemporaryDirectory() as td:
+            _run_inject_policy_script(cmd, td)
+            self.assertTrue((Path(td) / "security_policy.json").exists())
+            self.assertTrue((Path(td) / "admission_policy.json").exists())
 
     def test_inject_policy_admission_enables_signature_verification(self) -> None:
         """Admission policy sets require_policy_signature=True with trust_keys dict."""
@@ -3488,18 +3915,16 @@ class TestPolicyInjection(unittest.TestCase):
         secret = "fixed-secret-for-test"
 
         mock_podman = Mock()
-        mock_podman.container_exec_checked = Mock(return_value="policy injected version=1")
 
-        captured_scripts: list[str] = []
+        captured_cmds: list[list[str]] = []
 
         def exec_capture(container, cmd):
-            if cmd[0] == "python3" and cmd[1] == "-c":
-                captured_scripts.append(cmd[2])
+            captured_cmds.append(cmd)
             return "policy injected version=1"
 
         mock_podman.container_exec_checked = Mock(side_effect=exec_capture)
 
-        with patch("transport.server.Path") as MockPath:
+        with patch("transport.lifecycle.Path") as MockPath:
             composition_path = Mock()
             composition_path.exists.return_value = True
             composition_path.read_text.return_value = json.dumps(policy)
@@ -3513,20 +3938,12 @@ class TestPolicyInjection(unittest.TestCase):
 
             server._inject_policy(mock_podman, "gs-test", "test", secret)
 
-        # Execute the captured script locally to inspect what it would write
-        self.assertEqual(len(captured_scripts), 1)
-        script = captured_scripts[0]
-
-        # Simulate what the script does: run it with a fake crew_dir
-        import tempfile, os as _os
+        # Run the real inject_policy.py logic against a temp crew dir to inspect
+        # what it writes.
+        self.assertEqual(len(captured_cmds), 1)
         with tempfile.TemporaryDirectory() as td:
             fake_crew_dir = Path(td)
-            patched = script.replace(
-                "pathlib.Path('/home/kirocrew/.kiro/crew')",
-                f"pathlib.Path('{fake_crew_dir}')",
-            )
-            exec(compile(patched, "<test>", "exec"))  # noqa: S102
-
+            _run_inject_policy_script(captured_cmds[0], td)
             policy_out = json.loads((fake_crew_dir / "security_policy.json").read_text())
             admission_out = json.loads((fake_crew_dir / "admission_policy.json").read_text())
 
@@ -3549,16 +3966,15 @@ class TestPolicyInjection(unittest.TestCase):
         secret = "test-secret-abc123"
 
         mock_podman = Mock()
-        captured_scripts: list[str] = []
+        captured_cmds: list[list[str]] = []
 
         def exec_capture(container, cmd):
-            if cmd[0] == "python3" and cmd[1] == "-c":
-                captured_scripts.append(cmd[2])
+            captured_cmds.append(cmd)
             return "policy injected version=1"
 
         mock_podman.container_exec_checked = Mock(side_effect=exec_capture)
 
-        with patch("transport.server.Path") as MockPath:
+        with patch("transport.lifecycle.Path") as MockPath:
             composition_path = Mock()
             composition_path.exists.return_value = True
             composition_path.read_text.return_value = json.dumps(policy)
@@ -3571,16 +3987,11 @@ class TestPolicyInjection(unittest.TestCase):
             MockPath.side_effect = path_side_effect
             server._inject_policy(mock_podman, "gs-test", "spec-ops", secret)
 
-        self.assertEqual(len(captured_scripts), 1)
-        script = captured_scripts[0]
+        self.assertEqual(len(captured_cmds), 1)
 
         with tempfile.TemporaryDirectory() as td:
             fake_crew_dir = Path(td)
-            patched = script.replace(
-                "pathlib.Path('/home/kirocrew/.kiro/crew')",
-                f"pathlib.Path('{fake_crew_dir}')",
-            )
-            exec(compile(patched, "<test>", "exec"))  # noqa: S102
+            _run_inject_policy_script(captured_cmds[0], td)
             policy_out = json.loads((fake_crew_dir / "security_policy.json").read_text())
 
         # Re-derive the expected signature: whole doc minus identity.signature
@@ -3601,7 +4012,7 @@ class TestPolicyInjection(unittest.TestCase):
             side_effect=RuntimeError("container_exec failed")
         )
 
-        with patch("transport.server.Path") as MockPath:
+        with patch("transport.lifecycle.Path") as MockPath:
             composition_path = Mock()
             composition_path.exists.return_value = True
             composition_path.read_text.return_value = json.dumps(self.default_policy)
@@ -3623,23 +4034,38 @@ class TestPolicyInjection(unittest.TestCase):
     def test_launch_response_includes_policy_version(self) -> None:
         """launch() response includes policy_version when injection succeeds."""
         test_entry = {"name": "spec-ops", "dir": "spec-ops", "description": "Default"}
-        with (
-            patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}),
-            patch.object(server, "_get_podman") as mock_get_podman,
-            patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
-            patch.object(server, "_load_registry", return_value={"crews": {}}),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_inject_auth", return_value=True),
-            patch.object(server, "_patch_crew_config"),
-            patch.object(server, "_copy_agents", return_value=[]),
-            patch.object(server, "_copy_skills", return_value=[]),
-            patch.object(server, "_copy_steering", return_value=[]),
-            patch.object(server, "_seed_openspec_store"),
-            patch.object(server, "_patch_models"),
-            patch.object(server, "_inject_policy", return_value="1"),
-            patch.object(server, "_mint_cookie", return_value="test-cookie"),
-        ):
+        import contextlib
+        with contextlib.ExitStack() as _stack:
+            _stack.enter_context(patch.object(lifecycle, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}))
+            _stack.enter_context(patch.object(server, "COMPOSITION_REGISTRY", {"spec-ops": test_entry}))
+            mock_get_podman = _stack.enter_context(patch.object(lifecycle, "_get_podman"))
+            _stack.enter_context(patch.object(server, "_get_podman"))
+            _stack.enter_context(patch.object(server, "_read_auth_file", return_value="dGVzdA=="))
+            _stack.enter_context(patch.object(lifecycle, "_load_registry", return_value={"crews": {}}))
+            _stack.enter_context(patch.object(server, "_load_registry", return_value={"crews": {}}))
+            _stack.enter_context(patch.object(lifecycle, "_save_registry"))
+            _stack.enter_context(patch.object(server, "_save_registry"))
+            _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+            _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
+            _stack.enter_context(patch.object(lifecycle, "_inject_auth", return_value=True))
+            _stack.enter_context(patch.object(server, "_inject_auth", return_value=True))
+            _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+            _stack.enter_context(patch.object(server, "_patch_crew_config"))
+            _stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+            _stack.enter_context(patch.object(server, "_copy_agents", return_value=[]))
+            _stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+            _stack.enter_context(patch.object(server, "_copy_skills", return_value=[]))
+            _stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+            _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
+            _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+            _stack.enter_context(patch.object(server, "_seed_openspec_store"))
+            _stack.enter_context(patch.object(lifecycle, "_patch_models"))
+            _stack.enter_context(patch.object(server, "_patch_models"))
+            _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+            _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
+            _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
+            _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
+
             mock_podman = Mock()
             mock_get_podman.return_value = mock_podman
             mock_podman.network_create = Mock()
@@ -3669,9 +4095,13 @@ class TestPolicyInjection(unittest.TestCase):
             }
         }
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_crew_api", return_value=[]),
             patch.object(server, "_crew_api", return_value=[]),
+            patch.object(lifecycle, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
             patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
         ):
             result = server.crews()
@@ -3695,9 +4125,13 @@ class TestPolicyInjection(unittest.TestCase):
             }
         }
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_crew_api", return_value=[]),
             patch.object(server, "_crew_api", return_value=[]),
+            patch.object(lifecycle, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
             patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
         ):
             result = server.crews()
@@ -3789,19 +4223,31 @@ class TestMemoryGate(unittest.TestCase):
         original = server.GA_MIN_FREE_MEM_GB
         try:
             server.GA_MIN_FREE_MEM_GB = 0.0
-            with (
-                patch.object(server, "_get_podman", return_value=fake_podman),
-                patch.object(server, "_wait_for_memory") as mock_wait,
-                patch.object(server, "_wait_gateway", return_value=True),
-                patch.object(server, "_mint_cookie", return_value="new-cookie"),
-                patch.object(server, "_load_registry", return_value={
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
+            import contextlib
+            with contextlib.ExitStack() as _stack:
+                _stack.enter_context(patch.object(lifecycle, "_get_podman", return_value=fake_podman))
+                _stack.enter_context(patch.object(server, "_get_podman", return_value=fake_podman))
+                _stack.enter_context(patch.object(lifecycle, "_wait_for_memory"))
+                mock_wait = _stack.enter_context(patch.object(server, "_wait_for_memory"))
+                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"))
+                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="new-cookie"))
+                _stack.enter_context(patch.object(lifecycle, "_load_registry", return_value={
                     "crews": {"demo": {"container": "gs-demo", "cookie": "cookie", "status": "stopped"}}
-                }),
-                patch.object(server, "_save_registry"),
-                patch.object(server, "_patch_crew_config"),
-                patch.object(server, "_touch_crew"),
-                patch.object(server, "_probe_gateway", return_value=True),
-            ):
+                }))
+                _stack.enter_context(patch.object(server, "_load_registry", return_value={
+                    "crews": {"demo": {"container": "gs-demo", "cookie": "cookie", "status": "stopped"}}
+                }))
+                _stack.enter_context(patch.object(lifecycle, "_save_registry"))
+                _stack.enter_context(patch.object(server, "_save_registry"))
+                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+                _stack.enter_context(patch.object(server, "_patch_crew_config"))
+                _stack.enter_context(patch.object(lifecycle, "_touch_crew"))
+                _stack.enter_context(patch.object(server, "_touch_crew"))
+                _stack.enter_context(patch.object(lifecycle, "_probe_gateway", return_value=True))
+                _stack.enter_context(patch.object(server, "_probe_gateway", return_value=True))
                 # _ensure_crew_running should succeed without calling _wait_for_memory
                 try:
                     server._ensure_crew_running(crew, "demo", touch=False)
@@ -3811,6 +4257,20 @@ class TestMemoryGate(unittest.TestCase):
             mock_wait.assert_not_called()
         finally:
             server.GA_MIN_FREE_MEM_GB = original
+            lifecycle.GA_MIN_FREE_MEM_GB = original
+
+
+def _decode_overrides(cmd: list[str]) -> dict:
+    """Decode the base64 JSON overrides argv passed to patch_crew_config.py.
+
+    _patch_crew_config now invokes ``python3 /scripts/patch_crew_config.py
+    <config_path> <overrides_b64>``; the overrides are the final argv element,
+    a base64-encoded JSON object deep-merged into config.local.json.
+    """
+    import base64 as _b64
+    import json as _json
+
+    return _json.loads(_b64.b64decode(cmd[-1]).decode())
 
 
 class TestPatchCrewConfig(unittest.TestCase):
@@ -3821,8 +4281,11 @@ class TestPatchCrewConfig(unittest.TestCase):
         original = server.GA_SPAWN_MIN_MEMORY_GB
         try:
             server.GA_SPAWN_MIN_MEMORY_GB = 2.5
+            lifecycle.GA_SPAWN_MIN_MEMORY_GB = 2.5
             server.GA_RESOURCE_PRESSURE_GB = 3.0
+            lifecycle.GA_RESOURCE_PRESSURE_GB = 3.0
             server.GA_RESOURCE_CRITICAL_GB = 1.5
+            lifecycle.GA_RESOURCE_CRITICAL_GB = 1.5
             exec_calls: list[tuple[str, list[str]]] = []
 
             class CapturePodman:
@@ -3832,27 +4295,28 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]  # last arg to python3 -c
-            self.assertIn("2.5", script)
-            self.assertIn("3.0", script)
-            self.assertIn("1.5", script)
-            self.assertIn("p.parent.mkdir(parents=True, exist_ok=True)", script)
-            self.assertNotIn("'spawn_min_memory_gb'] = 0", script)
-            # Verify subagent_timeout_secs and subagent_max_turns are present with defaults
-            self.assertIn("subagent_timeout_secs", script)
-            self.assertIn("subagent_max_turns", script)
-            self.assertIn("3600", script)
-            self.assertIn("200", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["spawn_min_memory_gb"], 2.5)
+            self.assertEqual(overrides["resource_pressure_gb"], 3.0)
+            self.assertEqual(overrides["resource_critical_gb"], 1.5)
+            self.assertNotEqual(overrides["spawn_min_memory_gb"], 0)
+            # Verify subagent_timeout_secs and subagent_max_turns carry defaults
+            self.assertEqual(overrides["subagent_timeout_secs"], 3600)
+            self.assertEqual(overrides["subagent_max_turns"], 200)
         finally:
             server.GA_SPAWN_MIN_MEMORY_GB = original
+            lifecycle.GA_SPAWN_MIN_MEMORY_GB = original
             server.GA_RESOURCE_PRESSURE_GB = 2.0
+            lifecycle.GA_RESOURCE_PRESSURE_GB = 2.0
             server.GA_RESOURCE_CRITICAL_GB = 1.0
+            lifecycle.GA_RESOURCE_CRITICAL_GB = 1.0
 
     def test_subagent_timeout_from_env(self) -> None:
         """GA_SUBAGENT_TIMEOUT_SECS=7200 → subagent_timeout_secs: 7200 in patched config."""
         original = server.GA_SUBAGENT_TIMEOUT_SECS
         try:
             server.GA_SUBAGENT_TIMEOUT_SECS = 7200
+            lifecycle.GA_SUBAGENT_TIMEOUT_SECS = 7200
             exec_calls: list[tuple[str, list[str]]] = []
 
             class CapturePodman:
@@ -3862,16 +4326,18 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("'subagent_timeout_secs'] = 7200", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["subagent_timeout_secs"], 7200)
         finally:
             server.GA_SUBAGENT_TIMEOUT_SECS = original
+            lifecycle.GA_SUBAGENT_TIMEOUT_SECS = original
 
     def test_subagent_max_turns_from_env(self) -> None:
         """GA_SUBAGENT_MAX_TURNS=300 → subagent_max_turns: 300 in patched config."""
         original = server.GA_SUBAGENT_MAX_TURNS
         try:
             server.GA_SUBAGENT_MAX_TURNS = 300
+            lifecycle.GA_SUBAGENT_MAX_TURNS = 300
             exec_calls: list[tuple[str, list[str]]] = []
 
             class CapturePodman:
@@ -3881,16 +4347,18 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("'subagent_max_turns'] = 300", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["subagent_max_turns"], 300)
         finally:
             server.GA_SUBAGENT_MAX_TURNS = original
+            lifecycle.GA_SUBAGENT_MAX_TURNS = original
 
     def test_agent_field_default_kiro(self) -> None:
         """GA_CREW_AGENT unset → config.local.json gets agent: "kiro" (0.4.0 required field)."""
         original = server.GA_CREW_AGENT
         try:
             server.GA_CREW_AGENT = "kiro"
+            lifecycle.GA_CREW_AGENT = "kiro"
             exec_calls: list[tuple[str, list[str]]] = []
 
             class CapturePodman:
@@ -3900,16 +4368,18 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("a['agent'] = \"kiro\"", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["agent"], "kiro")
         finally:
             server.GA_CREW_AGENT = original
+            lifecycle.GA_CREW_AGENT = original
 
     def test_agent_field_from_env(self) -> None:
         """GA_CREW_AGENT=custom-agent → agent field carries the override value."""
         original = server.GA_CREW_AGENT
         try:
             server.GA_CREW_AGENT = "custom-agent"
+            lifecycle.GA_CREW_AGENT = "custom-agent"
             exec_calls: list[tuple[str, list[str]]] = []
 
             class CapturePodman:
@@ -3919,14 +4389,16 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("a['agent'] = \"custom-agent\"", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(overrides["agent"], "custom-agent")
         finally:
             server.GA_CREW_AGENT = original
+            lifecycle.GA_CREW_AGENT = original
 
     def test_config_script_has_no_unexpanded_shell_vars(self) -> None:
-        """KiroCrew 0.4.0 rejects literal $VAR in config values — the exec script
-        must contain no unexpanded shell variable reference in any written value."""
+        """KiroCrew 0.4.0 rejects literal $VAR in config values — the decoded
+        overrides must contain no unexpanded shell variable reference in any
+        written value."""
         import re
         exec_calls: list[tuple[str, list[str]]] = []
 
@@ -3936,15 +4408,17 @@ class TestPatchCrewConfig(unittest.TestCase):
                 return "patched config.local.json"
 
         server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
-        script = exec_calls[0][1][-1]
-        # No literal $NAME or ${NAME} unexpanded shell/variable references.
-        self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", script))
+        overrides = _decode_overrides(exec_calls[0][1])
+        for value in overrides.values():
+            if isinstance(value, str):
+                self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", value))
 
     def test_kc_model_default_set_writes_default_model(self) -> None:
         """KC_MODEL_DEFAULT set → default_model written to config.local.json."""
         original = server.KC_MODEL_DEFAULT
         try:
             server.KC_MODEL_DEFAULT = "anthropic/claude-sonnet-4-20250514"
+            lifecycle.KC_MODEL_DEFAULT = "anthropic/claude-sonnet-4-20250514"
             exec_calls: list[tuple[str, list[str]]] = []
 
             class CapturePodman:
@@ -3954,17 +4428,20 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertIn("default_model", script)
-            self.assertIn("anthropic/claude-sonnet-4-20250514", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertEqual(
+                overrides["default_model"], "anthropic/claude-sonnet-4-20250514"
+            )
         finally:
             server.KC_MODEL_DEFAULT = original
+            lifecycle.KC_MODEL_DEFAULT = original
 
     def test_kc_model_default_empty_does_not_write_default_model(self) -> None:
         """KC_MODEL_DEFAULT empty → default_model NOT written to config.local.json."""
         original = server.KC_MODEL_DEFAULT
         try:
             server.KC_MODEL_DEFAULT = ""
+            lifecycle.KC_MODEL_DEFAULT = ""
             exec_calls: list[tuple[str, list[str]]] = []
 
             class CapturePodman:
@@ -3974,10 +4451,11 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            script = exec_calls[0][1][-1]
-            self.assertNotIn("default_model", script)
+            overrides = _decode_overrides(exec_calls[0][1])
+            self.assertNotIn("default_model", overrides)
         finally:
             server.KC_MODEL_DEFAULT = original
+            lifecycle.KC_MODEL_DEFAULT = original
 
 
 class TestCrewsMemoryField(unittest.TestCase):
@@ -3987,10 +4465,12 @@ class TestCrewsMemoryField(unittest.TestCase):
         """crews() response includes host_memory_available_gb."""
         reg = {"crews": {}}
         fake = FakePodmanClient([int(3.5 * 1024**3)])
-        # Clear cache to force fresh read
-        server._host_memory_cache = None
+        # Clear cache to force fresh read (cache global lives in transport.podman)
+        _podman_mod._host_memory_cache = None
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_get_podman", return_value=fake),
             patch.object(server, "_get_podman", return_value=fake),
         ):
             result = server.crews()
@@ -4006,9 +4486,11 @@ class TestCrewsMemoryField(unittest.TestCase):
             def system_info(self) -> dict:
                 raise RuntimeError("connection refused")
 
-        server._host_memory_cache = None
+        _podman_mod._host_memory_cache = None
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_get_podman", return_value=BrokenPodman()),
             patch.object(server, "_get_podman", return_value=BrokenPodman()),
         ):
             result = server.crews()
@@ -4022,12 +4504,12 @@ class TestMemoryCache(unittest.TestCase):
     def test_cache_ttl_avoids_repeated_calls(self) -> None:
         """Second call within 5s does not invoke system_info() again."""
         fake = FakePodmanClient([int(4 * 1024**3)])
-        server._host_memory_cache = None
+        _podman_mod._host_memory_cache = None
 
         with patch("time.monotonic", return_value=100.0):
-            val1 = server._get_host_memory_gb_cached(fake)
+            val1 = _podman_mod._get_host_memory_gb_cached(fake)
         with patch("time.monotonic", return_value=103.0):
-            val2 = server._get_host_memory_gb_cached(fake)
+            val2 = _podman_mod._get_host_memory_gb_cached(fake)
 
         self.assertEqual(val1, val2)
         self.assertEqual(fake.system_info_calls, 1)
@@ -4035,12 +4517,12 @@ class TestMemoryCache(unittest.TestCase):
     def test_cache_expires_after_ttl(self) -> None:
         """After 5s, a fresh system_info() call is made."""
         fake = FakePodmanClient([int(4 * 1024**3), int(3 * 1024**3)])
-        server._host_memory_cache = None
+        _podman_mod._host_memory_cache = None
 
         with patch("time.monotonic", return_value=100.0):
-            server._get_host_memory_gb_cached(fake)
+            _podman_mod._get_host_memory_gb_cached(fake)
         with patch("time.monotonic", return_value=106.0):
-            server._get_host_memory_gb_cached(fake)
+            _podman_mod._get_host_memory_gb_cached(fake)
 
         self.assertEqual(fake.system_info_calls, 2)
 
@@ -4138,10 +4620,14 @@ class ReconcileRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             registry_path = _make_registry_file(Path(tmp), {})
             with (
+                patch.object(lifecycle, "_get_podman", return_value=podman),
                 patch.object(server, "_get_podman", return_value=podman),
                 patch.object(server, "REGISTRY_PATH", registry_path),
-                patch.object(server, "_nuke_login_container") as nuke,
+                patch.object(lifecycle, "_nuke_login_container") as nuke,
+                patch.object(server, "_nuke_login_container"),
+                patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
                 patch.object(server, "_load_registry", return_value={"crews": {}}),
+                patch.object(lifecycle, "_save_registry"),
                 patch.object(server, "_save_registry"),
             ):
                 server._reconcile_registry()
@@ -4161,8 +4647,11 @@ class ReconcileRegistryTests(unittest.TestCase):
             saved.update(reg)
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
             patch.object(server, "_save_registry", side_effect=save_reg),
         ):
             server._reconcile_registry()
@@ -4183,10 +4672,15 @@ class ReconcileRegistryTests(unittest.TestCase):
             saved.update(reg)
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
             patch.object(server, "_save_registry", side_effect=save_reg),
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"),
             patch.object(server, "_mint_cookie", return_value="new-cookie"),
         ):
             server._reconcile_registry()
@@ -4210,9 +4704,13 @@ class ReconcileRegistryTests(unittest.TestCase):
             saved.update(reg)
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
             patch.object(server, "_save_registry", side_effect=save_reg),
+            patch.object(lifecycle, "_wait_gateway", return_value=False),
             patch.object(server, "_wait_gateway", return_value=False),
         ):
             server._reconcile_registry()
@@ -4234,8 +4732,11 @@ class ReconcileRegistryTests(unittest.TestCase):
             saved.update(reg)
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
             patch.object(server, "_save_registry", side_effect=save_reg),
         ):
             server._reconcile_registry()
@@ -4258,8 +4759,11 @@ class ReconcileRegistryTests(unittest.TestCase):
             saved.update(reg)
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
             patch.object(server, "_save_registry", side_effect=save_reg),
         ):
             server._reconcile_registry()
@@ -4288,10 +4792,15 @@ class ReconcileRegistryTests(unittest.TestCase):
             saved.update(reg)
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_load_registry", side_effect=load_registry),
             patch.object(server, "_load_registry", side_effect=load_registry),
+            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
             patch.object(server, "_save_registry", side_effect=save_reg),
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(lifecycle, "_mint_cookie", return_value="new"),
             patch.object(server, "_mint_cookie", return_value="new"),
         ):
             server._reconcile_registry()
@@ -4329,8 +4838,11 @@ class ReconcileRegistryTests(unittest.TestCase):
             save_calls.append(json.loads(json.dumps(r)))
 
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
         ):
             server._reseed_crew_schedules(crew, "demo", crew_info)
@@ -4373,11 +4885,17 @@ class ReconcileRegistryTests(unittest.TestCase):
             return "fresh-cookie"
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(server, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_patch_crew_config", side_effect=patched_patch),
             patch.object(server, "_patch_crew_config", side_effect=patched_patch),
+            patch.object(lifecycle, "_wait_gateway", side_effect=wait_gateway),
             patch.object(server, "_wait_gateway", side_effect=wait_gateway),
+            patch.object(lifecycle, "_mint_cookie", side_effect=mint_cookie),
             patch.object(server, "_mint_cookie", side_effect=mint_cookie),
         ):
             server._reconcile_registry()
@@ -4445,11 +4963,17 @@ class IdleMonitorTests(unittest.TestCase):
             sleep_called[0] = True
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_http", FakeHTTP()),
             patch.object(server, "_http", FakeHTTP()),
+            patch.object(lifecycle, "_touch_crew", side_effect=touch),
             patch.object(server, "_touch_crew", side_effect=touch),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crew_items)}),
             patch.object(server, "_load_registry", return_value={"crews": dict(crew_items)}),
+            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
             patch.object(server, "_save_registry", side_effect=save_reg),
+            patch.object(lifecycle, "_mint_cookie", return_value=mint_cookie_return),
             patch.object(server, "_mint_cookie", return_value=mint_cookie_return),
             patch.object(server.time, "sleep", side_effect=fake_sleep),
             patch.object(server.time, "time", return_value=1000.0),
@@ -4657,6 +5181,45 @@ class IdleMonitorTests(unittest.TestCase):
         self.assertEqual(result["stops"], [], "crew should not be stopped after cron 401 retry")
         self.assertIn("cron401-crew", result["touched"])
 
+    def test_403_triggers_cookie_refresh_and_retry_on_spawn(self) -> None:
+        """2.2 (trn-78): 403 response on spawn triggers cookie refresh and retry."""
+        podman = IdleMonitorPodman(containers_running={"gs-403spawn": True})
+        # First spawn call returns 403 (CSRF mismatch), retry returns 200 with active task
+        spawn_403 = MockHTTPResponse(403)
+        spawn_ok = MockHTTPResponse(200, {"agents": [{"done": False}]})
+        crew_items = [("spawn-403-crew", {
+            "container": "gs-403spawn", "status": "running", "cookie": "old", "last_used": 0,
+        })]
+        result = self._run_one_iteration(
+            crew_items, podman, [spawn_403, spawn_ok],
+            mint_cookie_return="new-cookie",
+        )
+
+        # Crew has active task after retry — must not be stopped
+        self.assertEqual(result["stops"], [])
+        self.assertIn("spawn-403-crew", result["touched"])
+
+    def test_403_with_successful_cookie_refresh_stops_idle_crew(self) -> None:
+        """2.3 (trn-78): idle monitor stops crew after successful cookie refresh following 403."""
+        podman = IdleMonitorPodman(containers_running={"gs-403idle": True})
+        # spawn: first 403, then (after cookie refresh) 200 with empty agents
+        # crons: 200 with empty jobs list → crew is genuinely idle → gets stopped
+        spawn_403 = MockHTTPResponse(403)
+        spawn_ok = MockHTTPResponse(200, {"agents": []})
+        cron_ok = MockHTTPResponse(200, {"jobs": []})
+        crew_items = [("idle-403-crew", {
+            "container": "gs-403idle", "status": "running", "cookie": "old", "last_used": 0,
+        })]
+        result = self._run_one_iteration(
+            crew_items, podman, [spawn_403, spawn_ok, cron_ok],
+            mint_cookie_return="new-cookie",
+        )
+
+        # Cookie refresh succeeded, no active tasks — crew should be stopped
+        self.assertIn("gs-403idle", result["stops"])
+        self.assertTrue(result["saved_regs"])
+        self.assertEqual(result["saved_regs"][-1]["crews"]["idle-403-crew"]["status"], "stopped")
+
 
 
 # ── Task 6: _finish_crew_setup ordering tests ────────────────────────────────
@@ -4711,20 +5274,32 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             return "1"
 
         with tempfile.TemporaryDirectory() as tmp:
-            with (
-                patch.object(server, "DATA_DIR", Path(tmp)),
-                patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
-                patch.object(server, "_wait_gateway", side_effect=wait_gw),
-                patch.object(server, "_inject_auth", side_effect=inject_auth),
-                patch.object(server, "_patch_crew_config", side_effect=patch_config),
-                patch.object(server, "_copy_agents", side_effect=copy_agents),
-                patch.object(server, "_copy_skills", side_effect=copy_skills),
-                patch.object(server, "_copy_steering", side_effect=copy_steering),
-                patch.object(server, "_seed_openspec_store", side_effect=seed_openspec),
-                patch.object(server, "_patch_models", side_effect=patch_models),
-                patch.object(server, "_mint_cookie", side_effect=mint_cookie),
-                patch.object(server, "_inject_policy", side_effect=inject_policy),
-            ):
+            import contextlib
+            with contextlib.ExitStack() as _stack:
+                _stack.enter_context(patch.object(server, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", side_effect=wait_gw))
+                _stack.enter_context(patch.object(server, "_wait_gateway", side_effect=wait_gw))
+                _stack.enter_context(patch.object(lifecycle, "_inject_auth", side_effect=inject_auth))
+                _stack.enter_context(patch.object(server, "_inject_auth", side_effect=inject_auth))
+                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config", side_effect=patch_config))
+                _stack.enter_context(patch.object(server, "_patch_crew_config", side_effect=patch_config))
+                _stack.enter_context(patch.object(lifecycle, "_copy_agents", side_effect=copy_agents))
+                _stack.enter_context(patch.object(server, "_copy_agents", side_effect=copy_agents))
+                _stack.enter_context(patch.object(lifecycle, "_copy_skills", side_effect=copy_skills))
+                _stack.enter_context(patch.object(server, "_copy_skills", side_effect=copy_skills))
+                _stack.enter_context(patch.object(lifecycle, "_copy_steering", side_effect=copy_steering))
+                _stack.enter_context(patch.object(server, "_copy_steering", side_effect=copy_steering))
+                _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store", side_effect=seed_openspec))
+                _stack.enter_context(patch.object(server, "_seed_openspec_store", side_effect=seed_openspec))
+                _stack.enter_context(patch.object(lifecycle, "_patch_models", side_effect=patch_models))
+                _stack.enter_context(patch.object(server, "_patch_models", side_effect=patch_models))
+                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", side_effect=mint_cookie))
+                _stack.enter_context(patch.object(server, "_mint_cookie", side_effect=mint_cookie))
+                _stack.enter_context(patch.object(lifecycle, "_inject_policy", side_effect=inject_policy))
+                _stack.enter_context(patch.object(server, "_inject_policy", side_effect=inject_policy))
                 result = server._finish_crew_setup(
                     podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
                 )
@@ -4788,20 +5363,32 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
 
         with tempfile.TemporaryDirectory() as tmp:
-            with (
-                patch.object(server, "DATA_DIR", Path(tmp)),
-                patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
-                patch.object(server, "_wait_gateway", return_value=True),
-                patch.object(server, "_inject_auth"),
-                patch.object(server, "_patch_crew_config"),
-                patch.object(server, "_copy_agents", return_value=[]),
-                patch.object(server, "_copy_skills", return_value=[]),
-                patch.object(server, "_copy_steering", return_value=[]),
-                patch.object(server, "_seed_openspec_store"),
-                patch.object(server, "_patch_models"),
-                patch.object(server, "_inject_policy", return_value="1"),
-                patch.object(server, "_mint_cookie", return_value="test-cookie"),
-            ):
+            import contextlib
+            with contextlib.ExitStack() as _stack:
+                _stack.enter_context(patch.object(server, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(lifecycle, "_inject_auth"))
+                _stack.enter_context(patch.object(server, "_inject_auth"))
+                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+                _stack.enter_context(patch.object(server, "_patch_crew_config"))
+                _stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_agents", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_skills", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+                _stack.enter_context(patch.object(server, "_seed_openspec_store"))
+                _stack.enter_context(patch.object(lifecycle, "_patch_models"))
+                _stack.enter_context(patch.object(server, "_patch_models"))
+                _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+                _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
+                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
+                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
                 result = server._finish_crew_setup(
                     podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
                 )
@@ -4826,13 +5413,15 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
 
     def test_admiral_secret_injection_script_contains_fsync(self) -> None:
         """6.4 (trn-36 2.2): the admiral secret injection script contains os.fsync."""
-        captured_scripts: list[str] = []
+        captured_cmds: list[list[str]] = []
 
         podman = Mock()
 
         def capture_exec_checked(container: str, cmd: list[str]) -> str:
-            if len(cmd) >= 3 and "admiral_secret" in cmd[2]:
-                captured_scripts.append(cmd[2])
+            if len(cmd) >= 3 and cmd[0] == "python3" and cmd[1].endswith(
+                "/inject_admiral_secret.py"
+            ):
+                captured_cmds.append(cmd)
             return "ok"
 
         podman.container_exec_checked = Mock(side_effect=capture_exec_checked)
@@ -4842,27 +5431,54 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
 
         with tempfile.TemporaryDirectory() as tmp:
-            with (
-                patch.object(server, "DATA_DIR", Path(tmp)),
-                patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"),
-                patch.object(server, "_wait_gateway", return_value=True),
-                patch.object(server, "_inject_auth"),
-                patch.object(server, "_patch_crew_config"),
-                patch.object(server, "_copy_agents", return_value=[]),
-                patch.object(server, "_copy_skills", return_value=[]),
-                patch.object(server, "_copy_steering", return_value=[]),
-                patch.object(server, "_seed_openspec_store"),
-                patch.object(server, "_patch_models"),
-                patch.object(server, "_inject_policy", return_value="1"),
-                patch.object(server, "_mint_cookie", return_value="test-cookie"),
-            ):
+            import contextlib
+            with contextlib.ExitStack() as _stack:
+                _stack.enter_context(patch.object(server, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(lifecycle, "_inject_auth"))
+                _stack.enter_context(patch.object(server, "_inject_auth"))
+                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+                _stack.enter_context(patch.object(server, "_patch_crew_config"))
+                _stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_agents", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_skills", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+                _stack.enter_context(patch.object(server, "_seed_openspec_store"))
+                _stack.enter_context(patch.object(lifecycle, "_patch_models"))
+                _stack.enter_context(patch.object(server, "_patch_models"))
+                _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+                _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
+                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
+                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
                 server._finish_crew_setup(
                     podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
                 )
 
-        self.assertEqual(len(captured_scripts), 1, "Expected exactly one admiral secret injection call")
-        script = captured_scripts[0]
-        self.assertIn("os.fsync", script, "Secret injection script must call os.fsync for durability")
+        self.assertEqual(
+            len(captured_cmds), 1, "Expected exactly one admiral secret injection call"
+        )
+        cmd = captured_cmds[0]
+        # The call passes the secret file path as argv; the fsync durability
+        # guarantee now lives in the baked inject_admiral_secret.py script.
+        self.assertTrue(cmd[2].endswith("/.admiral_secret"))
+        script_path = (
+            Path(server.__file__).resolve().parent
+            / "container_scripts"
+            / "inject_admiral_secret.py"
+        )
+        script_src = script_path.read_text()
+        self.assertIn(
+            "os.fsync",
+            script_src,
+            "Secret injection script must call os.fsync for durability",
+        )
 
     def test_gateway_failure_after_restart_triggers_cleanup(self) -> None:
         """6.2: gateway failure after auth restart triggers cleanup and returns error."""
@@ -4888,9 +5504,13 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             cleanup_called[0] = True
 
         with (
+            patch.object(lifecycle, "_wait_gateway", side_effect=wait_gw),
             patch.object(server, "_wait_gateway", side_effect=wait_gw),
+            patch.object(lifecycle, "_inject_auth"),
             patch.object(server, "_inject_auth"),
+            patch.object(lifecycle, "_patch_crew_config"),
             patch.object(server, "_patch_crew_config"),
+            patch.object(lifecycle, "_cleanup_crew", side_effect=cleanup),
             patch.object(server, "_cleanup_crew", side_effect=cleanup),
         ):
             result = server._finish_crew_setup(
@@ -4920,9 +5540,13 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
 
         with (
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-timeout"),
             patch.object(server, "_start_login_container", return_value="ga-login-timeout"),
+            patch.object(lifecycle, "_nuke_login_container"),
             patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "time") as mock_time,
             patch.object(server, "time") as mock_time,
             patch.object(server, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
@@ -4956,7 +5580,9 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
 
         with (
             patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-region"),
             patch.object(server, "_start_login_container", return_value="ga-login-region"),
             patch.object(server, "select") as mock_select,
             patch.object(server, "KIRO_REGION", "us-west-2"),
@@ -5031,11 +5657,16 @@ class LoginGuardClearTests(unittest.TestCase):
 
         try:
             with (
+                patch.object(lifecycle, "_get_podman", return_value=fake_podman),
                 patch.object(server, "_get_podman", return_value=fake_podman),
+                patch.object(lifecycle, "_read_auth_from_crew", return_value="dGVzdA=="),
                 patch.object(server, "_read_auth_from_crew", return_value="dGVzdA=="),
                 patch.object(server, "_write_auth_file"),
+                patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
                 patch.object(server, "_load_registry", return_value={"crews": {}}),
+                patch.object(lifecycle, "_inject_auth"),
                 patch.object(server, "_inject_auth"),
+                patch.object(lifecycle, "_nuke_login_container", side_effect=fake_nuke),
                 patch.object(server, "_nuke_login_container", side_effect=fake_nuke),
             ):
                 asyncio.run(server._handle_login_get(Mock()))
@@ -5111,11 +5742,17 @@ class SchedulePersistenceTests(unittest.TestCase):
         fake_podman.container_exec = lambda *a, **kw: ""
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(lifecycle, "_get_podman", return_value=fake_podman),
             patch.object(server, "_get_podman", return_value=fake_podman),
             patch.object(server, "_append_captain_mail"),
         ):
@@ -5141,6 +5778,7 @@ class SchedulePersistenceTests(unittest.TestCase):
         ])
 
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
         ):
             result = server._schedule_list("demo")
@@ -5174,10 +5812,15 @@ class SchedulePersistenceTests(unittest.TestCase):
             return {}
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
         ):
             result = server._schedule_cancel("j1", "demo")
@@ -5198,10 +5841,15 @@ class SchedulePersistenceTests(unittest.TestCase):
             save_calls.append(json.loads(json.dumps(r)))
 
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value={"id": "delay-job-1"}),
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "delay-job-1"}),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
         ):
             result = server.schedule(
@@ -5276,11 +5924,17 @@ class SchedulePersistenceTests(unittest.TestCase):
 
         before = time.time()
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(lifecycle, "_get_podman", return_value=fake_podman),
             patch.object(server, "_get_podman", return_value=fake_podman),
             patch.object(server, "_append_captain_mail"),
         ):
@@ -5338,10 +5992,15 @@ class ScheduleMonitorTests(unittest.TestCase):
                 raise StopIteration("break after one iteration")
 
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(lifecycle, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
             patch.object(server, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
             patch.object(server.time, "sleep", side_effect=fake_sleep),
         ):
@@ -5397,8 +6056,11 @@ class ScheduleMonitorTests(unittest.TestCase):
             save_calls.append(json.loads(json.dumps(r)))
 
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
             patch.object(server, "_save_registry", side_effect=fake_save),
         ):
             server._reseed_crew_schedules(crew, "demo", reg["crews"]["demo"])
@@ -5406,6 +6068,166 @@ class ScheduleMonitorTests(unittest.TestCase):
         # Verify POST to /api/crons was called to re-register
         post_calls = [(m, p) for m, p, _ in api_calls if m == "POST" and p == "/api/crons"]
         self.assertEqual(len(post_calls), 1)
+
+
+# ── TRN-82: _reseed_crew_schedules reconcile pass tests ─────────────────────
+
+class ReseedCronReconcileTests(unittest.TestCase):
+    """Tests for the gateway→registry reconcile pass in _reseed_crew_schedules (TRN-82)."""
+
+    def _make_reg(self, schedules):
+        return {"crews": {"demo": {
+            "container": "gs-demo", "cookie": "cookie",
+            "schedules": schedules,
+        }}}
+
+    def test_reconcile_paused_job_updates_registry(self) -> None:
+        """2.1 — gateway reports job enabled=false → registry updated, job not re-registered."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,  # stale: registry says enabled
+        }])
+        api_calls = []
+
+        def api(_crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": [{"id": "j1", "enabled": False, "every_secs": 300}]}
+            return {}
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(json.loads(json.dumps(r)))
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # Registry should have been saved with enabled=False
+        self.assertTrue(saved, "Registry should have been saved after reconcile")
+        sched = saved[-1]["crews"]["demo"]["schedules"][0]
+        self.assertFalse(sched["enabled"], "Registry entry should be updated to enabled=False")
+
+        # No POST to re-register the paused job
+        post_calls = [p for m, p in api_calls if m == "POST"]
+        self.assertEqual(post_calls, [], "Paused job should not be re-registered")
+
+    def test_reconcile_absent_job_left_for_reseed(self) -> None:
+        """2.2 — gateway does not include job → entry kept in registry, reseeded as bootstrap."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,
+        }])
+        api_calls = []
+
+        def api(_crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": []}  # Job absent — bootstrap case
+            if method == "POST" and path == "/api/crons":
+                return {"id": "j1"}
+            return {}
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(json.loads(json.dumps(r)))
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # Job should be reseeded (POST) — absent from gateway is the bootstrap case
+        post_calls = [p for m, p in api_calls if m == "POST" and p == "/api/crons"]
+        self.assertEqual(len(post_calls), 1, "Absent enabled job should be reseeded")
+
+    def test_reseed_missing_job_registered_in_gateway(self) -> None:
+        """2.3 — registry has enabled job absent from gateway → job registered (bootstrap)."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,
+        }])
+        api_calls = []
+
+        def api(_crew, method, path, **kwargs):
+            api_calls.append((method, path))
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": []}  # Missing from gateway — bootstrap case
+            if method == "POST" and path == "/api/crons":
+                return {"id": "j1-new"}
+            return {}
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(json.loads(json.dumps(r)))
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # POST should have been made to register the missing job
+        post_calls = [p for m, p in api_calls if m == "POST" and p == "/api/crons"]
+        self.assertEqual(len(post_calls), 1, "Missing enabled job should be re-registered")
+
+    def test_reconcile_gateway_error_skips_both_passes(self) -> None:
+        """2.4 — gateway /api/crons returns error → both passes skipped, registry unchanged."""
+        reg = self._make_reg([{
+            "job_id": "j1", "name": "captain", "interval_secs": 300,
+            "cron_expr": None, "agent": "raven", "message": "check-in",
+            "enabled": True,
+        }])
+
+        def api(_crew, method, path, **kwargs):
+            raise RuntimeError("gateway unavailable")
+
+        saved = []
+
+        def fake_save(r):
+            saved.append(r)
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(lifecycle, "_crew_api", side_effect=api),
+            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server._reseed_crew_schedules(
+                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
+            )
+
+        # Registry should not have been touched
+        self.assertEqual(saved, [], "Registry should not be saved when gateway errors")
 
 
 # ── TRN-39: _advance_next_fire_at tests ─────────────────────────────────────
@@ -5538,7 +6360,9 @@ class TestTrn38SecurityHardening(unittest.TestCase):
 
         crew = {"container": "gs-crewone"}
         with (
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             response = asyncio.run(server._handle_file_put(request))
@@ -5551,7 +6375,9 @@ class TestTrn38SecurityHardening(unittest.TestCase):
         """evac(path='') returns {'error': 'path must not be empty'}."""
         crew = {"container": "gs-demo"}
         with (
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             result = server.evac("", crew_id="demo")
@@ -5563,7 +6389,9 @@ class TestTrn38SecurityHardening(unittest.TestCase):
         """evac(path='/') strips to '' and returns error."""
         crew = {"container": "gs-demo"}
         with (
+            patch.object(lifecycle, "_require_crew", return_value=crew),
             patch.object(server, "_require_crew", return_value=crew),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             result = server.evac("/", crew_id="demo")
@@ -5639,6 +6467,8 @@ class TestTrn38SecurityHardening(unittest.TestCase):
             with (
                 patch.object(server, "DATA_DIR", Path(tmp)),
                 patch.object(server, "REGISTRY_PATH", registry_path),
+                patch.object(_registry_mod, "DATA_DIR", Path(tmp)),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
             ):
                 server._save_registry(reg)
 
@@ -5668,7 +6498,7 @@ class TestTrn38SecurityHardening(unittest.TestCase):
             "commands": {"deny": []},
         })
 
-        with patch("transport.server.Path") as MockPath:
+        with patch("transport.lifecycle.Path") as MockPath:
             composition_path = Mock()
             composition_path.exists.return_value = False
             default_path = Mock()
@@ -5733,11 +6563,17 @@ class ActiveCrewLimitTests(unittest.TestCase):
         crew = self._make_crew(status="stopped", container="gs-failing")
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=FailingRestartPodman()),
             patch.object(server, "_get_podman", return_value=FailingRestartPodman()),
+            patch.object(lifecycle, "_startup_events", startup_events),
             patch.object(server, "_startup_events", startup_events),
+            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
             patch.object(server, "_startup_events_lock", threading.Lock()),
+            patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(server, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
             patch.object(server, "GA_MIN_FREE_MEM_GB", 0.0),
+            patch.object(lifecycle, "_wait_gateway", side_effect=RuntimeError("restart failed")),
             patch.object(server, "_wait_gateway", side_effect=RuntimeError("restart failed")),
         ):
             with self.assertRaisesRegex(RuntimeError, "restart failed"):
@@ -5753,6 +6589,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
         original = server.GA_MAX_ACTIVE_CREWS
         try:
             server.GA_MAX_ACTIVE_CREWS = 2
+            lifecycle.GA_MAX_ACTIVE_CREWS = 2
             reg = self._registry_with_running(2)  # 2 running, limit is 2
 
             class StoppedPodman:
@@ -5760,9 +6597,13 @@ class ActiveCrewLimitTests(unittest.TestCase):
                     return False
 
             with (
+                patch.object(lifecycle, "_load_registry", return_value=reg),
                 patch.object(server, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_get_podman", return_value=StoppedPodman()),
                 patch.object(server, "_get_podman", return_value=StoppedPodman()),
+                patch.object(lifecycle, "_startup_events", {}),
                 patch.object(server, "_startup_events", {}),
+                patch.object(lifecycle, "_startup_events_lock", __import__("threading").Lock()),
                 patch.object(server, "_startup_events_lock", __import__("threading").Lock()),
             ):
                 crew = reg["crews"]["target"]
@@ -5772,6 +6613,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertIn("2", str(ctx.exception))
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
+            lifecycle.GA_MAX_ACTIVE_CREWS = original
 
     # ── Task 3.2: succeeds when below limit ──────────────────────────────────
 
@@ -5780,6 +6622,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
         original = server.GA_MAX_ACTIVE_CREWS
         try:
             server.GA_MAX_ACTIVE_CREWS = 3
+            lifecycle.GA_MAX_ACTIVE_CREWS = 3
             # Only 1 running crew; limit is 3 → should NOT raise
             reg = self._registry_with_running(1)
             steps: list[str] = []
@@ -5802,25 +6645,42 @@ class ActiveCrewLimitTests(unittest.TestCase):
                     return "ok"
 
             podman = StoppedRestartPodman()
-            with (
-                patch.object(server, "_load_registry", return_value=reg),
-                patch.object(server, "_save_registry"),
-                patch.object(server, "_get_podman", return_value=podman),
-                patch.object(server, "_startup_events", {}),
-                patch.object(server, "_startup_events_lock", __import__("threading").Lock()),
-                patch.object(server, "GA_MIN_FREE_MEM_GB", 0.0),
-                patch.object(
+            import contextlib
+            with contextlib.ExitStack() as _stack:
+                _stack.enter_context(patch.object(lifecycle, "_load_registry", return_value=reg))
+                _stack.enter_context(patch.object(server, "_load_registry", return_value=reg))
+                _stack.enter_context(patch.object(lifecycle, "_save_registry"))
+                _stack.enter_context(patch.object(server, "_save_registry"))
+                _stack.enter_context(patch.object(lifecycle, "_get_podman", return_value=podman))
+                _stack.enter_context(patch.object(server, "_get_podman", return_value=podman))
+                _stack.enter_context(patch.object(lifecycle, "_startup_events", {}))
+                _stack.enter_context(patch.object(server, "_startup_events", {}))
+                _stack.enter_context(patch.object(lifecycle, "_startup_events_lock", __import__("threading").Lock()))
+                _stack.enter_context(patch.object(server, "_startup_events_lock", __import__("threading").Lock()))
+                _stack.enter_context(patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0))
+                _stack.enter_context(patch.object(server, "GA_MIN_FREE_MEM_GB", 0.0))
+                wait_gateway = _stack.enter_context(patch.object(
+                    lifecycle,
+                    "_wait_gateway",
+                    side_effect=lambda *args, **kwargs: (steps.append("wait") or True),
+                ))
+                _stack.enter_context(patch.object(
                     server,
                     "_wait_gateway",
                     side_effect=lambda *args, **kwargs: (steps.append("wait") or True),
-                ) as wait_gateway,
-                patch.object(
+                ))
+                _stack.enter_context(patch.object(
+                    lifecycle,
+                    "_patch_crew_config",
+                    side_effect=lambda *args, **kwargs: steps.append("patch"),
+                ))
+                _stack.enter_context(patch.object(
                     server,
                     "_patch_crew_config",
                     side_effect=lambda *args, **kwargs: steps.append("patch"),
-                ),
-                patch.object(server, "_mint_cookie", return_value="new-c"),
-            ):
+                ))
+                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="new-c"))
+                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="new-c"))
                 crew = reg["crews"]["target"]
                 # Should not raise
                 result = server._ensure_crew_running(crew, "target")
@@ -5830,6 +6690,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             wait_gateway.assert_called_once_with("http://gs-target:5476", timeout=30)
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
+            lifecycle.GA_MAX_ACTIVE_CREWS = original
 
     # ── Task 3.3: GA_MAX_ACTIVE_CREWS=0 disables the check ──────────────────
 
@@ -5839,6 +6700,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
         original = server.GA_MAX_ACTIVE_CREWS
         try:
             server.GA_MAX_ACTIVE_CREWS = 0
+            lifecycle.GA_MAX_ACTIVE_CREWS = 0
             # 10 running crews — should still not raise
             reg: dict = {"crews": {}}
             for i in range(10):
@@ -5861,14 +6723,23 @@ class ActiveCrewLimitTests(unittest.TestCase):
                     return "ok"
 
             with (
+                patch.object(lifecycle, "_load_registry", return_value=reg),
                 patch.object(server, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_save_registry"),
                 patch.object(server, "_save_registry"),
+                patch.object(lifecycle, "_get_podman", return_value=StoppedRestartPodman()),
                 patch.object(server, "_get_podman", return_value=StoppedRestartPodman()),
+                patch.object(lifecycle, "_startup_events", {}),
                 patch.object(server, "_startup_events", {}),
+                patch.object(lifecycle, "_startup_events_lock", __import__("threading").Lock()),
                 patch.object(server, "_startup_events_lock", __import__("threading").Lock()),
+                patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
                 patch.object(server, "GA_MIN_FREE_MEM_GB", 0.0),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
                 patch.object(server, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_patch_crew_config"),
                 patch.object(server, "_patch_crew_config"),
+                patch.object(lifecycle, "_mint_cookie", return_value="new-c"),
                 patch.object(server, "_mint_cookie", return_value="new-c"),
             ):
                 crew = reg["crews"]["target"]
@@ -5877,6 +6748,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertIsNotNone(result)
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
+            lifecycle.GA_MAX_ACTIVE_CREWS = original
 
     # ── Task 3.4: already-running crew not double-counted ────────────────────
 
@@ -5886,6 +6758,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
         original = server.GA_MAX_ACTIVE_CREWS
         try:
             server.GA_MAX_ACTIVE_CREWS = 1
+            lifecycle.GA_MAX_ACTIVE_CREWS = 1
             # Crew is already running (container_is_running returns True) and
             # gateway probe passes — the function returns early before any limit
             # check.  No RuntimeError should be raised.
@@ -5896,8 +6769,11 @@ class ActiveCrewLimitTests(unittest.TestCase):
                     return True
 
             with (
+                patch.object(lifecycle, "_get_podman", return_value=RunningPodman()),
                 patch.object(server, "_get_podman", return_value=RunningPodman()),
-                patch.object(server, "_probe_gateway", return_value=True) as probe,
+                patch.object(lifecycle, "_probe_gateway", return_value=True) as probe,
+                patch.object(server, "_probe_gateway", return_value=True),
+                patch.object(lifecycle, "_touch_crew"),
                 patch.object(server, "_touch_crew"),
             ):
                 crew = self._make_crew(status="running", container="gs-live")
@@ -5908,6 +6784,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertEqual(result["container"], "gs-live")
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
+            lifecycle.GA_MAX_ACTIVE_CREWS = original
 
     # ── Task 3.5: registered-crew limit in launch() ───────────────────────────
 
@@ -5925,10 +6802,14 @@ class ActiveCrewLimitTests(unittest.TestCase):
                 pass
 
             with (
+                patch.object(lifecycle, "_load_registry", return_value=reg),
                 patch.object(server, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_get_podman", return_value=MinimalPodman()),
                 patch.object(server, "_get_podman", return_value=MinimalPodman()),
                 patch.object(server, "_read_auth_file", return_value="dummyauth"),
+                patch.object(lifecycle, "_resolve_composition", return_value={"name": "spec-ops", "dir": "spec-ops"}),
                 patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "dir": "spec-ops"}),
+                patch.object(lifecycle, "_resolve_image", return_value="localhost/spec-ops:latest"),
                 patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
             ):
                 result = server.launch("new-crew")
@@ -5947,6 +6828,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
         original = server.GA_MAX_ACTIVE_CREWS
         try:
             server.GA_MAX_ACTIVE_CREWS = 3
+            lifecycle.GA_MAX_ACTIVE_CREWS = 3
             reg = {
                 "crews": {
                     "running-a": {"status": "running", "container": "gs-a", "cookie": "c1"},
@@ -5958,9 +6840,13 @@ class ActiveCrewLimitTests(unittest.TestCase):
             server._host_memory_cache = None
 
             with (
+                patch.object(lifecycle, "_load_registry", return_value=reg),
                 patch.object(server, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_get_podman", return_value=fake),
                 patch.object(server, "_get_podman", return_value=fake),
+                patch.object(lifecycle, "_probe_gateway", return_value=False),
                 patch.object(server, "_probe_gateway", return_value=False),
+                patch.object(lifecycle, "_crew_api", side_effect=Exception("offline")),
                 patch.object(server, "_crew_api", side_effect=Exception("offline")),
             ):
                 result = server.crews()
@@ -5973,6 +6859,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertEqual(result["max_active_crews"], 3)
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
+            lifecycle.GA_MAX_ACTIVE_CREWS = original
 
 
 # ── TRN-31: Gateway UI / API proxy tests ─────────────────────────────────────
@@ -6044,7 +6931,9 @@ class ProxyHandlerTests(unittest.TestCase):
 
         request = _FakeStreamRequest(path="/crews/demo/ui")
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server._async_http, "stream", new_callable=lambda: lambda: fake_stream.__call__),
         ):
@@ -6056,7 +6945,9 @@ class ProxyHandlerTests(unittest.TestCase):
 
         async def run():
             with (
+                patch.object(lifecycle, "_require_crew", return_value=self.CREW),
                 patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(server._async_http, "stream") as mock_stream,
             ):
@@ -6078,7 +6969,9 @@ class ProxyHandlerTests(unittest.TestCase):
 
         request = _FakeStreamRequest(path="/crews/demo/ui/app/page")
         with (
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
         ):
             with patch.object(server._async_http, "stream") as mock_stream:
@@ -6112,7 +7005,9 @@ class ProxyHandlerTests(unittest.TestCase):
 
         async def run():
             with (
+                patch.object(lifecycle, "_require_crew", return_value=self.CREW),
                 patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             ):
                 request = _FakeStreamRequest(
@@ -6142,7 +7037,9 @@ class ProxyHandlerTests(unittest.TestCase):
 
         async def run():
             with (
+                patch.object(lifecycle, "_require_crew", return_value=self.CREW),
                 patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             ):
                 request = _FakeStreamRequest(
@@ -6173,7 +7070,9 @@ class ProxyHandlerTests(unittest.TestCase):
 
         async def run():
             with (
+                patch.object(lifecycle, "_require_crew", return_value=self.CREW),
                 patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             ):
                 request = _FakeStreamRequest(path="/crews/demo/ui")
@@ -6201,7 +7100,9 @@ class ProxyHandlerTests(unittest.TestCase):
 
         async def run():
             with (
+                patch.object(lifecycle, "_require_crew", return_value=self.CREW),
                 patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/spawn")
@@ -6231,8 +7132,11 @@ class ProxyHandlerTests(unittest.TestCase):
 
         async def run():
             with (
+                patch.object(lifecycle, "_require_crew", return_value=dict(self.CREW)),
                 patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=dict(self.CREW)),
                 patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_refresh_cookie", return_value=True) as refresh,
                 patch.object(server, "_refresh_cookie", return_value=True) as refresh,
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/spawn")
@@ -6261,8 +7165,11 @@ class ProxyHandlerTests(unittest.TestCase):
 
         async def run():
             with (
+                patch.object(lifecycle, "_require_crew", return_value=dict(self.CREW)),
                 patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=dict(self.CREW)),
                 patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_refresh_cookie", return_value=True),
                 patch.object(server, "_refresh_cookie", return_value=True),
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/crons")
@@ -6296,7 +7203,9 @@ class ProxyHandlerTests(unittest.TestCase):
                 return crew
 
             with (
+                patch.object(lifecycle, "_require_crew", return_value=self.CREW),
                 patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(lifecycle, "_ensure_crew_running", side_effect=ensure),
                 patch.object(server, "_ensure_crew_running", side_effect=ensure),
             ):
                 request = _FakeStreamRequest(path="/crews/demo/ui")
@@ -6450,6 +7359,87 @@ class ProxyHandlerTests(unittest.TestCase):
         self.assertIsNone(server._extract_crew_proxy_parts("/mcp"))
         self.assertIsNone(server._extract_crew_proxy_parts("/crews"))
         self.assertIsNone(server._extract_crew_proxy_parts("/crews/demo"))
+
+    # ── Cookie header deduplication (trn-78 tasks 3.2–3.3) ───────────────────
+
+    def test_api_proxy_strips_inbound_cookie_header_to_prevent_duplicates(self) -> None:
+        """3.2 (trn-78): inbound lowercase 'cookie' header is stripped — no duplicate Cookie in forwarded request."""
+        captured_headers: list[dict] = []
+
+        async def run():
+            with (
+                patch.object(lifecycle, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+            ):
+                # Inbound request carries a browser cookie header (lowercase, as Starlette normalises)
+                request = _FakeStreamRequest(
+                    path="/crews/demo/api/spawn",
+                    headers={"cookie": "session=browser-session-id; theme=dark"},
+                )
+
+                class FakeHTTP:
+                    async def request(self_inner, method, url, headers=None, content=None):
+                        captured_headers.append(dict(headers or {}))
+                        resp = Mock()
+                        resp.status_code = 200
+                        resp.content = b"{}"
+                        resp.headers = {}
+                        return resp
+
+                with patch.object(server, "_async_http", FakeHTTP()):
+                    return await server._handle_crew_api_proxy(request)
+
+        asyncio.run(run())
+        self.assertTrue(captured_headers)
+        fwd = captured_headers[0]
+        # Count Cookie / cookie occurrences — must be exactly one
+        cookie_keys = [k for k in fwd if k.lower() == "cookie"]
+        self.assertEqual(len(cookie_keys), 1, "Exactly one Cookie header must be forwarded, not duplicated")
+        # The inbound browser cookie must NOT be forwarded
+        cookie_val = fwd[cookie_keys[0]]
+        self.assertNotIn("browser-session-id", cookie_val)
+
+    def test_api_proxy_injected_session_cookie_present_when_inbound_had_cookie_header(self) -> None:
+        """3.3 (trn-78): injected mc_token_5476 cookie is correct even when inbound request had a 'cookie' header."""
+        captured_headers: list[dict] = []
+
+        async def run():
+            with (
+                patch.object(lifecycle, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+            ):
+                request = _FakeStreamRequest(
+                    path="/crews/demo/api/spawn",
+                    headers={"cookie": "old=stale-val"},
+                )
+
+                class FakeHTTP:
+                    async def request(self_inner, method, url, headers=None, content=None):
+                        captured_headers.append(dict(headers or {}))
+                        resp = Mock()
+                        resp.status_code = 200
+                        resp.content = b"{}"
+                        resp.headers = {}
+                        return resp
+
+                with patch.object(server, "_async_http", FakeHTTP()):
+                    return await server._handle_crew_api_proxy(request)
+
+        asyncio.run(run())
+        self.assertTrue(captured_headers)
+        fwd = captured_headers[0]
+        cookie_keys = [k for k in fwd if k.lower() == "cookie"]
+        self.assertEqual(len(cookie_keys), 1)
+        cookie_val = fwd[cookie_keys[0]]
+        # The injected session cookie must be present
+        self.assertIn("mc_token_5476", cookie_val)
+        self.assertIn("test-cookie-val", cookie_val)
+        # The stale inbound cookie must NOT be present
+        self.assertNotIn("stale-val", cookie_val)
 
 
 class InstallEnvVarSyncTests(unittest.TestCase):
@@ -6613,6 +7603,8 @@ class CopyAgentsMcpTests(unittest.TestCase):
 
             handler = _WarningCapture()
             server.logger.addHandler(handler)
+            import transport.lifecycle as _lc_mod
+            _lc_mod.logger.addHandler(handler)
 
             real_path = Path
 
@@ -6623,14 +7615,18 @@ class CopyAgentsMcpTests(unittest.TestCase):
 
             try:
                 with (
+                    patch.object(lifecycle, "_load_crew_manifest", return_value=manifest),
                     patch.object(server, "_load_crew_manifest", return_value=manifest),
+                    patch.object(lifecycle, "MCP_CATALOGUE_DIR", mcp_dir),
                     patch.object(server, "MCP_CATALOGUE_DIR", mcp_dir),
                     patch.dict(os.environ, env or {}, clear=False),
+                    patch("transport.lifecycle.Path", side_effect=_path_factory),
                     patch("transport.server.Path", side_effect=_path_factory),
                 ):
                     server._copy_agents(mock_podman, "gs-test", None)
             finally:
                 server.logger.removeHandler(handler)
+                _lc_mod.logger.removeHandler(handler)
 
         mcp_json = self._extract_mcp_json_from_calls(mock_podman)
         return mock_podman, mcp_json, captured_warnings
@@ -6804,6 +7800,197 @@ class CopyAgentsMcpTests(unittest.TestCase):
             any("TRN68_MISSING_TEST_VAR" in w for w in warnings),
             f"Expected warning about TRN68_MISSING_TEST_VAR; warnings: {warnings}",
         )
+
+
+# ── TRN-77: Git author identity injection tests ───────────────────────────────
+#
+# The correct mechanism: GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL / GIT_COMMITTER_NAME /
+# GIT_COMMITTER_EMAIL are injected into the container_create env= dict so they
+# are part of the container's process environment from startup.  The gateway
+# inherits them and kiro-cli subprocesses inherit them via {**os.environ} in
+# AcpRuntime.spawn().
+#
+# /etc/environment is NOT used: it is only read by PAM login sessions, not by
+# non-login processes like the KiroCrew gateway.
+
+
+class GitIdentityInjectionTests(unittest.TestCase):
+    """Unit tests for git author identity passthrough (TRN-77 tasks 4.1 and 4.2).
+
+    The identity vars must appear in the container_create env= dict so they are
+    part of the process environment from container startup and inherited by the
+    gateway and every kiro-cli child it spawns.
+    """
+
+    def _capture_create_calls(
+        self,
+        author_name: str,
+        author_email: str,
+    ) -> list[dict]:
+        """Run launch() up to container_create with the given GA_ vars.
+
+        Returns the list of keyword-argument dicts passed to container_create.
+        Aborts after the create call so we do not need a full environment.
+        """
+        create_calls: list[dict] = []
+
+        class _StopAfterCreate(Exception):
+            pass
+
+        def fake_container_create(**kwargs: Any) -> dict:
+            create_calls.append(kwargs)
+            raise _StopAfterCreate
+
+        podman = Mock()
+        podman.container_create = Mock(side_effect=fake_container_create)
+        podman.volume_create = Mock()
+        podman.network_create = Mock()
+
+        with (
+            patch.object(server, "GA_GIT_AUTHOR_NAME", author_name),
+            patch.object(server, "GA_GIT_AUTHOR_EMAIL", author_email),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_read_auth_file", return_value="fake-auth"),
+            patch.object(lifecycle, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(lifecycle, "_resolve_composition", return_value={"name": "spec-ops"}),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops"}),
+            patch.object(lifecycle, "_registry_lock"),
+            patch.object(server, "_registry_lock"),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
+            patch.object(server, "_save_registry"),
+        ):
+            try:
+                server.launch("test-crew")
+            except _StopAfterCreate:
+                pass
+
+        return create_calls
+
+    # ── 4.1: both vars set → all four git env vars in container_create env ──
+
+    def test_both_vars_set_includes_all_four_git_vars_in_create_env(self) -> None:
+        """4.1 — when GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are set,
+        container_create receives all four GIT_* identity vars in its env dict."""
+        create_calls = self._capture_create_calls("Ada Lovelace", "ada@example.com")
+
+        self.assertEqual(len(create_calls), 1)
+        env = create_calls[0]["env"]
+
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "Ada Lovelace")
+        self.assertEqual(env["GIT_AUTHOR_EMAIL"], "ada@example.com")
+        self.assertEqual(env["GIT_COMMITTER_NAME"], "Ada Lovelace")
+        self.assertEqual(env["GIT_COMMITTER_EMAIL"], "ada@example.com")
+
+    def test_both_vars_set_preserves_existing_env_keys(self) -> None:
+        """4.1 — git identity vars are additive; KIROCREW_CORS_ORIGINS and
+        KIROCREW_ALLOW_UNSANDBOXED are still present alongside them."""
+        create_calls = self._capture_create_calls("Test User", "test@example.com")
+        env = create_calls[0]["env"]
+
+        self.assertIn("KIROCREW_CORS_ORIGINS", env)
+        self.assertIn("KIROCREW_ALLOW_UNSANDBOXED", env)
+
+    # ── 4.2: GA_GIT_AUTHOR_NAME unset → git vars absent from create env ──────
+
+    def test_author_name_unset_git_vars_absent_from_create_env(self) -> None:
+        """4.2 — when GA_GIT_AUTHOR_NAME is unset, no GIT_* vars appear in
+        the container_create env dict."""
+        create_calls = self._capture_create_calls("", "test@example.com")
+        env = create_calls[0]["env"]
+
+        self.assertNotIn("GIT_AUTHOR_NAME", env)
+        self.assertNotIn("GIT_AUTHOR_EMAIL", env)
+        self.assertNotIn("GIT_COMMITTER_NAME", env)
+        self.assertNotIn("GIT_COMMITTER_EMAIL", env)
+
+    def test_author_email_unset_git_vars_absent_from_create_env(self) -> None:
+        """4.2 — when GA_GIT_AUTHOR_EMAIL is unset, no GIT_* vars appear."""
+        create_calls = self._capture_create_calls("Test User", "")
+        env = create_calls[0]["env"]
+
+        self.assertNotIn("GIT_AUTHOR_NAME", env)
+        self.assertNotIn("GIT_COMMITTER_NAME", env)
+
+    def test_both_vars_unset_git_vars_absent_from_create_env(self) -> None:
+        """4.2 — when both vars are unset, no GIT_* vars appear."""
+        create_calls = self._capture_create_calls("", "")
+        env = create_calls[0]["env"]
+
+        self.assertNotIn("GIT_AUTHOR_NAME", env)
+        self.assertNotIn("GIT_COMMITTER_NAME", env)
+
+    # ── _inject_git_identity is a no-op ──────────────────────────────────────
+
+    def test_inject_git_identity_is_noop_does_not_exec(self) -> None:
+        """_inject_git_identity must never call container_exec_checked.
+        The /etc/environment approach is removed; identity is in process env."""
+        podman = Mock()
+        podman.container_exec_checked = Mock()
+
+        with (
+            patch.object(server, "GA_GIT_AUTHOR_NAME", "Ada Lovelace"),
+            patch.object(server, "GA_GIT_AUTHOR_EMAIL", "ada@example.com"),
+        ):
+            server._inject_git_identity(podman, "gs-test")
+
+        podman.container_exec_checked.assert_not_called()
+
+    # ── Integration: _finish_crew_setup still calls _inject_git_identity ─────
+
+    def test_finish_crew_setup_calls_inject_git_identity(self) -> None:
+        """_inject_git_identity is called during _finish_crew_setup (no-op, but
+        the call must remain so the call-site comment stays accurate)."""
+        inject_called: list[bool] = []
+
+        podman = Mock()
+        podman.container_stop = Mock()
+        podman.container_start = Mock()
+        podman.container_exec = Mock(return_value="ready")
+        podman.container_exec_checked = Mock(return_value="ok")
+        podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
+
+        def fake_inject_git_identity(p: Any, container: str) -> None:
+            inject_called.append(True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            import contextlib
+            with contextlib.ExitStack() as _stack:
+                _stack.enter_context(patch.object(server, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                _stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
+                _stack.enter_context(patch.object(lifecycle, "_inject_auth", return_value=True))
+                _stack.enter_context(patch.object(server, "_inject_auth", return_value=True))
+                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+                _stack.enter_context(patch.object(server, "_patch_crew_config"))
+                _stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_agents", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_skills", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+                _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
+                _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+                _stack.enter_context(patch.object(server, "_seed_openspec_store"))
+                _stack.enter_context(patch.object(lifecycle, "_inject_git_identity", side_effect=fake_inject_git_identity))
+                _stack.enter_context(patch.object(server, "_inject_git_identity", side_effect=fake_inject_git_identity))
+                _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+                _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
+                _stack.enter_context(patch.object(lifecycle, "_patch_models"))
+                _stack.enter_context(patch.object(server, "_patch_models"))
+                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
+                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
+                result = server._finish_crew_setup(
+                    podman, "test", "gs-test", "vol", "home", "auth"
+                )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(inject_called, [True], "_inject_git_identity must be called once")
 
 
 if __name__ == "__main__":

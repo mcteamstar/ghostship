@@ -50,5 +50,11 @@ RUN chmod 644 /etc/msmtprc && chmod 755 /usr/local/bin/maildeliver && \
 COPY --chown=root:root verify-admiral-sig /usr/local/bin/verify-admiral-sig
 RUN chmod 755 /usr/local/bin/verify-admiral-sig
 
+# Container-side helper scripts baked into every crew at /scripts/.
+# Copied from transport/container_scripts/ by install.sh into the build context.
+# server.py invokes these via `python3 /scripts/<name>.py` (TRN-74).
+COPY --chown=root:root container_scripts/*.py /scripts/
+RUN chmod 755 /scripts/*.py
+
 # Ends as USER root — composition adds its own installs on top.
 # base-graduation restores USER kirocrew.

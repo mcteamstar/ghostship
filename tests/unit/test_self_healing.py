@@ -44,9 +44,11 @@ def _ensure_httpx_exceptions() -> None:
 
 
 from tests.unit.test_file_transfer import server
+import transport.lifecycle as lifecycle
 
 _ensure_httpx_exceptions()
 import httpx
+import transport.registry as _registry_mod
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -101,27 +103,27 @@ class TestProbeGateway(unittest.TestCase):
     def test_probe_success(self):
         """Probe returns True on 200."""
         fake_http = FakeHTTP([FakeResponse(200)])
-        with patch.object(server, "_http", fake_http):
+        with patch.object(lifecycle, "_http", fake_http):
             self.assertTrue(server._probe_gateway("http://gs-test:5476"))
 
     def test_probe_non_2xx(self):
         """Probe returns False on non-2xx (e.g. 500)."""
         fake_http = FakeHTTP([FakeResponse(500)])
-        with patch.object(server, "_http", fake_http):
+        with patch.object(lifecycle, "_http", fake_http):
             self.assertFalse(server._probe_gateway("http://gs-test:5476"))
 
     def test_probe_connection_refused(self):
         """Probe returns False on connection error."""
         mock_http = Mock()
         mock_http.get.side_effect = ConnectionError("Connection refused")
-        with patch.object(server, "_http", mock_http):
+        with patch.object(lifecycle, "_http", mock_http):
             self.assertFalse(server._probe_gateway("http://gs-test:5476"))
 
     def test_probe_timeout(self):
         """Probe returns False on timeout."""
         mock_http = Mock()
         mock_http.get.side_effect = httpx.ConnectTimeout("timeout")
-        with patch.object(server, "_http", mock_http):
+        with patch.object(lifecycle, "_http", mock_http):
             self.assertFalse(server._probe_gateway("http://gs-test:5476"))
 
 
@@ -146,9 +148,13 @@ class TestRefreshCookie(unittest.TestCase):
         reg = {"crews": {"test-crew": {**crew}}}
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
             patch.object(server, "_get_podman", return_value=mock_podman),
+            patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"),
             patch.object(server, "_mint_cookie", return_value="new-cookie"),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
             result = server._refresh_cookie(crew, "test-crew")
@@ -162,7 +168,9 @@ class TestRefreshCookie(unittest.TestCase):
         mock_podman = Mock()
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
             patch.object(server, "_get_podman", return_value=mock_podman),
+            patch.object(lifecycle, "_mint_cookie", return_value=None),
             patch.object(server, "_mint_cookie", return_value=None),
         ):
             result = server._refresh_cookie(crew, "test-crew")
@@ -181,9 +189,13 @@ class TestRefreshCookie(unittest.TestCase):
             saved["reg"] = r
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
             patch.object(server, "_get_podman", return_value=mock_podman),
+            patch.object(lifecycle, "_mint_cookie", return_value="refreshed-cookie"),
             patch.object(server, "_mint_cookie", return_value="refreshed-cookie"),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=capture_save),
             patch.object(server, "_save_registry", side_effect=capture_save),
         ):
             server._refresh_cookie(crew, "test-crew")
@@ -218,7 +230,9 @@ class TestCrewApiWithRecovery(unittest.TestCase):
             return {"ok": True}
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=mock_crew_api),
             patch.object(server, "_crew_api", side_effect=mock_crew_api),
+            patch.object(lifecycle, "_refresh_cookie", return_value=True),
             patch.object(server, "_refresh_cookie", return_value=True),
         ):
             result = server._crew_api_with_recovery(crew, "test-crew", "GET", "/api/spawn")
@@ -238,8 +252,11 @@ class TestCrewApiWithRecovery(unittest.TestCase):
             return {"recovered": True}
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=mock_crew_api),
             patch.object(server, "_crew_api", side_effect=mock_crew_api),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             result = server._crew_api_with_recovery(crew, "test-crew", "GET", "/test")
@@ -264,8 +281,11 @@ class TestCrewApiWithRecovery(unittest.TestCase):
             return c
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=mock_crew_api),
             patch.object(server, "_crew_api", side_effect=mock_crew_api),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_ensure_crew_running", side_effect=mock_ensure),
             patch.object(server, "_ensure_crew_running", side_effect=mock_ensure),
         ):
             result = server._crew_api_with_recovery(crew, "test-crew", "GET", "/test")
@@ -282,8 +302,11 @@ class TestCrewApiWithRecovery(unittest.TestCase):
             raise httpx.HTTPStatusError("403", request=MagicMock(), response=resp)
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=always_fail),
             patch.object(server, "_crew_api", side_effect=always_fail),
+            patch.object(lifecycle, "_refresh_cookie", return_value=False),
             patch.object(server, "_refresh_cookie", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             with self.assertRaises(server.CrewUnresponsiveError):
@@ -299,8 +322,11 @@ class TestCrewApiWithRecovery(unittest.TestCase):
             raise httpx.ConnectError("refused")
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=counting_fail),
             patch.object(server, "_crew_api", side_effect=counting_fail),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             with self.assertRaises(server.CrewUnresponsiveError):
@@ -344,8 +370,11 @@ class TestErrorMessages(unittest.TestCase):
             raise httpx.HTTPStatusError("401", request=MagicMock(), response=resp)
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=always_fail),
             patch.object(server, "_crew_api", side_effect=always_fail),
+            patch.object(lifecycle, "_refresh_cookie", return_value=False),
             patch.object(server, "_refresh_cookie", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             with self.assertRaises(server.CrewUnresponsiveError) as ctx:
@@ -365,8 +394,11 @@ class TestErrorMessages(unittest.TestCase):
             raise httpx.ConnectError("refused")
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=always_fail),
             patch.object(server, "_crew_api", side_effect=always_fail),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             with self.assertRaises(server.CrewUnresponsiveError) as ctx:
@@ -386,8 +418,11 @@ class TestErrorMessages(unittest.TestCase):
             raise httpx.HTTPStatusError("400 Bad CSRF", request=MagicMock(), response=resp)
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=always_fail),
             patch.object(server, "_crew_api", side_effect=always_fail),
+            patch.object(lifecycle, "_refresh_cookie", return_value=False),
             patch.object(server, "_refresh_cookie", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             with self.assertRaises(server.CrewUnresponsiveError) as ctx:
@@ -416,9 +451,15 @@ class TestCallSiteMigration(unittest.TestCase):
         reg = {"crews": {"test": crew}}
 
         with (
+            patch.object(lifecycle, "_get_podman") as mock_podman_fn,
             patch.object(server, "_get_podman") as mock_podman_fn,
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_save_registry"),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(
                 server,
@@ -461,8 +502,11 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
             }
         })
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_crew_api", return_value=[]),
             patch.object(server, "_crew_api", return_value=[]),
         ):
             result = server.crews()
@@ -482,8 +526,11 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
             }
         })
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_crew_api", side_effect=Exception("dead")),
             patch.object(server, "_crew_api", side_effect=Exception("dead")),
         ):
             result = server.crews()
@@ -503,8 +550,11 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
             }
         })
         with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway") as mock_probe,
             patch.object(server, "_probe_gateway") as mock_probe,
+            patch.object(lifecycle, "_crew_api", side_effect=Exception("stopped")),
             patch.object(server, "_crew_api", side_effect=Exception("stopped")),
         ):
             result = server.crews()
@@ -538,8 +588,11 @@ class TestIntegrationGatewayCrash(unittest.TestCase):
             return {"agents": []}
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=simulate_crash_then_recover),
             patch.object(server, "_crew_api", side_effect=simulate_crash_then_recover),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             result = server._crew_api_with_recovery(crew, "integ", "GET", "/api/spawn")
@@ -569,7 +622,9 @@ class TestIntegrationStaleCookie(unittest.TestCase):
             return {"id": "task-123", "done": False}
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=simulate_stale_then_ok),
             patch.object(server, "_crew_api", side_effect=simulate_stale_then_ok),
+            patch.object(lifecycle, "_refresh_cookie", return_value=True),
             patch.object(server, "_refresh_cookie", return_value=True),
         ):
             result = server._crew_api_with_recovery(crew, "integ2", "POST", "/api/spawn")
@@ -594,8 +649,11 @@ class TestIntegrationDoubleFailure(unittest.TestCase):
             raise httpx.ConnectError("Connection refused")
 
         with (
+            patch.object(lifecycle, "_crew_api", side_effect=always_refuse),
             patch.object(server, "_crew_api", side_effect=always_refuse),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
             patch.object(server, "_ensure_crew_running", return_value=crew),
         ):
             with self.assertRaises(server.CrewUnresponsiveError) as ctx:

@@ -76,6 +76,8 @@ GA_MEMORY_WAIT_SECS=60
 GA_SPAWN_MIN_MEMORY_GB=1.5
 GA_RESOURCE_PRESSURE_GB=2.0
 GA_RESOURCE_CRITICAL_GB=1.0
+GA_GIT_AUTHOR_NAME=""
+GA_GIT_AUTHOR_EMAIL=""
 HOST=0.0.0.0
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
@@ -483,9 +485,17 @@ fi
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
 echo "Building localhost/base-admission:latest (admission) ..."
+# Copy container-side helper scripts into the admission build context so they
+# are baked into the crew image at /scripts/ (TRN-74). Uses a temp copy to
+# avoid polluting the source tree with generated files.
+_ADMISSION_CTX="$(mktemp -d)"
+cp -r "$GHOSTSHIP_DIR/crews/_base/admission/." "$_ADMISSION_CTX/"
+mkdir -p "$_ADMISSION_CTX/container_scripts"
+cp "$GHOSTSHIP_DIR/transport/container_scripts/"*.py "$_ADMISSION_CTX/container_scripts/"
 ${_PODMAN_CMD} build -t localhost/base-admission:latest \
-  "$GHOSTSHIP_DIR/crews/_base/admission/" \
-  && echo "✓ admission image built" || { echo "✗ admission image build failed"; exit 1; }
+  "$_ADMISSION_CTX/" \
+  && echo "✓ admission image built" || { echo "✗ admission image build failed"; rm -rf "$_ADMISSION_CTX"; exit 1; }
+rm -rf "$_ADMISSION_CTX"
 
 echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
@@ -592,6 +602,8 @@ services:
       GA_SPAWN_MIN_MEMORY_GB: "${GA_SPAWN_MIN_MEMORY_GB:-1.5}"
       GA_RESOURCE_PRESSURE_GB: "${GA_RESOURCE_PRESSURE_GB:-2.0}"
       GA_RESOURCE_CRITICAL_GB: "${GA_RESOURCE_CRITICAL_GB:-1.0}"
+      GA_GIT_AUTHOR_NAME: "${GA_GIT_AUTHOR_NAME:-}"
+      GA_GIT_AUTHOR_EMAIL: "${GA_GIT_AUTHOR_EMAIL:-}"
       GA_ENABLE_SECURITY_HEADERS: "${GA_ENABLE_SECURITY_HEADERS:-1}"
       GA_ENFORCE_HTTPS_REDIRECT: "${GA_ENFORCE_HTTPS_REDIRECT:-0}"
       GA_CSP_ENFORCE: "${GA_CSP_ENFORCE:-0}"

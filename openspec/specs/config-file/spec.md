@@ -28,8 +28,16 @@ The system SHALL accept a `--config <path>` flag pointing to a shell file that e
 - **THEN** the script SHALL exit with a non-zero status and print an error indicating the file does not exist or is not readable
 
 #### Scenario: Config file with all supported variables
-- **WHEN** a config file exports any combination of: `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE`, `PORT`, `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT`, `GA_API_KEY`, `GA_HOST_URL`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MACHINE_CPUS`, `GA_MACHINE_MEMORY`, `GA_MACHINE_DISK`
+- **WHEN** a config file exports any combination of: `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE`, `PORT`, `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT`, `GA_API_KEY`, `GA_HOST_URL`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MACHINE_CPUS`, `GA_MACHINE_MEMORY`, `GA_MACHINE_DISK`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`
 - **THEN** each exported variable SHALL act as a default, overridable by its corresponding flag where one exists
+
+#### Scenario: Config file sets git author identity
+- **WHEN** `install.sh` runs with `--config ./my.conf` and `my.conf` exports `GA_GIT_AUTHOR_NAME="Your Name"` and `GA_GIT_AUTHOR_EMAIL="you@example.com"`
+- **THEN** crew containers SHALL have `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` set to the configured values
+
+#### Scenario: Git identity vars absent — per-persona identity preserved
+- **WHEN** `GA_GIT_AUTHOR_NAME` and `GA_GIT_AUTHOR_EMAIL` are not set
+- **THEN** crew containers SHALL use the per-persona git identity (e.g. `Ghost <ghost@localhost>`) as before — no breaking change
 
 #### Scenario: Ambient environment variable ignored when unset elsewhere
 - **WHEN** the invoking shell has `GA_MACHINE_NAME=from-env` exported, no `--config` file is passed, and no corresponding flag is passed
@@ -56,3 +64,36 @@ The system SHALL accept a `--config <path>` flag pointing to a shell file that e
 #### Scenario: Auth docs reference config file
 - **WHEN** reading `docs/auth.md` "Identity provider config" section
 - **THEN** it SHALL list config file as item 1 in the resolution order and include an example snippet showing `KIRO_IDENTITY_PROVIDER=...` and `KIRO_REGION=...`
+
+### Requirement: Transport runtime config centralised in Config dataclass
+The transport SHALL load all runtime configuration from environment variables exactly once at startup into a `Config` dataclass defined in `transport/config.py`. All transport subsystems SHALL read configuration from this loaded instance rather than calling `os.environ.get()` directly at use sites.
+
+#### Scenario: Config loaded at startup
+- **WHEN** the transport process starts
+- **THEN** a single `Config` instance is constructed from the current environment variables before any request is handled
+
+#### Scenario: Default values applied consistently
+- **WHEN** an environment variable is absent
+- **THEN** the `Config` dataclass applies the same default that was previously scattered at each call site
+
+### Requirement: Config fields match ghostship.conf.example
+Every field in the `Config` dataclass SHALL have a corresponding commented-out entry in `config/ghostship.conf.example`, and vice versa. A CI test SHALL assert this invariant so the two cannot silently diverge.
+
+#### Scenario: CI sync check passes
+- **WHEN** `Config` fields and `ghostship.conf.example` entries are in sync
+- **THEN** the CI test passes
+
+#### Scenario: CI sync check fails on drift
+- **WHEN** a field is added to `Config` without a matching entry in `ghostship.conf.example`
+- **THEN** the CI test fails and identifies the missing entry
+
+### Requirement: Operator-configurable git author identity for crew commits
+The system SHALL optionally inject `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` environment variables into crew containers at creation time when `GA_GIT_AUTHOR_NAME` and `GA_GIT_AUTHOR_EMAIL` are set. When set, all commits made by agents inside the crew SHALL carry the operator's configured identity as both author and committer.
+
+#### Scenario: Git identity injected when configured
+- **WHEN** `GA_GIT_AUTHOR_NAME` and `GA_GIT_AUTHOR_EMAIL` are set and a crew is launched
+- **THEN** the crew container has all four git identity env vars set to the configured values
+
+#### Scenario: Identity not injected when unconfigured
+- **WHEN** `GA_GIT_AUTHOR_NAME` is unset
+- **THEN** the crew container does not have `GIT_AUTHOR_NAME` or `GIT_COMMITTER_NAME` in its environment — kiro-cli uses its own per-session identity

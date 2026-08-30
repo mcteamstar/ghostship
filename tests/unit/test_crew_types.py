@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import patch, MagicMock
 
 from tests.unit.test_file_transfer import server
+import transport.lifecycle as lifecycle
 
 
 class TestLoadCrewTypeRegistry(unittest.TestCase):
@@ -48,6 +49,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
 
         # Patch the registry path and ensure both dirs "exist"
         with (
+            patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path),
             patch.object(server, "_CREW_REGISTRY_PATH", tmp_path),
             patch("pathlib.Path.is_dir", return_value=True),
         ):
@@ -63,7 +65,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
     def test_missing_file_returns_fallback(self) -> None:
         """Missing registry file returns single kirocrew fallback."""
         nonexistent = Path("/nonexistent/registry.json")
-        with patch.object(server, "_CREW_REGISTRY_PATH", nonexistent):
+        with patch.object(lifecycle, "_CREW_REGISTRY_PATH", nonexistent):
             result = server._load_composition_registry()
 
         self.assertEqual(list(result.keys()), ["spec-ops"])
@@ -77,7 +79,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
             f.flush()
             tmp_path = Path(f.name)
 
-        with patch.object(server, "_CREW_REGISTRY_PATH", tmp_path):
+        with patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path):
             result = server._load_composition_registry()
 
         self.assertEqual(list(result.keys()), ["spec-ops"])
@@ -113,6 +115,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
             return "gooddir" in str(self)
 
         with (
+            patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path),
             patch.object(server, "_CREW_REGISTRY_PATH", tmp_path),
             patch("pathlib.Path.is_dir", _is_dir_side_effect),
         ):
@@ -132,7 +135,7 @@ class TestLoadCrewTypeRegistry(unittest.TestCase):
             f.flush()
             tmp_path = Path(f.name)
 
-        with patch.object(server, "_CREW_REGISTRY_PATH", tmp_path):
+        with patch.object(lifecycle, "_CREW_REGISTRY_PATH", tmp_path):
             result = server._load_composition_registry()
 
         self.assertEqual(list(result.keys()), ["spec-ops"])
@@ -205,11 +208,16 @@ class TestLaunchComposition(unittest.TestCase):
 
         # Mock everything to isolate the composition resolution and image usage
         with (
+            patch.object(lifecycle, "COMPOSITION_REGISTRY", custom_registry),
             patch.object(server, "COMPOSITION_REGISTRY", custom_registry),
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
             patch.object(server, "_get_podman", return_value=mock_podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(
                 server, "_finish_crew_setup",
@@ -230,10 +238,14 @@ class TestLaunchComposition(unittest.TestCase):
         mock_podman.container_is_running.return_value = False
 
         with (
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
             patch.object(server, "_get_podman", return_value=mock_podman),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(
                 server, "_finish_crew_setup",
@@ -266,7 +278,10 @@ class TestCompositionsResource(unittest.TestCase):
                 "image": "custom:latest",
             },
         }
-        with patch.object(server, "COMPOSITION_REGISTRY", mock_registry):
+        with (
+            patch.object(lifecycle, "COMPOSITION_REGISTRY", mock_registry),
+            patch.object(server, "COMPOSITION_REGISTRY", mock_registry),
+        ):
             result = server.resource_compositions()
 
         self.assertIsInstance(result, str)

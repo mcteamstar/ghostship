@@ -6,8 +6,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy server
-COPY server.py security.py ./
+# Copy transport package (all modules)
+COPY . /app/
+# Exclude crew-side scripts (those belong in the crew image via admission layer)
+RUN rm -rf /app/container_scripts/
 
 # Version baked in at build time via --build-arg VERSION=<semver>
 ARG VERSION=0.0.0-dev

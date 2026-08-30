@@ -40,6 +40,8 @@ See [configuration.md](configuration.md#extending-the-crew-image) to add package
 
 ## Ghost Academy
 
+![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](images/docs-fleet-hierarchy.png)
+
 Every ghostship is built from the same foundation: [`academy/agents/`](../academy/agents/),
 [`academy/skills/`](../academy/skills/), and
 [`academy/steering/`](../academy/steering/) — the Ghost Academy's shared
@@ -67,6 +69,8 @@ change. Raven is the sixth, coordination-only persona for recurring
 standing-orders work. See [agents.md](agents.md) for what each persona owns,
 and [Steering](#steering) below for the crew-wide context every persona gets
 regardless of its own prompt.
+
+![SDD workflow: Spectre → Ghost → Banshee → Reaper, with Raven/Captain orchestration](images/docs-sdd-workflow.png)
 
 ## Crew lifecycle
 
