@@ -616,14 +616,18 @@ def _extract_crew_proxy_parts(path: str) -> tuple[str, str, str] | None:
     return crew_id, segment, sub_path
 
 
+_QS_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def _sanitise_query_string(raw: bytes) -> str:
     """Decode query string and strip control characters.
 
     latin-1 is used to preserve non-ASCII bytes faithfully (percent-encoded
     values in a query string are ASCII anyway). Control characters (0x00-0x1F,
-    0x7F) are stripped to prevent CRLF injection into the upstream request.
+    0x7F) are stripped to prevent CRLF injection into the upstream request
+    or a response header.
     """
-    return re.sub(r"[\x00-\x1f\x7f]", "", raw.decode("latin-1"))
+    return _QS_CONTROL_CHARS.sub("", raw.decode("latin-1"))
 
 
 async def _handle_crew_ui_proxy(request: Request) -> Response:
@@ -1052,7 +1056,7 @@ class SecurityHeadersMiddleware:
             qs = scope.get("query_string", b"")
             target = f"https://{host}{path}"
             if qs:
-                target += "?" + qs.decode("latin-1")
+                target += "?" + _sanitise_query_string(qs)
             await send({
                 "type": "http.response.start",
                 "status": 301,
