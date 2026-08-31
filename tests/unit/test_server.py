@@ -4208,6 +4208,99 @@ class ProxyHandlerTests(unittest.TestCase):
         # The stale inbound cookie must NOT be present
         self.assertNotIn("stale-val", cookie_val)
 
+class TestProxyQuerySanitisation(unittest.TestCase):
+    """Verify raw query controls are removed by both proxy handlers."""
+
+    CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
+
+    def _capture_ui_url(self, query_string: bytes) -> str:
+        captured: list[str] = []
+        mock_response = _FakeUpstreamResponse(200, b"ok")
+
+        async def run() -> None:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(server, "_async_http") as fake_http,
+            ):
+                request = _FakeStreamRequest(
+                    path="/crews/demo/ui/search",
+                    query_string=query_string,
+                )
+
+                class StreamCapture:
+                    def __call__(self_inner, method, url, **kwargs):
+                        captured.append(url)
+                        return mock_response
+
+                fake_http.stream = StreamCapture()
+                await server._handle_crew_ui_proxy(request)
+
+        asyncio.run(run())
+        self.assertEqual(len(captured), 1)
+        return captured[0]
+
+    def _capture_api_url(self, query_string: bytes) -> str:
+        captured: list[str] = []
+
+        async def run() -> None:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(server, "_async_http") as fake_http,
+            ):
+                request = _FakeStreamRequest(
+                    path="/crews/demo/api/search",
+                    query_string=query_string,
+                )
+
+                class HTTPRequestCapture:
+                    async def request(self_inner, method, url, **kwargs):
+                        captured.append(url)
+                        response = Mock()
+                        response.status_code = 200
+                        response.content = b"ok"
+                        response.headers = {}
+                        return response
+
+                fake_http.request = HTTPRequestCapture().request
+                await server._handle_crew_api_proxy(request)
+
+        asyncio.run(run())
+        self.assertEqual(len(captured), 1)
+        return captured[0]
+
+    def test_ui_proxy_strips_cr_lf_and_null(self) -> None:
+        query = b"q=hello\r\nworld\x00&limit=10"
+        self.assertEqual(
+            self._capture_ui_url(query),
+            "http://gs-demo:5476/search?q=helloworld&limit=10",
+        )
+
+    def test_api_proxy_strips_cr_lf_and_null(self) -> None:
+        query = b"q=hello\r\nworld\x00&limit=10"
+        self.assertEqual(
+            self._capture_api_url(query),
+            "http://gs-demo:5476/api/search?q=helloworld&limit=10",
+        )
+
+    def test_ui_proxy_preserves_ordinary_and_percent_encoded_queries(self) -> None:
+        for query in (b"q=hello&limit=10", b"q=hello%0Aworld&limit=10"):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    self._capture_ui_url(query),
+                    f"http://gs-demo:5476/search?{query.decode('ascii')}",
+                )
+
+    def test_api_proxy_preserves_ordinary_and_percent_encoded_queries(self) -> None:
+        for query in (b"q=hello&limit=10", b"q=hello%0Aworld&limit=10"):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    self._capture_api_url(query),
+                    f"http://gs-demo:5476/api/search?{query.decode('ascii')}",
+                )
+
+
 class InstallEnvVarSyncTests(unittest.TestCase):
     """Verify that every GA_* / KC_* env var read by server.py is also
     passed to the transport container via a -e flag in install.sh.

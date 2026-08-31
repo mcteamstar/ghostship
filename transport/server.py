@@ -616,6 +616,16 @@ def _extract_crew_proxy_parts(path: str) -> tuple[str, str, str] | None:
     return crew_id, segment, sub_path
 
 
+def _sanitise_query_string(raw: bytes) -> str:
+    """Decode query string and strip control characters.
+
+    latin-1 is used to preserve non-ASCII bytes faithfully (percent-encoded
+    values in a query string are ASCII anyway). Control characters (0x00-0x1F,
+    0x7F) are stripped to prevent CRLF injection into the upstream request.
+    """
+    return re.sub(r"[\x00-\x1f\x7f]", "", raw.decode("latin-1"))
+
+
 async def _handle_crew_ui_proxy(request: Request) -> Response:
     """Reverse-proxy GET/POST to the crew gateway UI at http://gs-{crew_id}:5476/.
 
@@ -652,7 +662,7 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
     query = request.scope.get("query_string", b"")
     upstream_url = upstream_path
     if query:
-        upstream_url = f"{upstream_path}?{query.decode('latin-1')}"
+        upstream_url = f"{upstream_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{upstream_url}"
 
     # Forward headers minus host
@@ -721,7 +731,7 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
     api_path = f"/api/{sub_path}" if sub_path else "/api/"
     query = request.scope.get("query_string", b"")
     if query:
-        api_path = f"{api_path}?{query.decode('latin-1')}"
+        api_path = f"{api_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{api_path}"
 
     # Forward headers minus host and cookie, then inject session cookie
