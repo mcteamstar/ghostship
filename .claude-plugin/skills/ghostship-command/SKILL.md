@@ -294,10 +294,13 @@ You don't reach in and read `/var/mail/*` directly (see guardrails).
 
 Two ways to see mail state without a dispatch:
 
-- Every `pickup` response includes mail counts (`admiral_mail`) and subject lines
-  for the agent persona's mailbox (e.g. `ghost_subjects`, `raven_subjects`).
-  Captain and admiral mailbox subjects are NOT included in pickup — those are
-  stale when sourced from a Raven pickup result anyway.
+- Every `pickup` response includes the agent persona's mail count (`agent_mail`)
+  and subject lines for the agent persona's mailbox (e.g. `ghost_subjects`,
+  `raven_subjects`). Captain and admiral mailbox subjects and counts
+  (`captain_subjects`, `admiral_subjects`, `captain_mail`, `admiral_mail`) are
+  NOT included in pickup — those are stale when sourced from a Raven pickup
+  result anyway. A poll still returns early with `reason: "admiral_mail"` when
+  new Admiral mail lands mid-poll.
 - `captain(action="status")` returns live `captain_subjects` and `admiral_subjects`
   arrays directly from the mailboxes (using the Podman archive API, so it works
   even on a stopped crew). Use this for an accurate mail picture of the

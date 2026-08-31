@@ -2784,11 +2784,13 @@ def _pickup_single(
             "error": r.get("error", ""),
             "outcome": r.get("outcome", ""),
             "agent_mail": agent_mail,
-            "admiral_mail": admiral_mail,
         }
 
+        # captain_subjects, admiral_subjects, captain_mail, and admiral_mail are
+        # NOT surfaced by pickup — use captain(action="status") for those. The
+        # admiral_mail count is still read (above) purely to drive the
+        # reason="admiral_mail" early-return below; it is not part of the response.
         # Include subject lines for the agent persona and raven mailboxes only.
-        # captain_subjects and admiral_subjects are available via captain(action="status").
         if agent_persona:
             out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
         raven_subjects = mail_subjects.get("raven", [])
@@ -2882,7 +2884,6 @@ def _pickup_list(
             "crew_id": crew_id,
             "tasks": task_list,
             "mail_summary": mail_summary,
-            "admiral_mail": admiral_mail,
             **subjects_summary,
         }
 

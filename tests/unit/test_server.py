@@ -613,12 +613,13 @@ class PickupTimeoutTests(unittest.TestCase):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
 
         self.assertEqual(result["agent_mail"], 3)
-        self.assertEqual(result["admiral_mail"], 1)
         self.assertEqual(result["ghost_subjects"], ["hello"])
-        # captain_subjects and admiral_subjects are NOT in pickup — use captain status
+        # captain_subjects, admiral_subjects, captain_mail, admiral_mail are NOT
+        # in pickup — use captain status
         self.assertNotIn("captain_subjects", result)
         self.assertNotIn("admiral_subjects", result)
         self.assertNotIn("captain_mail", result)
+        self.assertNotIn("admiral_mail", result)
 
     def test_pickup_mail_counts_present_list_all(self) -> None:
         """5.4 — mail counts present in list-all response."""
@@ -636,12 +637,13 @@ class PickupTimeoutTests(unittest.TestCase):
 
         self.assertIn("mail_summary", result)
         self.assertEqual(result["mail_summary"]["ghost"], 2)
-        self.assertEqual(result["admiral_mail"], 1)
         self.assertEqual(result["ghost_subjects"], ["done"])
-        # captain_subjects and admiral_subjects are NOT in pickup — use captain status
+        # captain_subjects, admiral_subjects, captain_mail, admiral_mail are NOT
+        # in pickup — use captain status
         self.assertNotIn("captain_subjects", result)
         self.assertNotIn("admiral_subjects", result)
         self.assertNotIn("captain_mail", result)
+        self.assertNotIn("admiral_mail", result)
 
     def test_pickup_admiral_mail_early_return(self) -> None:
         """5.5 — Admiral mail early-return sets reason='admiral_mail'."""
@@ -674,7 +676,9 @@ class PickupTimeoutTests(unittest.TestCase):
 
         self.assertFalse(result["done"])
         self.assertEqual(result["reason"], "admiral_mail")
-        self.assertEqual(result["admiral_mail"], 1)
+        # The admiral_mail count is read internally to trigger this early return
+        # but is no longer surfaced in the pickup response (use captain status).
+        self.assertNotIn("admiral_mail", result)
 
 
 class ResourceJobsTests(unittest.TestCase):
