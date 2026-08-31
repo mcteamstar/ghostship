@@ -286,6 +286,43 @@ class TestTransportSecurity(unittest.TestCase):
             f"Expected source IP in plaintext log, got: {plaintext_logs}",
         )
 
+    def test_enforced_redirect_sanitises_query_string(self):
+        """The enforcing HTTPS redirect strips raw CR/LF/null from the Location.
+
+        Guards the wiring in the 301 redirect itself -- distinct from the
+        _sanitise_query_string helper and proxy-handler tests, which don't
+        exercise this code path.
+        """
+        import asyncio
+
+        collected = []
+
+        async def _dummy_app(scope, receive, send):
+            pass
+
+        async def _dummy_send(msg):
+            collected.append(msg)
+
+        mw = server.SecurityHeadersMiddleware(
+            _dummy_app, enable_headers=True, enforce_redirect=True, csp_enforce=False
+        )
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/search",
+            "scheme": "http",
+            "headers": [(b"host", b"example.com")],
+            "query_string": b"q=hello\r\nworld\x00&limit=10",
+        }
+        asyncio.run(mw(scope, None, _dummy_send))
+
+        start = next(m for m in collected if m["type"] == "http.response.start")
+        self.assertEqual(start["status"], 301)
+        location = dict(start["headers"])[b"location"].decode("latin-1")
+        self.assertEqual(
+            location, "https://example.com/search?q=helloworld&limit=10"
+        )
+
 
 # ── audit logging ─────────────────────────────────────────────────────────────
 
