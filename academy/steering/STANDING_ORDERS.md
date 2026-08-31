@@ -24,6 +24,27 @@ checkout keeps its real history. To extract history, the caller calls
 `git clone ./crew.bundle ./crew-repo` or
 `git fetch ./crew.bundle <ref>:refs/remotes/crew/<ref>`.
 
+## Git identity
+
+Before your first commit in a session, check whether git identity is already
+configured for the checkout you're committing in: `git config user.name`. If
+that returns non-empty, an operator override is already in effect (or a
+previous task already set it) — leave it alone, don't override it.
+
+If it's empty, set it deterministically — **never guess, invent, or reuse an
+identity from anywhere else** (cached credentials, `gh auth status`, anything
+you might otherwise find lying around):
+
+```bash
+git config user.name "<YourPersonaName>"
+git config user.email "<persona>@localhost"
+```
+
+Use your own persona name and its lowercase form — Ghost sets `Ghost
+<ghost@localhost>`, Spectre sets `Spectre <spectre@localhost>`, and so on.
+This mirrors the `<persona>@localhost` addressing already used for mail (see
+Mail conventions below) — same identity, same rule, no exceptions.
+
 ## Shared OpenSpec store
 
 An OpenSpec store is seeded at the workspace root when the crew is created.
