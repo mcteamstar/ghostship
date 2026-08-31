@@ -4300,6 +4300,16 @@ class TestProxyQuerySanitisation(unittest.TestCase):
                     f"http://gs-demo:5476/api/search?{query.decode('ascii')}",
                 )
 
+    def test_helper_strips_full_ascii_control_range_and_preserves_latin1(self) -> None:
+        controls = bytes(range(0x20)) + bytes((0x7F,))
+        high_bytes = bytes((0x80, 0xFF))
+        raw = b"before" + controls + high_bytes + b"after%0A"
+
+        self.assertEqual(
+            server._sanitise_query_string(raw),
+            "before" + high_bytes.decode("latin-1") + "after%0A",
+        )
+
 
 class InstallEnvVarSyncTests(unittest.TestCase):
     """Verify that every GA_* / KC_* env var read by server.py is also
