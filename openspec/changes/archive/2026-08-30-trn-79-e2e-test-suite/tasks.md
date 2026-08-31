@@ -32,5 +32,5 @@
 
 ## 7. Verification
 
-- [x] 7.1 Run `GHOSTSHIP_E2E_URL=http://your-academy-host bash tests/run.sh --e2e` — all tests pass against vm23
+- [x] 7.1 Run `GHOSTSHIP_E2E_URL=http://your-academy-host bash tests/run.sh --e2e` — all tests pass against the test host
 - [x] 7.2 Run `bash tests/run.sh --e2e` (no env var) — suite skips cleanly with 0 failures

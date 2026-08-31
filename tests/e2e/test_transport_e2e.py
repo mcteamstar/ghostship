@@ -9,6 +9,11 @@ runs that don't have a transport provisioned.
 
 Optional:
     GHOSTSHIP_API_KEY — if set, the auth gate test also runs.
+    GHOSTSHIP_E2E_KIRO_AUTH — if set to a truthy value, the kiro-cli auth
+        cycle test also runs. Opt-in and destructive: it logs out every
+        running crew's kiro-cli identity, then requires a human to open the
+        printed login_url and approve the device prompt while the test polls
+        for completion. Do not set this in unattended CI.
 """
 
 import os
@@ -17,7 +22,14 @@ import unittest
 
 import httpx
 
-from tests.e2e.helpers import GHOSTSHIP_E2E_URL, GHOSTSHIP_API_KEY, _SKIP_REASON, mcp_call as _mcp_call, is_error as _is_error
+from tests.e2e.helpers import (
+    GHOSTSHIP_E2E_URL,
+    GHOSTSHIP_API_KEY,
+    GHOSTSHIP_E2E_KIRO_AUTH,
+    _SKIP_REASON,
+    mcp_call as _mcp_call,
+    is_error as _is_error,
+)
 
 
 # ── 2. Health check ───────────────────────────────────────────────────────────
@@ -216,6 +228,71 @@ class TestAuthGate(unittest.TestCase):
             timeout=10.0,
         )
         self.assertEqual(resp.status_code, 200)
+
+
+# ── 7. Kiro auth cycle (opt-in, destructive) ─────────────────────────────────
+
+
+@unittest.skipUnless(
+    GHOSTSHIP_E2E_URL and GHOSTSHIP_E2E_KIRO_AUTH,
+    "GHOSTSHIP_E2E_URL and GHOSTSHIP_E2E_KIRO_AUTH both required (opt-in: logs "
+    "out every crew's kiro-cli identity and needs a human to approve the "
+    "device prompt during the run)",
+)
+class TestKiroAuthCycle(unittest.TestCase):
+    """Exercises the real /login, /logout device-auth flow.
+
+    Requires a human to open the printed login_url and approve the device
+    prompt while this test polls GET /login — it cannot complete unattended,
+    which is why it's gated behind an explicit opt-in flag rather than
+    GHOSTSHIP_E2E_URL alone.
+    """
+
+    def _headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if GHOSTSHIP_API_KEY:
+            headers["Authorization"] = f"Bearer {GHOSTSHIP_API_KEY}"
+        return headers
+
+    def test_logout_then_login_completes(self):
+        headers = self._headers()
+
+        logout_resp = httpx.post(
+            f"{GHOSTSHIP_E2E_URL}/logout", headers=headers, timeout=10.0
+        )
+        self.assertIn(logout_resp.status_code, (200, 404))
+
+        login_resp = httpx.post(
+            f"{GHOSTSHIP_E2E_URL}/login", headers=headers, timeout=10.0
+        )
+        self.assertEqual(login_resp.status_code, 200)
+        login_body = login_resp.json()
+        self.assertEqual(login_body["status"], "pending")
+        self.assertTrue(login_body.get("login_url"))
+
+        print(
+            f"\n>>> Kiro auth: open {login_body['login_url']} and approve the "
+            f"device (code: {login_body.get('code')}) — polling up to 180s "
+            f"for completion...\n"
+        )
+
+        deadline = time.monotonic() + 180
+        status = "pending"
+        while time.monotonic() < deadline:
+            poll_resp = httpx.get(
+                f"{GHOSTSHIP_E2E_URL}/login", headers=headers, timeout=10.0
+            )
+            self.assertEqual(poll_resp.status_code, 200)
+            status = poll_resp.json()["status"]
+            if status == "complete":
+                break
+            time.sleep(3)
+
+        self.assertEqual(
+            status,
+            "complete",
+            "Login did not complete within 180s — was the device prompt approved?",
+        )
 
 
 if __name__ == "__main__":

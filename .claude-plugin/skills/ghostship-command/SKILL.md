@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.2.1"
+  version: "0.2.2"
 ---
 
 # Ghostship Command
@@ -75,7 +75,7 @@ Treat the tables in this skill as the common case, not a guarantee.
 ```
 launch(crew_id)                     → crew ready (~30s cold; auto-restarts if idled)
 supply(path, crew_id, ...)          → presigned upload URL; POST bytes yourself
-dispatch(task, agent, crew_id)      → task_id
+dispatch(task, agent, crew_id, model=...) → task_id
 pickup(task_id, crew_id, ...)       → poll or collect
 steer(task_id, message, crew_id)    → redirect running / continue completed
 evac(path, crew_id, ...)            → presigned download URL; GET bytes yourself
@@ -134,8 +134,14 @@ run `git log`, `git diff`, and `git bundle` for `evac`.
 ### 3. Do work — `dispatch`
 
 ```
-dispatch(task, agent="ghost", crew_id) → { task_id, ... }
+dispatch(task, agent="ghost", crew_id, model=...) → { task_id, ... }
 ```
+
+The optional `model` pins the model for this one task. It is a create-time
+setting only: `steer` and `continue` cannot change an existing session's model.
+It outranks both the crew's per-agent model and `KC_MODEL_OVERRIDE` for this
+call, so `KC_MODEL_OVERRIDE` is not an absolute ceiling when a caller supplies
+`model=`.
 
 The dispatched agent has **no context beyond `task`** — no memory of this
 conversation, no idea what you're trying to accomplish beyond what you wrote.
@@ -189,9 +195,16 @@ or `schedule(action="cancel")` for those.
 ### 5. Recurring or delayed work — `schedule`
 
 ```
-schedule(name, message, crew_id, cron=... | interval=... | delay=...)
+schedule(name, message, crew_id, cron=... | interval=... | delay=..., model=...)
 schedule(action="list" | "cancel", ...)
 ```
+
+Pass `model=` when creating a cron, interval, or one-shot delay job to pin
+that job's model. The override is create-time-only — it has no effect through
+`steer`/`continue` and cannot alter an existing job. It outranks the crew's
+per-agent model and `KC_MODEL_OVERRIDE`; operators using `KC_MODEL_OVERRIDE` as
+an absolute model ceiling should treat any caller with dispatch access as able
+to override it per call.
 
 Both `dispatch` and `schedule` default to `ghost`; pass `agent=` explicitly
 for anything else. `interval` jobs fire immediately on creation by default;
@@ -212,6 +225,13 @@ captain(crew_id, action="order", message="<free-form standing order>", interval=
 captain(crew_id, action="status")   # job state, last-run summary, unread mail counts
 captain(crew_id, action="stop")     # pauses the job without deleting it
 ```
+
+For `captain(action="order")`, `model=` pins only a newly created Captain
+check-in job; it is ignored when resuming an existing paused job. This is also
+create-time-only and cannot change a model through `steer`/`continue`. The
+per-call value outranks the crew's per-agent model and `KC_MODEL_OVERRIDE`, so
+`KC_MODEL_OVERRIDE` is not an absolute ceiling for callers allowed to create a
+Captain job.
 
 Use `interval=300` (5 min) for SDD work — comfortably inside the idle-stop
 window. A scheduled check-in existing does **not** by itself keep a crew

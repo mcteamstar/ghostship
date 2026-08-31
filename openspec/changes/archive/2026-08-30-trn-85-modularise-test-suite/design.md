@@ -23,8 +23,9 @@ module's globals does the function under test read from when it executes."
 | `test_podman.py` | `PodmanClient`, `_get_podman`, `_http`, `_async_http`, `_get_host_memory_gb`, `_wait_for_memory` | `transport.podman` |
 | `test_files.py` | `_sign_file_url`, `_sign_upload_url`, `_verify_file_token`, `_handle_file_get`, `_handle_file_put`, `_transfer_upload`, `_TarMemberStream`, `_ResponseChunkReader` | `transport.files` |
 | `test_captain.py` | `_append_captain_mail`, `_format_captain_mail`, `_captain_jobs`, `_captain_standing_view`, `_load_order_template`, `_resolve_order_template`, `_mail_count` | `transport.captain` |
-| `test_lifecycle.py` | `_ensure_crew_running`, `_finish_crew_setup`, `_crew_api_with_recovery`, `_crew_api`, `_probe_gateway`, `_patch_crew_config`, `_copy_agents`, `_copy_skills`, `_inject_policy`, `_mint_cookie`, `_reconcile_registry`, `_validate_academy` | `transport.lifecycle` |
-| `test_server.py` | MCP tools (`crews`, `launch`, `dispatch`, `pickup`, `steer`, `nuke`, `captain`, `schedule`, `evac`, `supply`), login state machine (`_handle_login_post`, `_handle_login_get`, `_handle_logout_post`), routes, middleware | `transport.server` for names in server's body; `transport.lifecycle` for deps called two levels deep |
+| `test_academy.py` | `COMPOSITION_REGISTRY`, `_load_composition_registry`, `_resolve_composition`, `_resolve_manifest_path`, `_resolve_image`, `_load_crew_manifest`, `_manifest_selects`, `_substitute_env_vars`, `_validate_academy`, `_AGENTS_DIR`, `_CREW_REGISTRY_PATH` — absorbs `test_academy_validation.py` and `test_crew_types.py` | `transport.academy` |
+| `test_lifecycle.py` | `_ensure_crew_running`, `_finish_crew_setup`, `_crew_api_with_recovery`, `_crew_api`, `_probe_gateway`, `_patch_crew_config`, `_copy_agents`, `_copy_skills`, `_inject_policy`, `_mint_cookie`, `_reconcile_registry` — **not** the academy functions (those moved to `test_academy.py`) | `transport.lifecycle` |
+| `test_server.py` | MCP tools (`crews`, `launch`, `dispatch`, `pickup`, `steer`, `nuke`, `captain`, `schedule`, `evac`, `supply`), login state machine (`_handle_login_post`, `_handle_login_get`, `_handle_logout_post`), routes, middleware | `transport.server` for names in server's body; `transport.lifecycle` / `transport.academy` for deps called two levels deep |
 
 ### 2. Patch target rule — the call-site principle
 
@@ -75,6 +76,15 @@ Known test classes in `test_transport.py` and their destinations:
 **→ test_captain.py**
 - `CaptainStandingOrdersTests`
 - `CaptainMailHelperTests`
+
+**→ test_academy.py** (TRN-86 module — absorbs `test_academy_validation.py` and `test_crew_types.py`)
+- `TestCrewTypesTool` — tests `transport.academy.COMPOSITION_REGISTRY` via the `compositions` MCP tool
+- `TestLaunchCrewType` — tests composition resolution in `launch()`, patches `transport.academy.COMPOSITION_REGISTRY`, `_resolve_composition`, `_resolve_image`
+- `CrewTypeRegistryTests` (if present) — tests `_load_composition_registry`, `_resolve_manifest_path`
+- All classes from `test_academy_validation.py` — tests `_validate_academy`, already patching `transport.academy`
+- All classes from `test_crew_types.py` — tests `_load_crew_manifest`, `_manifest_selects`, `_substitute_env_vars`
+
+**Note on `CopyAgentsMcpTests`:** Stays in `test_lifecycle.py`. It tests `_copy_agents` which is defined in `lifecycle.py`. That function calls `_load_crew_manifest` (academy) and `_substitute_env_vars` (academy) as dependencies — the test patches those at the academy level but the function under test is lifecycle's.
 
 **→ test_lifecycle.py**
 - `SetupRegistrationTests`

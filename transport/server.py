@@ -125,8 +125,6 @@ try:
         _get_podman,
         _http,
         _async_http,
-        _host_memory_cache,
-        _host_memory_cache_lock,
         _get_host_memory_gb,
         _get_host_memory_gb_cached,
         _wait_for_memory,
@@ -139,8 +137,6 @@ except ModuleNotFoundError:
         _get_podman,
         _http,
         _async_http,
-        _host_memory_cache,
-        _host_memory_cache_lock,
         _get_host_memory_gb,
         _get_host_memory_gb_cached,
         _wait_for_memory,
@@ -272,6 +268,28 @@ GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
+_MODEL_MAX_LENGTH = 500
+_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def _validate_model(model: str | None) -> str | None:
+    """Validate and normalize an optional KiroCrew model override."""
+    if model is None:
+        return None
+    if not isinstance(model, str):
+        raise ValueError("Invalid model: expected a string")
+    if not model:
+        return None
+    if len(model) > _MODEL_MAX_LENGTH:
+        raise ValueError(
+            f"Invalid model: maximum length is {_MODEL_MAX_LENGTH} characters"
+        )
+    if _MODEL_NAME_RE.fullmatch(model) is None:
+        raise ValueError(
+            "Invalid model: must start with a letter or digit and contain only "
+            "letters, digits, '.', '_' or '-'"
+        )
+    return model
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 # KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json; crew
 # creation fails at the gateway with a 4xx if it is absent. Default "kiro" is
@@ -423,7 +441,6 @@ _security.install_redaction_filter()
 
 try:
     from lifecycle import (  # container: flat /app/
-        COMPOSITION_REGISTRY,
         CREW_CONTAINER_PREFIX,
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
@@ -439,8 +456,6 @@ try:
         KIRO_STEERING_DIR,
         MCP_CATALOGUE_DIR,
         SCRIPTS_DIR,
-        _AGENTS_DIR,
-        _CREW_REGISTRY_PATH,
         _SCHEDULE_MONITOR_INTERVAL,
         _cleanup_crew,
         _copy_agents,
@@ -459,9 +474,6 @@ try:
         _inject_auth,
         _inject_git_identity,
         _inject_policy,
-        _load_composition_registry,
-        _load_crew_manifest,
-        _manifest_selects,
         _mint_cookie,
         _nuke_login_container,
         _patch_crew_config,
@@ -474,22 +486,16 @@ try:
         _refresh_cookie,
         _require_crew,
         _reseed_crew_schedules,
-        _resolve_composition,
-        _resolve_image,
-        _resolve_manifest_path,
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
         _startup_events,
         _startup_events_lock,
-        _substitute_env_vars,
-        _validate_academy,
         _validate_agent,
         _wait_gateway,
     )
 except ModuleNotFoundError:
     from transport.lifecycle import (  # local dev
-        COMPOSITION_REGISTRY,
         CREW_CONTAINER_PREFIX,
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
@@ -505,8 +511,6 @@ except ModuleNotFoundError:
         KIRO_STEERING_DIR,
         MCP_CATALOGUE_DIR,
         SCRIPTS_DIR,
-        _AGENTS_DIR,
-        _CREW_REGISTRY_PATH,
         _SCHEDULE_MONITOR_INTERVAL,
         _cleanup_crew,
         _copy_agents,
@@ -525,9 +529,6 @@ except ModuleNotFoundError:
         _inject_auth,
         _inject_git_identity,
         _inject_policy,
-        _load_composition_registry,
-        _load_crew_manifest,
-        _manifest_selects,
         _mint_cookie,
         _nuke_login_container,
         _patch_crew_config,
@@ -540,18 +541,54 @@ except ModuleNotFoundError:
         _refresh_cookie,
         _require_crew,
         _reseed_crew_schedules,
-        _resolve_composition,
-        _resolve_image,
-        _resolve_manifest_path,
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
         _startup_events,
         _startup_events_lock,
-        _substitute_env_vars,
-        _validate_academy,
         _validate_agent,
         _wait_gateway,
+    )
+
+# Academy composition/manifest/validation surface — extracted from lifecycle
+# to transport/academy.py (TRN-86). server reads COMPOSITION_REGISTRY (in
+# resource_compositions), _AGENTS_DIR (in resource_agents), and the helper
+# functions. It imports them from academy directly rather than re-through
+# lifecycle. Note (pending TRN-85): tests still dual-patch these names on
+# BOTH `lifecycle` and `server` (e.g. patch.object(lifecycle,
+# "COMPOSITION_REGISTRY") + patch.object(server, ...)) and also patch
+# transport.academy; that dual/triple-patch is intentional until TRN-85
+# migrates the academy tests to patch transport.academy exclusively.
+try:
+    from academy import (  # container: flat /app/
+        COMPOSITION_REGISTRY,
+        _AGENTS_DIR,
+        _CREW_REGISTRY_PATH,
+        _load_composition_registry,
+        _load_crew_manifest,
+        _manifest_selects,
+        _resolve_composition,
+        _resolve_image,
+        _resolve_manifest_path,
+        _substitute_env_vars,
+        _validate_academy,
+    )
+except ImportError:
+    # See the ImportError note in lifecycle.py: the repo-root academy/ assets
+    # directory shadows the flat-path module as a namespace package in local
+    # dev, so `from academy import <name>` raises ImportError there.
+    from transport.academy import (  # local dev
+        COMPOSITION_REGISTRY,
+        _AGENTS_DIR,
+        _CREW_REGISTRY_PATH,
+        _load_composition_registry,
+        _load_crew_manifest,
+        _manifest_selects,
+        _resolve_composition,
+        _resolve_image,
+        _resolve_manifest_path,
+        _substitute_env_vars,
+        _validate_academy,
     )
 
 mcp = MCPServer(
@@ -601,6 +638,20 @@ def _extract_crew_proxy_parts(path: str) -> tuple[str, str, str] | None:
     return crew_id, segment, sub_path
 
 
+_QS_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _sanitise_query_string(raw: bytes) -> str:
+    """Decode query string and strip control characters.
+
+    latin-1 is used to preserve non-ASCII bytes faithfully (percent-encoded
+    values in a query string are ASCII anyway). Control characters (0x00-0x1F,
+    0x7F) are stripped to prevent CRLF injection into the upstream request
+    or a response header.
+    """
+    return _QS_CONTROL_CHARS.sub("", raw.decode("latin-1"))
+
+
 async def _handle_crew_ui_proxy(request: Request) -> Response:
     """Reverse-proxy GET/POST to the crew gateway UI at http://gs-{crew_id}:5476/.
 
@@ -637,7 +688,7 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
     query = request.scope.get("query_string", b"")
     upstream_url = upstream_path
     if query:
-        upstream_url = f"{upstream_path}?{query.decode('latin-1')}"
+        upstream_url = f"{upstream_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{upstream_url}"
 
     # Forward headers minus host
@@ -706,7 +757,7 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
     api_path = f"/api/{sub_path}" if sub_path else "/api/"
     query = request.scope.get("query_string", b"")
     if query:
-        api_path = f"{api_path}?{query.decode('latin-1')}"
+        api_path = f"{api_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{api_path}"
 
     # Forward headers minus host and cookie, then inject session cookie
@@ -1027,7 +1078,7 @@ class SecurityHeadersMiddleware:
             qs = scope.get("query_string", b"")
             target = f"https://{host}{path}"
             if qs:
-                target += "?" + qs.decode("latin-1")
+                target += "?" + _sanitise_query_string(qs)
             await send({
                 "type": "http.response.start",
                 "status": 301,
@@ -1859,6 +1910,7 @@ def captain(
     interval: int | None = None,
     timezone: str = "UTC",
     fire_immediately: bool | None = None,
+    model: str | None = None,
 ) -> dict:
     """Manage the single Raven-backed standing-orders Captain for a crew.
 
@@ -1890,9 +1942,19 @@ def captain(
         fire_immediately: Whether to dispatch Raven once immediately when a
             new check-in is created. Defaults to True when interval is set,
             False when cron is set. Ignored on resume of a paused job.
+        model: Optional model override for a newly created check-in job. Its
+            format is validated on every call regardless of action; a
+            syntactically valid value has no effect when resuming an existing
+            job, since no new job is created, but an invalid value still
+            returns an error.
     """
     if action not in {"order", "stop", "status"}:
         return {"error": "action must be one of: order, stop, status"}
+
+    try:
+        model = _validate_model(model)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     if action == "order":
         has_message = message is not None
@@ -1916,10 +1978,10 @@ def captain(
             order_message = message
     elif any(
         value is not None
-        for value in (message, template, change_name, cron, interval, fire_immediately)
+        for value in (message, template, change_name, cron, interval, fire_immediately, model)
     ) or timezone != "UTC":
         return {
-            "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, or timezone"
+            "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, model, or timezone"
         }
 
     try:
@@ -1961,6 +2023,8 @@ def captain(
                     body["timezone"] = timezone
                 else:
                     body["every"] = interval
+                if model is not None:
+                    body["model"] = model
                 try:
                     job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
                 except Exception as exc:
@@ -1994,9 +2058,28 @@ def captain(
                 "message": _CAPTAIN_CHECKIN_TASK,
                 "enabled": True,
             }
+            if is_new_job:
+                schedule_entry["model"] = model
             try:
                 with _registry_lock:
                     reg = _load_registry()
+                    if not is_new_job:
+                        # Resume does not accept a new model.  Prefer the
+                        # gateway's value when present, but preserve the
+                        # registry pin for older gateway responses that omit it.
+                        if "model" in job:
+                            schedule_entry["model"] = job.get("model")
+                        else:
+                            prior_entry = next(
+                                (
+                                    entry
+                                    for entry in _get_crew_schedules(reg, crew_id)
+                                    if entry.get("job_id") == schedule_entry["job_id"]
+                                ),
+                                None,
+                            )
+                            if prior_entry is not None and "model" in prior_entry:
+                                schedule_entry["model"] = prior_entry["model"]
                     _upsert_crew_schedule(reg, crew_id, schedule_entry)
                     _save_registry(reg)
             except Exception as exc:
@@ -2027,9 +2110,15 @@ def captain(
                 should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
                 if should_fire:
                     try:
+                        immediate_body: dict[str, Any] = {
+                            "task": _CAPTAIN_CHECKIN_TASK,
+                            "agent": "raven",
+                            "keep": True,
+                        }
+                        if model is not None:
+                            immediate_body["model"] = model
                         _crew_api_with_recovery(
-                            crew, crew_id, "POST", "/api/spawn",
-                            json={"task": _CAPTAIN_CHECKIN_TASK, "agent": "raven", "keep": True},
+                            crew, crew_id, "POST", "/api/spawn", json=immediate_body,
                         )
                     except Exception as exc:
                         result["immediate_dispatch_error"] = str(exc)
@@ -2135,6 +2224,7 @@ def schedule(
     fire_immediately: bool | None = None,
     action: str = "create",
     job_id: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Book, cancel, or list recurring tasks on KiroCrew.
 
@@ -2167,9 +2257,16 @@ def schedule(
             creation. Defaults to True when interval is set, False when cron
             is set. Explicit values override the default.
         job_id: Job ID to cancel (required for action="cancel").
+        model: Optional model override for a newly created job. It is fixed at
+            job creation and does not affect steer/continue operations.
     """
     if action not in ("create", "cancel", "list"):
         return {"error": "action must be one of: create, cancel, list"}
+
+    try:
+        model = _validate_model(model)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     if action == "cancel":
         return _schedule_cancel(job_id, crew_id)
@@ -2215,6 +2312,8 @@ def schedule(
             "agent": agent,
             "cron": cron_expr,
         }
+        if model is not None:
+            body["model"] = model
         try:
             r = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
         except (CrewUnresponsiveError, RuntimeError) as e:
@@ -2230,6 +2329,7 @@ def schedule(
             "agent": agent,
             "message": message,
             "enabled": True,
+            "model": model,
             "one_shot": True,
         }
         try:
@@ -2248,6 +2348,8 @@ def schedule(
             "delay": delay,
         }
     body: dict = {"name": name, "message": message, "agent": agent}
+    if model is not None:
+        body["model"] = model
     if cron:
         body["cron"] = cron
         body["timezone"] = timezone
@@ -2268,6 +2370,7 @@ def schedule(
         "agent": agent,
         "message": message,
         "enabled": True,
+        "model": model,
     }
     try:
         with _registry_lock:
@@ -2290,9 +2393,15 @@ def schedule(
 
     if should_fire:
         try:
+            immediate_body: dict[str, Any] = {
+                "task": message,
+                "agent": agent,
+                "keep": True,
+            }
+            if model is not None:
+                immediate_body["model"] = model
             _crew_api_with_recovery(
-                crew, crew_id, "POST", "/api/spawn",
-                json={"task": message, "agent": agent, "keep": True},
+                crew, crew_id, "POST", "/api/spawn", json=immediate_body,
             )
         except Exception as exc:
             result["immediate_dispatch_error"] = str(exc)
@@ -2426,7 +2535,12 @@ def _schedule_list(crew_id: str | None) -> dict:
 
 
 @mcp.tool()
-def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dict:
+def dispatch(
+    task: str,
+    agent: str = "ghost",
+    crew_id: str | None = None,
+    model: str | None = None,
+) -> dict:
     """Spawn a task on a KiroCrew agent, dispatched for autonomous execution.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
@@ -2441,7 +2555,14 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
         task: What to do. Be specific — the agent has no other context.
         agent: Which agent to use. Default is 'ghost' (general-purpose).
         crew_id: Which crew to dispatch to. Required — use launch first.
+        model: Optional model override for this task only. It outranks
+            KC_MODEL_OVERRIDE and per-agent config for this call. It has no
+            effect on later steer/continue operations.
     """
+    try:
+        model = _validate_model(model)
+    except ValueError as e:
+        return {"error": str(e)}
     try:
         _validate_agent(agent)
     except ValueError as e:
@@ -2451,10 +2572,13 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
+    body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
+    if model is not None:
+        body["model"] = model
     try:
         result = _crew_api_with_recovery(
             crew, crew_id, "POST", "/api/spawn",
-            json={"task": task, "agent": agent, "keep": True},
+            json=body,
         )
     except CrewUnresponsiveError as e:
         return {"error": str(e)}

@@ -51,6 +51,7 @@ run_integration() {
   local script script_exit
   for script in \
     "$REPO_DIR/tests/integration/test_install_config.sh" \
+    "$REPO_DIR/tests/integration/test_install_cache_detection.sh" \
     "$REPO_DIR/tests/integration/test_dedicated_transport.sh"; do
     printf '\n--- Integration: %s ---\n' "$(basename "$script")"
     if bash "$script"; then

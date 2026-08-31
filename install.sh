@@ -484,6 +484,30 @@ fi
 
 VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 
+# Some build backends (observed with podman) do not reliably invalidate a
+# cached layer when only a --build-arg value changes, silently baking a
+# stale VERSION into an image whose tag/creation time otherwise look fresh.
+# Detect that here and force --no-cache ONLY when the currently-tagged
+# image's baked version actually differs from VERSION -- an ordinary
+# reinstall with no version bump still gets the normal cache speed-up.
+_TRANSPORT_BUILD_FLAGS=()
+if ${_PODMAN_CMD} image exists localhost/transport:latest 2>/dev/null; then
+  _baked_transport_version="$(${_PODMAN_CMD} run --rm localhost/transport:latest sh -c 'echo $TRANSPORT_VERSION' 2>/dev/null || true)"
+  if [[ "$_baked_transport_version" != "$VERSION" ]]; then
+    echo "  Detected stale localhost/transport:latest version ('$_baked_transport_version' != '$VERSION') -- forcing a clean rebuild."
+    _TRANSPORT_BUILD_FLAGS=(--no-cache)
+  fi
+fi
+
+_CREW_BUILD_FLAGS=()
+if ${_PODMAN_CMD} image exists localhost/spec-ops:latest 2>/dev/null; then
+  _baked_crew_version="$(${_PODMAN_CMD} inspect localhost/spec-ops:latest --format '{{ index .Labels "org.ghostship.version" }}' 2>/dev/null || true)"
+  if [[ "$_baked_crew_version" != "${VERSION}-spec-ops" ]]; then
+    echo "  Detected stale localhost/spec-ops:latest version ('$_baked_crew_version' != '${VERSION}-spec-ops') -- forcing a clean rebuild."
+    _CREW_BUILD_FLAGS=(--no-cache)
+  fi
+fi
+
 echo "Building localhost/base-admission:latest (admission) ..."
 # Copy container-side helper scripts into the admission build context so they
 # are baked into the crew image at /scripts/ (TRN-74). Uses a temp copy to
@@ -499,15 +523,18 @@ rm -rf "$_ADMISSION_CTX"
 
 echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
+  "${_CREW_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}-spec-ops" \
   "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && ${_PODMAN_CMD} build -t localhost/spec-ops:latest \
+  "${_CREW_BUILD_FLAGS[@]}" \
   --build-arg MID_IMAGE=localhost/spec-ops-mid:latest \
   "$GHOSTSHIP_DIR/crews/_base/graduation/" \
   && echo "✓ crew image built" || { echo "✗ crew image build failed"; exit 1; }
 
 echo "Building localhost/transport:latest ..."
 ${_PODMAN_CMD} build -t localhost/transport:latest \
+  "${_TRANSPORT_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}" \
   "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }

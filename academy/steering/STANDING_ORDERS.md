@@ -24,6 +24,27 @@ checkout keeps its real history. To extract history, the caller calls
 `git clone ./crew.bundle ./crew-repo` or
 `git fetch ./crew.bundle <ref>:refs/remotes/crew/<ref>`.
 
+## Git identity
+
+Before your first commit in a session, check whether git identity is already
+configured for the checkout you're committing in: `git config user.name`. If
+that returns non-empty, an operator override is already in effect (or a
+previous task already set it) — leave it alone, don't override it.
+
+If it's empty, set it deterministically — **never guess, invent, or reuse an
+identity from anywhere else** (cached credentials, `gh auth status`, anything
+you might otherwise find lying around):
+
+```bash
+git config user.name "<YourPersonaName>"
+git config user.email "<persona>@localhost"
+```
+
+Use your own persona name and its lowercase form — Ghost sets `Ghost
+<ghost@localhost>`, Spectre sets `Spectre <spectre@localhost>`, and so on.
+This mirrors the `<persona>@localhost` addressing already used for mail (see
+Mail conventions below) — same identity, same rule, no exceptions.
+
 ## Shared OpenSpec store
 
 An OpenSpec store is seeded at the workspace root when the crew is created.
@@ -106,15 +127,21 @@ fi
 
 For SDD transitions, the full dispatch-coordination pattern—including its pre-spawn intent token, post-spawn assigned-ID confirmation, and pending-marker election—is defined in `academy/orders/sdd.md` and applies to every SDD transition, including Ghost, Banshee, and Reaper dispatches.
 
-Before dispatching any persona task, check `spawn list` to confirm no task for
-that persona is already in flight. If a task is running, steer or continue it
-rather than spawning a duplicate. Duplicate dispatches waste resources, can
-corrupt shared state (e.g. two tasks checking off the same boxes in tasks.md),
-and require manual cleanup.
+Before dispatching any persona task, apply this three-layer check in order:
 
-This applies to any agent with dispatch capability — not just Raven. A common
-failure mode is a shell command with a `||` fallback where both branches succeed,
-spawning two tasks. Always verify before dispatching:
+1. **Raven mailbox (primary):** Scan `raven@localhost` (`/var/mail/raven/new/` and `/var/mail/raven/cur/`) for a `dispatching <persona> <intent_id>` message for the target persona. If a pending or confirmed intent is present and the referenced task is not yet done, hold — do not dispatch.
+2. **Spawn list task descriptions (secondary):** Run `kirocrew spawn list` and scan each task's `task` description field for mention of the target persona. If a matching in-flight task is found, steer or continue it rather than spawning a duplicate.
+3. **Agent field (tertiary):** Check the `agent` field in `kirocrew spawn list` as a final confirmation only. This field is asynchronous and must not be the sole dispatch guard.
+
+All three signals must be clear before proceeding with a new dispatch.
+
+**AcpProcessDied (`outcome=stopped`):** A task with `outcome=stopped` means the runtime process died unexpectedly — this is NOT a successful completion. Treat it identically to `outcome=failed`: check tasks.md to find the last successfully checked item and dispatch a continuation starting from that point. Never assume a stopped task completed its work.
+
+**Timeout (`outcome=failed` with timeout error):** A task with `outcome=failed` and a timeout error ran out of time but may have made partial progress. Before dispatching a continuation, read tasks.md to identify the last checked-off item. The new dispatch should start from where the prior one left off, not from the beginning.
+
+**Stale mail is not an in-flight signal:** Unread mail in a persona's mailbox (e.g. files in `/var/mail/ghost/new/`) accumulates from prior dispatches and is only cleared by the agent reading it. The presence of unread messages is NOT evidence that a persona is currently running. The only authoritative in-flight signal is `kirocrew spawn list`.
+
+A common failure mode is a shell command with a `||` fallback where both branches succeed, spawning two tasks. Always verify before dispatching:
 
 ```bash
 # Check before dispatching

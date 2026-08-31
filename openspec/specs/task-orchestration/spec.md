@@ -325,3 +325,63 @@ The transport schedule registry SHALL contain schedule entries only for crews th
 #### Scenario: Partial failure does not leave orphan schedule entries
 - **WHEN** `nuke(confirm=True)` is called and one or more gateway `DELETE /api/crons/<job_id>` requests fail
 - **THEN** the crew's schedule entries are still removed from the transport registry as part of the crew entry deletion — orphaned registry entries are not left behind due to individual gateway cancellation failures
+
+### Requirement: Dispatch tool supports per-task model override
+
+The `dispatch` tool SHALL accept an optional `model` string parameter. When provided, it SHALL be forwarded as `model` in the `/api/spawn` request body, pinning that one task's model regardless of the dispatched persona's configured `model` in its agent JSON. When omitted, the request body SHALL NOT include a `model` field and existing precedence (`KC_MODEL_OVERRIDE` > per-agent `model` > `KC_MODEL_DEFAULT` > KiroCrew built-in) is unaffected. The system SHALL validate `model` before forwarding it: reject a non-string value, and reject a value exceeding the crew gateway's own model-name length/format bounds, returning a clear transport-level error without contacting the crew API.
+
+#### Scenario: Dispatch with a model override
+- **WHEN** `dispatch(task="...", agent="ghost", crew_id="my-crew", model="claude-opus-5")` is called
+- **THEN** the system forwards `model: "claude-opus-5"` in the `/api/spawn` request body, and the response includes the normal dispatched fields
+
+#### Scenario: Dispatch without a model override
+- **WHEN** `dispatch` is called without a `model` parameter
+- **THEN** the system omits `model` from the `/api/spawn` request body, leaving persona/env-var model precedence unchanged
+
+#### Scenario: Dispatch with a malformed model value
+- **WHEN** `dispatch` is called with a `model` value that is not a string, or exceeds the crew gateway's model-name length/format bounds
+- **THEN** the system returns a validation error and does not contact the crew API
+
+#### Scenario: A per-dispatch model outranks KC_MODEL_OVERRIDE
+- **WHEN** `dispatch` is called with a `model` parameter AND the crew's `KC_MODEL_OVERRIDE` env var is set to a different value
+- **THEN** the per-call `model` value is what gets forwarded to `/api/spawn` and served for that task — `KC_MODEL_OVERRIDE` is not an absolute ceiling once a caller supplies an explicit per-dispatch `model` (an accepted trade-off, not a defect; see design.md)
+
+### Requirement: Schedule tool supports per-job model override
+
+The `schedule` tool SHALL accept an optional `model` string parameter, for `cron`, `interval`, and `delay` (one-shot) job creation alike. When provided, it SHALL be forwarded as `model` in the `/api/crons` request body, pinning that one recurring or one-shot job's model. The transport SHALL retain the pin with the scheduled job and SHALL include it when re-registering a missing job after a crew or transport restart and when firing a due job through the transport-owned schedule monitor. If `fire_immediately` causes an immediate `/api/spawn`, that first run SHALL receive the same `model` when one was provided. The same validation and precedence rules as the `dispatch` tool's `model` parameter apply.
+
+#### Scenario: Schedule with a model override
+- **WHEN** `schedule(interval=300, message="...", agent="ghost", crew_id="my-crew", model="claude-sonnet-5")` is called
+- **THEN** the system forwards `model: "claude-sonnet-5"` in the `/api/crons` request body when creating the job
+
+#### Scenario: Schedule with a model override on a one-shot delay job
+- **WHEN** `schedule(delay=300, message="...", agent="ghost", crew_id="my-crew", model="claude-sonnet-5")` is called
+- **THEN** the system forwards `model: "claude-sonnet-5"` in the one-shot job's `/api/crons` request body, the same as the `cron`/`interval` path
+
+#### Scenario: Schedule without a model override
+- **WHEN** `schedule` is called without a `model` parameter
+- **THEN** the system omits `model` from the `/api/crons` request body, leaving persona/env-var model precedence unchanged
+
+#### Scenario: Schedule model applies to immediate and transport-owned runs
+- **WHEN** a scheduled job is created with `model="claude-sonnet-5"` and `fire_immediately` is true, or the job later fires through the transport schedule monitor or is re-registered after restart
+- **THEN** each transport-issued request for that job includes `model: "claude-sonnet-5"`
+
+### Requirement: Captain standing-orders check-in supports model override
+
+The `captain(action="order")` call SHALL accept an optional `model` string parameter, forwarded as `model` in the `/api/crons` request body when a new standing-orders check-in job is created. When a new job is configured to `fire_immediately`, the immediate Raven `/api/spawn` SHALL receive the same model. The transport SHALL retain the pin for restart re-seeding and transport-owned schedule-monitor ticks. The parameter's format SHALL be validated on every call regardless of action, and an invalid value SHALL return an error even when resuming. A syntactically valid value SHALL have no effect when resuming a previously paused check-in, since no new job is created in that path; an existing pin SHALL remain unchanged.
+
+#### Scenario: Captain order with a model override on a new check-in
+- **WHEN** `captain(crew_id="my-crew", action="order", template="sdd", change_name="...", interval=300, model="claude-opus-5")` creates a new check-in job
+- **THEN** the system forwards `model: "claude-opus-5"` in the `/api/crons` request body for that job
+
+#### Scenario: Captain order with a valid model override on a resumed check-in
+- **WHEN** `captain(action="order", model="claude-opus-5")` is called to resume a previously paused check-in
+- **THEN** the system resumes the existing job unchanged and does not apply the `model` parameter, since no new job is created
+
+#### Scenario: Captain order with an invalid model override on a resumed check-in
+- **WHEN** `captain(action="order", model="bad model!")` is called to resume a previously paused check-in
+- **THEN** the system returns an error and does not resume the job, since the parameter's format is still validated regardless of action
+
+#### Scenario: Captain order model applies to the immediate Raven run
+- **WHEN** a new Captain check-in is created with `interval=300`, `fire_immediately=true`, and `model="claude-opus-5"`
+- **THEN** the cron creation request and the immediate Raven `/api/spawn` request both carry `model: "claude-opus-5"`
