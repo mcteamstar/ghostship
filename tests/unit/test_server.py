@@ -142,6 +142,196 @@ class PersonaValidationTests(unittest.TestCase):
                 api.assert_not_called()
 
 
+class ModelOverrideTests(unittest.TestCase):
+    """Tests for per-dispatch and per-job model overrides (TRN-87)."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_validate_model_rules(self) -> None:
+        self.assertEqual(server._validate_model("claude-opus-5"), "claude-opus-5")
+        self.assertIsNone(server._validate_model(None))
+        self.assertIsNone(server._validate_model(""))
+
+        with self.subTest(case="non-string"):
+            with self.assertRaisesRegex(ValueError, "Invalid model"):
+                server._validate_model(123)  # type: ignore[arg-type]
+        with self.subTest(case="too-long"):
+            with self.assertRaisesRegex(ValueError, "maximum length"):
+                server._validate_model("a" * 501)
+        with self.subTest(case="invalid-characters"):
+            with self.assertRaisesRegex(ValueError, "only"):
+                server._validate_model("claude/opus")
+
+    def test_dispatch_forwards_model_and_omits_it_when_unset(self) -> None:
+        for supplied, expected in (("claude-opus-5", "claude-opus-5"), (None, None)):
+            with self.subTest(model=supplied):
+                with (
+                    patch.object(server, "_require_crew", return_value=self.CREW),
+                    patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                    patch.object(
+                        server, "_crew_api_with_recovery", return_value={"id": "task"}
+                    ) as api,
+                ):
+                    kwargs = {"task": "do work", "agent": "ghost", "crew_id": "demo"}
+                    if supplied is not None:
+                        kwargs["model"] = supplied
+                    result = server.dispatch(**kwargs)
+
+                self.assertEqual(result["task_id"], "task")
+                body = api.call_args.kwargs["json"]
+                if expected is None:
+                    self.assertNotIn("model", body)
+                else:
+                    self.assertEqual(body["model"], expected)
+
+    def test_dispatch_rejects_invalid_model_without_contacting_crew(self) -> None:
+        with (
+            patch.object(server, "_require_crew") as require,
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_crew_api_with_recovery") as api,
+        ):
+            result = server.dispatch(
+                "do work", agent="ghost", crew_id="demo", model="claude/opus"
+            )
+
+        self.assertIn("Invalid model", result["error"])
+        require.assert_not_called()
+        ensure.assert_not_called()
+        api.assert_not_called()
+
+    def _schedule_body(self, **kwargs: object) -> dict:
+        registry = {"crews": {"demo": {"schedules": []}}}
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(
+                server, "_crew_api_with_recovery", return_value={"id": "job-1"}
+            ) as api,
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+        ):
+            result = server.schedule(
+                name="job", message="do work", crew_id="demo", **kwargs
+            )
+
+        self.assertEqual(result["status"], "scheduled")
+        cron_calls = [
+            call for call in api.call_args_list
+            if call.args[2:] == ("POST", "/api/crons")
+        ]
+        self.assertEqual(len(cron_calls), 1)
+        return cron_calls[0].kwargs["json"]
+
+    def test_schedule_forwards_model_on_cron_interval_and_delay_paths(self) -> None:
+        cron_body = self._schedule_body(cron="0 9 * * 1", model="claude-sonnet-5")
+        self.assertEqual(cron_body["model"], "claude-sonnet-5")
+
+        interval_body = self._schedule_body(
+            interval=60, fire_immediately=False, model="claude-sonnet-5"
+        )
+        self.assertEqual(interval_body["model"], "claude-sonnet-5")
+
+        delay_body = self._schedule_body(delay=1, model="claude-sonnet-5")
+        self.assertEqual(delay_body["model"], "claude-sonnet-5")
+
+    def test_schedule_rejects_invalid_model_without_contacting_crew(self) -> None:
+        with (
+            patch.object(server, "_require_crew") as require,
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_crew_api_with_recovery") as api,
+        ):
+            result = server.schedule(
+                name="job",
+                message="do work",
+                crew_id="demo",
+                interval=60,
+                model="claude/opus",
+            )
+
+        self.assertIn("Invalid model", result["error"])
+        require.assert_not_called()
+        ensure.assert_not_called()
+        api.assert_not_called()
+
+    def _captain_create_body(self, **kwargs: object) -> dict:
+        registry = {"crews": {"demo": {"schedules": []}}}
+        podman = Mock()
+
+        def api(_crew: dict, _crew_id: str, method: str, path: str, **_kwargs: object) -> dict:
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": []}
+            if method == "POST" and path == "/api/crons":
+                return {"id": "captain-job", "enabled": True}
+            return {"id": "immediate-task"}
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", side_effect=api) as gateway,
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_append_captain_mail"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+        ):
+            result = server.captain(
+                "demo",
+                "order",
+                message="hold",
+                interval=120,
+                fire_immediately=False,
+                **kwargs,
+            )
+
+        self.assertEqual(result["status"], "ordered")
+        cron_calls = [
+            call for call in gateway.call_args_list
+            if call.args[2:] == ("POST", "/api/crons")
+        ]
+        self.assertEqual(len(cron_calls), 1)
+        return cron_calls[0].kwargs["json"]
+
+    def test_captain_new_job_forwards_model(self) -> None:
+        body = self._captain_create_body(model="claude-opus-5")
+        self.assertEqual(body["model"], "claude-opus-5")
+
+    def test_captain_new_job_omits_model_when_unset(self) -> None:
+        body = self._captain_create_body()
+        self.assertNotIn("model", body)
+
+    def test_captain_resume_ignores_model_without_creating_job(self) -> None:
+        existing = {
+            "id": "paused-job",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": False,
+        }
+        registry = {"crews": {"demo": {"schedules": []}}}
+        podman = Mock()
+
+        def api(_crew: dict, _crew_id: str, method: str, path: str, **_kwargs: object) -> dict:
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": [existing]}
+            if method == "POST" and path.endswith("/enable"):
+                return {"ok": True}
+            raise AssertionError(f"unexpected gateway call: {method} {path}")
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", side_effect=api) as gateway,
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_append_captain_mail"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+        ):
+            result = server.captain(
+                "demo", "order", message="resume", model="claude-opus-5"
+            )
+
+        self.assertEqual(result["job_id"], "paused-job")
+        self.assertTrue(all(call.args[2:] != ("POST", "/api/crons") for call in gateway.call_args_list))
+
+
 class TaskOrchestrationTests(unittest.TestCase):
     CREW = {"container": "gs-demo"}
 

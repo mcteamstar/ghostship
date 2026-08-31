@@ -268,6 +268,28 @@ GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
+_MODEL_MAX_LENGTH = 500
+_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def _validate_model(model: str | None) -> str | None:
+    """Validate and normalize an optional KiroCrew model override."""
+    if model is None:
+        return None
+    if not isinstance(model, str):
+        raise ValueError("Invalid model: expected a string")
+    if not model:
+        return None
+    if len(model) > _MODEL_MAX_LENGTH:
+        raise ValueError(
+            f"Invalid model: maximum length is {_MODEL_MAX_LENGTH} characters"
+        )
+    if _MODEL_NAME_RE.fullmatch(model) is None:
+        raise ValueError(
+            "Invalid model: must start with a letter or digit and contain only "
+            "letters, digits, '.', '_' or '-'"
+        )
+    return model
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 # KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json; crew
 # creation fails at the gateway with a 4xx if it is absent. Default "kiro" is
@@ -1888,6 +1910,7 @@ def captain(
     interval: int | None = None,
     timezone: str = "UTC",
     fire_immediately: bool | None = None,
+    model: str | None = None,
 ) -> dict:
     """Manage the single Raven-backed standing-orders Captain for a crew.
 
@@ -1919,9 +1942,16 @@ def captain(
         fire_immediately: Whether to dispatch Raven once immediately when a
             new check-in is created. Defaults to True when interval is set,
             False when cron is set. Ignored on resume of a paused job.
+        model: Optional model override for a newly created check-in job. It is
+            ignored when resuming an existing job.
     """
     if action not in {"order", "stop", "status"}:
         return {"error": "action must be one of: order, stop, status"}
+
+    try:
+        model = _validate_model(model)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     if action == "order":
         has_message = message is not None
@@ -1945,10 +1975,10 @@ def captain(
             order_message = message
     elif any(
         value is not None
-        for value in (message, template, change_name, cron, interval, fire_immediately)
+        for value in (message, template, change_name, cron, interval, fire_immediately, model)
     ) or timezone != "UTC":
         return {
-            "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, or timezone"
+            "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, model, or timezone"
         }
 
     try:
@@ -1990,6 +2020,8 @@ def captain(
                     body["timezone"] = timezone
                 else:
                     body["every"] = interval
+                if model is not None:
+                    body["model"] = model
                 try:
                     job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
                 except Exception as exc:
@@ -2164,6 +2196,7 @@ def schedule(
     fire_immediately: bool | None = None,
     action: str = "create",
     job_id: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Book, cancel, or list recurring tasks on KiroCrew.
 
@@ -2196,9 +2229,16 @@ def schedule(
             creation. Defaults to True when interval is set, False when cron
             is set. Explicit values override the default.
         job_id: Job ID to cancel (required for action="cancel").
+        model: Optional model override for a newly created job. It is fixed at
+            job creation and does not affect steer/continue operations.
     """
     if action not in ("create", "cancel", "list"):
         return {"error": "action must be one of: create, cancel, list"}
+
+    try:
+        model = _validate_model(model)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     if action == "cancel":
         return _schedule_cancel(job_id, crew_id)
@@ -2244,6 +2284,8 @@ def schedule(
             "agent": agent,
             "cron": cron_expr,
         }
+        if model is not None:
+            body["model"] = model
         try:
             r = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
         except (CrewUnresponsiveError, RuntimeError) as e:
@@ -2277,6 +2319,8 @@ def schedule(
             "delay": delay,
         }
     body: dict = {"name": name, "message": message, "agent": agent}
+    if model is not None:
+        body["model"] = model
     if cron:
         body["cron"] = cron
         body["timezone"] = timezone
@@ -2455,7 +2499,12 @@ def _schedule_list(crew_id: str | None) -> dict:
 
 
 @mcp.tool()
-def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dict:
+def dispatch(
+    task: str,
+    agent: str = "ghost",
+    crew_id: str | None = None,
+    model: str | None = None,
+) -> dict:
     """Spawn a task on a KiroCrew agent, dispatched for autonomous execution.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
@@ -2470,7 +2519,14 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
         task: What to do. Be specific — the agent has no other context.
         agent: Which agent to use. Default is 'ghost' (general-purpose).
         crew_id: Which crew to dispatch to. Required — use launch first.
+        model: Optional model override for this task only. It outranks
+            KC_MODEL_OVERRIDE and per-agent config for this call. It has no
+            effect on later steer/continue operations.
     """
+    try:
+        model = _validate_model(model)
+    except ValueError as e:
+        return {"error": str(e)}
     try:
         _validate_agent(agent)
     except ValueError as e:
@@ -2480,10 +2536,13 @@ def dispatch(task: str, agent: str = "ghost", crew_id: str | None = None) -> dic
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
+    body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
+    if model is not None:
+        body["model"] = model
     try:
         result = _crew_api_with_recovery(
             crew, crew_id, "POST", "/api/spawn",
-            json={"task": task, "agent": agent, "keep": True},
+            json=body,
         )
     except CrewUnresponsiveError as e:
         return {"error": str(e)}
