@@ -24,7 +24,7 @@ The documentation SHALL describe the `GA_HOST_URL` variable, its fallback behavi
 - **THEN** they SHALL find an entry for `GA_HOST_URL` with description, default, and example values
 
 ### Requirement: Crew UI reverse proxy
-The transport SHALL expose `GET /crews/{crew_id}/ui` and `GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/ui/{path:path}` routes that reverse-proxy all matching requests to `http://gs-{crew_id}:5476/{path}` on the crew's internal gateway. The crew SHALL be auto-woken via the existing restart mechanism before any proxied request is forwarded. The transport SHALL forward the original request method, path, query string, and all headers (excluding `host`) to the upstream gateway. Response status, headers, and body SHALL be streamed back to the caller without modification. The route SHALL NOT inject the internal session cookie; callers interact with the crew UI as a fresh browser session, including any login page the crew gateway serves.
+The transport SHALL expose `GET /crews/{crew_id}/ui` and `GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/ui/{path:path}` routes that reverse-proxy all matching requests to `http://gs-{crew_id}:5476/{path}` on the crew's internal gateway. The crew SHALL be auto-woken via the existing restart mechanism before any proxied request is forwarded. The transport SHALL forward the original request method, path, query string, and all headers (excluding `host`) to the upstream gateway. Before forwarding, the transport SHALL remove every raw query-string byte in the ASCII control ranges `0x00`–`0x1F` and `0x7F`, while preserving the order and value of all remaining bytes. Percent-encoded query text SHALL NOT be decoded or altered by this sanitisation. Response status, headers, and body SHALL be streamed back to the caller without modification. The route SHALL NOT inject the internal session cookie; callers interact with the crew UI as a fresh browser session, including any login page the crew gateway serves.
 
 #### Scenario: UI proxy reaches a running crew
 - **WHEN** `GET /crews/my-crew/ui/` is requested and the crew container is running
@@ -50,8 +50,16 @@ The transport SHALL expose `GET /crews/{crew_id}/ui` and `GET|POST|PUT|PATCH|DEL
 - **WHEN** `GA_API_KEY` is set and a request to `/crews/{crew_id}/ui/` omits or supplies an incorrect `Authorization: Bearer` header
 - **THEN** the transport returns HTTP 401 before proxying, consistent with all other authenticated routes
 
+#### Scenario: UI proxy strips raw control bytes from the query
+- **WHEN** a UI proxy request contains raw query-string bytes `q=hello\r\nworld\u0000&limit=10`
+- **THEN** the upstream request contains `q=helloworld&limit=10` and no raw byte in `0x00`–`0x1F` or `0x7F`
+
+#### Scenario: UI proxy preserves ordinary and percent-encoded query text
+- **WHEN** a UI proxy request contains the query string `q=hello%0Aworld&limit=10`
+- **THEN** the upstream query string is exactly `q=hello%0Aworld&limit=10`
+
 ### Requirement: Crew REST API reverse proxy
-The transport SHALL expose `GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/api/{path:path}` routes that reverse-proxy to `http://gs-{crew_id}:5476/api/{path}` on the crew's internal gateway. The crew SHALL be auto-woken before any request is forwarded. The transport SHALL forward the original method, path, query string, body, and headers (excluding `host`). The transport SHALL inject the internal session cookie (`mc_token_5476=<value>`) so that REST calls succeed without a separate browser login. Response status, headers, and body SHALL be streamed back to the caller.
+The transport SHALL expose `GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/api/{path:path}` routes that reverse-proxy to `http://gs-{crew_id}:5476/api/{path}` on the crew's internal gateway. The crew SHALL be auto-woken before any request is forwarded. The transport SHALL forward the original method, path, query string, body, and headers (excluding `host`). Before forwarding, the transport SHALL remove every raw query-string byte in the ASCII control ranges `0x00`–`0x1F` and `0x7F`, while preserving the order and value of all remaining bytes. Percent-encoded query text SHALL NOT be decoded or altered by this sanitisation. The transport SHALL inject the internal session cookie (`mc_token_5476=<value>`) so that REST calls succeed without a separate browser login. Response status, headers, and body SHALL be streamed back to the caller.
 
 #### Scenario: API proxy forwards internal session cookie
 - **WHEN** `GET /crews/my-crew/api/spawn` is requested
@@ -72,6 +80,14 @@ The transport SHALL expose `GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/api/{path
 #### Scenario: API proxy with GA_API_KEY configured
 - **WHEN** `GA_API_KEY` is set and a request to `/crews/{crew_id}/api/` omits or supplies an incorrect `Authorization: Bearer` header
 - **THEN** the transport returns HTTP 401 before proxying
+
+#### Scenario: API proxy strips raw control bytes from the query
+- **WHEN** an API proxy request contains raw query-string bytes `q=hello\r\nworld\u0000&limit=10`
+- **THEN** the upstream request contains `q=helloworld&limit=10` and no raw byte in `0x00`–`0x1F` or `0x7F`, while the request body is unchanged
+
+#### Scenario: API proxy preserves ordinary and percent-encoded query text
+- **WHEN** an API proxy request contains the query string `q=hello%0Aworld&limit=10`
+- **THEN** the upstream query string is exactly `q=hello%0Aworld&limit=10`
 
 ### Requirement: Proxy routes documented in reference
 The transport's user-facing documentation SHALL describe both new proxy route families, their URL patterns, their auth requirements, their auto-wake behaviour, and the difference in session-cookie handling between the UI proxy (no injection) and the API proxy (cookie injected).
