@@ -8,6 +8,32 @@ metadata:
 
 # Ghostship Admin
 
+## Quick reference: CLI entry points
+
+If ghostship is already installed and the `ghostship` command is on your PATH,
+use the CLI for the most common tasks:
+
+```bash
+# Health check — see if the transport is running, what port, how long
+ghostship status
+
+# Wire MCP server + skill symlinks for all detected agent clients (one-time, idempotent)
+ghostship init
+
+# Target a specific client, optionally with a custom URL or API key
+ghostship init --agent kiro
+ghostship init --agent claude --url http://myhost:64057/mcp --api-key <key>
+```
+
+`ghostship status` is the canonical health check — it reads the container state
+directly via Podman, with no MCP connection required.
+
+`ghostship init` automates everything in [Connect an MCP client](#connect-an-mcp-client)
+below: registers the MCP server and symlinks the three skill files for each detected
+agent client. It is idempotent — safe to run again after a reinstall or repo move.
+
+The rest of this skill covers the full manual setup path and advanced scenarios.
+
 ## Get ghostship
 
 Before anything else, check whether ghostship is already installed:
