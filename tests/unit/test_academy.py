@@ -252,11 +252,6 @@ class CrewTypeHelpersTests(unittest.TestCase):
         entry = {"name": "spec-ops", "dir": "spec-ops", "image": ""}
         self.assertEqual(academy._resolve_image(entry), academy.KC_IMAGE)
 
-    def test_resolve_image_empty_string_falls_back(self) -> None:
-        """Entry with empty image string falls back to KC_IMAGE (alias)."""
-        entry = {"name": "spec-ops", "dir": "spec-ops", "image": ""}
-        self.assertEqual(academy._resolve_image(entry), academy.KC_IMAGE)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # launch() with composition parameter
