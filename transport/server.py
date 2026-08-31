@@ -1942,8 +1942,11 @@ def captain(
         fire_immediately: Whether to dispatch Raven once immediately when a
             new check-in is created. Defaults to True when interval is set,
             False when cron is set. Ignored on resume of a paused job.
-        model: Optional model override for a newly created check-in job. It is
-            ignored when resuming an existing job.
+        model: Optional model override for a newly created check-in job. Its
+            format is validated on every call regardless of action; a
+            syntactically valid value has no effect when resuming an existing
+            job, since no new job is created, but an invalid value still
+            returns an error.
     """
     if action not in {"order", "stop", "status"}:
         return {"error": "action must be one of: order, stop, status"}

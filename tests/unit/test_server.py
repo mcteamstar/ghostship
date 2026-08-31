@@ -331,6 +331,21 @@ class ModelOverrideTests(unittest.TestCase):
         self.assertEqual(result["job_id"], "paused-job")
         self.assertTrue(all(call.args[2:] != ("POST", "/api/crons") for call in gateway.call_args_list))
 
+    def test_captain_resume_rejects_invalid_model_without_resuming(self) -> None:
+        with (
+            patch.object(server, "_require_crew") as require,
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_crew_api_with_recovery") as gateway,
+        ):
+            result = server.captain(
+                "demo", "order", message="resume", model="claude/opus"
+            )
+
+        self.assertIn("Invalid model", result["error"])
+        require.assert_not_called()
+        ensure.assert_not_called()
+        gateway.assert_not_called()
+
 
 class TaskOrchestrationTests(unittest.TestCase):
     CREW = {"container": "gs-demo"}

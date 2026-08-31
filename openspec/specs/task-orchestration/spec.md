@@ -368,15 +368,19 @@ The `schedule` tool SHALL accept an optional `model` string parameter, for `cron
 
 ### Requirement: Captain standing-orders check-in supports model override
 
-The `captain(action="order")` call SHALL accept an optional `model` string parameter, forwarded as `model` in the `/api/crons` request body when a new standing-orders check-in job is created. When a new job is configured to `fire_immediately`, the immediate Raven `/api/spawn` SHALL receive the same model. The transport SHALL retain the pin for restart re-seeding and transport-owned schedule-monitor ticks. The parameter SHALL be ignored (with no error) when resuming a previously paused check-in, since no new job is created in that path; an existing pin SHALL remain unchanged.
+The `captain(action="order")` call SHALL accept an optional `model` string parameter, forwarded as `model` in the `/api/crons` request body when a new standing-orders check-in job is created. When a new job is configured to `fire_immediately`, the immediate Raven `/api/spawn` SHALL receive the same model. The transport SHALL retain the pin for restart re-seeding and transport-owned schedule-monitor ticks. The parameter's format SHALL be validated on every call regardless of action, and an invalid value SHALL return an error even when resuming. A syntactically valid value SHALL have no effect when resuming a previously paused check-in, since no new job is created in that path; an existing pin SHALL remain unchanged.
 
 #### Scenario: Captain order with a model override on a new check-in
 - **WHEN** `captain(crew_id="my-crew", action="order", template="sdd", change_name="...", interval=300, model="claude-opus-5")` creates a new check-in job
 - **THEN** the system forwards `model: "claude-opus-5"` in the `/api/crons` request body for that job
 
-#### Scenario: Captain order with a model override on a resumed check-in
+#### Scenario: Captain order with a valid model override on a resumed check-in
 - **WHEN** `captain(action="order", model="claude-opus-5")` is called to resume a previously paused check-in
 - **THEN** the system resumes the existing job unchanged and does not apply the `model` parameter, since no new job is created
+
+#### Scenario: Captain order with an invalid model override on a resumed check-in
+- **WHEN** `captain(action="order", model="bad model!")` is called to resume a previously paused check-in
+- **THEN** the system returns an error and does not resume the job, since the parameter's format is still validated regardless of action
 
 #### Scenario: Captain order model applies to the immediate Raven run
 - **WHEN** a new Captain check-in is created with `interval=300`, `fire_immediately=true`, and `model="claude-opus-5"`
