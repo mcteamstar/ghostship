@@ -22,6 +22,19 @@ jobs:
             exit 1
           fi
 
+      - name: Check VERSION matches the release branch name
+        run: |
+          branch="${{ github.head_ref }}"
+          branch_version="${branch#release/}"
+          version="$(cat VERSION)"
+          if [[ "$branch_version" != "$version" ]]; then
+            echo "✗ Branch 'release/$branch_version' does not match VERSION file ('$version')."
+            echo "  A release/X.Y.Z branch must ship VERSION=X.Y.Z."
+            exit 1
+          else
+            echo "✓ VERSION ($version) matches release branch name (release/$branch_version)."
+          fi
+
       - name: Check plugin manifest versions match VERSION
         run: |
           version="$(cat VERSION)"
