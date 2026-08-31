@@ -131,6 +131,9 @@ class ContainerRuntime(ABC):
     ) -> bytes: ...
 
     @abstractmethod
+    def volume_name_for_crew(self, crew_id: str) -> str: ...
+
+    @abstractmethod
     def network_create(self, name: str) -> None: ...
 
     @abstractmethod
@@ -502,7 +505,14 @@ class PodmanClient(ContainerRuntime):
             try:
                 exit_code = int(wait.json())
             except (ValueError, TypeError):
-                exit_code = wait.json().get("StatusCode", 1) if wait.content else 1
+                # Podman may return {"StatusCode": N, "Error": {...}} instead of
+                # a bare integer (older API versions / edge cases). Guard against
+                # None or other non-dict responses so .get() doesn't AttributeError.
+                body = wait.json() if wait.content else None
+                if isinstance(body, dict):
+                    exit_code = int(body.get("StatusCode", 1))
+                else:
+                    exit_code = 1
 
             # Fetch stdout+stderr from the logs endpoint (demuxed).
             logs = self._c.get(
