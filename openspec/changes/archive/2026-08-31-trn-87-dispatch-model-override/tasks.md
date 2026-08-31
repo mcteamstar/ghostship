@@ -25,7 +25,7 @@
 ## 6. Verification
 
 - [x] 6.1 Run the full unit test suite and confirm no regressions.
-- [x] 6.2 Manually dispatch a task with an explicit `model` against a live crew and confirm (via `pickup` or crew logs) the session actually served the requested model, distinguishing `model` (requested) from `resolved_model` (served) per `subagent.py`'s existing audit fields. -- **DEFERRED / FINAL (Admiral-authorized):** manual verification is outside this crew; no live `model`/`resolved_model` evidence is claimed here, and this crew must not retry or escalate it.
+- [x] 6.2 Manually dispatch a task with an explicit `model` against a live crew and confirm (via `pickup` or crew logs) the session actually served the requested model, distinguishing `model` (requested) from `resolved_model` (served) per `subagent.py`'s existing audit fields. -- **VERIFIED by the Admiral** against a live `trn-87-dispatch-model-override` crew (task `72fa6db9`, `dispatch(model="claude-sonnet-5")`): `~/.kiro/crew/subagents/72fa6db9/state.json` shows `"requested_model": "claude-sonnet-5", "resolved_model": "claude-sonnet-5"` -- both match, confirming the override is forwarded end-to-end and actually served, not just self-reported by the agent.
 
 ## 7. Review follow-ups
 
