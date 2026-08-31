@@ -49,7 +49,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import ANY, Mock, MagicMock, patch
 
 import httpx
 import transport.registry as _registry_mod  # noqa: F401
@@ -1558,6 +1558,27 @@ class ReadAuthFromCrewTests(unittest.TestCase):
 
         result = server._read_auth_from_crew(podman, "gs-test")
         self.assertEqual(result, b64)
+
+    def test_uses_inline_python_not_a_bundled_script_path(self) -> None:
+        """Must work in bare kirocrew login containers, which have no /scripts/.
+
+        Guards the fix itself: execs an inline python3 -c snippet rather than
+        a bundled script path that only exists in full crew images.
+        """
+        rows = [["registration", ""], ["access_token", "tok"]]
+        b64 = self._b64_rows(rows)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+
+        self.assertEqual(result, b64)
+        podman.container_exec.assert_called_once_with("gs-test", ["python3", "-c", ANY])
+        command = podman.container_exec.call_args.args[1]
+        self.assertNotIn("read_auth.py", " ".join(command))
+        self.assertIn("sqlite3", command[2])
+        self.assertIn("auth_kv", command[2])
 
 class ScheduleCancelTests(unittest.TestCase):
     """Tests for schedule(action='cancel', ...)."""
