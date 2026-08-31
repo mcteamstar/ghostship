@@ -515,7 +515,13 @@ async def _handle_file_get(request: Request) -> Response:
                     podman, crew_id, "repo", ref, pathspec=repo_pathspec
                 )
                 return PlainTextResponse(out, media_type="text/plain")
-            data = worker_read_file(podman, crew_id, clean)
+            # Plain file on a stopped crew: use archive API directly (no worker,
+            # no _ensure_crew_running). The Podman archive API works on both
+            # running and stopped containers via the overlay filesystem.
+            archive_response = podman.container_archive_get(
+                crew["container"], f"{ws}/{clean}"
+            )
+            archive_stream = _TarMemberStream(archive_response, clean)
             ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
             media_types = {
                 "json": "application/json", "md": "text/markdown",
@@ -525,19 +531,19 @@ async def _handle_file_get(request: Request) -> Response:
                 "sh": "text/x-sh", "yaml": "text/yaml", "yml": "text/yaml",
             }
             media_type = media_types.get(ext, "application/octet-stream")
-            return Response(data, media_type=media_type)
+            return StreamingResponse(iter(archive_stream), media_type=media_type)
         except WorkerImageMissing as e:
             return PlainTextResponse(str(e), status_code=500)
         except WorkerCommandError as e:
-            # A plain-file `cat` non-zero means the file is absent → 404.
             # A git failure (not a repo, bad ref) → 500 with git stderr.
-            if not bundle and not ref:
-                return PlainTextResponse(
-                    f"Not found: {path}", status_code=404
-                )
             return PlainTextResponse(e.output.strip() or str(e), status_code=500)
         except Exception as e:
-            return PlainTextResponse(str(e), status_code=500)
+            msg = str(e)
+            # Podman archive GET returns HTTP 404 when the path does not exist
+            # inside the container.
+            if "404" in msg and ("no such file" in msg.lower() or "not found" in msg.lower()):
+                return PlainTextResponse(f"Not found: {path}", status_code=404)
+            return PlainTextResponse(msg, status_code=500)
 
     # ── Running-crew path (unchanged) ─────────────────────────────────────────
     try:

@@ -198,6 +198,8 @@ try:
         _mail_count,
         _read_all_mail_counts,
         _read_all_mail_subjects,
+        _read_maildir_subjects_from_tar,
+        _read_mail_subjects_archive,
         _captain_jobs,
         _captain_checkin_job,
         _captain_order_lock,
@@ -223,6 +225,8 @@ except ModuleNotFoundError:
         _mail_count,
         _read_all_mail_counts,
         _read_all_mail_subjects,
+        _read_maildir_subjects_from_tar,
+        _read_mail_subjects_archive,
         _captain_jobs,
         _captain_checkin_job,
         _captain_order_lock,
@@ -2125,6 +2129,72 @@ def captain(
 
             return result
 
+    # ── Captain status — no container wake required ───────────────────────────
+    # For action == "status", read mail subjects via archive API (works on both
+    # running and stopped containers) and return early without calling
+    # _ensure_crew_running. The stop action still needs a running container to
+    # reach the gateway's cron API to disable the job.
+    if action == "status":
+        podman = _get_podman()
+        captain_subjects = _read_mail_subjects_archive(
+            podman, crew["container"], _CAPTAIN_MAILBOX_PATH
+        )
+        admiral_subjects = _read_mail_subjects_archive(
+            podman, crew["container"], _ADMIRAL_MAILBOX_PATH
+        )
+        captain_mail = len(captain_subjects)
+        admiral_mail = len(admiral_subjects)
+
+        # If the container is already running, read the live cron job state
+        # without waking it. If stopped, return dormant/no-job without starting.
+        try:
+            is_running = podman.container_is_running(crew["container"])
+        except Exception:
+            is_running = False
+
+        if is_running:
+            standing_job: dict[str, Any] | None = None
+            try:
+                running_crew = _ensure_crew_running(crew, crew_id)
+                cron_listing = _crew_api_with_recovery(running_crew, crew_id, "GET", "/api/crons")
+                standing_job = _captain_checkin_job(cron_listing)
+            except Exception:
+                standing_job = None
+        else:
+            standing_job = None
+
+        if standing_job is None:
+            return {
+                "crew_id": crew_id,
+                "action": action,
+                "status": "dormant",
+                "mode": "standing-orders",
+                "job_id": None,
+                "enabled": False,
+                "unread_mail": captain_mail,
+                "mailbox": "captain@localhost",
+                "captain_subjects": captain_subjects,
+                "captain_mail": captain_mail,
+                "unread_admiral_mail": admiral_mail,
+                "admiral_mailbox": "admiral@localhost",
+                "admiral_subjects": admiral_subjects,
+                "admiral_mail": admiral_mail,
+            }
+
+        status_result = _captain_standing_view(
+            crew_id,
+            action,
+            standing_job,
+            podman,
+            crew["container"],
+        )
+        status_result["captain_subjects"] = captain_subjects
+        status_result["admiral_subjects"] = admiral_subjects
+        status_result["captain_mail"] = captain_mail
+        status_result["admiral_mail"] = admiral_mail
+        return status_result
+
+    # ── Stop — container must be running to reach cron API ───────────────────
     try:
         crew = _ensure_crew_running(crew, crew_id)
         podman = _get_podman()
@@ -2138,28 +2208,6 @@ def captain(
         return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
 
     if standing_job is None:
-        if action == "status":
-            try:
-                unread_mail = _mail_count(
-                    podman, crew["container"], _CAPTAIN_MAILBOX_PATH
-                )
-                unread_admiral_mail = _mail_count(
-                    podman, crew["container"], _ADMIRAL_MAILBOX_PATH
-                )
-            except Exception as exc:
-                return {"error": f"Could not read Captain or Admiral mailbox: {exc}"}
-            return {
-                "crew_id": crew_id,
-                "action": action,
-                "status": "dormant",
-                "mode": "standing-orders",
-                "job_id": None,
-                "enabled": False,
-                "unread_mail": unread_mail,
-                "mailbox": "captain@localhost",
-                "unread_admiral_mail": unread_admiral_mail,
-                "admiral_mailbox": "admiral@localhost",
-            }
         return {
             "crew_id": crew_id,
             "action": "stop",
@@ -2724,7 +2772,6 @@ def _pickup_single(
         agent_persona = r.get("agent", "")
         agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
         admiral_mail = mail_counts.get("admiral", 0)
-        captain_mail = mail_counts.get("captain", 0)
 
         out: dict[str, Any] = {
             "task_id": r.get("id"),
@@ -2738,14 +2785,15 @@ def _pickup_single(
             "outcome": r.get("outcome", ""),
             "agent_mail": agent_mail,
             "admiral_mail": admiral_mail,
-            "captain_mail": captain_mail,
         }
 
-        # Include subject lines for the agent, captain, and admiral mailboxes.
+        # Include subject lines for the agent persona and raven mailboxes only.
+        # captain_subjects and admiral_subjects are available via captain(action="status").
         if agent_persona:
             out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
-        out["captain_subjects"] = mail_subjects.get("captain", [])
-        out["admiral_subjects"] = mail_subjects.get("admiral", [])
+        raven_subjects = mail_subjects.get("raven", [])
+        if raven_subjects:
+            out["raven_subjects"] = raven_subjects
 
         if done or timeout_secs == 0:
             return out
@@ -2805,7 +2853,6 @@ def _pickup_list(
             if mail_counts.get(name, 0) > 0
         }
         admiral_mail = mail_counts.get("admiral", 0)
-        captain_mail = mail_counts.get("captain", 0)
 
         task_list = [
             {
@@ -2822,21 +2869,20 @@ def _pickup_list(
             for a in agents
         ]
 
-        # Build subject summaries for all persona mailboxes + captain + admiral.
+        # Build subject summaries for persona mailboxes only.
+        # captain_subjects and admiral_subjects are removed — use captain(action="status")
+        # for live captain/admiral mailbox subjects. pickup is persona-only.
         subjects_summary: dict[str, list[str]] = {}
         for name in PERSONA_NAMES:
             subs = mail_subjects.get(name, [])
             if subs:
                 subjects_summary[f"{name}_subjects"] = subs
-        subjects_summary["captain_subjects"] = mail_subjects.get("captain", [])
-        subjects_summary["admiral_subjects"] = mail_subjects.get("admiral", [])
 
         out: dict[str, Any] = {
             "crew_id": crew_id,
             "tasks": task_list,
             "mail_summary": mail_summary,
             "admiral_mail": admiral_mail,
-            "captain_mail": captain_mail,
             **subjects_summary,
         }
 

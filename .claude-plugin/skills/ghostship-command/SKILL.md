@@ -294,8 +294,20 @@ You don't reach in and read `/var/mail/*` directly (see guardrails).
 
 Two ways to see mail state without a dispatch:
 
-- Every `pickup` response includes mail counts (`admiral_mail`, `captain_subjects`).
-- `captain(action="status")` reports Captain + Admiral mailbox unread counts and the last Raven cycle summary — usually enough to know what's happening without a full dispatch.
+- Every `pickup` response includes mail counts (`admiral_mail`) and subject lines
+  for the agent persona's mailbox (e.g. `ghost_subjects`, `raven_subjects`).
+  Captain and admiral mailbox subjects are NOT included in pickup — those are
+  stale when sourced from a Raven pickup result anyway.
+- `captain(action="status")` returns live `captain_subjects` and `admiral_subjects`
+  arrays directly from the mailboxes (using the Podman archive API, so it works
+  even on a stopped crew). Use this for an accurate mail picture of the
+  captain/admiral mailboxes without dispatching or waking the container.
+
+```
+captain(crew_id, action="status")
+# → { "captain_subjects": [...], "admiral_subjects": [...],
+#     "captain_mail": N, "admiral_mail": M, ... }
+```
 
 To read full mail content, dispatch **raven** with a task asking it to check
 a specific mailbox and report back. Raven is the watcher/messenger persona;

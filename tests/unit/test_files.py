@@ -543,16 +543,40 @@ from transport.podman import (  # noqa: E402
 )
 
 
+class _FakeArchiveResponse:
+    """Minimal stand-in for the httpx.Response returned by container_archive_get."""
+
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.closed = False
+
+    def iter_bytes(self, chunk_size: int = 65536):
+        yield self.body
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _WorkerFakePodman:
-    """Records worker_run calls and returns scripted output.
+    """Records worker_run and archive calls, returning scripted output.
 
     container_is_running(False) drives the stopped-crew branch. worker_run
     returns `output` bytes, or raises `raise_exc` when set.
+    `archive_output` is served by container_archive_get as a minimal tar;
+    when `archive_raise` is set that exception is raised instead.
     """
 
-    def __init__(self, output: bytes = b"", raise_exc: Exception | None = None):
+    def __init__(
+        self,
+        output: bytes = b"",
+        raise_exc: Exception | None = None,
+        archive_output: bytes | None = None,
+        archive_raise: Exception | None = None,
+    ):
         self._output = output
         self._raise = raise_exc
+        self._archive_output = archive_output
+        self._archive_raise = archive_raise
         self.worker_calls: list[tuple[str, list[str]]] = []
         self.exec_calls: list[Any] = []
         self.archive_calls: list[Any] = []
@@ -569,6 +593,22 @@ class _WorkerFakePodman:
         if self._raise is not None:
             raise self._raise
         return self._output
+
+    def container_archive_get(self, container: str, path: str):
+        self.archive_calls.append((container, path))
+        if self._archive_raise is not None:
+            raise self._archive_raise
+        # Build a minimal tar wrapping archive_output (or empty bytes)
+        import io as _io
+        import tarfile as _tarfile
+        content = self._archive_output if self._archive_output is not None else self._output
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            info = _tarfile.TarInfo(name=path.lstrip("/").rsplit("/", 1)[-1])
+            info.size = len(content)
+            tf.addfile(info, _io.BytesIO(content))
+        buf.seek(0)
+        return _FakeArchiveResponse(buf.getvalue())
 
 
 class WorkerHelperTests(unittest.TestCase):
@@ -636,27 +676,35 @@ class FileGetBranchingTests(unittest.TestCase):
             resp = asyncio.run(server._handle_file_get(request))
             return resp, ensure
 
-    def test_stopped_crew_plain_file_routes_to_worker(self) -> None:
+    def test_stopped_crew_plain_file_routes_to_archive_api(self) -> None:
         request = self._signed_request("notes.txt")
-        podman = _WorkerFakePodman(output=b"file body")
+        podman = _WorkerFakePodman(archive_output=b"file body")
         resp, ensure = self._run(request, podman)
-        self.assertEqual(resp.body, b"file body")
-        self.assertEqual(len(podman.worker_calls), 1)
-        # Stopped path must NOT wake the crew (task 5.6).
+        # The stub StreamingResponse stores the iterator as resp.body when
+        # content is not str/dict/list. Collect it explicitly.
+        body = resp.body
+        if hasattr(body, "__iter__") and not isinstance(body, (bytes, bytearray)):
+            body = b"".join(body)
+        self.assertEqual(body, b"file body")
+        # archive API was called, worker was not
+        self.assertEqual(len(podman.archive_calls), 1)
+        self.assertEqual(len(podman.worker_calls), 0)
+        # Stopped path must NOT wake the crew.
         ensure.assert_not_called()
 
     def test_stopped_crew_missing_file_returns_404(self) -> None:
         request = self._signed_request("missing.txt")
-        podman = _WorkerFakePodman(raise_exc=WorkerCommandError(1, "cat: no such file"))
+        # Simulate Podman archive returning a 404-like error
+        podman = _WorkerFakePodman(archive_raise=Exception("HTTP 404: no such file"))
         resp, _ = self._run(request, podman)
         self.assertEqual(resp.status_code, 404)
 
-    def test_stopped_crew_missing_image_returns_500(self) -> None:
+    def test_stopped_crew_archive_error_returns_500(self) -> None:
+        """A non-404 archive error on plain file read returns 500."""
         request = self._signed_request("notes.txt")
-        podman = _WorkerFakePodman(raise_exc=WorkerImageMissing("gs-worker missing"))
+        podman = _WorkerFakePodman(archive_raise=Exception("internal server error"))
         resp, _ = self._run(request, podman)
         self.assertEqual(resp.status_code, 500)
-        self.assertIn("gs-worker", resp.body.decode())
 
     def test_stopped_crew_git_failure_returns_500(self) -> None:
         request = self._signed_request("repo/x", ref="HEAD")
@@ -664,6 +712,14 @@ class FileGetBranchingTests(unittest.TestCase):
         resp, _ = self._run(request, podman)
         self.assertEqual(resp.status_code, 500)
         self.assertIn("not a git repo", resp.body.decode())
+
+    def test_stopped_crew_worker_image_missing_on_bundle_returns_500(self) -> None:
+        """WorkerImageMissing on the git bundle path still returns 500."""
+        request = self._signed_request("repo", bundle=True)
+        podman = _WorkerFakePodman(raise_exc=WorkerImageMissing("gs-worker missing"))
+        resp, _ = self._run(request, podman)
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("gs-worker", resp.body.decode())
 
     def test_running_crew_does_not_spawn_worker(self) -> None:
         request = self._signed_request("repo/notes.txt", ref="HEAD")

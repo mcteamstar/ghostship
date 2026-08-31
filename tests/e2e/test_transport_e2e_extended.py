@@ -359,5 +359,68 @@ class TestAuthExtended(unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
+# ── 6. TRN-51: Captain status on stopped crew ─────────────────────────────────
+
+
+@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+class TestCaptainStatusStoppedCrew(unittest.TestCase):
+    """TRN-51 smoke test: captain status works on stopped crews without waking them.
+
+    Requires a live transport at GHOSTSHIP_E2E_URL. The test launches a crew,
+    stops it, and asserts that captain(action="status") returns HTTP 200 with
+    subject arrays present and the container still stopped after the call.
+
+    Crew name: e2e-trn51-captain-stopped — nuked on teardown.
+    """
+
+    CREW_ID = "e2e-trn51-captain-stopped"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Launch and immediately stop the test crew."""
+        # Launch (or reuse) a crew for this test
+        _mcp_call("launch", crew_id=cls.CREW_ID)
+        # Stop it so the container is not running
+        _mcp_call("captain", crew_id=cls.CREW_ID, action="stop")
+        # Give the container a moment to stop
+        time.sleep(2)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Tear down the test crew."""
+        try:
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
+        except Exception:
+            pass
+
+    def test_captain_status_stopped_crew_returns_200_with_subjects(self) -> None:
+        """Captain status on a stopped crew returns HTTP 200 and subject arrays."""
+        result = _mcp_call("captain", crew_id=self.CREW_ID, action="status")
+        self.assertFalse(_is_error(result), f"captain status returned error: {result}")
+        # Subject arrays must be present (may be empty on a fresh crew)
+        self.assertIn("captain_subjects", result, "captain_subjects missing from status response")
+        self.assertIn("admiral_subjects", result, "admiral_subjects missing from status response")
+        self.assertIsInstance(result["captain_subjects"], list)
+        self.assertIsInstance(result["admiral_subjects"], list)
+
+    def test_captain_status_does_not_start_stopped_container(self) -> None:
+        """Captain status must not start the container on a stopped crew."""
+        # Call captain status
+        _mcp_call("captain", crew_id=self.CREW_ID, action="status")
+        # Check crew state — should still be stopped
+        crews_result = _mcp_call("crews")
+        crews = crews_result if isinstance(crews_result, list) else crews_result.get("crews", [])
+        for crew in crews:
+            if crew.get("crew_id") == self.CREW_ID or crew.get("id") == self.CREW_ID:
+                status = crew.get("status", "")
+                self.assertNotIn(
+                    status.lower(),
+                    ("running", "starting"),
+                    f"Crew {self.CREW_ID} was started by captain status (status={status!r})",
+                )
+                return
+        # If crew not found in listing, it's stopped — that's fine
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -615,7 +615,10 @@ class PickupTimeoutTests(unittest.TestCase):
         self.assertEqual(result["agent_mail"], 3)
         self.assertEqual(result["admiral_mail"], 1)
         self.assertEqual(result["ghost_subjects"], ["hello"])
-        self.assertEqual(result["admiral_subjects"], ["order1"])
+        # captain_subjects and admiral_subjects are NOT in pickup — use captain status
+        self.assertNotIn("captain_subjects", result)
+        self.assertNotIn("admiral_subjects", result)
+        self.assertNotIn("captain_mail", result)
 
     def test_pickup_mail_counts_present_list_all(self) -> None:
         """5.4 — mail counts present in list-all response."""
@@ -635,7 +638,10 @@ class PickupTimeoutTests(unittest.TestCase):
         self.assertEqual(result["mail_summary"]["ghost"], 2)
         self.assertEqual(result["admiral_mail"], 1)
         self.assertEqual(result["ghost_subjects"], ["done"])
-        self.assertEqual(result["admiral_subjects"], ["check"])
+        # captain_subjects and admiral_subjects are NOT in pickup — use captain status
+        self.assertNotIn("captain_subjects", result)
+        self.assertNotIn("admiral_subjects", result)
+        self.assertNotIn("captain_mail", result)
 
     def test_pickup_admiral_mail_early_return(self) -> None:
         """5.5 — Admiral mail early-return sets reason='admiral_mail'."""
