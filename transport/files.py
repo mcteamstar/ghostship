@@ -624,7 +624,12 @@ async def _handle_file_get(request: Request) -> Response:
         media_type = media_types.get(ext, "application/octet-stream")
         return StreamingResponse(iter(archive_stream), media_type=media_type)
     except Exception as e:
-        return PlainTextResponse(str(e), status_code=500)
+        msg = str(e)
+        # Podman archive GET returns HTTP 404 when the path does not exist inside
+        # the container. Surface that as a 404 to the caller rather than a 500.
+        if "404" in msg and ("no such file" in msg.lower() or "not found" in msg.lower()):
+            return PlainTextResponse(f"Not found: {path}", status_code=404)
+        return PlainTextResponse(msg, status_code=500)
 
 
 async def _handle_file_put(request: Request) -> Response:
