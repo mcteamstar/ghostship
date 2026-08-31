@@ -902,6 +902,9 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
             if new_cron is not None and sched.get("cron_expr") != new_cron:
                 sched["cron_expr"] = new_cron
                 changed = True
+            if "model" in gw and sched.get("model") != gw.get("model"):
+                sched["model"] = gw.get("model")
+                changed = True
             if changed:
                 registry_changed = True
                 logger.info(
@@ -928,6 +931,8 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
             "message": sched.get("message", ""),
             "agent": sched.get("agent", "ghost"),
         }
+        if sched.get("model"):
+            body["model"] = sched["model"]
         if sched.get("cron_expr"):
             body["cron"] = sched["cron_expr"]
         elif sched.get("interval_secs"):
@@ -1387,13 +1392,15 @@ def _schedule_monitor() -> None:
 
                     # Fire the tick
                     try:
+                        tick_body: dict[str, Any] = {
+                            "task": sched.get("message", ""),
+                            "agent": sched.get("agent", "ghost"),
+                            "keep": True,
+                        }
+                        if sched.get("model"):
+                            tick_body["model"] = sched["model"]
                         _crew_api_with_recovery(
-                            crew, crew_id, "POST", "/api/spawn",
-                            json={
-                                "task": sched.get("message", ""),
-                                "agent": sched.get("agent", "ghost"),
-                                "keep": True,
-                            },
+                            crew, crew_id, "POST", "/api/spawn", json=tick_body,
                         )
                     except Exception as e:
                         logger.warning(

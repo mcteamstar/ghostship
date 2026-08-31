@@ -993,11 +993,15 @@ class FireImmediatelyTests(unittest.TestCase):
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
-            result = server.schedule("task", "do work", crew_id="demo", interval=120)
+            result = server.schedule(
+                "task", "do work", crew_id="demo", interval=120,
+                model="claude-sonnet-5",
+            )
 
         self.assertEqual(result["status"], "scheduled")
         self.assertEqual(len(dispatch_calls), 1)
         self.assertEqual(dispatch_calls[0]["task"], "do work")
+        self.assertEqual(dispatch_calls[0]["model"], "claude-sonnet-5")
 
     def test_schedule_cron_no_fire_immediately_defaults_false(self) -> None:
         """3.3 — schedule() with cron and no fire_immediately → no immediate dispatch."""
@@ -1133,12 +1137,16 @@ class FireImmediatelyTests(unittest.TestCase):
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
         ):
-            result = server.captain("demo", "order", message="hold", interval=120)
+            result = server.captain(
+                "demo", "order", message="hold", interval=120,
+                model="claude-opus-5",
+            )
 
         self.assertEqual(result["status"], "ordered")
         # Exactly one immediate dispatch to Raven
         self.assertEqual(len(spawn_calls), 1)
         self.assertEqual(spawn_calls[0]["agent"], "raven")
+        self.assertEqual(spawn_calls[0]["model"], "claude-opus-5")
 
     def test_captain_order_resume_no_immediate_dispatch(self) -> None:
         """3.8 — captain(action="order") resume of paused job → no immediate dispatch."""
@@ -3093,7 +3101,10 @@ class SchedulePersistenceTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=fake_podman),
             patch.object(server, "_append_captain_mail"),
         ):
-            result = server.captain(crew_id="demo", action="order", message="do stuff", interval=300)
+            result = server.captain(
+                crew_id="demo", action="order", message="do stuff", interval=300,
+                model="claude-opus-5",
+            )
 
         self.assertEqual(result["status"], "ordered")
         self.assertEqual(result["job_id"], "cap-job-1")
@@ -3105,6 +3116,7 @@ class SchedulePersistenceTests(unittest.TestCase):
         self.assertEqual(schedules[0]["job_id"], "cap-job-1")
         self.assertEqual(schedules[0]["name"], "captain")
         self.assertEqual(schedules[0]["agent"], "raven")
+        self.assertEqual(schedules[0]["model"], "claude-opus-5")
         self.assertTrue(schedules[0]["enabled"])
 
     def test_schedule_list_returns_registry_entries_when_stopped(self) -> None:
@@ -3191,7 +3203,7 @@ class SchedulePersistenceTests(unittest.TestCase):
         ):
             result = server.schedule(
                 name="cleanup", message="run cleanup", agent="ghost",
-                crew_id="demo", delay=300,
+                crew_id="demo", delay=300, model="claude-sonnet-5",
             )
 
         self.assertEqual(result["job_id"], "delay-job-1")
@@ -3203,6 +3215,7 @@ class SchedulePersistenceTests(unittest.TestCase):
         schedules = last_reg["crews"]["demo"]["schedules"]
         self.assertEqual(len(schedules), 1)
         self.assertEqual(schedules[0]["job_id"], "delay-job-1")
+        self.assertEqual(schedules[0]["model"], "claude-sonnet-5")
         self.assertTrue(schedules[0].get("one_shot"))
 
     def test_dispatch_no_longer_accepts_delay(self) -> None:
@@ -3303,7 +3316,8 @@ class ScheduleMonitorTests(unittest.TestCase):
             "schedules": [{
                 "job_id": "j1", "name": "check", "interval_secs": 300, "cron_expr": None,
                 "next_fire_at": now - 10,  # due
-                "agent": "ghost", "message": "do check", "enabled": True,
+                "agent": "ghost", "message": "do check", "model": "claude-sonnet-5",
+                "enabled": True,
             }],
         }}}
         api_calls = []
@@ -3352,6 +3366,11 @@ class ScheduleMonitorTests(unittest.TestCase):
         )
         # Verify registry was saved after the tick
         self.assertTrue(len(save_calls) > 0, "Expected _save_registry to have been called")
+        spawn_calls = [
+            kwargs for method, path, kwargs in api_calls
+            if method == "POST" and path == "/api/spawn"
+        ]
+        self.assertEqual(spawn_calls[0]["json"]["model"], "claude-sonnet-5")
 
     def test_monitor_skips_and_advances_on_crew_failure(self) -> None:
         """7.5 — _schedule_monitor skips tick and advances when crew won't start."""
@@ -3419,14 +3438,19 @@ class ReseedCronReconcileTests(unittest.TestCase):
         reg = self._make_reg([{
             "job_id": "j1", "name": "captain", "interval_secs": 300,
             "cron_expr": None, "agent": "raven", "message": "check-in",
-            "enabled": True,  # stale: registry says enabled
+            "model": "old-model", "enabled": True,  # stale: registry says enabled
         }])
         api_calls = []
 
         def api(_crew, method, path, **kwargs):
             api_calls.append((method, path))
             if method == "GET" and path == "/api/crons":
-                return {"jobs": [{"id": "j1", "enabled": False, "every_secs": 300}]}
+                return {
+                    "jobs": [{
+                        "id": "j1", "enabled": False, "every_secs": 300,
+                        "model": "new-model",
+                    }]
+                }
             return {}
 
         saved = []
@@ -3450,6 +3474,7 @@ class ReseedCronReconcileTests(unittest.TestCase):
         self.assertTrue(saved, "Registry should have been saved after reconcile")
         sched = saved[-1]["crews"]["demo"]["schedules"][0]
         self.assertFalse(sched["enabled"], "Registry entry should be updated to enabled=False")
+        self.assertEqual(sched["model"], "new-model")
 
         # No POST to re-register the paused job
         post_calls = [p for m, p in api_calls if m == "POST"]

@@ -2055,9 +2055,28 @@ def captain(
                 "message": _CAPTAIN_CHECKIN_TASK,
                 "enabled": True,
             }
+            if is_new_job:
+                schedule_entry["model"] = model
             try:
                 with _registry_lock:
                     reg = _load_registry()
+                    if not is_new_job:
+                        # Resume does not accept a new model.  Prefer the
+                        # gateway's value when present, but preserve the
+                        # registry pin for older gateway responses that omit it.
+                        if "model" in job:
+                            schedule_entry["model"] = job.get("model")
+                        else:
+                            prior_entry = next(
+                                (
+                                    entry
+                                    for entry in _get_crew_schedules(reg, crew_id)
+                                    if entry.get("job_id") == schedule_entry["job_id"]
+                                ),
+                                None,
+                            )
+                            if prior_entry is not None and "model" in prior_entry:
+                                schedule_entry["model"] = prior_entry["model"]
                     _upsert_crew_schedule(reg, crew_id, schedule_entry)
                     _save_registry(reg)
             except Exception as exc:
@@ -2088,9 +2107,15 @@ def captain(
                 should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
                 if should_fire:
                     try:
+                        immediate_body: dict[str, Any] = {
+                            "task": _CAPTAIN_CHECKIN_TASK,
+                            "agent": "raven",
+                            "keep": True,
+                        }
+                        if model is not None:
+                            immediate_body["model"] = model
                         _crew_api_with_recovery(
-                            crew, crew_id, "POST", "/api/spawn",
-                            json={"task": _CAPTAIN_CHECKIN_TASK, "agent": "raven", "keep": True},
+                            crew, crew_id, "POST", "/api/spawn", json=immediate_body,
                         )
                     except Exception as exc:
                         result["immediate_dispatch_error"] = str(exc)
@@ -2301,6 +2326,7 @@ def schedule(
             "agent": agent,
             "message": message,
             "enabled": True,
+            "model": model,
             "one_shot": True,
         }
         try:
@@ -2341,6 +2367,7 @@ def schedule(
         "agent": agent,
         "message": message,
         "enabled": True,
+        "model": model,
     }
     try:
         with _registry_lock:
@@ -2363,9 +2390,15 @@ def schedule(
 
     if should_fire:
         try:
+            immediate_body: dict[str, Any] = {
+                "task": message,
+                "agent": agent,
+                "keep": True,
+            }
+            if model is not None:
+                immediate_body["model"] = model
             _crew_api_with_recovery(
-                crew, crew_id, "POST", "/api/spawn",
-                json={"task": message, "agent": agent, "keep": True},
+                crew, crew_id, "POST", "/api/spawn", json=immediate_body,
             )
         except Exception as exc:
             result["immediate_dispatch_error"] = str(exc)

@@ -25,4 +25,9 @@
 ## 6. Verification
 
 - [x] 6.1 Run the full unit test suite and confirm no regressions.
-- [ ] 6.2 Manually dispatch a task with an explicit `model` against a live crew and confirm (via `pickup` or crew logs) the session actually served the requested model, distinguishing `model` (requested) from `resolved_model` (served) per `subagent.py`'s existing audit fields.
+- [ ] 6.2 Manually dispatch a task with an explicit `model` against a live crew and confirm (via `pickup` or crew logs) the session actually served the requested model, distinguishing `model` (requested) from `resolved_model` (served) per `subagent.py`'s existing audit fields. -- **DEFERRED (Admiral-authorized):** verify manually outside this crew; no live `model`/`resolved_model` evidence is claimed here, and this crew must not retry or escalate it.
+
+## 7. Review follow-ups
+
+- [x] 7.1 Persist scheduled-job model pins in the transport registry and forward them on restart re-seeding and transport-owned schedule-monitor ticks; cover the restored request body and registry behavior with unit tests.
+- [x] 7.2 Forward a scheduled model pin to `fire_immediately` spawns for both `schedule` and Captain check-ins, with unit coverage for the immediate requests.

@@ -543,8 +543,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             "schedules": [{
                 "job_id": "missing-j1", "name": "daily-report",
                 "interval_secs": 86400, "cron_expr": None,
-                "agent": "ghost", "message": "report", "enabled": True,
-                "next_fire_at": time.time() + 1000,
+                "agent": "ghost", "message": "report", "model": "claude-sonnet-5",
+                "enabled": True, "next_fire_at": time.time() + 1000,
             }],
         }
         reg = {"crews": {"demo": crew_info}}
@@ -576,6 +576,7 @@ class ReconcileRegistryTests(unittest.TestCase):
         posted_body = post_calls[0][2].get("json", {})
         self.assertEqual(posted_body.get("name"), "daily-report")
         self.assertEqual(posted_body.get("every"), 86400)
+        self.assertEqual(posted_body.get("model"), "claude-sonnet-5")
 
     def test_reconcile_patch_before_gateway_wait_ordering(self) -> None:
         """_reconcile_registry applies _patch_crew_config before _wait_gateway.

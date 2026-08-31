@@ -15,6 +15,7 @@ Two distinct "config pin" concepts sit below the per-spawn `model` param, and it
 **Goals:**
 - Let a caller pin the model for exactly one `dispatch` task, or one `schedule`/`captain(order)` recurring job, without touching persona config or crew-wide env vars.
 - Fail fast on a malformed `model` value at the transport layer, before any crew API call, consistent with how the transport already validates `agent` (persona allowlist) before contacting the crew.
+- Preserve each scheduled job's optional model pin in the transport registry and carry it through restart re-seeding, the transport-owned schedule monitor, and any `fire_immediately` first run so every execution path honors the same job-level choice.
 
 **Non-Goals:**
 - No change to model *resolution* precedence for calls that omit `model` — `KC_MODEL_OVERRIDE` > per-agent `model` > `KC_MODEL_DEFAULT` > KiroCrew built-in stays exactly as-is.
@@ -31,6 +32,8 @@ Two distinct "config pin" concepts sit below the per-spawn `model` param, and it
 **`captain(action="order")` accepts `model` only on the create-new-job path.** Resuming a paused check-in reuses the existing job as-is (same pattern the existing `fire_immediately` parameter already follows for resume) — there is no job body to attach `model` to on a resume, since no new `/api/crons` call is made.
 
 **Let a per-dispatch `model` outrank `KC_MODEL_OVERRIDE` rather than build enforcement against it.** This matches KiroCrew's own native precedence (the per-spawn pin always wins over the config pin, regardless of how that config pin was set) instead of adding ghostship-side logic to detect the crew's configured `KC_MODEL_OVERRIDE` at dispatch time and reject or strip a conflicting per-call `model`. Simpler, and consistent with treating `model` as a pure passthrough (see the first Decision above) rather than a value the transport reasons about. The trade-off is real and is not hidden: `KC_MODEL_OVERRIDE` stops being an absolute ceiling once this ships. Documented explicitly in proposal.md and below.
+
+**Carry schedule pins through every transport-owned execution path.** A schedule's gateway job is durable inside the crew, but Ghostship also keeps a registry entry for restart bootstrap and its own idle-crew schedule monitor. The optional `model` is stored alongside the existing message, agent, and schedule fields; re-seeding includes it when a gateway job is missing, and the monitor includes it on its direct `/api/spawn` tick. `fire_immediately` is another direct spawn rather than a gateway cron tick, so it receives the same model when one was supplied. On Captain resume, the caller's new `model` remains ignored; an existing registry pin is preserved instead.
 
 **Alternatives considered:**
 - *Add a `set_model`-style follow-up call after spawn instead of a create-time field* — rejected: KiroCrew's own contract for this is create-time only (`api_spawn`/`api_crons_create`), and `subagent.py`'s explicit distinction between `model` (requested) and `resolved_model` (served) exists precisely to audit a *pinned* run, not a run whose model changed mid-session.
