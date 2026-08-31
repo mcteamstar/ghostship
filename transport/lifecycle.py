@@ -799,11 +799,21 @@ def _mint_cookie(podman: PodmanClient, container: str, crew_url: str) -> str | N
 
 
 def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
-    """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON."""
+    """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON.
+
+    Uses an inline python one-liner so this works in both crew containers
+    (base-admission image, which has /scripts/) and ephemeral login containers
+    (bare kirocrew image, which does not).
+    """
+    extract = (
+        "import sqlite3, json, base64; "
+        f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
+        "rows = conn.execute('SELECT key, value FROM auth_kv').fetchall(); "
+        "conn.close(); "
+        "print(base64.b64encode(json.dumps(rows).encode()).decode())"
+    )
     try:
-        b64 = podman.container_exec(
-            container, ["python3", f"{SCRIPTS_DIR}/read_auth.py", KIRO_CLI_DB]
-        ).strip()
+        b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
         if b64:
             rows = json.loads(base64.b64decode(b64).decode())
             if rows and any(r[1] for r in rows if len(r) > 1):
