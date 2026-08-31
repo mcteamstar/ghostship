@@ -7,6 +7,7 @@ import httpx
 
 GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "").rstrip("/")
 GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
+GHOSTSHIP_E2E_KIRO_AUTH = os.environ.get("GHOSTSHIP_E2E_KIRO_AUTH", "") not in ("", "0", "false")
 
 _SKIP_REASON = "GHOSTSHIP_E2E_URL not set"
 
