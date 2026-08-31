@@ -521,6 +521,16 @@ ${_PODMAN_CMD} build -t localhost/base-admission:latest \
   && echo "✓ admission image built" || { echo "✗ admission image build failed"; rm -rf "$_ADMISSION_CTX"; exit 1; }
 rm -rf "$_ADMISSION_CTX"
 
+# Worker image (TRN-81) — the transport's disposable utility unit for reading
+# files/bundles/diffs from STOPPED crew volumes without waking the crew. Based
+# on python:3.12.10-slim (shared with the transport image) plus git. Built
+# after base-admission and before the crew compositions.
+echo "Building localhost/gs-worker:latest (worker) ..."
+${_PODMAN_CMD} build -t localhost/gs-worker:latest \
+  --build-arg VERSION="${VERSION}" \
+  "$GHOSTSHIP_DIR/crews/_worker/" \
+  && echo "✓ worker image built" || { echo "✗ worker image build failed"; exit 1; }
+
 echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   "${_CREW_BUILD_FLAGS[@]}" \

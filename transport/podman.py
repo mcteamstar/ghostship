@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import socket
 import threading
 import time
@@ -28,7 +29,35 @@ cfg = Config.from_env()
 PODMAN_SOCK = cfg.podman_socket
 KIRO_WORKSPACE_ROOT = "/home/kirocrew/workplace/kirocrew-workspace"
 
+# Worker sidecar (TRN-81) — the transport's disposable utility container for
+# reading files/bundles/diffs from STOPPED crew volumes without waking the
+# crew. Built by install.sh from crews/_worker/. The crew workspace volume is
+# mounted read-only at WORKER_MOUNT; worker commands operate under that path.
+WORKER_IMAGE = "localhost/gs-worker:latest"
+WORKER_MOUNT = "/workspace"
+CREW_VOLUME_PREFIX = "gs-vol-"
+
 logger = logging.getLogger(__name__)
+
+
+class WorkerImageMissing(RuntimeError):
+    """Raised when the worker image (localhost/gs-worker:latest) is not present."""
+
+
+class WorkerCommandError(RuntimeError):
+    """Raised when a worker command exits non-zero.
+
+    Carries the exit code and captured output so callers can map it to the
+    right HTTP status (e.g. a `cat` non-zero → 404 file-not-found, a git
+    failure → 500 with git stderr).
+    """
+
+    def __init__(self, exit_code: int, output: str) -> None:
+        self.exit_code = exit_code
+        self.output = output
+        super().__init__(
+            f"worker command exited {exit_code}: {output.strip() or '(no output)'}"
+        )
 
 # ── Shared HTTP clients ───────────────────────────────────────────────────────
 
@@ -95,6 +124,11 @@ class ContainerRuntime(ABC):
 
     @abstractmethod
     def volume_remove(self, name: str) -> None: ...
+
+    @abstractmethod
+    def worker_run(
+        self, volume_name: str, cmd: list[str], timeout: float = 60.0
+    ) -> bytes: ...
 
     @abstractmethod
     def network_create(self, name: str) -> None: ...
@@ -396,6 +430,130 @@ class PodmanClient(ContainerRuntime):
             ).raise_for_status()
         except Exception:
             pass
+
+    # ── worker sidecar (TRN-81) ─────────────────────────────────────────────
+
+    @staticmethod
+    def volume_name_for_crew(crew_id: str) -> str:
+        """Return the workspace volume name for a crew (``gs-vol-{crew_id}``)."""
+        return f"{CREW_VOLUME_PREFIX}{crew_id}"
+
+    def _image_exists(self, image: str) -> bool:
+        r = self._c.get(f"/libpod/images/{image}/exists")
+        return r.status_code == 204
+
+    def worker_run(
+        self, volume_name: str, cmd: list[str], timeout: float = 60.0
+    ) -> bytes:
+        """Run one command in a disposable worker container and return stdout.
+
+        Spins up ``localhost/gs-worker:latest`` with ``volume_name`` mounted
+        read-only at ``/workspace``, runs ``cmd``, waits for exit, and always
+        removes the container. Equivalent to::
+
+            podman run --rm -v {volume_name}:/workspace:ro \
+                localhost/gs-worker:latest {cmd}
+
+        Returns the raw stdout bytes on success. Raises:
+          * ``WorkerImageMissing`` if the worker image is not present;
+          * ``WorkerCommandError`` (with exit code + combined output) if the
+            command exits non-zero;
+          * ``RuntimeError`` for any other Podman/infra failure.
+
+        The container mounts the volume ``:ro`` and joins no network. Because
+        it is short-lived and read-only, concurrent workers on the same volume
+        are safe and need no coordination.
+        """
+        if not self._image_exists(WORKER_IMAGE):
+            raise WorkerImageMissing(
+                f"Worker image {WORKER_IMAGE} is not present. "
+                "Run install.sh to build it."
+            )
+
+        name = f"gs-worker-{secrets.token_hex(8)}"
+        spec = {
+            "name": name,
+            "image": WORKER_IMAGE,
+            "command": cmd,
+            "remove": True,  # auto-remove on exit (--rm)
+            "netns": {"nsmode": "none"},
+            "volumes": [
+                {
+                    "name": volume_name,
+                    "dest": WORKER_MOUNT,
+                    "options": ["ro"],
+                },
+            ],
+        }
+
+        created = False
+        try:
+            self._req("POST", "/libpod/containers/create", json=spec)
+            created = True
+            self.container_start(name)
+
+            # Block until the container exits, capturing its exit code.
+            wait = self._c.post(
+                f"/libpod/containers/{name}/wait",
+                params={"condition": "exited"},
+                timeout=timeout,
+            )
+            wait.raise_for_status()
+            try:
+                exit_code = int(wait.json())
+            except (ValueError, TypeError):
+                exit_code = wait.json().get("StatusCode", 1) if wait.content else 1
+
+            # Fetch stdout+stderr from the logs endpoint (demuxed).
+            logs = self._c.get(
+                f"/libpod/containers/{name}/logs",
+                params={"stdout": "true", "stderr": "true"},
+            )
+            raw = logs.content if logs.status_code == 200 else b""
+            output = self._demux(raw)
+
+            if exit_code != 0:
+                raise WorkerCommandError(exit_code, output)
+            # stdout only: re-demux keeping just stream type 1 would drop stderr,
+            # but for the success path callers want the command's stdout bytes.
+            return self._demux_stdout(raw)
+        except (WorkerCommandError, WorkerImageMissing):
+            raise
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Worker container failed: {e}") from e
+        finally:
+            # remove:true handles the happy path; force-remove covers a worker
+            # that failed to start or was interrupted before auto-removal.
+            if created:
+                try:
+                    self._c.delete(
+                        f"/libpod/containers/{name}", params={"force": "true"}
+                    )
+                except Exception:
+                    pass
+
+    def _demux_stdout(self, raw: bytes) -> bytes:
+        """Demux a Docker multiplexed stream, keeping only stdout (type 1) bytes.
+
+        Unlike ``_demux`` (which returns combined stdout+stderr as text), this
+        returns raw stdout bytes so binary payloads (git bundles) survive.
+        """
+        out = bytearray()
+        i = 0
+        matched = False
+        while i + 8 <= len(raw):
+            stream_type = raw[i]
+            size = int.from_bytes(raw[i + 4:i + 8], "big")
+            i += 8
+            chunk = raw[i:i + size]
+            if stream_type == 1:
+                out.extend(chunk)
+                matched = True
+            i += size
+        if not matched and raw:
+            # Stream was not multiplexed (no TTY framing) — return as-is.
+            return raw
+        return bytes(out)
 
     # ── networks ──────────────────────────────────────────────────────────────
 

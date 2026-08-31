@@ -32,6 +32,9 @@ class GitDiffPodman:
     def __init__(self) -> None:
         self.exec_calls: list[tuple[str, list[str], dict[str, str] | None]] = []
 
+    def container_is_running(self, container: str) -> bool:
+        return True
+
     def container_exec(
         self,
         container: str,
@@ -60,6 +63,9 @@ class BundleGetPodman:
     def __init__(self) -> None:
         self.exec_calls: list[tuple[str, list[str], dict[str, str] | None]] = []
         self.archive_calls: list[tuple[str, str]] = []
+
+    def container_is_running(self, container: str) -> bool:
+        return True
 
     def container_exec_checked(
         self,

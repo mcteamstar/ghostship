@@ -1,0 +1,25 @@
+# Worker image — the transport's disposable utility unit (TRN-81).
+#
+# Analogous to an SCV / worker unit: cheap, short-lived, does one job and
+# exits. The transport spins one of these up with a crew's workspace volume
+# mounted read-only to read files, git bundles, and git diffs from a STOPPED
+# crew without waking the crew container.
+#
+# Base is python:3.12.10-slim — the same base as the transport image, so its
+# layers are already on disk and only the git layer (~10MB) is additional
+# storage. git is required for the bundle/diff evac paths.
+#
+# Tagged localhost/gs-worker:latest, built by install.sh alongside transport
+# and the crew images. Not pushed to any registry.
+FROM python:3.12.10-slim
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG VERSION=0.0.0-dev
+LABEL org.ghostship.version=$VERSION
+
+# No CMD/ENTRYPOINT — the transport always supplies the command to run
+# (cat, git bundle, git diff) at `podman run` time.

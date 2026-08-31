@@ -47,13 +47,19 @@ except ImportError:
 try:
     from podman import (  # container: flat /app/
         KIRO_WORKSPACE_ROOT,
+        WORKER_MOUNT,
         PodmanClient,
+        WorkerCommandError,
+        WorkerImageMissing,
         _get_podman,
     )
 except ModuleNotFoundError:
     from transport.podman import (  # local dev
         KIRO_WORKSPACE_ROOT,
+        WORKER_MOUNT,
         PodmanClient,
+        WorkerCommandError,
+        WorkerImageMissing,
         _get_podman,
     )
 
@@ -290,6 +296,65 @@ def _transfer_upload(
         raise
 
 
+# ── Stopped-crew worker helpers (TRN-81) ──────────────────────────────────────
+# These read files/bundles/diffs from a STOPPED crew's workspace volume by
+# spinning up a disposable worker container (see PodmanClient.worker_run) that
+# mounts the volume read-only. They never start the crew container and never
+# update its idle timestamp. `path`/`repo_path` are workspace-relative and are
+# expected to be already sanitised by the caller (no leading `/`, no `..`).
+
+def worker_read_file(
+    podman: PodmanClient, crew_id: str, path: str
+) -> bytes:
+    """Read a plain file from a stopped crew's volume via the worker sidecar.
+
+    Returns the file bytes. Raises WorkerCommandError if the file does not
+    exist (cat exits non-zero), WorkerImageMissing if the worker image is
+    absent, or RuntimeError on other worker failures.
+    """
+    volume = podman.volume_name_for_crew(crew_id)
+    target = posixpath.join(WORKER_MOUNT, path)
+    return podman.worker_run(volume, ["cat", target])
+
+
+def worker_git_bundle(
+    podman: PodmanClient, crew_id: str, repo_path: str, ref: str | None = None
+) -> bytes:
+    """Create a git bundle from a stopped crew's repo via the worker sidecar.
+
+    `repo_path` is the workspace-relative path to the repo (e.g. "repo").
+    `ref` defaults to --all (bundle the entire history). Returns bundle bytes.
+    """
+    volume = podman.volume_name_for_crew(crew_id)
+    repo_dir = posixpath.join(WORKER_MOUNT, repo_path) if repo_path else WORKER_MOUNT
+    bundle_ref = ref if ref else "--all"
+    # `git bundle create -` writes the bundle to stdout, so no temp file / no
+    # writable mount is needed — the volume can stay read-only.
+    return podman.worker_run(
+        volume,
+        ["git", "-C", repo_dir, "bundle", "create", "-", bundle_ref],
+    )
+
+
+def worker_git_diff(
+    podman: PodmanClient, crew_id: str, repo_path: str, ref: str,
+    pathspec: str | None = None,
+) -> str:
+    """Produce a git diff from a stopped crew's repo via the worker sidecar.
+
+    `repo_path` is the workspace-relative path to the repo. `pathspec`, when
+    given, limits the diff to that path (mirrors the running path's
+    `git diff <ref> -- <pathspec>`). Returns the diff as text.
+    """
+    volume = podman.volume_name_for_crew(crew_id)
+    repo_dir = posixpath.join(WORKER_MOUNT, repo_path) if repo_path else WORKER_MOUNT
+    cmd = ["git", "-C", repo_dir, "diff", ref]
+    if pathspec is not None:
+        cmd += ["--", pathspec]
+    out = podman.worker_run(volume, cmd)
+    return out.decode("utf-8", errors="replace")
+
+
 # ── Tar member streaming ──────────────────────────────────────────────────────
 
 class _ResponseChunkReader:
@@ -419,12 +484,66 @@ async def _handle_file_get(request: Request) -> Response:
 
     _ensure_crew_running, _require_crew = _crew_helpers()
     try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+        crew = _require_crew(crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return PlainTextResponse(str(e), status_code=404)
 
     podman = _get_podman()
     ws = KIRO_WORKSPACE_ROOT
+
+    # ── Stopped-crew path (TRN-81) ────────────────────────────────────────────
+    # If the crew container is not running, serve the read via a disposable
+    # worker container mounting the crew volume read-only. This does NOT wake
+    # the crew container and does NOT update its idle timestamp (no _touch_crew,
+    # no _ensure_crew_running).
+    try:
+        running = podman.container_is_running(crew["container"])
+    except Exception:
+        running = False
+
+    if not running:
+        try:
+            if bundle:
+                data = worker_git_bundle(podman, crew_id, clean, ref)
+                return Response(data, media_type="application/octet-stream")
+            if ref:
+                # Diff is rooted at the repo/ dir, matching the running path.
+                repo_pathspec = clean.removeprefix("repo/") or "."
+                if repo_pathspec == "repo":
+                    repo_pathspec = "."
+                out = worker_git_diff(
+                    podman, crew_id, "repo", ref, pathspec=repo_pathspec
+                )
+                return PlainTextResponse(out, media_type="text/plain")
+            data = worker_read_file(podman, crew_id, clean)
+            ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+            media_types = {
+                "json": "application/json", "md": "text/markdown",
+                "txt": "text/plain", "py": "text/x-python",
+                "js": "text/javascript", "ts": "text/typescript",
+                "html": "text/html", "css": "text/css",
+                "sh": "text/x-sh", "yaml": "text/yaml", "yml": "text/yaml",
+            }
+            media_type = media_types.get(ext, "application/octet-stream")
+            return Response(data, media_type=media_type)
+        except WorkerImageMissing as e:
+            return PlainTextResponse(str(e), status_code=500)
+        except WorkerCommandError as e:
+            # A plain-file `cat` non-zero means the file is absent → 404.
+            # A git failure (not a repo, bad ref) → 500 with git stderr.
+            if not bundle and not ref:
+                return PlainTextResponse(
+                    f"Not found: {path}", status_code=404
+                )
+            return PlainTextResponse(e.output.strip() or str(e), status_code=500)
+        except Exception as e:
+            return PlainTextResponse(str(e), status_code=500)
+
+    # ── Running-crew path (unchanged) ─────────────────────────────────────────
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except (ValueError, KeyError, RuntimeError) as e:
+        return PlainTextResponse(str(e), status_code=404)
 
     try:
         if bundle:
