@@ -2786,16 +2786,21 @@ def _pickup_single(
             "agent_mail": agent_mail,
         }
 
-        # captain_subjects, admiral_subjects, captain_mail, and admiral_mail are
-        # NOT surfaced by pickup — use captain(action="status") for those. The
-        # admiral_mail count is still read (above) purely to drive the
-        # reason="admiral_mail" early-return below; it is not part of the response.
-        # Include subject lines for the agent persona and raven mailboxes only.
+        # Include subject lines for the agent persona, raven, captain, and admiral.
+        # captain/admiral are read via archive API (always live, works on stopped
+        # containers). The admiral_mail count above is still used for the
+        # reason="admiral_mail" early-return signal.
         if agent_persona:
             out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
         raven_subjects = mail_subjects.get("raven", [])
         if raven_subjects:
             out["raven_subjects"] = raven_subjects
+        captain_subjects = _read_mail_subjects_archive(podman, container, _CAPTAIN_MAILBOX_PATH)
+        admiral_subjects = _read_mail_subjects_archive(podman, container, _ADMIRAL_MAILBOX_PATH)
+        out["captain_subjects"] = captain_subjects
+        out["captain_mail"] = len(captain_subjects)
+        out["admiral_subjects"] = admiral_subjects
+        out["admiral_mail"] = len(admiral_subjects)
 
         if done or timeout_secs == 0:
             return out
@@ -2871,14 +2876,19 @@ def _pickup_list(
             for a in agents
         ]
 
-        # Build subject summaries for persona mailboxes only.
-        # captain_subjects and admiral_subjects are removed — use captain(action="status")
-        # for live captain/admiral mailbox subjects. pickup is persona-only.
+        # Build subject summaries for all persona mailboxes + captain + admiral.
+        # captain/admiral are read via archive API (always live).
         subjects_summary: dict[str, list[str]] = {}
         for name in PERSONA_NAMES:
             subs = mail_subjects.get(name, [])
             if subs:
                 subjects_summary[f"{name}_subjects"] = subs
+        captain_subjects = _read_mail_subjects_archive(podman, container, _CAPTAIN_MAILBOX_PATH)
+        admiral_subjects = _read_mail_subjects_archive(podman, container, _ADMIRAL_MAILBOX_PATH)
+        subjects_summary["captain_subjects"] = captain_subjects
+        subjects_summary["captain_mail"] = len(captain_subjects)
+        subjects_summary["admiral_subjects"] = admiral_subjects
+        subjects_summary["admiral_mail"] = len(admiral_subjects)
 
         out: dict[str, Any] = {
             "crew_id": crew_id,

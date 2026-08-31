@@ -49,28 +49,22 @@ The system SHALL skim subject lines from relevant mailboxes on every `pickup` ca
 and include them in the response. This gives the Admiral a mail picture without
 needing a separate dispatch.
 
-- When `pickup` is called with a `task_id`: skim the mailbox of the agent that ran
-  that task, plus always `/var/mail/raven`. `captain_subjects`, `admiral_subjects`,
-  `captain_mail`, and `admiral_mail` are NOT included — use `captain status` for those.
+- When `pickup` is called with a `task_id`: skim the agent's mailbox, raven, captain,
+  and admiral mailboxes. Captain and admiral are read via the archive API (live, works
+  on stopped containers).
 - When `pickup` is called without a `task_id` (crew-wide list): skim all persona
-  mailboxes. `captain_subjects`, `admiral_subjects`, `captain_mail`, and `admiral_mail`
-  are NOT included — use `captain status` for those.
+  mailboxes plus captain and admiral.
 - Only subject lines are returned — bodies are not read by `pickup`.
 - Only unread messages contribute to counts and subject lists. Reading never modifies
   the mailbox files.
 
-#### Scenario: pickup on a specific task returns agent and raven subjects only
-- **WHEN** `pickup` is called with a `task_id` for a Ghost task
-- **THEN** the response includes `ghost_mail` and `ghost_subjects` plus `raven_mail`
-  and `raven_subjects`
-- **THEN** the response does NOT include `captain_subjects`, `admiral_subjects`,
-  `captain_mail`, or `admiral_mail`
+#### Scenario: pickup on a specific task returns agent, raven, captain, and admiral subjects
+- **WHEN** `pickup` is called with a `task_id` for a Ghost task and all mailboxes have unread mail
+- **THEN** the response includes `ghost_subjects`, `raven_subjects`, `captain_subjects`, `captain_mail`, `admiral_subjects`, and `admiral_mail`
 
-#### Scenario: crew-wide pickup returns persona subjects only
+#### Scenario: crew-wide pickup returns all persona, captain, and admiral subjects
 - **WHEN** `pickup` is called without a `task_id`
-- **THEN** the response includes subject summaries for persona mailboxes with unread mail
-- **THEN** the response does NOT include `captain_subjects`, `admiral_subjects`,
-  `captain_mail`, or `admiral_mail`
+- **THEN** the response includes subject summaries for every persona mailbox with unread mail, plus `captain_subjects`, `captain_mail`, `admiral_subjects`, and `admiral_mail`
 
 #### Scenario: empty mailboxes omitted or shown as zero
 - **WHEN** `pickup` is called and a mailbox has no unread messages
