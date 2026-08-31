@@ -30,4 +30,4 @@
 ## 7. Review follow-ups
 
 - [x] 7.1 Persist scheduled-job model pins in the transport registry and forward them on restart re-seeding and transport-owned schedule-monitor ticks; cover the restored request body and registry behavior with unit tests.
-- [x] 7.2 Forward a scheduled model pin to `fire_immediately` spawns for both `schedule` and Captain check-ins, with unit coverage for the immediate requests.
+- [x] 7.2 Forward a scheduled model pin to `fire_immediately` spawns for both `schedule` and Captain check-ins, with unit coverage for the immediate requests. -- **VERIFIED by the Admiral** against a live `trn-87-dispatch-model-override` crew: `schedule(interval=60, model="claude-opus-5", ...)` (job `38d29d2a`) immediately dispatched task `a0fc4b5b`; `~/.kiro/crew/subagents/a0fc4b5b/state.json` shows `"requested_model": "claude-opus-5", "resolved_model": "claude-opus-5"` -- both match, confirming the `fire_immediately` first-run model forwarding works end-to-end. Job cancelled after verification.
