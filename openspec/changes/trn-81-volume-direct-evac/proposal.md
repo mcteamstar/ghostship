@@ -84,15 +84,15 @@ Before a design can be committed to, the following need to be answered —
 ideally by a Wraith on a live crew:
 
 1. Does `GET /libpod/volumes/{name}/export` work reliably in rootless mode
-   on vm23? Test against a stopped crew volume.
+   on a representative test host? Test against a stopped crew volume.
 2. Is streaming tar extraction of a specific file practical without full
    buffering? (`tarfile.open(mode="r|", fileobj=stream)`)
 3. What is the security posture of volume-direct access in the single-operator
    model — is the exec boundary worth preserving?
 4. Is the sidecar approach viable and simpler than volume export?
 5. What is the actual latency of `_ensure_crew_running` for a stopped crew —
-   is the 2–3s estimate accurate on vm23, and is it worth the architectural
-   complexity to eliminate?
+   is the 2–3s estimate accurate on a representative test host, and is it
+   worth the architectural complexity to eliminate?
 
 ## Expected outcome
 

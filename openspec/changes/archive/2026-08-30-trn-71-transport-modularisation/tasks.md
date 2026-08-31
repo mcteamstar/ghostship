@@ -50,5 +50,5 @@
 
 ## 7. Verification
 
-- [x] 7.1 Deploy to vm23 via servers submodule bump
+- [x] 7.1 Deploy to the test host via servers submodule bump
 - [x] 7.2 Smoke test: launch crew, dispatch task, pickup result, nuke

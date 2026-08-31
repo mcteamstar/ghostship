@@ -44,4 +44,4 @@
   ```
   Note: dual-patches targeting both `lifecycle` and `server` for these names are acceptable until TRN-85 — just flag them in a comment
 - [x] 2.4 Run integration tests: `bash tests/run.sh --integration` — all pass (skipped: requires live transport, covered by e2e suite TRN-84)
-- [x] 2.5 Deploy to vm23 and run e2e smoke test (deferred: deploy tracked separately)
+- [x] 2.5 Deploy to the test host and run e2e smoke test (deferred: deploy tracked separately)
