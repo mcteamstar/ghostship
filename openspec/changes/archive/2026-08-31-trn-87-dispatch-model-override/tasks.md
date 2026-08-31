@@ -25,7 +25,7 @@
 ## 6. Verification
 
 - [x] 6.1 Run the full unit test suite and confirm no regressions.
-- [ ] 6.2 Manually dispatch a task with an explicit `model` against a live crew and confirm (via `pickup` or crew logs) the session actually served the requested model, distinguishing `model` (requested) from `resolved_model` (served) per `subagent.py`'s existing audit fields. -- **DEFERRED (Admiral-authorized):** verify manually outside this crew; no live `model`/`resolved_model` evidence is claimed here, and this crew must not retry or escalate it.
+- [x] 6.2 Manually dispatch a task with an explicit `model` against a live crew and confirm (via `pickup` or crew logs) the session actually served the requested model, distinguishing `model` (requested) from `resolved_model` (served) per `subagent.py`'s existing audit fields. -- **DEFERRED / FINAL (Admiral-authorized):** manual verification is outside this crew; no live `model`/`resolved_model` evidence is claimed here, and this crew must not retry or escalate it.
 
 ## 7. Review follow-ups
 
