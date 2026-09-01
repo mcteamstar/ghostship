@@ -383,13 +383,17 @@ def _find_claude_config() -> pathlib.Path:
 
 def _init_claude(url: str, api_key: str) -> bool:
     """Register ghostship MCP server and wire skills for Claude Code."""
+    # Require the claude binary to be on PATH — don't trigger on a stale config file alone
+    if not shutil.which("claude"):
+        return False
+
     cfg_path = _find_claude_config()
     claude_detected = cfg_path.exists()
 
     if not claude_detected:
         return False
 
-    print("[claude] Claude Code config detected")
+    print("[claude] Claude Code detected")
 
     # Read existing config
     try:
