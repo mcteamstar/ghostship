@@ -2,12 +2,22 @@
 
 import json
 import os
+import time
 
 import httpx
 
 GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "").rstrip("/")
 GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
 GHOSTSHIP_E2E_KIRO_AUTH = os.environ.get("GHOSTSHIP_E2E_KIRO_AUTH", "") not in ("", "0", "false")
+
+# Podman socket used by the transport — needed for tests that must stop a
+# container directly (no transport MCP tool exposes a stop-without-nuke path).
+# Override via GHOSTSHIP_PODMAN_SOCKET when pointing at a remote or
+# non-default socket path.
+GHOSTSHIP_PODMAN_SOCKET = os.environ.get(
+    "GHOSTSHIP_PODMAN_SOCKET",
+    "/run/user/1000/ghost-academy/podman.sock",
+)
 
 _SKIP_REASON = "GHOSTSHIP_E2E_URL not set"
 
@@ -74,3 +84,59 @@ def mcp_call(tool: str, *, api_key: str = GHOSTSHIP_API_KEY, **kwargs) -> dict:
 def is_error(result: dict) -> bool:
     """Return True if the result contains a transport-level error."""
     return "error" in result
+
+
+# ── Podman helpers ────────────────────────────────────────────────────────────
+# These talk directly to the Podman socket used by the transport.  They are
+# needed for tests that must manipulate container state in ways that have no
+# MCP tool equivalent (e.g. stopping a container without nuking it).
+# They require GHOSTSHIP_PODMAN_SOCKET to be reachable from the test runner.
+
+
+def _podman_client(socket: str = GHOSTSHIP_PODMAN_SOCKET) -> httpx.Client:
+    """Return an httpx.Client configured to talk to a Podman Unix socket."""
+    transport = httpx.HTTPTransport(uds=socket)
+    return httpx.Client(transport=transport, base_url="http://localhost")
+
+
+def container_stop(container: str, timeout: int = 10) -> None:
+    """Stop a container via the Podman REST API (POST /libpod/containers/{name}/stop).
+
+    ``timeout`` is the seconds Podman waits for a graceful SIGTERM before
+    sending SIGKILL.  Raises on unexpected HTTP errors; treats 204 (stopped),
+    304 (already stopped), and 404 (container gone) as success.
+    """
+    with _podman_client() as client:
+        resp = client.post(
+            f"/libpod/containers/{container}/stop",
+            params={"t": timeout},
+            timeout=30.0,
+        )
+        # 204 = stopped, 304 = already stopped, 404 = container gone — all fine
+        if resp.status_code not in (204, 304, 404):
+            resp.raise_for_status()
+
+
+def container_is_running(container: str) -> bool:
+    """Return True if the named container's Podman state is 'running'.
+
+    Returns False for both stopped and non-existent containers.
+    """
+    with _podman_client() as client:
+        resp = client.get(f"/libpod/containers/{container}/json", timeout=10.0)
+        if resp.status_code != 200:
+            return False
+        return resp.json().get("State", {}).get("Status") == "running"
+
+
+def wait_until_stopped(container: str, timeout: int = 30) -> bool:
+    """Poll until the container is no longer running or ``timeout`` elapses.
+
+    Returns True if the container stopped within the timeout, False otherwise.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not container_is_running(container):
+            return True
+        time.sleep(1)
+    return False
