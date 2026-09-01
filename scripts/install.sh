@@ -647,6 +647,12 @@ services:
       GA_TLS_MIN_VERSION: "${GA_TLS_MIN_VERSION:-1.2}"
       GA_TLS_CERTFILE: "${GA_TLS_CERTFILE:-}"
       GA_TLS_KEYFILE: "${GA_TLS_KEYFILE:-}"
+      GA_RATE_LIMIT_ENABLED: "${GA_RATE_LIMIT_ENABLED:-true}"
+      GA_RATE_LIMIT_LOGIN_GET: "${GA_RATE_LIMIT_LOGIN_GET:-30:60}"
+      GA_RATE_LIMIT_LOGIN_POST: "${GA_RATE_LIMIT_LOGIN_POST:-5:300}"
+      GA_RATE_LIMIT_MCP: "${GA_RATE_LIMIT_MCP:-300:60}"
+      GA_RATE_LIMIT_FILES: "${GA_RATE_LIMIT_FILES:-60:60}"
+      GA_RATE_LIMIT_CREW_API: "${GA_RATE_LIMIT_CREW_API:-120:60}"
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
 networks:
   ga-net:

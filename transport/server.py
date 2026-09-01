@@ -819,6 +819,108 @@ async def _handle_version_get(request: Request) -> Response:
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
 
+class RateLimitMiddleware:
+    """ASGI middleware enforcing per-endpoint sliding-window rate limits.
+
+    Applied outside ``BearerAuthMiddleware`` so all callers are subject to
+    limits, including unauthenticated ``/login`` requests. ``/health`` and
+    ``/version`` are unconditionally exempt and never return 429. Non-HTTP ASGI
+    scopes (WebSocket, lifespan) pass through unchanged. Paths not covered by
+    any registered limiter pass through without a rate check.
+
+    Caller identity is a composite key: the source IP alone when no bearer
+    token is presented, or ``SHA-256(token)[:8]:<ip>`` when one is — the raw
+    token value is never stored in limiter state.
+    """
+
+    _EXEMPT: frozenset[str] = frozenset({"/health", "/version"})
+
+    def __init__(self, app, limiters: dict[str, "_security.RateLimiter"], api_key: str = "") -> None:
+        self.app = app
+        self._limiters = limiters
+        self._api_key = api_key
+
+    def _caller_key(self, scope: dict, bearer_token: str | None) -> str:
+        # Source IP: X-Forwarded-For first hop, else ASGI client.
+        source_ip = None
+        for k, v in scope.get("headers", []):
+            if k == b"x-forwarded-for":
+                source_ip = v.decode("latin-1").split(",")[0].strip()
+                break
+        if source_ip is None:
+            client = scope.get("client")
+            source_ip = client[0] if client else "unknown"
+
+        if not bearer_token:
+            return source_ip
+        # Hash the token so its raw value is never held in limiter state.
+        key_prefix = hashlib.sha256(bearer_token.encode()).hexdigest()[:8]
+        return f"{key_prefix}:{source_ip}"
+
+    @staticmethod
+    def _match_endpoint(method: str, path: str) -> str | None:
+        """Return the limiter key for a request, or None if unmatched.
+
+        Priority order: login_post, login_get, files, crew_api, mcp.
+        """
+        if method == "POST" and path == "/login":
+            return "login_post"
+        if method == "GET" and path == "/login":
+            return "login_get"
+        if path.startswith("/files/"):
+            return "files"
+        # /crews/<id>/api and /crews/<id>/api/<sub>
+        parts = path.lstrip("/").split("/")
+        if len(parts) >= 3 and parts[0] == "crews" and parts[2] == "api":
+            return "crew_api"
+        if path.startswith("/mcp"):
+            return "mcp"
+        return None
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path in self._EXEMPT:
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "")
+        endpoint_key = self._match_endpoint(method, path)
+        limiter = self._limiters.get(endpoint_key) if endpoint_key else None
+        if limiter is None:
+            await self.app(scope, receive, send)
+            return
+
+        # Extract bearer token (best-effort — may be absent or invalid).
+        bearer: str | None = None
+        for k, v in scope.get("headers", []):
+            if k == b"authorization":
+                val = v.decode("latin-1")
+                if val[:7].lower() == "bearer ":
+                    bearer = val[7:].strip()
+                break
+        caller = self._caller_key(scope, bearer)
+
+        if not limiter.record(caller):
+            retry_after = str(int(limiter.window_secs)).encode("latin-1")
+            await send({
+                "type": "http.response.start",
+                "status": 429,
+                "headers": [
+                    [b"content-type", b"text/plain; charset=utf-8"],
+                    [b"retry-after", retry_after],
+                ],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b"Rate limit exceeded. Retry after " + retry_after + b" seconds.",
+            })
+            return
+
+        await self.app(scope, receive, send)
+
+
 class BearerAuthMiddleware:
     """Pure ASGI middleware enforcing a static bearer API key.
 
@@ -1114,6 +1216,66 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
+
+
+# ── Rate-limit configuration (TRN-52) ─────────────────────────────────────────
+# Per-endpoint sliding-window limits, each overridable via a GA_RATE_LIMIT_*
+# env var in "<count>:<window_secs>" format. GA_RATE_LIMIT_ENABLED is the master
+# switch (default "true"); state is in-memory and resets on process restart.
+# Defaults, keyed by the endpoint name RateLimitMiddleware matches on:
+_RATE_LIMIT_DEFAULTS: dict[str, tuple[str, int, int]] = {
+    # endpoint_key: (env_var_name, default_count, default_window_secs)
+    "login_get": ("GA_RATE_LIMIT_LOGIN_GET", 30, 60),
+    "login_post": ("GA_RATE_LIMIT_LOGIN_POST", 5, 300),
+    "mcp": ("GA_RATE_LIMIT_MCP", 300, 60),
+    "files": ("GA_RATE_LIMIT_FILES", 60, 60),
+    "crew_api": ("GA_RATE_LIMIT_CREW_API", 120, 60),
+}
+
+
+def _parse_rate_limit_var(
+    name: str, default_count: int, default_window: int
+) -> tuple[int, int]:
+    """Parse a GA_RATE_LIMIT_* env var of the form "<count>:<window_secs>".
+
+    Both fields must be positive integers. On any parse failure the default
+    (count, window) is returned and a WARNING naming the variable is logged.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default_count, default_window
+    try:
+        count_str, window_str = raw.split(":", 1)
+        count = int(count_str)
+        window = int(window_str)
+        if count <= 0 or window <= 0:
+            raise ValueError("count and window must be positive integers")
+        return count, window
+    except (ValueError, AttributeError) as e:
+        logger.warning(
+            "Could not parse %s=%r (expected \"<count>:<window_secs>\", positive "
+            "integers): %s. Using default %d:%d.",
+            name, raw, e, default_count, default_window,
+        )
+        return default_count, default_window
+
+
+def _build_rate_limiters() -> dict[str, "_security.RateLimiter"] | None:
+    """Build the per-endpoint RateLimiter map from GA_RATE_LIMIT_* env vars.
+
+    Returns None when GA_RATE_LIMIT_ENABLED is "false" (master switch), so the
+    caller can skip wrapping RateLimitMiddleware entirely.
+    """
+    enabled = os.environ.get("GA_RATE_LIMIT_ENABLED", "true").strip().lower()
+    if enabled == "false":
+        return None
+    limiters: dict[str, "_security.RateLimiter"] = {}
+    for endpoint_key, (env_var, dc, dw) in _RATE_LIMIT_DEFAULTS.items():
+        count, window = _parse_rate_limit_var(env_var, dc, dw)
+        limiters[endpoint_key] = _security.RateLimiter(
+            max_requests=count, window_secs=float(window)
+        )
+    return limiters
 
 
 # ── Podman client + memory helpers ───────────────────────────────────────────
@@ -3103,6 +3265,22 @@ if __name__ == "__main__":
     )
     _file_starlette = Starlette(routes=file_routes)
     app = BearerAuthMiddleware(mcp_app, api_key=GA_API_KEY, file_app=_file_starlette)
+    # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all
+    # callers — including unauthenticated /login — are subject to limits, and
+    # INSIDE SecurityHeadersMiddleware. Skipped entirely when the master switch
+    # GA_RATE_LIMIT_ENABLED=false.
+    _rate_limiters = _build_rate_limiters()
+    if _rate_limiters is not None:
+        app = RateLimitMiddleware(app, limiters=_rate_limiters, api_key=GA_API_KEY)
+        logger.info(
+            "HTTP rate limiting: enabled (%s)",
+            ", ".join(
+                f"{k}={lim.max_requests}/{int(lim.window_secs)}s"
+                for k, lim in _rate_limiters.items()
+            ),
+        )
+    else:
+        logger.info("HTTP rate limiting: disabled (GA_RATE_LIMIT_ENABLED=false)")
     # Transport-security wrapper: security headers, HSTS, and the staged
     # HTTP→HTTPS redirect (TRN-70). Outermost so headers land on every response
     # and the redirect precedes auth.

@@ -316,6 +316,56 @@ class Throttle:
             self._fails.pop(self._key(account, source), None)
 
 
+# ── HTTP request rate limiting (transport-security) ───────────────────────────
+
+@dataclass
+class RateLimiter:
+    """Sliding-window request-rate limiter keyed on an arbitrary caller string.
+
+    Allows at most ``max_requests`` recorded hits per ``window_secs`` for a
+    given key. Uses the same in-memory sliding-window pruning pattern as
+    ``Throttle``; state is held per-process and resets on restart. Thread-safe:
+    ``record`` prunes, checks, and appends atomically under the lock so two
+    concurrent callers at the boundary can never both be admitted past the
+    limit.
+    """
+
+    max_requests: int
+    window_secs: float
+    _hits: dict[str, list[float]] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _prune(self, key: str, now: float) -> list[float]:
+        stamps = [t for t in self._hits.get(key, []) if now - t < self.window_secs]
+        if stamps:
+            self._hits[key] = stamps
+        else:
+            self._hits.pop(key, None)
+        return stamps
+
+    def is_limited(self, key: str, now: float | None = None) -> bool:
+        """Whether ``key`` is at/over its limit right now (read-only, no record)."""
+        now = time.time() if now is None else now
+        with self._lock:
+            return len(self._prune(key, now)) >= self.max_requests
+
+    def record(self, key: str, now: float | None = None) -> bool:
+        """Atomically prune, check, and record one hit for ``key``.
+
+        Returns ``True`` if the hit was within the limit and recorded; returns
+        ``False`` without recording if ``key`` is already at ``max_requests``
+        for the current window.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            stamps = self._prune(key, now)
+            if len(stamps) >= self.max_requests:
+                return False
+            stamps.append(now)
+            self._hits[key] = stamps
+            return True
+
+
 # ── Bounded, revocable sessions (authentication-security) ─────────────────────
 
 @dataclass
