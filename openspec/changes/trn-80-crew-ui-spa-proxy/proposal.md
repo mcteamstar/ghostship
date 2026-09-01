@@ -1,26 +1,29 @@
 ## Why
 
-The crew UI proxy works for the initial page load but breaks immediately after: SPAs served by the KiroCrew gateway use root-absolute asset paths (`/static/app.js`, `/static/app.css`) that the browser fetches from the transport root, which has no handler for them and returns 404. Additionally, `KIROCREW_CORS_ORIGINS` is set to only the crew's internal origin at container start time, so browser requests issued from the transport's public origin are CORS-rejected. Found by Steve Mactaggart (stevemac007) in PR #3.
+The crew UI proxy works for the initial page load but breaks for SPA navigation: the KiroCrew gateway UI uses root-absolute paths for both static assets and client-side routing (e.g. navigates to `/chat`). When loaded via `/crews/{id}/ui/`, the browser resolves these paths against the transport host, not the crew gateway, so assets 404 and the page URL detaches from the crew context. The Python-layer catch-all approach (attempted in TRN-80 phase 1) fixed asset loading but cannot fix client-side navigation, which rewrites `window.location` to a root-absolute URL that Referer-based routing can't recover. The correct fix is at the web server layer. Found by Steve Mactaggart (stevemac007) in PR #3.
 
 ## What Changes
 
-- The transport intercepts root-absolute requests (`GET /static/**`, `/assets/**`, and any path not matching an existing transport route) when the browser's `Referer` header points to a `/crews/{id}/ui/` page, and re-routes them through the crew UI proxy for that crew.
-- A `crew_ui_context` cookie is set on the browser when the initial `/crews/{id}/ui/` page loads, providing a fallback crew identity for service-worker and no-Referer fetches.
-- The transport's public origin (`GA_HOST_URL` or `http://localhost:{PORT}`) is injected into `KIROCREW_CORS_ORIGINS` when the crew container is started, so browser requests from the transport origin are accepted by the crew gateway's CORS policy.
+- The transport's Caddy instance gains a dynamic routing layer: when a crew is launched, the transport registers a per-crew reverse proxy block in Caddy via the admin API; when a crew is nuked, that block is removed.
+- Each crew's UI is served at `http(s)://<host>/crews/{id}/ui/` with path prefix stripping — the SPA sees itself at the root of its upstream, so asset paths and client-side navigation work correctly.
+- The `ohnomer/servers` Caddy deploy config is updated to enable the admin API on localhost and mount a writable config dir for the dynamic route file.
+- `KIROCREW_CORS_ORIGINS` is injected with the transport's public origin at crew container create time (carried over from phase 1 — still needed so the SPA's API calls from the transport origin aren't CORS-rejected).
+- **BREAKING:** The existing Python `_handle_crew_ui_proxy` and catch-all routes are removed. Crew UI is served exclusively via Caddy.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `crew-ui-spa-routing`: Root-absolute SPA asset requests are resolved to the originating crew's gateway using Referer header or cookie fallback, then proxied transparently.
+- `crew-ui-spa-routing`: Full SPA support for crew UI — assets, client-side navigation, and WebSockets routed correctly via Caddy dynamic proxy.
 
 ### Modified Capabilities
 
-- `proxy-hosting`: Two new requirements — SPA asset re-routing and transport-origin CORS injection at crew start.
+- `proxy-hosting`: Crew UI proxy requirement updated to describe Caddy-layer routing; CORS injection requirement retained.
+- `crew-lifecycle`: `launch` and `nuke` gain Caddy route registration and removal as part of their lifecycle.
 
 ## Impact
 
-- `transport/server.py` — new catch-all route (lowest priority) for SPA assets; sets `crew_ui_context` cookie on UI proxy responses.
-- `transport/server.py` (container create) — inject transport public origin into `KIROCREW_CORS_ORIGINS` env var when starting a crew container.
-- `openspec/specs/proxy-hosting/spec.md` — two new requirements added.
-- No API or MCP tool changes. No breaking changes.
+- `transport/server.py` — `launch` calls Caddy admin API to register crew UI route; `nuke` removes it; `_handle_crew_ui_proxy` and SPA catch-all removed.
+- `transport/config.py` — new `GA_CADDY_ADMIN_URL` env var (default `http://localhost:2019`); `GA_CADDY_UI_ENABLED` flag (default `true`); graceful degradation when Caddy admin is unreachable.
+- `ohnomer/servers/hyperv/academy/install.sh` — enable Caddy admin API on `localhost:2019`; make Caddy config dir writable (remove `:ro` mount).
+- No MCP tool interface changes. `launch` and `nuke` behavior is unchanged from the Admiral's perspective.

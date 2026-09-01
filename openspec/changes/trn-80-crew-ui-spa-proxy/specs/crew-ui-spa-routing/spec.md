@@ -2,37 +2,46 @@
 
 ## Purpose
 
-Enable SPAs served by the KiroCrew crew gateway to load correctly through the transport UI proxy. Root-absolute asset requests issued by the browser after the initial page load must be resolved back to the originating crew and proxied transparently, without any change to SPA source code.
+Enable the KiroCrew gateway SPA to load and navigate correctly when accessed via the transport's public URL, by routing crew UI traffic through a shared Caddy reverse proxy with path-prefix stripping.
 
 ## Requirements
 
-### Requirement: Root-absolute SPA asset requests are re-routed to the originating crew
+### Requirement: Crew UI routed via Caddy with path stripping
 
-The transport SHALL intercept `GET` requests for root-absolute paths that do not match any existing transport route (MCP, files, login, crews API) when those requests carry a `Referer` header whose path begins with `/crews/{crew_id}/ui/`. The transport SHALL proxy such requests to `http://gs-{crew_id}:5476/{path}` on the originating crew's gateway, following the same forwarding rules as the existing UI proxy.
+The transport SHALL register a reverse-proxy route in Caddy at crew launch time. The route SHALL match `GET` and `POST` requests under `/crews/{crew_id}/ui/` and strip the `/crews/{crew_id}/ui` prefix before forwarding to `http://gs-{crew_id}:5476/`. WebSocket upgrade requests SHALL be forwarded transparently.
 
-#### Scenario: SPA script fetch after initial page load (Referer present)
-- **WHEN** a browser that loaded `/crews/my-crew/ui/` subsequently fetches `/static/app.js`
-- **AND** the request carries `Referer: http://transport-host/crews/my-crew/ui/`
-- **THEN** the transport proxies `GET http://gs-my-crew:5476/static/app.js` and streams the response back with the original status and headers
+#### Scenario: SPA assets load correctly
+- **WHEN** a browser loads `/crews/my-crew/ui/` and the SPA subsequently fetches `/assets/app.js`
+- **THEN** Caddy routes `/assets/app.js` to `http://gs-my-crew:5476/assets/app.js` without any involvement from the transport Python layer
 
-#### Scenario: Unrecognised root path with no matching crew Referer passes through
-- **WHEN** a `GET /static/app.js` request carries no `Referer` header (or a `Referer` that does not match `/crews/{id}/ui/`)
-- **AND** no `crew_ui_context` cookie is present
-- **THEN** the transport returns HTTP 404 with a message indicating no crew context
+#### Scenario: Client-side navigation stays within crew context
+- **WHEN** the SPA navigates to `/chat` via `window.history.pushState`
+- **THEN** a browser reload of `/chat` resolves to `http://gs-my-crew:5476/chat` via the same Caddy route, and the SPA renders correctly
 
-#### Scenario: Transport route takes priority over SPA re-routing
-- **WHEN** a request path matches an existing transport route (e.g. `/mcp`, `/files/**`, `/login`)
-- **THEN** the transport routes it normally and the SPA catch-all is NOT invoked
+#### Scenario: Caddy route registered at launch
+- **WHEN** `launch` is called for crew `my-crew`
+- **THEN** a Caddy route for `/crews/my-crew/ui/` is registered via the admin API before `launch` returns
 
-### Requirement: crew_ui_context cookie set on initial UI proxy response
+#### Scenario: Caddy route removed at nuke
+- **WHEN** `nuke` is called for crew `my-crew`
+- **THEN** the Caddy route for `/crews/my-crew/ui/` is removed via the admin API
 
-The transport SHALL set a `crew_ui_context` cookie containing the `crew_id` on every response it streams back from the initial `/crews/{crew_id}/ui` or `/crews/{crew_id}/ui/` request. The cookie SHALL be `HttpOnly`, `SameSite=Strict`, scoped to `/`, and have a short TTL (≤ 1 hour).
+#### Scenario: Launch succeeds even if Caddy admin is unreachable
+- **WHEN** `launch` is called and the Caddy admin API is unreachable
+- **THEN** the crew is launched normally and a warning is logged; the UI via Caddy is unavailable but all MCP tools work
 
-#### Scenario: Cookie set on initial page load
-- **WHEN** `GET /crews/my-crew/ui/` is requested
-- **THEN** the response includes `Set-Cookie: crew_ui_context=my-crew; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600`
+### Requirement: Routes reconciled on transport startup
 
-#### Scenario: Cookie used as fallback when Referer is absent
-- **WHEN** a browser fetches `/static/app.js` with no `Referer` header
-- **AND** the request carries `Cookie: crew_ui_context=my-crew`
-- **THEN** the transport proxies the request to `http://gs-my-crew:5476/static/app.js`
+On startup, the transport SHALL re-register any crew UI routes that have a corresponding route file in the data dir and a live crew in the registry. Routes for crews no longer in the registry SHALL be removed from Caddy and their route files deleted.
+
+#### Scenario: Transport restart re-registers live crew routes
+- **WHEN** the transport restarts with live crews that have route files
+- **THEN** all live crew UI routes are re-registered with Caddy on startup
+
+#### Scenario: Stale route files are cleaned up on startup
+- **WHEN** a route file exists for a crew that is no longer in the registry
+- **THEN** the transport removes the route from Caddy and deletes the route file
+
+### Requirement: GA_CADDY_UI_ENABLED flag
+
+When `GA_CADDY_UI_ENABLED=false`, the transport SHALL skip all Caddy route management and fall back to the existing Python-layer `_handle_crew_ui_proxy`. Default is `true`.
