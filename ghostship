@@ -86,13 +86,35 @@ def cmd_uninstall(args: list) -> int:
 # ---------------------------------------------------------------------------
 
 def _podman_cmd() -> list:
-    """Return the base podman command list, honouring GA_MACHINE_NAME on macOS."""
+    """Return the base podman command list, honouring the dedicated socket/machine.
+
+    Resolution order:
+      1. PODMAN_SOCK env var (explicit override)
+      2. macOS + GA_DEDICATED_MACHINE=true  → --connection <GA_MACHINE_NAME>
+      3. Linux + GA_DEDICATED_MACHINE=true  → --url unix://<runtime>/<name>/podman.sock
+      4. Fallback: plain podman (default socket)
+    """
     import platform
+
+    # Explicit override
+    sock = os.environ.get("PODMAN_SOCK", "")
+    if sock:
+        return ["podman", "--url", f"unix://{sock}"]
+
+    machine = os.environ.get("GA_MACHINE_NAME", "ghost-academy")
+    dedicated = os.environ.get("GA_DEDICATED_MACHINE", "true").lower() == "true"
+
     if platform.system() == "Darwin":
-        machine = os.environ.get("GA_MACHINE_NAME", "ghost-academy")
-        dedicated = os.environ.get("GA_DEDICATED_MACHINE", "true").lower() == "true"
         if dedicated:
             return ["podman", "--connection", machine]
+    else:
+        # Linux: dedicated instance uses its own socket under XDG_RUNTIME_DIR
+        if dedicated:
+            runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+            sock_path = f"{runtime}/{machine}/podman.sock"
+            if os.path.exists(sock_path):
+                return ["podman", "--url", f"unix://{sock_path}"]
+
     return ["podman"]
 
 
