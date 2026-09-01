@@ -65,7 +65,6 @@ def cmd_version(args: list) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_install(args: list) -> int:
-def cmd_install(args: list) -> int:
     if "--help" in args or "-h" in args:
         print("Usage: ghostship install [flags]\n"
               "\nInstall or update the Ghost Academy transport.\n"
