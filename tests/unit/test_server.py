@@ -1278,7 +1278,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
 
     def test_installer_has_no_podman_secret_machinery(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        installer = (repo_root / "install.sh").read_text()
+        installer = (repo_root / "scripts" / "install.sh").read_text()
         self.assertIn('${DATA_DIR}:/data', installer)
         self.assertIn('KC_GATEWAY_TOKEN_TTL', installer)
         self.assertNotIn("podman secret inspect ga-kiro-auth", installer)
@@ -4597,11 +4597,12 @@ class InstallEnvVarSyncTests(unittest.TestCase):
         """Extract env var names passed to the transport container in install.sh.
 
         Matches both the old podman run -e flag format and the new compose YAML
-        environment block format.
+        environment block format. Reads scripts/install.sh (the real implementation;
+        install.sh at the repo root is a shim that delegates to it).
         """
         import re
         root = Path(__file__).resolve().parents[2]
-        src = (root / "install.sh").read_text()
+        src = (root / "scripts" / "install.sh").read_text()
         # Old: -e "VAR_NAME=..."
         via_flags = set(re.findall(r'-e\s+["\']([A-Z_]+)=', src))
         # New: compose YAML environment block: "      VAR_NAME: ..."
