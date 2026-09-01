@@ -267,303 +267,30 @@ def cmd_status(args: list) -> int:
     return 0
 
 
+
 # ---------------------------------------------------------------------------
-# Subcommand: init
+# Subcommand: setup (init is an alias)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_URL = "http://localhost:64057/mcp"
-_SKILLS = ["ghostship-command", "ghostship-admin", "ghostship-capability"]
-
-
-def _skills_source_dir() -> pathlib.Path:
-    return _ghostship_dir() / ".claude-plugin" / "skills"
-
-
-def _wire_skills(client_skills_dir: pathlib.Path, label: str) -> None:
-    """Create symlinks in client_skills_dir for the three ghostship skills."""
-    source = _skills_source_dir()
-    client_skills_dir.mkdir(parents=True, exist_ok=True)
-    for skill in _SKILLS:
-        target = source / skill
-        link = client_skills_dir / skill
-        if link.is_symlink():
-            current_target = link.resolve()
-            expected_target = target.resolve()
-            if current_target == expected_target:
-                # Already correct — skip silently
-                continue
-            # Symlink exists but points somewhere else (repo was moved)
-            print(f"  [{label}] note: {skill} symlink target changed "
-                  f"(was {current_target}, now {expected_target}) — updating")
-            link.unlink()
-        elif link.exists():
-            # Not a symlink but something else exists — leave it alone
-            print(f"  [{label}] skip: {skill} already exists at {link} (not a symlink)")
-            continue
-        link.symlink_to(target)
-        print(f"  [{label}] ✓ skill symlink: {link} → {target}")
-
-
-def _kiro_mcp_config_path() -> pathlib.Path:
-    """Return the path to kiro's global MCP config file."""
-    return pathlib.Path.home() / ".kiro" / "settings" / "mcp.json"
-
-
-def _init_kiro(url: str, api_key: str) -> bool:
-    """Register ghostship MCP server and wire skills for kiro-cli."""
-    if shutil.which("kiro-cli") is None:
-        return False
-
-    print("[kiro] kiro-cli detected")
-
-    # Register via kiro-cli CLI first (no --headers flag; we apply the header
-    # via direct JSON edit after if an api-key is provided).
-    add_cmd = [
-        "kiro-cli", "mcp", "add",
-        "--name", "ghostship",
-        "--url", url,
-        "--scope", "global",
-        "--force",  # idempotent overwrite if already present
-    ]
-    result = subprocess.run(add_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"[kiro]   error: could not register MCP server: {result.stderr.strip()}")
-        return True  # kiro-cli detected, but registration failed
-
-    print(f"[kiro] ✓ MCP server registered: {url}")
-
-    # Apply api-key header directly to the mcp.json config file.
-    # kiro-cli mcp add does not support --headers, so we write the header field
-    # ourselves using the same mcp.json schema that kiro reads at runtime.
-    if api_key:
-        cfg_path = _kiro_mcp_config_path()
-        try:
-            config = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
-            if "mcpServers" not in config:
-                config["mcpServers"] = {}
-            if "ghostship" not in config["mcpServers"]:
-                config["mcpServers"]["ghostship"] = {}
-            config["mcpServers"]["ghostship"]["headers"] = {
-                "Authorization": f"Bearer {api_key}"
-            }
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=cfg_path.parent, prefix=".ghostship-init-", suffix=".tmp"
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(config, fh, indent=2)
-                    fh.write("\n")
-                os.replace(tmp_path, cfg_path)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
-            print(f"[kiro]   ✓ Authorization header written to {cfg_path}")
-        except OSError as exc:
-            print(f"[kiro]   warning: could not write api-key header to {cfg_path}: {exc}")
-
-    # Wire skills
-    kiro_skills = pathlib.Path.home() / ".kiro" / "skills"
-    _wire_skills(kiro_skills, "kiro")
-    return True
-
-
-def _find_claude_config() -> pathlib.Path:
-    """Return the Claude Code config path that exists, or the default creation path."""
-    candidates = [
-        pathlib.Path.home() / ".claude.json",
-        pathlib.Path.home() / ".config" / "claude" / "claude.json",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    # Default creation path
-    return candidates[0]
-
-
-def _init_claude(url: str, api_key: str) -> bool:
-    """Register ghostship MCP server and wire skills for Claude Code."""
-    # Require the claude binary to be on PATH — don't trigger on a stale config file alone
-    if not shutil.which("claude"):
-        return False
-
-    cfg_path = _find_claude_config()
-    claude_detected = cfg_path.exists()
-
-    if not claude_detected:
-        return False
-
-    print("[claude] Claude Code detected")
-
-    # Read existing config
-    try:
-        with cfg_path.open("r", encoding="utf-8") as fh:
-            config = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"[claude]   error: could not read {cfg_path}: {exc}")
-        return True
-
-    # Build the server entry
-    entry: dict = {"type": "http", "url": url}
-    if api_key:
-        entry["headers"] = {"Authorization": f"Bearer {api_key}"}
-
-    # Merge surgically — only touch mcpServers.ghostship
-    if "mcpServers" not in config:
-        config["mcpServers"] = {}
-    config["mcpServers"]["ghostship"] = entry
-
-    # Write back atomically
-    try:
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=cfg_path.parent, prefix=".ghostship-init-", suffix=".tmp"
+def cmd_setup(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print(
+            "Usage: ghostship setup [--agent kiro|claude|opencode|all] "
+            "[--url <url>] [--api-key <key>]\n"
+            "\n"
+            "  Register the ghostship MCP server and install skill symlinks\n"
+            "  for detected agent clients (kiro-cli, Claude Code, opencode).\n"
+            "  Idempotent — safe to re-run.\n"
+            "\n"
+            "  --agent   Target: kiro, claude, opencode, or all.\n"
+            "            Default: auto-detect installed agents.\n"
+            "  --url     MCP server URL (default: http://localhost:64057/mcp)\n"
+            "  --api-key Bearer token for the MCP endpoint (optional)\n"
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(config, fh, indent=2)
-                fh.write("\n")
-            os.replace(tmp_path, cfg_path)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
-    except OSError as exc:
-        print(f"[claude]   error: could not write {cfg_path}: {exc}")
-        return True
-
-    print(f"[claude] ✓ MCP server registered in {cfg_path}: {url}")
-
-    # Wire skills
-    claude_skills = pathlib.Path.home() / ".claude" / "skills"
-    _wire_skills(claude_skills, "claude")
-    return True
-
-
-def _init_claude_unconditional(url: str, api_key: str) -> None:
-    """Like _init_claude but creates the config if neither path exists."""
-    cfg_path = _find_claude_config()
-    config: dict = {}
-    if cfg_path.exists():
-        try:
-            with cfg_path.open("r", encoding="utf-8") as fh:
-                config = json.load(fh)
-        except (json.JSONDecodeError, OSError) as exc:
-            print(f"[claude]   error: could not read {cfg_path}: {exc}")
-            return
-
-    entry: dict = {"type": "http", "url": url}
-    if api_key:
-        entry["headers"] = {"Authorization": f"Bearer {api_key}"}
-
-    if "mcpServers" not in config:
-        config["mcpServers"] = {}
-    config["mcpServers"]["ghostship"] = entry
-
-    try:
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=cfg_path.parent, prefix=".ghostship-init-", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(config, fh, indent=2)
-                fh.write("\n")
-            os.replace(tmp_path, cfg_path)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
-    except OSError as exc:
-        print(f"[claude]   error: could not write {cfg_path}: {exc}")
-        return
-
-    print(f"[claude] ✓ MCP server registered in {cfg_path}: {url}")
-
-    claude_skills = pathlib.Path.home() / ".claude" / "skills"
-    _wire_skills(claude_skills, "claude")
-
-
-def cmd_init(args: list) -> int:
-    # Parse flags
-    agent = None   # None = auto-detect
-    url = _DEFAULT_URL
-    api_key = ""
-
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a in ("--help", "-h"):
-            print(
-                "Usage: ghostship init [--agent kiro|claude|all] "
-                "[--url <url>] [--api-key <key>]\n"
-                "\n"
-                "  --agent   Target agent client: kiro, claude, or all.\n"
-                "            Default: auto-detect both kiro-cli and Claude Code.\n"
-                "  --url     MCP server URL (default: http://localhost:64057/mcp)\n"
-                "  --api-key Bearer token for the MCP endpoint (optional)\n"
-            )
-            return 0
-        elif a == "--agent":
-            if i + 1 >= len(args):
-                print("error: --agent requires a value (kiro, claude, all)", file=sys.stderr)
-                return 1
-            agent = args[i + 1]
-            if agent not in ("kiro", "claude", "all"):
-                print(f"error: unknown --agent value '{agent}' (use kiro, claude, or all)",
-                      file=sys.stderr)
-                return 1
-            i += 2
-        elif a == "--url":
-            if i + 1 >= len(args):
-                print("error: --url requires a value", file=sys.stderr)
-                return 1
-            url = args[i + 1]
-            i += 2
-        elif a == "--api-key":
-            if i + 1 >= len(args):
-                print("error: --api-key requires a value", file=sys.stderr)
-                return 1
-            api_key = args[i + 1]
-            i += 2
-        else:
-            print(f"error: unknown flag '{a}'", file=sys.stderr)
-            return 1
-
-    print(f"ghostship init — url: {url}")
-    if api_key:
-        print("  api-key: (set)")
-
-    wired_any = False
-
-    if agent is None:
-        # Auto-detect
-        kiro_wired = _init_kiro(url, api_key)
-        claude_wired = _init_claude(url, api_key)
-        wired_any = kiro_wired or claude_wired
-    elif agent == "all":
-        # Unconditional — report errors per-agent, not fatal
-        kiro_wired = _init_kiro(url, api_key)
-        if not kiro_wired:
-            print("[kiro]   kiro-cli not found on PATH — skipping")
-        _init_claude_unconditional(url, api_key)
-        wired_any = True
-    elif agent == "kiro":
-        kiro_wired = _init_kiro(url, api_key)
-        if not kiro_wired:
-            print("[kiro]   kiro-cli not found on PATH")
-        wired_any = kiro_wired
-    elif agent == "claude":
-        _init_claude_unconditional(url, api_key)
-        wired_any = True
-
-    if not wired_any and agent is None:
-        print("No supported agent client found (kiro-cli or Claude Code).")
-        print("Nothing to do. Re-run with --agent kiro or --agent claude to force.")
         return 0
+    _exec_script("scripts/setup.py", args)
 
-    if wired_any:
-        print("\nghostship init complete.")
-        print("  If symlinks were moved, re-run 'ghostship init' to update them.")
-    return 0
+
 
 
 # ---------------------------------------------------------------------------
@@ -580,8 +307,10 @@ Subcommands:
   upgrade    [flags]   Rebuild and restart the transport (same as install)
   uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
   status               Show transport status
-  init       [flags]   Wire MCP server + skills for agent clients (kiro-cli, Claude Code)
+  setup      [flags]   Register MCP server + skills for agent clients (kiro, Claude Code, opencode)
   version              Print ghostship version
+
+Aliases: init → setup
 
 Run 'ghostship <subcommand> --help' for flags specific to that subcommand.
 """
@@ -593,7 +322,8 @@ _COMMANDS = {
     "upgrade":   cmd_upgrade,
     "uninstall": cmd_uninstall,
     "status":    cmd_status,
-    "init":      cmd_init,
+    "setup":     cmd_setup,
+    "init":      cmd_setup,   # alias
     "version":   cmd_version,
 }
 
