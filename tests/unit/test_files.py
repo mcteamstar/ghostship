@@ -680,11 +680,7 @@ class FileGetBranchingTests(unittest.TestCase):
         request = self._signed_request("notes.txt")
         podman = _WorkerFakePodman(archive_output=b"file body")
         resp, ensure = self._run(request, podman)
-        # The stub StreamingResponse stores the iterator as resp.body when
-        # content is not str/dict/list. Collect it explicitly.
-        body = resp.body
-        if hasattr(body, "__iter__") and not isinstance(body, (bytes, bytearray)):
-            body = b"".join(body)
+        body = BundleGetRegressionTests._downloaded_body(resp)
         self.assertEqual(body, b"file body")
         # archive API was called, worker was not
         self.assertEqual(len(podman.archive_calls), 1)
