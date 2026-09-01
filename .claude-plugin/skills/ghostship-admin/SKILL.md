@@ -1,6 +1,6 @@
 ---
 name: ghostship-admin
-description: Install, configure, connect a client to, upgrade, or tear down a ghostship transport — Podman prerequisites, `./install.sh`/`./start.sh`/`./uninstall.sh`, the transport's own API-key auth, and rebuilding images. Use when there's no MCP connection to `ghostship` yet, or when the task is about the transport host itself (bringing it up, connecting a new client, upgrading, tearing it down) rather than driving an already-running fleet — for that, use `ghostship-command` instead.
+description: Install, configure, connect a client to, upgrade, or tear down a ghostship transport — Podman prerequisites, the `ghostship` CLI (`ghostship install`/`ghostship start`/`ghostship uninstall`/`ghostship init`/`ghostship status`), the transport's own API-key auth, and rebuilding images. Use when there's no MCP connection to `ghostship` yet, or when the task is about the transport host itself (bringing it up, connecting a new client, upgrading, tearing it down) rather than driving an already-running fleet — for that, use `ghostship-command` instead.
 metadata:
   author: ghostship
   version: "0.2.2"
@@ -58,7 +58,7 @@ cd ~/.ghostship/ghostship
 
 If the user prefers a different location (e.g. `~/development/ghostship` or
 `~/projects/ghostship`), clone there instead — just make sure to note the
-path, as `./install.sh` must be run from inside it and `./start.sh` needs to
+path, as `./install.sh` must be run from inside it and `ghostship start` needs to
 find it again later.
 
 
@@ -281,14 +281,14 @@ setup is complete.
 
 ## Keep it running
 
-`./start.sh` brings ghostship back up after a stop or reboot — starts the
+`ghostship start` brings ghostship back up after a stop or reboot — starts the
 Podman service (or machine, on macOS) and the `ga-transport` container.
 Safe to run any time; it's a no-op if things are already running.
 
 ```bash
-./start.sh                            # auto-discovers config
-./start.sh --config ~/ghostship.conf  # explicit config
-./start.sh --machine-name my-academy  # override machine name
+ghostship start                            # auto-discovers config
+ghostship start --config ~/ghostship.conf  # explicit config
+ghostship start --machine-name my-academy  # override machine name
 ```
 
 Config is discovered in order: `<ghostship-dir>/ghostship.conf`, then
@@ -309,14 +309,14 @@ an *existing* container from whatever image it was created from — it does
 
 | Rebuilt... | Needs recreating | How |
 |:-----------|:------------------|:----|
-| `transport/` (`localhost/transport:latest`) | The `ga-transport` container | `./install.sh` — removes and re-runs `ga-transport` unconditionally, no crew impact |
+| `transport/` (`localhost/transport:latest`) | The `ga-transport` container | `ghostship install` — removes and re-runs `ga-transport` unconditionally, no crew impact |
 | `crews/spec-ops/Containerfile` (`localhost/spec-ops:latest`) | Each existing crew container | `nuke(crew_id, confirm=True)` then `launch(crew_id)` per crew, over MCP — destroys that crew's volumes, so `evac` anything needed first. This step is `ghostship-command`'s tool surface, not this skill's — mentioned here only because the trigger (a rebuilt crew image) is an admin-side event. |
 
 ## Uninstall
 
 ```bash
-./uninstall.sh              # tears down transport
-./uninstall.sh --purge-auth # also removes kiro-cli credentials
+ghostship uninstall              # tears down transport
+ghostship uninstall --purge-auth # also removes kiro-cli credentials
 ```
 
 ## Beyond the common path

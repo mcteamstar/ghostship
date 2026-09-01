@@ -261,6 +261,11 @@ def _wire_skills(client_skills_dir: pathlib.Path, label: str) -> None:
         print(f"  [{label}] ✓ skill symlink: {link} → {target}")
 
 
+def _kiro_mcp_config_path() -> pathlib.Path:
+    """Return the path to kiro's global MCP config file."""
+    return pathlib.Path.home() / ".kiro" / "settings" / "mcp.json"
+
+
 def _init_kiro(url: str, api_key: str) -> bool:
     """Register ghostship MCP server and wire skills for kiro-cli."""
     if shutil.which("kiro-cli") is None:
@@ -268,37 +273,51 @@ def _init_kiro(url: str, api_key: str) -> bool:
 
     print("[kiro] kiro-cli detected")
 
-    # Build the base add command
+    # Register via kiro-cli CLI first (no --headers flag; we apply the header
+    # via direct JSON edit after if an api-key is provided).
     add_cmd = [
         "kiro-cli", "mcp", "add",
         "--name", "ghostship",
         "--url", url,
         "--scope", "global",
+        "--force",  # idempotent overwrite if already present
     ]
-    if api_key:
-        add_cmd += ["--headers", json.dumps({"Authorization": f"Bearer {api_key}"})]
-
     result = subprocess.run(add_cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # May already exist — try remove + re-add
-        stderr_lower = result.stderr.lower() + result.stdout.lower()
-        if "already" in stderr_lower or "exists" in stderr_lower or "duplicate" in stderr_lower:
-            print("[kiro]   entry exists — removing and re-adding for idempotency")
-            rm = subprocess.run(
-                ["kiro-cli", "mcp", "remove", "--name", "ghostship", "--scope", "global"],
-                capture_output=True, text=True,
-            )
-            if rm.returncode != 0:
-                print(f"[kiro]   warning: remove failed: {rm.stderr.strip()}")
-            result = subprocess.run(add_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[kiro]   error: could not register MCP server: {result.stderr.strip()}")
-                return True  # detected, but failed
-        else:
-            print(f"[kiro]   error: could not register MCP server: {result.stderr.strip()}")
-            return True
+        print(f"[kiro]   error: could not register MCP server: {result.stderr.strip()}")
+        return True  # kiro-cli detected, but registration failed
 
     print(f"[kiro] ✓ MCP server registered: {url}")
+
+    # Apply api-key header directly to the mcp.json config file.
+    # kiro-cli mcp add does not support --headers, so we write the header field
+    # ourselves using the same mcp.json schema that kiro reads at runtime.
+    if api_key:
+        cfg_path = _kiro_mcp_config_path()
+        try:
+            config = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+            if "mcpServers" not in config:
+                config["mcpServers"] = {}
+            if "ghostship" not in config["mcpServers"]:
+                config["mcpServers"]["ghostship"] = {}
+            config["mcpServers"]["ghostship"]["headers"] = {
+                "Authorization": f"Bearer {api_key}"
+            }
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=cfg_path.parent, prefix=".ghostship-init-", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(config, fh, indent=2)
+                    fh.write("\n")
+                os.replace(tmp_path, cfg_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+            print(f"[kiro]   ✓ Authorization header written to {cfg_path}")
+        except OSError as exc:
+            print(f"[kiro]   warning: could not write api-key header to {cfg_path}: {exc}")
 
     # Wire skills
     kiro_skills = pathlib.Path.home() / ".kiro" / "skills"
@@ -467,7 +486,6 @@ def cmd_init(args: list) -> int:
         print("  api-key: (set)")
 
     wired_any = False
-    errors: list = []
 
     if agent is None:
         # Auto-detect
