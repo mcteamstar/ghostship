@@ -65,7 +65,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from mcp.server.mcpserver.server import MCPServer
@@ -249,6 +249,7 @@ HOST = cfg.host  # Binds all interfaces inside the container.
 # of what the container binds internally. Set HOST=127.0.0.1 only for
 # non-containerised installs where you want loopback-only binding.
 PORT = cfg.port
+GA_HOST_URL = cfg.ga_host_url
 
 DATA_DIR = Path(cfg.transport_data_dir)
 # REGISTRY_PATH is imported from transport.registry
@@ -719,13 +720,134 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
             # Read body fully so we can close the upstream context; for large
             # responses this is acceptable given the 60 s timeout constraint.
             body = await upstream_resp.aread()
+        resp = Response(
+            content=body,
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+        )
+        # TRN-80: set crew_ui_context cookie only on the root UI path
+        # (/crews/{id}/ui or /crews/{id}/ui/) so the browser can use it
+        # as a fallback crew identity for subsequent SPA asset requests.
+        if not sub_path:
+            resp.set_cookie(
+                "crew_ui_context",
+                crew_id,
+                max_age=3600,
+                path="/",
+                httponly=True,
+                samesite="strict",
+            )
+        return resp
+    except Exception as e:
+        logger.warning("UI proxy error for crew %s: %s", crew_id, e)
+        return PlainTextResponse(f"Proxy error: {e}", status_code=502)
+
+
+_CREW_UI_REFERER_RE = re.compile(r"^[^/]+//[^/]+/crews/([^/]+)/ui(?:/|$)")
+
+
+def _crew_id_from_referer(referer: str) -> str | None:
+    """Extract crew_id from a Referer header pointing at /crews/{id}/ui/.
+
+    Returns None if the Referer does not match the crew UI path pattern.
+    """
+    m = _CREW_UI_REFERER_RE.match(referer)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _crew_id_from_cookie(request: Request) -> str | None:
+    """Extract crew_id from the crew_ui_context cookie, if present."""
+    # request.headers is a dict-like for our stubs; cookies header is separate.
+    # For Starlette Requests, use request.cookies; for test stubs, look in headers.
+    try:
+        return request.cookies.get("crew_ui_context") or None
+    except AttributeError:
+        pass
+    # Fallback for test stubs that expose headers dict directly
+    cookie_header = request.headers.get("cookie", "")
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith("crew_ui_context="):
+            return part[len("crew_ui_context="):] or None
+    return None
+
+
+async def _handle_spa_catchall(request: Request) -> Response:
+    """Catch-all GET handler for root-absolute SPA asset requests (TRN-80).
+
+    Resolves the originating crew from:
+      1. Referer header: path begins /crews/{crew_id}/ui/
+      2. crew_ui_context cookie (fallback for service-worker fetches)
+
+    Proxies the request to http://gs-{crew_id}:{CREW_GATEWAY_PORT}/{path}
+    using the same logic as _handle_crew_ui_proxy.
+
+    Returns 404 when neither source identifies a valid crew.
+    """
+    # Try Referer first
+    referer = request.headers.get("referer", "")
+    crew_id = _crew_id_from_referer(referer) if referer else None
+
+    # Fall back to cookie
+    if not crew_id:
+        crew_id = _crew_id_from_cookie(request)
+
+    if not crew_id:
+        return PlainTextResponse(
+            "No crew context for SPA asset request", status_code=404
+        )
+
+    # Crew lookup
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # Auto-wake if stopped
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError as e:
+        return PlainTextResponse(str(e), status_code=502)
+
+    # Build upstream URL: proxy the raw request path to the crew gateway
+    path = request.scope.get("path", "/")
+    upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+    upstream_path = path if path else "/"
+    query = request.scope.get("query_string", b"")
+    upstream_url = upstream_path
+    if query:
+        upstream_url = f"{upstream_path}?{_sanitise_query_string(query)}"
+    upstream_full = f"{upstream_base}{upstream_url}"
+
+    # Forward headers minus host
+    forward_headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() != "host"
+    }
+
+    try:
+        async with _async_http.stream(
+            "GET",
+            upstream_full,
+            headers=forward_headers,
+            content=await request.body(),
+        ) as upstream_resp:
+            response_headers = {
+                k: v
+                for k, v in upstream_resp.headers.items()
+                if k.lower() not in _HOP_BY_HOP_HEADERS
+            }
+            body = await upstream_resp.aread()
         return Response(
             content=body,
             status_code=upstream_resp.status_code,
             headers=response_headers,
         )
     except Exception as e:
-        logger.warning("UI proxy error for crew %s: %s", crew_id, e)
+        logger.warning("SPA catch-all proxy error for crew %s: %s", crew_id, e)
         return PlainTextResponse(f"Proxy error: {e}", status_code=502)
 
 
@@ -994,6 +1116,12 @@ class BearerAuthMiddleware:
                     response = await _handle_crew_api_proxy(request)
                     await response(scope, receive, send)
                     return
+                # TRN-80: SPA catch-all — lowest priority, GET only
+                if scope["method"] == "GET":
+                    request = Request(scope, receive)
+                    response = await _handle_spa_catchall(request)
+                    await response(scope, receive, send)
+                    return
             await self.app(scope, receive, send)
             return
 
@@ -1059,6 +1187,13 @@ class BearerAuthMiddleware:
         ):
             request = Request(scope, receive)
             response = await _handle_crew_api_proxy(request)
+            await response(scope, receive, send)
+            return
+
+        # TRN-80: SPA catch-all — lowest priority, GET only
+        if scope["method"] == "GET":
+            request = Request(scope, receive)
+            response = await _handle_spa_catchall(request)
             await response(scope, receive, send)
             return
 
@@ -1731,6 +1866,25 @@ def resource_compositions() -> str:
     return "\n\n".join(lines)
 
 
+def _transport_public_origin() -> str:
+    """Derive the transport's public origin for CORS injection.
+
+    Uses GA_HOST_URL (scheme+host only, trailing slash stripped) when set.
+    Falls back to http://localhost:{PORT}.
+
+    Used at crew container create time so the crew gateway accepts browser
+    requests that originate from the transport's public URL (TRN-80).
+    """
+    raw = GA_HOST_URL.strip().rstrip("/")
+    if raw:
+        parsed = urlsplit(raw)
+        # Keep scheme and host only (drop path/query/fragment)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if parsed.netloc:
+            return origin
+    return f"http://localhost:{PORT}"
+
+
 @mcp.tool()
 def launch(crew_id: str, composition: str = "spec-ops") -> dict:
     """Summon a new crew container into existence, with its own workspace volume.
@@ -1816,6 +1970,13 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             "KIROCREW_CORS_ORIGINS": f"http://{container}:{CREW_GATEWAY_PORT}",
             "KIROCREW_ALLOW_UNSANDBOXED": "1",
         }
+        # TRN-80: append transport's public origin so the crew gateway accepts
+        # browser requests from the transport URL after an initial UI page load.
+        transport_origin = _transport_public_origin()
+        existing_cors = container_env.get("KIROCREW_CORS_ORIGINS", "")
+        container_env["KIROCREW_CORS_ORIGINS"] = (
+            f"{existing_cors},{transport_origin}" if existing_cors else transport_origin
+        )
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
             container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL

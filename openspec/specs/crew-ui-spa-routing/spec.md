@@ -1,6 +1,10 @@
-# crew-ui-spa-routing Specification (new)
+# crew-ui-spa-routing Specification
 
-## ADDED Requirements
+## Purpose
+
+Enable SPAs served by the KiroCrew crew gateway to load correctly through the transport UI proxy. Root-absolute asset requests issued by the browser after the initial page load must be resolved back to the originating crew and proxied transparently, without any change to SPA source code.
+
+## Requirements
 
 ### Requirement: Root-absolute SPA asset requests are re-routed to the originating crew
 
@@ -26,7 +30,7 @@ The transport SHALL set a `crew_ui_context` cookie containing the `crew_id` on e
 
 #### Scenario: Cookie set on initial page load
 - **WHEN** `GET /crews/my-crew/ui/` is requested
-- **THEN** the response includes `Set-Cookie: crew_ui_context=my-crew; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600`
+- **THEN** the response includes `Set-Cookie: crew_ui_context=my-crew; Path=/; HttpOnly; SameSite=strict; Max-Age=3600`
 
 #### Scenario: Cookie used as fallback when Referer is absent
 - **WHEN** a browser fetches `/static/app.js` with no `Referer` header
