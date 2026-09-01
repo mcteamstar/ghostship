@@ -42,7 +42,7 @@
 # messages to name *what* failed.
 set -eo pipefail
 
-GHOSTSHIP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GHOSTSHIP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OS="$(uname -s)"
 
 # ── Built-in defaults (literal assignments, BEFORE config sourcing) ──────────
