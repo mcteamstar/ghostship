@@ -37,7 +37,7 @@ The built-in `spec-ops` loadout is designed for **Spec-Driven Development** usin
 
 ### Prerequisites
 
-Install these before running `install.sh`:
+Install these before running `ghostship install`:
 
 - macOS or Linux
 - **Podman >= 4.4** — `brew install podman` (macOS), `sudo apt-get install -y podman podman-compose` (Ubuntu/Debian)
@@ -51,7 +51,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ### Setup
 
 ```bash
-./install.sh
+./ghostship install
 ```
 
 Builds the crew images and starts the `ga-transport` container on `localhost:64057`. MCP, REST API, and file transfer all share this single port.
@@ -61,18 +61,18 @@ For a repeatable setup, copy the example config and fill in your values before r
 ```bash
 cp config/ghostship.conf.example config/ghostship.conf
 # edit config/ghostship.conf, then:
-./install.sh --config config/ghostship.conf
+./ghostship install --config config/ghostship.conf
 ```
 
 **API key** — for any non-local deployment (or if you just want auth), pass `--api-key <key>` to lock the endpoint:
 
 ```bash
-./install.sh --api-key <key>
+./ghostship install --api-key <key>
 ```
 
-To uninstall: `./uninstall.sh`. If ghostship stops after a reboot, run `./start.sh` to bring it back without reinstalling.
+To uninstall: `ghostship uninstall`. If ghostship stops after a reboot, run `ghostship start` to bring it back without reinstalling.
 
-**Updating academy/ and crews/** — `install.sh` snapshots `academy/` and `crews/` from the repo into the data volume. The transport has no runtime dependency on the repo checkout path. After editing files under `academy/` or `crews/`, re-run `./install.sh` for changes to take effect. See [Updating academy/ and crews/](docs/configuration.md#updating-academy-and-crews) in the configuration docs.
+**Updating academy/ and crews/** — `ghostship install` snapshots `academy/` and `crews/` from the repo into the data volume. The transport has no runtime dependency on the repo checkout path. After editing files under `academy/` or `crews/`, re-run `ghostship install` for changes to take effect. See [Updating academy/ and crews/](docs/configuration.md#updating-academy-and-crews) in the configuration docs.
 
 Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
 
@@ -93,7 +93,7 @@ Install the ghostship power from the Powers panel → Add Custom Power → Impor
 ```
 https://github.com/mcteamstar/ghostship
 ```
-The `ghostship-admin` skill walks you through the rest — Podman, `./install.sh`, auth, and connecting. See `.claude-plugin/PACKAGING.md` for keyed and remote installs.
+The `ghostship-admin` skill walks you through the rest — Podman, `./ghostship install`, auth, and connecting. See `.claude-plugin/PACKAGING.md` for keyed and remote installs.
 
 **kiro-cli:**
 ```bash
