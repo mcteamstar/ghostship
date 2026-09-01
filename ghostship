@@ -65,19 +65,41 @@ def cmd_version(args: list) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_install(args: list) -> int:
+def cmd_install(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship install [flags]\n"
+              "\nInstall or update the Ghost Academy transport.\n"
+              "Delegates to scripts/install.sh — run 'ghostship install --help' "
+              "after removing this flag to see all install.sh flags.")
+        return 0
     _exec_script("scripts/install.sh", args)
 
 
 def cmd_start(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship start [flags]\n"
+              "\nStart the transport (no-op if already running).\n"
+              "Delegates to scripts/start.sh.")
+        return 0
     _exec_script("scripts/start.sh", args)
 
 
 def cmd_upgrade(args: list) -> int:
     """Rebuild images and restart the transport (alias for install)."""
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship upgrade [flags]\n"
+              "\nRebuild images and recreate the transport container.\n"
+              "Equivalent to 'ghostship install'. Delegates to scripts/install.sh.")
+        return 0
     _exec_script("scripts/install.sh", args)
 
 
 def cmd_uninstall(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship uninstall [flags]\n"
+              "\nTear down the Ghost Academy transport.\n"
+              "Delegates to scripts/uninstall.sh.")
+        return 0
     _exec_script("scripts/uninstall.sh", args)
 
 
