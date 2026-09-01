@@ -2,11 +2,9 @@
 
 ## MODIFIED Requirements
 
-### Modified Requirement: Crew UI reverse proxy
+### Modified Requirement: Crew UI access
 
-The existing crew UI proxy requirement is updated. The transport SHALL delegate crew UI routing to Caddy rather than handling it in the Python layer when `GA_CADDY_UI_ENABLED=true`. The Caddy route performs path-prefix stripping and full reverse proxying including WebSocket support. Full behavior is specified in `crew-ui-spa-routing/spec.md`.
-
-When `GA_CADDY_UI_ENABLED=false`, the existing Python-layer `_handle_crew_ui_proxy` behavior is retained unchanged.
+The crew UI is now served directly on a dedicated host port per crew (see `crew-ui-spa-routing/spec.md`) rather than via a path-prefix proxy. The existing Python-layer `_handle_crew_ui_proxy` is removed from the default code path and retained only as a fallback behind `GA_UI_PORT_ENABLED=false`.
 
 ### New Requirement: Transport origin added to crew CORS origins at start
 
