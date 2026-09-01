@@ -727,5 +727,238 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertNotIn("cron_expr", payload)
 
 
+class MaildirSubjectReaderTests(unittest.TestCase):
+    """Task 2.3 — _read_maildir_subjects_from_tar with synthetic tar bytes."""
+
+    @staticmethod
+    def _make_maildir_tar(messages: dict[str, str]) -> bytes:
+        """Build a synthetic Maildir tar.
+
+        ``messages`` maps relative path inside the tar (e.g. ``new/msg1``) to
+        RFC 5322-formatted message text.  Returns tar bytes.
+        """
+        import io as _io
+        import tarfile as _tarfile
+
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            for name, content in messages.items():
+                data = content.encode("utf-8")
+                info = _tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, _io.BytesIO(data))
+        return buf.getvalue()
+
+    def test_reads_subjects_from_new_and_cur(self) -> None:
+        tar = self._make_maildir_tar({
+            "new/msg1": "From: ghost@localhost\nSubject: task A done\n\nbody",
+            "cur/msg2": "From: spectre@localhost\nSubject: task B ready\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertIn("task A done", subjects)
+        self.assertIn("task B ready", subjects)
+        self.assertEqual(len(subjects), 2)
+
+    def test_ignores_files_outside_new_and_cur(self) -> None:
+        tar = self._make_maildir_tar({
+            "tmp/msg1": "Subject: should be ignored\n\nbody",
+            "new/msg2": "Subject: included\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(subjects, ["included"])
+
+    def test_empty_mailbox_returns_empty_list(self) -> None:
+        tar = self._make_maildir_tar({})
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(subjects, [])
+
+    def test_message_without_subject_header_skipped(self) -> None:
+        tar = self._make_maildir_tar({
+            "new/msg1": "From: ghost@localhost\n\nno subject header here",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(subjects, [])
+
+    def test_bytes_input_works(self) -> None:
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: bytes path\n\nbody",
+        })
+        self.assertIsInstance(tar, bytes)
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(subjects, ["bytes path"])
+
+    def test_deeply_nested_new_dir_is_included(self) -> None:
+        """A path like captain/new/msg1 (tar from archive API) should be matched."""
+        tar = self._make_maildir_tar({
+            "captain/new/msg1": "Subject: deep subject\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(subjects, ["deep subject"])
+
+    def test_corrupt_tar_returns_empty_list(self) -> None:
+        subjects = captain_mod._read_maildir_subjects_from_tar(b"not a tar stream")
+        self.assertEqual(subjects, [])
+
+    def test_read_mail_subjects_archive_calls_archive_get(self) -> None:
+        """_read_mail_subjects_archive calls container_archive_get and parses subjects."""
+        import io as _io
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: order received\n\nbody",
+        })
+
+        class _FakeResp:
+            def iter_bytes(self):
+                yield tar
+
+            def close(self):
+                pass
+
+        podman = Mock()
+        podman.container_archive_get.return_value = _FakeResp()
+        result = captain_mod._read_mail_subjects_archive(podman, "gs-demo", "/var/mail/captain")
+        podman.container_archive_get.assert_called_once_with("gs-demo", "/var/mail/captain")
+        self.assertEqual(result, ["order received"])
+
+    def test_read_mail_subjects_archive_returns_empty_on_error(self) -> None:
+        """_read_mail_subjects_archive returns [] if archive_get raises."""
+        podman = Mock()
+        podman.container_archive_get.side_effect = Exception("container not found")
+        result = captain_mod._read_mail_subjects_archive(podman, "gs-demo", "/var/mail/captain")
+        self.assertEqual(result, [])
+
+
+class CaptainStatusArchiveTests(unittest.TestCase):
+    """Tasks 5.1 + 5.2 — captain status uses archive API for mail subjects."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    @staticmethod
+    def _make_maildir_tar(messages: dict[str, str]) -> bytes:
+        import io as _io
+        import tarfile as _tarfile
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            for name, content in messages.items():
+                data = content.encode("utf-8")
+                info = _tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, _io.BytesIO(data))
+        return buf.getvalue()
+
+    def _make_podman(
+        self,
+        *,
+        is_running: bool,
+        captain_tar: bytes | None = None,
+        admiral_tar: bytes | None = None,
+    ):
+        """Build a Mock podman that returns scripted archive tars and running state."""
+        podman = Mock()
+        podman.container_is_running.return_value = is_running
+
+        captain_tar = captain_tar or self._make_maildir_tar({})
+        admiral_tar = admiral_tar or self._make_maildir_tar({})
+
+        class _FakeResp:
+            def __init__(self, data: bytes) -> None:
+                self._data = data
+
+            def iter_bytes(self):
+                yield self._data
+
+            def close(self):
+                pass
+
+        def _archive_get(container, path):
+            if "captain" in path:
+                return _FakeResp(captain_tar)
+            return _FakeResp(admiral_tar)
+
+        podman.container_archive_get.side_effect = _archive_get
+        return podman
+
+    def test_status_stopped_crew_returns_subjects_without_waking_container(self) -> None:
+        """5.1 — stopped crew: subjects returned, _ensure_crew_running NOT called."""
+        captain_tar = self._make_maildir_tar({
+            "new/msg1": "Subject: trn-51 cleanup done\n\nbody",
+        })
+        admiral_tar = self._make_maildir_tar({
+            "new/msg1": "Subject: SO1 complete\n\nbody",
+        })
+        podman = self._make_podman(
+            is_running=False,
+            captain_tar=captain_tar,
+            admiral_tar=admiral_tar,
+        )
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_get_podman", return_value=podman),
+        ):
+            result = server.captain("demo", "status")
+
+        # Subjects are present
+        self.assertEqual(result["captain_subjects"], ["trn-51 cleanup done"])
+        self.assertEqual(result["admiral_subjects"], ["SO1 complete"])
+        self.assertEqual(result["captain_mail"], 1)
+        self.assertEqual(result["admiral_mail"], 1)
+        # Status is dormant (no job found on a stopped container)
+        self.assertEqual(result["status"], "dormant")
+        # Container was NOT started
+        ensure.assert_not_called()
+        podman.container_is_running.assert_called_once()
+
+    def test_status_stopped_crew_empty_mailboxes(self) -> None:
+        """5.1 — stopped crew with empty mailboxes: subjects are empty lists."""
+        podman = self._make_podman(is_running=False)
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_get_podman", return_value=podman),
+        ):
+            result = server.captain("demo", "status")
+
+        self.assertEqual(result["captain_subjects"], [])
+        self.assertEqual(result["admiral_subjects"], [])
+        self.assertEqual(result["captain_mail"], 0)
+        self.assertEqual(result["admiral_mail"], 0)
+        ensure.assert_not_called()
+
+    def test_status_running_crew_returns_subjects_and_job_state(self) -> None:
+        """5.2 — running crew: subjects returned correctly alongside job state."""
+        existing = {
+            "id": "job-existing",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        captain_tar = self._make_maildir_tar({
+            "cur/msg1": "Subject: banshee review done\n\nbody",
+            "cur/msg2": "Subject: trn-85 archived\n\nbody",
+        })
+        admiral_tar = self._make_maildir_tar({})
+        podman = self._make_podman(
+            is_running=True,
+            captain_tar=captain_tar,
+            admiral_tar=admiral_tar,
+        )
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}),
+        ):
+            result = server.captain("demo", "status")
+
+        self.assertEqual(set(result["captain_subjects"]), {"banshee review done", "trn-85 archived"})
+        self.assertEqual(result["captain_mail"], 2)
+        self.assertEqual(result["admiral_subjects"], [])
+        self.assertEqual(result["admiral_mail"], 0)
+        # Job state still present
+        self.assertEqual(result["job_id"], "job-existing")
+        self.assertTrue(result["enabled"])
+
+
 if __name__ == "__main__":
     unittest.main()

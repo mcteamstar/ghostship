@@ -1140,18 +1140,19 @@ def _inject_policy(
     podman: PodmanClient,
     container: str,
     composition: str,
-    admiral_secret: str,
+    policy_signing_key: str,
 ) -> str:
     """Inject security_policy.json and admission_policy.json into the crew.
 
     Returns the policy version string for registry storage.
     Raises on failure — caller must catch and handle gracefully.
 
-    Note: admission_policy.json contains trust_keys (the admiral_secret) which
-    is required by KiroCrew's governance API to verify the policy signature.
-    The file is written with mode 0600, but agents running as kirocrew can still
-    read it. See docs/auth.md for the threat model — this is accepted for the
-    current single-operator use case.
+    Note: admission_policy.json contains trust_keys (the policy_signing_key),
+    which is required by KiroCrew's governance API to verify the policy
+    signature. The file is written with mode 0600. policy_signing_key is a
+    dedicated signing key, separate from admiral_secret, so agent-readable
+    admission_policy.json no longer exposes the Admiral mail-signing secret.
+    See docs/auth.md for the threat model.
     """
     # 1. Load template — composition-specific or fallback to default
     policy_template_path = Path(f"/policies/{composition}.json")
@@ -1163,11 +1164,11 @@ def _inject_policy(
     # 2. Add identity block (without signature yet) and pass everything into
     # the container to sign.  Signing runs inside the container so the
     # canonicalization is always the same version as the verifier.
-    # The policy + admiral_secret are passed as a single base64-encoded JSON
-    # payload to avoid interpolating the secret as a Python literal.
+    # The policy + policy_signing_key are passed as a single base64-encoded
+    # JSON payload to avoid interpolating the secret as a Python literal.
     policy["identity"] = {"issuer": "ghostship"}
     payload_b64 = base64.b64encode(
-        json.dumps({"policy": policy, "admiral_secret": admiral_secret}).encode("utf-8")
+        json.dumps({"policy": policy, "policy_signing_key": policy_signing_key}).encode("utf-8")
     ).decode()
 
     # Signing runs inside the container (see inject_policy.py).
@@ -1206,6 +1207,7 @@ def _finish_crew_setup(
     # depends on: container running (pre-restart); must be written before restart
     # so the secret is on the home volume before the post-restart gateway starts
     admiral_secret = secrets.token_hex(32)
+    policy_signing_key = secrets.token_hex(32)
     try:
         podman.container_exec_checked(
             container,
@@ -1242,11 +1244,11 @@ def _finish_crew_setup(
     # is a no-op kept for call-site symmetry; the real work is done in launch().
     _inject_git_identity(podman, container)
 
-    # depends on: admiral_secret (already generated above), filesystem
+    # depends on: policy_signing_key (already generated above), filesystem
     policy_version = None
     policy_warning: str | None = None
     try:
-        policy_version = _inject_policy(podman, container, composition, admiral_secret)
+        policy_version = _inject_policy(podman, container, composition, policy_signing_key)
     except Exception as e:
         policy_warning = str(e)
         logger.error("Policy injection failed for %s: %s — continuing without policy", container, e)
@@ -1295,6 +1297,7 @@ def _finish_crew_setup(
         }
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
+            crew_entry["policy_signing_key"] = policy_signing_key
         reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 

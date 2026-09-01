@@ -136,6 +136,22 @@
 # Send CSP as enforcing rather than report-only. Staged rollout; default off.
 # GA_CSP_ENFORCE=0
 
+# ── HTTP rate limiting (TRN-52) ───────────────────────────────────────────────
+# Per-endpoint sliding-window request limits. Each value is "<count>:<window_secs>"
+# (both positive integers). State is in-memory only and resets on transport restart.
+# Master switch — set to "false" to disable all rate limiting entirely.
+# GA_RATE_LIMIT_ENABLED=true
+# GET /login — polling allowed, hammering blocked (default 30 req / 60 s).
+# GA_RATE_LIMIT_LOGIN_GET=30:60
+# POST /login — tight limit enforces deliberate use (default 5 req / 300 s).
+# GA_RATE_LIMIT_LOGIN_POST=5:300
+# /mcp and sub-paths — headroom for multi-tool orchestration (default 300 req / 60 s).
+# GA_RATE_LIMIT_MCP=300:60
+# /files/* — protects git subprocess execution (default 60 req / 60 s).
+# GA_RATE_LIMIT_FILES=60:60
+# /crews/*/api/* — proxied crew API (default 120 req / 60 s).
+# GA_RATE_LIMIT_CREW_API=120:60
+
 # ── Git author identity ───────────────────────────────────────────────────────
 # When both vars are set, all crew commits carry the operator's identity as
 # both author and committer. Unset → per-persona identity is used (default).

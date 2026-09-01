@@ -196,9 +196,9 @@ class TestInstallShPodmanSecret(unittest.TestCase):
 
     def test_install_script_has_secret_create(self):
         """5.5 (partial): install.sh contains podman secret create and no env-var pass."""
-        install_path = Path(__file__).resolve().parents[2] / "install.sh"
+        install_path = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
         if not install_path.exists():
-            self.skipTest("install.sh not found relative to test")
+            self.skipTest("scripts/install.sh not found relative to test")
 
         content = install_path.read_text()
         self.assertIn("secret rm ga-api-key", content)

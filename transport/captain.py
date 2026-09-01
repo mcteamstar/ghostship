@@ -345,6 +345,90 @@ def _read_all_mail_subjects(
         return {}
 
 
+def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[str]:
+    """Parse Subject: headers from Maildir files inside a Podman archive tar.
+
+    Iterates all tar members whose path component contains ``new/`` or ``cur/``
+    (the two standard Maildir directories). For each regular file member,
+    reads just the RFC 5322 header block using ``email.parser.BytesHeaderParser``
+    and extracts the ``Subject:`` header value. Returns a list of subject
+    strings (one per message). Empty mailboxes yield an empty list. Reading
+    never modifies the files.
+
+    Args:
+        tar_bytes_or_stream: Either ``bytes`` or a file-like object as accepted
+            by ``tarfile.open``.
+    """
+    import email.parser as _email_parser
+    import io as _io
+    import tarfile as _tarfile
+    import posixpath as _posixpath
+
+    subjects: list[str] = []
+    try:
+        if isinstance(tar_bytes_or_stream, (bytes, bytearray)):
+            fileobj: Any = _io.BytesIO(tar_bytes_or_stream)
+            tf = _tarfile.open(fileobj=fileobj, mode="r:*")
+        else:
+            tf = _tarfile.open(fileobj=tar_bytes_or_stream, mode="r|*")
+        with tf:
+            parser = _email_parser.BytesHeaderParser()
+            for member in tf:
+                if not member.isreg():
+                    continue
+                # Only files in new/ or cur/ subdirectories
+                parts = _posixpath.normpath(member.name).replace("\\", "/").split("/")
+                if not any(part in ("new", "cur") for part in parts):
+                    continue
+                fobj = tf.extractfile(member)
+                if fobj is None:
+                    continue
+                try:
+                    header_bytes = fobj.read()
+                    msg = parser.parsebytes(header_bytes)
+                    subject = msg.get("Subject", "")
+                    if subject:
+                        subjects.append(subject)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return subjects
+
+
+def _read_mail_subjects_archive(
+    podman: PodmanClient,
+    container: str,
+    mailbox_path: str,
+) -> list[str]:
+    """Read subject lines from a Maildir mailbox via the Podman archive API.
+
+    Works on both running and stopped containers — the archive API reads
+    directly from the container's overlay filesystem without requiring the
+    process to be running.
+
+    Args:
+        podman: PodmanClient instance.
+        container: Container name or ID.
+        mailbox_path: Absolute path inside the container to the Maildir root
+            (e.g. ``/var/mail/captain``).
+
+    Returns:
+        List of Subject header strings from messages in ``new/`` and ``cur/``.
+        Returns an empty list on any archive API failure (container does not
+        exist, mailbox absent, etc.).
+    """
+    try:
+        response = podman.container_archive_get(container, mailbox_path)
+        # Collect the full tar bytes from the response stream before parsing,
+        # since container_archive_get returns an httpx streaming response.
+        tar_bytes = b"".join(response.iter_bytes())
+        response.close()
+        return _read_maildir_subjects_from_tar(tar_bytes)
+    except Exception:
+        return []
+
+
 def _captain_jobs(payload: Any) -> list[dict[str, Any]]:
     """Normalise the gateway's /api/crons response into job dictionaries."""
     jobs = payload.get("jobs", []) if isinstance(payload, dict) else payload

@@ -12,7 +12,16 @@ import unittest
 
 import httpx
 
-from tests.e2e.helpers import GHOSTSHIP_E2E_URL, GHOSTSHIP_API_KEY, _SKIP_REASON, mcp_call as _mcp_call, is_error as _is_error
+from tests.e2e.helpers import (
+    GHOSTSHIP_E2E_URL,
+    GHOSTSHIP_API_KEY,
+    _SKIP_REASON,
+    mcp_call as _mcp_call,
+    is_error as _is_error,
+    container_stop as _container_stop,
+    container_is_running as _container_is_running,
+    wait_until_stopped as _wait_until_stopped,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # _mcp_call and _is_error imported from helpers.py
@@ -357,6 +366,82 @@ class TestAuthExtended(unittest.TestCase):
     def test_nuke_requires_auth(self):
         resp = self._unauthed_post("nuke", crew_id="e2e-auth-test", confirm=True)
         self.assertEqual(resp.status_code, 401)
+
+
+# ── 6. TRN-51: Captain status on stopped crew ─────────────────────────────────
+
+
+@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+class TestCaptainStatusStoppedCrew(unittest.TestCase):
+    """TRN-51 smoke test: captain status works on stopped crews without waking them.
+
+    Requires a live transport at GHOSTSHIP_E2E_URL and a reachable Podman
+    socket at GHOSTSHIP_PODMAN_SOCKET. The test launches a crew, stops the
+    container directly via the Podman REST API (not via captain stop, which
+    only pauses the cron job), and asserts that captain(action="status")
+    returns HTTP 200 with subject arrays present and the container still
+    stopped after the call.
+
+    Crew name: e2e-trn51-captain-stopped — nuked on teardown.
+    """
+
+    CREW_ID = "e2e-trn51-captain-stopped"
+    # Container name mirrors the transport's naming: CREW_CONTAINER_PREFIX + crew_id
+    CONTAINER = f"gs-{CREW_ID}"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Launch a crew, then stop its container via Podman so it is genuinely stopped."""
+        try:
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
+        except Exception:
+            pass
+        result = _mcp_call("launch", crew_id=cls.CREW_ID)
+        if result.get("status") != "ready":
+            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
+
+        # Stop the container directly via Podman — captain stop only pauses the
+        # cron job and does not stop the container, so it is not sufficient here.
+        _container_stop(cls.CONTAINER)
+        stopped = _wait_until_stopped(cls.CONTAINER, timeout=30)
+        if not stopped:
+            raise RuntimeError(
+                f"Container {cls.CONTAINER} did not stop within 30s"
+            )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Tear down the test crew."""
+        try:
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
+        except Exception:
+            pass
+
+    def test_captain_status_stopped_crew_returns_200_with_subjects(self) -> None:
+        """Captain status on a stopped crew returns HTTP 200 and subject arrays."""
+        result = _mcp_call("captain", crew_id=self.CREW_ID, action="status")
+        self.assertFalse(_is_error(result), f"captain status returned error: {result}")
+        # Subject arrays must be present (may be empty on a fresh crew)
+        self.assertIn("captain_subjects", result, "captain_subjects missing from status response")
+        self.assertIn("admiral_subjects", result, "admiral_subjects missing from status response")
+        self.assertIsInstance(result["captain_subjects"], list)
+        self.assertIsInstance(result["admiral_subjects"], list)
+
+    def test_captain_status_does_not_start_stopped_container(self) -> None:
+        """Captain status must not start the container on a stopped crew."""
+        # Confirm the container is still stopped before the call (setup guarantee)
+        self.assertFalse(
+            _container_is_running(self.CONTAINER),
+            f"Pre-condition failed: {self.CONTAINER} was already running before captain status",
+        )
+        # Call captain status
+        _mcp_call("captain", crew_id=self.CREW_ID, action="status")
+        # The container must still be stopped — check via Podman directly so we
+        # don't rely on the MCP crews() listing, which only surfaces running crews.
+        self.assertFalse(
+            _container_is_running(self.CONTAINER),
+            f"Crew {self.CREW_ID} container was started by captain status",
+        )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.2.2"
+  version: "0.2.3"
 ---
 
 # Ghostship Command
@@ -294,8 +294,23 @@ You don't reach in and read `/var/mail/*` directly (see guardrails).
 
 Two ways to see mail state without a dispatch:
 
-- Every `pickup` response includes mail counts (`admiral_mail`, `captain_subjects`).
-- `captain(action="status")` reports Captain + Admiral mailbox unread counts and the last Raven cycle summary — usually enough to know what's happening without a full dispatch.
+- Every `pickup` response includes the agent persona's mail count (`agent_mail`)
+  and subject lines for the agent persona's mailbox (e.g. `ghost_subjects`,
+  `raven_subjects`). Captain and admiral mailbox subjects and counts
+  (`captain_subjects`, `admiral_subjects`, `captain_mail`, `admiral_mail`) are
+  NOT included in pickup — those are stale when sourced from a Raven pickup
+  result anyway. A poll still returns early with `reason: "admiral_mail"` when
+  new Admiral mail lands mid-poll.
+- `captain(action="status")` returns live `captain_subjects` and `admiral_subjects`
+  arrays directly from the mailboxes (using the Podman archive API, so it works
+  even on a stopped crew). Use this for an accurate mail picture of the
+  captain/admiral mailboxes without dispatching or waking the container.
+
+```
+captain(crew_id, action="status")
+# → { "captain_subjects": [...], "admiral_subjects": [...],
+#     "captain_mail": N, "admiral_mail": M, ... }
+```
 
 To read full mail content, dispatch **raven** with a task asking it to check
 a specific mailbox and report back. Raven is the watcher/messenger persona;

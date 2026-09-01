@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""ghostship — command-line interface for Ghost Academy transport management.
+
+Usage:
+    ghostship <subcommand> [flags]
+
+Subcommands:
+    install    [flags]   Install or update the transport (runs scripts/install.sh)
+    start      [flags]   Start the transport (runs scripts/start.sh)
+    stop                 Stop the ga-transport container
+    upgrade    [flags]   Rebuild and restart the transport (runs scripts/install.sh)
+    uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
+    status               Show transport status (container running, port, uptime)
+    init       [flags]   Register the MCP server and install skill symlinks for agent clients
+    version              Print the ghostship version
+
+Run 'ghostship <subcommand> --help' for subcommand-specific flags.
+"""
+
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _ghostship_dir() -> pathlib.Path:
+    """Absolute path to the directory containing this script."""
+    return pathlib.Path(__file__).resolve().parent
+
+
+def _version() -> str:
+    version_file = _ghostship_dir() / "VERSION"
+    try:
+        return version_file.read_text().strip()
+    except FileNotFoundError:
+        return "unknown"
+
+
+def _exec_script(script_rel: str, extra_args: list) -> None:
+    """Replace the current process with scripts/<script> forwarding all args."""
+    script = _ghostship_dir() / script_rel
+    if not script.exists():
+        print(f"error: script not found: {script}", file=sys.stderr)
+        sys.exit(1)
+    os.execv(str(script), [str(script)] + extra_args)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: version
+# ---------------------------------------------------------------------------
+
+def cmd_version(args: list) -> int:
+    print(_version())
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: install / upgrade / start / uninstall
+# ---------------------------------------------------------------------------
+
+def cmd_install(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship install [flags]\n"
+              "\nInstall or update the Ghost Academy transport.\n"
+              "Delegates to scripts/install.sh — run 'ghostship install --help' "
+              "after removing this flag to see all install.sh flags.")
+        return 0
+    _exec_script("scripts/install.sh", args)
+
+
+def cmd_start(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship start [flags]\n"
+              "\nStart the transport (no-op if already running).\n"
+              "Delegates to scripts/start.sh.")
+        return 0
+    _exec_script("scripts/start.sh", args)
+
+
+def cmd_upgrade(args: list) -> int:
+    """Rebuild images and restart the transport (alias for install)."""
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship upgrade [flags]\n"
+              "\nRebuild images and recreate the transport container.\n"
+              "Equivalent to 'ghostship install'. Delegates to scripts/install.sh.")
+        return 0
+    _exec_script("scripts/install.sh", args)
+
+
+def cmd_uninstall(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print("Usage: ghostship uninstall [flags]\n"
+              "\nTear down the Ghost Academy transport.\n"
+              "Delegates to scripts/uninstall.sh.")
+        return 0
+    _exec_script("scripts/uninstall.sh", args)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: stop
+# ---------------------------------------------------------------------------
+
+def _podman_cmd() -> list:
+    """Return the base podman command list, honouring the dedicated socket/machine.
+
+    Resolution order:
+      1. PODMAN_SOCK env var (explicit override)
+      2. macOS + GA_DEDICATED_MACHINE=true  → --connection <GA_MACHINE_NAME>
+      3. Linux + GA_DEDICATED_MACHINE=true  → --url unix://<runtime>/<name>/podman.sock
+      4. Fallback: plain podman (default socket)
+    """
+    import platform
+
+    # Explicit override
+    sock = os.environ.get("PODMAN_SOCK", "")
+    if sock:
+        return ["podman", "--url", f"unix://{sock}"]
+
+    machine = os.environ.get("GA_MACHINE_NAME", "ghost-academy")
+    dedicated = os.environ.get("GA_DEDICATED_MACHINE", "true").lower() == "true"
+
+    if platform.system() == "Darwin":
+        if dedicated:
+            return ["podman", "--connection", machine]
+    else:
+        # Linux: dedicated instance uses its own socket under XDG_RUNTIME_DIR
+        if dedicated:
+            runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+            sock_path = f"{runtime}/{machine}/podman.sock"
+            if os.path.exists(sock_path):
+                return ["podman", "--url", f"unix://{sock_path}"]
+
+    return ["podman"]
+
+
+def cmd_stop(args: list) -> int:
+    podman = _podman_cmd()
+    if not shutil.which(podman[0]):
+        print("ga-transport container not found — nothing to stop")
+        return 0
+    result = subprocess.run(
+        podman + ["stop", "ga-transport"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("✓ ga-transport stopped")
+        return 0
+    # Container not found → exit 0 with a message
+    stderr_lower = result.stderr.lower()
+    if "no such container" in stderr_lower or "no container" in stderr_lower or "error" in stderr_lower:
+        # Check if it truly doesn't exist
+        check = subprocess.run(
+            podman + ["inspect", "ga-transport", "--format", "{{.State.Status}}"],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode != 0:
+            print("ga-transport container not found — nothing to stop")
+            return 0
+    print(result.stderr.strip(), file=sys.stderr)
+    return result.returncode
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: status
+# ---------------------------------------------------------------------------
+
+def cmd_status(args: list) -> int:
+    podman = _podman_cmd()
+
+    # Bail gracefully if podman isn't installed
+    if not shutil.which(podman[0]):
+        print("ghostship status: not installed (podman not found)")
+        print("  Install Podman, then run 'ghostship install'.")
+        return 0
+
+    # Check if the container exists and get its state
+    inspect = subprocess.run(
+        podman + [
+            "inspect", "ga-transport",
+            "--format",
+            "{{.State.Status}}\t{{.State.StartedAt}}\t{{json .NetworkSettings.Ports}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if inspect.returncode != 0:
+        # Container doesn't exist at all
+        print("ghostship status: not installed (ga-transport container not found)")
+        print("  Run 'ghostship install' to set up the transport.")
+        return 0
+
+    output = inspect.stdout.strip()
+    parts = output.split("\t", 2)
+    state = parts[0] if len(parts) > 0 else "unknown"
+    started_at = parts[1] if len(parts) > 1 else ""
+    ports_json = parts[2] if len(parts) > 2 else "{}"
+
+    if state != "running":
+        print(f"ghostship status: stopped (container state: {state})")
+        print("  Run 'ghostship start' to bring it back up.")
+        return 0
+
+    # Parse port bindings
+    port_str = "unknown"
+    try:
+        ports = json.loads(ports_json)
+        # ports is like {"64057/tcp": [{"HostIp": "127.0.0.1", "HostPort": "64057"}]}
+        for _proto_key, bindings in ports.items():
+            if bindings:
+                host_port = bindings[0].get("HostPort", "")
+                host_ip = bindings[0].get("HostIp", "127.0.0.1")
+                if host_port:
+                    port_str = f"{host_ip}:{host_port}"
+                    break
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+
+    # Compute uptime
+    uptime_str = ""
+    if started_at:
+        try:
+            from datetime import datetime, timezone
+            # started_at may be like "2026-08-31T20:00:00.123456789Z"
+            # Trim nanoseconds to microseconds (Python only handles 6 digits)
+            ts = started_at
+            if "." in ts:
+                dot = ts.index(".")
+                suffix = ts[dot + 1:]
+                tz_char = None
+                for ch in ("Z", "+", "-"):
+                    idx = suffix.find(ch)
+                    if idx != -1:
+                        tz_char = suffix[idx:]
+                        suffix = suffix[:idx]
+                        break
+                suffix = suffix[:6]  # microseconds only
+                ts = ts[:dot + 1] + suffix + (tz_char or "Z")
+            ts = ts.replace("Z", "+00:00")
+            started = datetime.fromisoformat(ts)
+            now = datetime.now(timezone.utc)
+            delta = now - started
+            total_seconds = int(delta.total_seconds())
+            if total_seconds < 60:
+                uptime_str = f"{total_seconds}s"
+            elif total_seconds < 3600:
+                uptime_str = f"{total_seconds // 60}m {total_seconds % 60}s"
+            else:
+                h = total_seconds // 3600
+                m = (total_seconds % 3600) // 60
+                uptime_str = f"{h}h {m}m"
+        except Exception:
+            uptime_str = started_at
+
+    print("ghostship status: running ✓")
+    print(f"  URL:    http://{port_str}/mcp")
+    if uptime_str:
+        print(f"  Uptime: {uptime_str}")
+    return 0
+
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: setup (init is an alias)
+# ---------------------------------------------------------------------------
+
+def cmd_setup(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print(
+            "Usage: ghostship setup [--agent kiro|claude|opencode|all] "
+            "[--url <url>] [--api-key <key>]\n"
+            "\n"
+            "  Register the ghostship MCP server and install skill symlinks\n"
+            "  for detected agent clients (kiro-cli, Claude Code, opencode).\n"
+            "  Idempotent — safe to re-run.\n"
+            "\n"
+            "  --agent   Target: kiro, claude, opencode, or all.\n"
+            "            Default: auto-detect installed agents.\n"
+            "  --url     MCP server URL (default: http://localhost:64057/mcp)\n"
+            "  --api-key Bearer token for the MCP endpoint (optional)\n"
+        )
+        return 0
+    _exec_script("scripts/setup.py", args)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Usage / dispatch
+# ---------------------------------------------------------------------------
+
+_USAGE = """\
+Usage: ghostship <subcommand> [flags]
+
+Subcommands:
+  install    [flags]   Install or update the transport (runs scripts/install.sh)
+  start      [flags]   Start the transport (runs scripts/start.sh)
+  stop                 Stop the ga-transport container
+  upgrade    [flags]   Rebuild and restart the transport (same as install)
+  uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
+  status               Show transport status
+  setup      [flags]   Register MCP server + skills for agent clients (kiro, Claude Code, opencode)
+  version              Print ghostship version
+
+Run 'ghostship <subcommand> --help' for flags specific to that subcommand.
+"""
+
+_COMMANDS = {
+    "install":   cmd_install,
+    "start":     cmd_start,
+    "stop":      cmd_stop,
+    "upgrade":   cmd_upgrade,
+    "uninstall": cmd_uninstall,
+    "status":    cmd_status,
+    "setup":     cmd_setup,
+    "version":   cmd_version,
+}
+
+
+def main() -> int:
+    args = sys.argv[1:]
+
+    if not args or args[0] in ("--help", "-h"):
+        print(_USAGE, end="")
+        return 0
+
+    subcmd = args[0]
+    if subcmd in ("--version", "-V"):
+        return cmd_version([])
+
+    handler = _COMMANDS.get(subcmd)
+    if handler is None:
+        print(f"error: unknown subcommand '{subcmd}'", file=sys.stderr)
+        print(f"Run 'ghostship --help' for available subcommands.", file=sys.stderr)
+        return 1
+
+    return handler(args[1:]) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

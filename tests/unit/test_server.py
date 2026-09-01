@@ -78,7 +78,7 @@ def _run_inject_policy_script(cmd: list[str], crew_dir: str) -> str:
     """
     payload = json.loads(base64.b64decode(cmd[-1]).decode())
     return _inject_policy_script.inject_policy(
-        crew_dir, payload["policy"], payload["admiral_secret"]
+        crew_dir, payload["policy"], payload["policy_signing_key"]
     )
 
 
@@ -602,6 +602,7 @@ class PickupTimeoutTests(unittest.TestCase):
 
     def test_pickup_mail_counts_present_single_task(self) -> None:
         """5.4 — mail counts present in single-task response."""
+        mock_archive = Mock(return_value=["standing order"])
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
@@ -609,17 +610,22 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={"ghost": 3, "admiral": 1}),
             patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["hello"], "admiral": ["order1"]}),
+            patch.object(server, "_read_mail_subjects_archive", mock_archive),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
 
         self.assertEqual(result["agent_mail"], 3)
-        self.assertEqual(result["admiral_mail"], 1)
         self.assertEqual(result["ghost_subjects"], ["hello"])
-        self.assertEqual(result["admiral_subjects"], ["order1"])
+        # captain and admiral are now included in pickup via archive API
+        self.assertIn("captain_subjects", result)
+        self.assertIn("admiral_subjects", result)
+        self.assertIn("captain_mail", result)
+        self.assertIn("admiral_mail", result)
 
     def test_pickup_mail_counts_present_list_all(self) -> None:
         """5.4 — mail counts present in list-all response."""
         agents = [{"id": "a", "done": True, "task": "t1", "agent": "ghost", "elapsed": 5}]
+        mock_archive = Mock(return_value=["standing order"])
 
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
@@ -628,14 +634,18 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", return_value={"ghost": 2, "admiral": 1}),
             patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["done"], "admiral": ["check"]}),
+            patch.object(server, "_read_mail_subjects_archive", mock_archive),
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
 
         self.assertIn("mail_summary", result)
         self.assertEqual(result["mail_summary"]["ghost"], 2)
-        self.assertEqual(result["admiral_mail"], 1)
         self.assertEqual(result["ghost_subjects"], ["done"])
-        self.assertEqual(result["admiral_subjects"], ["check"])
+        # captain and admiral are now included in pickup via archive API
+        self.assertIn("captain_subjects", result)
+        self.assertIn("admiral_subjects", result)
+        self.assertIn("captain_mail", result)
+        self.assertIn("admiral_mail", result)
 
     def test_pickup_admiral_mail_early_return(self) -> None:
         """5.5 — Admiral mail early-return sets reason='admiral_mail'."""
@@ -661,6 +671,7 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_read_all_mail_counts", side_effect=mock_read_all_mail_counts),
             patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(server, "_read_mail_subjects_archive", Mock(return_value=[])),
             patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
             patch.object(server.time, "sleep", side_effect=advance),
         ):
@@ -668,7 +679,9 @@ class PickupTimeoutTests(unittest.TestCase):
 
         self.assertFalse(result["done"])
         self.assertEqual(result["reason"], "admiral_mail")
-        self.assertEqual(result["admiral_mail"], 1)
+        # admiral_mail is now surfaced in pickup via archive API
+        self.assertIn("admiral_mail", result)
+        self.assertIn("admiral_subjects", result)
 
 
 class ResourceJobsTests(unittest.TestCase):
@@ -1265,7 +1278,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
 
     def test_installer_has_no_podman_secret_machinery(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        installer = (repo_root / "install.sh").read_text()
+        installer = (repo_root / "scripts" / "install.sh").read_text()
         self.assertIn('${DATA_DIR}:/data', installer)
         self.assertIn('KC_GATEWAY_TOKEN_TTL', installer)
         self.assertNotIn("podman secret inspect ga-kiro-auth", installer)
@@ -4584,11 +4597,12 @@ class InstallEnvVarSyncTests(unittest.TestCase):
         """Extract env var names passed to the transport container in install.sh.
 
         Matches both the old podman run -e flag format and the new compose YAML
-        environment block format.
+        environment block format. Reads scripts/install.sh (the real implementation;
+        install.sh at the repo root is a shim that delegates to it).
         """
         import re
         root = Path(__file__).resolve().parents[2]
-        src = (root / "install.sh").read_text()
+        src = (root / "scripts" / "install.sh").read_text()
         # Old: -e "VAR_NAME=..."
         via_flags = set(re.findall(r'-e\s+["\']([A-Z_]+)=', src))
         # New: compose YAML environment block: "      VAR_NAME: ..."

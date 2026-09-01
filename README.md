@@ -37,7 +37,7 @@ The built-in `spec-ops` loadout is designed for **Spec-Driven Development** usin
 
 ### Prerequisites
 
-Install these before running `install.sh`:
+Install these before running `./install.sh`:
 
 - macOS or Linux
 - **Podman >= 4.4** — `brew install podman` (macOS), `sudo apt-get install -y podman podman-compose` (Ubuntu/Debian)
@@ -70,9 +70,9 @@ cp config/ghostship.conf.example config/ghostship.conf
 ./install.sh --api-key <key>
 ```
 
-To uninstall: `./uninstall.sh`. If ghostship stops after a reboot, run `./start.sh` to bring it back without reinstalling.
+To uninstall: `ghostship uninstall`. If ghostship stops after a reboot, run `ghostship start` to bring it back without reinstalling.
 
-**Updating academy/ and crews/** — `install.sh` snapshots `academy/` and `crews/` from the repo into the data volume. The transport has no runtime dependency on the repo checkout path. After editing files under `academy/` or `crews/`, re-run `./install.sh` for changes to take effect. See [Updating academy/ and crews/](docs/configuration.md#updating-academy-and-crews) in the configuration docs.
+**Updating academy/ and crews/** — `./install.sh` snapshots `academy/` and `crews/` from the repo into the data volume. The transport has no runtime dependency on the repo checkout path. After editing files under `academy/` or `crews/`, re-run `./install.sh` for changes to take effect. See [Updating academy/ and crews/](docs/configuration.md#updating-academy-and-crews) in the configuration docs.
 
 Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
 

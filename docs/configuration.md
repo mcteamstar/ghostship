@@ -51,6 +51,12 @@ process sees and what each default means:
 | `GA_ENABLE_SECURITY_HEADERS` | `1` | Emit baseline security response headers (HSTS, etc.). On unless set to `0`, `false`, or empty |
 | `GA_ENFORCE_HTTPS_REDIRECT` | `0` | 301-redirect plaintext HTTP requests to HTTPS. Staged rollout — default off until the monitored plaintext window and client notice are complete. Enable with `1` or `true` |
 | `GA_CSP_ENFORCE` | `0` | Send the Content-Security-Policy header as enforcing rather than report-only. Staged rollout — default off until report-only violations are triaged. Enable with `1` or `true` |
+| `GA_RATE_LIMIT_ENABLED` | `true` | Master switch for HTTP rate limiting. Set to `false` to disable the `RateLimitMiddleware` entirely; any other value (default) leaves it enabled. See [Rate limiting](#rate-limiting) below |
+| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` limit in `<count>:<window_secs>` format (both positive integers). On parse failure the default is used and a `WARNING` is logged naming the variable |
+| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` limit in `<count>:<window_secs>` format |
+| `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` (and sub-paths) limit in `<count>:<window_secs>` format |
+| `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` limit in `<count>:<window_secs>` format |
+| `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/*/api/*` limit in `<count>:<window_secs>` format |
 | `GA_GIT_AUTHOR_NAME` | _(unset)_ | Operator name injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup time. When set together with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. When unset, per-persona git identity is used (e.g. `Ghost <ghost@localhost>`). Config-file-only — no CLI flag |
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Operator email injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` into every crew container at setup time. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only — no CLI flag |
 
@@ -162,6 +168,54 @@ model.
 
 The Podman socket and the unsandboxed crew runtime are additional deployment
 risks not redesigned by API-key authentication.
+
+## Rate limiting
+
+The transport applies per-endpoint HTTP rate limiting via a
+`RateLimitMiddleware` ASGI layer that sits **outside** the bearer-auth
+middleware, so every caller — including unauthenticated `/login` requests — is
+subject to limits. It complements the brute-force `Throttle` (which counts
+failed auth attempts) by bounding request *volume* regardless of outcome.
+
+Each limiter is a sliding window keyed on caller identity: the source IP alone
+when no bearer token is presented, or `SHA-256(token)[:8]:<ip>` when one is (the
+raw token value is never stored in limiter state). The source IP is taken from
+the first hop of `X-Forwarded-For` when present, falling back to the ASGI
+client address.
+
+When a caller exceeds a limit the middleware returns:
+
+```
+HTTP/1.1 429 Too Many Requests
+Content-Type: text/plain; charset=utf-8
+Retry-After: <window_secs>
+
+Rate limit exceeded. Retry after <window_secs> seconds.
+```
+
+`Retry-After` is the full window duration (conservative — it tells the client
+to back off for the whole window rather than retry-looping near the boundary).
+`/health` and `/version` are unconditionally exempt and never return `429`. Any
+path not matched by a registered limiter (e.g. `/logout`, the `/crews/{id}/ui/`
+browser-asset proxy) passes through without a rate check.
+
+Every limit is configured via a `GA_RATE_LIMIT_*` environment variable in
+`<count>:<window_secs>` format (both positive integers). On a parse failure the
+built-in default is used and a `WARNING` naming the variable is logged.
+
+| Variable | Default | Endpoint |
+|:---------|:--------|:---------|
+| `GA_RATE_LIMIT_ENABLED` | `true` | Master switch (`true`/`false`). `false` removes the middleware entirely and logs an `INFO` entry confirming rate limiting is disabled |
+| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` — polling allowed, hammering blocked |
+| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` — tight limit enforces deliberate use |
+| `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` and sub-paths — headroom for multi-tool orchestration |
+| `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` — protects git subprocess execution |
+| `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/{id}/api/*` — the proxied crew REST API |
+
+**State is in-memory only and is not persisted.** Restarting the transport
+process resets all counters to zero — no caller is pre-limited based on
+pre-restart history. This is the intended behaviour for the single-process
+local deployment; a deliberate restart is an effective limit reset.
 
 ## Extending the crew image
 

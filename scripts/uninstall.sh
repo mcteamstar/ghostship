@@ -268,6 +268,13 @@ if [[ -d "$DATA_DIR" ]]; then
   fi
 fi
 
+# Remove ghostship CLI symlink from ~/.local/bin
+_LOCAL_BIN="${HOME}/.local/bin"
+if [[ -L "${_LOCAL_BIN}/ghostship" ]]; then
+  rm -f "${_LOCAL_BIN}/ghostship"
+  echo "✓ removed ${_LOCAL_BIN}/ghostship"
+fi
+
 echo ""
 echo "=== Done ==="
 echo "Not automated — remove these yourself if you registered them:"
