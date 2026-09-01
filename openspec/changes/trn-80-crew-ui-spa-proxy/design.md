@@ -22,11 +22,13 @@ Caddy is already running on vm23 as a reverse proxy in front of the transport (s
 
 **D1: Caddy admin API for dynamic route management**
 
-The transport calls `PATCH http://localhost:2019/config/apps/http/servers/srv0/routes` at launch to prepend a per-crew route block, and removes it by `DELETE`-ing the matching route at nuke time. Each route is a Caddy JSON fragment with a `handle_path` directive that strips `/crews/{id}/ui` and reverse-proxies to `http://gs-{id}:5476`.
+The transport calls the Caddy admin API to add and remove per-crew routes at launch/nuke. Rather than targeting a named server (`srv0` is auto-assigned and unstable across installs), routes are managed using Caddy's `@id` tagging: each route is assigned a stable `"@id": "crew-ui-{crew_id}"` and registered via `POST http://localhost:2019/id/crew-ui-{crew_id}`. Removal is `DELETE http://localhost:2019/id/crew-ui-{crew_id}`. This avoids server-name discovery and is idempotent.
+
+Each route is a Caddy JSON fragment with a `handle_path` directive that strips `/crews/{id}/ui` and reverse-proxies to `http://gs-{id}:5476`.
 
 Alternatives considered:
+- *Target srv0 directly*: `srv0` is auto-assigned and breaks on installs where the server was created in a different order. `@id` is stable and the intended mechanism for programmatic route management.
 - *Rewrite Caddyfile on disk and reload*: requires file writes + `caddy reload` — brittle if the transport and Caddy are in different containers (they are). Admin API is cleaner and atomic.
-- *Nginx with reload*: Nginx has no runtime API; requires config rewrite + `nginx -s reload`. More complex and less safe.
 - *Per-crew sidecar proxy container*: one nginx/Caddy container per crew. Heavier, adds a container lifecycle dependency, more failure modes.
 
 **D2: Route stored as JSON fragment in transport data dir**
@@ -45,6 +47,7 @@ In `install.sh`, change the Caddy global block from `admin off` to `admin localh
 
 ## Risks / Trade-offs
 
+- **SPA navigation hard-reload loses crew context** → Once the SPA navigates client-side to `/chat`, a hard reload of `/chat` hits the transport root with no crew context. Caddy's `/crews/{id}/ui/*` route only matches paths under that prefix. Full hard-reload support would require subdomain-per-crew routing (out of scope) or a Caddy-layer cookie/Referer heuristic (same problem as the Python layer). Soft navigation (assets within the same tab session) works correctly because the browser still sends the `crew_ui_context` cookie set at initial load. Document this limitation: users should bookmark `/crews/{id}/ui/` not `/chat`.
 - **Route leakage if nuke fails mid-flight** → The route file in the data dir acts as a record. On startup, the transport re-registers all route files — so a leaked route for a nuked crew would try to re-register a non-existent upstream. Caddy won't error on this (the upstream just returns 502 until it's removed), but the transport should also attempt cleanup of stale route files (crew not in registry → remove from Caddy and delete file).
 - **Caddy admin API not available on fresh install** → D3 handles this with `GA_CADDY_UI_ENABLED` and graceful degradation. Old Python proxy is the fallback until Caddy config is updated.
 - **crew network isolation** → Caddy runs in host network mode, so `http://gs-{id}:5476` resolves via the Podman DNS on the ghost-academy network. This is the same hostname the transport already uses for all crew communication — no new network requirements.

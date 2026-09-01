@@ -8,8 +8,8 @@
 
 - [ ] 2.1 Add `GA_CADDY_ADMIN_URL` (default `http://localhost:2019`) and `GA_CADDY_UI_ENABLED` (default `true`) to `transport/config.py`
 - [ ] 2.2 Add `scripts/install.sh` env var block entries for `GA_CADDY_ADMIN_URL` and `GA_CADDY_UI_ENABLED`
-- [ ] 2.3 Write `_caddy_register_crew_ui(crew_id)` and `_caddy_remove_crew_ui(crew_id)` functions in `transport/server.py` — call Caddy admin API to add/remove the route JSON fragment for the crew; log warnings on failure, never raise
-- [ ] 2.4 Write the Caddy route JSON fragment: `handle_path /crews/{id}/ui/*` → `reverse_proxy gs-{id}:5476`; include WebSocket passthrough headers
+- [ ] 2.3 Write `_caddy_register_crew_ui(crew_id)` and `_caddy_remove_crew_ui(crew_id)` functions in `transport/server.py` — register via `POST http://<caddy_admin>/id/crew-ui-{crew_id}` with the route JSON; remove via `DELETE http://<caddy_admin>/id/crew-ui-{crew_id}`; log warnings on failure, never raise
+- [ ] 2.4 Write the Caddy route JSON fragment: `@id: crew-ui-{id}`, `handle_path /crews/{id}/ui/*` → `reverse_proxy gs-{id}:5476`; include WebSocket passthrough headers (`Connection`, `Upgrade`)
 
 ## 3. Route persistence and startup reconciliation
 

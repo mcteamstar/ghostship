@@ -8,7 +8,7 @@ The crew UI proxy works for the initial page load but breaks for SPA navigation:
 - Each crew's UI is served at `http(s)://<host>/crews/{id}/ui/` with path prefix stripping — the SPA sees itself at the root of its upstream, so asset paths and client-side navigation work correctly.
 - The `ohnomer/servers` Caddy deploy config is updated to enable the admin API on localhost and mount a writable config dir for the dynamic route file.
 - `KIROCREW_CORS_ORIGINS` is injected with the transport's public origin at crew container create time (carried over from phase 1 — still needed so the SPA's API calls from the transport origin aren't CORS-rejected).
-- **BREAKING:** The existing Python `_handle_crew_ui_proxy` and catch-all routes are removed. Crew UI is served exclusively via Caddy.
+- **BREAKING (default path):** The existing Python `_handle_crew_ui_proxy` and catch-all routes are removed from the default code path. They are retained as a fallback behind `GA_CADDY_UI_ENABLED=false` for installs that have not updated their Caddy config.
 
 ## Capabilities
 

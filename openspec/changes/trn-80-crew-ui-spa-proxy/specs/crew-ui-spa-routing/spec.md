@@ -14,9 +14,14 @@ The transport SHALL register a reverse-proxy route in Caddy at crew launch time.
 - **WHEN** a browser loads `/crews/my-crew/ui/` and the SPA subsequently fetches `/assets/app.js`
 - **THEN** Caddy routes `/assets/app.js` to `http://gs-my-crew:5476/assets/app.js` without any involvement from the transport Python layer
 
-#### Scenario: Client-side navigation stays within crew context
-- **WHEN** the SPA navigates to `/chat` via `window.history.pushState`
-- **THEN** a browser reload of `/chat` resolves to `http://gs-my-crew:5476/chat` via the same Caddy route, and the SPA renders correctly
+#### Scenario: Client-side navigation — asset requests continue to work
+- **WHEN** the SPA navigates client-side (e.g. to `/chat`) while the browser tab still holds the session cookie set at initial load
+- **THEN** subsequent asset fetches issued from that page are routed to the originating crew via the Caddy catch-all (see below)
+
+#### Scenario: Client-side navigation — hard reload loses crew context
+- **WHEN** a user hard-reloads the browser after the SPA has navigated to `/chat`
+- **THEN** the transport serves a 404 for `/chat` (no crew context without the cookie); the user must navigate back to `/crews/{id}/ui/` to restore context
+- **NOTE** Full navigation support (hard-reload surviving at `/chat`) requires subdomain-per-crew routing, which is out of scope for this change
 
 #### Scenario: Caddy route registered at launch
 - **WHEN** `launch` is called for crew `my-crew`
