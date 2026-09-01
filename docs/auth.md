@@ -346,46 +346,53 @@ before acting on it as a standing order.
 
 ### Delivery path and threat model
 
-The `admiral_secret` is written to two places:
+The `admiral_secret` is written to one place:
 
 1. **`.admiral_secret` file** (mode `0600`) — read by `verify-admiral-sig` to
-   verify Admiral mail signatures.
+   verify Admiral mail signatures. This file is readable only by the
+   `kirocrew` user inside the container.
+
+A separate `policy_signing_key` (also a random 32-byte hex secret) is
+generated at crew creation and used exclusively for policy signing:
+
 2. **`admission_policy.json` `trust_keys` field** — required by KiroCrew's
    governance API to verify the security policy signature on gateway startup.
    This file is mode `0600` but is readable by agent processes running as the
-   `kirocrew` user inside the container.
+   `kirocrew` user inside the container. Because it contains `policy_signing_key`
+   (not `admiral_secret`), an agent that reads it can no longer extract the
+   Admiral mail-signing secret and forge standing orders.
 
 **Threat model:** An agent that reads `admission_policy.json` can extract the
-`admiral_secret` and forge Admiral standing orders. This is an accepted risk
-for the current single-operator, isolated-container use case — each crew
-container runs in its own Podman sandbox and agents are trusted not to be
-actively malicious. For multi-operator or untrusted-agent deployments, a
-separate policy-signing key (distinct from `admiral_secret`) would close this
-gap. See TRN-38 for the investigation that surfaced this.
+`policy_signing_key` and forge security policy signatures, but it cannot forge
+Admiral standing orders — those require `admiral_secret`, which is only
+accessible via the `.admiral_secret` file. This separation closes the
+previously accepted risk noted in TRN-38. For multi-operator or
+untrusted-agent deployments, storing `policy_signing_key` in
+`admission_policy.json` (which any `kirocrew`-user process can read) is
+still an accepted risk for the current isolated-container use case.
 
 ### Policy signing
 
-The same `admiral_secret` is used to sign the crew's security policy at
-injection time. The transport computes HMAC-SHA256 over the canonical
-(sorted-keys JSON) policy body and writes the signature into
-`~/.kiro/crew/security_policy.json` as `identity.signature`. The gateway
-verifies this signature on load; a tampered `security_policy.json` causes a
-mismatch and the gateway refuses to continue — an agent cannot forge a valid
-policy without the `admiral_secret`.
+A dedicated `policy_signing_key` (distinct from `admiral_secret`) is used to
+sign the crew's security policy at injection time. The transport computes
+HMAC-SHA256 over the canonical (sorted-keys JSON) policy body and writes the
+signature into `~/.kiro/crew/security_policy.json` as `identity.signature`.
+The gateway verifies this signature on load; a tampered `security_policy.json`
+causes a mismatch and the gateway refuses to continue — an agent cannot forge a
+valid policy without the `policy_signing_key`.
 
-`admission_policy.json` also carries the `admiral_secret` in its `trust_keys`
+`admission_policy.json` carries the `policy_signing_key` in its `trust_keys`
 field — this is required by KiroCrew's governance API, which reads trust keys
-from the policy file at gateway startup. Delivering the secret exclusively via
-the `.admiral_secret` file (which would close the agent-readability gap
-described in the threat model above) was investigated in TRN-38 but reverted
-because `trust_keys` is a hard dependency of the governance API. The
-`require_policy_signature: false` flag is set in `admission_policy.json` while
-that API contract is being resolved upstream.
+from the policy file at gateway startup. Because `policy_signing_key` is
+separate from `admiral_secret`, agent-readable `admission_policy.json` no
+longer exposes the Admiral mail-signing secret (see TRN-53).
 
 ### Storage
 
-The `admiral_secret` is stored in plaintext in `crews.json` (the transport
-registry at `$TRANSPORT_DATA_DIR/crews.json`, default `/data/crews.json`).
+Both `admiral_secret` and `policy_signing_key` are stored in plaintext in
+`crews.json` (the transport registry at `$TRANSPORT_DATA_DIR/crews.json`,
+default `/data/crews.json`). `policy_signing_key` is only written to the
+registry when policy injection succeeds.
 
 ### Threat model
 
@@ -399,9 +406,12 @@ registry at `$TRANSPORT_DATA_DIR/crews.json`, default `/data/crews.json`).
   running crew. For multi-operator deployments, `DATA_DIR` should have `0700`
   permissions and `podman inspect` access should be restricted.
 - **Agent-level isolation:** Agent processes inside the crew container can
-  read `admission_policy.json`, which carries `admiral_secret` in its
-  `trust_keys` field (a hard dependency of the governance API). This is an
-  accepted risk for the current single-operator, isolated-container use case.
-  See the threat model note above under "Delivery path and threat model."
+  read `admission_policy.json`, which carries `policy_signing_key` in its
+  `trust_keys` field (a hard dependency of the governance API). As of TRN-53,
+  `admission_policy.json` no longer contains `admiral_secret` — the two
+  secrets are now distinct. An agent that reads the file can no longer forge
+  Admiral standing orders; it can only forge security policy signatures, which
+  is a lower-impact capability in the current single-operator, isolated-container
+  use case.
 - **Future hardening:** Encrypting secrets at rest in `crews.json`, or storing
   them separately with tighter file permissions, is tracked in TRN-16.

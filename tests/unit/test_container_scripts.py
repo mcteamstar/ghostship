@@ -29,6 +29,7 @@ wipe_auth = importlib.import_module("wipe_auth")
 read_mail_counts = importlib.import_module("read_mail_counts")
 read_mail_subjects = importlib.import_module("read_mail_subjects")
 patch_models = importlib.import_module("patch_models")
+inject_policy = importlib.import_module("inject_policy")
 
 
 def _make_auth_db(path: str) -> None:
@@ -199,6 +200,73 @@ class PatchModelsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             self._write_agent(td, "raven.json", {"name": "raven"})
             self.assertEqual(patch_models.patch_models(td, "target"), [])
+
+
+class InjectPolicyTests(unittest.TestCase):
+    """Unit tests for inject_policy.inject_policy() (TRN-53).
+
+    The script runs inside a container, but it has no KiroCrew or Podman
+    dependency so it imports and runs directly here.
+    """
+
+    _SAMPLE_POLICY = {
+        "version": "1",
+        "rules": [{"id": "no-internet"}],
+        "identity": {"issuer": "ghostship"},
+    }
+
+    def _run(self, policy: dict, key: str, tmp_dir: str) -> tuple[dict, dict]:
+        """Run inject_policy and return (security_policy, admission_policy) as dicts."""
+        inject_policy.inject_policy(tmp_dir, policy, key)
+        security = json.loads(Path(os.path.join(tmp_dir, "security_policy.json")).read_text())
+        admission = json.loads(Path(os.path.join(tmp_dir, "admission_policy.json")).read_text())
+        return security, admission
+
+    # 4.1 -- existing call sites now use policy_signing_key as the key name
+    def test_inject_policy_accepts_policy_signing_key_param(self) -> None:
+        """inject_policy() signature accepts policy_signing_key (not admiral_secret)."""
+        with tempfile.TemporaryDirectory() as td:
+            policy_signing_key = "deadbeef" * 8
+            # Should not raise -- the renamed param is the correct API
+            version = inject_policy.inject_policy(td, self._SAMPLE_POLICY.copy(), policy_signing_key)
+            self.assertEqual(version, "1")
+
+    # 4.2 -- admission_policy.json contains policy_signing_key, NOT admiral_secret
+    def test_admission_policy_uses_policy_signing_key_in_trust_keys(self) -> None:
+        """admission_policy.json trust_keys carries the policy_signing_key value."""
+        with tempfile.TemporaryDirectory() as td:
+            policy_signing_key = "aabbccdd" * 8
+            _, admission = self._run(self._SAMPLE_POLICY.copy(), policy_signing_key, td)
+
+            self.assertIn("trust_keys", admission)
+            self.assertEqual(admission["trust_keys"]["ghostship"], policy_signing_key)
+
+    def test_admission_policy_does_not_contain_admiral_secret_key(self) -> None:
+        """admission_policy.json must NOT contain an 'admiral_secret' key."""
+        with tempfile.TemporaryDirectory() as td:
+            _, admission = self._run(self._SAMPLE_POLICY.copy(), "key123", td)
+            admission_str = json.dumps(admission)
+            self.assertNotIn("admiral_secret", admission_str,
+                             "admission_policy.json must not expose admiral_secret")
+
+    def test_security_policy_is_signed_with_policy_signing_key(self) -> None:
+        """security_policy.json signature verifies with policy_signing_key."""
+        import hashlib
+        import hmac as _hmac
+        with tempfile.TemporaryDirectory() as td:
+            policy_signing_key = "sigkey" * 8
+            security, _ = self._run(self._SAMPLE_POLICY.copy(), policy_signing_key, td)
+
+            sig = security["identity"]["signature"]
+            # Recompute expected signature using the same canonicalization
+            body = {k: v for k, v in security.items() if k != "identity"}
+            identity_rest = {k: v for k, v in security.get("identity", {}).items()
+                             if k != "signature"}
+            if identity_rest:
+                body["identity"] = identity_rest
+            payload = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+            expected = _hmac.new(policy_signing_key.encode(), payload, hashlib.sha256).hexdigest()
+            self.assertEqual(sig, expected)
 
 
 if __name__ == "__main__":

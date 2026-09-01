@@ -5,7 +5,9 @@ Runs inside a crew container via
 ``python3 /scripts/inject_policy.py <crew_dir> <b64_payload>``, where
 ``b64_payload`` is a base64-encoded JSON object with keys ``policy`` (the
 policy document, including its ``identity`` block but without a signature)
-and ``admiral_secret`` (the HMAC signing key).
+and ``policy_signing_key`` (the dedicated HMAC key used to sign the policy —
+distinct from ``admiral_secret``, which is kept separate and never written
+to ``admission_policy.json``).
 
 Signing runs inside the container so the canonicalization is always the
 same version as the verifier. The KiroCrew canonicalization is inlined
@@ -18,7 +20,7 @@ stdout-only (no stdin) and to avoid interpolating the secret as a literal.
 
 Args (argv):
     1. crew_dir     — the ``.kiro/crew`` directory to write policy files into
-    2. b64_payload  — base64-encoded JSON {"policy": {...}, "admiral_secret": "..."}
+    2. b64_payload  — base64-encoded JSON {"policy": {...}, "policy_signing_key": "..."}
 
 Both files are written with mode 0600. Prints
 ``policy injected version=<v>``.
@@ -61,18 +63,21 @@ def _write_0600(path: pathlib.Path, content: str) -> None:
         os.close(fd)
 
 
-def inject_policy(crew_dir: str, policy: dict, admiral_secret: str) -> str:
+def inject_policy(crew_dir: str, policy: dict, policy_signing_key: str) -> str:
     """Sign the policy, write both files, return the policy version string."""
     policy_version = policy.get("version", "1")
-    signed = sign_policy(policy, admiral_secret)
+    signed = sign_policy(policy, policy_signing_key)
     policy_body = json.dumps(signed, indent=2)
     # admission_policy.json stores the verification flag and trust key.
     # trust_keys is required by KiroCrew's governance API to verify the
     # security policy signature — without it the gateway rejects the policy.
+    # The policy_signing_key stored here is a dedicated signing key, distinct
+    # from admiral_secret, so agent-readable admission_policy.json no longer
+    # exposes the Admiral mail-signing secret.
     admission_body = json.dumps(
         {
             "require_policy_signature": True,
-            "trust_keys": {"ghostship": admiral_secret},
+            "trust_keys": {"ghostship": policy_signing_key},
         },
         indent=2,
     )
@@ -88,7 +93,7 @@ def main(argv: list[str]) -> int:
         print("usage: inject_policy.py <crew_dir> <b64_payload>", file=sys.stderr)
         return 2
     data = json.loads(base64.b64decode(argv[2]).decode())
-    version = inject_policy(argv[1], data["policy"], data["admiral_secret"])
+    version = inject_policy(argv[1], data["policy"], data["policy_signing_key"])
     print(f"policy injected version={version}")
     return 0
 

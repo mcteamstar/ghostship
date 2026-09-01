@@ -31,6 +31,7 @@ last-used init) and ``ReconcileRegistryTests``; both are migrated below.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import tempfile
@@ -1525,6 +1526,157 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         finally:
             with server._login_pending_lock:
                 server._login_pending = None
+
+
+# ── AdmiralSecretHardeningTests (TRN-53) ─────────────────────────────────────
+#
+# Task 4.3: verify that two distinct secrets are generated and policy_signing_key
+# (not admiral_secret) is forwarded to the _inject_policy() call.
+# Task 4.4: verify that policy_signing_key is stored in the crews.json entry
+# when policy injection succeeds.
+
+
+class AdmiralSecretHardeningTests(unittest.TestCase):
+    """TRN-53: admiral_secret and policy_signing_key are distinct; only
+    policy_signing_key flows into the policy injection call; and
+    crews.json stores policy_signing_key when injection succeeds.
+    """
+
+    def _run_finish_crew_setup(
+        self,
+        inject_policy_calls: list,
+        admiral_secret_calls: list,
+        policy_injection_ok: bool = True,
+    ) -> tuple[dict, dict]:
+        """Run lifecycle._finish_crew_setup with enough mocking to reach the
+        registry write, capturing _inject_policy call args and the
+        inject_admiral_secret.py exec args.
+
+        Returns (registry_data, result) so callers can inspect both.
+        """
+
+        class CapturingPodman:
+            def container_stop(self, container: str) -> None:
+                pass
+
+            def container_start(self, container: str) -> None:
+                pass
+
+            def container_exec(
+                self, container: str, cmd: list, env: dict | None = None
+            ) -> str:
+                return "ready"
+
+            def container_exec_checked(self, container: str, cmd: list) -> str:
+                if "inject_admiral_secret.py" in " ".join(cmd):
+                    # Last arg is the secret value
+                    admiral_secret_calls.append(cmd[-1])
+                return "ok"
+
+            def container_inspect(self, container: str) -> dict:
+                return {"Config": {"Labels": {}}}
+
+        podman = CapturingPodman()
+
+        def fake_inject_policy(
+            p, container: str, composition: str, policy_signing_key: str
+        ) -> str:
+            inject_policy_calls.append({
+                "container": container,
+                "composition": composition,
+                "policy_signing_key": policy_signing_key,
+            })
+            if not policy_injection_ok:
+                raise RuntimeError("policy injection deliberately failed")
+            return "1"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            registry = data_dir / "crews.json"
+            with (
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_inject_auth"),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_copy_agents"),
+                patch.object(lifecycle, "_copy_skills"),
+                patch.object(lifecycle, "_copy_steering"),
+                patch.object(lifecycle, "_seed_openspec_store"),
+                patch.object(lifecycle, "_patch_models"),
+                patch.object(lifecycle, "_mint_cookie", return_value="cookie"),
+                patch.object(lifecycle, "_inject_policy", side_effect=fake_inject_policy),
+            ):
+                result = lifecycle._finish_crew_setup(
+                    podman,
+                    "demo",
+                    "gs-demo",
+                    "gs-vol-demo",
+                    "gs-home-demo",
+                    "auth-b64",
+                )
+
+            registry_data = json.loads(registry.read_text()) if registry.exists() else {}
+        return registry_data, result
+
+    def test_two_distinct_secrets_generated_and_policy_signing_key_forwarded(self) -> None:
+        """4.3: policy_signing_key (not admiral_secret) is passed to _inject_policy;
+        and the two secrets are distinct values."""
+        inject_policy_calls: list = []
+        admiral_secret_calls: list = []
+        self._run_finish_crew_setup(inject_policy_calls, admiral_secret_calls)
+
+        self.assertEqual(len(inject_policy_calls), 1,
+                         "Expected exactly one _inject_policy call")
+        self.assertEqual(len(admiral_secret_calls), 1,
+                         "Expected exactly one inject_admiral_secret.py exec call")
+
+        forwarded_key = inject_policy_calls[0]["policy_signing_key"]
+        admiral_secret_value = admiral_secret_calls[0]
+
+        # The two secrets must be distinct
+        self.assertNotEqual(
+            forwarded_key,
+            admiral_secret_value,
+            "policy_signing_key and admiral_secret must be distinct secrets",
+        )
+        # Both must be non-empty
+        self.assertTrue(forwarded_key, "policy_signing_key must be non-empty")
+        self.assertTrue(admiral_secret_value, "admiral_secret must be non-empty")
+
+    def test_policy_signing_key_stored_in_registry_when_injection_succeeds(self) -> None:
+        """4.4: crews.json entry contains policy_signing_key when policy injection succeeds."""
+        inject_policy_calls: list = []
+        admiral_secret_calls: list = []
+        registry_data, result = self._run_finish_crew_setup(
+            inject_policy_calls, admiral_secret_calls, policy_injection_ok=True
+        )
+
+        crew_entry = registry_data.get("crews", {}).get("demo", {})
+        self.assertIn("policy_signing_key", crew_entry,
+                      "crews.json entry must contain policy_signing_key on success")
+        self.assertTrue(crew_entry["policy_signing_key"],
+                        "policy_signing_key must be a non-empty string")
+
+        # The stored key must match what was forwarded to _inject_policy
+        self.assertEqual(len(inject_policy_calls), 1)
+        self.assertEqual(crew_entry["policy_signing_key"],
+                         inject_policy_calls[0]["policy_signing_key"],
+                         "stored policy_signing_key must match the one passed to _inject_policy")
+
+    def test_policy_signing_key_absent_from_registry_when_injection_fails(self) -> None:
+        """4.4 (failure path): policy_signing_key is NOT stored when injection fails."""
+        inject_policy_calls: list = []
+        admiral_secret_calls: list = []
+        registry_data, result = self._run_finish_crew_setup(
+            inject_policy_calls, admiral_secret_calls, policy_injection_ok=False
+        )
+
+        crew_entry = registry_data.get("crews", {}).get("demo", {})
+        self.assertNotIn("policy_signing_key", crew_entry,
+                         "policy_signing_key must not be stored when injection failed")
+        self.assertNotIn("policy_version", crew_entry,
+                         "policy_version must not be stored when injection failed")
 
 
 if __name__ == "__main__":

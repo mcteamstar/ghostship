@@ -78,7 +78,7 @@ def _run_inject_policy_script(cmd: list[str], crew_dir: str) -> str:
     """
     payload = json.loads(base64.b64decode(cmd[-1]).decode())
     return _inject_policy_script.inject_policy(
-        crew_dir, payload["policy"], payload["admiral_secret"]
+        crew_dir, payload["policy"], payload["policy_signing_key"]
     )
 
 
