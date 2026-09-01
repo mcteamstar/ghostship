@@ -310,8 +310,6 @@ Subcommands:
   setup      [flags]   Register MCP server + skills for agent clients (kiro, Claude Code, opencode)
   version              Print ghostship version
 
-Aliases: init → setup
-
 Run 'ghostship <subcommand> --help' for flags specific to that subcommand.
 """
 
@@ -323,7 +321,6 @@ _COMMANDS = {
     "uninstall": cmd_uninstall,
     "status":    cmd_status,
     "setup":     cmd_setup,
-    "init":      cmd_setup,   # alias
     "version":   cmd_version,
 }
 
