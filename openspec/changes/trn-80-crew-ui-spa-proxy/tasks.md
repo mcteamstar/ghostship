@@ -53,13 +53,13 @@
 
 ## 10. WebSocket proxying (unblocks "Gateway offline")
 
-- [ ] 10.1 Add `httpx-ws==0.7.0` to `transport/requirements.txt`
-- [ ] 10.2 Update `_proxy_asgi` in `_start_dashboard_port_server` to handle `scope["type"] == "websocket"`:
+- [x] 10.1 Add `httpx-ws==0.7.0` to `transport/requirements.txt`
+- [x] 10.2 Update `_proxy_asgi` in `_start_dashboard_port_server` to handle `scope["type"] == "websocket"`:
   - Accept incoming WS from browser (`starlette.websockets.WebSocket`)
   - Open upstream WS to crew gateway via `aconnect_ws` with session cookie forwarded in headers
   - Bidirectionally pump messages using `asyncio.gather` until either side disconnects
   - Handle `WebSocketDisconnect` / `httpx_ws.WebSocketDisconnect` gracefully on both sides
-- [ ] 10.3 Unit test for WS proxy handler (mock `aconnect_ws`)
+- [x] 10.3 Unit test for WS proxy handler (mock `aconnect_ws`)
 
 ## 11. Spec sync and validation
 

@@ -68,11 +68,22 @@ from typing import Any, Iterator
 from urllib.parse import quote
 
 import httpx
+try:
+    import httpx_ws as _httpx_ws
+except (ImportError, AttributeError):
+    # httpx_ws unavailable (dependency-free test stubs or not yet installed).
+    # The WebSocket proxy path is guarded at call time — it will raise if reached.
+    _httpx_ws = None  # type: ignore[assignment]
 from mcp.server.mcpserver.server import MCPServer
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse, PlainTextResponse, JSONResponse
 from starlette.routing import Route, Mount
+try:
+    from starlette.websockets import WebSocket as _StarletteWebSocket, WebSocketDisconnect as _StarletteWebSocketDisconnect
+except (ImportError, AttributeError):
+    _StarletteWebSocket = None  # type: ignore[assignment,misc]
+    _StarletteWebSocketDisconnect = Exception  # type: ignore[assignment,misc]
 import uvicorn
 import asyncio
 
@@ -689,14 +700,118 @@ def _start_dashboard_port_server(port: int, crew_id: str, app: Any) -> None:
                 )
         return await _handle_dashboard_port_proxy(request, crew_id)
 
+    async def _handle_dashboard_ws_proxy(scope: dict, receive: Any, send: Any) -> None:
+        """Bidirectionally proxy a WebSocket connection to the upstream crew gateway.
+
+        Pattern (per D6):
+        1. Accept the incoming WS connection from the browser.
+        2. Open an outbound WS to the upstream crew gateway via httpx-ws.
+        3. Pump messages between both connections concurrently with asyncio.gather.
+        4. Forward the stored session cookie in the upstream connection headers.
+        5. Handle disconnection from either side gracefully.
+
+        Uses module-level _httpx_ws, _StarletteWebSocket, and
+        _StarletteWebSocketDisconnect (imported at module load with fallbacks).
+        """
+        import httpx_ws as _local_httpx_ws
+        _WebSocket = _StarletteWebSocket
+        _WebSocketDisconnect = _StarletteWebSocketDisconnect
+
+        # Look up crew info so we can build the upstream URL and get the cookie.
+        try:
+            crew = _require_crew(crew_id)
+        except (KeyError, ValueError) as exc:
+            # Cannot look up crew — close immediately with a protocol error.
+            logger.warning("WS proxy: crew lookup failed for %s: %s", crew_id, exc)
+            return
+
+        upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+        path = scope.get("path", "/") or "/"
+        query = scope.get("query_string", b"")
+        upstream_url = upstream_base.replace("http://", "ws://") + path
+        if query:
+            upstream_url += "?" + _sanitise_query_string(query)
+
+        # Build forwarded headers: inject session cookie, strip hop-by-hop.
+        forward_headers: dict[str, str] = {}
+        for k, v in scope.get("headers", []):
+            key = k.decode("latin-1").lower()
+            if key in _HOP_BY_HOP_HEADERS or key == "host":
+                continue
+            forward_headers[key] = v.decode("latin-1")
+
+        stored_cookie = crew.get("cookie", "")
+        if stored_cookie:
+            cookie_header = f"mc_token_{CREW_GATEWAY_PORT}={stored_cookie}"
+            existing = forward_headers.get("cookie", "")
+            if existing:
+                cookie_header = f"{existing}; {cookie_header}"
+            forward_headers["cookie"] = cookie_header
+
+        websocket = _WebSocket(scope, receive, send)
+        try:
+            await websocket.accept()
+        except Exception as exc:
+            logger.debug("WS proxy: could not accept incoming connection: %s", exc)
+            return
+
+        try:
+            async with _local_httpx_ws.aconnect_ws(upstream_url, headers=forward_headers) as upstream_ws:
+
+                async def browser_to_upstream() -> None:
+                    """Pump messages from the browser to the upstream gateway."""
+                    try:
+                        while True:
+                            msg = await websocket.receive()
+                            if msg["type"] == "websocket.disconnect":
+                                break
+                            if "bytes" in msg and msg["bytes"] is not None:
+                                await upstream_ws.send_bytes(msg["bytes"])
+                            elif "text" in msg and msg["text"] is not None:
+                                await upstream_ws.send_text(msg["text"])
+                    except (_WebSocketDisconnect, _local_httpx_ws.WebSocketDisconnect):
+                        pass
+                    except Exception as exc:
+                        logger.debug("WS proxy browser->upstream error: %s", exc)
+
+                async def upstream_to_browser() -> None:
+                    """Pump messages from the upstream gateway to the browser."""
+                    try:
+                        while True:
+                            msg = await upstream_ws.receive()
+                            if isinstance(msg, bytes):
+                                await websocket.send_bytes(msg)
+                            else:
+                                await websocket.send_text(msg if isinstance(msg, str) else str(msg))
+                    except (_WebSocketDisconnect, _local_httpx_ws.WebSocketDisconnect):
+                        pass
+                    except Exception as exc:
+                        logger.debug("WS proxy upstream->browser error: %s", exc)
+
+                await asyncio.gather(
+                    browser_to_upstream(),
+                    upstream_to_browser(),
+                    return_exceptions=True,
+                )
+        except (_WebSocketDisconnect, _local_httpx_ws.WebSocketDisconnect):
+            pass
+        except Exception as exc:
+            logger.debug("WS proxy connection error for crew %s: %s", crew_id, exc)
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
     # Use a bare ASGI callable so all methods and paths are handled without
     # Starlette route matching (which can miss root "/" or unknown methods).
     async def _proxy_asgi(scope: dict, receive: Any, send: Any) -> None:
-        if scope["type"] != "http":
-            return
-        request = Request(scope, receive)
-        response = await _proxy_handler(request)
-        await response(scope, receive, send)
+        if scope["type"] == "http":
+            request = Request(scope, receive)
+            response = await _proxy_handler(request)
+            await response(scope, receive, send)
+        elif scope["type"] == "websocket":
+            await _handle_dashboard_ws_proxy(scope, receive, send)
 
     proxy_app = _proxy_asgi
     config = uvicorn.Config(proxy_app, host=HOST, port=port, log_level="warning")

@@ -5766,5 +5766,230 @@ class DashboardRestEndpointTests(unittest.TestCase):
         self.assertIn("post-dashboard-no-auth", handled)
 
 
+class DashboardWebSocketProxyTests(unittest.TestCase):
+    """TRN-80 task 10.3 — WebSocket proxy handler unit tests.
+
+    Verifies that:
+    - A ``websocket`` scope type is routed to the WS proxy path (not the HTTP path).
+    - The upstream disconnect is handled gracefully (no uncaught exception).
+
+    Both ``httpx_ws.aconnect_ws`` and the starlette WebSocket are mocked so no
+    real network connection is made.  Because starlette and uvicorn are stubs in
+    the test environment, the tests exercise the proxy logic by directly calling
+    the inner closure extracted via a minimal _start_dashboard_port_server run.
+    """
+
+    CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ws_scope(path: str = "/api/ws", query_string: bytes = b"") -> dict:
+        """Return a minimal ASGI WebSocket scope."""
+        return {
+            "type": "websocket",
+            "path": path,
+            "query_string": query_string,
+            "headers": [(b"host", b"localhost")],
+        }
+
+    @staticmethod
+    def _make_receive_queue(messages: list[dict]):
+        """Return an async callable that yields queued messages in order."""
+        queue = list(messages)
+
+        async def receive() -> dict:
+            if queue:
+                return queue.pop(0)
+            # Default: signal a clean browser disconnect so the pump loop stops.
+            return {"type": "websocket.disconnect", "code": 1000}
+
+        return receive
+
+    @staticmethod
+    def _make_send_collector():
+        """Return (send coroutine, collected list)."""
+        collected: list[dict] = []
+
+        async def send(msg: dict) -> None:
+            collected.append(msg)
+
+        return send, collected
+
+    # ------------------------------------------------------------------
+    # Test: websocket scope type routes to WS proxy, not HTTP handler
+    # ------------------------------------------------------------------
+
+    def test_websocket_scope_invokes_ws_proxy_not_http_handler(self) -> None:
+        """A ``websocket`` scope type must enter _handle_dashboard_ws_proxy,
+        not fall through to the HTTP handler."""
+        ws_proxy_called = []
+        http_proxy_called = []
+
+        # Capture the ASGI callable from _start_dashboard_port_server by patching
+        # uvicorn.Config to record the ``app`` arg and stub out the server.
+        captured_app: list = []
+
+        class _FakeConfig:
+            def __init__(self, app, **kwargs):
+                captured_app.append(app)
+                self.app = app
+
+        class _FakeServer:
+            def __init__(self, config):
+                self.should_exit = False
+
+        class _FakeThread:
+            def __init__(self, target=None, daemon=None, name=None, **kwargs):
+                self._target = target
+
+            def start(self):
+                pass
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("transport.server.uvicorn.Config", _FakeConfig),
+            patch("transport.server.uvicorn.Server", _FakeServer),
+            patch("transport.server.threading.Thread", _FakeThread),
+        ):
+            server._start_dashboard_port_server(29001, "demo", MagicMock())
+
+        self.assertEqual(len(captured_app), 1, "Expected uvicorn.Config to be called once")
+        proxy_asgi = captured_app[0]
+
+        # Now invoke _proxy_asgi with a websocket scope — the WS handler will be
+        # called.  We verify the routing by checking which inner path is entered.
+        from unittest.mock import AsyncMock
+
+        mock_ws = MagicMock()
+        mock_ws.accept = AsyncMock()
+        mock_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
+        mock_ws.send_text = AsyncMock()
+        mock_ws.send_bytes = AsyncMock()
+        mock_ws.close = AsyncMock()
+
+        aconnect_calls: list[str] = []
+
+        @contextlib.asynccontextmanager
+        async def fake_aconnect_ws(url, headers=None):
+            aconnect_calls.append(url)
+
+            class FakeUpstream:
+                async def receive(self):
+                    raise Exception("upstream disconnect")  # stop the pump
+
+                async def send_text(self, text):
+                    pass
+
+                async def send_bytes(self, data):
+                    pass
+
+            yield FakeUpstream()
+
+        scope = self._ws_scope("/api/ws")
+        receive = self._make_receive_queue([{"type": "websocket.disconnect"}])
+        send, _ = self._make_send_collector()
+
+        # Patch httpx_ws.aconnect_ws and the module-level WebSocket reference
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("httpx_ws.aconnect_ws", new=fake_aconnect_ws),
+            patch.object(server, "_StarletteWebSocket", lambda scope, receive, send: mock_ws),
+        ):
+            asyncio.run(proxy_asgi(scope, receive, send))
+
+        # The WS proxy path was entered (aconnect_ws called with upstream URL)
+        self.assertTrue(aconnect_calls, "Expected httpx_ws.aconnect_ws to be called for websocket scope")
+        self.assertIn("/api/ws", aconnect_calls[0])
+        # mock_ws.accept() must have been called
+        mock_ws.accept.assert_called_once()
+
+        # Clean up port state
+        server._dashboard_port_servers.pop(29001, None)
+        server._dashboard_port_crew.pop(29001, None)
+
+    # ------------------------------------------------------------------
+    # Test: upstream disconnect is handled gracefully
+    # ------------------------------------------------------------------
+
+    def test_upstream_disconnect_handled_gracefully(self) -> None:
+        """When the upstream WS disconnects, the proxy must close cleanly
+        without raising an uncaught exception."""
+        from unittest.mock import AsyncMock
+
+        captured_app: list = []
+
+        class _FakeConfig:
+            def __init__(self, app, **kwargs):
+                captured_app.append(app)
+                self.app = app
+
+        class _FakeServer:
+            def __init__(self, config):
+                self.should_exit = False
+
+        class _FakeThread:
+            def __init__(self, target=None, daemon=None, name=None, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("transport.server.uvicorn.Config", _FakeConfig),
+            patch("transport.server.uvicorn.Server", _FakeServer),
+            patch("transport.server.threading.Thread", _FakeThread),
+        ):
+            server._start_dashboard_port_server(29002, "demo", MagicMock())
+
+        proxy_asgi = captured_app[0]
+
+        mock_ws = MagicMock()
+        mock_ws.accept = AsyncMock()
+        mock_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
+        mock_ws.close = AsyncMock()
+
+        import httpx_ws as _hws
+
+        @contextlib.asynccontextmanager
+        async def fake_aconnect_ws_disconnect(url, headers=None):
+            class FakeUpstreamDisconnect:
+                async def receive(self):
+                    raise _hws.WebSocketDisconnect()
+
+                async def send_text(self, text):
+                    pass
+
+                async def send_bytes(self, data):
+                    pass
+
+            yield FakeUpstreamDisconnect()
+
+        scope = self._ws_scope("/api/ws")
+        receive = self._make_receive_queue([{"type": "websocket.disconnect"}])
+        send, _ = self._make_send_collector()
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("httpx_ws.aconnect_ws", new=fake_aconnect_ws_disconnect),
+            patch.object(server, "_StarletteWebSocket", lambda scope, receive, send: mock_ws),
+        ):
+            # Should not raise
+            try:
+                asyncio.run(proxy_asgi(scope, receive, send))
+            except Exception as exc:
+                self.fail(f"Upstream disconnect raised uncaught exception: {exc}")
+
+        # websocket.close() should have been called (graceful shutdown)
+        mock_ws.close.assert_called()
+
+        # Clean up
+        server._dashboard_port_servers.pop(29002, None)
+        server._dashboard_port_crew.pop(29002, None)
+
+
 if __name__ == "__main__":
     unittest.main()
