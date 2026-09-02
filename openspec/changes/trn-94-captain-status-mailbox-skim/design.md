@@ -19,9 +19,9 @@ Both `captain status` and crew-level `pickup` need the same broad mailbox skim �
 
 **D1: Shared `_skim_all_mailboxes(crew_id)` helper**
 
-Extract a helper that calls `_read_mail_subjects` for each of the 8 mailboxes (ghost, spectre, banshee, wraith, reaper, raven, captain, admiral) and returns a dict keyed by mailbox name. Both `captain status` and crew-level `pickup` call this helper. If the container is stopped or an exec fails for a mailbox, that mailbox contributes an empty list rather than erroring the whole call.
+Extract a helper that calls `_read_mail_subjects` (which already exists in `transport/captain.py`) passing all 8 mailbox names in one container exec — `read_mail_subjects.py` takes a JSON list of mailbox names and returns a dict in a single call. No per-mailbox exec loop needed. Both `captain status` and crew-level `pickup` call this helper. If the container is stopped or the exec fails, all mailboxes return empty lists rather than erroring the whole call.
 
-The helper lives in `transport/server.py` alongside the existing mail-reading utilities.
+The helper lives alongside the existing `_read_mail_subjects` in `transport/captain.py` (or is just a thin wrapper around it with a fixed mailbox set).
 
 **D2: `captain status` response — add `agent_mail` field**
 
@@ -41,5 +41,5 @@ Set `ticket: TRN-94` in `.openspec.yaml`.
 
 ## Risks / Trade-offs
 
-- **8 container execs per call** — each mailbox requires a container exec. For a stopped crew, all 8 fail fast (container not running) and return empty. For a running crew, 8 concurrent mailbox reads adds latency (~200ms total). Acceptable given the benefit.
+- **One container exec per call** — `_read_mail_subjects` already takes a list of mailboxes and handles them all in a single `python3 read_mail_subjects.py` exec. The broad skim is one call regardless of mailbox count. For a stopped crew it fails fast and returns empty. Latency is the same as the current captain/admiral skim — no regression.
 - **Backward compatibility** — `agent_mail` and `agent_subjects` are additive fields. No existing callers are broken.
