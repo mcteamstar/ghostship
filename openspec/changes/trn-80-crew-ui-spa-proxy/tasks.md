@@ -24,32 +24,32 @@
 - [x] 4.5 Session cookie (`mc_token_5476`) injected as `Set-Cookie` on responses
 - [x] 4.6 `content-encoding` / `content-length` stripped after httpx decompression
 
-## 5. `launch` parameter + nuke
+## 5. `launch` parameter + nuke ✓
 
 - [x] 5.1 Port allocation, `_start_dashboard_port_server`, registry write, `dashboard_url` in response
 - [x] 5.2 Nuke stops listener and releases port
-- [ ] 5.3 Add `dashboard: bool = False` parameter to `launch()` — gate port allocation on this flag instead of `GA_DASHBOARD_PORT_ENABLED` alone
+- [x] 5.3 Add `dashboard: bool = False` parameter to `launch()` — gate port allocation on this flag instead of `GA_DASHBOARD_PORT_ENABLED` alone
 
 ## 6. CORS origin injection ✓
 
 - [x] 6.1 Transport public origin appended to `KIROCREW_CORS_ORIGINS` at container create
 - [x] 6.2 UI port origin also appended after port allocation
 
-## 7. REST API for retrofitting dashboard
+## 7. REST API for retrofitting dashboard ✓
 
-- [ ] 7.1 `POST /crews/{crew_id}/dashboard` — allocate port + start listener for existing crew; return `{"dashboard_url": "..."}`; no-op if already active
-- [ ] 7.2 `DELETE /crews/{crew_id}/dashboard` — stop listener + release port; return `{"dashboard_url": null}`; no-op if not active
-- [ ] 7.3 Both routes respect `GA_API_KEY` auth and `GA_DASHBOARD_PORT_ENABLED`
-- [ ] 7.4 Unit tests for both endpoints
+- [x] 7.1 `POST /crews/{crew_id}/dashboard` — allocate port + start listener for existing crew; return `{"dashboard_url": "..."}`; no-op if already active
+- [x] 7.2 `DELETE /crews/{crew_id}/dashboard` — stop listener + release port; return `{"dashboard_url": null}`; no-op if not active
+- [x] 7.3 Both routes respect `GA_API_KEY` auth and `GA_DASHBOARD_PORT_ENABLED`
+- [x] 7.4 Unit tests for both endpoints
 
 ## 8. ohnomer/servers firewall ✓
 
 - [x] 8.1 `ufw allow 64058:64107/tcp` in `ohnomer/servers/hyperv/academy/install.sh`
 
-## 9. Tests
+## 9. Tests ✓
 
-- [ ] 9.1 Unit test: `launch(dashboard=True)` allocates port and returns `dashboard_url`; `launch(dashboard=False)` does not
-- [ ] 9.2 Existing tests: `_start_dashboard_port_server`, `_stop_dashboard_port_server`, catch-all handler (already passing — verify)
+- [x] 9.1 Unit test: `launch(dashboard=True)` allocates port and returns `dashboard_url`; `launch(dashboard=False)` does not
+- [x] 9.2 Existing tests: `_start_dashboard_port_server`, `_stop_dashboard_port_server`, catch-all handler passing
 
 ## 10. WebSocket proxying (unblocks "Gateway offline")
 

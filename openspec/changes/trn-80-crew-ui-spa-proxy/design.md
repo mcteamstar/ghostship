@@ -6,7 +6,7 @@ The KiroCrew gateway UI is a React SPA designed to own the entire origin. Path-p
 
 **Crew containers are completely unchanged.** They continue to expose only port 5476 on the internal ghost-academy Podman network, unreachable from the host or the internet. The transport already communicates with crew containers over this network for all other operations (dispatch, pickup, evac, etc.) — the UI proxy is just another consumer of the same internal route. No Podman port bindings, no firewall changes on the crew side, nothing new in the crew image.
 
-The transport already runs under uvicorn. Uvicorn supports serving a Starlette app on multiple ports via separate `asyncio` server instances in the same event loop. At crew launch the transport starts a new server bound to the allocated port; at nuke it stops it. All port-bound servers share the same app router but the incoming port is used to look up the target crew.
+The transport already runs under uvicorn. Rather than sharing the MCP app (which can only be started once due to its `StreamableHTTPSessionManager`), each dashboard port gets its own lightweight ASGI callable in a dedicated daemon thread with its own `asyncio` event loop. At crew launch the transport starts a new server bound to the allocated port; at nuke it stops it. Each per-port ASGI callable handles auth, HTTP proxying via httpx, and WebSocket proxying via httpx-ws.
 
 ## Goals / Non-Goals
 
