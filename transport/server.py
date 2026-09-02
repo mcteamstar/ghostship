@@ -691,7 +691,16 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
                 )
         return await _handle_ui_port_proxy(request, crew_id)
 
-    proxy_app = Starlette(routes=[Route("/{path:path}", _proxy_handler), Route("/", _proxy_handler)])
+    # Use a bare ASGI callable so all methods and paths are handled without
+    # Starlette route matching (which can miss root "/" or unknown methods).
+    async def _proxy_asgi(scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            return
+        request = Request(scope, receive)
+        response = await _proxy_handler(request)
+        await response(scope, receive, send)
+
+    proxy_app = _proxy_asgi
     config = uvicorn.Config(proxy_app, host=HOST, port=port, log_level="warning")
     srv = uvicorn.Server(config)
     _ui_port_servers[port] = srv
