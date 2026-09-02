@@ -5145,9 +5145,9 @@ class UiPortLaunchTests(unittest.TestCase):
             server.launch("demo")
 
         call_kwargs = podman.container_create.call_args.kwargs
-        self.assertIn("ports", call_kwargs)
-        self.assertIsNotNone(call_kwargs["ports"])
-        self.assertEqual(call_kwargs["ports"], {9000: server.CREW_GATEWAY_PORT})
+        self.assertNotIn("ports", call_kwargs, "crew containers must not bind host ports")
+        # ui_url should still be in the launch response (transport-side listener)
+        self.assertIn("ui_url", finish_result or {})
 
     def test_launch_no_ports_passed_when_ui_disabled(self) -> None:
         registry = {"crews": {}}
