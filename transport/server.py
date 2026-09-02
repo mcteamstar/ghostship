@@ -313,9 +313,9 @@ GA_PICKUP_MAX_POLL_SECS = cfg.ga_pickup_max_poll_secs
 KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
 # ── Crew UI port allocation (TRN-80) ─────────────────────────────────────────
-GA_UI_PORT_RANGE_START = cfg.ga_ui_port_range_start
-GA_UI_PORT_RANGE_SIZE = cfg.ga_ui_port_range_size
-GA_UI_PORT_ENABLED = cfg.ga_ui_port_enabled
+GA_DASHBOARD_PORT_RANGE_START = cfg.ga_dashboard_port_range_start
+GA_DASHBOARD_PORT_RANGE_SIZE = cfg.ga_dashboard_port_range_size
+GA_DASHBOARD_PORT_ENABLED = cfg.ga_dashboard_port_enabled
 
 # ── Git author identity passthrough (TRN-77) ─────────────────────────────────
 # When both vars are set, all four git identity env vars are injected into
@@ -616,13 +616,13 @@ _task_timestamps: dict[str, dict] = {}
 # ── UI port pool (TRN-80) ─────────────────────────────────────────────────────
 # Tracks which host ports in the UI port range are currently allocated to a
 # crew. Populated from crews.json at startup (see _startup_events) and mutated
-# only inside _allocate_ui_port / _release_ui_port. Protected by the global
+# only inside _allocate_dashboard_port / _release_dashboard_port. Protected by the global
 # _registry_lock (same lock used for crews.json writes) so allocation and
 # registry persistence are atomic.
-_ui_ports_in_use: set[int] = set()
+_dashboard_ports_in_use: set[int] = set()
 
 
-def _allocate_ui_port() -> int:
+def _allocate_dashboard_port() -> int:
     """Scan the UI port range and allocate the first free port.
 
     Must be called while holding ``_registry_lock`` so the allocation and
@@ -631,18 +631,18 @@ def _allocate_ui_port() -> int:
     Returns the allocated port. Raises RuntimeError if the range is full.
     """
     for port in range(
-        GA_UI_PORT_RANGE_START,
-        GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE,
+        GA_DASHBOARD_PORT_RANGE_START,
+        GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE,
     ):
-        if port not in _ui_ports_in_use:
-            _ui_ports_in_use.add(port)
+        if port not in _dashboard_ports_in_use:
+            _dashboard_ports_in_use.add(port)
             return port
     raise RuntimeError("UI port pool exhausted")
 
 
-def _release_ui_port(port: int) -> None:
+def _release_dashboard_port(port: int) -> None:
     """Remove ``port`` from the in-use set (no-op if not present)."""
-    _ui_ports_in_use.discard(port)
+    _dashboard_ports_in_use.discard(port)
 
 
 # ── Per-port UI proxy servers (TRN-80) ────────────────────────────────────────
@@ -651,14 +651,14 @@ def _release_ui_port(port: int) -> None:
 # ports pass through the same BearerAuthMiddleware (GA_API_KEY, rate limiting)
 # and are then proxied to the crew gateway over the internal Podman network.
 # Crew containers are NOT modified — they only expose port 5476 internally.
-_ui_port_servers: dict[int, "uvicorn.Server"] = {}
-_ui_port_crew: dict[int, str] = {}  # port → crew_id
+_dashboard_port_servers: dict[int, "uvicorn.Server"] = {}
+_dashboard_port_crew: dict[int, str] = {}  # port → crew_id
 # Set at startup to the fully-wrapped ASGI app so per-port servers use the
 # same middleware stack (auth, rate limiting, security headers).
-_ui_app: Any = None
+_dashboard_app: Any = None
 
 
-def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
+def _start_dashboard_port_server(port: int, crew_id: str, app: Any) -> None:
     """Start a lightweight proxy uvicorn server on *port* for *crew_id*.
 
     Uses a dedicated per-port Starlette app (NOT the MCP app — that can only
@@ -666,9 +666,9 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
     enforces GA_API_KEY auth and proxies all requests to the crew gateway.
     Safe to call from executor threads.
     """
-    if port in _ui_port_servers:
+    if port in _dashboard_port_servers:
         return
-    _ui_port_crew[port] = crew_id
+    _dashboard_port_crew[port] = crew_id
 
     # Build a minimal proxy app for this port.
     async def _proxy_handler(request: Request) -> Response:
@@ -687,7 +687,7 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
                     status_code=401,
                     headers={"www-authenticate": "Bearer"},
                 )
-        return await _handle_ui_port_proxy(request, crew_id)
+        return await _handle_dashboard_port_proxy(request, crew_id)
 
     # Use a bare ASGI callable so all methods and paths are handled without
     # Starlette route matching (which can miss root "/" or unknown methods).
@@ -701,7 +701,7 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
     proxy_app = _proxy_asgi
     config = uvicorn.Config(proxy_app, host=HOST, port=port, log_level="warning")
     srv = uvicorn.Server(config)
-    _ui_port_servers[port] = srv
+    _dashboard_port_servers[port] = srv
 
     def _run_in_thread() -> None:
         """Run the per-port uvicorn server in its own thread+event loop."""
@@ -716,16 +716,16 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
     logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
 
 
-def _stop_ui_port_server(port: int) -> None:
+def _stop_dashboard_port_server(port: int) -> None:
     """Signal the per-port server to shut down and clean up the mappings."""
-    srv = _ui_port_servers.pop(port, None)
-    _ui_port_crew.pop(port, None)
+    srv = _dashboard_port_servers.pop(port, None)
+    _dashboard_port_crew.pop(port, None)
     if srv is not None:
         srv.should_exit = True
         logger.info("TRN-80: stopped UI port server on %d", port)
 
 
-async def _handle_ui_port_proxy(request: Request, crew_id: str) -> Response:
+async def _handle_dashboard_port_proxy(request: Request, crew_id: str) -> Response:
     """Proxy a request arriving on a UI port to the crew gateway.
 
     The full path and query string are forwarded to
@@ -1018,10 +1018,10 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     """POST /crews/{crew_id}/dashboard — allocate a UI port and start a listener.
 
     Allocates a port from the configured range, starts a transport-side proxy
-    listener, and stores ui_port in the registry. Returns {"ui_url": "..."}.
-    No-op if the crew already has a dashboard — returns the existing ui_url.
+    listener, and stores dashboard_port in the registry. Returns {"dashboard_url": "..."}.
+    No-op if the crew already has a dashboard — returns the existing dashboard_url.
 
-    Requires GA_UI_PORT_ENABLED=true. Returns 503 if the feature is disabled.
+    Requires GA_DASHBOARD_PORT_ENABLED=true. Returns 503 if the feature is disabled.
     Returns 404 for unknown crew. Returns 409 if port pool is exhausted.
     """
     parsed = _extract_crew_proxy_parts(request.scope["path"])
@@ -1029,9 +1029,9 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         return PlainTextResponse("Not found", status_code=404)
     crew_id, _segment, _sub = parsed
 
-    if not GA_UI_PORT_ENABLED:
+    if not GA_DASHBOARD_PORT_ENABLED:
         return JSONResponse(
-            {"error": "UI port feature is disabled (GA_UI_PORT_ENABLED=false)"},
+            {"error": "UI port feature is disabled (GA_DASHBOARD_PORT_ENABLED=false)"},
             status_code=503,
         )
 
@@ -1041,52 +1041,52 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=404)
 
     # No-op: crew already has a dashboard
-    existing_port = crew.get("ui_port")
+    existing_port = crew.get("dashboard_port")
     if existing_port is not None:
         if cfg.ga_host_url:
             from urllib.parse import urlparse as _urlparse_d
             _ph = _urlparse_d(cfg.ga_host_url)
-            ui_url = f"{_ph.scheme}://{_ph.hostname}:{existing_port}/"
+            dashboard_url = f"{_ph.scheme}://{_ph.hostname}:{existing_port}/"
         else:
-            ui_url = f"http://localhost:{existing_port}/"
-        return JSONResponse({"ui_url": ui_url})
+            dashboard_url = f"http://localhost:{existing_port}/"
+        return JSONResponse({"dashboard_url": dashboard_url})
 
     # Allocate a new port
     with _registry_lock:
         try:
-            ui_port = _allocate_ui_port()
+            dashboard_port = _allocate_dashboard_port()
         except RuntimeError as e:
             return JSONResponse({"error": str(e)}, status_code=409)
 
         reg = _load_registry()
         if crew_id in reg["crews"]:
-            reg["crews"][crew_id]["ui_port"] = ui_port
+            reg["crews"][crew_id]["dashboard_port"] = dashboard_port
             _save_registry(reg)
 
     if cfg.ga_host_url:
         from urllib.parse import urlparse as _urlparse_d2
         _ph = _urlparse_d2(cfg.ga_host_url)
-        ui_url = f"{_ph.scheme}://{_ph.hostname}:{ui_port}/"
+        dashboard_url = f"{_ph.scheme}://{_ph.hostname}:{dashboard_port}/"
     else:
-        ui_url = f"http://localhost:{ui_port}/"
+        dashboard_url = f"http://localhost:{dashboard_port}/"
 
     # Start the transport-side listener
-    if _ui_app is not None:
-        _start_ui_port_server(ui_port, crew_id, _ui_app)
+    if _dashboard_app is not None:
+        _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
 
     logger.info(
-        "TRN-80: POST /crews/%s/dashboard — started UI port %d, ui_url=%s",
-        crew_id, ui_port, ui_url,
+        "TRN-80: POST /crews/%s/dashboard — started UI port %d, dashboard_url=%s",
+        crew_id, dashboard_port, dashboard_url,
     )
-    return JSONResponse({"ui_url": ui_url})
+    return JSONResponse({"dashboard_url": dashboard_url})
 
 
 async def _handle_crew_dashboard_delete(request: Request) -> Response:
     """DELETE /crews/{crew_id}/dashboard — stop the UI listener and release the port.
 
     Stops the per-port uvicorn server, releases the port back to the pool, and
-    clears ui_port from the registry. Returns {"ui_url": null}.
-    No-op if the crew has no dashboard — returns {"ui_url": null} without error.
+    clears dashboard_port from the registry. Returns {"dashboard_url": null}.
+    No-op if the crew has no dashboard — returns {"dashboard_url": null} without error.
 
     Returns 404 for unknown crew.
     """
@@ -1101,24 +1101,24 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=404)
 
     # No-op: crew has no dashboard
-    existing_port = crew.get("ui_port")
+    existing_port = crew.get("dashboard_port")
     if existing_port is None:
-        return JSONResponse({"ui_url": None})
+        return JSONResponse({"dashboard_url": None})
 
-    _stop_ui_port_server(int(existing_port))
-    _release_ui_port(int(existing_port))
+    _stop_dashboard_port_server(int(existing_port))
+    _release_dashboard_port(int(existing_port))
 
     with _registry_lock:
         reg = _load_registry()
         if crew_id in reg["crews"]:
-            reg["crews"][crew_id].pop("ui_port", None)
+            reg["crews"][crew_id].pop("dashboard_port", None)
             _save_registry(reg)
 
     logger.info(
         "TRN-80: DELETE /crews/%s/dashboard — released UI port %d",
         crew_id, existing_port,
     )
-    return JSONResponse({"ui_url": None})
+    return JSONResponse({"dashboard_url": None})
 
 
 async def _handle_version_get(request: Request) -> Response:
@@ -1292,11 +1292,11 @@ class BearerAuthMiddleware:
                 # port are proxied to that crew's gateway. Auth is skipped here
                 # only when GA_API_KEY is unset; the keyed path checks auth first.
                 _server = scope.get("server")
-                if _server and _ui_port_crew:
+                if _server and _dashboard_port_crew:
                     _incoming_port = _server[1] if isinstance(_server, (list, tuple)) and len(_server) > 1 else None
-                    if _incoming_port and _incoming_port in _ui_port_crew:
+                    if _incoming_port and _incoming_port in _dashboard_port_crew:
                         request = Request(scope, receive)
-                        response = await _handle_ui_port_proxy(request, _ui_port_crew[_incoming_port])
+                        response = await _handle_dashboard_port_proxy(request, _dashboard_port_crew[_incoming_port])
                         await response(scope, receive, send)
                         return
                 # Crew proxy routes (no auth required when GA_API_KEY unset)
@@ -1372,11 +1372,11 @@ class BearerAuthMiddleware:
 
         # TRN-80: per-port UI proxy (auth enforced above)
         _server = scope.get("server")
-        if _server and _ui_port_crew:
+        if _server and _dashboard_port_crew:
             _incoming_port = _server[1] if isinstance(_server, (list, tuple)) and len(_server) > 1 else None
-            if _incoming_port and _incoming_port in _ui_port_crew:
+            if _incoming_port and _incoming_port in _dashboard_port_crew:
                 request = Request(scope, receive)
-                response = await _handle_ui_port_proxy(request, _ui_port_crew[_incoming_port])
+                response = await _handle_dashboard_port_proxy(request, _dashboard_port_crew[_incoming_port])
                 await response(scope, receive, send)
                 return
 
@@ -2034,17 +2034,17 @@ def crews() -> dict:
             "crew_image_version": info.get("crew_image_version", "unknown"),
             "agents": [],
         }
-        # TRN-80: derive ui_url from stored ui_port (None if no port assigned)
-        _ui_p = info.get("ui_port")
+        # TRN-80: derive dashboard_url from stored dashboard_port (None if no port assigned)
+        _ui_p = info.get("dashboard_port")
         if _ui_p is not None:
             if cfg.ga_host_url:
                 from urllib.parse import urlparse as _urlparse3
                 _ph = _urlparse3(cfg.ga_host_url)
-                entry["ui_url"] = f"{_ph.scheme}://{_ph.hostname}:{_ui_p}/"
+                entry["dashboard_url"] = f"{_ph.scheme}://{_ph.hostname}:{_ui_p}/"
             else:
-                entry["ui_url"] = f"http://localhost:{_ui_p}/"
+                entry["dashboard_url"] = f"http://localhost:{_ui_p}/"
         else:
-            entry["ui_url"] = None
+            entry["dashboard_url"] = None
         if "policy_version" in info:
             entry["policy_version"] = info["policy_version"]
         # Try to fetch active tasks from the gateway
@@ -2119,11 +2119,11 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                  unique. Use lowercase letters, numbers, hyphens.
         composition: Crew composition to launch (default: "spec-ops"). See the
                      transport://compositions resource for available compositions.
-        dashboard: When True and GA_UI_PORT_ENABLED=True, allocates a dedicated
+        dashboard: When True and GA_DASHBOARD_PORT_ENABLED=True, allocates a dedicated
                    port from the UI port range and starts a transport-side proxy
                    listener for the crew's dashboard SPA. The SPA owns its entire
                    origin so assets, client-side navigation, and hard reloads all
-                   work. Returns ui_url in the response. Default is False — crews
+                   work. Returns dashboard_url in the response. Default is False — crews
                    are headless unless a dashboard is explicitly requested.
 
     Returns crew_id and status once the gateway is ready (~30s).
@@ -2178,7 +2178,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         _save_registry(reg)
 
     # TRN-80: initialised before the try so the except block can reference it.
-    ui_port: int | None = None
+    dashboard_port: int | None = None
     try:
         podman.network_create(GA_NETWORK)
         podman.volume_create(volume)
@@ -2223,12 +2223,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # ghost-academy network only. The transport will listen on the allocated
         # port and proxy to the crew gateway over the internal network.
         # Port allocation is gated on both the dashboard flag (per-launch opt-in)
-        # and the GA_UI_PORT_ENABLED global switch.
-        ui_url: str | None = None
-        if dashboard and GA_UI_PORT_ENABLED:
+        # and the GA_DASHBOARD_PORT_ENABLED global switch.
+        dashboard_url: str | None = None
+        if dashboard and GA_DASHBOARD_PORT_ENABLED:
             with _registry_lock:
                 try:
-                    ui_port = _allocate_ui_port()
+                    dashboard_port = _allocate_dashboard_port()
                 except RuntimeError as _err:
                     _cleanup_crew(podman, container, volume, home_volume)
                     reg = _load_registry()
@@ -2238,10 +2238,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             if cfg.ga_host_url:
                 from urllib.parse import urlparse as _urlparse2
                 _p = _urlparse2(cfg.ga_host_url)
-                _ui_host = f"{_p.scheme}://{_p.hostname}:{ui_port}"
+                _ui_host = f"{_p.scheme}://{_p.hostname}:{dashboard_port}"
             else:
-                _ui_host = f"http://localhost:{ui_port}"
-            ui_url = f"{_ui_host}/"
+                _ui_host = f"http://localhost:{dashboard_port}"
+            dashboard_url = f"{_ui_host}/"
             # Add the UI port origin to CORS so the SPA's API calls are accepted.
             container_env["KIROCREW_CORS_ORIGINS"] = (
                 f"{container_env['KIROCREW_CORS_ORIGINS']},{_ui_host}"
@@ -2260,8 +2260,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
 
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
         if not _wait_gateway(crew_url, timeout=30):
-            if ui_port is not None:
-                _release_ui_port(ui_port)
+            if dashboard_port is not None:
+                _release_dashboard_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
             with _registry_lock:
                 reg = _load_registry()
@@ -2270,20 +2270,20 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             return {"error": f"Gateway not ready within 30s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
-        # TRN-80: persist ui_port in registry, start per-port listener, include ui_url.
-        if ui_port is not None and "error" not in result:
+        # TRN-80: persist dashboard_port in registry, start per-port listener, include dashboard_url.
+        if dashboard_port is not None and "error" not in result:
             with _registry_lock:
                 reg = _load_registry()
                 if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["ui_port"] = ui_port
+                    reg["crews"][crew_id]["dashboard_port"] = dashboard_port
                     _save_registry(reg)
             # Start the transport-side listener for this crew's UI port.
-            # The app reference is injected at startup via _ui_app (set below).
-            if _ui_app is not None:
-                _start_ui_port_server(ui_port, crew_id, _ui_app)
-            result["ui_url"] = ui_url
+            # The app reference is injected at startup via _dashboard_app (set below).
+            if _dashboard_app is not None:
+                _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
+            result["dashboard_url"] = dashboard_url
         elif "error" not in result:
-            result["ui_url"] = None
+            result["dashboard_url"] = None
         return result
 
     except Exception as e:
@@ -2294,8 +2294,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             pass
         # TRN-80: free any port allocated before the failure
         try:
-            if ui_port is not None:
-                _release_ui_port(ui_port)
+            if dashboard_port is not None:
+                _release_dashboard_port(dashboard_port)
         except Exception:
             pass
         with _registry_lock:
@@ -2505,11 +2505,11 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         reg = _load_registry()
         # TRN-80: stop the per-port server and release the port before removing
         # the registry entry.
-        if GA_UI_PORT_ENABLED:
-            _ui_p = reg["crews"].get(crew_id, {}).get("ui_port")
+        if GA_DASHBOARD_PORT_ENABLED:
+            _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
             if _ui_p is not None:
-                _stop_ui_port_server(int(_ui_p))
-                _release_ui_port(int(_ui_p))
+                _stop_dashboard_port_server(int(_ui_p))
+                _release_dashboard_port(int(_ui_p))
         reg["crews"].pop(crew_id, None)
         _save_registry(reg)
 
@@ -3748,12 +3748,12 @@ if __name__ == "__main__":
     with _registry_lock:
         _reg = _load_registry()
         for _cid, _info in _reg["crews"].items():
-            _p = _info.get("ui_port")
+            _p = _info.get("dashboard_port")
             if _p is not None:
-                _ui_ports_in_use.add(int(_p))
-    if _ui_ports_in_use:
+                _dashboard_ports_in_use.add(int(_p))
+    if _dashboard_ports_in_use:
         logger.info("TRN-80: restored %d UI port(s) from registry: %s",
-                    len(_ui_ports_in_use), sorted(_ui_ports_in_use))
+                    len(_dashboard_ports_in_use), sorted(_dashboard_ports_in_use))
     for _warning in _validate_academy():
         logger.warning("Academy validation: %s", _warning)
     threading.Thread(target=_idle_monitor, daemon=True, name="idle-monitor").start()
@@ -3841,20 +3841,20 @@ if __name__ == "__main__":
     config = uvicorn.Config(app, host=HOST, port=PORT, log_level="info", **_uvicorn_kwargs)
     server = uvicorn.Server(config)
 
-    # TRN-80: expose the fully-wrapped app to _start_ui_port_server so per-port
+    # TRN-80: expose the fully-wrapped app to _start_dashboard_port_server so per-port
     # servers share the same middleware stack (auth, rate limiting, headers).
-    _ui_app = app
+    _dashboard_app = app
 
     async def _main() -> None:
-        # TRN-80: restore per-port UI servers for crews that had a ui_port
+        # TRN-80: restore per-port UI servers for crews that had a dashboard_port
         # in the registry before this transport restart.
-        if GA_UI_PORT_ENABLED and _ui_app is not None:
+        if GA_DASHBOARD_PORT_ENABLED and _dashboard_app is not None:
             with _registry_lock:
                 _restored_reg = _load_registry()
             for _cid, _info in _restored_reg["crews"].items():
-                _p = _info.get("ui_port")
+                _p = _info.get("dashboard_port")
                 if _p is not None:
-                    _start_ui_port_server(int(_p), _cid, _ui_app)
+                    _start_dashboard_port_server(int(_p), _cid, _dashboard_app)
         await server.serve()
 
     asyncio.run(_main())

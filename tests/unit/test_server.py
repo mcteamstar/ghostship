@@ -4477,7 +4477,7 @@ class TestProxyQuerySanitisation(unittest.TestCase):
 
     CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
 
-    def _capture_ui_url(self, query_string: bytes) -> str:
+    def _capture_dashboard_url(self, query_string: bytes) -> str:
         captured: list[str] = []
         mock_response = _FakeUpstreamResponse(200, b"ok")
 
@@ -4537,7 +4537,7 @@ class TestProxyQuerySanitisation(unittest.TestCase):
     def test_ui_proxy_strips_cr_lf_and_null(self) -> None:
         query = b"q=hello\r\nworld\x00&limit=10"
         self.assertEqual(
-            self._capture_ui_url(query),
+            self._capture_dashboard_url(query),
             "http://gs-demo:5476/search?q=helloworld&limit=10",
         )
 
@@ -4552,7 +4552,7 @@ class TestProxyQuerySanitisation(unittest.TestCase):
         for query in (b"q=hello&limit=10", b"q=hello%0Aworld&limit=10"):
             with self.subTest(query=query):
                 self.assertEqual(
-                    self._capture_ui_url(query),
+                    self._capture_dashboard_url(query),
                     f"http://gs-demo:5476/search?{query.decode('ascii')}",
                 )
 
@@ -4999,65 +4999,65 @@ class Trn89CrewTimestampTests(unittest.TestCase):
 # ── TRN-80: UI port allocation, CORS injection, launch/crews/nuke wiring ─────
 
 class UiPortAllocationTests(unittest.TestCase):
-    """Tests for _allocate_ui_port / _release_ui_port (TRN-80 task 3)."""
+    """Tests for _allocate_dashboard_port / _release_dashboard_port (TRN-80 task 3)."""
 
     def setUp(self) -> None:
         # Isolate module-level port state for each test
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def tearDown(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def test_allocate_returns_range_start_when_empty(self) -> None:
         with (
-            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
         ):
-            port = server._allocate_ui_port()
+            port = server._allocate_dashboard_port()
         self.assertEqual(port, 9000)
-        self.assertIn(9000, server._ui_ports_in_use)
+        self.assertIn(9000, server._dashboard_ports_in_use)
 
     def test_allocate_returns_next_free_port(self) -> None:
-        server._ui_ports_in_use.add(9000)
-        server._ui_ports_in_use.add(9001)
+        server._dashboard_ports_in_use.add(9000)
+        server._dashboard_ports_in_use.add(9001)
         with (
-            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
         ):
-            port = server._allocate_ui_port()
+            port = server._allocate_dashboard_port()
         self.assertEqual(port, 9002)
-        self.assertIn(9002, server._ui_ports_in_use)
+        self.assertIn(9002, server._dashboard_ports_in_use)
 
     def test_allocate_raises_when_exhausted(self) -> None:
         with (
-            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 3),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 3),
         ):
-            server._ui_ports_in_use.update({9000, 9001, 9002})
+            server._dashboard_ports_in_use.update({9000, 9001, 9002})
             with self.assertRaises(RuntimeError) as ctx:
-                server._allocate_ui_port()
+                server._allocate_dashboard_port()
         self.assertIn("exhausted", str(ctx.exception).lower())
 
     def test_release_frees_port(self) -> None:
-        server._ui_ports_in_use.add(9005)
-        server._release_ui_port(9005)
-        self.assertNotIn(9005, server._ui_ports_in_use)
+        server._dashboard_ports_in_use.add(9005)
+        server._release_dashboard_port(9005)
+        self.assertNotIn(9005, server._dashboard_ports_in_use)
 
     def test_release_is_noop_for_unallocated_port(self) -> None:
         # Must not raise
-        server._release_ui_port(9999)
+        server._release_dashboard_port(9999)
 
 
 class UiPortLaunchTests(unittest.TestCase):
     """Tests for launch() UI port wiring (TRN-80 task 4.1)."""
 
     def setUp(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def tearDown(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
-    def _run_launch(self, ga_ui_port_enabled: bool = True, ga_host_url: str = "") -> dict:
+    def _run_launch(self, ga_dashboard_port_enabled: bool = True, ga_host_url: str = "") -> dict:
         """Run server.launch() with a minimal set of mocks and return the result."""
         registry = {"crews": {}}
         podman = Mock()
@@ -5087,34 +5087,34 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_UI_PORT_ENABLED", ga_ui_port_enabled),
-            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", ga_dashboard_port_enabled),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
-            mock_cfg.ga_ui_port_range_start = 9000
-            mock_cfg.ga_ui_port_range_size = 50
-            result = server.launch("demo", dashboard=ga_ui_port_enabled)
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            result = server.launch("demo", dashboard=ga_dashboard_port_enabled)
         return result
 
-    def test_launch_includes_ui_url_when_port_enabled(self) -> None:
-        result = self._run_launch(ga_ui_port_enabled=True, ga_host_url="")
-        self.assertIn("ui_url", result)
-        self.assertIsNotNone(result["ui_url"])
-        self.assertTrue(result["ui_url"].startswith("http://"))
-        self.assertIn("9000", result["ui_url"])
+    def test_launch_includes_dashboard_url_when_port_enabled(self) -> None:
+        result = self._run_launch(ga_dashboard_port_enabled=True, ga_host_url="")
+        self.assertIn("dashboard_url", result)
+        self.assertIsNotNone(result["dashboard_url"])
+        self.assertTrue(result["dashboard_url"].startswith("http://"))
+        self.assertIn("9000", result["dashboard_url"])
 
-    def test_launch_ui_url_uses_ga_host_url_host(self) -> None:
-        result = self._run_launch(ga_ui_port_enabled=True, ga_host_url="http://vm23.example.com:64057")
-        self.assertIn("ui_url", result)
-        self.assertIn("vm23.example.com", result["ui_url"])
-        self.assertIn("9000", result["ui_url"])
+    def test_launch_dashboard_url_uses_ga_host_url_host(self) -> None:
+        result = self._run_launch(ga_dashboard_port_enabled=True, ga_host_url="http://vm23.example.com:64057")
+        self.assertIn("dashboard_url", result)
+        self.assertIn("vm23.example.com", result["dashboard_url"])
+        self.assertIn("9000", result["dashboard_url"])
 
-    def test_launch_ui_url_is_none_when_port_disabled(self) -> None:
-        result = self._run_launch(ga_ui_port_enabled=False)
-        self.assertIn("ui_url", result)
-        self.assertIsNone(result["ui_url"])
+    def test_launch_dashboard_url_is_none_when_port_disabled(self) -> None:
+        result = self._run_launch(ga_dashboard_port_enabled=False)
+        self.assertIn("dashboard_url", result)
+        self.assertIsNone(result["dashboard_url"])
 
     def test_launch_passes_ports_to_container_create(self) -> None:
         registry = {"crews": {}}
@@ -5134,20 +5134,20 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_UI_PORT_ENABLED", True),
-            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
-            mock_cfg.ga_ui_port_range_start = 9000
-            mock_cfg.ga_ui_port_range_size = 50
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
             server.launch("demo", dashboard=True)
 
         call_kwargs = podman.container_create.call_args.kwargs
         self.assertNotIn("ports", call_kwargs, "crew containers must not bind host ports")
-        # ui_url should still be in the launch response (transport-side listener)
-        self.assertIn("ui_url", finish_result or {})
+        # dashboard_url should still be in the launch response (transport-side listener)
+        self.assertIn("dashboard_url", finish_result or {})
 
     def test_launch_no_ports_passed_when_ui_disabled(self) -> None:
         registry = {"crews": {}}
@@ -5167,12 +5167,12 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_UI_PORT_ENABLED", False),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
-            mock_cfg.ga_ui_port_range_start = 9000
-            mock_cfg.ga_ui_port_range_size = 50
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
             server.launch("demo")
 
         call_kwargs = podman.container_create.call_args.kwargs
@@ -5183,18 +5183,18 @@ class UiPortNukeTests(unittest.TestCase):
     """Tests for nuke() UI port release (TRN-80 task 4.2)."""
 
     def setUp(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def tearDown(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
-    def test_nuke_releases_ui_port(self) -> None:
-        server._ui_ports_in_use.add(9000)
+    def test_nuke_releases_dashboard_port(self) -> None:
+        server._dashboard_ports_in_use.add(9000)
         crew = {
             "container": "gs-demo",
             "volume": "gs-vol-demo",
             "home_volume": "gs-home-demo",
-            "ui_port": 9000,
+            "dashboard_port": 9000,
         }
         registry = {"crews": {"demo": dict(crew)}}
         podman = Mock()
@@ -5212,20 +5212,20 @@ class UiPortNukeTests(unittest.TestCase):
             patch.object(server, "_cleanup_crew"),
             patch.object(server, "_captain_order_locks_lock", threading.Lock()),
             patch.object(server, "_captain_order_locks", {}),
-            patch.object(server, "GA_UI_PORT_ENABLED", True),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
         ):
             result = server.nuke("demo", confirm=True)
 
         self.assertEqual(result["status"], "nuked")
-        self.assertNotIn(9000, server._ui_ports_in_use)
+        self.assertNotIn(9000, server._dashboard_ports_in_use)
 
     def test_nuke_no_release_when_port_disabled(self) -> None:
-        server._ui_ports_in_use.add(9000)
+        server._dashboard_ports_in_use.add(9000)
         crew = {
             "container": "gs-demo",
             "volume": "gs-vol-demo",
             "home_volume": "gs-home-demo",
-            "ui_port": 9000,
+            "dashboard_port": 9000,
         }
         registry = {"crews": {"demo": dict(crew)}}
         podman = Mock()
@@ -5240,16 +5240,16 @@ class UiPortNukeTests(unittest.TestCase):
             patch.object(server, "_cleanup_crew"),
             patch.object(server, "_captain_order_locks_lock", threading.Lock()),
             patch.object(server, "_captain_order_locks", {}),
-            patch.object(server, "GA_UI_PORT_ENABLED", False),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
         ):
             server.nuke("demo", confirm=True)
 
-        # Port should NOT have been released because GA_UI_PORT_ENABLED=False
-        self.assertIn(9000, server._ui_ports_in_use)
+        # Port should NOT have been released because GA_DASHBOARD_PORT_ENABLED=False
+        self.assertIn(9000, server._dashboard_ports_in_use)
 
 
 class CrewsListUiUrlTests(unittest.TestCase):
-    """Tests for ui_url in crews() list (TRN-80 task 5)."""
+    """Tests for dashboard_url in crews() list (TRN-80 task 5)."""
 
     def _run_crews(self, crews_data: dict, ga_host_url: str = "") -> list:
         registry = {"crews": crews_data}
@@ -5266,36 +5266,36 @@ class CrewsListUiUrlTests(unittest.TestCase):
             result = server.crews()
         return result["crews"]
 
-    def test_crews_includes_ui_url_when_port_assigned(self) -> None:
+    def test_crews_includes_dashboard_url_when_port_assigned(self) -> None:
         crews_data = {
             "demo": {
                 "container": "gs-demo",
                 "status": "running",
                 "composition": "spec-ops",
                 "created_at": None,
-                "ui_port": 9005,
+                "dashboard_port": 9005,
                 "cookie": "c",
             }
         }
         entries = self._run_crews(crews_data, ga_host_url="")
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["ui_url"], "http://localhost:9005/")
+        self.assertEqual(entries[0]["dashboard_url"], "http://localhost:9005/")
 
-    def test_crews_ui_url_uses_ga_host_url_host(self) -> None:
+    def test_crews_dashboard_url_uses_ga_host_url_host(self) -> None:
         crews_data = {
             "demo": {
                 "container": "gs-demo",
                 "status": "running",
                 "composition": "spec-ops",
                 "created_at": None,
-                "ui_port": 9010,
+                "dashboard_port": 9010,
                 "cookie": "c",
             }
         }
         entries = self._run_crews(crews_data, ga_host_url="http://vm23.example.com:64057")
-        self.assertIn("vm23.example.com:9010", entries[0]["ui_url"])
+        self.assertIn("vm23.example.com:9010", entries[0]["dashboard_url"])
 
-    def test_crews_ui_url_is_none_when_no_port(self) -> None:
+    def test_crews_dashboard_url_is_none_when_no_port(self) -> None:
         crews_data = {
             "demo": {
                 "container": "gs-demo",
@@ -5306,17 +5306,17 @@ class CrewsListUiUrlTests(unittest.TestCase):
             }
         }
         entries = self._run_crews(crews_data)
-        self.assertIsNone(entries[0]["ui_url"])
+        self.assertIsNone(entries[0]["dashboard_url"])
 
 
 class CorsOriginInjectionTests(unittest.TestCase):
     """Tests for CORS origin injection at container_create time (TRN-80 task 6)."""
 
     def setUp(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def tearDown(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def _run_launch_capture_env(self, ga_host_url: str = "") -> dict:
         """Run server.launch() and return the env dict passed to container_create."""
@@ -5337,12 +5337,12 @@ class CorsOriginInjectionTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_UI_PORT_ENABLED", False),  # keep env test focused on CORS
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),  # keep env test focused on CORS
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
-            mock_cfg.ga_ui_port_range_start = 9000
-            mock_cfg.ga_ui_port_range_size = 50
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
             server.launch("demo")
 
         call_kwargs = podman.container_create.call_args.kwargs
@@ -5377,10 +5377,10 @@ class LaunchDashboardParamTests(unittest.TestCase):
     """TRN-80 task 5.3 / 9.1 — launch(dashboard=True/False) port allocation gate."""
 
     def setUp(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def tearDown(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def _run_launch(self, dashboard: bool) -> dict:
         """Run server.launch() and return the result.  Captures container_create env."""
@@ -5406,35 +5406,35 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_UI_PORT_ENABLED", True),
-            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
-            patch.object(server, "_start_ui_port_server"),  # prevent real uvicorn thread
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server, "_start_dashboard_port_server"),  # prevent real uvicorn thread
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
-            mock_cfg.ga_ui_port_range_start = 9000
-            mock_cfg.ga_ui_port_range_size = 50
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
             result = server.launch("demo", dashboard=dashboard)
         return result
 
-    def test_launch_dashboard_true_allocates_port_and_returns_ui_url(self) -> None:
-        """9.1a — launch(dashboard=True) allocates port and returns ui_url."""
+    def test_launch_dashboard_true_allocates_port_and_returns_dashboard_url(self) -> None:
+        """9.1a — launch(dashboard=True) allocates port and returns dashboard_url."""
         result = self._run_launch(dashboard=True)
-        self.assertIn("ui_url", result)
-        self.assertIsNotNone(result["ui_url"])
-        self.assertTrue(result["ui_url"].startswith("http://"))
-        self.assertIn("9000", result["ui_url"])
+        self.assertIn("dashboard_url", result)
+        self.assertIsNotNone(result["dashboard_url"])
+        self.assertTrue(result["dashboard_url"].startswith("http://"))
+        self.assertIn("9000", result["dashboard_url"])
         # Port should be marked as in-use
-        self.assertIn(9000, server._ui_ports_in_use)
+        self.assertIn(9000, server._dashboard_ports_in_use)
 
     def test_launch_dashboard_false_does_not_allocate_port(self) -> None:
-        """9.1b — launch(dashboard=False) does NOT allocate port, ui_url is null."""
+        """9.1b — launch(dashboard=False) does NOT allocate port, dashboard_url is null."""
         result = self._run_launch(dashboard=False)
-        self.assertIn("ui_url", result)
-        self.assertIsNone(result["ui_url"])
+        self.assertIn("dashboard_url", result)
+        self.assertIsNone(result["dashboard_url"])
         # No port should have been allocated
-        self.assertEqual(len(server._ui_ports_in_use), 0)
+        self.assertEqual(len(server._dashboard_ports_in_use), 0)
 
     def test_launch_dashboard_default_is_false(self) -> None:
         """9.1c — launch() default is dashboard=False (no port allocated)."""
@@ -5455,47 +5455,47 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_UI_PORT_ENABLED", True),
-            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
-            patch.object(server, "_start_ui_port_server"),  # prevent real uvicorn thread
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server, "_start_dashboard_port_server"),  # prevent real uvicorn thread
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
-            mock_cfg.ga_ui_port_range_start = 9000
-            mock_cfg.ga_ui_port_range_size = 50
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
             result = server.launch("demo")  # no dashboard=... passed
 
-        self.assertIsNone(result.get("ui_url"))
-        self.assertEqual(len(server._ui_ports_in_use), 0)
+        self.assertIsNone(result.get("dashboard_url"))
+        self.assertEqual(len(server._dashboard_ports_in_use), 0)
 
 
 class DashboardRestEndpointTests(unittest.TestCase):
     """TRN-80 task 7.1-7.4 — POST/DELETE /crews/{id}/dashboard REST endpoints."""
 
     def setUp(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     def tearDown(self) -> None:
-        server._ui_ports_in_use.clear()
+        server._dashboard_ports_in_use.clear()
 
     # ── POST /crews/{id}/dashboard ────────────────────────────────────────────
 
-    def test_post_dashboard_allocates_port_and_returns_ui_url(self) -> None:
-        """7.1a — POST on crew without dashboard allocates port and returns ui_url."""
+    def test_post_dashboard_allocates_port_and_returns_dashboard_url(self) -> None:
+        """7.1a — POST on crew without dashboard allocates port and returns dashboard_url."""
         crew = {"container": "gs-demo", "cookie": "c"}
         registry = {"crews": {"demo": dict(crew)}}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_UI_PORT_ENABLED", True),
-                patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
-                patch.object(server, "_start_ui_port_server"),
-                patch.object(server, "_ui_app", Mock()),
+                patch.object(server, "_start_dashboard_port_server"),
+                patch.object(server, "_dashboard_app", Mock()),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
@@ -5505,18 +5505,18 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        self.assertIn("ui_url", body)
-        self.assertIsNotNone(body["ui_url"])
-        self.assertIn("9000", body["ui_url"])
+        self.assertIn("dashboard_url", body)
+        self.assertIsNotNone(body["dashboard_url"])
+        self.assertIn("9000", body["dashboard_url"])
 
     def test_post_dashboard_noop_when_already_active(self) -> None:
-        """7.1b — POST on crew that already has a dashboard returns existing ui_url (no-op)."""
-        crew = {"container": "gs-demo", "cookie": "c", "ui_port": 9003}
+        """7.1b — POST on crew that already has a dashboard returns existing dashboard_url (no-op)."""
+        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9003}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_UI_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
@@ -5526,18 +5526,18 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        self.assertEqual(body["ui_url"], "http://localhost:9003/")
+        self.assertEqual(body["dashboard_url"], "http://localhost:9003/")
         # No new port should have been allocated
-        self.assertNotIn(9003, server._ui_ports_in_use)
+        self.assertNotIn(9003, server._dashboard_ports_in_use)
 
     def test_post_dashboard_503_when_feature_disabled(self) -> None:
-        """7.3a — POST returns 503 when GA_UI_PORT_ENABLED=False."""
+        """7.3a — POST returns 503 when GA_DASHBOARD_PORT_ENABLED=False."""
         crew = {"container": "gs-demo", "cookie": "c"}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_UI_PORT_ENABLED", False),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
             ):
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
                 return await server._handle_crew_dashboard_post(request)
@@ -5552,7 +5552,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", side_effect=KeyError("no such crew")),
-                patch.object(server, "GA_UI_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
             ):
                 request = _FakeStreamRequest(method="POST", path="/crews/unknown/dashboard")
                 return await server._handle_crew_dashboard_post(request)
@@ -5567,14 +5567,14 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_UI_PORT_ENABLED", True),
-                patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_UI_PORT_RANGE_SIZE", 2),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
                 # Fill the pool
-                server._ui_ports_in_use.update({9000, 9001})
+                server._dashboard_ports_in_use.update({9000, 9001})
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
                 return await server._handle_crew_dashboard_post(request)
 
@@ -5583,21 +5583,21 @@ class DashboardRestEndpointTests(unittest.TestCase):
         body = json.loads(response.body)
         self.assertIn("error", body)
 
-    def test_post_dashboard_uses_ga_host_url_for_ui_url(self) -> None:
-        """7.1e — POST uses GA_HOST_URL hostname in ui_url when set."""
+    def test_post_dashboard_uses_ga_host_url_for_dashboard_url(self) -> None:
+        """7.1e — POST uses GA_HOST_URL hostname in dashboard_url when set."""
         crew = {"container": "gs-demo", "cookie": "c"}
         registry = {"crews": {"demo": dict(crew)}}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_UI_PORT_ENABLED", True),
-                patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
-                patch.object(server, "_start_ui_port_server"),
-                patch.object(server, "_ui_app", Mock()),
+                patch.object(server, "_start_dashboard_port_server"),
+                patch.object(server, "_dashboard_app", Mock()),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = "http://vm23.example.com:64057"
@@ -5607,21 +5607,21 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        self.assertIn("vm23.example.com", body["ui_url"])
-        self.assertIn("9000", body["ui_url"])
+        self.assertIn("vm23.example.com", body["dashboard_url"])
+        self.assertIn("9000", body["dashboard_url"])
 
     # ── DELETE /crews/{id}/dashboard ──────────────────────────────────────────
 
     def test_delete_dashboard_stops_listener_and_releases_port(self) -> None:
-        """7.2a — DELETE stops listener, releases port, returns ui_url: null."""
-        server._ui_ports_in_use.add(9004)
-        crew = {"container": "gs-demo", "cookie": "c", "ui_port": 9004}
+        """7.2a — DELETE stops listener, releases port, returns dashboard_url: null."""
+        server._dashboard_ports_in_use.add(9004)
+        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9004}
         registry = {"crews": {"demo": {**crew}}}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "_stop_ui_port_server") as mock_stop,
+                patch.object(server, "_stop_dashboard_port_server") as mock_stop,
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
             ):
@@ -5632,14 +5632,14 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response, mock_stop = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        self.assertIsNone(body["ui_url"])
+        self.assertIsNone(body["dashboard_url"])
         mock_stop.assert_called_once_with(9004)
         # Port should be released
-        self.assertNotIn(9004, server._ui_ports_in_use)
+        self.assertNotIn(9004, server._dashboard_ports_in_use)
 
     def test_delete_dashboard_noop_when_no_dashboard_active(self) -> None:
-        """7.2b — DELETE on crew with no dashboard returns ui_url: null (no-op)."""
-        crew = {"container": "gs-demo", "cookie": "c"}  # no ui_port
+        """7.2b — DELETE on crew with no dashboard returns dashboard_url: null (no-op)."""
+        crew = {"container": "gs-demo", "cookie": "c"}  # no dashboard_port
 
         async def run():
             with patch.object(server, "_require_crew", return_value=crew):
@@ -5649,7 +5649,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        self.assertIsNone(body["ui_url"])
+        self.assertIsNone(body["dashboard_url"])
 
     def test_delete_dashboard_404_for_unknown_crew(self) -> None:
         """7.2c — DELETE returns 404 for unknown crew."""
@@ -5661,17 +5661,17 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 404)
 
-    def test_delete_dashboard_removes_ui_port_from_registry(self) -> None:
-        """7.2d — DELETE clears ui_port field from registry after stopping listener."""
-        server._ui_ports_in_use.add(9007)
-        crew = {"container": "gs-demo", "cookie": "c", "ui_port": 9007}
+    def test_delete_dashboard_removes_dashboard_port_from_registry(self) -> None:
+        """7.2d — DELETE clears dashboard_port field from registry after stopping listener."""
+        server._dashboard_ports_in_use.add(9007)
+        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9007}
         registry = {"crews": {"demo": {**crew}}}
         save_calls = []
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "_stop_ui_port_server"),
+                patch.object(server, "_stop_dashboard_port_server"),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry", side_effect=lambda r: save_calls.append(
                     json.loads(json.dumps(r))
@@ -5683,7 +5683,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
         asyncio.run(run())
         self.assertTrue(save_calls, "Expected _save_registry to be called")
         saved_crew = save_calls[-1]["crews"]["demo"]
-        self.assertNotIn("ui_port", saved_crew)
+        self.assertNotIn("dashboard_port", saved_crew)
 
     # ── BearerAuthMiddleware routing for /dashboard ───────────────────────────
 
@@ -5693,7 +5693,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
 
         async def fake_post_handler(req):
             handled.append("post-dashboard")
-            return server.JSONResponse({"ui_url": "http://localhost:9000/"})
+            return server.JSONResponse({"dashboard_url": "http://localhost:9000/"})
 
         scope = {
             "type": "http",
@@ -5715,7 +5715,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
 
         async def fake_delete_handler(req):
             handled.append("delete-dashboard")
-            return server.JSONResponse({"ui_url": None})
+            return server.JSONResponse({"dashboard_url": None})
 
         scope = {
             "type": "http",
@@ -5749,7 +5749,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
 
         async def fake_post_handler(req):
             handled.append("post-dashboard-no-auth")
-            return server.JSONResponse({"ui_url": "http://localhost:9000/"})
+            return server.JSONResponse({"dashboard_url": "http://localhost:9000/"})
 
         scope = {
             "type": "http",

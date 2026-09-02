@@ -8,7 +8,7 @@ Enable the KiroCrew gateway SPA to load and navigate correctly when accessed via
 
 ### Requirement: Each crew is assigned a unique UI port on the transport at launch
 
-The transport SHALL allocate a unique port from the configured range (`GA_UI_PORT_RANGE_START` to `GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE - 1`) when a crew is launched and start a transport listener on that port. All requests arriving on that port SHALL be reverse-proxied to `http://gs-{crew_id}:5476/{path}`. The allocated port SHALL be stored in the crew registry and returned in the `launch` response as `ui_url`.
+The transport SHALL allocate a unique port from the configured range (`GA_DASHBOARD_PORT_RANGE_START` to `GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1`) when a crew is launched and start a transport listener on that port. All requests arriving on that port SHALL be reverse-proxied to `http://gs-{crew_id}:5476/{path}`. The allocated port SHALL be stored in the crew registry and returned in the `launch` response as `dashboard_url`.
 
 #### Scenario: SPA loads at root of origin
 - **WHEN** a browser opens `http://academy.penguin-piano.ts.net:64058/`
@@ -22,9 +22,9 @@ The transport SHALL allocate a unique port from the configured range (`GA_UI_POR
 - **WHEN** `GA_API_KEY` is set and a request to the crew UI port omits or supplies an incorrect `Authorization: Bearer` header
 - **THEN** the transport returns HTTP 401 before proxying, consistent with all other authenticated routes
 
-#### Scenario: Launch returns ui_url
+#### Scenario: Launch returns dashboard_url
 - **WHEN** `launch` is called for crew `my-crew`
-- **THEN** the response includes `ui_url: "http://<host>:64058/"`
+- **THEN** the response includes `dashboard_url: "http://<host>:64058/"`
 
 #### Scenario: Port released at nuke
 - **WHEN** `nuke` is called for a crew
@@ -36,12 +36,12 @@ The transport SHALL allocate a unique port from the configured range (`GA_UI_POR
 
 ### Requirement: Transport UI port listeners restored on restart
 
-On startup, the transport SHALL re-start listeners for any crews that have a `ui_port` in the registry, restoring UI access for running crews after a transport restart.
+On startup, the transport SHALL re-start listeners for any crews that have a `dashboard_port` in the registry, restoring UI access for running crews after a transport restart.
 
-### Requirement: crews list includes ui_url per crew
+### Requirement: crews list includes dashboard_url per crew
 
-The `crews` tool response SHALL include `ui_url` for each crew that has an allocated port. `ui_url` SHALL be `null` for crews without a port assignment.
+The `crews` tool response SHALL include `dashboard_url` for each crew that has an allocated port. `dashboard_url` SHALL be `null` for crews without a port assignment.
 
-### Requirement: GA_UI_PORT_ENABLED flag
+### Requirement: GA_DASHBOARD_PORT_ENABLED flag
 
-When `GA_UI_PORT_ENABLED=false`, the transport SHALL skip all port allocation and listener management. Default is `true`.
+When `GA_DASHBOARD_PORT_ENABLED=false`, the transport SHALL skip all port allocation and listener management. Default is `true`.

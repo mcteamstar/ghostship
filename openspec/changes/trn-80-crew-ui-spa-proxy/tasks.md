@@ -1,6 +1,6 @@
 ## 1. Transport config ✓
 
-- [x] 1.1 `GA_UI_PORT_RANGE_START` (default 64058), `GA_UI_PORT_RANGE_SIZE` (default 50), `GA_UI_PORT_ENABLED` (default true) in `transport/config.py`
+- [x] 1.1 `GA_DASHBOARD_PORT_RANGE_START` (default 64058), `GA_DASHBOARD_PORT_RANGE_SIZE` (default 50), `GA_DASHBOARD_PORT_ENABLED` (default true) in `transport/config.py`
 - [x] 1.2 Env var entries in `scripts/install.sh` compose template
 
 ## 2. Podman port binding reverted ✓
@@ -10,9 +10,9 @@
 
 ## 3. Per-port uvicorn listener management ✓
 
-- [x] 3.1 `_ui_port_servers`, `_ui_port_crew`, `_ui_app` module-level dicts
-- [x] 3.2 `_start_ui_port_server(port, crew_id)` — daemon thread, own event loop
-- [x] 3.3 `_stop_ui_port_server(port)` — sets `should_exit`, cleans up dicts
+- [x] 3.1 `_dashboard_port_servers`, `_dashboard_port_crew`, `_dashboard_app` module-level dicts
+- [x] 3.2 `_start_dashboard_port_server(port, crew_id)` — daemon thread, own event loop
+- [x] 3.3 `_stop_dashboard_port_server(port)` — sets `should_exit`, cleans up dicts
 - [x] 3.4 Startup reconciliation re-starts listeners from registry
 
 ## 4. Port-based catch-all proxy handler ✓
@@ -26,9 +26,9 @@
 
 ## 5. `launch` parameter + nuke
 
-- [x] 5.1 Port allocation, `_start_ui_port_server`, registry write, `ui_url` in response
+- [x] 5.1 Port allocation, `_start_dashboard_port_server`, registry write, `dashboard_url` in response
 - [x] 5.2 Nuke stops listener and releases port
-- [ ] 5.3 Add `dashboard: bool = False` parameter to `launch()` — gate port allocation on this flag instead of `GA_UI_PORT_ENABLED` alone
+- [ ] 5.3 Add `dashboard: bool = False` parameter to `launch()` — gate port allocation on this flag instead of `GA_DASHBOARD_PORT_ENABLED` alone
 
 ## 6. CORS origin injection ✓
 
@@ -37,9 +37,9 @@
 
 ## 7. REST API for retrofitting dashboard
 
-- [ ] 7.1 `POST /crews/{crew_id}/dashboard` — allocate port + start listener for existing crew; return `{"ui_url": "..."}`; no-op if already active
-- [ ] 7.2 `DELETE /crews/{crew_id}/dashboard` — stop listener + release port; return `{"ui_url": null}`; no-op if not active
-- [ ] 7.3 Both routes respect `GA_API_KEY` auth and `GA_UI_PORT_ENABLED`
+- [ ] 7.1 `POST /crews/{crew_id}/dashboard` — allocate port + start listener for existing crew; return `{"dashboard_url": "..."}`; no-op if already active
+- [ ] 7.2 `DELETE /crews/{crew_id}/dashboard` — stop listener + release port; return `{"dashboard_url": null}`; no-op if not active
+- [ ] 7.3 Both routes respect `GA_API_KEY` auth and `GA_DASHBOARD_PORT_ENABLED`
 - [ ] 7.4 Unit tests for both endpoints
 
 ## 8. ohnomer/servers firewall ✓
@@ -48,8 +48,8 @@
 
 ## 9. Tests
 
-- [ ] 9.1 Unit test: `launch(dashboard=True)` allocates port and returns `ui_url`; `launch(dashboard=False)` does not
-- [ ] 9.2 Existing tests: `_start_ui_port_server`, `_stop_ui_port_server`, catch-all handler (already passing — verify)
+- [ ] 9.1 Unit test: `launch(dashboard=True)` allocates port and returns `dashboard_url`; `launch(dashboard=False)` does not
+- [ ] 9.2 Existing tests: `_start_dashboard_port_server`, `_stop_dashboard_port_server`, catch-all handler (already passing — verify)
 
 ## 10. Spec sync and validation
 

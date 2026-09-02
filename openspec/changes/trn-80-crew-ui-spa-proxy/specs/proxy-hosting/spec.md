@@ -4,7 +4,7 @@
 
 ### Modified Requirement: Crew UI access
 
-The crew UI is now served via dedicated per-port listeners on the transport itself. Each crew gets a port in the range `[GA_UI_PORT_RANGE_START, GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE)`. All requests on that port are reverse-proxied by the transport to the crew gateway over the internal ghost-academy Podman network. Crew containers do not bind any host ports. Full behavior specified in `crew-ui-spa-routing/spec.md`.
+The crew UI is now served via dedicated per-port listeners on the transport itself. Each crew gets a port in the range `[GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE)`. All requests on that port are reverse-proxied by the transport to the crew gateway over the internal ghost-academy Podman network. Crew containers do not bind any host ports. Full behavior specified in `crew-ui-spa-routing/spec.md`.
 
 ### New Requirement: Transport origin added to crew CORS origins at start
 

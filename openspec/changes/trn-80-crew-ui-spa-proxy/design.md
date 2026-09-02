@@ -24,9 +24,9 @@ The transport already runs under uvicorn. Uvicorn supports serving a Starlette a
 
 **D1: Transport spawns a daemon thread per crew UI port**
 
-At launch (when `dashboard=True`), after the crew container is started, the transport spawns a daemon `threading.Thread` for each UI port. Each thread runs its own `asyncio.run()` event loop with a dedicated lightweight uvicorn server bound to `0.0.0.0:{ui_port}`. The server uses a bare ASGI callable (not the MCP app — the MCP `StreamableHTTPSessionManager` can only be started once per instance). The proxy callable handles auth, session cookie injection, and proxying to the crew gateway using a fresh `httpx.AsyncClient()` per request (required because the daemon thread's event loop is separate from the main transport event loop).
+At launch (when `dashboard=True`), after the crew container is started, the transport spawns a daemon `threading.Thread` for each UI port. Each thread runs its own `asyncio.run()` event loop with a dedicated lightweight uvicorn server bound to `0.0.0.0:{dashboard_port}`. The server uses a bare ASGI callable (not the MCP app — the MCP `StreamableHTTPSessionManager` can only be started once per instance). The proxy callable handles auth, session cookie injection, and proxying to the crew gateway using a fresh `httpx.AsyncClient()` per request (required because the daemon thread's event loop is separate from the main transport event loop).
 
-`_ui_port_servers: dict[int, uvicorn.Server]` and `_ui_port_crew: dict[int, str]` track active servers and the port→crew_id mapping. At nuke, `server.should_exit = True` signals shutdown and both dicts are cleaned up.
+`_dashboard_port_servers: dict[int, uvicorn.Server]` and `_dashboard_port_crew: dict[int, str]` track active servers and the port→crew_id mapping. At nuke, `server.should_exit = True` signals shutdown and both dicts are cleaned up.
 
 The per-port proxy app enforces `GA_API_KEY` auth independently (via constant-time comparison) since browser requests don't share the main transport's `BearerAuthMiddleware` ASGI context.
 
@@ -38,17 +38,17 @@ Alternatives considered:
 
 **D2: Port-to-crew mapping via module-level dict**
 
-`_ui_port_crew: dict[int, str]` maps allocated port → crew_id. The catch-all proxy handler reads this dict to find the crew for any incoming request. Populated at launch, cleared at nuke, restored from `crews.json` at startup.
+`_dashboard_port_crew: dict[int, str]` maps allocated port → crew_id. The catch-all proxy handler reads this dict to find the crew for any incoming request. Populated at launch, cleared at nuke, restored from `crews.json` at startup.
 
 **D3: Port allocation and registry persistence (unchanged from previous approach)**
 
-`_ui_ports_in_use: set[int]` tracks allocated ports. `_allocate_ui_port()` scans the range for the first free port. Port and `ui_url` stored in `crews.json`. Restored at startup.
+`_dashboard_ports_in_use: set[int]` tracks allocated ports. `_allocate_dashboard_port()` scans the range for the first free port. Port and `dashboard_url` stored in `crews.json`. Restored at startup.
 
-At startup, the transport also restarts the per-port uvicorn servers for any crews that already have a `ui_port` in the registry (handles transport restarts).
+At startup, the transport also restarts the per-port uvicorn servers for any crews that already have a `dashboard_port` in the registry (handles transport restarts).
 
 **D4: CORS injection includes UI port origin**
 
-`KIROCREW_CORS_ORIGINS` is built at `container_create` time with two origins: the transport's public origin (from `GA_HOST_URL` or `http://localhost:{PORT}`) and the allocated UI port origin (e.g. `http://academy.example.com:64058`). The port origin must be added separately after allocation since `ui_port` isn't known until after `_allocate_ui_port()` runs. Without the port origin, the SPA's API calls from the browser are CSRF-rejected by the crew gateway.
+`KIROCREW_CORS_ORIGINS` is built at `container_create` time with two origins: the transport's public origin (from `GA_HOST_URL` or `http://localhost:{PORT}`) and the allocated UI port origin (e.g. `http://academy.example.com:64058`). The port origin must be added separately after allocation since `dashboard_port` isn't known until after `_allocate_dashboard_port()` runs. Without the port origin, the SPA's API calls from the browser are CSRF-rejected by the crew gateway.
 
 **D5: Session cookie injection**
 
@@ -65,5 +65,5 @@ The transport stores the crew's session cookie (`mc_token_5476`) in `crews.json`
 
 1. Add `ufw allow 64058:64107/tcp` in `ohnomer/servers/hyperv/academy/install.sh` (done).
 2. Deploy updated transport.
-3. Existing live crews without a `ui_port` can retrofit via `POST /crews/{id}/dashboard` — no nuke required.
-4. Rollback: set `GA_UI_PORT_ENABLED=false` — skips port allocation entirely, no UI ports opened.
+3. Existing live crews without a `dashboard_port` can retrofit via `POST /crews/{id}/dashboard` — no nuke required.
+4. Rollback: set `GA_DASHBOARD_PORT_ENABLED=false` — skips port allocation entirely, no UI ports opened.

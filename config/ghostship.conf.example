@@ -161,11 +161,11 @@
 # GA_GIT_AUTHOR_EMAIL="you@example.com"
 
 # ── Crew UI port allocation (TRN-80) ─────────────────────────────────────────
-# When GA_UI_PORT_ENABLED=true (default), each new crew is assigned a host port
-# from the range [GA_UI_PORT_RANGE_START, GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE - 1]
+# When GA_DASHBOARD_PORT_ENABLED=true (default), each new crew is assigned a host port
+# from the range [GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1]
 # so the crew's SPA is reachable at http://<host>:<port>/ as a stable origin.
 # Open the port range in your firewall before deploying (e.g. ufw allow 64058:64107/tcp).
-# Set GA_UI_PORT_ENABLED=false to fall back to the Python proxy (/crews/<id>/ui).
-# GA_UI_PORT_RANGE_START=64058
-# GA_UI_PORT_RANGE_SIZE=50
-# GA_UI_PORT_ENABLED=true
+# Dashboard ports are opt-in at launch time (dashboard=True). Set GA_DASHBOARD_PORT_ENABLED=false to disable entirely.
+# GA_DASHBOARD_PORT_RANGE_START=64058
+# GA_DASHBOARD_PORT_RANGE_SIZE=50
+# GA_DASHBOARD_PORT_ENABLED=true

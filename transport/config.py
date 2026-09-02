@@ -83,9 +83,9 @@ class Config:
     kc_gateway_token_ttl: str = "24h"
 
     # ── Crew UI port allocation (TRN-80) ─────────────────────────────────────
-    ga_ui_port_range_start: int = 64058
-    ga_ui_port_range_size: int = 50
-    ga_ui_port_enabled: bool = True
+    ga_dashboard_port_range_start: int = 64058
+    ga_dashboard_port_range_size: int = 50
+    ga_dashboard_port_enabled: bool = True
 
     # ── Transport security (TRN-70) ──────────────────────────────────────────
     ga_tls_min_version: str = "1.2"
@@ -147,9 +147,9 @@ class Config:
                 os.environ.get("GA_SUBAGENT_MAX_TURNS", "200")
             ),
             kc_gateway_token_ttl=os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h"),
-            ga_ui_port_range_start=int(os.environ.get("GA_UI_PORT_RANGE_START", "64058")),
-            ga_ui_port_range_size=int(os.environ.get("GA_UI_PORT_RANGE_SIZE", "50")),
-            ga_ui_port_enabled=_env_bool_default_on("GA_UI_PORT_ENABLED"),
+            ga_dashboard_port_range_start=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_START", "64058")),
+            ga_dashboard_port_range_size=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_SIZE", "50")),
+            ga_dashboard_port_enabled=_env_bool_default_on("GA_DASHBOARD_PORT_ENABLED"),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
             ga_tls_certfile=os.environ.get("GA_TLS_CERTFILE", "").strip(),
             ga_tls_keyfile=os.environ.get("GA_TLS_KEYFILE", "").strip(),

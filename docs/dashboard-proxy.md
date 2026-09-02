@@ -20,29 +20,29 @@ Key properties:
 - **CORS is pre-configured.** The UI port origin (e.g. `http://academy.example.com:64058`) is added to `KIROCREW_CORS_ORIGINS` at container create time so the SPA's API calls are not rejected.
 - **SPA navigation works correctly.** Because the SPA owns a full origin (`host:64058/`) rather than a path prefix, `history.pushState` navigation, hard reloads, and link sharing all work as expected.
 
-## The `ui_url`
+## The `dashboard_url`
 
-`launch` returns a `ui_url` in its response:
+`launch` returns a `dashboard_url` in its response:
 
 ```json
 {
   "crew_id": "my-crew",
-  "ui_url": "http://academy.example.com:64058/",
+  "dashboard_url": "http://academy.example.com:64058/",
   ...
 }
 ```
 
-`crews` also includes `ui_url` per crew (null for crews launched before this feature or when `GA_UI_PORT_ENABLED=false`).
+`crews` also includes `dashboard_url` per crew (null for crews launched before this feature or when `GA_DASHBOARD_PORT_ENABLED=false`).
 
 ## Configuration
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `GA_UI_PORT_ENABLED` | `true` | Enable/disable the dashboard proxy entirely |
-| `GA_UI_PORT_RANGE_START` | `64058` | First port in the UI port range |
-| `GA_UI_PORT_RANGE_SIZE` | `50` | Number of ports (max concurrent crew UIs) |
+| `GA_DASHBOARD_PORT_ENABLED` | `true` | Enable/disable the dashboard proxy entirely |
+| `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First port in the UI port range |
+| `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports (max concurrent crew UIs) |
 
-Set `GA_UI_PORT_ENABLED=false` to disable port allocation and fall back to the previous path-prefix proxy (`/crews/{id}/ui/`).
+Set `GA_DASHBOARD_PORT_ENABLED=false` to disable port allocation and fall back to the previous path-prefix proxy (`/crews/{id}/ui/`).
 
 ## Firewall
 
@@ -65,11 +65,11 @@ What protects the UI ports:
 - **Network layer** — on a Tailscale deployment, only devices on your tailnet can reach the host. This is the primary access control.
 - **Session cookie** — the injected `mc_token_5476` cookie is scoped to the crew's gateway and signed. A visitor without the cookie sees an onboarding screen and cannot interact with the crew. The cookie is set HttpOnly and SameSite=Lax.
 
-**Recommendation:** For any deployment reachable from the public internet, set `GA_UI_PORT_ENABLED=false` or restrict the port range at your firewall/security group until per-port bearer-token auth is implemented.
+**Recommendation:** For any deployment reachable from the public internet, set `GA_DASHBOARD_PORT_ENABLED=false` or restrict the port range at your firewall/security group until per-port bearer-token auth is implemented.
 
 ## Port persistence across restarts
 
-Allocated ports are stored in `crews.json`. When the transport restarts, it reads the registry and re-starts the daemon-thread proxy servers for any crews that have a `ui_port` assigned, so existing UI URLs continue to work without re-launching the crew.
+Allocated ports are stored in `crews.json`. When the transport restarts, it reads the registry and re-starts the daemon-thread proxy servers for any crews that have a `dashboard_port` assigned, so existing UI URLs continue to work without re-launching the crew.
 
 ## How the proxy session works
 
@@ -85,6 +85,6 @@ This means each page load — including sub-routes and hard reloads — carries 
 
 ## Limitations
 
-- **Port exhaustion** — if all 50 ports are allocated, `launch` returns an error. Increase `GA_UI_PORT_RANGE_SIZE` if you need more concurrent crew UIs.
+- **Port exhaustion** — if all 50 ports are allocated, `launch` returns an error. Increase `GA_DASHBOARD_PORT_RANGE_SIZE` if you need more concurrent crew UIs.
 - **No `GA_API_KEY` gating** — see Security above.
-- **Port collisions** — if the chosen range conflicts with other services on your host, change `GA_UI_PORT_RANGE_START` in your config.
+- **Port collisions** — if the chosen range conflicts with other services on your host, change `GA_DASHBOARD_PORT_RANGE_START` in your config.
