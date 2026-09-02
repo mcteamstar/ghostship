@@ -754,17 +754,20 @@ async def _handle_ui_port_proxy(request: Request, crew_id: str) -> Response:
         if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() != "host"
     }
     try:
-        async with _async_http.stream(
-            request.method,
-            upstream_full,
-            headers=forward_headers,
-            content=await request.body(),
-        ) as upstream_resp:
-            response_headers = {
-                k: v for k, v in upstream_resp.headers.items()
-                if k.lower() not in _HOP_BY_HOP_HEADERS
-            }
-            body = await upstream_resp.aread()
+        import httpx as _httpx
+        async with _httpx.AsyncClient() as _client:
+            async with _client.stream(
+                request.method,
+                upstream_full,
+                headers=forward_headers,
+                content=await request.body(),
+                timeout=60.0,
+            ) as upstream_resp:
+                response_headers = {
+                    k: v for k, v in upstream_resp.headers.items()
+                    if k.lower() not in _HOP_BY_HOP_HEADERS
+                }
+                body = await upstream_resp.aread()
         return Response(
             content=body,
             status_code=upstream_resp.status_code,
