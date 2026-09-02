@@ -26,6 +26,10 @@ Both endpoints respect `GA_API_KEY` auth and `GA_UI_PORT_ENABLED`.
 - **WHEN** `DELETE /crews/my-crew/dashboard` is called
 - **THEN** the listener is stopped, the port released, and `ui_url` becomes null
 
+#### Scenario: DELETE /dashboard when no dashboard is active
+- **WHEN** `DELETE /crews/my-crew/dashboard` is called and the crew has no `ui_port`
+- **THEN** the response returns `{"ui_url": null}` as a no-op — no error
+
 #### Scenario: POST /dashboard when already active
 - **WHEN** `POST /crews/my-crew/dashboard` is called and the crew already has a `ui_port`
 - **THEN** the existing `ui_url` is returned with no change

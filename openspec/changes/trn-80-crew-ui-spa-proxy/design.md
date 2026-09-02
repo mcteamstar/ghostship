@@ -22,18 +22,19 @@ The transport already runs under uvicorn. Uvicorn supports serving a Starlette a
 
 ## Decisions
 
-**D1: Transport binds additional uvicorn servers per crew UI port**
+**D1: Transport spawns a daemon thread per crew UI port**
 
-At launch, after the crew container is started, the transport calls `uvicorn.Server` with a `uvicorn.Config` bound to `0.0.0.0:{ui_port}` and starts it in the background within the existing asyncio event loop. The server uses the same Starlette app instance. All incoming requests on that port pass through `BearerAuthMiddleware` (GA_API_KEY check), rate limiting, and then a port-based catch-all handler that looks up the crew by port and proxies to `http://gs-{crew_id}:5476/{path}`.
+At launch (when `dashboard=True`), after the crew container is started, the transport spawns a daemon `threading.Thread` for each UI port. Each thread runs its own `asyncio.run()` event loop with a dedicated lightweight uvicorn server bound to `0.0.0.0:{ui_port}`. The server uses a bare ASGI callable (not the MCP app — the MCP `StreamableHTTPSessionManager` can only be started once per instance). The proxy callable handles auth, session cookie injection, and proxying to the crew gateway using a fresh `httpx.AsyncClient()` per request (required because the daemon thread's event loop is separate from the main transport event loop).
 
-At nuke, the transport calls `server.should_exit = True` on the per-port server, waits for shutdown, and releases the port.
+`_ui_port_servers: dict[int, uvicorn.Server]` and `_ui_port_crew: dict[int, str]` track active servers and the port→crew_id mapping. At nuke, `server.should_exit = True` signals shutdown and both dicts are cleaned up.
 
-Per-port server handles are stored in a module-level dict `_ui_port_servers: dict[int, uvicorn.Server]` keyed by port.
+The per-port proxy app enforces `GA_API_KEY` auth independently (via constant-time comparison) since browser requests don't share the main transport's `BearerAuthMiddleware` ASGI context.
 
 Alternatives considered:
+- *Shared main event loop via `create_task`*: Doesn't work — `uvicorn.Server.serve()` monopolises the event loop and tasks never run.
+- *`asyncio.run_coroutine_threadsafe`*: Schedules on the main loop but same problem — the main uvicorn server blocks it.
 - *Podman port binding (previous approach)*: Direct binding to host bypasses all transport security. Rejected.
-- *Caddy dynamic proxy per port*: Adds infrastructure complexity and another hop. Rejected.
-- *Caddy pre-configured for all 50 ports forwarding to transport*: Unnecessary middleman — the transport can own the ports directly.
+- *Caddy dynamic proxy per port*: Adds infrastructure complexity. Rejected.
 
 **D2: Port-to-crew mapping via module-level dict**
 
@@ -45,9 +46,13 @@ Alternatives considered:
 
 At startup, the transport also restarts the per-port uvicorn servers for any crews that already have a `ui_port` in the registry (handles transport restarts).
 
-**D4: CORS injection at container create (unchanged)**
+**D4: CORS injection includes UI port origin**
 
-`KIROCREW_CORS_ORIGINS` is appended with the transport's public origin so the SPA's API calls to the crew gateway aren't CORS-rejected.
+`KIROCREW_CORS_ORIGINS` is built at `container_create` time with two origins: the transport's public origin (from `GA_HOST_URL` or `http://localhost:{PORT}`) and the allocated UI port origin (e.g. `http://academy.example.com:64058`). The port origin must be added separately after allocation since `ui_port` isn't known until after `_allocate_ui_port()` runs. Without the port origin, the SPA's API calls from the browser are CSRF-rejected by the crew gateway.
+
+**D5: Session cookie injection**
+
+The transport stores the crew's session cookie (`mc_token_5476`) in `crews.json` at launch time (minted via `_mint_cookie`). The UI port proxy injects this as a `Set-Cookie` header on every proxied response, so the browser is automatically authenticated without going through a manual kiro-cli device auth flow. Without this, the gateway shows the "install kiro-cli" onboarding screen even though auth is already injected into the container's kiro-cli DB.
 
 ## Risks / Trade-offs
 
@@ -58,7 +63,7 @@ At startup, the transport also restarts the per-port uvicorn servers for any cre
 
 ## Migration Plan
 
-1. Add `ufw allow 64058:64107/tcp` in `ohnomer/servers/hyperv/academy/install.sh`.
+1. Add `ufw allow 64058:64107/tcp` in `ohnomer/servers/hyperv/academy/install.sh` (done).
 2. Deploy updated transport.
-3. Existing live crews have no `ui_port` — they need to be nuked and re-launched to get a UI port. Or the startup reconciliation will register them on next transport restart.
+3. Existing live crews without a `ui_port` can retrofit via `POST /crews/{id}/dashboard` — no nuke required.
 4. Rollback: set `GA_UI_PORT_ENABLED=false` — skips port allocation entirely, no UI ports opened.
