@@ -107,6 +107,7 @@ try:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _delete_crew_secret,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -121,6 +122,7 @@ except ModuleNotFoundError:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _delete_crew_secret,
     )
 
 try:
@@ -2626,6 +2628,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     with _captain_order_locks_lock:
         _captain_order_locks.pop(crew_id, None)
+
+    # TRN-93: remove the per-crew signing-secret file (best-effort).
+    _delete_crew_secret(crew_id)
 
     logger.info("Crew %s nuked", crew_id)
     return {"crew_id": crew_id, "status": "nuked", "container": container}

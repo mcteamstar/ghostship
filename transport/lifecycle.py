@@ -66,6 +66,7 @@ try:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _write_crew_secret,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -77,6 +78,7 @@ except ModuleNotFoundError:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _write_crew_secret,
     )
 
 try:
@@ -1228,6 +1230,15 @@ def _finish_crew_setup(
         logger.info("Injected admiral signing secret for %s", container)
     except Exception as e:
         logger.warning("Failed to inject admiral secret for %s: %s", container, e)
+
+    # TRN-93: persist the admiral secret in a separate file (DATA_DIR/secrets/)
+    # so captain.py can retrieve it for X-Admiral-Sig when sending standing orders.
+    # This is the only place the plaintext is written to disk; crews.json stores
+    # only the non-reversible identifier (admiral_secret_id).
+    try:
+        _write_crew_secret(crew_id, admiral_secret)
+    except Exception as e:
+        logger.warning("Failed to persist admiral secret for %s: %s", crew_id, e)
 
     # depends on: gateway (pre-restart); gateway seeds config on first start
     _patch_crew_config(podman, container)

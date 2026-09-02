@@ -127,3 +127,54 @@ def _touch_crew(crew_id: str) -> None:
         if crew_id in reg["crews"]:
             reg["crews"][crew_id]["last_used"] = time.time()
             _save_registry(reg)
+
+
+# ── Per-crew signing-secret store (TRN-93) ───────────────────────────────────
+# The admiral_secret is no longer written to crews.json (plaintext removed by
+# TRN-93).  Instead, the transport stores it in a separate file under
+# DATA_DIR/secrets/<crew_id>.admiral_secret (mode 0600).  This keeps the value
+# in a file that inherits DATA_DIR's access controls (0700 for multi-operator
+# deployments) while keeping it out of the structured JSON registry that is
+# more likely to be backed up or inspected.
+
+_SECRETS_DIR_NAME = "secrets"
+
+
+def _crew_secret_path(crew_id: str) -> Path:
+    """Return the path for a crew's admiral signing-secret file."""
+    return DATA_DIR / _SECRETS_DIR_NAME / f"{crew_id}.admiral_secret"
+
+
+def _write_crew_secret(crew_id: str, secret: str) -> None:
+    """Write the admiral signing secret for *crew_id* to an isolated file.
+
+    The file is created with mode 0600. Parent directory is created if absent.
+    This is the only place the plaintext secret is persisted to disk; it is
+    never stored in crews.json.
+    """
+    secret_path = _crew_secret_path(crew_id)
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, secret.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_crew_secret(crew_id: str) -> str | None:
+    """Return the admiral signing secret for *crew_id*, or None if absent."""
+    secret_path = _crew_secret_path(crew_id)
+    try:
+        return secret_path.read_text().strip()
+    except FileNotFoundError:
+        return None
+
+
+def _delete_crew_secret(crew_id: str) -> None:
+    """Remove the admiral signing-secret file for *crew_id* (nuke path)."""
+    secret_path = _crew_secret_path(crew_id)
+    try:
+        secret_path.unlink()
+    except FileNotFoundError:
+        pass

@@ -643,5 +643,112 @@ class TestFileTransferAudit(unittest.TestCase):
                              "Audit event must not contain HMAC signature")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.fix — Admiral signing-secret file (TRN-93 Banshee fix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAdmiralSigningSecretFile(unittest.TestCase):
+    """_finish_crew_setup writes the admiral secret to a separate file; captain
+    reads it back so standing orders are signed for TRN-93+ crews."""
+
+    def test_finish_crew_setup_writes_crew_secret_file(self) -> None:
+        """_finish_crew_setup calls _write_crew_secret with the admiral_secret value."""
+        import transport.registry as _registry_mod
+
+        written_secrets: list[tuple[str, str]] = []
+
+        def capture_write(crew_id: str, secret: str) -> None:
+            written_secrets.append((crew_id, secret))
+
+        podman = MagicMock()
+        podman.container_exec.return_value = "ready"
+        podman.container_exec_checked.return_value = "ok"
+        podman.container_exec_stdin.return_value = "admiral secret injected"
+        podman.container_inspect.return_value = {"Config": {"Labels": {}}}
+        podman.container_stop = MagicMock()
+        podman.container_start = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                stack.enter_context(patch.object(lifecycle, "_inject_auth"))
+                stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+                stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+                stack.enter_context(patch.object(lifecycle, "_patch_models"))
+                stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+                stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
+                stack.enter_context(patch.object(lifecycle, "_write_crew_secret", side_effect=capture_write))
+                lifecycle._finish_crew_setup(
+                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth"
+                )
+
+        self.assertEqual(len(written_secrets), 1,
+                         "_write_crew_secret must be called exactly once")
+        crew_id, secret = written_secrets[0]
+        self.assertEqual(crew_id, "demo")
+        self.assertIsInstance(secret, str)
+        self.assertGreater(len(secret), 0, "secret must be non-empty")
+        # The secret must not be the identifier — it must be the raw hex token
+        self.assertFalse(secret.startswith("sha256:"),
+                         "_write_crew_secret must receive the raw secret, not the identifier")
+
+    def test_write_and_read_crew_secret_roundtrip(self) -> None:
+        """_write_crew_secret and _read_crew_secret roundtrip correctly."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                _registry_mod._write_crew_secret("test-crew", "my_secret_value_abc")
+                result = _registry_mod._read_crew_secret("test-crew")
+        self.assertEqual(result, "my_secret_value_abc")
+
+    def test_read_crew_secret_returns_none_when_absent(self) -> None:
+        """_read_crew_secret returns None for a crew with no secret file."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                result = _registry_mod._read_crew_secret("nonexistent-crew")
+        self.assertIsNone(result)
+
+    def test_crew_secret_file_has_mode_0600(self) -> None:
+        """The crew secret file is written with mode 0600."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                _registry_mod._write_crew_secret("test-crew", "s3cr3t")
+                secret_path = _registry_mod._crew_secret_path("test-crew")
+                mode = secret_path.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600,
+                         "Crew secret file must be mode 0600")
+
+    def test_delete_crew_secret_removes_file(self) -> None:
+        """_delete_crew_secret removes the secret file."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                _registry_mod._write_crew_secret("test-crew", "s3cr3t")
+                _registry_mod._delete_crew_secret("test-crew")
+                result = _registry_mod._read_crew_secret("test-crew")
+        self.assertIsNone(result, "_delete_crew_secret must remove the secret file")
+
+    def test_delete_crew_secret_noop_when_absent(self) -> None:
+        """_delete_crew_secret does not raise if the file doesn't exist."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                # Should not raise
+                _registry_mod._delete_crew_secret("nonexistent-crew")
+
+
 if __name__ == "__main__":
     unittest.main()

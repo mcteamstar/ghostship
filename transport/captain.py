@@ -27,12 +27,13 @@ except ModuleNotFoundError:
     from transport.podman import PodmanClient  # local dev
 
 try:
-    from registry import _load_registry, _registry_lock, _save_registry  # container
+    from registry import _load_registry, _registry_lock, _save_registry, _read_crew_secret  # container
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
         _load_registry,
         _registry_lock,
         _save_registry,
+        _read_crew_secret,
     )
 
 logger = logging.getLogger(__name__)
@@ -240,16 +241,10 @@ def _append_captain_mail(
         with _registry_lock:
             reg = _load_registry()
             crew_entry = reg["crews"].get(crew_id, {})
-            # TRN-93 audit: this is a read-back of admiral_secret from crews.json.
-            # After TRN-93, crews.json stores only admiral_secret_id (a non-reversible
-            # identifier) and no longer contains the plaintext admiral_secret. This
-            # read-back will return None for crews launched after TRN-93, causing
-            # captain standing orders to be sent unsigned. A follow-on change is needed
-            # to persist the signing secret separately (e.g. in a Podman secret or
-            # encrypted field) so this path can retrieve it. Until then, standing orders
-            # are sent without an X-Admiral-Sig header for TRN-93+ crews.
-            signing_secret = crew_entry.get("admiral_secret")
             supersedes_id = crew_entry.get("last_captain_message_id")
+        # TRN-93: admiral_secret is no longer stored in crews.json. Read it from
+        # the separate per-crew secrets file written by lifecycle._finish_crew_setup.
+        signing_secret = _read_crew_secret(crew_id)
 
     # Pure computation — outside any lock
     message, message_id = _format_captain_mail(

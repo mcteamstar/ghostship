@@ -392,11 +392,13 @@ class PodmanClient(ContainerRuntime):
         stdin_data: bytes,
     ) -> str:
         """Run a one-shot exec, write stdin_data to the process's stdin, wait for exit,
-        and return stdout as a string.
+        and return stdout as a string.  Raises RuntimeError if the process exits non-zero.
 
         Uses the Podman exec API with AttachStdin=True, then hijacks the connection
         via a raw Unix socket to write stdin_data before closing the write side.
-        The response is demuxed using the existing _demux helper.
+        The response is demuxed using the existing _demux helper.  After the socket
+        closes, the exec is inspected (GET /libpod/exec/{id}/json) to retrieve the
+        exit code — identical to the pattern used by container_exec_checked.
         """
         spec: dict = {
             "AttachStdin": True,
@@ -450,7 +452,26 @@ class PodmanClient(ContainerRuntime):
         finally:
             sock.close()
 
-        return self._demux(bytes(output_buf))
+        output = self._demux(bytes(output_buf))
+
+        # Inspect the exec to get the exit code — same pattern as container_exec_checked.
+        inspected = self._c.get(f"/libpod/exec/{exec_id}/json")
+        try:
+            self._check_response(inspected, "Podman exec inspect")
+            exit_code = inspected.json().get("ExitCode")
+        finally:
+            inspected.close()
+
+        if exit_code is None:
+            raise RuntimeError(
+                f"Podman exec {exec_id} returned no exit code: {output.strip()}"
+            )
+        if exit_code != 0:
+            detail = output.strip() or "(no output)"
+            raise RuntimeError(
+                f"Podman exec {exec_id} exited with code {exit_code}: {detail}"
+            )
+        return output
 
     def container_exec_checked(
         self,
