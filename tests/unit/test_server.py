@@ -5095,7 +5095,7 @@ class UiPortLaunchTests(unittest.TestCase):
             mock_cfg.ga_host_url = ga_host_url
             mock_cfg.ga_ui_port_range_start = 9000
             mock_cfg.ga_ui_port_range_size = 50
-            result = server.launch("demo")
+            result = server.launch("demo", dashboard=ga_ui_port_enabled)
         return result
 
     def test_launch_includes_ui_url_when_port_enabled(self) -> None:
@@ -5142,7 +5142,7 @@ class UiPortLaunchTests(unittest.TestCase):
             mock_cfg.ga_host_url = ""
             mock_cfg.ga_ui_port_range_start = 9000
             mock_cfg.ga_ui_port_range_size = 50
-            server.launch("demo")
+            server.launch("demo", dashboard=True)
 
         call_kwargs = podman.container_create.call_args.kwargs
         self.assertNotIn("ports", call_kwargs, "crew containers must not bind host ports")
@@ -5371,6 +5371,397 @@ class CorsOriginInjectionTests(unittest.TestCase):
         origins = env.get("KIROCREW_CORS_ORIGINS", "")
         parts = [p.strip() for p in origins.split(",")]
         self.assertGreaterEqual(len(parts), 2)
+
+
+class LaunchDashboardParamTests(unittest.TestCase):
+    """TRN-80 task 5.3 / 9.1 — launch(dashboard=True/False) port allocation gate."""
+
+    def setUp(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def _run_launch(self, dashboard: bool) -> dict:
+        """Run server.launch() and return the result.  Captures container_create env."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {
+            "crew_id": "demo",
+            "container": "gs-demo",
+            "gateway_url": "http://gs-demo:5476",
+            "status": "ready",
+        }
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry", side_effect=lambda r: None),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_UI_PORT_ENABLED", True),
+            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_ui_port_range_start = 9000
+            mock_cfg.ga_ui_port_range_size = 50
+            result = server.launch("demo", dashboard=dashboard)
+        return result
+
+    def test_launch_dashboard_true_allocates_port_and_returns_ui_url(self) -> None:
+        """9.1a — launch(dashboard=True) allocates port and returns ui_url."""
+        result = self._run_launch(dashboard=True)
+        self.assertIn("ui_url", result)
+        self.assertIsNotNone(result["ui_url"])
+        self.assertTrue(result["ui_url"].startswith("http://"))
+        self.assertIn("9000", result["ui_url"])
+        # Port should be marked as in-use
+        self.assertIn(9000, server._ui_ports_in_use)
+
+    def test_launch_dashboard_false_does_not_allocate_port(self) -> None:
+        """9.1b — launch(dashboard=False) does NOT allocate port, ui_url is null."""
+        result = self._run_launch(dashboard=False)
+        self.assertIn("ui_url", result)
+        self.assertIsNone(result["ui_url"])
+        # No port should have been allocated
+        self.assertEqual(len(server._ui_ports_in_use), 0)
+
+    def test_launch_dashboard_default_is_false(self) -> None:
+        """9.1c — launch() default is dashboard=False (no port allocated)."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_UI_PORT_ENABLED", True),
+            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_ui_port_range_start = 9000
+            mock_cfg.ga_ui_port_range_size = 50
+            result = server.launch("demo")  # no dashboard=... passed
+
+        self.assertIsNone(result.get("ui_url"))
+        self.assertEqual(len(server._ui_ports_in_use), 0)
+
+
+class DashboardRestEndpointTests(unittest.TestCase):
+    """TRN-80 task 7.1-7.4 — POST/DELETE /crews/{id}/dashboard REST endpoints."""
+
+    def setUp(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    # ── POST /crews/{id}/dashboard ────────────────────────────────────────────
+
+    def test_post_dashboard_allocates_port_and_returns_ui_url(self) -> None:
+        """7.1a — POST on crew without dashboard allocates port and returns ui_url."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+        registry = {"crews": {"demo": dict(crew)}}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_UI_PORT_ENABLED", True),
+                patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry"),
+                patch.object(server, "_start_ui_port_server"),
+                patch.object(server, "_ui_app", Mock()),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = ""
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIn("ui_url", body)
+        self.assertIsNotNone(body["ui_url"])
+        self.assertIn("9000", body["ui_url"])
+
+    def test_post_dashboard_noop_when_already_active(self) -> None:
+        """7.1b — POST on crew that already has a dashboard returns existing ui_url (no-op)."""
+        crew = {"container": "gs-demo", "cookie": "c", "ui_port": 9003}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_UI_PORT_ENABLED", True),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = ""
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertEqual(body["ui_url"], "http://localhost:9003/")
+        # No new port should have been allocated
+        self.assertNotIn(9003, server._ui_ports_in_use)
+
+    def test_post_dashboard_503_when_feature_disabled(self) -> None:
+        """7.3a — POST returns 503 when GA_UI_PORT_ENABLED=False."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_UI_PORT_ENABLED", False),
+            ):
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 503)
+        body = json.loads(response.body)
+        self.assertIn("error", body)
+
+    def test_post_dashboard_404_for_unknown_crew(self) -> None:
+        """7.1c — POST returns 404 for unknown crew."""
+        async def run():
+            with (
+                patch.object(server, "_require_crew", side_effect=KeyError("no such crew")),
+                patch.object(server, "GA_UI_PORT_ENABLED", True),
+            ):
+                request = _FakeStreamRequest(method="POST", path="/crews/unknown/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 404)
+
+    def test_post_dashboard_409_when_port_pool_exhausted(self) -> None:
+        """7.1d — POST returns 409 when port pool is exhausted."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_UI_PORT_ENABLED", True),
+                patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_UI_PORT_RANGE_SIZE", 2),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = ""
+                # Fill the pool
+                server._ui_ports_in_use.update({9000, 9001})
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 409)
+        body = json.loads(response.body)
+        self.assertIn("error", body)
+
+    def test_post_dashboard_uses_ga_host_url_for_ui_url(self) -> None:
+        """7.1e — POST uses GA_HOST_URL hostname in ui_url when set."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+        registry = {"crews": {"demo": dict(crew)}}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_UI_PORT_ENABLED", True),
+                patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry"),
+                patch.object(server, "_start_ui_port_server"),
+                patch.object(server, "_ui_app", Mock()),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = "http://vm23.example.com:64057"
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIn("vm23.example.com", body["ui_url"])
+        self.assertIn("9000", body["ui_url"])
+
+    # ── DELETE /crews/{id}/dashboard ──────────────────────────────────────────
+
+    def test_delete_dashboard_stops_listener_and_releases_port(self) -> None:
+        """7.2a — DELETE stops listener, releases port, returns ui_url: null."""
+        server._ui_ports_in_use.add(9004)
+        crew = {"container": "gs-demo", "cookie": "c", "ui_port": 9004}
+        registry = {"crews": {"demo": {**crew}}}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "_stop_ui_port_server") as mock_stop,
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry"),
+            ):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
+                resp = await server._handle_crew_dashboard_delete(request)
+                return resp, mock_stop
+
+        response, mock_stop = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIsNone(body["ui_url"])
+        mock_stop.assert_called_once_with(9004)
+        # Port should be released
+        self.assertNotIn(9004, server._ui_ports_in_use)
+
+    def test_delete_dashboard_noop_when_no_dashboard_active(self) -> None:
+        """7.2b — DELETE on crew with no dashboard returns ui_url: null (no-op)."""
+        crew = {"container": "gs-demo", "cookie": "c"}  # no ui_port
+
+        async def run():
+            with patch.object(server, "_require_crew", return_value=crew):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_delete(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIsNone(body["ui_url"])
+
+    def test_delete_dashboard_404_for_unknown_crew(self) -> None:
+        """7.2c — DELETE returns 404 for unknown crew."""
+        async def run():
+            with patch.object(server, "_require_crew", side_effect=KeyError("no such crew")):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/unknown/dashboard")
+                return await server._handle_crew_dashboard_delete(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 404)
+
+    def test_delete_dashboard_removes_ui_port_from_registry(self) -> None:
+        """7.2d — DELETE clears ui_port field from registry after stopping listener."""
+        server._ui_ports_in_use.add(9007)
+        crew = {"container": "gs-demo", "cookie": "c", "ui_port": 9007}
+        registry = {"crews": {"demo": {**crew}}}
+        save_calls = []
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "_stop_ui_port_server"),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry", side_effect=lambda r: save_calls.append(
+                    json.loads(json.dumps(r))
+                )),
+            ):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_delete(request)
+
+        asyncio.run(run())
+        self.assertTrue(save_calls, "Expected _save_registry to be called")
+        saved_crew = save_calls[-1]["crews"]["demo"]
+        self.assertNotIn("ui_port", saved_crew)
+
+    # ── BearerAuthMiddleware routing for /dashboard ───────────────────────────
+
+    def test_middleware_dispatches_post_dashboard_when_auth_passes(self) -> None:
+        """7.4a — POST /crews/demo/dashboard reaches handler after auth passes."""
+        handled = []
+
+        async def fake_post_handler(req):
+            handled.append("post-dashboard")
+            return server.JSONResponse({"ui_url": "http://localhost:9000/"})
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/crews/demo/dashboard",
+            "headers": [(b"authorization", b"Bearer testkey")],
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+
+        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
+            status, _, _ = _run_asgi(mw, scope)
+
+        self.assertEqual(status, 200)
+        self.assertIn("post-dashboard", handled)
+
+    def test_middleware_dispatches_delete_dashboard_when_auth_passes(self) -> None:
+        """7.4b — DELETE /crews/demo/dashboard reaches handler after auth passes."""
+        handled = []
+
+        async def fake_delete_handler(req):
+            handled.append("delete-dashboard")
+            return server.JSONResponse({"ui_url": None})
+
+        scope = {
+            "type": "http",
+            "method": "DELETE",
+            "path": "/crews/demo/dashboard",
+            "headers": [(b"authorization", b"Bearer testkey")],
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+
+        with patch.object(server, "_handle_crew_dashboard_delete", side_effect=fake_delete_handler):
+            status, _, _ = _run_asgi(mw, scope)
+
+        self.assertEqual(status, 200)
+        self.assertIn("delete-dashboard", handled)
+
+    def test_middleware_returns_401_for_dashboard_when_key_wrong(self) -> None:
+        """7.4c — /crews/demo/dashboard returns 401 when bearer token is wrong."""
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/crews/demo/dashboard",
+            "headers": [(b"authorization", b"Bearer wrongkey")],
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="correctkey")
+        status, _, _ = _run_asgi(mw, scope)
+        self.assertEqual(status, 401)
+
+    def test_middleware_dispatches_dashboard_without_auth_when_no_key(self) -> None:
+        """7.4d — /crews/demo/dashboard is dispatched without auth when GA_API_KEY unset."""
+        handled = []
+
+        async def fake_post_handler(req):
+            handled.append("post-dashboard-no-auth")
+            return server.JSONResponse({"ui_url": "http://localhost:9000/"})
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/crews/demo/dashboard",
+            "headers": [],  # No auth header
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="")  # No key
+
+        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
+            status, _, body = _run_asgi(mw, scope)
+
+        self.assertEqual(status, 200)
+        self.assertIn("post-dashboard-no-auth", handled)
 
 
 if __name__ == "__main__":

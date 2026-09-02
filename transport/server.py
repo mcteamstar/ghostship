@@ -1014,6 +1014,113 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
 
 
+async def _handle_crew_dashboard_post(request: Request) -> Response:
+    """POST /crews/{crew_id}/dashboard — allocate a UI port and start a listener.
+
+    Allocates a port from the configured range, starts a transport-side proxy
+    listener, and stores ui_port in the registry. Returns {"ui_url": "..."}.
+    No-op if the crew already has a dashboard — returns the existing ui_url.
+
+    Requires GA_UI_PORT_ENABLED=true. Returns 503 if the feature is disabled.
+    Returns 404 for unknown crew. Returns 409 if port pool is exhausted.
+    """
+    parsed = _extract_crew_proxy_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, _sub = parsed
+
+    if not GA_UI_PORT_ENABLED:
+        return JSONResponse(
+            {"error": "UI port feature is disabled (GA_UI_PORT_ENABLED=false)"},
+            status_code=503,
+        )
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # No-op: crew already has a dashboard
+    existing_port = crew.get("ui_port")
+    if existing_port is not None:
+        if cfg.ga_host_url:
+            from urllib.parse import urlparse as _urlparse_d
+            _ph = _urlparse_d(cfg.ga_host_url)
+            ui_url = f"{_ph.scheme}://{_ph.hostname}:{existing_port}/"
+        else:
+            ui_url = f"http://localhost:{existing_port}/"
+        return JSONResponse({"ui_url": ui_url})
+
+    # Allocate a new port
+    with _registry_lock:
+        try:
+            ui_port = _allocate_ui_port()
+        except RuntimeError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+
+        reg = _load_registry()
+        if crew_id in reg["crews"]:
+            reg["crews"][crew_id]["ui_port"] = ui_port
+            _save_registry(reg)
+
+    if cfg.ga_host_url:
+        from urllib.parse import urlparse as _urlparse_d2
+        _ph = _urlparse_d2(cfg.ga_host_url)
+        ui_url = f"{_ph.scheme}://{_ph.hostname}:{ui_port}/"
+    else:
+        ui_url = f"http://localhost:{ui_port}/"
+
+    # Start the transport-side listener
+    if _ui_app is not None:
+        _start_ui_port_server(ui_port, crew_id, _ui_app)
+
+    logger.info(
+        "TRN-80: POST /crews/%s/dashboard — started UI port %d, ui_url=%s",
+        crew_id, ui_port, ui_url,
+    )
+    return JSONResponse({"ui_url": ui_url})
+
+
+async def _handle_crew_dashboard_delete(request: Request) -> Response:
+    """DELETE /crews/{crew_id}/dashboard — stop the UI listener and release the port.
+
+    Stops the per-port uvicorn server, releases the port back to the pool, and
+    clears ui_port from the registry. Returns {"ui_url": null}.
+    No-op if the crew has no dashboard — returns {"ui_url": null} without error.
+
+    Returns 404 for unknown crew.
+    """
+    parsed = _extract_crew_proxy_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, _sub = parsed
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # No-op: crew has no dashboard
+    existing_port = crew.get("ui_port")
+    if existing_port is None:
+        return JSONResponse({"ui_url": None})
+
+    _stop_ui_port_server(int(existing_port))
+    _release_ui_port(int(existing_port))
+
+    with _registry_lock:
+        reg = _load_registry()
+        if crew_id in reg["crews"]:
+            reg["crews"][crew_id].pop("ui_port", None)
+            _save_registry(reg)
+
+    logger.info(
+        "TRN-80: DELETE /crews/%s/dashboard — released UI port %d",
+        crew_id, existing_port,
+    )
+    return JSONResponse({"ui_url": None})
+
+
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
@@ -1205,6 +1312,21 @@ class BearerAuthMiddleware:
                     response = await _handle_crew_api_proxy(request)
                     await response(scope, receive, send)
                     return
+                # TRN-80: POST/DELETE /crews/{id}/dashboard
+                if (
+                    len(_parts) == 3
+                    and _parts[0] == "crews"
+                    and _parts[2] == "dashboard"
+                ):
+                    request = Request(scope, receive)
+                    if scope["method"] == "POST":
+                        response = await _handle_crew_dashboard_post(request)
+                    elif scope["method"] == "DELETE":
+                        response = await _handle_crew_dashboard_delete(request)
+                    else:
+                        response = PlainTextResponse("Method Not Allowed", status_code=405)
+                    await response(scope, receive, send)
+                    return
             await self.app(scope, receive, send)
             return
 
@@ -1280,6 +1402,22 @@ class BearerAuthMiddleware:
         ):
             request = Request(scope, receive)
             response = await _handle_crew_api_proxy(request)
+            await response(scope, receive, send)
+            return
+
+        # TRN-80: POST/DELETE /crews/{id}/dashboard (keyed path — auth already passed above)
+        if (
+            len(path_parts) == 3
+            and path_parts[0] == "crews"
+            and path_parts[2] == "dashboard"
+        ):
+            request = Request(scope, receive)
+            if scope["method"] == "POST":
+                response = await _handle_crew_dashboard_post(request)
+            elif scope["method"] == "DELETE":
+                response = await _handle_crew_dashboard_delete(request)
+            else:
+                response = PlainTextResponse("Method Not Allowed", status_code=405)
             await response(scope, receive, send)
             return
 
@@ -1965,7 +2103,7 @@ def resource_compositions() -> str:
 
 
 @mcp.tool()
-def launch(crew_id: str, composition: str = "spec-ops") -> dict:
+def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False) -> dict:
     """Summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
@@ -1981,6 +2119,12 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
                  unique. Use lowercase letters, numbers, hyphens.
         composition: Crew composition to launch (default: "spec-ops"). See the
                      transport://compositions resource for available compositions.
+        dashboard: When True and GA_UI_PORT_ENABLED=True, allocates a dedicated
+                   port from the UI port range and starts a transport-side proxy
+                   listener for the crew's dashboard SPA. The SPA owns its entire
+                   origin so assets, client-side navigation, and hard reloads all
+                   work. Returns ui_url in the response. Default is False — crews
+                   are headless unless a dashboard is explicitly requested.
 
     Returns crew_id and status once the gateway is ready (~30s).
     """
@@ -2078,8 +2222,10 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         # The crew container itself is NOT modified — it stays on the internal
         # ghost-academy network only. The transport will listen on the allocated
         # port and proxy to the crew gateway over the internal network.
+        # Port allocation is gated on both the dashboard flag (per-launch opt-in)
+        # and the GA_UI_PORT_ENABLED global switch.
         ui_url: str | None = None
-        if GA_UI_PORT_ENABLED:
+        if dashboard and GA_UI_PORT_ENABLED:
             with _registry_lock:
                 try:
                     ui_port = _allocate_ui_port()
