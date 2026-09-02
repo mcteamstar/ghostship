@@ -711,15 +711,20 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
         except Exception as exc:
             logger.warning("UI port server %d exited: %s", port, exc)
 
-    loop = _main_event_loop
-    if loop is not None and loop.is_running():
-        asyncio.run_coroutine_threadsafe(_serve(), loop)
+    try:
+        # If there's a running event loop on this thread, we're in an async
+        # context (e.g. startup) — use create_task directly.
+        running = asyncio.get_running_loop()
+        running.create_task(_serve())
         logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
-    else:
-        try:
-            asyncio.get_running_loop().create_task(_serve())
-            logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
-        except RuntimeError:
+    except RuntimeError:
+        # No running loop on this thread — we're in an executor thread (MCP
+        # tool handler). Schedule on the main event loop threadsafe.
+        loop = _main_event_loop
+        if loop is not None:
+            asyncio.run_coroutine_threadsafe(_serve(), loop)
+            logger.info("TRN-80: started UI port server on %d for crew %s (threadsafe)", port, crew_id)
+        else:
             logger.warning("TRN-80: no event loop; UI port server %d not started", port)
 
 
