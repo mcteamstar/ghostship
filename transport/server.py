@@ -660,6 +660,7 @@ def _release_dashboard_port(port: int) -> None:
 # Crew containers are NOT modified — they only expose port 5476 internally.
 _dashboard_port_servers: dict[int, "uvicorn.Server"] = {}
 _dashboard_port_crew: dict[int, str] = {}  # port → crew_id
+_dashboard_port_clients: dict[int, Any] = {}  # port → httpx.AsyncClient (reused per crew)
 # Set at startup to the fully-wrapped ASGI app so per-port servers use the
 # same middleware stack (auth, rate limiting, security headers).
 _dashboard_app: Any = None
@@ -675,6 +676,8 @@ def _start_dashboard_port_server(port: int, crew_id: str, app: Any) -> None:
     """
     if port in _dashboard_port_servers:
         return
+    import httpx as _httpx
+    _dashboard_port_clients[port] = _httpx.AsyncClient()
     _dashboard_port_crew[port] = crew_id
 
     # Build a minimal proxy app for this port.
@@ -784,11 +787,19 @@ def _start_dashboard_port_server(port: int, crew_id: str, app: Any) -> None:
                     except Exception as exc:
                         logger.debug("WS proxy upstream->browser error: %s", exc)
 
-                await asyncio.gather(
-                    browser_to_upstream(),
-                    upstream_to_browser(),
-                    return_exceptions=True,
+                _pump_tasks = {
+                    asyncio.ensure_future(browser_to_upstream()),
+                    asyncio.ensure_future(upstream_to_browser()),
+                }
+                _done, _pending = await asyncio.wait(
+                    _pump_tasks, return_when=asyncio.FIRST_COMPLETED
                 )
+                for _task in _pending:
+                    _task.cancel()
+                    try:
+                        await _task
+                    except (asyncio.CancelledError, Exception):
+                        pass
         except (_WebSocketDisconnect, _local_httpx_ws.WebSocketDisconnect):
             pass
         except Exception as exc:
@@ -831,6 +842,7 @@ def _stop_dashboard_port_server(port: int) -> None:
     """Signal the per-port server to shut down and clean up the mappings."""
     srv = _dashboard_port_servers.pop(port, None)
     _dashboard_port_crew.pop(port, None)
+    _dashboard_port_clients.pop(port, None)  # drop the pooled httpx client
     if srv is not None:
         srv.should_exit = True
         logger.info("TRN-80: stopped UI port server on %d", port)
@@ -876,8 +888,15 @@ async def _handle_dashboard_port_proxy(request: Request, crew_id: str) -> Respon
         forward_headers["cookie"] = cookie_header
     try:
         import httpx as _httpx
-        async with _httpx.AsyncClient() as _client:
-            async with _client.stream(
+        _server_info = request.scope.get("server")
+        _incoming_port = (
+            _server_info[1]
+            if isinstance(_server_info, (list, tuple)) and len(_server_info) > 1
+            else None
+        )
+        _pooled_client = _dashboard_port_clients.get(_incoming_port) if _incoming_port else None
+        if _pooled_client is not None:
+            async with _pooled_client.stream(
                 request.method,
                 upstream_full,
                 headers=forward_headers,
@@ -889,6 +908,20 @@ async def _handle_dashboard_port_proxy(request: Request, crew_id: str) -> Respon
                     if k.lower() not in _HOP_BY_HOP_HEADERS
                 }
                 body = await upstream_resp.aread()
+        else:
+            async with _httpx.AsyncClient() as _client:
+                async with _client.stream(
+                    request.method,
+                    upstream_full,
+                    headers=forward_headers,
+                    content=await request.body(),
+                    timeout=60.0,
+                ) as upstream_resp:
+                    response_headers = {
+                        k: v for k, v in upstream_resp.headers.items()
+                        if k.lower() not in _HOP_BY_HOP_HEADERS
+                    }
+                    body = await upstream_resp.aread()
         resp = Response(
             content=body,
             status_code=upstream_resp.status_code,
@@ -1216,14 +1249,17 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
     if existing_port is None:
         return JSONResponse({"dashboard_url": None})
 
-    _stop_dashboard_port_server(int(existing_port))
-    _release_dashboard_port(int(existing_port))
-
     with _registry_lock:
+        # Re-check under the lock to prevent double-stop from concurrent DELETEs.
         reg = _load_registry()
-        if crew_id in reg["crews"]:
-            reg["crews"][crew_id].pop("dashboard_port", None)
-            _save_registry(reg)
+        existing_port = reg["crews"].get(crew_id, {}).get("dashboard_port")
+        if existing_port is None:
+            return JSONResponse({"dashboard_url": None})
+        _stop_dashboard_port_server(int(existing_port))
+        _release_dashboard_port(int(existing_port))
+        reg["crews"][crew_id].pop("dashboard_port", None)
+        reg["crews"][crew_id]["dashboard_url"] = None
+        _save_registry(reg)
 
     logger.info(
         "TRN-80: DELETE /crews/%s/dashboard — released UI port %d",
