@@ -2,61 +2,63 @@
 
 See proposal.md — Why for motivation.
 
-The KiroCrew gateway UI is a React SPA designed to run at the root of an origin. Any path-prefix approach (`/crews/{id}/ui/`) breaks `window.history.pushState` navigation — once the SPA routes to `/chat`, the browser URL detaches from the crew context and hard reloads fail. Subdomain-per-crew requires wildcard DNS and TLS cert infrastructure. Port-per-crew requires only a port range allocation and a firewall rule — simpler to set up and simpler to maintain.
+The KiroCrew gateway UI is a React SPA designed to own the entire origin. Path-prefix proxying breaks `window.history.pushState`. Subdomain routing requires wildcard DNS/TLS. Direct Podman port binding bypasses all transport security. The solution is the transport itself listening on a range of ports — one per allocated crew UI — and reverse-proxying to the appropriate crew gateway. All existing transport security (auth, rate limiting, logging) applies automatically because it's the same process.
 
-Crew containers already run with an internal gateway on port 5476 accessible only within the Podman network. Binding a host port to that internal port exposes the SPA at `http://<host>:<port>/` — a fully independent origin.
+**Crew containers are completely unchanged.** They continue to expose only port 5476 on the internal ghost-academy Podman network, unreachable from the host or the internet. The transport already communicates with crew containers over this network for all other operations (dispatch, pickup, evac, etc.) — the UI proxy is just another consumer of the same internal route. No Podman port bindings, no firewall changes on the crew side, nothing new in the crew image.
+
+The transport already runs under uvicorn. Uvicorn supports serving a Starlette app on multiple ports via separate `asyncio` server instances in the same event loop. At crew launch the transport starts a new server bound to the allocated port; at nuke it stops it. All port-bound servers share the same app router but the incoming port is used to look up the target crew.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- SPA assets, client-side navigation, and WebSockets all work correctly.
-- Hard reloads and link sharing work (URL is stable across navigation).
-- No DNS or TLS changes required.
-- Ports allocated and released automatically at launch/nuke.
+- SPA assets, client-side navigation, and hard reloads all work correctly.
+- All transport security (GA_API_KEY auth, rate limiting) applies to UI traffic.
+- No Caddy config changes, no Podman port bindings, no additional infrastructure.
+- Routes registered/removed automatically at launch/nuke.
 
 **Non-Goals:**
-- TLS per-crew port (crews share no TLS on their UI ports — this is an internal/Tailscale deployment).
-- Supporting more concurrent crews than `GA_UI_PORT_RANGE_SIZE` allows.
+- TLS per-crew port (all ports share the transport's TLS config).
+- Subdomain-per-crew routing.
 
 ## Decisions
 
-**D1: Port allocation from a configurable range stored in crews.json**
+**D1: Transport binds additional uvicorn servers per crew UI port**
 
-A module-level set `_ui_ports_in_use` is populated from `crews.json` at startup. At launch, the transport scans `GA_UI_PORT_RANGE_START` to `GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE - 1` for the first port not in `_ui_ports_in_use`, binds it, and writes it to the crew's `crews.json` entry as `ui_port`. At nuke, the port is removed from `_ui_ports_in_use` and the entry is cleared.
+At launch, after the crew container is started, the transport calls `uvicorn.Server` with a `uvicorn.Config` bound to `0.0.0.0:{ui_port}` and starts it in the background within the existing asyncio event loop. The server uses the same Starlette app instance. All incoming requests on that port pass through `BearerAuthMiddleware` (GA_API_KEY check), rate limiting, and then a port-based catch-all handler that looks up the crew by port and proxies to `http://gs-{crew_id}:5476/{path}`.
 
-Defaults: `GA_UI_PORT_RANGE_START=9000`, `GA_UI_PORT_RANGE_SIZE=50` (ports 9000–9049).
+At nuke, the transport calls `server.should_exit = True` on the per-port server, waits for shutdown, and releases the port.
+
+Per-port server handles are stored in a module-level dict `_ui_port_servers: dict[int, uvicorn.Server]` keyed by port.
 
 Alternatives considered:
-- *Dynamic OS port allocation*: simpler but gives non-deterministic ports that change on restart. Stable ports per crew are preferable so bookmarks and shared URLs survive a transport restart.
-- *Caddy dynamic proxy with path stripping*: fixes assets but not hard-reload navigation. Dropped in favour of port-per-crew.
-- *Subdomain per crew*: correct, but requires wildcard DNS + TLS. Port-per-crew achieves the same origin isolation with only a firewall rule.
+- *Podman port binding (previous approach)*: Direct binding to host bypasses all transport security. Rejected.
+- *Caddy dynamic proxy per port*: Adds infrastructure complexity and another hop. Rejected.
+- *Caddy pre-configured for all 50 ports forwarding to transport*: Unnecessary middleman — the transport can own the ports directly.
 
-**D2: Port bound via podman run -p flag**
+**D2: Port-to-crew mapping via module-level dict**
 
-The existing `podman.container_create` call accepts an optional `ports` parameter (`{host_port: container_port}`). Pass `{ui_port: 5476}` at crew create time. This is the only transport-side change needed for binding — no Caddy involvement.
+`_ui_port_crew: dict[int, str]` maps allocated port → crew_id. The catch-all proxy handler reads this dict to find the crew for any incoming request. Populated at launch, cleared at nuke, restored from `crews.json` at startup.
 
-**D3: ui_url returned in launch response**
+**D3: Port allocation and registry persistence (unchanged from previous approach)**
 
-`launch` returns `ui_url: f"http://{GA_HOST_URL or 'localhost'}:{ui_port}/"` so the Admiral gets the direct link without having to compute it. The `crews` list also includes `ui_url` per crew.
+`_ui_ports_in_use: set[int]` tracks allocated ports. `_allocate_ui_port()` scans the range for the first free port. Port and `ui_url` stored in `crews.json`. Restored at startup.
 
-**D4: CORS injection at container create**
+At startup, the transport also restarts the per-port uvicorn servers for any crews that already have a `ui_port` in the registry (handles transport restarts).
 
-`KIROCREW_CORS_ORIGINS` is injected with the transport's public origin at `container_create` time so the SPA's API calls (to the crew gateway) aren't CORS-rejected when the browser is on the UI port origin. The crew gateway's own internal origin is preserved.
+**D4: CORS injection at container create (unchanged)**
 
-**D5: GA_CADDY_UI_ENABLED=false preserves Python proxy as fallback**
-
-For installs that haven't opened the port range, set `GA_UI_PORT_ENABLED=false` (default `true`) to skip port allocation entirely and fall back to the existing `_handle_crew_ui_proxy`. Named `GA_UI_PORT_ENABLED` rather than `GA_CADDY_UI_ENABLED` since Caddy is no longer involved.
+`KIROCREW_CORS_ORIGINS` is appended with the transport's public origin so the SPA's API calls to the crew gateway aren't CORS-rejected.
 
 ## Risks / Trade-offs
 
-- **Port exhaustion** → If all ports in the range are allocated, `launch` returns an error. The default range (50 ports) is generous for typical use. Document clearly.
-- **Port collision with other services** → The chosen range (9000–9049) should be checked against existing vm23 services before deploying. `GA_UI_PORT_RANGE_START` is configurable to avoid conflicts.
-- **Firewall configuration is manual** → The `ohnomer/servers` deploy script should open the port range in `ufw` automatically, or document the Tailscale ACL addition. This is a one-time setup step.
-- **Stopped crew port still bound** → When a crew is stopped (idle), its host port binding is removed by Podman. On restart via `_ensure_crew_running`, the port must be re-bound. The `podman.container_start` call does not re-apply port bindings from `container_create` — port bindings are set at create time and persist across stop/start. Verify this behaviour; if not, the port binding approach needs adjustment.
+- **Many open ports** → The UI port range (default 64058–64107) must be open in `ufw` and accessible via Tailscale/firewall. This is 50 ports, but they're all on the same host and protected by the transport's `GA_API_KEY` auth. Acceptable.
+- **Uvicorn sub-server startup time** → Each `uvicorn.Server.startup()` takes ~100ms. Launch is already not instant, so this is negligible.
+- **Event loop blocking on server shutdown** → `server.should_exit = True` is non-blocking; the server drains in-flight requests gracefully. Nuke should await shutdown with a short timeout before proceeding.
+- **Port pool exhaustion** → Launch returns an error if all 50 ports are allocated. Default range of 50 is generous for typical use.
 
 ## Migration Plan
 
-1. Add `ufw allow 9000:9049/tcp` (or Tailscale ACL equivalent) on vm23.
+1. Add `ufw allow 64058:64107/tcp` in `ohnomer/servers/hyperv/academy/install.sh`.
 2. Deploy updated transport.
-3. Existing live crews have no `ui_port` — they need to be nuked and re-launched to get a port assignment.
-4. Rollback: set `GA_UI_PORT_ENABLED=false` — reverts to Python proxy without redeploying.
+3. Existing live crews have no `ui_port` — they need to be nuked and re-launched to get a UI port. Or the startup reconciliation will register them on next transport restart.
+4. Rollback: set `GA_UI_PORT_ENABLED=false` — skips port allocation entirely, no UI ports opened.

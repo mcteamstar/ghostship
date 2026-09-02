@@ -4,7 +4,7 @@
 
 ### Modified Requirement: Crew UI access
 
-The crew UI is now served directly on a dedicated host port per crew (see `crew-ui-spa-routing/spec.md`) rather than via a path-prefix proxy. The existing Python-layer `_handle_crew_ui_proxy` is removed from the default code path and retained only as a fallback behind `GA_UI_PORT_ENABLED=false`.
+The crew UI is now served via dedicated per-port listeners on the transport itself. Each crew gets a port in the range `[GA_UI_PORT_RANGE_START, GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE)`. All requests on that port are reverse-proxied by the transport to the crew gateway over the internal ghost-academy Podman network. Crew containers do not bind any host ports. Full behavior specified in `crew-ui-spa-routing/spec.md`.
 
 ### New Requirement: Transport origin added to crew CORS origins at start
 

@@ -1894,9 +1894,11 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             container_env["GIT_COMMITTER_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_COMMITTER_EMAIL"] = GA_GIT_AUTHOR_EMAIL
 
-        # TRN-80: allocate a host port for the crew's UI SPA.
+        # TRN-80: allocate a transport-side UI port for the crew's SPA.
+        # The crew container itself is NOT modified — it stays on the internal
+        # ghost-academy network only. The transport will listen on the allocated
+        # port and proxy to the crew gateway over the internal network.
         ui_url: str | None = None
-        _container_ports: dict[int, int] | None = None
         if GA_UI_PORT_ENABLED:
             with _registry_lock:
                 try:
@@ -1907,10 +1909,6 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
                     reg["crews"].pop(crew_id, None)
                     _save_registry(reg)
                     return {"error": str(_err)}
-            _container_ports = {ui_port: CREW_GATEWAY_PORT}
-            _ui_host = cfg.ga_host_url.rstrip("/") if cfg.ga_host_url else f"localhost:{ui_port}"
-            # If ga_host_url includes a host (no port), we need to build the URL
-            # with the allocated port, not the ga_host_url port.
             if cfg.ga_host_url:
                 from urllib.parse import urlparse as _urlparse2
                 _p = _urlparse2(cfg.ga_host_url)
@@ -1926,7 +1924,6 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             network=GA_NETWORK,
             workspace_volume=volume,
             home_volume=home_volume,
-            ports=_container_ports,
         )
         podman.container_start(container)
         logger.info("Started %s", container)

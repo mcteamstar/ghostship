@@ -1,30 +1,33 @@
 ## Why
 
-The crew UI proxy works for the initial page load but breaks for SPA navigation: the KiroCrew gateway UI uses root-absolute paths for both static assets and client-side routing (e.g. navigates to `/chat`). Any approach that serves the SPA under a path prefix (`/crews/{id}/ui/`) cannot fix `window.history.pushState` calls that rewrite the browser URL to a root-absolute path — hard reloads and link sharing break. The correct fix is to give each crew's UI its own origin. Found by Steve Mactaggart (stevemac007) in PR #3.
+The crew UI proxy works for the initial page load but breaks for SPA navigation: the KiroCrew gateway UI uses root-absolute paths for both static assets and client-side routing (e.g. navigates to `/chat`). Any approach that serves the SPA under a path prefix (`/crews/{id}/ui/`) cannot fix `window.history.pushState` navigation. The correct fix is to give each crew's UI its own origin. Found by Steve Mactaggart (stevemac007) in PR #3.
 
 ## What Changes
 
-- Each crew is assigned a dedicated host port from a configurable range (`GA_UI_PORT_RANGE_START`, default 9000) at launch time. The port is bound to the crew's internal gateway port (5476) via `podman run -p <host_port>:5476`.
-- The crew's assigned UI port is stored in `crews.json` and returned in the `launch` response as `ui_url`.
-- At nuke, the port is released back to the pool.
-- `KIROCREW_CORS_ORIGINS` is injected with the transport's public origin at crew container create time, so the SPA's API calls from the UI port aren't CORS-rejected by the crew gateway.
-- The existing Python `_handle_crew_ui_proxy` routes are removed from the default code path (retained behind `GA_CADDY_UI_ENABLED=false` for backwards compatibility during transition).
+- Each crew is assigned a dedicated port from a configurable range (`GA_UI_PORT_RANGE_START`, default 64058) at launch time.
+- The transport (Python/uvicorn) binds an additional listener on the allocated port for the duration of the crew's life. All requests arriving on that port are reverse-proxied to `http://gs-{crew_id}:5476/` — the crew gateway.
+- Because the transport handles all these ports, `GA_API_KEY` auth, rate limiting, and audit logging apply automatically. No Caddy involvement, no direct Podman port bindings to host, no open network surface beyond the transport's own ports.
+- At nuke, the port listener is removed and the port returned to the pool.
+- `KIROCREW_CORS_ORIGINS` is injected with the transport's public origin at crew container create time so the SPA's API calls aren't CORS-rejected.
+- The `launch` response and `crews` list include `ui_url`.
+- **Replaces** the previous approach (direct Podman port binding), which bypassed transport auth entirely.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `crew-ui-spa-routing`: Each crew's UI is served at its own host port. The SPA owns its entire origin — assets, client-side navigation, and WebSockets all work without path-prefix complications.
+- `crew-ui-spa-routing`: Each crew's UI is served at its own port on the transport. The SPA owns its entire origin — assets, client-side navigation, and hard reloads all work. All traffic flows through the transport so security policies are uniformly enforced.
 
 ### Modified Capabilities
 
-- `crew-lifecycle`: `launch` allocates a UI port and returns `ui_url`; `nuke` releases it.
-- `proxy-hosting`: CORS injection requirement retained; Python UI proxy requirement updated to reflect port-based approach.
+- `crew-lifecycle`: `launch` allocates a UI port and starts a transport listener; `nuke` removes it.
+- `proxy-hosting`: CORS injection requirement retained; crew UI proxy updated to describe per-port transport listeners.
 
 ## Impact
 
-- `transport/server.py` — `launch` allocates a port from the pool and passes `-p <port>:5476` to `container_create`; `nuke` releases it; `_handle_crew_ui_proxy` removed from default path.
-- `transport/config.py` — new `GA_UI_PORT_RANGE_START` (default 9000) and `GA_UI_PORT_RANGE_SIZE` (default 50) env vars.
-- `crews.json` — new `ui_port` field per crew entry.
-- `ohnomer/servers/hyperv/academy/install.sh` — open the UI port range in `ufw` (or document for Tailscale ACL).
+- `transport/server.py` — port allocation helpers; `launch` starts a per-port uvicorn sub-application or asyncio server; `nuke` stops it; catch-all proxy handler routes by incoming port to the right crew.
+- `transport/config.py` — `GA_UI_PORT_RANGE_START` (default 64058), `GA_UI_PORT_RANGE_SIZE` (default 50), `GA_UI_PORT_ENABLED` (default true).
+- `transport/podman.py` — remove the `ports` parameter added in the previous approach (no Podman port binding needed).
+- `scripts/install.sh` — expose the UI port range via `ufw` (or document for the operator); add env vars to compose template.
+- No Caddy changes required.
 - No MCP tool interface breaking changes. `launch` response gains `ui_url`.

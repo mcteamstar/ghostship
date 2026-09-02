@@ -1,45 +1,47 @@
-## 1. Verify port binding behaviour
+## 1. Transport config
 
-- [ ] 1.1 Confirm that Podman host port bindings set at `container_create` time persist across `container_stop` / `container_start` cycles — if not, port re-binding logic will be needed in `_ensure_crew_running`
-- [ ] 1.2 Confirm that `podman.container_create` in `transport/podman.py` accepts a `ports` parameter and passes it correctly to the Podman API
+- [ ] 1.1 Confirm `GA_UI_PORT_RANGE_START` (default 64058), `GA_UI_PORT_RANGE_SIZE` (default 50), `GA_UI_PORT_ENABLED` (default true) are in `transport/config.py` (already added in previous iteration — verify)
+- [ ] 1.2 Confirm env var entries in `scripts/install.sh` compose template (already added — verify)
 
-## 2. Transport config
+## 2. Remove Podman port binding (revert previous approach)
 
-- [ ] 2.1 Add `GA_UI_PORT_RANGE_START` (default 9000), `GA_UI_PORT_RANGE_SIZE` (default 50), and `GA_UI_PORT_ENABLED` (default `true`) to `transport/config.py`
-- [ ] 2.2 Add env var entries to `scripts/install.sh` compose template
+- [ ] 2.1 Remove the `ports` parameter from `transport/podman.py` `container_create` — crew containers no longer bind host ports
+- [ ] 2.2 Remove any `_container_ports` / port-binding code from `launch()` in `transport/server.py`
 
-## 3. Port allocation
+## 3. Per-port uvicorn listener management
 
-- [ ] 3.1 Add module-level `_ui_ports_in_use: set[int]` to `transport/server.py`; populate from `crews.json` at startup
-- [ ] 3.2 Write `_allocate_ui_port() -> int` — scan range for first port not in `_ui_ports_in_use`, add to set, return it; raise `RuntimeError` if range exhausted
-- [ ] 3.3 Write `_release_ui_port(port: int)` — remove from `_ui_ports_in_use`
+- [ ] 3.1 Add `_ui_port_servers: dict[int, uvicorn.Server]` and `_ui_port_crew: dict[int, str]` module-level dicts to `transport/server.py`
+- [ ] 3.2 Write `_start_ui_port_server(port: int, crew_id: str)` — create a `uvicorn.Config` bound to `0.0.0.0:{port}` using the same Starlette app, start the server in the background event loop, store in `_ui_port_servers[port]`, store crew mapping in `_ui_port_crew[port]`
+- [ ] 3.3 Write `_stop_ui_port_server(port: int)` — set `server.should_exit = True`, wait briefly for shutdown, clean up both dicts
+- [ ] 3.4 On transport startup, for each crew in the registry with a `ui_port`, call `_start_ui_port_server` to restore listeners
 
-## 4. Wire into launch and nuke
+## 4. Port-based catch-all proxy handler
 
-- [ ] 4.1 In `launch` (when `GA_UI_PORT_ENABLED=true`): call `_allocate_ui_port()`, pass `ports={ui_port: 5476}` to `container_create`, store `ui_port` in the crew's `crews.json` entry, include `ui_url` in the launch response
-- [ ] 4.2 In `nuke` (confirm=True, when `GA_UI_PORT_ENABLED=true`): call `_release_ui_port(crew["ui_port"])` and clear `ui_port` from the registry entry
-- [ ] 4.3 When `GA_UI_PORT_ENABLED=false`: skip port allocation; existing `_handle_crew_ui_proxy` remains
+- [ ] 4.1 Add a catch-all route handler in `BearerAuthMiddleware` (or the Starlette app router) that fires when the incoming request port is in `_ui_port_crew` — look up the crew_id, proxy the full request (path + query) to `http://gs-{crew_id}:{CREW_GATEWAY_PORT}/{path}`
+- [ ] 4.2 The catch-all SHALL only fire after all existing transport routes are checked — transport's own MCP, files, login, etc. must not be shadowed
+- [ ] 4.3 Apply the existing `_sanitise_query_string` to the upstream URL
 
-## 5. Expose ui_url in crews list
+## 5. Wire into launch and nuke
 
-- [ ] 5.1 In the `crews` tool, derive `ui_url` from `info.get("ui_port")` — `http://<GA_HOST_URL or localhost>:<ui_port>/` — and include it in each crew entry (`null` if no port assigned)
+- [ ] 5.1 In `launch()`: when `GA_UI_PORT_ENABLED=True`, call `_allocate_ui_port()`, call `_start_ui_port_server(port, crew_id)`, store `ui_port` in registry, include `ui_url` in response
+- [ ] 5.2 In `nuke()` confirm=True path: when `GA_UI_PORT_ENABLED=True`, call `_stop_ui_port_server(crew["ui_port"])`, call `_release_ui_port()`
+- [ ] 5.3 When `GA_UI_PORT_ENABLED=False`: skip entirely
 
 ## 6. CORS origin injection
 
-- [ ] 6.1 In `transport/server.py` `container_create` env block, derive the transport's public origin from `GA_HOST_URL` (scheme+host only) or fall back to `http://localhost:{PORT}`
-- [ ] 6.2 Append the public origin to `KIROCREW_CORS_ORIGINS`, comma-separated, preserving any existing value
-- [ ] 6.3 Add unit tests: CORS origin injected correctly when `GA_HOST_URL` is set; when unset; when a pre-existing value is present
+- [ ] 6.1 In container_create env block: derive transport public origin from `GA_HOST_URL` or `http://localhost:{PORT}`, append to `KIROCREW_CORS_ORIGINS` (already implemented — verify it's still present after revert)
 
-## 7. ohnomer/servers firewall config
+## 7. ohnomer/servers firewall
 
-- [ ] 7.1 In `ohnomer/servers/hyperv/academy/install.sh`, add `sudo ufw allow 9000:9049/tcp` (or document the Tailscale ACL equivalent)
+- [ ] 7.1 In `ohnomer/servers/hyperv/academy/install.sh`: add `ufw allow 64058:64107/tcp` so the transport's UI ports are reachable via Tailscale
 
 ## 8. Tests
 
-- [ ] 8.1 Unit tests: `_allocate_ui_port` returns next free port; raises on exhaustion; `_release_ui_port` frees correctly
-- [ ] 8.2 Unit test: `launch` response includes `ui_url`; `crews` list includes `ui_url`; `nuke` releases port
-- [ ] 8.3 Unit test: `GA_UI_PORT_ENABLED=false` skips port allocation
-- [ ] 8.4 Manual smoke test on vm23: launch a crew, open `ui_url` in browser, confirm SPA loads, navigate to `/chat`, hard reload — confirm it still renders
+- [ ] 8.1 Unit tests: `_start_ui_port_server` registers server and crew mapping; `_stop_ui_port_server` cleans up
+- [ ] 8.2 Unit test: catch-all handler proxies to correct crew by incoming port
+- [ ] 8.3 Unit test: launch response includes `ui_url`; crews list includes `ui_url`; nuke stops the listener
+- [ ] 8.4 Unit test: `GA_UI_PORT_ENABLED=False` skips all listener management
+- [ ] 8.5 Manual smoke test on vm23: launch a crew, open `ui_url` in browser, navigate to `/chat`, hard reload — confirm it renders correctly
 
 ## 9. Spec sync and validation
 
