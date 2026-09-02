@@ -26,7 +26,7 @@
 
 - [x] 4.1 Add `_validate_token_ttl(value: str, default: str = "24h") -> str` to `transport/config.py`. The function accepts values matching `^\d+[smhd]$` with the numeric part > 0. On mismatch, logs `logging.warning("KC_GATEWAY_TOKEN_TTL=%r is invalid; falling back to %r", value, default)` and returns `default`. Import `logging` and `re` at the top of `config.py` if not already present.
 - [x] 4.2 In `Config.from_env()`, wrap the `kc_gateway_token_ttl` assignment: `kc_gateway_token_ttl=_validate_token_ttl(os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h"))`.
-- [ ] 4.3 Add unit tests for `_validate_token_ttl` in `tests/unit/` (inline in the new TRN-93 test file): valid values `"24h"`, `"3600s"`, `"7d"`, `"30m"` are returned unchanged; invalid values `"banana"`, `"0h"`, `"-1m"`, `""`, `"24"` trigger a WARNING and return `"24h"`.
+- [x] 4.3 Add unit tests for `_validate_token_ttl` in `tests/unit/` (inline in the new TRN-93 test file): valid values `"24h"`, `"3600s"`, `"7d"`, `"30m"` are returned unchanged; invalid values `"banana"`, `"0h"`, `"-1m"`, `""`, `"24"` trigger a WARNING and return `"24h"`.
 
 ## 5. Audit logging for file-transfer events
 
