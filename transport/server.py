@@ -661,16 +661,38 @@ _main_event_loop: "asyncio.AbstractEventLoop | None" = None
 
 
 def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
-    """Start a uvicorn server on *port* for *crew_id*.
+    """Start a lightweight proxy uvicorn server on *port* for *crew_id*.
 
-    Safe to call from an executor thread (MCP tool handlers run in threads).
-    Schedules the server coroutine on the main event loop via
-    ``_main_event_loop``. No-op if already started.
+    Uses a dedicated per-port Starlette app (NOT the MCP app — that can only
+    be started once due to the StreamableHTTP session manager). The proxy app
+    enforces GA_API_KEY auth and proxies all requests to the crew gateway.
+    Safe to call from executor threads.
     """
     if port in _ui_port_servers:
         return
     _ui_port_crew[port] = crew_id
-    config = uvicorn.Config(app, host=HOST, port=port, log_level="warning")
+
+    # Build a minimal proxy app for this port.
+    async def _proxy_handler(request: Request) -> Response:
+        if GA_API_KEY:
+            auth_values = [
+                v.decode("latin-1")
+                for k, v in request.scope.get("headers", [])
+                if k == b"authorization"
+            ]
+            token = ""
+            if len(auth_values) == 1 and auth_values[0][:7].lower() == "bearer ":
+                token = auth_values[0][7:].strip()
+            if not token or not hmac.compare_digest(token, GA_API_KEY):
+                return Response(
+                    content=b"Unauthorized",
+                    status_code=401,
+                    headers={"www-authenticate": "Bearer"},
+                )
+        return await _handle_ui_port_proxy(request, crew_id)
+
+    proxy_app = Starlette(routes=[Route("/{path:path}", _proxy_handler), Route("/", _proxy_handler)])
+    config = uvicorn.Config(proxy_app, host=HOST, port=port, log_level="warning")
     srv = uvicorn.Server(config)
     _ui_port_servers[port] = srv
 
@@ -680,13 +702,11 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
         except Exception as exc:
             logger.warning("UI port server %d exited: %s", port, exc)
 
-    # MCP tool handlers run in executor threads — schedule on the main loop.
     loop = _main_event_loop
     if loop is not None and loop.is_running():
         asyncio.run_coroutine_threadsafe(_serve(), loop)
         logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
     else:
-        # Fallback for tests or direct asyncio.run context.
         try:
             asyncio.get_running_loop().create_task(_serve())
             logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
