@@ -644,6 +644,106 @@ def _release_ui_port(port: int) -> None:
     """Remove ``port`` from the in-use set (no-op if not present)."""
     _ui_ports_in_use.discard(port)
 
+
+# ── Per-port UI proxy servers (TRN-80) ────────────────────────────────────────
+# Each allocated crew UI port gets its own uvicorn.Server instance running in
+# the same asyncio event loop as the main transport server. Requests on these
+# ports pass through the same BearerAuthMiddleware (GA_API_KEY, rate limiting)
+# and are then proxied to the crew gateway over the internal Podman network.
+# Crew containers are NOT modified — they only expose port 5476 internally.
+_ui_port_servers: dict[int, "uvicorn.Server"] = {}
+_ui_port_crew: dict[int, str] = {}  # port → crew_id
+# Set at startup to the fully-wrapped ASGI app so per-port servers use the
+# same middleware stack (auth, rate limiting, security headers).
+_ui_app: Any = None
+
+
+def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
+    """Start a uvicorn server on *port* for *crew_id* in the running event loop.
+
+    Registers the server in ``_ui_port_servers`` and the crew mapping in
+    ``_ui_port_crew``. No-op if already started.
+    """
+    if port in _ui_port_servers:
+        return
+    _ui_port_crew[port] = crew_id
+    config = uvicorn.Config(app, host=HOST, port=port, log_level="warning")
+    srv = uvicorn.Server(config)
+    _ui_port_servers[port] = srv
+
+    async def _serve() -> None:
+        try:
+            await srv.serve()
+        except Exception as exc:
+            logger.warning("UI port server %d exited: %s", port, exc)
+
+    try:
+        loop = asyncio.get_event_loop()
+        loop.create_task(_serve())
+        logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
+    except RuntimeError:
+        # No running event loop — called outside asyncio context (e.g. tests)
+        logger.warning("TRN-80: no event loop; UI port server %d not started", port)
+
+
+def _stop_ui_port_server(port: int) -> None:
+    """Signal the per-port server to shut down and clean up the mappings."""
+    srv = _ui_port_servers.pop(port, None)
+    _ui_port_crew.pop(port, None)
+    if srv is not None:
+        srv.should_exit = True
+        logger.info("TRN-80: stopped UI port server on %d", port)
+
+
+async def _handle_ui_port_proxy(request: Request, crew_id: str) -> Response:
+    """Proxy a request arriving on a UI port to the crew gateway.
+
+    The full path and query string are forwarded to
+    ``http://gs-{crew_id}:{CREW_GATEWAY_PORT}/{path}``.
+    Auth has already been enforced by BearerAuthMiddleware before this is called.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as exc:
+        return PlainTextResponse(str(exc), status_code=404)
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError as exc:
+        return PlainTextResponse(str(exc), status_code=502)
+
+    upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+    path = request.scope.get("path", "/") or "/"
+    query = request.scope.get("query_string", b"")
+    upstream_url = path
+    if query:
+        upstream_url = f"{path}?{_sanitise_query_string(query)}"
+    upstream_full = f"{upstream_base}{upstream_url}"
+
+    forward_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() != "host"
+    }
+    try:
+        async with _async_http.stream(
+            request.method,
+            upstream_full,
+            headers=forward_headers,
+            content=await request.body(),
+        ) as upstream_resp:
+            response_headers = {
+                k: v for k, v in upstream_resp.headers.items()
+                if k.lower() not in _HOP_BY_HOP_HEADERS
+            }
+            body = await upstream_resp.aread()
+        return Response(
+            content=body,
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+        )
+    except Exception as exc:
+        logger.warning("UI port proxy error for crew %s: %s", crew_id, exc)
+        return PlainTextResponse(f"Proxy error: {exc}", status_code=502)
+
 # _http and _async_http are imported from transport.podman (they are owned by
 # that module; proxy handlers below use _async_http).
 
@@ -1022,6 +1122,17 @@ class BearerAuthMiddleware:
                     response = await handler(request)
                     await response(scope, receive, send)
                     return
+                # TRN-80: per-port UI proxy — requests arriving on a crew UI
+                # port are proxied to that crew's gateway. Auth is skipped here
+                # only when GA_API_KEY is unset; the keyed path checks auth first.
+                _server = scope.get("server")
+                if _server and _ui_port_crew:
+                    _incoming_port = _server[1] if isinstance(_server, (list, tuple)) and len(_server) > 1 else None
+                    if _incoming_port and _incoming_port in _ui_port_crew:
+                        request = Request(scope, receive)
+                        response = await _handle_ui_port_proxy(request, _ui_port_crew[_incoming_port])
+                        await response(scope, receive, send)
+                        return
                 # Crew proxy routes (no auth required when GA_API_KEY unset)
                 _path = scope["path"]
                 _parts = _path.lstrip("/").split("/")
@@ -1077,6 +1188,16 @@ class BearerAuthMiddleware:
             response = await handler(request)
             await response(scope, receive, send)
             return
+
+        # TRN-80: per-port UI proxy (auth enforced above)
+        _server = scope.get("server")
+        if _server and _ui_port_crew:
+            _incoming_port = _server[1] if isinstance(_server, (list, tuple)) and len(_server) > 1 else None
+            if _incoming_port and _incoming_port in _ui_port_crew:
+                request = Request(scope, receive)
+                response = await _handle_ui_port_proxy(request, _ui_port_crew[_incoming_port])
+                await response(scope, receive, send)
+                return
 
         # Crew UI proxy — /crews/<id>/ui and /crews/<id>/ui/<path>
         # Dispatch after auth passes so GA_API_KEY enforcement applies.
@@ -1940,13 +2061,17 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             return {"error": f"Gateway not ready within 30s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
-        # TRN-80: persist ui_port in registry and include ui_url in the response.
+        # TRN-80: persist ui_port in registry, start per-port listener, include ui_url.
         if ui_port is not None and "error" not in result:
             with _registry_lock:
                 reg = _load_registry()
                 if crew_id in reg["crews"]:
                     reg["crews"][crew_id]["ui_port"] = ui_port
                     _save_registry(reg)
+            # Start the transport-side listener for this crew's UI port.
+            # The app reference is injected at startup via _ui_app (set below).
+            if _ui_app is not None:
+                _start_ui_port_server(ui_port, crew_id, _ui_app)
             result["ui_url"] = ui_url
         elif "error" not in result:
             result["ui_url"] = None
@@ -2169,10 +2294,12 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     with _registry_lock:
         reg = _load_registry()
-        # TRN-80: release the crew's UI port before removing the registry entry.
+        # TRN-80: stop the per-port server and release the port before removing
+        # the registry entry.
         if GA_UI_PORT_ENABLED:
             _ui_p = reg["crews"].get(crew_id, {}).get("ui_port")
             if _ui_p is not None:
+                _stop_ui_port_server(int(_ui_p))
                 _release_ui_port(int(_ui_p))
         reg["crews"].pop(crew_id, None)
         _save_registry(reg)
@@ -3504,4 +3631,21 @@ if __name__ == "__main__":
 
     config = uvicorn.Config(app, host=HOST, port=PORT, log_level="info", **_uvicorn_kwargs)
     server = uvicorn.Server(config)
-    asyncio.run(server.serve())
+
+    # TRN-80: expose the fully-wrapped app to _start_ui_port_server so per-port
+    # servers share the same middleware stack (auth, rate limiting, headers).
+    _ui_app = app
+
+    async def _main() -> None:
+        # TRN-80: restore per-port UI servers for crews that had a ui_port
+        # in the registry before this transport restart.
+        if GA_UI_PORT_ENABLED and _ui_app is not None:
+            with _registry_lock:
+                _restored_reg = _load_registry()
+            for _cid, _info in _restored_reg["crews"].items():
+                _p = _info.get("ui_port")
+                if _p is not None:
+                    _start_ui_port_server(int(_p), _cid, _ui_app)
+        await server.serve()
+
+    asyncio.run(_main())
