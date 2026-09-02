@@ -121,6 +121,10 @@ curl -X POST "<url>" --data-binary @./config.json
 tar -czf - ./myrepo | curl -X POST "<url>&unpack=1" --data-binary @-
 
 # Full git history — recommended for SDD work (set bundle=True on the supply() call)
+# IMPORTANT: use --all so the bundle includes a valid HEAD ref and the crew
+# can check out a working tree. A branch-specific bundle (e.g.
+# git bundle create ... release/0.2.4) may leave HEAD unresolvable if the
+# branch name contains slashes, resulting in an empty working tree.
 git bundle create /tmp/myrepo.bundle --all
 curl -X POST "<url>&bundle=1" --data-binary @/tmp/myrepo.bundle
 ```

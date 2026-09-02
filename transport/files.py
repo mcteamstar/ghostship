@@ -270,12 +270,28 @@ def _transfer_upload(
         try:
             parent = os.path.dirname(destination.rstrip("/")) or workspace
             podman.container_exec_checked(container, ["mkdir", "-p", parent])
-            return podman.container_exec_checked(
+            # Clone the bundle. If the bundle's HEAD ref contains a slash
+            # (e.g. release/0.2.4) git may fail to resolve it and leave the
+            # working tree empty. Detect that and check out explicitly.
+            result = podman.container_exec_checked(
                 container, ["git", "clone", staged_file, destination]
             )
+            # Check if clone left an empty working tree (no HEAD commit).
+            try:
+                podman.container_exec_checked(
+                    container, ["git", "-C", destination, "rev-parse", "HEAD"]
+                )
+            except RuntimeError:
+                # HEAD unresolvable — check out the first available remote branch.
+                podman.container_exec_checked(
+                    container,
+                    ["bash", "-c",
+                     f"cd {destination} && "
+                     "branch=$(git branch -r | grep -v HEAD | head -1 | sed 's|origin/||' | tr -d ' ') && "
+                     "git checkout -b \"$branch\" \"origin/$branch\""],
+                )
+            return result
         finally:
-            # Bundle mode intentionally relies on git clone for the occupied-
-            # destination check; this cleanup runs on both clone outcomes.
             _cleanup_transfer_stage(podman, container, stage_dir)
 
     try:
