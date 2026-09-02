@@ -68,12 +68,6 @@ from typing import Any, Iterator
 from urllib.parse import quote
 
 import httpx
-try:
-    import httpx_ws as _httpx_ws
-except (ImportError, AttributeError):
-    # httpx_ws unavailable (dependency-free test stubs or not yet installed).
-    # The WebSocket proxy path is guarded at call time — it will raise if reached.
-    _httpx_ws = None  # type: ignore[assignment]
 from mcp.server.mcpserver.server import MCPServer
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -710,8 +704,8 @@ def _start_dashboard_port_server(port: int, crew_id: str, app: Any) -> None:
         4. Forward the stored session cookie in the upstream connection headers.
         5. Handle disconnection from either side gracefully.
 
-        Uses module-level _httpx_ws, _StarletteWebSocket, and
-        _StarletteWebSocketDisconnect (imported at module load with fallbacks).
+        Uses module-level _StarletteWebSocket and _StarletteWebSocketDisconnect,
+        and imports httpx_ws lazily as _local_httpx_ws at call time.
         """
         import httpx_ws as _local_httpx_ws
         _WebSocket = _StarletteWebSocket
