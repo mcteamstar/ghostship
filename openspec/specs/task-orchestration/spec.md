@@ -11,7 +11,7 @@ The system SHALL dispatch a task to a named agent persona within a specified cre
 
 #### Scenario: Dispatch to an existing crew
 - **WHEN** `dispatch` is called with a `task`, an `agent` (defaulting to `ghost`), and a `crew_id` that exists
-- **THEN** the system ensures the crew container is running, forwards the task to the crew's `/api/spawn` endpoint with a dedicated-run request, and returns a `task_id` with status `dispatched`
+- **THEN** the system ensures the crew container is running, forwards the task to the crew's `/api/spawn` endpoint with a dedicated-run request, and returns a `task_id` with status `dispatched` and `created_at` as an ISO 8601 UTC timestamp
 
 #### Scenario: Dispatch without crew_id when crews exist
 - **WHEN** `dispatch` is called without `crew_id` and one or more crews are registered
@@ -37,7 +37,7 @@ In both cases all 8 mailboxes are read; only the reported set differs.
 
 #### Scenario: Poll a specific task
 - **WHEN** `pickup` is called with a `task_id` and `crew_id`
-- **THEN** the system returns the task's done state, turn count, last tool used, elapsed seconds, result, error, and outcome, plus the unread mail count for the agent that ran the task and the Admiral mail count
+- **THEN** the system returns the task's done state, turn count, last tool used, elapsed seconds, result, error, and outcome, plus the unread mail count for the agent that ran the task and the Admiral mail count, and `created_at`, `started_at`, `completed_at` ISO 8601 UTC timestamps (`null` when not yet reached)
 
 #### Scenario: List all tasks in a crew
 - **WHEN** `pickup` is called with a `crew_id` but no `task_id`

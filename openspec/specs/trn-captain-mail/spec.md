@@ -13,6 +13,11 @@ container's overlay filesystem via the Podman archive API.
 `captain(action="status")` SHALL return subject lines from the captain and admiral
 mailboxes without starting a stopped crew container. The response SHALL include
 `captain_subjects` and `admiral_subjects` arrays alongside the existing mail counts.
+Each subject entry SHALL be a structured object `{"subject": str, "received_at": str | None}`
+where `received_at` is the ISO 8601 UTC timestamp parsed from the message's `Date` header
+(see `mail-timestamps` spec). The response SHALL also include `last_checkin_at`
+(ISO 8601 UTC) — the wall-clock time the most recent Raven check-in fired for this crew.
+`last_checkin_at` SHALL be `null` if no check-in has fired yet.
 
 #### Scenario: Captain status on stopped crew returns subjects
 - **WHEN** `captain(action="status")` is called on a crew whose container is stopped
@@ -27,6 +32,14 @@ mailboxes without starting a stopped crew container. The response SHALL include
 #### Scenario: Empty mailbox yields empty subjects list
 - **WHEN** `captain(action="status")` is called and a mailbox has no messages
 - **THEN** the corresponding subjects array is empty and the mail count is zero
+
+#### Scenario: captain status includes last_checkin_at after a check-in fires
+- **WHEN** `captain(action="status")` is called after at least one Raven check-in has run
+- **THEN** the response includes `last_checkin_at` as an ISO 8601 UTC string
+
+#### Scenario: captain status last_checkin_at is null before any check-in
+- **WHEN** `captain(action="status")` is called on a crew where no check-in has fired
+- **THEN** `last_checkin_at` is `null`
 
 ### Requirement: Plain file evac from stopped crew uses archive API directly
 
