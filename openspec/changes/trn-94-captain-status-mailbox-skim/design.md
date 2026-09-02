@@ -19,13 +19,21 @@ Both `captain status` and crew-level `pickup` need the same broad mailbox skim �
 
 **D1: Shared `_skim_all_mailboxes(crew_id)` helper**
 
-Extract a helper that calls `_read_mail_subjects` (which already exists in `transport/captain.py`) passing all 8 mailbox names in one container exec — `read_mail_subjects.py` takes a JSON list of mailbox names and returns a dict in a single call. No per-mailbox exec loop needed. Both `captain status` and crew-level `pickup` call this helper. If the container is stopped or the exec fails, all mailboxes return empty lists rather than erroring the whole call.
+**D1: Two mailbox reading approaches — archive API chosen for `received_at` consistency**
 
-The helper lives alongside the existing `_read_mail_subjects` in `transport/captain.py` (or is just a thin wrapper around it with a fixed mailbox set).
+Two existing mechanisms read mailbox subjects:
+
+1. **`_read_all_mail_subjects(podman, container)`** — single container exec (`read_mail_subjects.py`), all 8 mailboxes in one call, returns `dict[str, list[str]]` (plain strings). Requires running container. No `received_at`.
+
+2. **`_read_mail_subjects_archive(podman, container, mailbox_path)`** — Podman archive API per mailbox, works on stopped containers, returns `list[dict{"subject": str, "received_at": str|None}]`. One call per mailbox.
+
+The existing main specs (`trn-captain-mail`, `task-orchestration`) and the current pickup implementation both use the `{"subject": str, "received_at": str}` format. To stay consistent with the established contract, the broad skim must use `_read_mail_subjects_archive` — 8 archive API calls, one per mailbox. Each is fast (~10ms); total ~80ms for a running crew.
+
+**`_skim_all_mailboxes(podman, container) -> dict[str, list[dict]]`** is a new helper in `transport/captain.py` that calls `_read_mail_subjects_archive` for each of the 8 mailboxes in `_ALL_MAIL_MAILBOXES`, returns empty list per mailbox on failure, and works on stopped containers (archive API doesn't require the process to run).
 
 **D2: `captain status` response — add `agent_mail` field**
 
-The `agent_mail` field is added to the captain status response dict. The existing `captain_subjects`, `admiral_subjects`, `captain_mail`, `admiral_mail` top-level fields are kept for backward compatibility — they are populated from the same skim result (no extra exec calls).
+The `agent_mail` field is added to the captain status response dict. The existing `captain_subjects`, `admiral_subjects`, `captain_mail`, `admiral_mail` top-level fields are kept for backward compatibility — they are populated from the `_skim_all_mailboxes` result (captain and admiral entries from the dict), removing the current separate `_mail_count` calls for those two mailboxes.
 
 **D3: `pickup` (crew-level) — add `agent_subjects` field**
 
@@ -41,5 +49,5 @@ Set `ticket: TRN-94` in `.openspec.yaml`.
 
 ## Risks / Trade-offs
 
-- **One container exec per call** — `_read_mail_subjects` already takes a list of mailboxes and handles them all in a single `python3 read_mail_subjects.py` exec. The broad skim is one call regardless of mailbox count. For a stopped crew it fails fast and returns empty. Latency is the same as the current captain/admiral skim — no regression.
+- **8 archive API calls per skim** — one `_read_mail_subjects_archive` call per mailbox. Each uses the Podman archive endpoint (~10ms each); total ~80ms. The alternative (single exec via `_read_all_mail_subjects`) is faster but returns plain strings without `received_at`, breaking the established response contract. The archive approach is consistent with how pickup already reads captain/admiral subjects today.
 - **Backward compatibility** — `agent_mail` and `agent_subjects` are additive fields. No existing callers are broken.

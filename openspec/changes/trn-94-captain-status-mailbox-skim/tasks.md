@@ -1,6 +1,6 @@
 ## 1. Shared helper
 
-- [ ] 1.1 Add `_skim_all_mailboxes(crew_id: str) -> dict[str, list[dict]]` to `transport/server.py` — calls `_read_mail_subjects` for each of the 8 mailboxes (ghost, spectre, banshee, wraith, reaper, raven, captain, admiral); returns empty list per mailbox on exec failure or stopped container
+- [ ] 1.1 Add `_skim_all_mailboxes(podman, container) -> dict[str, list[dict]]` to `transport/captain.py` — calls `_read_mail_subjects_archive` for each of the 8 mailboxes in `_ALL_MAIL_MAILBOXES`; returns empty list per mailbox on failure; works on stopped containers
 - [ ] 1.2 Unit tests: running crew returns all 8 keys; stopped crew returns 8 empty lists; one exec failure leaves other mailboxes intact
 
 ## 2. captain status
