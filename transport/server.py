@@ -789,6 +789,11 @@ _HOP_BY_HOP_HEADERS: frozenset[str] = frozenset({
     "te",
     "trailers",
     "upgrade",
+    # httpx decompresses gzip/br/zstd transparently when using aread(); strip
+    # content-encoding so the browser doesn't try to decompress already-decoded
+    # bytes. content-length is also wrong after decompression so strip it too.
+    "content-encoding",
+    "content-length",
 })
 
 
