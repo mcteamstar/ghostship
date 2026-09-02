@@ -4996,5 +4996,382 @@ class Trn89CrewTimestampTests(unittest.TestCase):
         self.assertIsNone(crew_map["demo-no-task"]["last_task_at"])
 
 
+# ── TRN-80: UI port allocation, CORS injection, launch/crews/nuke wiring ─────
+
+class UiPortAllocationTests(unittest.TestCase):
+    """Tests for _allocate_ui_port / _release_ui_port (TRN-80 task 3)."""
+
+    def setUp(self) -> None:
+        # Isolate module-level port state for each test
+        server._ui_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def test_allocate_returns_range_start_when_empty(self) -> None:
+        with (
+            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+        ):
+            port = server._allocate_ui_port()
+        self.assertEqual(port, 9000)
+        self.assertIn(9000, server._ui_ports_in_use)
+
+    def test_allocate_returns_next_free_port(self) -> None:
+        server._ui_ports_in_use.add(9000)
+        server._ui_ports_in_use.add(9001)
+        with (
+            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+        ):
+            port = server._allocate_ui_port()
+        self.assertEqual(port, 9002)
+        self.assertIn(9002, server._ui_ports_in_use)
+
+    def test_allocate_raises_when_exhausted(self) -> None:
+        with (
+            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 3),
+        ):
+            server._ui_ports_in_use.update({9000, 9001, 9002})
+            with self.assertRaises(RuntimeError) as ctx:
+                server._allocate_ui_port()
+        self.assertIn("exhausted", str(ctx.exception).lower())
+
+    def test_release_frees_port(self) -> None:
+        server._ui_ports_in_use.add(9005)
+        server._release_ui_port(9005)
+        self.assertNotIn(9005, server._ui_ports_in_use)
+
+    def test_release_is_noop_for_unallocated_port(self) -> None:
+        # Must not raise
+        server._release_ui_port(9999)
+
+
+class UiPortLaunchTests(unittest.TestCase):
+    """Tests for launch() UI port wiring (TRN-80 task 4.1)."""
+
+    def setUp(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def _run_launch(self, ga_ui_port_enabled: bool = True, ga_host_url: str = "") -> dict:
+        """Run server.launch() with a minimal set of mocks and return the result."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+
+        finish_result = {
+            "crew_id": "demo",
+            "container": "gs-demo",
+            "gateway_url": "http://gs-demo:5476",
+            "status": "ready",
+        }
+
+        def save_registry(reg: dict) -> None:
+            # Simulate what _finish_crew_setup writes
+            if "demo" in reg["crews"] and reg["crews"]["demo"].get("status") != "launching":
+                pass
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry", side_effect=lambda r: None),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_UI_PORT_ENABLED", ga_ui_port_enabled),
+            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ga_host_url
+            mock_cfg.ga_ui_port_range_start = 9000
+            mock_cfg.ga_ui_port_range_size = 50
+            result = server.launch("demo")
+        return result
+
+    def test_launch_includes_ui_url_when_port_enabled(self) -> None:
+        result = self._run_launch(ga_ui_port_enabled=True, ga_host_url="")
+        self.assertIn("ui_url", result)
+        self.assertIsNotNone(result["ui_url"])
+        self.assertTrue(result["ui_url"].startswith("http://"))
+        self.assertIn("9000", result["ui_url"])
+
+    def test_launch_ui_url_uses_ga_host_url_host(self) -> None:
+        result = self._run_launch(ga_ui_port_enabled=True, ga_host_url="http://vm23.example.com:64057")
+        self.assertIn("ui_url", result)
+        self.assertIn("vm23.example.com", result["ui_url"])
+        self.assertIn("9000", result["ui_url"])
+
+    def test_launch_ui_url_is_none_when_port_disabled(self) -> None:
+        result = self._run_launch(ga_ui_port_enabled=False)
+        self.assertIn("ui_url", result)
+        self.assertIsNone(result["ui_url"])
+
+    def test_launch_passes_ports_to_container_create(self) -> None:
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_UI_PORT_ENABLED", True),
+            patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_ui_port_range_start = 9000
+            mock_cfg.ga_ui_port_range_size = 50
+            server.launch("demo")
+
+        call_kwargs = podman.container_create.call_args.kwargs
+        self.assertIn("ports", call_kwargs)
+        self.assertIsNotNone(call_kwargs["ports"])
+        self.assertEqual(call_kwargs["ports"], {9000: server.CREW_GATEWAY_PORT})
+
+    def test_launch_no_ports_passed_when_ui_disabled(self) -> None:
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_UI_PORT_ENABLED", False),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_ui_port_range_start = 9000
+            mock_cfg.ga_ui_port_range_size = 50
+            server.launch("demo")
+
+        call_kwargs = podman.container_create.call_args.kwargs
+        self.assertIsNone(call_kwargs.get("ports"))
+
+
+class UiPortNukeTests(unittest.TestCase):
+    """Tests for nuke() UI port release (TRN-80 task 4.2)."""
+
+    def setUp(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def test_nuke_releases_ui_port(self) -> None:
+        server._ui_ports_in_use.add(9000)
+        crew = {
+            "container": "gs-demo",
+            "volume": "gs-vol-demo",
+            "home_volume": "gs-home-demo",
+            "ui_port": 9000,
+        }
+        registry = {"crews": {"demo": dict(crew)}}
+        podman = Mock()
+        podman.container_stop = Mock()
+        podman.container_remove = Mock()
+        podman.volume_remove = Mock()
+
+        with (
+            patch.object(server, "_get_crew", return_value=crew),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(server, "_get_crew_schedules", return_value=[]),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_cleanup_crew"),
+            patch.object(server, "_captain_order_locks_lock", threading.Lock()),
+            patch.object(server, "_captain_order_locks", {}),
+            patch.object(server, "GA_UI_PORT_ENABLED", True),
+        ):
+            result = server.nuke("demo", confirm=True)
+
+        self.assertEqual(result["status"], "nuked")
+        self.assertNotIn(9000, server._ui_ports_in_use)
+
+    def test_nuke_no_release_when_port_disabled(self) -> None:
+        server._ui_ports_in_use.add(9000)
+        crew = {
+            "container": "gs-demo",
+            "volume": "gs-vol-demo",
+            "home_volume": "gs-home-demo",
+            "ui_port": 9000,
+        }
+        registry = {"crews": {"demo": dict(crew)}}
+        podman = Mock()
+
+        with (
+            patch.object(server, "_get_crew", return_value=crew),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(server, "_get_crew_schedules", return_value=[]),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_cleanup_crew"),
+            patch.object(server, "_captain_order_locks_lock", threading.Lock()),
+            patch.object(server, "_captain_order_locks", {}),
+            patch.object(server, "GA_UI_PORT_ENABLED", False),
+        ):
+            server.nuke("demo", confirm=True)
+
+        # Port should NOT have been released because GA_UI_PORT_ENABLED=False
+        self.assertIn(9000, server._ui_ports_in_use)
+
+
+class CrewsListUiUrlTests(unittest.TestCase):
+    """Tests for ui_url in crews() list (TRN-80 task 5)."""
+
+    def _run_crews(self, crews_data: dict, ga_host_url: str = "") -> list:
+        registry = {"crews": crews_data}
+        with (
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(server, "_crew_api", return_value=[]),
+            patch.object(server, "_get_podman", return_value=Mock(
+                system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}}
+            )),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ga_host_url
+            result = server.crews()
+        return result["crews"]
+
+    def test_crews_includes_ui_url_when_port_assigned(self) -> None:
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "ui_port": 9005,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(crews_data, ga_host_url="")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["ui_url"], "http://localhost:9005/")
+
+    def test_crews_ui_url_uses_ga_host_url_host(self) -> None:
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "ui_port": 9010,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(crews_data, ga_host_url="http://vm23.example.com:64057")
+        self.assertIn("vm23.example.com:9010", entries[0]["ui_url"])
+
+    def test_crews_ui_url_is_none_when_no_port(self) -> None:
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(crews_data)
+        self.assertIsNone(entries[0]["ui_url"])
+
+
+class CorsOriginInjectionTests(unittest.TestCase):
+    """Tests for CORS origin injection at container_create time (TRN-80 task 6)."""
+
+    def setUp(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._ui_ports_in_use.clear()
+
+    def _run_launch_capture_env(self, ga_host_url: str = "") -> dict:
+        """Run server.launch() and return the env dict passed to container_create."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_UI_PORT_ENABLED", False),  # keep env test focused on CORS
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ga_host_url
+            mock_cfg.ga_ui_port_range_start = 9000
+            mock_cfg.ga_ui_port_range_size = 50
+            server.launch("demo")
+
+        call_kwargs = podman.container_create.call_args.kwargs
+        return call_kwargs["env"]
+
+    def test_cors_includes_transport_origin_when_ga_host_url_set(self) -> None:
+        env = self._run_launch_capture_env(ga_host_url="http://vm23.example.com:64057")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        self.assertIn("http://vm23.example.com:64057", origins)
+
+    def test_cors_falls_back_to_localhost_when_ga_host_url_unset(self) -> None:
+        env = self._run_launch_capture_env(ga_host_url="")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        self.assertIn("http://localhost:", origins)
+
+    def test_cors_preserves_crew_internal_origin(self) -> None:
+        env = self._run_launch_capture_env(ga_host_url="http://vm23.example.com:64057")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        # Internal origin (container:5476) must still be present
+        self.assertIn("gs-demo", origins)
+        self.assertIn(str(server.CREW_GATEWAY_PORT), origins)
+
+    def test_cors_includes_both_origins_when_existing_value_present(self) -> None:
+        """Both crew-internal and transport origins appear in the comma-separated list."""
+        env = self._run_launch_capture_env(ga_host_url="http://host.example.com:64057")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        parts = [p.strip() for p in origins.split(",")]
+        self.assertGreaterEqual(len(parts), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

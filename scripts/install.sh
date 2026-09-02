@@ -79,6 +79,9 @@ GA_RESOURCE_CRITICAL_GB=1.0
 GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 HOST=0.0.0.0
+GA_UI_PORT_RANGE_START=9000
+GA_UI_PORT_RANGE_SIZE=50
+GA_UI_PORT_ENABLED=true
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -653,6 +656,9 @@ services:
       GA_RATE_LIMIT_MCP: "${GA_RATE_LIMIT_MCP:-300:60}"
       GA_RATE_LIMIT_FILES: "${GA_RATE_LIMIT_FILES:-60:60}"
       GA_RATE_LIMIT_CREW_API: "${GA_RATE_LIMIT_CREW_API:-120:60}"
+      GA_UI_PORT_RANGE_START: "${GA_UI_PORT_RANGE_START:-9000}"
+      GA_UI_PORT_RANGE_SIZE: "${GA_UI_PORT_RANGE_SIZE:-50}"
+      GA_UI_PORT_ENABLED: "${GA_UI_PORT_ENABLED:-true}"
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
 networks:
   ga-net:

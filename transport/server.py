@@ -312,6 +312,11 @@ GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 GA_PICKUP_MAX_POLL_SECS = cfg.ga_pickup_max_poll_secs
 KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
+# ── Crew UI port allocation (TRN-80) ─────────────────────────────────────────
+GA_UI_PORT_RANGE_START = cfg.ga_ui_port_range_start
+GA_UI_PORT_RANGE_SIZE = cfg.ga_ui_port_range_size
+GA_UI_PORT_ENABLED = cfg.ga_ui_port_enabled
+
 # ── Git author identity passthrough (TRN-77) ─────────────────────────────────
 # When both vars are set, all four git identity env vars are injected into
 # each crew container at setup time so commits carry the operator's identity.
@@ -607,6 +612,37 @@ mcp = MCPServer(
 # In-memory store for task lifecycle timestamps. Keyed by task_id.
 # Lost on transport restart — acceptable per design decision D1.
 _task_timestamps: dict[str, dict] = {}
+
+# ── UI port pool (TRN-80) ─────────────────────────────────────────────────────
+# Tracks which host ports in the UI port range are currently allocated to a
+# crew. Populated from crews.json at startup (see _startup_events) and mutated
+# only inside _allocate_ui_port / _release_ui_port. Protected by the global
+# _registry_lock (same lock used for crews.json writes) so allocation and
+# registry persistence are atomic.
+_ui_ports_in_use: set[int] = set()
+
+
+def _allocate_ui_port() -> int:
+    """Scan the UI port range and allocate the first free port.
+
+    Must be called while holding ``_registry_lock`` so the allocation and
+    the subsequent registry write are atomic.
+
+    Returns the allocated port. Raises RuntimeError if the range is full.
+    """
+    for port in range(
+        GA_UI_PORT_RANGE_START,
+        GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE,
+    ):
+        if port not in _ui_ports_in_use:
+            _ui_ports_in_use.add(port)
+            return port
+    raise RuntimeError("UI port pool exhausted")
+
+
+def _release_ui_port(port: int) -> None:
+    """Remove ``port`` from the in-use set (no-op if not present)."""
+    _ui_ports_in_use.discard(port)
 
 # _http and _async_http are imported from transport.podman (they are owned by
 # that module; proxy handlers below use _async_http).
@@ -1680,6 +1716,17 @@ def crews() -> dict:
             "crew_image_version": info.get("crew_image_version", "unknown"),
             "agents": [],
         }
+        # TRN-80: derive ui_url from stored ui_port (None if no port assigned)
+        _ui_p = info.get("ui_port")
+        if _ui_p is not None:
+            if cfg.ga_host_url:
+                from urllib.parse import urlparse as _urlparse3
+                _ph = _urlparse3(cfg.ga_host_url)
+                entry["ui_url"] = f"{_ph.scheme}://{_ph.hostname}:{_ui_p}/"
+            else:
+                entry["ui_url"] = f"http://localhost:{_ui_p}/"
+        else:
+            entry["ui_url"] = None
         if "policy_version" in info:
             entry["policy_version"] = info["policy_version"]
         # Try to fetch active tasks from the gateway
@@ -1806,6 +1853,8 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         reg["crews"][crew_id] = {"status": "launching", "container": container}
         _save_registry(reg)
 
+    # TRN-80: initialised before the try so the except block can reference it.
+    ui_port: int | None = None
     try:
         podman.network_create(GA_NETWORK)
         podman.volume_create(volume)
@@ -1813,13 +1862,30 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         logger.info("Created volumes %s, %s", volume, home_volume)
 
         # Build container env — always include CORS and sandbox flag.
-        # When GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are both set, inject
         # all four git identity vars so they are part of the container's process
         # environment from startup and inherited by the gateway and every kiro-cli
         # child it spawns.  /etc/environment is NOT used because it is only read
         # by PAM login sessions, not by non-login processes like the gateway.
+        #
+        # TRN-80: Derive the transport's public origin for CORS injection.
+        # The crew gateway needs to accept API calls from the browser when it is
+        # served from the per-crew UI port (a different origin). We append the
+        # transport's public origin to KIROCREW_CORS_ORIGINS so those calls are
+        # not CORS-rejected. GA_HOST_URL may be "http://host:port/" (strip path),
+        # or we fall back to http://localhost:{PORT}.
+        _transport_public_origin: str
+        if cfg.ga_host_url:
+            from urllib.parse import urlparse as _urlparse
+            _parsed = _urlparse(cfg.ga_host_url)
+            _transport_public_origin = f"{_parsed.scheme}://{_parsed.netloc}"
+        else:
+            _transport_public_origin = f"http://localhost:{PORT}"
+
+        _crew_internal_origin = f"http://{container}:{CREW_GATEWAY_PORT}"
+        _cors_origins = f"{_crew_internal_origin},{_transport_public_origin}"
+
         container_env: dict[str, str] = {
-            "KIROCREW_CORS_ORIGINS": f"http://{container}:{CREW_GATEWAY_PORT}",
+            "KIROCREW_CORS_ORIGINS": _cors_origins,
             "KIROCREW_ALLOW_UNSANDBOXED": "1",
         }
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
@@ -1827,6 +1893,32 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL
             container_env["GIT_COMMITTER_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_COMMITTER_EMAIL"] = GA_GIT_AUTHOR_EMAIL
+
+        # TRN-80: allocate a host port for the crew's UI SPA.
+        ui_url: str | None = None
+        _container_ports: dict[int, int] | None = None
+        if GA_UI_PORT_ENABLED:
+            with _registry_lock:
+                try:
+                    ui_port = _allocate_ui_port()
+                except RuntimeError as _err:
+                    _cleanup_crew(podman, container, volume, home_volume)
+                    reg = _load_registry()
+                    reg["crews"].pop(crew_id, None)
+                    _save_registry(reg)
+                    return {"error": str(_err)}
+            _container_ports = {ui_port: CREW_GATEWAY_PORT}
+            _ui_host = cfg.ga_host_url.rstrip("/") if cfg.ga_host_url else f"localhost:{ui_port}"
+            # If ga_host_url includes a host (no port), we need to build the URL
+            # with the allocated port, not the ga_host_url port.
+            if cfg.ga_host_url:
+                from urllib.parse import urlparse as _urlparse2
+                _p = _urlparse2(cfg.ga_host_url)
+                _ui_host = f"{_p.scheme}://{_p.hostname}:{ui_port}"
+            else:
+                _ui_host = f"http://localhost:{ui_port}"
+            ui_url = f"{_ui_host}/"
+
         podman.container_create(
             name=container,
             image=image,
@@ -1834,12 +1926,15 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             network=GA_NETWORK,
             workspace_volume=volume,
             home_volume=home_volume,
+            ports=_container_ports,
         )
         podman.container_start(container)
         logger.info("Started %s", container)
 
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
         if not _wait_gateway(crew_url, timeout=30):
+            if ui_port is not None:
+                _release_ui_port(ui_port)
             _cleanup_crew(podman, container, volume, home_volume)
             with _registry_lock:
                 reg = _load_registry()
@@ -1847,12 +1942,29 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 30s for crew {crew_id}"}
 
-        return _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
+        # TRN-80: persist ui_port in registry and include ui_url in the response.
+        if ui_port is not None and "error" not in result:
+            with _registry_lock:
+                reg = _load_registry()
+                if crew_id in reg["crews"]:
+                    reg["crews"][crew_id]["ui_port"] = ui_port
+                    _save_registry(reg)
+            result["ui_url"] = ui_url
+        elif "error" not in result:
+            result["ui_url"] = None
+        return result
 
     except Exception as e:
         logger.error("Launch failed for %s: %s", crew_id, e)
         try:
             _cleanup_crew(podman, container, volume, home_volume)
+        except Exception:
+            pass
+        # TRN-80: free any port allocated before the failure
+        try:
+            if ui_port is not None:
+                _release_ui_port(ui_port)
         except Exception:
             pass
         with _registry_lock:
@@ -2060,6 +2172,11 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     with _registry_lock:
         reg = _load_registry()
+        # TRN-80: release the crew's UI port before removing the registry entry.
+        if GA_UI_PORT_ENABLED:
+            _ui_p = reg["crews"].get(crew_id, {}).get("ui_port")
+            if _ui_p is not None:
+                _release_ui_port(int(_ui_p))
         reg["crews"].pop(crew_id, None)
         _save_registry(reg)
 
@@ -3293,6 +3410,17 @@ if __name__ == "__main__":
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
     _reconcile_registry()
+    # TRN-80: restore UI port allocations from persisted registry so restarts
+    # don't re-allocate ports already claimed by existing crews.
+    with _registry_lock:
+        _reg = _load_registry()
+        for _cid, _info in _reg["crews"].items():
+            _p = _info.get("ui_port")
+            if _p is not None:
+                _ui_ports_in_use.add(int(_p))
+    if _ui_ports_in_use:
+        logger.info("TRN-80: restored %d UI port(s) from registry: %s",
+                    len(_ui_ports_in_use), sorted(_ui_ports_in_use))
     for _warning in _validate_academy():
         logger.warning("Academy validation: %s", _warning)
     threading.Thread(target=_idle_monitor, daemon=True, name="idle-monitor").start()

@@ -83,6 +83,7 @@ class ContainerRuntime(ABC):
         network: str,
         workspace_volume: str,
         home_volume: str,
+        ports: dict[int, int] | None = None,
     ) -> dict: ...
 
     @abstractmethod
@@ -169,8 +170,9 @@ class PodmanClient(ContainerRuntime):
         network: str,
         workspace_volume: str,
         home_volume: str,
+        ports: dict[int, int] | None = None,
     ) -> dict:
-        return self._req("POST", "/libpod/containers/create", json={
+        spec: dict[str, Any] = {
             "name": name,
             "image": image,
             "env": env,
@@ -181,7 +183,15 @@ class PodmanClient(ContainerRuntime):
                  "dest": KIRO_WORKSPACE_ROOT},
                 {"name": home_volume, "dest": "/home/kirocrew"},
             ],
-        })
+        }
+        if ports:
+            # Podman REST API port mapping format:
+            # "portmappings": [{"host_port": H, "container_port": C, "protocol": "tcp"}]
+            spec["portmappings"] = [
+                {"host_port": host_port, "container_port": container_port, "protocol": "tcp"}
+                for host_port, container_port in ports.items()
+            ]
+        return self._req("POST", "/libpod/containers/create", json=spec)
 
     def container_start(self, name: str) -> None:
         r = self._c.post(f"/libpod/containers/{name}/start")
