@@ -1422,6 +1422,7 @@ def _schedule_monitor() -> None:
                         )
 
                     # Advance next_fire_at in registry after fire (success or failure)
+                    # TRN-89 task 4: write last_checkin_at for captain check-ins
                     _advance_next_fire_at(sched)
                     with _registry_lock:
                         reg = _load_registry()
@@ -1429,6 +1430,12 @@ def _schedule_monitor() -> None:
                         for s in crew_scheds:
                             if s.get("job_id") == sched.get("job_id"):
                                 s["next_fire_at"] = sched["next_fire_at"]
+                                if (
+                                    sched.get("name") == "captain"
+                                    and sched.get("agent") == "raven"
+                                ):
+                                    from datetime import datetime as _datetime, timezone as _tz
+                                    s["last_checkin_at"] = _datetime.now(_tz.utc).isoformat()
                                 break
                         _save_registry(reg)
 

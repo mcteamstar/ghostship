@@ -603,6 +603,11 @@ mcp = MCPServer(
     ),
 )
 
+# ── Task timestamps (TRN-89) ──────────────────────────────────────────────────
+# In-memory store for task lifecycle timestamps. Keyed by task_id.
+# Lost on transport restart — acceptable per design decision D1.
+_task_timestamps: dict[str, dict] = {}
+
 # _http and _async_http are imported from transport.podman (they are owned by
 # that module; proxy handlers below use _async_http).
 
@@ -1670,6 +1675,7 @@ def crews() -> dict:
             "status": status,
             "composition": info.get("composition", "kirocrew"),
             "created_at": info.get("created_at"),
+            "last_task_at": info.get("last_task_at"),  # TRN-89 task 3
             "gateway_healthy": gateway_healthy,
             "crew_image_version": info.get("crew_image_version", "unknown"),
             "agents": [],
@@ -2792,12 +2798,36 @@ def dispatch(
         )
     except CrewUnresponsiveError as e:
         return {"error": str(e)}
+
+    task_id = result.get("id")
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+
+    # TRN-89 task 1: record task timestamps in-memory
+    if task_id:
+        _task_timestamps[task_id] = {
+            "created_at": created_at,
+            "started_at": None,
+            "completed_at": None,
+        }
+
+    # TRN-89 task 3: write last_task_at to crew's registry entry
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            if crew_id in reg["crews"]:
+                reg["crews"][crew_id]["last_task_at"] = created_at
+                _save_registry(reg)
+    except Exception as exc:
+        logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
+
     return {
-        "task_id": result.get("id"),
+        "task_id": task_id,
         "crew_id": crew_id,
         "status": "dispatched",
         "task": task,
         "agent": agent,
+        "created_at": created_at,
     }
 
 
@@ -2935,6 +2965,15 @@ def _pickup_single(
         agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
         admiral_mail = mail_counts.get("admiral", 0)
 
+        # TRN-89 task 1: populate task timestamps
+        now = datetime.now(timezone.utc)
+        ts = _task_timestamps.get(task_id, {})
+        elapsed = r.get("elapsed", 0)
+        if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
+            ts["started_at"] = now.isoformat()
+        if ts and done and ts.get("completed_at") is None:
+            ts["completed_at"] = now.isoformat()
+
         out: dict[str, Any] = {
             "task_id": r.get("id"),
             "crew_id": crew_id,
@@ -2946,6 +2985,9 @@ def _pickup_single(
             "error": r.get("error", ""),
             "outcome": r.get("outcome", ""),
             "agent_mail": agent_mail,
+            "created_at": ts.get("created_at") if ts else None,
+            "started_at": ts.get("started_at") if ts else None,
+            "completed_at": ts.get("completed_at") if ts else None,
         }
 
         # Include subject lines for the agent persona, raven, captain, and admiral.
@@ -3034,6 +3076,10 @@ def _pickup_list(
                 "last_tool": a.get("last_tool", ""),
                 "outcome": a.get("outcome", ""),
                 "error": a.get("error", ""),
+                # TRN-89 task 1: include per-task timestamps (null if missing)
+                "created_at": _task_timestamps.get(a.get("id", ""), {}).get("created_at"),
+                "started_at": _task_timestamps.get(a.get("id", ""), {}).get("started_at"),
+                "completed_at": _task_timestamps.get(a.get("id", ""), {}).get("completed_at"),
             }
             for a in agents
         ]

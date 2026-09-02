@@ -755,9 +755,14 @@ class MaildirSubjectReaderTests(unittest.TestCase):
             "cur/msg2": "From: spectre@localhost\nSubject: task B ready\n\nbody",
         })
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertIn("task A done", subjects)
-        self.assertIn("task B ready", subjects)
         self.assertEqual(len(subjects), 2)
+        subject_texts = [s["subject"] for s in subjects]
+        self.assertIn("task A done", subject_texts)
+        self.assertIn("task B ready", subject_texts)
+        # All entries have received_at key (may be None if no Date header)
+        for entry in subjects:
+            self.assertIn("subject", entry)
+            self.assertIn("received_at", entry)
 
     def test_ignores_files_outside_new_and_cur(self) -> None:
         tar = self._make_maildir_tar({
@@ -765,7 +770,8 @@ class MaildirSubjectReaderTests(unittest.TestCase):
             "new/msg2": "Subject: included\n\nbody",
         })
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertEqual(subjects, ["included"])
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "included")
 
     def test_empty_mailbox_returns_empty_list(self) -> None:
         tar = self._make_maildir_tar({})
@@ -785,7 +791,8 @@ class MaildirSubjectReaderTests(unittest.TestCase):
         })
         self.assertIsInstance(tar, bytes)
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertEqual(subjects, ["bytes path"])
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "bytes path")
 
     def test_deeply_nested_new_dir_is_included(self) -> None:
         """A path like captain/new/msg1 (tar from archive API) should be matched."""
@@ -793,7 +800,8 @@ class MaildirSubjectReaderTests(unittest.TestCase):
             "captain/new/msg1": "Subject: deep subject\n\nbody",
         })
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertEqual(subjects, ["deep subject"])
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "deep subject")
 
     def test_corrupt_tar_returns_empty_list(self) -> None:
         subjects = captain_mod._read_maildir_subjects_from_tar(b"not a tar stream")
@@ -817,7 +825,9 @@ class MaildirSubjectReaderTests(unittest.TestCase):
         podman.container_archive_get.return_value = _FakeResp()
         result = captain_mod._read_mail_subjects_archive(podman, "gs-demo", "/var/mail/captain")
         podman.container_archive_get.assert_called_once_with("gs-demo", "/var/mail/captain")
-        self.assertEqual(result, ["order received"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["subject"], "order received")
+        self.assertIn("received_at", result[0])
 
     def test_read_mail_subjects_archive_returns_empty_on_error(self) -> None:
         """_read_mail_subjects_archive returns [] if archive_get raises."""
@@ -898,8 +908,8 @@ class CaptainStatusArchiveTests(unittest.TestCase):
             result = server.captain("demo", "status")
 
         # Subjects are present
-        self.assertEqual(result["captain_subjects"], ["trn-51 cleanup done"])
-        self.assertEqual(result["admiral_subjects"], ["SO1 complete"])
+        self.assertEqual(result["captain_subjects"], [{"subject": "trn-51 cleanup done", "received_at": None}])
+        self.assertEqual(result["admiral_subjects"], [{"subject": "SO1 complete", "received_at": None}])
         self.assertEqual(result["captain_mail"], 1)
         self.assertEqual(result["admiral_mail"], 1)
         # Status is dormant (no job found on a stopped container)
@@ -951,13 +961,166 @@ class CaptainStatusArchiveTests(unittest.TestCase):
         ):
             result = server.captain("demo", "status")
 
-        self.assertEqual(set(result["captain_subjects"]), {"banshee review done", "trn-85 archived"})
+        self.assertEqual(set(s["subject"] for s in result["captain_subjects"]), {"banshee review done", "trn-85 archived"})
         self.assertEqual(result["captain_mail"], 2)
         self.assertEqual(result["admiral_subjects"], [])
         self.assertEqual(result["admiral_mail"], 0)
         # Job state still present
         self.assertEqual(result["job_id"], "job-existing")
         self.assertTrue(result["enabled"])
+
+
+class MaildirSubjectTimestampTests(unittest.TestCase):
+    """TRN-89 Task 2 — received_at in _read_maildir_subjects_from_tar."""
+
+    @staticmethod
+    def _make_maildir_tar(messages: dict[str, str]) -> bytes:
+        import io as _io
+        import tarfile as _tarfile
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            for name, content in messages.items():
+                data = content.encode("utf-8")
+                info = _tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, _io.BytesIO(data))
+        return buf.getvalue()
+
+    def test_valid_date_header_returns_utc_received_at(self) -> None:
+        """Message with valid Date header returns ISO 8601 UTC received_at."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: hello\nDate: Mon, 01 Jan 2024 12:00:00 +0000\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "hello")
+        self.assertIsNotNone(subjects[0]["received_at"])
+        self.assertIn("2024-01-01", subjects[0]["received_at"])
+
+    def test_date_header_with_timezone_offset_converted_to_utc(self) -> None:
+        """Date header with +0500 offset is converted to UTC in received_at."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: tz test\nDate: Mon, 01 Jan 2024 17:00:00 +0500\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        # 17:00 +05:00 == 12:00 UTC
+        self.assertIsNotNone(subjects[0]["received_at"])
+        self.assertIn("12:00:00", subjects[0]["received_at"])
+
+    def test_no_date_header_returns_received_at_null(self) -> None:
+        """Message with no Date header returns received_at = None."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "From: ghost@localhost\nSubject: no date\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "no date")
+        self.assertIsNone(subjects[0]["received_at"])
+
+    def test_return_type_is_list_of_dicts(self) -> None:
+        """Each entry in the returned list is a dict with subject and received_at keys."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: check shape\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        self.assertIsInstance(subjects[0], dict)
+        self.assertIn("subject", subjects[0])
+        self.assertIn("received_at", subjects[0])
+
+
+class CaptainLastCheckinAtTests(unittest.TestCase):
+    """TRN-89 Task 4 — last_checkin_at in captain status."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    @staticmethod
+    def _make_maildir_tar(messages: dict[str, str]) -> bytes:
+        import io as _io
+        import tarfile as _tarfile
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            for name, content in messages.items():
+                data = content.encode("utf-8")
+                info = _tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, _io.BytesIO(data))
+        return buf.getvalue()
+
+    def _make_podman(self, *, is_running: bool = True):
+        podman = Mock()
+        podman.container_is_running.return_value = is_running
+        tar = self._make_maildir_tar({})
+
+        class _FakeResp:
+            def iter_bytes(self_inner):
+                yield tar
+
+            def close(self_inner):
+                pass
+
+        podman.container_archive_get.return_value = _FakeResp()
+        return podman
+
+    def test_status_includes_last_checkin_at_null_before_checkin_fires(self) -> None:
+        """captain status includes last_checkin_at=null when no check-in has fired."""
+        existing = {
+            "id": "job-1",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        # Registry entry with NO last_checkin_at
+        reg = {"crews": {"demo": {
+            "container": "gs-demo", "cookie": "cookie",
+            "schedules": [{"job_id": "job-1", "name": "captain", "agent": "raven", "enabled": True}],
+        }}}
+        podman = self._make_podman(is_running=True)
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}),
+        ):
+            result = server.captain("demo", "status")
+
+        self.assertIn("last_checkin_at", result)
+        self.assertIsNone(result["last_checkin_at"])
+
+    def test_status_includes_last_checkin_at_after_checkin_fires(self) -> None:
+        """captain status includes last_checkin_at when a check-in has fired."""
+        existing = {
+            "id": "job-1",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        checkin_ts = "2026-09-02T00:00:00+00:00"
+        # Registry entry WITH last_checkin_at
+        reg = {"crews": {"demo": {
+            "container": "gs-demo", "cookie": "cookie",
+            "schedules": [{
+                "job_id": "job-1", "name": "captain", "agent": "raven",
+                "enabled": True, "last_checkin_at": checkin_ts,
+            }],
+        }}}
+        podman = self._make_podman(is_running=True)
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}),
+        ):
+            result = server.captain("demo", "status")
+
+        self.assertEqual(result["last_checkin_at"], checkin_ts)
 
 
 if __name__ == "__main__":

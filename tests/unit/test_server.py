@@ -4813,5 +4813,188 @@ class GitIdentityInjectionTests(unittest.TestCase):
 
 
 
+class Trn89TaskTimestampTests(unittest.TestCase):
+    """TRN-89 Task 1 — task lifecycle timestamps in dispatch and pickup."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_dispatch_response_includes_created_at(self) -> None:
+        """dispatch response includes created_at in ISO 8601 format."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-1"}),
+            patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(server, "_save_registry"),
+        ):
+            result = server.dispatch("do work", agent="ghost", crew_id="demo")
+
+        self.assertIn("created_at", result)
+        self.assertIsNotNone(result["created_at"])
+        # Should be ISO 8601 with timezone
+        self.assertIn("+", result["created_at"])
+
+    def test_pickup_running_task_has_started_at_nonnull_and_completed_at_null(self) -> None:
+        """pickup of running task (elapsed > 0) has started_at non-null, completed_at null."""
+        # Seed a task in _task_timestamps
+        server._task_timestamps["running-task"] = {
+            "created_at": "2026-09-02T00:00:00+00:00",
+            "started_at": None,
+            "completed_at": None,
+        }
+        try:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(lifecycle, "_crew_api", return_value={
+                    "id": "running-task", "agent": "ghost", "done": False,
+                    "elapsed": 10, "turns": 1, "last_tool": "", "result": "", "error": "", "outcome": "",
+                }),
+                patch.object(server, "_get_podman", return_value=Mock()),
+                patch.object(server, "_read_all_mail_counts", return_value={}),
+                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(server, "_read_mail_subjects_archive", return_value=[]),
+            ):
+                result = server.pickup(task_id="running-task", crew_id="demo", timeout_secs=0)
+        finally:
+            server._task_timestamps.pop("running-task", None)
+
+        self.assertIsNotNone(result.get("started_at"))
+        self.assertIsNone(result.get("completed_at"))
+        self.assertEqual(result["created_at"], "2026-09-02T00:00:00+00:00")
+
+    def test_pickup_done_task_has_all_three_timestamps_set(self) -> None:
+        """pickup of done task has created_at, started_at, and completed_at all set."""
+        server._task_timestamps["done-task"] = {
+            "created_at": "2026-09-02T00:00:00+00:00",
+            "started_at": "2026-09-02T00:00:01+00:00",
+            "completed_at": None,  # will be set on done=True pickup
+        }
+        try:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(lifecycle, "_crew_api", return_value={
+                    "id": "done-task", "agent": "ghost", "done": True,
+                    "elapsed": 5, "turns": 2, "last_tool": "", "result": "ok", "error": "", "outcome": "success",
+                }),
+                patch.object(server, "_get_podman", return_value=Mock()),
+                patch.object(server, "_read_all_mail_counts", return_value={}),
+                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(server, "_read_mail_subjects_archive", return_value=[]),
+            ):
+                result = server.pickup(task_id="done-task", crew_id="demo", timeout_secs=0)
+        finally:
+            server._task_timestamps.pop("done-task", None)
+
+        self.assertIsNotNone(result.get("created_at"))
+        self.assertIsNotNone(result.get("started_at"))
+        self.assertIsNotNone(result.get("completed_at"))
+
+    def test_pickup_list_entries_include_timestamp_fields(self) -> None:
+        """pickup list entries include created_at, started_at, completed_at (null if missing)."""
+        server._task_timestamps["known-task"] = {
+            "created_at": "2026-09-02T00:00:00+00:00",
+            "started_at": None,
+            "completed_at": None,
+        }
+        agents = [
+            {"id": "known-task", "done": False, "task": "do work", "agent": "ghost", "elapsed": 0},
+            {"id": "unknown-task", "done": False, "task": "other", "agent": "ghost", "elapsed": 0},
+        ]
+        try:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
+                patch.object(server, "_get_podman", return_value=Mock()),
+                patch.object(server, "_read_all_mail_counts", return_value={}),
+                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(server, "_read_mail_subjects_archive", return_value=[]),
+            ):
+                result = server.pickup(crew_id="demo", timeout_secs=0)
+        finally:
+            server._task_timestamps.pop("known-task", None)
+
+        tasks = result["tasks"]
+        known = next(t for t in tasks if t["task_id"] == "known-task")
+        unknown = next(t for t in tasks if t["task_id"] == "unknown-task")
+
+        self.assertEqual(known["created_at"], "2026-09-02T00:00:00+00:00")
+        self.assertIsNone(known["started_at"])
+        self.assertIsNone(known["completed_at"])
+
+        # Unknown task (dispatched before this change or after restart) → all null
+        self.assertIsNone(unknown["created_at"])
+        self.assertIsNone(unknown["started_at"])
+        self.assertIsNone(unknown["completed_at"])
+
+
+class Trn89CrewTimestampTests(unittest.TestCase):
+    """TRN-89 Task 3 — last_task_at in crews list."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_dispatch_writes_last_task_at_to_registry(self) -> None:
+        """dispatch writes last_task_at to the crew's registry entry."""
+        reg = {"crews": {"demo": {"container": "gs-demo", "schedules": []}}}
+        save_calls = []
+
+        def fake_save(r):
+            import copy
+            save_calls.append(copy.deepcopy(r))
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-ts"}),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server.dispatch("do work", agent="ghost", crew_id="demo")
+
+        self.assertTrue(save_calls, "Expected _save_registry to be called")
+        saved = save_calls[-1]
+        self.assertIn("last_task_at", saved["crews"]["demo"])
+        self.assertIsNotNone(saved["crews"]["demo"]["last_task_at"])
+
+    def test_crews_includes_last_task_at_after_dispatch(self) -> None:
+        """crews() includes last_task_at in each crew entry (null if not present)."""
+        reg = {
+            "crews": {
+                "demo-with-task": {
+                    "container": "gs-demo",
+                    "status": "running",
+                    "composition": "spec-ops",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_task_at": "2026-09-02T00:00:00+00:00",
+                    "cookie": "c",
+                },
+                "demo-no-task": {
+                    "container": "gs-demo2",
+                    "status": "running",
+                    "composition": "spec-ops",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "cookie": "c",
+                },
+            }
+        }
+        with (
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
+            patch.object(server, "_crew_api", return_value=[]),
+            patch.object(lifecycle, "_crew_api", return_value=[]),
+            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
+            patch.object(lifecycle, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
+        ):
+            result = server.crews()
+
+        crew_map = {e["crew_id"]: e for e in result["crews"]}
+        self.assertEqual(crew_map["demo-with-task"]["last_task_at"], "2026-09-02T00:00:00+00:00")
+        self.assertIsNone(crew_map["demo-no-task"]["last_task_at"])
+
+
 if __name__ == "__main__":
     unittest.main()

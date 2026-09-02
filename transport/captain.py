@@ -345,26 +345,34 @@ def _read_all_mail_subjects(
         return {}
 
 
-def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[str]:
-    """Parse Subject: headers from Maildir files inside a Podman archive tar.
+def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[dict]:
+    """Parse Subject: and Date: headers from Maildir files inside a Podman archive tar.
 
     Iterates all tar members whose path component contains ``new/`` or ``cur/``
     (the two standard Maildir directories). For each regular file member,
     reads just the RFC 5322 header block using ``email.parser.BytesHeaderParser``
-    and extracts the ``Subject:`` header value. Returns a list of subject
-    strings (one per message). Empty mailboxes yield an empty list. Reading
-    never modifies the files.
+    and extracts the ``Subject:`` and ``Date:`` header values.
+
+    Returns a list of dicts ``{"subject": str, "received_at": str | None}`` —
+    one per message. Empty mailboxes yield an empty list. Reading never modifies
+    the files.
+
+    ``received_at`` is an ISO 8601 UTC string derived from the ``Date:`` header
+    using ``email.utils.parsedate_to_datetime``; ``None`` when the header is
+    absent or unparseable.
 
     Args:
         tar_bytes_or_stream: Either ``bytes`` or a file-like object as accepted
             by ``tarfile.open``.
     """
     import email.parser as _email_parser
+    import email.utils as _email_utils
     import io as _io
     import tarfile as _tarfile
     import posixpath as _posixpath
+    from datetime import timezone as _timezone
 
-    subjects: list[str] = []
+    subjects: list[dict] = []
     try:
         if isinstance(tar_bytes_or_stream, (bytes, bytearray)):
             fileobj: Any = _io.BytesIO(tar_bytes_or_stream)
@@ -387,8 +395,30 @@ def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[str]:
                     header_bytes = fobj.read()
                     msg = parser.parsebytes(header_bytes)
                     subject = msg.get("Subject", "")
-                    if subject:
-                        subjects.append(subject)
+                    if not subject:
+                        continue
+                    # TRN-89 task 2: parse Date header into received_at
+                    received_at: str | None = None
+                    date_header = msg.get("Date", "")
+                    if date_header:
+                        try:
+                            dt = _email_utils.parsedate_to_datetime(date_header)
+                            received_at = dt.astimezone(_timezone.utc).isoformat()
+                        except Exception:
+                            # Naive date with no timezone: treat as UTC
+                            try:
+                                dt = _email_utils.parsedate_to_datetime(date_header)
+                                if dt.tzinfo is None:
+                                    from datetime import timezone as _tz
+                                    dt = dt.replace(tzinfo=_tz.utc)
+                                    logger.warning(
+                                        "Mail Date header has no timezone, treating as UTC: %s",
+                                        date_header,
+                                    )
+                                received_at = dt.isoformat()
+                            except Exception:
+                                received_at = None
+                    subjects.append({"subject": subject, "received_at": received_at})
                 except Exception:
                     pass
     except Exception:
@@ -400,7 +430,7 @@ def _read_mail_subjects_archive(
     podman: PodmanClient,
     container: str,
     mailbox_path: str,
-) -> list[str]:
+) -> list[dict]:
     """Read subject lines from a Maildir mailbox via the Podman archive API.
 
     Works on both running and stopped containers — the archive API reads
@@ -414,9 +444,9 @@ def _read_mail_subjects_archive(
             (e.g. ``/var/mail/captain``).
 
     Returns:
-        List of Subject header strings from messages in ``new/`` and ``cur/``.
-        Returns an empty list on any archive API failure (container does not
-        exist, mailbox absent, etc.).
+        List of dicts ``{"subject": str, "received_at": str | None}`` from
+        messages in ``new/`` and ``cur/``. Returns an empty list on any archive
+        API failure (container does not exist, mailbox absent, etc.).
     """
     try:
         response = podman.container_archive_get(container, mailbox_path)
@@ -486,6 +516,20 @@ def _captain_standing_view(
         "status": job.get("last_status"),
         "result": job.get("last_result"),
     }
+
+    # TRN-89 task 4: read last_checkin_at from the crew's schedule entry
+    last_checkin_at: str | None = None
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            crew_entry = reg.get("crews", {}).get(crew_id, {})
+            for sched in crew_entry.get("schedules", []):
+                if sched.get("job_id") == job.get("id"):
+                    last_checkin_at = sched.get("last_checkin_at")
+                    break
+    except Exception:
+        pass
+
     return {
         "crew_id": crew_id,
         "action": action,
@@ -497,6 +541,7 @@ def _captain_standing_view(
         "last_run_ts": last_run["timestamp"],
         "last_status": last_run["status"],
         "last_result": last_run["result"],
+        "last_checkin_at": last_checkin_at,  # TRN-89 task 4
         "unread_mail": unread_mail,
         "mailbox": "captain@localhost",
         "unread_admiral_mail": unread_admiral_mail,
