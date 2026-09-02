@@ -2096,6 +2096,10 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             else:
                 _ui_host = f"http://localhost:{ui_port}"
             ui_url = f"{_ui_host}/"
+            # Add the UI port origin to CORS so the SPA's API calls are accepted.
+            container_env["KIROCREW_CORS_ORIGINS"] = (
+                f"{container_env['KIROCREW_CORS_ORIGINS']},{_ui_host}"
+            )
 
         podman.container_create(
             name=container,
