@@ -54,6 +54,29 @@ At startup, the transport also restarts the per-port uvicorn servers for any cre
 
 The transport stores the crew's session cookie (`mc_token_5476`) in `crews.json` at launch time (minted via `_mint_cookie`). The UI port proxy injects this as a `Set-Cookie` header on every proxied response, so the browser is automatically authenticated without going through a manual kiro-cli device auth flow. Without this, the gateway shows the "install kiro-cli" onboarding screen even though auth is already injected into the container's kiro-cli DB.
 
+**D6: WebSocket proxying — httpx-ws**
+
+The current `_proxy_asgi` ASGI callable ignores `scope["type"] == "websocket"` requests, returning nothing and causing uvicorn to send a 400/403 to the browser. The KiroCrew SPA requires a persistent WebSocket connection to `/api/ws` for real-time session updates — without it the gateway shows "offline".
+
+httpx does not support WebSocket connections. The correct solution is `httpx-ws` (`pip install httpx-ws`), which wraps httpx with WebSocket support via `aconnect_ws`. The proxy ASGI callable must handle both `scope["type"] == "http"` (existing path) and `scope["type"] == "websocket"` (new path).
+
+WebSocket proxy pattern using Starlette's `WebSocket` and `httpx-ws`:
+1. Accept the incoming WS connection from the browser (`websocket.accept()`)
+2. Open an outbound WS connection to the upstream crew gateway via `aconnect_ws`
+3. Bidirectionally pump messages between the two connections concurrently using `asyncio.gather`
+4. Forward the session cookie in the upstream connection request headers
+5. Handle disconnection from either side gracefully
+
+The daemon thread has its own event loop, so `aconnect_ws` runs in the correct context without conflicts with the main transport event loop.
+
+`httpx-ws` must be added to `transport/requirements.txt` (pin to current latest, `0.7.0`).
+
+**D7: `/api/instances` 403 — KiroCrew feature flag, not auth failure**
+
+Investigation showed that `/api/instances` returns HTTP 403 but with body `{"error": "instances feature is disabled (set instances.enabled=true)"}`. This is a KiroCrew feature flag, not a cookie auth failure. The session cookie is being forwarded and accepted correctly — other authenticated endpoints (`/api/agents`, `/api/sessions`) return 200.
+
+The 403 on `/api/instances` is expected behaviour from the KiroCrew gateway. The "Gateway offline" status in the browser is caused entirely by the WebSocket failure (D6), not by this 403. No action required for `/api/instances`.
+
 ## Risks / Trade-offs
 
 - **Many open ports** → The UI port range (default 64058–64107) must be open in `ufw` and accessible via Tailscale/firewall. This is 50 ports, but they're all on the same host and protected by the transport's `GA_API_KEY` auth. Acceptable.
