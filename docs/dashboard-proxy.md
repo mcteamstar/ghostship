@@ -58,14 +58,16 @@ For a cloud deployment with a security group, open the equivalent port range inb
 
 ## Security
 
-**The dashboard proxy is not currently gated by `GA_API_KEY`.** The transport's bearer-token auth applies to MCP tool calls (port 64057 / the main transport port), but browser requests to the UI ports do not carry an `Authorization` header.
+> ⚠️ **Dashboard ports are unauthenticated.** Anyone who can reach the port can open the crew UI. Restrict access at the network layer (Tailscale, firewall, security group) until TRN-91 (cookie-gated login page) is implemented.
+
+**The dashboard proxy is not currently gated by `GA_API_KEY`.** The transport's bearer-token auth applies to MCP tool calls (port 64057 / the main transport port), but browser requests to the UI ports do not carry an `Authorization` header — and there is no other credential check.
 
 What protects the UI ports:
 
-- **Network layer** — on a Tailscale deployment, only devices on your tailnet can reach the host. This is the primary access control.
-- **Session cookie** — the injected `mc_token_5476` cookie is scoped to the crew's gateway and signed. A visitor without the cookie sees an onboarding screen and cannot interact with the crew. The cookie is set HttpOnly and SameSite=Lax.
+- **Network layer** — on a Tailscale deployment, only devices on your tailnet can reach the host. This is the primary (and currently only) access control.
+- **Session cookie** — the injected `mc_token_5476` cookie is scoped to the crew's gateway and signed. A visitor without the cookie sees an onboarding screen and cannot interact with the crew. The cookie is set HttpOnly and SameSite=Lax. Note: the cookie is set on every response, so any visitor who loads the page receives it.
 
-**Recommendation:** For any deployment reachable from the public internet, set `GA_DASHBOARD_PORT_ENABLED=false` or restrict the port range at your firewall/security group until per-port bearer-token auth is implemented.
+**Recommendation:** Only enable `GA_DASHBOARD_PORT_ENABLED=true` on deployments protected by Tailscale or a network-level firewall. For any deployment reachable from the public internet, set `GA_DASHBOARD_PORT_ENABLED=false` until TRN-91 is shipped.
 
 ## Port persistence across restarts
 
