@@ -193,5 +193,6 @@ Registered as `ghostship`:
 - [docs/agents.md](docs/agents.md) — the six agent personas, what each owns in the OpenSpec workflow, and how that's enforced (and isn't)
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
+- [docs/dashboard-proxy.md](docs/dashboard-proxy.md) — per-crew browser UI proxy, port allocation, security model
 - [docs/forks.md](docs/forks.md) — fork model: private/internal/public visibility, keeping your fork current with upstream
 - [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations
