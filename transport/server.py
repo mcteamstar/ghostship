@@ -656,8 +656,6 @@ _ui_port_crew: dict[int, str] = {}  # port → crew_id
 # Set at startup to the fully-wrapped ASGI app so per-port servers use the
 # same middleware stack (auth, rate limiting, security headers).
 _ui_app: Any = None
-# Main asyncio event loop, set inside _main() so thread-safe scheduling works.
-_main_event_loop: "asyncio.AbstractEventLoop | None" = None
 
 
 def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
@@ -705,27 +703,17 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
     srv = uvicorn.Server(config)
     _ui_port_servers[port] = srv
 
-    async def _serve() -> None:
+    def _run_in_thread() -> None:
+        """Run the per-port uvicorn server in its own thread+event loop."""
         try:
-            await srv.serve()
+            asyncio.run(srv.serve())
         except Exception as exc:
             logger.warning("UI port server %d exited: %s", port, exc)
 
-    try:
-        # If there's a running event loop on this thread, we're in an async
-        # context (e.g. startup) — use create_task directly.
-        running = asyncio.get_running_loop()
-        running.create_task(_serve())
-        logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
-    except RuntimeError:
-        # No running loop on this thread — we're in an executor thread (MCP
-        # tool handler). Schedule on the main event loop threadsafe.
-        loop = _main_event_loop
-        if loop is not None:
-            asyncio.run_coroutine_threadsafe(_serve(), loop)
-            logger.info("TRN-80: started UI port server on %d for crew %s (threadsafe)", port, crew_id)
-        else:
-            logger.warning("TRN-80: no event loop; UI port server %d not started", port)
+    t = threading.Thread(target=_run_in_thread, daemon=True,
+                         name=f"ui-port-{port}")
+    t.start()
+    logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
 
 
 def _stop_ui_port_server(port: int) -> None:
@@ -3679,10 +3667,6 @@ if __name__ == "__main__":
     _ui_app = app
 
     async def _main() -> None:
-        # Capture the running event loop so thread-safe scheduling works for
-        # per-port UI servers started from MCP tool handler threads.
-        global _main_event_loop  # noqa: PLW0603
-        _main_event_loop = asyncio.get_running_loop()
         # TRN-80: restore per-port UI servers for crews that had a ui_port
         # in the registry before this transport restart.
         if GA_UI_PORT_ENABLED and _ui_app is not None:
