@@ -753,6 +753,16 @@ async def _handle_ui_port_proxy(request: Request, crew_id: str) -> Response:
         k: v for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() != "host"
     }
+    # Inject the stored session cookie so the browser authenticates automatically.
+    # The crew's mc_token_5476 cookie is stored in the registry at launch time.
+    stored_cookie = crew.get("cookie", "")
+    if stored_cookie:
+        # Merge with any cookie the browser already sent
+        existing = forward_headers.get("cookie", "")
+        cookie_header = f"mc_token_{CREW_GATEWAY_PORT}={stored_cookie}"
+        if existing:
+            cookie_header = f"{existing}; {cookie_header}"
+        forward_headers["cookie"] = cookie_header
     try:
         import httpx as _httpx
         async with _httpx.AsyncClient() as _client:
@@ -768,11 +778,22 @@ async def _handle_ui_port_proxy(request: Request, crew_id: str) -> Response:
                     if k.lower() not in _HOP_BY_HOP_HEADERS
                 }
                 body = await upstream_resp.aread()
-        return Response(
+        resp = Response(
             content=body,
             status_code=upstream_resp.status_code,
             headers=response_headers,
         )
+        # Set the session cookie on the browser so it authenticates on subsequent
+        # requests (e.g. /api/auth/refresh, WebSocket handshake).
+        if stored_cookie:
+            resp.set_cookie(
+                f"mc_token_{CREW_GATEWAY_PORT}",
+                stored_cookie,
+                path="/",
+                httponly=True,
+                samesite="lax",
+            )
+        return resp
     except Exception as exc:
         logger.warning("UI port proxy error for crew %s: %s", crew_id, exc)
         return PlainTextResponse(f"Proxy error: {exc}", status_code=502)
