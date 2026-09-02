@@ -23,8 +23,29 @@ The documentation SHALL describe the `GA_HOST_URL` variable, its fallback behavi
 - **WHEN** a user reads `docs/configuration.md`
 - **THEN** they SHALL find an entry for `GA_HOST_URL` with description, default, and example values
 
-### Requirement: Crew UI reverse proxy
-The transport SHALL expose `GET /crews/{crew_id}/ui` and `GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/ui/{path:path}` routes that reverse-proxy all matching requests to `http://gs-{crew_id}:5476/{path}` on the crew's internal gateway. The crew SHALL be auto-woken via the existing restart mechanism before any proxied request is forwarded. The transport SHALL forward the original request method, path, query string, and all headers (excluding `host`) to the upstream gateway. Before forwarding, the transport SHALL remove every raw query-string byte in the ASCII control ranges `0x00`–`0x1F` and `0x7F`, while preserving the order and value of all remaining bytes. Percent-encoded query text SHALL NOT be decoded or altered by this sanitisation. Response status, headers, and body SHALL be streamed back to the caller without modification. The route SHALL NOT inject the internal session cookie; callers interact with the crew UI as a fresh browser session, including any login page the crew gateway serves.
+### Requirement: Crew UI access
+
+The transport SHALL serve crew UI access via dedicated per-port listeners. Each crew launched with `dashboard=True` gets a port in the range `[GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE)`. All requests on that port SHALL be reverse-proxied by the transport to the crew gateway over the internal ghost-academy Podman network. WebSocket upgrade requests SHALL be bidirectionally proxied via `httpx-ws`. Crew containers do not bind any host ports. Full behavior specified in `crew-ui-spa-routing/spec.md`.
+
+#### Scenario: Requests proxied to crew gateway via port
+- **WHEN** a browser request arrives on an allocated dashboard port
+- **THEN** the transport reverse-proxies it to `http://gs-{crew_id}:5476/{path}` over the internal Podman network
+
+### Requirement: Transport origin added to crew CORS origins at start
+
+The transport SHALL inject its own public origin (the base of `GA_HOST_URL`, or `http://localhost:{PORT}` when `GA_HOST_URL` is unset) into the `KIROCREW_CORS_ORIGINS` environment variable when starting a crew container. This ensures the crew gateway accepts browser requests that originate from the transport's public URL.
+
+#### Scenario: CORS origin injected when GA_HOST_URL is set
+- **WHEN** a crew container is started and `GA_HOST_URL=https://academy.example.com`
+- **THEN** `KIROCREW_CORS_ORIGINS` passed to the container includes `https://academy.example.com`
+
+#### Scenario: CORS origin injected when GA_HOST_URL is unset
+- **WHEN** a crew container is started and `GA_HOST_URL` is not set
+- **THEN** `KIROCREW_CORS_ORIGINS` passed to the container includes `http://localhost:{PORT}`
+
+#### Scenario: Existing CORS origins are preserved
+- **WHEN** `KIROCREW_CORS_ORIGINS` is already set (e.g. from a crew composition config)
+- **THEN** the transport appends its public origin to the existing value rather than replacing it
 
 #### Scenario: UI proxy reaches a running crew
 - **WHEN** `GET /crews/my-crew/ui/` is requested and the crew container is running

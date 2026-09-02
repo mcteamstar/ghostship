@@ -9,6 +9,8 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ### Requirement: Crew creation via launch
 The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew-type registry based on the optional `composition` parameter (defaulting to `"kirocrew"`). At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
 
+`launch` gains a `dashboard` parameter (default `false`). When `dashboard=true` and `GA_DASHBOARD_PORT_ENABLED=true`, `launch` allocates a port from the configured range, starts a transport-side listener, injects the session cookie and CORS origins, stores `dashboard_port` in the registry, and returns `dashboard_url` in the response. When `dashboard=false` (default), no port is allocated and `dashboard_url` is `null`.
+
 #### Scenario: First launch for a new crew_id
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
 - **THEN** a new crew container and volumes are created and the crew is registered as "running"
@@ -42,7 +44,7 @@ The system SHALL create an isolated crew container with a dedicated workspace vo
 - **THEN** the system stores `"unknown"` as `crew_image_version` in the registry and proceeds normally — the missing label is not a launch failure
 
 ### Requirement: Crew teardown via nuke
-The system SHALL require explicit confirmation before tearing down a crew, and SHALL remove the crew's container and both volumes completely once confirmed. The system SHALL NOT frame `nuke` as routine cleanup or a normal post-task step; its documentation and tooling aliases SHALL communicate that it is a destructive workspace teardown intended only when the operator wants to permanently discard the workspace.
+The system SHALL require explicit confirmation before tearing down a crew, and SHALL remove the crew's container and both volumes completely once confirmed. When `GA_DASHBOARD_PORT_ENABLED=true` and the crew has a `dashboard_port` assigned, `nuke` SHALL stop the listener and release the port before removing the registry entry. The system SHALL NOT frame `nuke` as routine cleanup or a normal post-task step; its documentation and tooling aliases SHALL communicate that it is a destructive workspace teardown intended only when the operator wants to permanently discard the workspace.
 
 #### Scenario: Nuke without confirmation
 - **WHEN** `nuke` is called for an existing `crew_id` without `confirm=True`
@@ -63,6 +65,30 @@ The system SHALL require explicit confirmation before tearing down a crew, and S
 #### Scenario: Nuke is not depicted as the lifecycle endpoint
 - **WHEN** a user reads the README's SDD lifecycle diagram
 - **THEN** the diagram SHALL NOT show `nuke` as the final step; the diagram SHALL end at `evac` or an equivalent non-destructive operation, and a note below SHALL explain that `nuke` is for intentional workspace destruction, not routine cleanup
+
+### Requirement: REST API to retrofit or remove a dashboard
+
+`POST /crews/{crew_id}/dashboard` SHALL allocate a UI port and start a listener for an already-running crew (same behaviour as `launch(dashboard=True)`). Returns `{"dashboard_url": "..."}` on success, or a no-op returning the existing `dashboard_url` if the crew already has a dashboard active.
+
+`DELETE /crews/{crew_id}/dashboard` SHALL stop the listener and release the port for a running crew. Returns `{"dashboard_url": null}` on success, or a no-op returning `{"dashboard_url": null}` if no dashboard is active.
+
+Both endpoints respect `GA_API_KEY` auth and `GA_DASHBOARD_PORT_ENABLED`.
+
+#### Scenario: POST /dashboard on a running crew
+- **WHEN** `POST /crews/my-crew/dashboard` is called for a crew without a `dashboard_port`
+- **THEN** a port is allocated, a listener is started, and the response includes `dashboard_url`
+
+#### Scenario: DELETE /dashboard on a running crew
+- **WHEN** `DELETE /crews/my-crew/dashboard` is called
+- **THEN** the listener is stopped, the port released, and `dashboard_url` becomes null
+
+#### Scenario: DELETE /dashboard when no dashboard is active
+- **WHEN** `DELETE /crews/my-crew/dashboard` is called and the crew has no `dashboard_port`
+- **THEN** the response returns `{"dashboard_url": null}` as a no-op — no error
+
+#### Scenario: POST /dashboard when already active
+- **WHEN** `POST /crews/my-crew/dashboard` is called and the crew already has a `dashboard_port`
+- **THEN** the existing `dashboard_url` is returned with no change
 
 ### Requirement: Nuke dry-run reports scheduled jobs
 The `nuke` dry-run response (called without `confirm=True`) SHALL include the count and names of all scheduled jobs registered for the crew in the transport registry, so the operator can see what recurring work will be discarded before confirming teardown.
