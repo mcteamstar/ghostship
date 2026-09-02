@@ -389,10 +389,17 @@ longer exposes the Admiral mail-signing secret (see TRN-53).
 
 ### Storage
 
-Both `admiral_secret` and `policy_signing_key` are stored in plaintext in
-`crews.json` (the transport registry at `$TRANSPORT_DATA_DIR/crews.json`,
-default `/data/crews.json`). `policy_signing_key` is only written to the
-registry when policy injection succeeds.
+After `admiral_secret` and `policy_signing_key` are injected into the crew
+container, `crews.json` stores only a non-reversible identifier for each secret
+rather than the plaintext value. The identifiers use the scheme
+`"sha256:<hex[:16]>"` (a SHA-256 digest of the secret, truncated to 64 bits
+and prefixed with a label). These identifiers are sufficient for log correlation
+("which crew used this secret fingerprint?") but cannot be used to replay or
+derive the original secrets. The plaintext values exist only in memory for the
+duration of the injection call and are never written to disk.
+
+`policy_signing_key_id` is only written to the registry when policy injection
+succeeds.
 
 ### Threat model
 
@@ -401,10 +408,11 @@ registry when policy injection succeeds.
   `GA_API_KEY` — operator-level access to the host is assumed trusted. No
   additional hardening is required.
 - **Multi-operator:** If multiple operators share access to the host's data
-  volume (or can run `podman inspect ga-transport`), any of them can read
-  `admiral_secret` from `crews.json` and forge Admiral standing orders to any
-  running crew. For multi-operator deployments, `DATA_DIR` should have `0700`
-  permissions and `podman inspect` access should be restricted.
+  volume (or can run `podman inspect ga-transport`), they can read the
+  identifier fingerprints from `crews.json`, but these are non-reversible and
+  cannot be used to forge Admiral standing orders or policy signatures. For
+  multi-operator deployments, `DATA_DIR` should have `0700` permissions and
+  `podman inspect` access should be restricted.
 - **Agent-level isolation:** Agent processes inside the crew container can
   read `admission_policy.json`, which carries `policy_signing_key` in its
   `trust_keys` field (a hard dependency of the governance API). As of TRN-53,
@@ -413,5 +421,3 @@ registry when policy injection succeeds.
   Admiral standing orders; it can only forge security policy signatures, which
   is a lower-impact capability in the current single-operator, isolated-container
   use case.
-- **Future hardening:** Encrypting secrets at rest in `crews.json`, or storing
-  them separately with tighter file permissions, is tracked in TRN-16.

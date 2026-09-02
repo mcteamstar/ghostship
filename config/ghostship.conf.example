@@ -117,6 +117,8 @@
 
 # ── Gateway ───────────────────────────────────────────────────────────────────
 # TTL for the KiroCrew gateway token minted for each crew.
+# Accepted format: <N>[s|m|h|d] where N is a positive integer, e.g. 24h, 3600s, 7d, 30m.
+# Invalid values are rejected at startup with a WARNING; the default 24h is used instead.
 # KC_GATEWAY_TOKEN_TTL=24h
 
 # ── Transport TLS / security headers (TRN-70) ─────────────────────────────────

@@ -240,6 +240,14 @@ def _append_captain_mail(
         with _registry_lock:
             reg = _load_registry()
             crew_entry = reg["crews"].get(crew_id, {})
+            # TRN-93 audit: this is a read-back of admiral_secret from crews.json.
+            # After TRN-93, crews.json stores only admiral_secret_id (a non-reversible
+            # identifier) and no longer contains the plaintext admiral_secret. This
+            # read-back will return None for crews launched after TRN-93, causing
+            # captain standing orders to be sent unsigned. A follow-on change is needed
+            # to persist the signing secret separately (e.g. in a Podman secret or
+            # encrypted field) so this path can retrieve it. Until then, standing orders
+            # are sent without an X-Admiral-Sig header for TRN-93+ crews.
             signing_secret = crew_entry.get("admiral_secret")
             supersedes_id = crew_entry.get("last_captain_message_id")
 

@@ -2479,6 +2479,7 @@ def supply(
     else:
         curl_example = f'curl -X POST "{url}" --data-binary @./your-file'
 
+    _security.audit_auth_event(action="presign_supply", outcome="issued", source=None)
     return {
         "crew_id": crew_id,
         "path": clean,
@@ -2525,6 +2526,7 @@ def evac(
         return {"error": str(e)}
 
     url = _sign_file_url(crew_id, clean, ref, bundle)
+    _security.audit_auth_event(action="presign_evac", outcome="issued", source=None)
     result = {
         "crew_id": crew_id,
         "path": path,

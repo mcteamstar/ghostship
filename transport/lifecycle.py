@@ -13,6 +13,7 @@ cycle — lifecycle can call files freely).
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -168,6 +169,15 @@ PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 
 # /mcp catalogue dir for mcpServers resolution
 MCP_CATALOGUE_DIR = Path("/mcp")
+
+
+def _secret_identifier(value: str) -> str:
+    """Return a non-reversible opaque label for a secret value.
+
+    Returns ``"sha256:" + hashlib.sha256(value.encode()).hexdigest()[:16]``.
+    Useful for log correlation without storing the plaintext secret.
+    """
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()[:16]
 
 # ── Lifecycle globals ─────────────────────────────────────────────────────────
 
@@ -1209,12 +1219,11 @@ def _finish_crew_setup(
     admiral_secret = secrets.token_hex(32)
     policy_signing_key = secrets.token_hex(32)
     try:
-        podman.container_exec_checked(
+        podman.container_exec_stdin(
             container,
-            [
-                "python3", f"{SCRIPTS_DIR}/inject_admiral_secret.py",
-                f"{KIRO_CREW_DIR}/.admiral_secret", admiral_secret,
-            ],
+            ["python3", f"{SCRIPTS_DIR}/inject_admiral_secret.py",
+             f"{KIRO_CREW_DIR}/.admiral_secret"],
+            admiral_secret.encode(),
         )
         logger.info("Injected admiral signing secret for %s", container)
     except Exception as e:
@@ -1292,12 +1301,14 @@ def _finish_crew_setup(
             "composition": composition,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_used": time.time(),
-            "admiral_secret": admiral_secret,
+            # TRN-93: store non-reversible identifiers only — plaintext secrets
+            # are not needed after injection and must not persist in crews.json.
+            "admiral_secret_id": _secret_identifier(admiral_secret),
             "crew_image_version": crew_image_version,
         }
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
-            crew_entry["policy_signing_key"] = policy_signing_key
+            crew_entry["policy_signing_key_id"] = _secret_identifier(policy_signing_key)
         reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 

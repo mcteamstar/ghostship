@@ -178,8 +178,10 @@ def _verify_file_token(
     try:
         exp = int(expires)
     except (ValueError, TypeError):
+        _security.audit_auth_event(action="verify_file_token", outcome="invalid", source=None)
         return False
     if time.time() > exp:
+        _security.audit_auth_event(action="verify_file_token", outcome="expired", source=None)
         return False
     # Unified payload format: {crew_id}:{path}:{expires}:{method}:{ref}:{flags}
     # flags is a sorted colon-joined set of active boolean options (bundle, unpack).
@@ -193,7 +195,11 @@ def _verify_file_token(
         flags = ":".join(sorted(f for f in ["bundle"] if bundle))
         payload = f"{crew_id}:{path}:{exp}:GET:{ref or ''}:{flags}"
     expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, sig)
+    if hmac.compare_digest(expected, sig):
+        _security.audit_auth_event(action="verify_file_token", outcome="valid", source=None)
+        return True
+    _security.audit_auth_event(action="verify_file_token", outcome="invalid", source=None)
+    return False
 
 
 def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool = False) -> str:

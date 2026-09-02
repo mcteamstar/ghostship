@@ -2837,17 +2837,17 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
 
     def test_admiral_secret_injected_before_container_restart(self) -> None:
         """6.3 (trn-36 2.1): admiral secret exec call occurs before container_stop/start."""
-        exec_calls: list[list[str]] = []
+        stdin_calls: list[tuple[int, list[str]]] = []
         stop_calls: list[int] = []
         start_calls: list[int] = []
         call_counter: list[int] = [0]
 
         podman = Mock()
 
-        def track_exec_checked(container: str, cmd: list[str]) -> str:
+        def track_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
             call_counter[0] += 1
-            exec_calls.append((call_counter[0], cmd))
-            return "ok"
+            stdin_calls.append((call_counter[0], cmd))
+            return "admiral secret injected"
 
         def track_stop(name: str) -> None:
             call_counter[0] += 1
@@ -2857,7 +2857,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             call_counter[0] += 1
             start_calls.append(call_counter[0])
 
-        podman.container_exec_checked = Mock(side_effect=track_exec_checked)
+        podman.container_exec_stdin = Mock(side_effect=track_exec_stdin)
+        podman.container_exec_checked = Mock(return_value="ok")
         podman.container_stop = Mock(side_effect=track_stop)
         podman.container_start = Mock(side_effect=track_start)
         podman.container_exec = Mock(return_value="ready")
@@ -2895,14 +2896,14 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 )
 
         self.assertEqual(result["status"], "ready")
-        # Find the admiral secret injection call (first exec_checked call whose
-        # command contains the secret injection marker)
+        # Find the admiral secret injection call (first exec_stdin call whose
+        # command contains inject_admiral_secret.py)
         secret_call_order = None
-        for order, cmd in exec_calls:
-            if len(cmd) >= 3 and "admiral_secret" in cmd[2]:
+        for order, cmd in stdin_calls:
+            if any("admiral_secret" in part for part in cmd):
                 secret_call_order = order
                 break
-        self.assertIsNotNone(secret_call_order, "Admiral secret injection exec call not found")
+        self.assertIsNotNone(secret_call_order, "Admiral secret injection exec_stdin call not found")
         # The container restart (first stop) must come after the secret injection
         first_stop_order = stop_calls[0] if stop_calls else None
         self.assertIsNotNone(first_stop_order, "Expected at least one container_stop call")
@@ -2918,14 +2919,15 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
 
         podman = Mock()
 
-        def capture_exec_checked(container: str, cmd: list[str]) -> str:
-            if len(cmd) >= 3 and cmd[0] == "python3" and cmd[1].endswith(
+        def capture_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
+            if len(cmd) >= 2 and cmd[0] == "python3" and cmd[1].endswith(
                 "/inject_admiral_secret.py"
             ):
                 captured_cmds.append(cmd)
-            return "ok"
+            return "admiral secret injected"
 
-        podman.container_exec_checked = Mock(side_effect=capture_exec_checked)
+        podman.container_exec_stdin = Mock(side_effect=capture_exec_stdin)
+        podman.container_exec_checked = Mock(return_value="ok")
         podman.container_stop = Mock()
         podman.container_start = Mock()
         podman.container_exec = Mock(return_value="ready")
@@ -2966,8 +2968,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             len(captured_cmds), 1, "Expected exactly one admiral secret injection call"
         )
         cmd = captured_cmds[0]
-        # The call passes the secret file path as argv; the fsync durability
-        # guarantee now lives in the baked inject_admiral_secret.py script.
+        # The call passes the secret file path as argv; secret delivered via stdin.
+        # argv[1] is the destination path (e.g. /home/kirocrew/.kiro/crew/.admiral_secret)
         self.assertTrue(cmd[2].endswith("/.admiral_secret"))
         script_path = (
             Path(server.__file__).resolve().parent

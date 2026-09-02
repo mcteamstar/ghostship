@@ -113,6 +113,14 @@ class ContainerRuntime(ABC):
     ) -> str: ...
 
     @abstractmethod
+    def container_exec_stdin(
+        self, container: str, cmd: list[str], stdin_data: bytes
+    ) -> str:
+        """Run a one-shot exec, write stdin_data to the process's stdin, wait for exit,
+        and return stdout as a string."""
+        ...
+
+    @abstractmethod
     def container_archive_put(
         self, name: str, workspace_path: str, tar_body: bytes
     ) -> None: ...
@@ -183,6 +191,10 @@ class PodmanClient(ContainerRuntime):
                  "dest": KIRO_WORKSPACE_ROOT},
                 {"name": home_volume, "dest": "/home/kirocrew"},
             ],
+            # TRN-93: prevent privilege escalation via setuid binaries and drop
+            # the two highest-risk capabilities for crew containers.
+            "no_new_privileges": True,
+            "cap_drop": ["CAP_NET_RAW", "CAP_SYS_ADMIN"],
         }
         return self._req("POST", "/libpod/containers/create", json=spec)
 
@@ -373,6 +385,73 @@ class PodmanClient(ContainerRuntime):
             f"Podman archive GET failed with HTTP {response.status_code}{suffix}"
         )
 
+    def container_exec_stdin(
+        self,
+        container: str,
+        cmd: list[str],
+        stdin_data: bytes,
+    ) -> str:
+        """Run a one-shot exec, write stdin_data to the process's stdin, wait for exit,
+        and return stdout as a string.
+
+        Uses the Podman exec API with AttachStdin=True, then hijacks the connection
+        via a raw Unix socket to write stdin_data before closing the write side.
+        The response is demuxed using the existing _demux helper.
+        """
+        spec: dict = {
+            "AttachStdin": True,
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Tty": False,
+            "Cmd": cmd,
+        }
+        r = self._req("POST", f"/libpod/containers/{container}/exec", json=spec)
+        exec_id = r["Id"]
+
+        # Open a raw Unix socket for hijacked stdin/stdout communication.
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(self._sock_path)
+
+        body = json.dumps({"Detach": False}).encode()
+        request_line = f"POST /v4.0.0/libpod/exec/{exec_id}/start HTTP/1.1\r\n"
+        headers = (
+            "Host: d\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: Upgrade\r\n"
+            "Upgrade: tcp\r\n"
+            "\r\n"
+        )
+        sock.sendall((request_line + headers).encode() + body)
+
+        # Read until end of HTTP response headers (the 101 Switching Protocols).
+        response_buf = bytearray()
+        while b"\r\n\r\n" not in response_buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("Socket closed before exec upgrade completed")
+            response_buf.extend(chunk)
+
+        # Write stdin_data then shut down the write side so the process sees EOF.
+        try:
+            sock.sendall(stdin_data)
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+        # Read all remaining output from the process.
+        output_buf = bytearray()
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                output_buf.extend(chunk)
+        finally:
+            sock.close()
+
+        return self._demux(bytes(output_buf))
+
     def container_exec_checked(
         self,
         name: str,
@@ -490,6 +569,9 @@ class PodmanClient(ContainerRuntime):
                     "options": ["ro"],
                 },
             ],
+            # TRN-93: prevent privilege escalation and drop high-risk capabilities.
+            "no_new_privileges": True,
+            "cap_drop": ["CAP_NET_RAW", "CAP_SYS_ADMIN"],
         }
 
         created = False
