@@ -350,7 +350,10 @@ The `admiral_secret` is written to one place:
 
 1. **`.admiral_secret` file** (mode `0600`) — read by `verify-admiral-sig` to
    verify Admiral mail signatures. This file is readable only by the
-   `kirocrew` user inside the container.
+   `kirocrew` user inside the container. The secret is delivered to the
+   injection script over **stdin** (TRN-93), never as a `podman exec`
+   argument, so it never appears in the exec argument list or in
+   `/proc/<pid>/cmdline` on the host.
 
 A separate `policy_signing_key` (also a random 32-byte hex secret) is
 generated at crew creation and used exclusively for policy signing:
@@ -395,8 +398,12 @@ rather than the plaintext value. The identifiers use the scheme
 `"sha256:<hex[:16]>"` (a SHA-256 digest of the secret, truncated to 64 bits
 and prefixed with a label). These identifiers are sufficient for log correlation
 ("which crew used this secret fingerprint?") but cannot be used to replay or
-derive the original secrets. The plaintext values exist only in memory for the
-duration of the injection call and are never written to disk.
+derive the original secrets. The `admiral_secret` plaintext is additionally
+persisted (mode `0600`) to `DATA_DIR/secrets/<crew_id>` so the transport can
+sign Captain standing orders after launch — but it is never stored in
+`crews.json`. The `policy_signing_key` plaintext is not persisted to disk on
+the host at all beyond the in-container `admission_policy.json`; only its
+identifier reaches the registry.
 
 `policy_signing_key_id` is only written to the registry when policy injection
 succeeds.

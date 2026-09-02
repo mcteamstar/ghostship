@@ -4,7 +4,9 @@ Each crew has a KiroCrew gateway UI — a full chat and task management interfac
 
 ## How it works
 
-When a crew is launched, the transport allocates a dedicated port from a configurable range (default `64058–64107`) and starts a lightweight reverse proxy on that port. All requests on that port are forwarded to the crew's internal gateway (`http://gs-{crew_id}:5476`) over the ghost-academy Podman network.
+Dashboards are **opt-in**. Crews are headless by default: `launch(crew_id)` allocates no port and returns no `dashboard_url`. To get a dashboard, launch with `dashboard=True` (and `GA_DASHBOARD_PORT_ENABLED=true`, the default). You can also attach or detach a dashboard after launch via the REST API (see [Managing dashboard allocation after launch](#managing-dashboard-allocation-after-launch)).
+
+When a dashboard is requested, the transport allocates a dedicated port from a configurable range (default `64058–64107`) and starts a lightweight reverse proxy on that port. All requests on that port are forwarded to the crew's internal gateway (`http://gs-{crew_id}:5476`) over the ghost-academy Podman network.
 
 ```
 Browser → host:64058
@@ -22,7 +24,7 @@ Key properties:
 
 ## The `dashboard_url`
 
-`launch` returns a `dashboard_url` in its response:
+When launched with `dashboard=True`, `launch` returns a `dashboard_url` in its response:
 
 ```json
 {
@@ -32,7 +34,27 @@ Key properties:
 }
 ```
 
-`crews` also includes `dashboard_url` per crew (null for crews launched before this feature or when `GA_DASHBOARD_PORT_ENABLED=false`).
+A crew launched headless (the default) has no `dashboard_url` in its `launch` response.
+
+`crews` also includes `dashboard_url` per crew (null for crews launched headless, launched before this feature, or when `GA_DASHBOARD_PORT_ENABLED=false`).
+
+## Managing dashboard allocation after launch
+
+A headless crew can be given a dashboard later — and a dashboard can be released — through two REST endpoints on the transport port. Both require the `Authorization: Bearer <key>` header when `GA_API_KEY` is set, like all other transport routes.
+
+**`POST /crews/{crew_id}/dashboard`** — allocate a UI port, start the proxy listener, and store `dashboard_port` in the registry. Returns `{"dashboard_url": "..."}`. No-op if the crew already has a dashboard — returns the existing `dashboard_url`.
+
+```bash
+curl -sX POST http://localhost:64057/crews/my-crew/dashboard | jq
+# → { "dashboard_url": "http://localhost:64058/" }
+```
+
+**`DELETE /crews/{crew_id}/dashboard`** — stop the proxy listener, release the port, and clear `dashboard_port` from the registry. Returns `{"dashboard_url": null}`. No-op (also returns `{"dashboard_url": null}`) if the crew has no dashboard.
+
+```bash
+curl -sX DELETE http://localhost:64057/crews/my-crew/dashboard | jq
+# → { "dashboard_url": null }
+```
 
 ## Configuration
 
@@ -84,6 +106,8 @@ Under the hood, each UI port runs a `uvicorn` server in a daemon thread with its
 5. Sets `Set-Cookie: mc_token_5476=...` on the response so the browser persists the session
 
 This means each page load — including sub-routes and hard reloads — carries the correct session.
+
+**WebSocket proxying.** The same per-port proxy also handles WebSocket upgrades: the handler detects a `websocket` scope, opens an upstream connection to the crew gateway via `httpx-ws` (`aconnect_ws`), and bidirectionally relays text and binary frames between the browser and the gateway until either side disconnects. This is what makes the KiroCrew dashboard's real-time features (live task/chat streaming) work through the proxy, not just plain HTTP request/response.
 
 ## Limitations
 
