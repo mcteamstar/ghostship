@@ -656,13 +656,16 @@ _ui_port_crew: dict[int, str] = {}  # port → crew_id
 # Set at startup to the fully-wrapped ASGI app so per-port servers use the
 # same middleware stack (auth, rate limiting, security headers).
 _ui_app: Any = None
+# Main asyncio event loop, set inside _main() so thread-safe scheduling works.
+_main_event_loop: "asyncio.AbstractEventLoop | None" = None
 
 
 def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
-    """Start a uvicorn server on *port* for *crew_id* in the running event loop.
+    """Start a uvicorn server on *port* for *crew_id*.
 
-    Registers the server in ``_ui_port_servers`` and the crew mapping in
-    ``_ui_port_crew``. No-op if already started.
+    Safe to call from an executor thread (MCP tool handlers run in threads).
+    Schedules the server coroutine on the main event loop via
+    ``_main_event_loop``. No-op if already started.
     """
     if port in _ui_port_servers:
         return
@@ -677,13 +680,18 @@ def _start_ui_port_server(port: int, crew_id: str, app: Any) -> None:
         except Exception as exc:
             logger.warning("UI port server %d exited: %s", port, exc)
 
-    try:
-        loop = asyncio.get_event_loop()
-        loop.create_task(_serve())
+    # MCP tool handlers run in executor threads — schedule on the main loop.
+    loop = _main_event_loop
+    if loop is not None and loop.is_running():
+        asyncio.run_coroutine_threadsafe(_serve(), loop)
         logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
-    except RuntimeError:
-        # No running event loop — called outside asyncio context (e.g. tests)
-        logger.warning("TRN-80: no event loop; UI port server %d not started", port)
+    else:
+        # Fallback for tests or direct asyncio.run context.
+        try:
+            asyncio.get_running_loop().create_task(_serve())
+            logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
+        except RuntimeError:
+            logger.warning("TRN-80: no event loop; UI port server %d not started", port)
 
 
 def _stop_ui_port_server(port: int) -> None:
@@ -3637,6 +3645,10 @@ if __name__ == "__main__":
     _ui_app = app
 
     async def _main() -> None:
+        # Capture the running event loop so thread-safe scheduling works for
+        # per-port UI servers started from MCP tool handler threads.
+        global _main_event_loop  # noqa: PLW0603
+        _main_event_loop = asyncio.get_running_loop()
         # TRN-80: restore per-port UI servers for crews that had a ui_port
         # in the registry before this transport restart.
         if GA_UI_PORT_ENABLED and _ui_app is not None:
