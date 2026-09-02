@@ -5409,6 +5409,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "GA_UI_PORT_ENABLED", True),
             patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
             patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "_start_ui_port_server"),  # prevent real uvicorn thread
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
@@ -5457,6 +5458,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "GA_UI_PORT_ENABLED", True),
             patch.object(server, "GA_UI_PORT_RANGE_START", 9000),
             patch.object(server, "GA_UI_PORT_RANGE_SIZE", 50),
+            patch.object(server, "_start_ui_port_server"),  # prevent real uvicorn thread
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
