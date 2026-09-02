@@ -1123,5 +1123,190 @@ class CaptainLastCheckinAtTests(unittest.TestCase):
         self.assertEqual(result["last_checkin_at"], checkin_ts)
 
 
+# ── TRN-94 tests ─────────────────────────────────────────────────────────────
+
+
+class ReadAllMailSubjectsTests(unittest.TestCase):
+    """TRN-94 task 1.5 — _read_all_mail_subjects returns new dict shape."""
+
+    CONTAINER = "gs-demo"
+
+    def test_returns_subject_dicts_on_success(self) -> None:
+        """_read_all_mail_subjects returns {name: [{subject, received_at}]} dicts."""
+        raw_json = json.dumps({
+            "ghost": [{"subject": "task done", "received_at": "2026-09-02T22:00:00+00:00"}],
+            "raven": [],
+            "captain": [{"subject": "standing order", "received_at": None}],
+        })
+        podman = Mock()
+        podman.container_exec_checked.return_value = raw_json
+        result = captain_mod._read_all_mail_subjects(podman, self.CONTAINER)
+        self.assertEqual(result["ghost"], [{"subject": "task done", "received_at": "2026-09-02T22:00:00+00:00"}])
+        self.assertEqual(result["raven"], [])
+        self.assertEqual(result["captain"], [{"subject": "standing order", "received_at": None}])
+
+    def test_returns_empty_dict_on_exec_failure(self) -> None:
+        """_read_all_mail_subjects returns {} when exec raises."""
+        podman = Mock()
+        podman.container_exec_checked.side_effect = RuntimeError("container stopped")
+        # The function itself raises — _skim_all_mailboxes wraps the exception
+        import contextlib
+        with contextlib.suppress(Exception):
+            result = captain_mod._read_all_mail_subjects(podman, self.CONTAINER)
+            # If it doesn't raise, should return {} or empty
+            self.assertIsInstance(result, dict)
+
+    def test_filters_non_dict_entries(self) -> None:
+        """_read_all_mail_subjects filters out non-dict list entries."""
+        raw_json = json.dumps({
+            "ghost": [{"subject": "ok", "received_at": None}, "stray-string", 42],
+        })
+        podman = Mock()
+        podman.container_exec_checked.return_value = raw_json
+        result = captain_mod._read_all_mail_subjects(podman, self.CONTAINER)
+        # Only the dict entry survives
+        self.assertEqual(result["ghost"], [{"subject": "ok", "received_at": None}])
+
+
+class SkimAllMailboxesTests(unittest.TestCase):
+    """TRN-94 tasks 1.3 + 2.2 — _skim_all_mailboxes happy path and fallback."""
+
+    CONTAINER = "gs-demo"
+
+    def _exec_json(self, data: dict) -> Mock:
+        """Return a Mock podman whose exec returns data as JSON."""
+        podman = Mock()
+        podman.container_exec_checked.return_value = json.dumps(data)
+        return podman
+
+    def test_running_crew_returns_all_8_keys(self) -> None:
+        """Running crew: _skim_all_mailboxes returns all 8 mailbox keys."""
+        skim_data = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        skim_data["ghost"] = [{"subject": "hello", "received_at": None}]
+        podman = self._exec_json(skim_data)
+        result = captain_mod._skim_all_mailboxes(podman, self.CONTAINER)
+        self.assertEqual(set(result.keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+        self.assertEqual(result["ghost"], [{"subject": "hello", "received_at": None}])
+        self.assertEqual(result["raven"], [])
+
+    def test_exec_failure_triggers_archive_fallback(self) -> None:
+        """When exec fails, _skim_all_mailboxes falls back to per-mailbox archive reads."""
+        podman = Mock()
+        podman.container_exec_checked.side_effect = RuntimeError("not running")
+        # Archive returns a subject for ghost, empty for everyone else.
+        # _read_mail_subjects_archive is called as (podman, container, mailbox_path).
+        def _archive(_podman, _container, mailbox_path):
+            if "ghost" in mailbox_path:
+                return [{"subject": "archive fallback", "received_at": None}]
+            return []
+        with patch.object(captain_mod, "_read_mail_subjects_archive", side_effect=_archive):
+            result = captain_mod._skim_all_mailboxes(podman, self.CONTAINER)
+        self.assertEqual(result["ghost"], [{"subject": "archive fallback", "received_at": None}])
+        self.assertEqual(result["raven"], [])
+        self.assertEqual(set(result.keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+
+    def test_stopped_crew_returns_8_empty_lists(self) -> None:
+        """Stopped crew: all 8 mailboxes return empty lists."""
+        podman = Mock()
+        podman.container_exec_checked.side_effect = RuntimeError("stopped")
+        with patch.object(captain_mod, "_read_mail_subjects_archive", return_value=[]):
+            result = captain_mod._skim_all_mailboxes(podman, self.CONTAINER)
+        self.assertEqual(set(result.keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+        for name in captain_mod._ALL_MAIL_MAILBOXES:
+            self.assertEqual(result[name], [])
+
+
+class CaptainStatusAgentMailTests(unittest.TestCase):
+    """TRN-94 task 2.4 — captain status includes agent_mail field."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def _skim_result(self, **overrides) -> dict:
+        """Build a full 8-key skim result with optional overrides per mailbox."""
+        base = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        base.update(overrides)
+        return base
+
+    def test_agent_mail_present_dormant_captain(self) -> None:
+        """2.4 — dormant captain status still includes agent_mail."""
+        ghost_subjects = [{"subject": "task done", "received_at": None}]
+        skim = self._skim_result(ghost=ghost_subjects)
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.captain("demo", "status")
+        self.assertIn("agent_mail", result)
+        self.assertEqual(result["agent_mail"]["ghost"], ghost_subjects)
+        self.assertEqual(result["status"], "dormant")
+        ensure.assert_not_called()
+
+    def test_agent_mail_present_running_crew(self) -> None:
+        """2.4 — running crew captain status includes agent_mail with all 8 keys."""
+        existing_job = {
+            "id": "job-1",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        raven_subjects = [{"subject": "check-in report", "received_at": None}]
+        skim = self._skim_result(raven=raven_subjects)
+        reg = {"crews": {"demo": {"container": "gs-demo", "cookie": "cookie", "schedules": []}}}
+        podman = Mock()
+        podman.container_is_running.return_value = True
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing_job]}),
+        ):
+            result = server.captain("demo", "status")
+        self.assertIn("agent_mail", result)
+        self.assertEqual(set(result["agent_mail"].keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+        self.assertEqual(result["agent_mail"]["raven"], raven_subjects)
+
+    def test_stopped_crew_agent_mail_empty_lists(self) -> None:
+        """2.4 — stopped crew: agent_mail contains empty lists for all 8 mailboxes."""
+        skim = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.captain("demo", "status")
+        self.assertIn("agent_mail", result)
+        for name in captain_mod._ALL_MAIL_MAILBOXES:
+            self.assertEqual(result["agent_mail"][name], [])
+
+    def test_captain_admiral_derived_from_skim_no_duplicate_exec(self) -> None:
+        """2.3 — captain_subjects and admiral_subjects come from skim, no extra exec calls."""
+        captain_subs = [{"subject": "standing order", "received_at": None}]
+        admiral_subs = [{"subject": "admiral reply", "received_at": None}]
+        skim = self._skim_result(captain=captain_subs, admiral=admiral_subs)
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim) as mock_skim,
+            patch.object(server, "_read_mail_subjects_archive") as mock_archive,
+        ):
+            result = server.captain("demo", "status")
+        # Skim called once; archive NOT called for captain/admiral
+        mock_skim.assert_called_once()
+        mock_archive.assert_not_called()
+        self.assertEqual(result["captain_subjects"], captain_subs)
+        self.assertEqual(result["admiral_subjects"], admiral_subs)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -328,10 +328,11 @@ def _read_all_mail_counts(
 def _read_all_mail_subjects(
     podman: PodmanClient,
     container: str,
-) -> dict[str, list[str]]:
+) -> dict[str, list[dict]]:
     """Read subject lines from all mailboxes in one container exec.
 
-    Returns a dict mapping mailbox name to a list of Subject header values.
+    Returns a dict mapping mailbox name to a list of
+    ``{"subject": str, "received_at": str | None}`` dicts.
     Empty mailboxes yield an empty list. Reading never modifies the files.
     Supports both Maildir and legacy mbox format.
     """
@@ -342,10 +343,50 @@ def _read_all_mail_subjects(
     try:
         result = json.loads(raw.strip())
         if isinstance(result, dict):
-            return {k: v for k, v in result.items() if isinstance(v, list)}
+            return {
+                k: [d for d in v if isinstance(d, dict)]
+                for k, v in result.items()
+                if isinstance(v, list)
+            }
         return {}
     except (ValueError, KeyError):
         return {}
+
+
+def _skim_all_mailboxes(
+    podman: PodmanClient,
+    container: str,
+) -> dict[str, list[dict]]:
+    """Skim all 8 agent mailboxes for subject lines.
+
+    Uses ``_read_all_mail_subjects`` (one container exec) for the happy path
+    when the container is running.  Falls back to ``_read_mail_subjects_archive``
+    per-mailbox if the exec fails (e.g. container stopped).  Returns empty lists
+    for all mailboxes as a last resort.
+
+    Returns:
+        dict mapping each of the 8 mailbox names to a list of
+        ``{"subject": str, "received_at": str | None}`` dicts.
+    """
+    try:
+        result = _read_all_mail_subjects(podman, container)
+        if result:
+            # Ensure all 8 keys are present even if some mailboxes were empty
+            for name in _ALL_MAIL_MAILBOXES:
+                result.setdefault(name, [])
+            return result
+    except Exception:
+        pass
+
+    # Fallback: per-mailbox archive API (works on stopped containers)
+    out: dict[str, list[dict]] = {}
+    for name in _ALL_MAIL_MAILBOXES:
+        mailbox_path = f"/var/mail/{name}"
+        try:
+            out[name] = _read_mail_subjects_archive(podman, container, mailbox_path)
+        except Exception:
+            out[name] = []
+    return out
 
 
 def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[dict]:

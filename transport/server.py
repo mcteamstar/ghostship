@@ -205,6 +205,7 @@ try:
         _mail_count,
         _read_all_mail_counts,
         _read_all_mail_subjects,
+        _skim_all_mailboxes,
         _read_maildir_subjects_from_tar,
         _read_mail_subjects_archive,
         _captain_jobs,
@@ -232,6 +233,7 @@ except ModuleNotFoundError:
         _mail_count,
         _read_all_mail_counts,
         _read_all_mail_subjects,
+        _skim_all_mailboxes,
         _read_maildir_subjects_from_tar,
         _read_mail_subjects_archive,
         _captain_jobs,
@@ -2900,18 +2902,17 @@ def captain(
             return result
 
     # ── Captain status — no container wake required ───────────────────────────
-    # For action == "status", read mail subjects via archive API (works on both
-    # running and stopped containers) and return early without calling
-    # _ensure_crew_running. The stop action still needs a running container to
-    # reach the gateway's cron API to disable the job.
+    # For action == "status", skim all 8 mailboxes (works on both running and
+    # stopped containers via _skim_all_mailboxes) and return early without
+    # calling _ensure_crew_running. The stop action still needs a running
+    # container to reach the gateway's cron API to disable the job.
     if action == "status":
         podman = _get_podman()
-        captain_subjects = _read_mail_subjects_archive(
-            podman, crew["container"], _CAPTAIN_MAILBOX_PATH
-        )
-        admiral_subjects = _read_mail_subjects_archive(
-            podman, crew["container"], _ADMIRAL_MAILBOX_PATH
-        )
+        # Single call — covers all 8 mailboxes; falls back to archive API on
+        # stopped containers.
+        agent_mail = _skim_all_mailboxes(podman, crew["container"])
+        captain_subjects = agent_mail.get("captain", [])
+        admiral_subjects = agent_mail.get("admiral", [])
         captain_mail = len(captain_subjects)
         admiral_mail = len(admiral_subjects)
 
@@ -2949,6 +2950,7 @@ def captain(
                 "admiral_mailbox": "admiral@localhost",
                 "admiral_subjects": admiral_subjects,
                 "admiral_mail": admiral_mail,
+                "agent_mail": agent_mail,
             }
 
         status_result = _captain_standing_view(
@@ -2962,6 +2964,7 @@ def captain(
         status_result["admiral_subjects"] = admiral_subjects
         status_result["captain_mail"] = captain_mail
         status_result["admiral_mail"] = admiral_mail
+        status_result["agent_mail"] = agent_mail
         return status_result
 
     # ── Stop — container must be running to reach cron API ───────────────────
@@ -3493,6 +3496,7 @@ def pickup(
     task_id: str | None = None,
     crew_id: str | None = None,
     timeout_secs: int = 0,
+    agent: str | None = None,
 ) -> dict | list:
     """Check a task's progress, retrieve its completed result, or list all tasks.
 
@@ -3503,6 +3507,11 @@ def pickup(
     Without a task_id: returns all tasks currently running or recently finished
     in the crew, plus a per-agent mail summary. Also: list, overview,
     what's happening.
+
+    Without a task_id and with agent set to a persona name (ghost, spectre,
+    banshee, wraith, reaper, raven): returns only that agent's mailbox subjects
+    and count — no task list, no other mailbox data. agent is ignored when
+    task_id is set.
 
     When timeout_secs > 0, polls every 3s until a task completes or the timeout
     elapses. Returns early with reason="admiral_mail" if new Admiral mail
@@ -3515,6 +3524,9 @@ def pickup(
         crew_id: Which crew the task belongs to. Required.
         timeout_secs: Maximum seconds to poll before returning. 0 means
             check once and return immediately (default).
+        agent: Optional persona name filter (ghost, spectre, banshee, wraith,
+            reaper, raven). When set and task_id is None, returns only that
+            agent's mailbox subjects and count. Ignored when task_id is set.
     """
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
@@ -3531,6 +3543,22 @@ def pickup(
 
     if task_id:
         return _pickup_single(crew, crew_id, task_id, podman, container, effective_timeout)
+    elif agent is not None:
+        # Agent filter: validate and return single-inbox subjects only
+        if agent not in PERSONA_ALLOWLIST:
+            return {
+                "error": (
+                    f"Invalid agent {agent!r}. Must be one of: "
+                    + ", ".join(sorted(PERSONA_ALLOWLIST))
+                )
+            }
+        all_subjects = _skim_all_mailboxes(podman, container)
+        subjects = all_subjects.get(agent, [])
+        return {
+            "agent": agent,
+            "subjects": subjects,
+            "mail": len(subjects),
+        }
     else:
         return _pickup_list(crew, crew_id, podman, container, effective_timeout)
 
@@ -3593,16 +3621,16 @@ def _pickup_single(
         }
 
         # Include subject lines for the agent persona, raven, captain, and admiral.
-        # captain/admiral are read via archive API (always live, works on stopped
-        # containers). The admiral_mail count above is still used for the
-        # reason="admiral_mail" early-return signal.
+        # captain/admiral come from the single _read_all_mail_subjects exec above
+        # (same shape: [{subject, received_at}]). The admiral_mail count above is
+        # still used for the reason="admiral_mail" early-return signal.
         if agent_persona:
             out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
         raven_subjects = mail_subjects.get("raven", [])
         if raven_subjects:
             out["raven_subjects"] = raven_subjects
-        captain_subjects = _read_mail_subjects_archive(podman, container, _CAPTAIN_MAILBOX_PATH)
-        admiral_subjects = _read_mail_subjects_archive(podman, container, _ADMIRAL_MAILBOX_PATH)
+        captain_subjects = mail_subjects.get("captain", [])
+        admiral_subjects = mail_subjects.get("admiral", [])
         out["captain_subjects"] = captain_subjects
         out["captain_mail"] = len(captain_subjects)
         out["admiral_subjects"] = admiral_subjects
@@ -3687,14 +3715,14 @@ def _pickup_list(
         ]
 
         # Build subject summaries for all persona mailboxes + captain + admiral.
-        # captain/admiral are read via archive API (always live).
+        # captain/admiral come from the single _read_all_mail_subjects exec above.
         subjects_summary: dict[str, list[str]] = {}
         for name in PERSONA_NAMES:
             subs = mail_subjects.get(name, [])
             if subs:
                 subjects_summary[f"{name}_subjects"] = subs
-        captain_subjects = _read_mail_subjects_archive(podman, container, _CAPTAIN_MAILBOX_PATH)
-        admiral_subjects = _read_mail_subjects_archive(podman, container, _ADMIRAL_MAILBOX_PATH)
+        captain_subjects = mail_subjects.get("captain", [])
+        admiral_subjects = mail_subjects.get("admiral", [])
         subjects_summary["captain_subjects"] = captain_subjects
         subjects_summary["captain_mail"] = len(captain_subjects)
         subjects_summary["admiral_subjects"] = admiral_subjects
@@ -3704,6 +3732,7 @@ def _pickup_list(
             "crew_id": crew_id,
             "tasks": task_list,
             "mail_summary": mail_summary,
+            "agent_subjects": mail_subjects,
             **subjects_summary,
         }
 

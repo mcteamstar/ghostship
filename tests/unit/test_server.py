@@ -5993,5 +5993,131 @@ class DashboardWebSocketProxyTests(unittest.TestCase):
         server._dashboard_port_crew.pop(29002, None)
 
 
+# ── TRN-94 tests ─────────────────────────────────────────────────────────────
+
+
+class PickupAgentSubjectsTests(unittest.TestCase):
+    """TRN-94 tasks 3.3 + 4.4 — agent_subjects and agent filter in pickup."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def _make_skim_result(self) -> dict:
+        """Return a full 8-key skim dict with one ghost message."""
+        names = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven", "captain", "admiral")
+        result = {name: [] for name in names}
+        result["ghost"] = [{"subject": "task result", "received_at": None}]
+        return result
+
+    # ── 3.3: agent_subjects in crew-level pickup ──────────────────────────────
+
+    def test_crew_level_pickup_includes_agent_subjects(self) -> None:
+        """3.3 — crew-level pickup (no task_id) includes agent_subjects field."""
+        agents = [{"id": "a", "done": True, "task": "t1", "agent": "ghost", "elapsed": 5}]
+        skim = self._make_skim_result()
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value=skim),
+        ):
+            result = server.pickup(crew_id="demo", timeout_secs=0)
+        self.assertIn("agent_subjects", result)
+        self.assertEqual(result["agent_subjects"]["ghost"], [{"subject": "task result", "received_at": None}])
+        self.assertEqual(result["agent_subjects"]["raven"], [])
+
+    def test_task_specific_pickup_does_not_include_agent_subjects(self) -> None:
+        """3.3 — task-specific pickup is unchanged (no agent_subjects field)."""
+        task_resp = {
+            "id": "task-1", "agent": "ghost", "done": True, "turns": 2,
+            "last_tool": "shell", "elapsed": 7, "result": "done", "error": "", "outcome": "success",
+        }
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=task_resp),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
+        ):
+            result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
+        self.assertNotIn("agent_subjects", result)
+        self.assertIn("task_id", result)
+
+    # ── 4.4: agent filter ────────────────────────────────────────────────────
+
+    def test_agent_filter_returns_single_inbox_response(self) -> None:
+        """4.4 — agent filter returns single-inbox subjects and count, no task list."""
+        skim = self._make_skim_result()
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.pickup(crew_id="demo", agent="ghost", timeout_secs=0)
+        self.assertEqual(result["agent"], "ghost")
+        self.assertEqual(result["subjects"], [{"subject": "task result", "received_at": None}])
+        self.assertEqual(result["mail"], 1)
+        self.assertNotIn("tasks", result)
+        self.assertNotIn("agent_subjects", result)
+
+    def test_agent_filter_empty_mailbox(self) -> None:
+        """4.4 — agent filter for an empty mailbox returns zero count."""
+        skim = self._make_skim_result()  # only ghost has mail
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.pickup(crew_id="demo", agent="reaper", timeout_secs=0)
+        self.assertEqual(result["agent"], "reaper")
+        self.assertEqual(result["subjects"], [])
+        self.assertEqual(result["mail"], 0)
+
+    def test_invalid_agent_returns_error(self) -> None:
+        """4.4 — invalid agent name returns an error dict."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+        ):
+            result = server.pickup(crew_id="demo", agent="admiral", timeout_secs=0)
+        self.assertIn("error", result)
+        self.assertIn("admiral", result["error"])
+
+    def test_agent_filter_invalid_random_name_returns_error(self) -> None:
+        """4.4 — unknown agent name returns error."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+        ):
+            result = server.pickup(crew_id="demo", agent="kiro", timeout_secs=0)
+        self.assertIn("error", result)
+
+    def test_agent_filter_ignored_when_task_id_set(self) -> None:
+        """4.4 — agent parameter is ignored when task_id is set."""
+        task_resp = {
+            "id": "task-1", "agent": "ghost", "done": True, "turns": 1,
+            "last_tool": "shell", "elapsed": 5, "result": "done", "error": "", "outcome": "success",
+        }
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=task_resp),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
+        ):
+            # agent is set but task_id takes priority
+            result = server.pickup(task_id="task-1", crew_id="demo", agent="ghost", timeout_secs=0)
+        # Should behave as normal single-task pickup
+        self.assertIn("task_id", result)
+        self.assertNotIn("subjects", result)  # not the single-inbox format
+
+
 if __name__ == "__main__":
     unittest.main()
