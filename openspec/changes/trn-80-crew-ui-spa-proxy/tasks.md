@@ -24,7 +24,7 @@
 - [x] 4.5 Session cookie (`mc_token_5476`) injected as `Set-Cookie` on responses
 - [x] 4.6 `content-encoding` / `content-length` stripped after httpx decompression
 
-## 5. `launch` parameter + nuke ✓ (partial)
+## 5. `launch` parameter + nuke
 
 - [x] 5.1 Port allocation, `_start_ui_port_server`, registry write, `ui_url` in response
 - [x] 5.2 Nuke stops listener and releases port
@@ -35,10 +35,10 @@
 - [x] 6.1 Transport public origin appended to `KIROCREW_CORS_ORIGINS` at container create
 - [x] 6.2 UI port origin also appended after port allocation
 
-## 7. REST API for retrofitting dashboard (new)
+## 7. REST API for retrofitting dashboard
 
 - [ ] 7.1 `POST /crews/{crew_id}/dashboard` — allocate port + start listener for existing crew; return `{"ui_url": "..."}`; no-op if already active
-- [ ] 7.2 `DELETE /crews/{crew_id}/dashboard` — stop listener + release port; return `{"ui_url": null}`
+- [ ] 7.2 `DELETE /crews/{crew_id}/dashboard` — stop listener + release port; return `{"ui_url": null}`; no-op if not active
 - [ ] 7.3 Both routes respect `GA_API_KEY` auth and `GA_UI_PORT_ENABLED`
 - [ ] 7.4 Unit tests for both endpoints
 
@@ -49,7 +49,7 @@
 ## 9. Tests
 
 - [ ] 9.1 Unit test: `launch(dashboard=True)` allocates port and returns `ui_url`; `launch(dashboard=False)` does not
-- [ ] 9.2 Existing tests: `_start_ui_port_server`, `_stop_ui_port_server`, catch-all handler (already passing)
+- [ ] 9.2 Existing tests: `_start_ui_port_server`, `_stop_ui_port_server`, catch-all handler (already passing — verify)
 
 ## 10. Spec sync and validation
 
