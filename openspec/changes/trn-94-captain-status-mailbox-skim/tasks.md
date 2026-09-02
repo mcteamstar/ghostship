@@ -1,7 +1,15 @@
-## 1. Shared helper
+## 1. Refactor mail reading
 
-- [ ] 1.1 Add `_skim_all_mailboxes(podman, container) -> dict[str, list[dict]]` to `transport/captain.py` — calls `_read_mail_subjects_archive` for each of the 8 mailboxes in `_ALL_MAIL_MAILBOXES`; returns empty list per mailbox on failure; works on stopped containers
-- [ ] 1.2 Unit tests: running crew returns all 8 keys; stopped crew returns 8 empty lists; one exec failure leaves other mailboxes intact
+- [ ] 1.1 Update `transport/container_scripts/read_mail_subjects.py` — extract `Date:` header alongside `Subject:`; return `[{"subject": str, "received_at": str|None}]` per mailbox instead of plain strings
+- [ ] 1.2 Update `_read_all_mail_subjects` in `transport/captain.py` — update return type annotation to `dict[str, list[dict]]`; update the JSON parse logic to handle the new dict format
+- [ ] 1.3 Add `_skim_all_mailboxes(podman, container) -> dict[str, list[dict]]` to `transport/captain.py` — calls `_read_all_mail_subjects` for the happy path (running container); falls back to `_read_mail_subjects_archive` per-mailbox if exec fails; returns empty lists as last resort
+- [ ] 1.4 Replace all `_read_mail_subjects_archive` call sites in `pickup` (`transport/server.py`) with `_skim_all_mailboxes` or direct `_read_all_mail_subjects` calls
+- [ ] 1.5 Unit tests: `read_mail_subjects.py` returns `{subject, received_at}` dicts; `_read_all_mail_subjects` returns new shape; fallback to archive on exec failure
+
+## 2. Shared helper (now thin wrapper over refactored _read_all_mail_subjects)
+
+- [ ] 2.1 `_skim_all_mailboxes` implemented in task 1.3 above — this section tracks integration
+- [ ] 2.2 Unit tests: running crew returns all 8 keys with `{subject, received_at}` dicts; stopped crew returns 8 empty lists; one exec failure triggers per-mailbox archive fallback
 
 ## 2. captain status
 

@@ -19,17 +19,22 @@ Both `captain status` and crew-level `pickup` need the same broad mailbox skim �
 
 **D1: Shared `_skim_all_mailboxes(crew_id)` helper**
 
-**D1: Two mailbox reading approaches — archive API chosen for `received_at` consistency**
+**D1: Refactor mail reading to one approach — enhanced exec script**
 
-Two existing mechanisms read mailbox subjects:
+Currently three mechanisms exist for reading mailbox subjects, with inconsistent return shapes:
 
-1. **`_read_all_mail_subjects(podman, container)`** — single container exec (`read_mail_subjects.py`), all 8 mailboxes in one call, returns `dict[str, list[str]]` (plain strings). Requires running container. No `received_at`.
+1. **`_read_all_mail_subjects`** — single exec, all 8 mailboxes, plain strings, running container only
+2. **`_read_mail_subjects_archive`** — archive API, one mailbox per call, `{subject, received_at}`, works on stopped containers
+3. **`_read_maildir_subjects_from_tar`** — underlying tar parser used by #2
 
-2. **`_read_mail_subjects_archive(podman, container, mailbox_path)`** — Podman archive API per mailbox, works on stopped containers, returns `list[dict{"subject": str, "received_at": str|None}]`. One call per mailbox.
+The right consolidation: enhance `read_mail_subjects.py` to also extract `Date:` headers and return `[{"subject": str, "received_at": str|None}]` per mailbox. This gives the exec-based path the same shape as the archive path — enabling `_read_all_mail_subjects` to become the single canonical approach: one exec, all 8 mailboxes, full data including `received_at`.
 
-The existing main specs (`trn-captain-mail`, `task-orchestration`) and the current pickup implementation both use the `{"subject": str, "received_at": str}` format. To stay consistent with the established contract, the broad skim must use `_read_mail_subjects_archive` — 8 archive API calls, one per mailbox. Each is fast (~10ms); total ~80ms for a running crew.
+After the refactor:
+- `_read_all_mail_subjects` return type changes to `dict[str, list[dict]]`
+- `_read_mail_subjects_archive` call sites in `pickup` and `captain status` are replaced with `_skim_all_mailboxes` (a thin wrapper over `_read_all_mail_subjects`)
+- `_read_mail_subjects_archive` and `_read_maildir_subjects_from_tar` are kept for stopped-container evac (where exec is unavailable) but no longer used for routine subject reads
 
-**`_skim_all_mailboxes(podman, container) -> dict[str, list[dict]]`** is a new helper in `transport/captain.py` that calls `_read_mail_subjects_archive` for each of the 8 mailboxes in `_ALL_MAIL_MAILBOXES`, returns empty list per mailbox on failure, and works on stopped containers (archive API doesn't require the process to run).
+The skim on a stopped crew: `_read_mail_subjects_archive` is still needed when the container isn't running. `_skim_all_mailboxes` should detect the running state and fall back to archive API per-mailbox if the exec fails, returning empty lists as a last resort.
 
 **D2: `captain status` response — add `agent_mail` field**
 
@@ -49,5 +54,7 @@ Set `ticket: TRN-94` in `.openspec.yaml`.
 
 ## Risks / Trade-offs
 
-- **8 archive API calls per skim** — one `_read_mail_subjects_archive` call per mailbox. Each uses the Podman archive endpoint (~10ms each); total ~80ms. The alternative (single exec via `_read_all_mail_subjects`) is faster but returns plain strings without `received_at`, breaking the established response contract. The archive approach is consistent with how pickup already reads captain/admiral subjects today.
-- **Backward compatibility** — `agent_mail` and `agent_subjects` are additive fields. No existing callers are broken.
+- **Single exec for running crews** — `_read_all_mail_subjects` (one exec, all 8 mailboxes) replaces 8 archive API calls for running containers. Significantly faster and simpler.
+- **Stopped crew fallback** — `_skim_all_mailboxes` falls back to `_read_mail_subjects_archive` per-mailbox when the exec fails (container stopped). Returns empty lists as a last resort.
+- **`read_mail_subjects.py` format change** — changing the script output from plain strings to `{subject, received_at}` dicts is a breaking change for any caller that expects the old format. All callers are in `transport/captain.py` and are updated as part of this change.
+- **Backward compatibility** — `agent_mail` and `agent_subjects` are additive fields on the MCP responses. No existing callers are broken.

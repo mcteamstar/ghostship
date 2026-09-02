@@ -14,6 +14,8 @@ A lightweight "what's the crew thinking about?" call is missing. The Admiral oft
 
 A shared `_skim_all_mailboxes(crew_id)` helper is extracted and reused by both callers.
 
+The mail-reading code is also refactored as part of this change: `read_mail_subjects.py` currently returns plain subject strings with no timestamp. It will be updated to also extract `Date:` headers and return `[{"subject": str, "received_at": str|None}]` per mailbox — the same shape as `_read_mail_subjects_archive`. This allows `_read_all_mail_subjects` (single exec, all 8 mailboxes) to replace the per-mailbox archive API calls, giving one consistent approach throughout the codebase.
+
 ## Capabilities
 
 ### Modified Capabilities
@@ -23,8 +25,9 @@ A shared `_skim_all_mailboxes(crew_id)` helper is extracted and reused by both c
 
 ## Impact
 
-- `transport/captain.py` — `captain status` handler: call `_skim_all_mailboxes`, add `agent_mail` to response.
+- `transport/container_scripts/read_mail_subjects.py` — add `Date:` header extraction; return `[{"subject": str, "received_at": str|None}]` per mailbox instead of plain strings.
+- `transport/captain.py` — update `_read_all_mail_subjects` return type to `dict[str, list[dict]]`; add `_skim_all_mailboxes(podman, container)` thin wrapper; deprecate / replace `_read_mail_subjects_archive` call sites with the exec-based path.
+- `transport/captain.py` — `captain status` handler: call `_skim_all_mailboxes`, add `agent_mail` to response, derive `captain_subjects`/`admiral_subjects` from skim result.
 - `transport/server.py` — `pickup` tool: add `agent` parameter; call `_skim_all_mailboxes` when no task_id; add `agent_subjects` to crew-level response; when `agent` is specified, return single-inbox subjects only.
-- `transport/server.py` or `transport/lifecycle.py` — new `_skim_all_mailboxes(crew_id)` helper using existing `_read_mail_subjects` mechanism.
-- `tests/unit/test_captain.py` and `tests/unit/test_server.py` — new tests for both response shapes and the agent filter.
+- `tests/unit/test_captain.py` and `tests/unit/test_server.py` — new tests for both response shapes, the agent filter, and the refactored mail reading.
 - MCP tool schema: `pickup` gains optional `agent` string parameter.
