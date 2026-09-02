@@ -83,7 +83,7 @@ class Config:
     kc_gateway_token_ttl: str = "24h"
 
     # ── Crew UI port allocation (TRN-80) ─────────────────────────────────────
-    ga_ui_port_range_start: int = 9000
+    ga_ui_port_range_start: int = 64058
     ga_ui_port_range_size: int = 50
     ga_ui_port_enabled: bool = True
 
@@ -147,7 +147,7 @@ class Config:
                 os.environ.get("GA_SUBAGENT_MAX_TURNS", "200")
             ),
             kc_gateway_token_ttl=os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h"),
-            ga_ui_port_range_start=int(os.environ.get("GA_UI_PORT_RANGE_START", "9000")),
+            ga_ui_port_range_start=int(os.environ.get("GA_UI_PORT_RANGE_START", "64058")),
             ga_ui_port_range_size=int(os.environ.get("GA_UI_PORT_RANGE_SIZE", "50")),
             ga_ui_port_enabled=_env_bool_default_on("GA_UI_PORT_ENABLED"),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),

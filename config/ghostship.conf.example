@@ -164,8 +164,8 @@
 # When GA_UI_PORT_ENABLED=true (default), each new crew is assigned a host port
 # from the range [GA_UI_PORT_RANGE_START, GA_UI_PORT_RANGE_START + GA_UI_PORT_RANGE_SIZE - 1]
 # so the crew's SPA is reachable at http://<host>:<port>/ as a stable origin.
-# Open the port range in your firewall before deploying (e.g. ufw allow 9000:9049/tcp).
+# Open the port range in your firewall before deploying (e.g. ufw allow 64058:64107/tcp).
 # Set GA_UI_PORT_ENABLED=false to fall back to the Python proxy (/crews/<id>/ui).
-# GA_UI_PORT_RANGE_START=9000
+# GA_UI_PORT_RANGE_START=64058
 # GA_UI_PORT_RANGE_SIZE=50
 # GA_UI_PORT_ENABLED=true
