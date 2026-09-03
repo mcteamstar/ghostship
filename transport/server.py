@@ -354,6 +354,13 @@ GA_ENABLE_SECURITY_HEADERS = cfg.ga_enable_security_headers
 GA_ENFORCE_HTTPS_REDIRECT = cfg.ga_enforce_https_redirect
 GA_CSP_ENFORCE = cfg.ga_csp_enforce
 
+# ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────────
+# When GA_CADDY_ENABLED=true, a ga-caddy container owns port bindings for
+# the main HTTPS port AND the dashboard port range (64058–64107). The
+# transport does NOT start per-port uvicorn listeners; instead it calls the
+# Caddy admin API to register/deregister per-crew dashboard servers.
+GA_CADDY_ENABLED = cfg.ga_caddy_enabled
+
 # ── Version ───────────────────────────────────────────────────────────────────
 
 def _read_transport_version() -> str:
@@ -654,6 +661,302 @@ def _release_dashboard_port(port: int) -> None:
     _dashboard_ports_in_use.discard(port)
 
 
+# ── Caddy admin API helpers (TRN-92) ─────────────────────────────────────────
+
+def _caddy_admin_url() -> str:
+    """Return the Caddy admin API base URL from config."""
+    return cfg.ga_caddy_admin_url
+
+
+def _caddy_register_crew(crew_id: str, port: int) -> None:
+    """Register a per-crew Caddy dashboard server via the admin API.
+
+    Builds an HTTP server object bound to *port* with ``@id: crew-{crew_id}``,
+    carrying a ``forward_auth`` check against ``/dashboard-auth`` and a
+    ``reverse_proxy`` to ``gs-{crew_id}:5476``. PUT to the Caddy admin API.
+
+    Retries up to 3 times with exponential backoff (~7 s total). Logs a
+    warning on failure — does not raise, so a Caddy startup race does not
+    cause ``launch`` to fail.
+
+    Must be called while holding ``_registry_lock``.
+    """
+    server_obj = {
+        "@id": f"crew-{crew_id}",
+        "listen": [f":{port}"],
+        "routes": [
+            {
+                "handle": [
+                    {
+                        "handler": "subroute",
+                        "routes": [
+                            {
+                                "handle": [
+                                    {
+                                        "handler": "forward_auth",
+                                        "uri": f"{_caddy_admin_url().replace(':2019', ':64057')}/dashboard-auth",
+                                        "copy_headers": ["X-Crew-Cookie"],
+                                    }
+                                ]
+                            },
+                            {
+                                "handle": [
+                                    {
+                                        "handler": "reverse_proxy",
+                                        "upstreams": [{"dial": f"gs-{crew_id}:5476"}],
+                                    }
+                                ]
+                            },
+                        ],
+                    }
+                ]
+            }
+        ],
+    }
+    # Determine the forward_auth URI — it points at the transport's main port
+    # on the internal ga-net network.
+    _transport_addr = "ga-transport:64057"
+    server_obj["routes"][0]["handle"][0]["routes"][0]["handle"][0]["uri"] = (
+        f"http://{_transport_addr}/dashboard-auth"
+    )
+
+    url = f"{_caddy_admin_url()}/config/apps/http/servers/crew-{crew_id}"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = httpx.put(url, json=server_obj, timeout=5.0)
+            if resp.status_code in (200, 201):
+                logger.info(
+                    "TRN-92: registered Caddy server crew-%s on port %d", crew_id, port
+                )
+                return
+            # 409 Conflict means the @id already exists — treat as idempotent success
+            if resp.status_code == 409:
+                logger.info(
+                    "TRN-92: Caddy server crew-%s already exists (409) — idempotent", crew_id
+                )
+                return
+            logger.warning(
+                "TRN-92: Caddy register crew-%s returned %d (attempt %d/%d): %s",
+                crew_id, resp.status_code, attempt + 1, max_retries, resp.text[:200],
+            )
+        except Exception as exc:
+            logger.warning(
+                "TRN-92: Caddy register crew-%s failed (attempt %d/%d): %s",
+                crew_id, attempt + 1, max_retries, exc,
+            )
+        if attempt < max_retries - 1:
+            time.sleep(2 ** attempt)  # 0s, 1s, 2s → ~3s total
+
+
+def _caddy_deregister_crew(crew_id: str) -> None:
+    """Remove a per-crew Caddy dashboard server via the admin API.
+
+    Calls ``DELETE /config/id/crew-{crew_id}`` on the Caddy admin API.
+    Handles 404 gracefully (server already removed). Logs a warning on other
+    failures; does not raise so ``nuke`` is never blocked by Caddy errors.
+    """
+    url = f"{_caddy_admin_url()}/id/crew-{crew_id}"
+    try:
+        resp = httpx.delete(url, timeout=5.0)
+        if resp.status_code in (200, 204):
+            logger.info("TRN-92: deregistered Caddy server crew-%s", crew_id)
+        elif resp.status_code == 404:
+            logger.debug(
+                "TRN-92: Caddy server crew-%s not found on deregister (404) — OK", crew_id
+            )
+        else:
+            logger.warning(
+                "TRN-92: Caddy deregister crew-%s returned %d: %s",
+                crew_id, resp.status_code, resp.text[:200],
+            )
+    except Exception as exc:
+        logger.warning("TRN-92: Caddy deregister crew-%s failed: %s", crew_id, exc)
+
+
+# ── Dashboard session store (TRN-92) ─────────────────────────────────────────
+# In-memory token → expiry mapping for gs_session cookies.
+# Lost on transport restart (acceptable — users re-login).
+_gs_session_store: dict[str, float] = {}
+_gs_session_store_lock = threading.Lock()
+
+
+def _gs_session_issue() -> str:
+    """Mint a new gs_session token and record it with its expiry."""
+    token = secrets.token_hex(32)
+    expiry = time.time() + cfg.ga_caddy_session_ttl_secs
+    with _gs_session_store_lock:
+        _gs_session_store[token] = expiry
+    return token
+
+
+def _gs_session_valid(token: str) -> bool:
+    """Return True if *token* exists and has not expired."""
+    with _gs_session_store_lock:
+        expiry = _gs_session_store.get(token)
+        if expiry is None:
+            return False
+        if time.time() > expiry:
+            _gs_session_store.pop(token, None)
+            return False
+        return True
+
+
+# ── Dashboard auth HTTP handlers (TRN-92) ─────────────────────────────────────
+
+async def _handle_dashboard_login_post(request: Request) -> Response:
+    """POST /dashboard-login — validate ga_api_key, issue gs_session cookie.
+
+    Reads ``ga_api_key`` from the form body, constant-time compares against
+    ``GA_API_KEY``. On success returns 200 + ``Set-Cookie: gs_session=...``.
+    On failure returns 401 with no cookie.
+    """
+    if not GA_API_KEY:
+        # No API key configured — dashboard login is only meaningful with one.
+        return Response(status_code=401)
+    try:
+        form = await request.form()
+        provided = str(form.get("ga_api_key", ""))
+    except Exception:
+        return Response(status_code=400)
+
+    if not hmac.compare_digest(provided, GA_API_KEY):
+        return Response(status_code=401)
+
+    token = _gs_session_issue()
+    resp = Response(status_code=200, content="OK")
+    resp.set_cookie(
+        "gs_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+        path="/",
+    )
+    return resp
+
+
+async def _handle_dashboard_auth(request: Request) -> Response:
+    """GET /dashboard-auth — Caddy forward_auth endpoint.
+
+    Validates the ``gs_session`` cookie. On 200 returns
+    ``X-Crew-Cookie: mc_token_5476=<crew_cookie>`` so Caddy's ``copy_headers``
+    injects it into the upstream request to the crew gateway. The target crew
+    is identified from the incoming dashboard port via ``_dashboard_port_crew``.
+    Returns 401 on missing/invalid session.
+    """
+    # Extract gs_session cookie
+    token = request.cookies.get("gs_session", "")
+    if not token or not _gs_session_valid(token):
+        return Response(status_code=401)
+
+    # Determine which crew this request is for by looking up the incoming port.
+    # In Caddy mode the forward_auth call comes from ga-caddy → ga-transport,
+    # so we read the X-Forwarded-For / X-Real-Port Caddy passes, or fall back
+    # to reading the original dashboard-port from a custom header that the
+    # Caddy server config can inject.
+    # The simplest Caddy-compatible approach: encode the crew's port in the
+    # forward_auth URI, e.g. /dashboard-auth?port=64058. Caddy's forward_auth
+    # directive supports arbitrary URIs. We derive the crew from the port.
+    port_str = request.query_params.get("port", "")
+    crew_id: str | None = None
+    if port_str:
+        try:
+            port_int = int(port_str)
+            crew_id = _dashboard_port_crew.get(port_int)
+        except ValueError:
+            pass
+
+    if crew_id is None:
+        # Fallback: check X-Forwarded-Port or X-Dashboard-Port header
+        fwd_port = request.headers.get("x-dashboard-port", "")
+        if fwd_port:
+            try:
+                crew_id = _dashboard_port_crew.get(int(fwd_port))
+            except ValueError:
+                pass
+
+    if crew_id is None:
+        # Last resort: return 200 without crew cookie (auth still passed,
+        # session is valid; crew cookie injection is best-effort).
+        return Response(status_code=200)
+
+    # Look up the crew's gateway token from the registry.
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+        crew_info = reg.get("crews", {}).get(crew_id, {})
+        crew_token = crew_info.get("gateway_token", "")
+    except Exception:
+        crew_token = ""
+
+    headers: dict[str, str] = {}
+    if crew_token:
+        headers["X-Crew-Cookie"] = f"mc_token_5476={crew_token}"
+    return Response(status_code=200, headers=headers)
+
+
+async def _handle_login_ui(request: Request) -> Response:
+    """GET /login-ui — serve the minimal HTML login form.
+
+    Accepts an optional ``?next=<url>`` query parameter for post-login
+    redirect.
+    """
+    next_url = request.query_params.get("next", "/")
+    # Simple HTML login page — no external dependencies.
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Academy — Login</title>
+<style>
+  body {{ font-family: sans-serif; display: flex; align-items: center;
+         justify-content: center; min-height: 100vh; margin: 0;
+         background: #0f0f0f; color: #e8e8e8; }}
+  .card {{ background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+           padding: 2rem; width: 320px; }}
+  h1 {{ font-size: 1.2rem; margin: 0 0 1.5rem; }}
+  label {{ display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.4rem; }}
+  input {{ width: 100%; box-sizing: border-box; padding: 0.6rem;
+           background: #0f0f0f; border: 1px solid #444; border-radius: 4px;
+           color: #e8e8e8; font-size: 1rem; }}
+  button {{ margin-top: 1rem; width: 100%; padding: 0.7rem;
+            background: #2d6a4f; border: none; border-radius: 4px;
+            color: #fff; font-size: 1rem; cursor: pointer; }}
+  button:hover {{ background: #3a8a65; }}
+  .err {{ color: #e07070; font-size: 0.85rem; margin-top: 0.8rem; display: none; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>👻 Ghost Academy</h1>
+  <form id="f" method="post" action="/dashboard-login">
+    <input type="hidden" name="next" value="{next_url}">
+    <label for="k">API Key</label>
+    <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <p class="err" id="err">Invalid API key.</p>
+  </form>
+</div>
+<script>
+  const f = document.getElementById('f');
+  f.addEventListener('submit', async e => {{
+    e.preventDefault();
+    const fd = new FormData(f);
+    const r = await fetch('/dashboard-login', {{method:'POST', body: fd}});
+    if (r.ok) {{
+      window.location.href = fd.get('next') || '/';
+    }} else {{
+      document.getElementById('err').style.display = 'block';
+    }}
+  }});
+</script>
+</body>
+</html>"""
+    return Response(content=html, media_type="text/html; charset=utf-8")
+
+
 # ── Per-port UI proxy servers (TRN-80) ────────────────────────────────────────
 # Each allocated crew UI port gets its own uvicorn.Server instance running in
 # the same asyncio event loop as the main transport server. Requests on these
@@ -675,7 +978,16 @@ def _start_dashboard_port_server(port: int, crew_id: str, app: Any) -> None:
     be started once due to the StreamableHTTP session manager). The proxy app
     enforces GA_API_KEY auth and proxies all requests to the crew gateway.
     Safe to call from executor threads.
+
+    TRN-92: When GA_CADDY_ENABLED=True, Caddy owns the port binding —
+    this function is a no-op. The port↔crew mapping is still stored in
+    ``_dashboard_port_crew`` so ``_handle_dashboard_auth`` can resolve crews.
     """
+    # TRN-92: In Caddy mode, record the port→crew mapping but skip starting
+    # a uvicorn listener — Caddy owns the port binding.
+    if GA_CADDY_ENABLED:
+        _dashboard_port_crew[port] = crew_id
+        return
     if port in _dashboard_port_servers:
         return
     import httpx as _httpx
@@ -1209,25 +1521,36 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
             reg["crews"][crew_id]["dashboard_port"] = dashboard_port
             _save_registry(reg)
 
-    if cfg.ga_host_url:
-        from urllib.parse import urlparse as _urlparse_d2
-        _ph = _urlparse_d2(cfg.ga_host_url)
-        dashboard_url = f"{_ph.scheme}://{_ph.hostname}:{dashboard_port}/"
+    if GA_CADDY_ENABLED:
+        # TRN-92: Caddy mode — dashboard URL uses HTTPS; register with Caddy admin API.
+        if cfg.ga_host_url:
+            from urllib.parse import urlparse as _urlparse_d2
+            _ph = _urlparse_d2(cfg.ga_host_url)
+            dashboard_url = f"https://{_ph.hostname}:{dashboard_port}/"
+        else:
+            dashboard_url = f"https://localhost:{dashboard_port}/"
+        # Register inside a fresh _registry_lock acquisition — we exited the
+        # previous lock section above.
+        with _registry_lock:
+            _caddy_register_crew(crew_id, dashboard_port)
+        # Store port→crew mapping for forward_auth lookups (no uvicorn thread).
+        _dashboard_port_crew[dashboard_port] = crew_id
     else:
-        dashboard_url = f"http://localhost:{dashboard_port}/"
-
-    # Start the transport-side listener
-    if _dashboard_app is not None:
-        _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
+        if cfg.ga_host_url:
+            from urllib.parse import urlparse as _urlparse_d2
+            _ph = _urlparse_d2(cfg.ga_host_url)
+            dashboard_url = f"{_ph.scheme}://{_ph.hostname}:{dashboard_port}/"
+        else:
+            dashboard_url = f"http://localhost:{dashboard_port}/"
+        # Start the transport-side listener
+        if _dashboard_app is not None:
+            _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
 
     logger.info(
-        "TRN-80: POST /crews/%s/dashboard — started UI port %d, dashboard_url=%s",
-        crew_id, dashboard_port, dashboard_url,
+        "TRN-80: POST /crews/%s/dashboard — UI port %d, dashboard_url=%s (caddy=%s)",
+        crew_id, dashboard_port, dashboard_url, GA_CADDY_ENABLED,
     )
     return JSONResponse({"dashboard_url": dashboard_url})
-
-
-async def _handle_crew_dashboard_delete(request: Request) -> Response:
     """DELETE /crews/{crew_id}/dashboard — stop the UI listener and release the port.
 
     Stops the per-port uvicorn server, releases the port back to the pool, and
@@ -1257,7 +1580,12 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         existing_port = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if existing_port is None:
             return JSONResponse({"dashboard_url": None})
-        _stop_dashboard_port_server(int(existing_port))
+        if GA_CADDY_ENABLED:
+            # TRN-92: Deregister from Caddy (best-effort, inside lock for serialization)
+            _caddy_deregister_crew(crew_id)
+            _dashboard_port_crew.pop(int(existing_port), None)
+        else:
+            _stop_dashboard_port_server(int(existing_port))
         _release_dashboard_port(int(existing_port))
         reg["crews"][crew_id].pop("dashboard_port", None)
         reg["crews"][crew_id]["dashboard_url"] = None
@@ -1329,6 +1657,9 @@ class RateLimitMiddleware:
         parts = path.lstrip("/").split("/")
         if len(parts) >= 3 and parts[0] == "crews" and parts[2] == "api":
             return "crew_api"
+        # TRN-92: dashboard auth/login endpoints
+        if path in ("/dashboard-login", "/dashboard-auth"):
+            return "dashboard_auth"
         if path.startswith("/mcp"):
             return "mcp"
         return None
@@ -1401,9 +1732,14 @@ class BearerAuthMiddleware:
             ("POST", "/logout"): _handle_logout_post,
             ("GET",  "/health"): _handle_health,
         }
-        # Routes exempt from authentication (served before auth check)
+        # Routes exempt from authentication (served before auth check).
+        # TRN-92: dashboard auth/login routes are public — they are the auth
+        # mechanism itself, so they must be reachable without a Bearer token.
         self._public_routes: dict[tuple[str, str], Any] = {
-            ("GET", "/version"): _handle_version_get,
+            ("GET",  "/version"): _handle_version_get,
+            ("POST", "/dashboard-login"): _handle_dashboard_login_post,
+            ("GET",  "/dashboard-auth"): _handle_dashboard_auth,
+            ("GET",  "/login-ui"): _handle_login_ui,
         }
 
     # Paths that bypass API-key auth (readiness probes, etc.)
@@ -1738,6 +2074,10 @@ _RATE_LIMIT_DEFAULTS: dict[str, tuple[str, int, int]] = {
     "mcp": ("GA_RATE_LIMIT_MCP", 300, 60),
     "files": ("GA_RATE_LIMIT_FILES", 60, 60),
     "crew_api": ("GA_RATE_LIMIT_CREW_API", 120, 60),
+    # TRN-92: dashboard login endpoint rate limit (default 60 req / 60 s).
+    # /dashboard-auth (forward_auth) is called by Caddy per-request; keep it
+    # generous. /dashboard-login (the key check) is more sensitive.
+    "dashboard_auth": ("GA_RATE_LIMIT_DASHBOARD_AUTH", 60, 60),
 }
 
 
@@ -2184,14 +2524,23 @@ def crews() -> dict:
             "agents": [],
         }
         # TRN-80: derive dashboard_url from stored dashboard_port (None if no port assigned)
+        # TRN-92: use HTTPS scheme when GA_CADDY_ENABLED=True
         _ui_p = info.get("dashboard_port")
         if _ui_p is not None:
-            if cfg.ga_host_url:
-                from urllib.parse import urlparse as _urlparse3
-                _ph = _urlparse3(cfg.ga_host_url)
-                entry["dashboard_url"] = f"{_ph.scheme}://{_ph.hostname}:{_ui_p}/"
+            if GA_CADDY_ENABLED:
+                if cfg.ga_host_url:
+                    from urllib.parse import urlparse as _urlparse3
+                    _ph = _urlparse3(cfg.ga_host_url)
+                    entry["dashboard_url"] = f"https://{_ph.hostname}:{_ui_p}/"
+                else:
+                    entry["dashboard_url"] = f"https://localhost:{_ui_p}/"
             else:
-                entry["dashboard_url"] = f"http://localhost:{_ui_p}/"
+                if cfg.ga_host_url:
+                    from urllib.parse import urlparse as _urlparse3
+                    _ph = _urlparse3(cfg.ga_host_url)
+                    entry["dashboard_url"] = f"{_ph.scheme}://{_ph.hostname}:{_ui_p}/"
+                else:
+                    entry["dashboard_url"] = f"http://localhost:{_ui_p}/"
         else:
             entry["dashboard_url"] = None
         if "policy_version" in info:
@@ -2384,12 +2733,21 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                     reg["crews"].pop(crew_id, None)
                     _save_registry(reg)
                     return {"error": str(_err)}
-            if cfg.ga_host_url:
-                from urllib.parse import urlparse as _urlparse2
-                _p = _urlparse2(cfg.ga_host_url)
-                _ui_host = f"{_p.scheme}://{_p.hostname}:{dashboard_port}"
+            if GA_CADDY_ENABLED:
+                # TRN-92: Caddy mode — dashboard URL uses HTTPS scheme.
+                if cfg.ga_host_url:
+                    from urllib.parse import urlparse as _urlparse2
+                    _p = _urlparse2(cfg.ga_host_url)
+                    _ui_host = f"https://{_p.hostname}:{dashboard_port}"
+                else:
+                    _ui_host = f"https://localhost:{dashboard_port}"
             else:
-                _ui_host = f"http://localhost:{dashboard_port}"
+                if cfg.ga_host_url:
+                    from urllib.parse import urlparse as _urlparse2
+                    _p = _urlparse2(cfg.ga_host_url)
+                    _ui_host = f"{_p.scheme}://{_p.hostname}:{dashboard_port}"
+                else:
+                    _ui_host = f"http://localhost:{dashboard_port}"
             dashboard_url = f"{_ui_host}/"
             # Add the UI port origin to CORS so the SPA's API calls are accepted.
             container_env["KIROCREW_CORS_ORIGINS"] = (
@@ -2426,10 +2784,17 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 if crew_id in reg["crews"]:
                     reg["crews"][crew_id]["dashboard_port"] = dashboard_port
                     _save_registry(reg)
-            # Start the transport-side listener for this crew's UI port.
-            # The app reference is injected at startup via _dashboard_app (set below).
-            if _dashboard_app is not None:
-                _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
+                # TRN-92: register with Caddy inside _registry_lock for atomicity.
+                if GA_CADDY_ENABLED:
+                    _caddy_register_crew(crew_id, dashboard_port)
+            if GA_CADDY_ENABLED:
+                # In Caddy mode record port→crew mapping; no uvicorn thread.
+                _dashboard_port_crew[dashboard_port] = crew_id
+            else:
+                # Start the transport-side listener for this crew's UI port.
+                # The app reference is injected at startup via _dashboard_app (set below).
+                if _dashboard_app is not None:
+                    _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
             result["dashboard_url"] = dashboard_url
         elif "error" not in result:
             result["dashboard_url"] = None
@@ -2660,10 +3025,15 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         reg = _load_registry()
         # TRN-80: stop the per-port server and release the port before removing
         # the registry entry.
+        # TRN-92: In Caddy mode, deregister from Caddy instead of stopping a uvicorn thread.
         if GA_DASHBOARD_PORT_ENABLED:
             _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
             if _ui_p is not None:
-                _stop_dashboard_port_server(int(_ui_p))
+                if GA_CADDY_ENABLED:
+                    _caddy_deregister_crew(crew_id)
+                    _dashboard_port_crew.pop(int(_ui_p), None)
+                else:
+                    _stop_dashboard_port_server(int(_ui_p))
                 _release_dashboard_port(int(_ui_p))
         reg["crews"].pop(crew_id, None)
         _save_registry(reg)
@@ -4033,13 +4403,23 @@ if __name__ == "__main__":
     async def _main() -> None:
         # TRN-80: restore per-port UI servers for crews that had a dashboard_port
         # in the registry before this transport restart.
+        # TRN-92: In Caddy mode, re-register all existing crew servers with Caddy
+        # (idempotent — Caddy's --resume may have already loaded them, but we
+        # call again so a fresh data-volume wipe is handled gracefully).
         if GA_DASHBOARD_PORT_ENABLED and _dashboard_app is not None:
             with _registry_lock:
                 _restored_reg = _load_registry()
             for _cid, _info in _restored_reg["crews"].items():
                 _p = _info.get("dashboard_port")
                 if _p is not None:
-                    _start_dashboard_port_server(int(_p), _cid, _dashboard_app)
+                    if GA_CADDY_ENABLED:
+                        _dashboard_port_crew[int(_p)] = _cid
+                        with _registry_lock:
+                            _caddy_register_crew(_cid, int(_p))
+                    else:
+                        _start_dashboard_port_server(int(_p), _cid, _dashboard_app)
+        if GA_CADDY_ENABLED:
+            logger.info("TRN-92: Caddy mode enabled — per-port uvicorn listeners suppressed")
         await server.serve()
 
     asyncio.run(_main())

@@ -41,6 +41,25 @@ _TTL_RE = re.compile(r"^([1-9]\d*)[smhd]$")
 _config_logger = logging.getLogger(__name__)
 
 
+_CADDY_TLS_MODES: frozenset[str] = frozenset({"internal", "tailscale", "acme", "off"})
+
+
+def _validate_caddy_tls_mode(value: str, default: str = "internal") -> str:
+    """Validate GA_CADDY_TLS_MODE against the four allowed values.
+
+    On an unrecognised value, logs a WARNING and falls back to ``default``.
+    """
+    if value in _CADDY_TLS_MODES:
+        return value
+    _config_logger.warning(
+        "GA_CADDY_TLS_MODE=%r is not one of %s; falling back to %r",
+        value,
+        sorted(_CADDY_TLS_MODES),
+        default,
+    )
+    return default
+
+
 def _validate_token_ttl(value: str, default: str = "24h") -> str:
     """Validate a KC_GATEWAY_TOKEN_TTL value.
 
@@ -115,6 +134,27 @@ class Config:
     ga_enforce_https_redirect: bool = False
     ga_csp_enforce: bool = False
 
+    # ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────
+    # GA_CADDY_ENABLED=true opts into the Caddy layer; default is false (plain
+    # HTTP, per-port uvicorn dashboard proxies — the pre-TRN-92 behaviour).
+    ga_caddy_enabled: bool = False
+    # URL of the Caddy admin API, reachable from inside the transport container.
+    ga_caddy_admin_url: str = "http://ga-caddy:2019"
+    # TLS mode: internal | tailscale | acme | off
+    # - internal (default): Caddy built-in CA; requires a one-time `caddy trust`
+    # - tailscale: real certs from Tailscale ACME for .ts.net hostnames
+    # - acme: public Let's Encrypt; requires GA_CADDY_DOMAIN and port 80/443
+    # - off: plain HTTP, no TLS
+    ga_caddy_tls_mode: str = "internal"
+    # Domain name used for ACME (Let's Encrypt) certificate requests.
+    ga_caddy_domain: str = ""
+    # HTTPS port Caddy listens on (main port).
+    ga_caddy_port: int = 443
+    # HTTP port Caddy listens on (redirects, ACME challenges).
+    ga_caddy_http_port: int = 80
+    # Session TTL for gs_session cookies (dashboard login); default 24 h.
+    ga_caddy_session_ttl_secs: int = 86400
+
     # ── kiro-cli identity ────────────────────────────────────────────────────
     kiro_license: str = ""
     kiro_identity_provider: str = ""
@@ -180,6 +220,15 @@ class Config:
                 "GA_ENFORCE_HTTPS_REDIRECT"
             ),
             ga_csp_enforce=_env_bool_default_off("GA_CSP_ENFORCE"),
+            ga_caddy_enabled=_env_bool_default_off("GA_CADDY_ENABLED"),
+            ga_caddy_admin_url=os.environ.get("GA_CADDY_ADMIN_URL", "http://ga-caddy:2019").strip(),
+            ga_caddy_tls_mode=_validate_caddy_tls_mode(
+                os.environ.get("GA_CADDY_TLS_MODE", "internal").strip()
+            ),
+            ga_caddy_domain=os.environ.get("GA_CADDY_DOMAIN", "").strip(),
+            ga_caddy_port=int(os.environ.get("GA_CADDY_PORT", "443")),
+            ga_caddy_http_port=int(os.environ.get("GA_CADDY_HTTP_PORT", "80")),
+            ga_caddy_session_ttl_secs=int(os.environ.get("GA_CADDY_SESSION_TTL_SECS", "86400")),
             kiro_license=os.environ.get("KIRO_LICENSE", ""),
             kiro_identity_provider=os.environ.get("KIRO_IDENTITY_PROVIDER", ""),
             kiro_region=os.environ.get("KIRO_REGION", ""),

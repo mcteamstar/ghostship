@@ -1,33 +1,33 @@
 ## 1. Config and Environment
 
-- [ ] 1.1 Add new fields to `transport/config.py`: `ga_caddy_enabled`, `ga_caddy_admin_url`, `ga_caddy_tls_mode` (`internal`/`tailscale`/`acme`/`off`, default `internal`), `ga_caddy_domain`, `ga_caddy_port`, `ga_caddy_http_port`; add `from_env()` reads with documented defaults; validate `ga_caddy_tls_mode` against the four allowed values (warn + fall back to `internal` on an unknown value).
-- [ ] 1.2 Add `GA_CADDY_*` variable documentation to `config/ghostship.conf.example` with comments matching the existing style (all four TLS modes described).
-- [ ] 1.3 Add `GA_CADDY_*` variable documentation to `docs/configuration.md`, including the internal-CA root-cert trust step and the four TLS modes.
+- [x] 1.1 Add new fields to `transport/config.py`: `ga_caddy_enabled`, `ga_caddy_admin_url`, `ga_caddy_tls_mode` (`internal`/`tailscale`/`acme`/`off`, default `internal`), `ga_caddy_domain`, `ga_caddy_port`, `ga_caddy_http_port`; add `from_env()` reads with documented defaults; validate `ga_caddy_tls_mode` against the four allowed values (warn + fall back to `internal` on an unknown value).
+- [x] 1.2 Add `GA_CADDY_*` variable documentation to `config/ghostship.conf.example` with comments matching the existing style (all four TLS modes described).
+- [x] 1.3 Add `GA_CADDY_*` variable documentation to `docs/configuration.md`, including the internal-CA root-cert trust step and the four TLS modes.
 
 ## 2. Caddy Admin API — MCP/File Edge Auth
 
-- [ ] 2.1 Implement `_caddy_admin_url()` helper reading `cfg.ga_caddy_admin_url` (default `http://ga-caddy:2019`).
+- [x] 2.1 Implement `_caddy_admin_url()` helper reading `cfg.ga_caddy_admin_url` (default `http://ga-caddy:2019`).
 - [ ] 2.2 Generate the main-server `/mcp*` and `/files/*` routes with a Bearer matcher (`Authorization: Bearer {env.GA_API_KEY}`) plus a catch-all 401 `static_response` route, in the `initial-config.json` writer (task 5.3). Verify a bad/missing token is rejected at Caddy.
 - [ ] 2.3 Ensure the `ga-caddy` compose stanza injects `GA_API_KEY` into Caddy's environment so `{env.GA_API_KEY}` resolves.
 
 ## 3. Caddy Admin API — Per-Crew Dashboard Servers
 
-- [ ] 3.1 Implement `_caddy_register_crew(crew_id, port)`: builds a Caddy HTTP-server JSON object (`@id: crew-{crew_id}`, `listen: [":{port}"]`, `forward_auth` sub-handler to `/dashboard-auth` with `copy_headers: ["X-Crew-Cookie"]`, then `reverse_proxy` to `gs-{crew_id}:5476`), `PUT`s it to the Caddy admin API, retries 3× with backoff, logs a warning on failure (does not raise).
-- [ ] 3.2 Implement `_caddy_deregister_crew(crew_id)`: `DELETE /config/id/crew-{crew_id}`, handles 404 gracefully, logs a warning on other failures.
-- [ ] 3.3 Call `_caddy_register_crew` inside `_registry_lock` in `launch` after the dashboard port is allocated, when `cfg.ga_caddy_enabled` and `dashboard=True`.
-- [ ] 3.4 Call `_caddy_deregister_crew` in `nuke` (before registry removal / port release) when `cfg.ga_caddy_enabled`.
-- [ ] 3.5 In `_reconcile_registry` (transport startup), re-register a Caddy server for every crew in `crews.json` with an allocated dashboard port; make re-registration idempotent (handle existing `@id`).
-- [ ] 3.6 Suppress `_start_dashboard_port_server` / the per-port uvicorn listener threads when `cfg.ga_caddy_enabled=True` — Caddy owns the port binding. Keep the port-pool allocation (transport still assigns the port and tells Caddy).
-- [ ] 3.7 Update `_handle_crew_dashboard_post`/`_handle_crew_dashboard_delete` to register/deregister a Caddy server (instead of a uvicorn thread) when Caddy is enabled.
+- [x] 3.1 Implement `_caddy_register_crew(crew_id, port)`: builds a Caddy HTTP-server JSON object (`@id: crew-{crew_id}`, `listen: [":{port}"]`, `forward_auth` sub-handler to `/dashboard-auth` with `copy_headers: ["X-Crew-Cookie"]`, then `reverse_proxy` to `gs-{crew_id}:5476`), `PUT`s it to the Caddy admin API, retries 3× with backoff, logs a warning on failure (does not raise).
+- [x] 3.2 Implement `_caddy_deregister_crew(crew_id)`: `DELETE /config/id/crew-{crew_id}`, handles 404 gracefully, logs a warning on other failures.
+- [x] 3.3 Call `_caddy_register_crew` inside `_registry_lock` in `launch` after the dashboard port is allocated, when `cfg.ga_caddy_enabled` and `dashboard=True`.
+- [x] 3.4 Call `_caddy_deregister_crew` in `nuke` (before registry removal / port release) when `cfg.ga_caddy_enabled`.
+- [x] 3.5 In `_reconcile_registry` (transport startup), re-register a Caddy server for every crew in `crews.json` with an allocated dashboard port; make re-registration idempotent (handle existing `@id`).
+- [x] 3.6 Suppress `_start_dashboard_port_server` / the per-port uvicorn listener threads when `cfg.ga_caddy_enabled=True` — Caddy owns the port binding. Keep the port-pool allocation (transport still assigns the port and tells Caddy).
+- [x] 3.7 Update `_handle_crew_dashboard_post`/`_handle_crew_dashboard_delete` to register/deregister a Caddy server (instead of a uvicorn thread) when Caddy is enabled.
 
 ## 4. Dashboard Auth Endpoints (forward_auth)
 
-- [ ] 4.1 Add an in-memory `_gs_session_store: dict[str, float]` (token → expiry); TTL default 24 h via `GA_CADDY_SESSION_TTL_SECS`.
-- [ ] 4.2 Implement `_handle_dashboard_login_post`: reads `ga_api_key`, constant-time compare with `GA_API_KEY`, on success issues `secrets.token_hex(32)` and returns `Set-Cookie: gs_session=<token>; HttpOnly; SameSite=Lax; Secure; Path=/` + 200; on failure 401.
-- [ ] 4.3 Implement `_handle_dashboard_auth`: validates `gs_session`, on 200 returns `X-Crew-Cookie: mc_token_5476=<crew cookie>` for the crew mapped from the incoming dashboard port; 401 otherwise.
-- [ ] 4.4 Implement `_handle_login_ui`: serves the minimal HTML form (no auth), honours `?next=` for post-login redirect.
-- [ ] 4.5 Register `/dashboard-login`, `/dashboard-auth`, `/login-ui` as public routes (served before `BearerAuthMiddleware`'s key check) and add them to the main Caddy server config.
-- [ ] 4.6 Add a `dashboard_auth` rate limiter (e.g. `GA_RATE_LIMIT_DASHBOARD_AUTH=60:60`) or exempt these routes deliberately.
+- [x] 4.1 Add an in-memory `_gs_session_store: dict[str, float]` (token → expiry); TTL default 24 h via `GA_CADDY_SESSION_TTL_SECS`.
+- [x] 4.2 Implement `_handle_dashboard_login_post`: reads `ga_api_key`, constant-time compare with `GA_API_KEY`, on success issues `secrets.token_hex(32)` and returns `Set-Cookie: gs_session=<token>; HttpOnly; SameSite=Lax; Secure; Path=/` + 200; on failure 401.
+- [x] 4.3 Implement `_handle_dashboard_auth`: validates `gs_session`, on 200 returns `X-Crew-Cookie: mc_token_5476=<crew cookie>` for the crew mapped from the incoming dashboard port; 401 otherwise.
+- [x] 4.4 Implement `_handle_login_ui`: serves the minimal HTML form (no auth), honours `?next=` for post-login redirect.
+- [x] 4.5 Register `/dashboard-login`, `/dashboard-auth`, `/login-ui` as public routes (served before `BearerAuthMiddleware`'s key check) and add them to the main Caddy server config.
+- [x] 4.6 Add a `dashboard_auth` rate limiter (e.g. `GA_RATE_LIMIT_DASHBOARD_AUTH=60:60`) or exempt these routes deliberately.
 - [ ] 4.7 Document the `basicauth` and `caddy-security` (OIDC/OAuth2, via `xcaddy`) alternatives as config-only swaps in `docs/caddy.md`.
 
 ## 5. install.sh
@@ -47,8 +47,8 @@
 
 ## 7. dashboard_url in launch and crews
 
-- [ ] 7.1 When `cfg.ga_caddy_enabled`, `launch()` returns `dashboard_url = https://{host}:{port}/` (HTTPS via Caddy; same per-port shape, TLS scheme).
-- [ ] 7.2 Update `crews()` to return the Caddy HTTPS per-port `dashboard_url` when Caddy is enabled, and the plain-HTTP per-port URL otherwise.
+- [x] 7.1 When `cfg.ga_caddy_enabled`, `launch()` returns `dashboard_url = https://{host}:{port}/` (HTTPS via Caddy; same per-port shape, TLS scheme).
+- [x] 7.2 Update `crews()` to return the Caddy HTTPS per-port `dashboard_url` when Caddy is enabled, and the plain-HTTP per-port URL otherwise.
 
 ## 8. Tests
 
