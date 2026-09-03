@@ -3,7 +3,7 @@ name: ghostship-capability
 description: Configure what ghostship crews can do — agent personas, skills, steering, MCP server catalogue, security policies, crew compositions, and environment variables. Use when the task is about changing what agents know or can access, adding a new composition, wiring an MCP server into the catalogue, or tuning configuration — not about installing ghostship (ghostship-admin) or driving an already-running fleet (ghostship-command).
 metadata:
   author: ghostship
-  version: "0.2.4"
+  version: "0.2.5"
 ---
 
 # Ghostship Capability
