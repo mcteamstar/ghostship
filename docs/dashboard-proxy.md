@@ -98,7 +98,7 @@ What protects the UI ports in direct mode:
 When `GA_CADDY_ENABLED=true`, Caddy takes over all dashboard port bindings and adds authentication to every dashboard port:
 
 ```
-Browser → host:64058 (HTTPS, via ga-caddy)
+Browser → host:64058 (HTTPS, via ga-port)
         → forward_auth check at ga-transport:/dashboard-auth
         → (on valid gs_session cookie) reverse_proxy → gs-{crew_id}:5476
 ```

@@ -139,7 +139,7 @@ class Config:
     # HTTP, per-port uvicorn dashboard proxies — the pre-TRN-92 behaviour).
     ga_caddy_enabled: bool = False
     # URL of the Caddy admin API, reachable from inside the transport container.
-    ga_caddy_admin_url: str = "http://ga-caddy:2019"
+    ga_caddy_admin_url: str = "http://ga-port:2019"
     # TLS mode: internal | tailscale | acme | off
     # - internal (default): Caddy built-in CA; requires a one-time `caddy trust`
     # - tailscale: real certs from Tailscale ACME for .ts.net hostnames
@@ -221,7 +221,7 @@ class Config:
             ),
             ga_csp_enforce=_env_bool_default_off("GA_CSP_ENFORCE"),
             ga_caddy_enabled=_env_bool_default_off("GA_CADDY_ENABLED"),
-            ga_caddy_admin_url=os.environ.get("GA_CADDY_ADMIN_URL", "http://ga-caddy:2019").strip(),
+            ga_caddy_admin_url=os.environ.get("GA_CADDY_ADMIN_URL", "http://ga-port:2019").strip(),
             ga_caddy_tls_mode=_validate_caddy_tls_mode(
                 os.environ.get("GA_CADDY_TLS_MODE", "internal").strip()
             ),

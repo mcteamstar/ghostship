@@ -6,7 +6,7 @@
 
 `GA_CADDY_ENABLED=true` is an opt-in, breaking cutover — no coexistence with the existing per-port mode. Re-run `install.sh` after enabling.
 
-- `GA_CADDY_ENABLED=true` adds a `ga-caddy` container (vanilla `caddy:2` image) to the compose stack. It becomes the sole TLS terminator and auth gate for all ports.
+- `GA_CADDY_ENABLED=true` adds a `ga-port` container (vanilla `caddy:2` image) to the compose stack. It becomes the sole TLS terminator and auth gate for all ports.
 - **Port ownership change:** Caddy binds the dashboard port range (default `64058–64107`) **and** ports 443/80. The transport no longer binds those ports. The transport's per-port uvicorn listener threads are not started.
 - **Dashboard auth gating:** every dashboard port is now protected by a `forward_auth` → `gs_session` cookie gate. Unauthenticated requests redirect to `/login-ui`; `POST /dashboard-login` issues a session cookie when the operator's `GA_API_KEY` is correct.
 - **MCP/file Bearer enforcement at the edge:** when `GA_API_KEY` is set, Caddy rejects bad or missing `Authorization: Bearer` on `/mcp*` and `/files/*` before requests reach the transport.
@@ -14,7 +14,7 @@
 - **New transport endpoints:** `GET /login-ui`, `POST /dashboard-login`, `GET /dashboard-auth`.
 - **Dynamic Caddy server management:** `launch` registers a per-crew Caddy server via the admin API; `nuke` removes it. Transport startup re-registers servers from `crews.json` (idempotent). No Caddy restarts on crew changes.
 - **Dashboard URLs become HTTPS:** `launch(dashboard=True)` returns `https://host:PORT/` when Caddy is enabled.
-- **vm23 host Caddy retirement:** `ga-caddy` replaces the host-level Caddy on vm23. Stop and disable the host Caddy before or alongside the `install.sh` cutover.
+- **vm23 host Caddy retirement:** `ga-port` replaces the host-level Caddy on vm23. Stop and disable the host Caddy before or alongside the `install.sh` cutover.
 - New env vars: `GA_CADDY_ENABLED`, `GA_CADDY_ADMIN_URL`, `GA_CADDY_TLS_MODE`, `GA_CADDY_DOMAIN`, `GA_CADDY_PORT`, `GA_CADDY_HTTP_PORT`, `GA_CADDY_SESSION_TTL_SECS`.
 - Rate limiter extended with `dashboard_auth` endpoint (`GA_RATE_LIMIT_DASHBOARD_AUTH`, default 60 req/60 s).
 - See [docs/caddy.md](docs/caddy.md) for setup, TLS modes, auth upgrade paths (`basicauth`, `caddy-security` SSO), and migration.

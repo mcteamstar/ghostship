@@ -355,7 +355,7 @@ GA_ENFORCE_HTTPS_REDIRECT = cfg.ga_enforce_https_redirect
 GA_CSP_ENFORCE = cfg.ga_csp_enforce
 
 # ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────────
-# When GA_CADDY_ENABLED=true, a ga-caddy container owns port bindings for
+# When GA_CADDY_ENABLED=true, a ga-port container owns port bindings for
 # the main HTTPS port AND the dashboard port range (64058–64107). The
 # transport does NOT start per-port uvicorn listeners; instead it calls the
 # Caddy admin API to register/deregister per-crew dashboard servers.
@@ -851,7 +851,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
         return Response(status_code=401)
 
     # Determine which crew this request is for by looking up the incoming port.
-    # In Caddy mode the forward_auth call comes from ga-caddy → ga-transport,
+    # In Caddy mode the forward_auth call comes from ga-port → ga-transport,
     # so we read the X-Forwarded-For / X-Real-Port Caddy passes, or fall back
     # to reading the original dashboard-port from a custom header that the
     # Caddy server config can inject.
@@ -1522,13 +1522,15 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
             _save_registry(reg)
 
     if GA_CADDY_ENABLED:
-        # TRN-92: Caddy mode — dashboard URL uses HTTPS; register with Caddy admin API.
+        # TRN-92: Caddy mode — dashboard URL scheme depends on TLS mode.
+        # GA_CADDY_TLS_MODE=off means plain HTTP; all other modes use HTTPS.
+        _caddy_scheme = "http" if cfg.ga_caddy_tls_mode == "off" else "https"
         if cfg.ga_host_url:
             from urllib.parse import urlparse as _urlparse_d2
             _ph = _urlparse_d2(cfg.ga_host_url)
-            dashboard_url = f"https://{_ph.hostname}:{dashboard_port}/"
+            dashboard_url = f"{_caddy_scheme}://{_ph.hostname}:{dashboard_port}/"
         else:
-            dashboard_url = f"https://localhost:{dashboard_port}/"
+            dashboard_url = f"{_caddy_scheme}://localhost:{dashboard_port}/"
         # Register inside a fresh _registry_lock acquisition — we exited the
         # previous lock section above.
         with _registry_lock:
@@ -2531,12 +2533,13 @@ def crews() -> dict:
         _ui_p = info.get("dashboard_port")
         if _ui_p is not None:
             if GA_CADDY_ENABLED:
+                _caddy_scheme = "http" if cfg.ga_caddy_tls_mode == "off" else "https"
                 if cfg.ga_host_url:
                     from urllib.parse import urlparse as _urlparse3
                     _ph = _urlparse3(cfg.ga_host_url)
-                    entry["dashboard_url"] = f"https://{_ph.hostname}:{_ui_p}/"
+                    entry["dashboard_url"] = f"{_caddy_scheme}://{_ph.hostname}:{_ui_p}/"
                 else:
-                    entry["dashboard_url"] = f"https://localhost:{_ui_p}/"
+                    entry["dashboard_url"] = f"{_caddy_scheme}://localhost:{_ui_p}/"
             else:
                 if cfg.ga_host_url:
                     from urllib.parse import urlparse as _urlparse3
@@ -2737,13 +2740,14 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                     _save_registry(reg)
                     return {"error": str(_err)}
             if GA_CADDY_ENABLED:
-                # TRN-92: Caddy mode — dashboard URL uses HTTPS scheme.
+                # TRN-92: Caddy mode — scheme depends on TLS mode.
+                _caddy_scheme = "http" if cfg.ga_caddy_tls_mode == "off" else "https"
                 if cfg.ga_host_url:
                     from urllib.parse import urlparse as _urlparse2
                     _p = _urlparse2(cfg.ga_host_url)
-                    _ui_host = f"https://{_p.hostname}:{dashboard_port}"
+                    _ui_host = f"{_caddy_scheme}://{_p.hostname}:{dashboard_port}"
                 else:
-                    _ui_host = f"https://localhost:{dashboard_port}"
+                    _ui_host = f"{_caddy_scheme}://localhost:{dashboard_port}"
             else:
                 if cfg.ga_host_url:
                     from urllib.parse import urlparse as _urlparse2

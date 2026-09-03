@@ -1,6 +1,6 @@
 # Caddy Reverse Proxy (TRN-92)
 
-Ghostship can optionally run a Caddy container (`ga-caddy`) as its TLS terminator, edge auth gate, and dashboard port router. This feature is **opt-in** — set `GA_CADDY_ENABLED=true` in your config and re-run `install.sh`.
+Ghostship can optionally run a Caddy container (`ga-port`) as its TLS terminator, edge auth gate, and dashboard port router. This feature is **opt-in** — set `GA_CADDY_ENABLED=true` in your config and re-run `install.sh`.
 
 > ⚠️ **Breaking change.** Enabling Caddy is a clean cutover. Caddy binds the dashboard port range (`64058–64107` by default); the transport stops binding those ports. There is no coexistence window. See [Migration](#migration).
 
@@ -10,7 +10,7 @@ Caddy sits in front of all traffic:
 
 ```
                   ┌──────────────────────────────────────────────────────┐
-  External        │  ga-caddy (caddy:2 image, ga-net)                    │
+  External        │  ga-port (caddy:2 image, ga-net)                    │
   traffic ──────▶ │                                                       │
                   │  MAIN SERVER  :443 / :80                              │
                   │    /mcp*         ── Bearer check ──▶ ga-transport     │
@@ -68,7 +68,7 @@ TLS applies to every listener Caddy owns — the main port and every per-crew da
 When `GA_CADDY_TLS_MODE=internal`, add the Caddy root CA to your trust store once. `install.sh` prints the path:
 
 ```
-[CADDY] Internal CA root cert: /path/to/ga-caddy-data/_data/caddy/pki/authorities/local/root.crt
+[CADDY] Internal CA root cert: /path/to/ga-port-data/_data/caddy/pki/authorities/local/root.crt
 [CADDY] Run once: caddy trust --ca /path/to/root.crt
 ```
 
@@ -79,7 +79,7 @@ When `GA_CADDY_TLS_MODE=internal`, add the Caddy root CA to your trust store onc
 The default auth mechanism for dashboard ports uses Caddy's `forward_auth` handler:
 
 ```
-Browser ──GET :64058/──▶ ga-caddy
+Browser ──GET :64058/──▶ ga-port
                             │
                             ├─ forward_auth ──GET /dashboard-auth──▶ ga-transport
                             │                    │ valid gs_session cookie?
@@ -105,7 +105,7 @@ No Caddy plugin is required for this flow. The vanilla `caddy:2` image is suffic
 When `GA_API_KEY` is set and Caddy is enabled, the `/mcp*` and `/files/*` routes on the main server require `Authorization: Bearer <GA_API_KEY>`. Requests without the correct token are rejected by Caddy with 401 before they reach the transport process:
 
 ```
-Client ──/mcp──▶ ga-caddy
+Client ──/mcp──▶ ga-port
                     │
                     ├─ Authorization: Bearer <correct> ──▶ ga-transport (proxied)
                     └─ missing / wrong Bearer           ──▶ 401 WWW-Authenticate: Bearer
@@ -132,7 +132,7 @@ The transport's own `BearerAuthMiddleware` remains active for defence-in-depth �
 3. For `internal` mode: trust the Caddy root CA (path printed by step 2):
 
    ```bash
-   caddy trust --ca /path/to/ga-caddy-data/_data/caddy/pki/authorities/local/root.crt
+   caddy trust --ca /path/to/ga-port-data/_data/caddy/pki/authorities/local/root.crt
    ```
 
    Or import the cert into your browser's trust store manually.
@@ -181,7 +181,7 @@ This is the recommended path for production deployments where operator-managed a
 
 ## vm23 note — retiring the host Caddy
 
-When `GA_CADDY_ENABLED=true`, `ga-caddy` becomes the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on vm23 is no longer needed and should be stopped and removed to avoid port conflicts:
+When `GA_CADDY_ENABLED=true`, `ga-port` becomes the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on vm23 is no longer needed and should be stopped and removed to avoid port conflicts:
 
 ```bash
 sudo systemctl stop caddy
@@ -196,7 +196,7 @@ All existing deployments run unchanged — `GA_CADDY_ENABLED=false` is the defau
 
 1. Set `GA_CADDY_ENABLED=true` in your config (and `GA_CADDY_TLS_MODE`, `GA_CADDY_DOMAIN` if needed).
 2. On vm23: stop the pre-existing host Caddy (see above).
-3. Run `./install.sh --config config/ghostship.conf`. The regenerated `compose.yml` binds the dashboard port range to `ga-caddy`, not `ga-transport`.
+3. Run `./install.sh --config config/ghostship.conf`. The regenerated `compose.yml` binds the dashboard port range to `ga-port`, not `ga-transport`.
 4. For `internal` TLS: run `caddy trust` with the printed path.
 5. Existing crews survive — the transport's `_reconcile_registry` re-registers their Caddy servers on startup.
 
@@ -213,5 +213,5 @@ See [configuration.md](configuration.md) for the full `GA_CADDY_*` variable tabl
 | `GA_CADDY_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
 | `GA_CADDY_PORT` | `443` | Main HTTPS port |
 | `GA_CADDY_HTTP_PORT` | `80` | HTTP port (ACME challenges and redirects) |
-| `GA_CADDY_ADMIN_URL` | `http://ga-caddy:2019` | Caddy admin API URL (transport-internal) |
+| `GA_CADDY_ADMIN_URL` | `http://ga-port:2019` | Caddy admin API URL (transport-internal) |
 | `GA_CADDY_SESSION_TTL_SECS` | `86400` | Session cookie TTL (seconds) |

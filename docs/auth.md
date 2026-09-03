@@ -436,7 +436,7 @@ When the Caddy reverse proxy is enabled, dashboard ports are protected by a sess
 ### Auth flow overview
 
 ```
-Browser ──GET :64058/──▶ ga-caddy
+Browser ──GET :64058/──▶ ga-port
                             │
                             ├─ forward_auth ──GET /dashboard-auth──▶ ga-transport
                             │                 valid gs_session?

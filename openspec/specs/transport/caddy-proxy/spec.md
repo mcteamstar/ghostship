@@ -7,22 +7,22 @@ Manages a Caddy reverse-proxy container as an optional transport layer: generate
 ## Requirements
 
 ### Requirement: Caddy container lifecycle
-When `GA_CADDY_ENABLED=true`, `install.sh` SHALL add a `ga-caddy` service to the generated `compose.yml`. The service SHALL bind the public HTTPS port (default 443), the HTTP port (default 80) for ACME challenges and redirects, AND the dashboard port range (default 64058–64107) — Caddy owns those port bindings, not the transport. The Caddy admin API (port 2019) SHALL be bound to the internal `ga-net` network only and SHALL NOT be published to the host. The `ga-transport` service SHALL NOT bind the dashboard port range when `GA_CADDY_ENABLED=true`.
+When `GA_CADDY_ENABLED=true`, `install.sh` SHALL add a `ga-port` service to the generated `compose.yml`. The service SHALL bind the public HTTPS port (default 443), the HTTP port (default 80) for ACME challenges and redirects, AND the dashboard port range (default 64058–64107) — Caddy owns those port bindings, not the transport. The Caddy admin API (port 2019) SHALL be bound to the internal `ga-net` network only and SHALL NOT be published to the host. The `ga-transport` service SHALL NOT bind the dashboard port range when `GA_CADDY_ENABLED=true`.
 
 #### Scenario: Fresh install with Caddy enabled
 - **WHEN** `install.sh` runs with `GA_CADDY_ENABLED=true`
-- **THEN** `compose.yml` contains a `ga-caddy` service with the `caddy:2` image, ports `80:80`, `443:443`, and the dashboard range, and no `2019:2019` host mapping
+- **THEN** `compose.yml` contains a `ga-port` service with the `caddy:2` image, ports `80:80`, `443:443`, and the dashboard range, and no `2019:2019` host mapping
 - **THEN** the `ga-transport` service does not bind the dashboard port range
 
 #### Scenario: Fresh install with Caddy disabled
 - **WHEN** `install.sh` runs with `GA_CADDY_ENABLED=false` (the default)
-- **THEN** `compose.yml` does not contain a `ga-caddy` service and transport behavior is unchanged (the transport binds the dashboard range as today)
+- **THEN** `compose.yml` does not contain a `ga-port` service and transport behavior is unchanged (the transport binds the dashboard range as today)
 
 ### Requirement: Initial Caddy JSON configuration
 `install.sh` SHALL write an `initial-config.json` under `DATA_DIR` that bootstraps Caddy with a main HTTP server (default port 443) carrying: MCP routes (`/mcp*`), file-transfer routes (`/files/*`), health (`/health`), and the dashboard-auth endpoints (`/dashboard-auth`, `/login-ui`, `/dashboard-login`). The initial config SHALL contain no per-crew dashboard servers — those are added at runtime. The config SHALL be loaded via `caddy run --config /config/initial-config.json --resume`.
 
 #### Scenario: Caddy starts with initial config
-- **WHEN** the `ga-caddy` container starts for the first time
+- **WHEN** the `ga-port` container starts for the first time
 - **THEN** the Caddy entrypoint loads `initial-config.json`
 - **THEN** `GET /health` on the main port returns 200
 

@@ -18,7 +18,7 @@ Two layers of Caddy routing:
 
 ```
                   ┌──────────────────────────────────────────────────────┐
-  External ─────▶ │  ga-caddy (caddy:2, ga-net) — sole TLS terminator    │
+  External ─────▶ │  ga-port (caddy:2, ga-net) — sole TLS terminator    │
                   │                                                       │
                   │  MAIN :443/:80                                        │
                   │    /mcp*    (Bearer {GA_API_KEY} enforced)──▶ transport│
@@ -59,11 +59,11 @@ Two layers of Caddy routing:
 
 **D5 — TLS four modes:** `internal` (default; built-in CA, works anywhere, one-time `caddy trust`), `tailscale` (real trusted `.ts.net` certs via Tailscale ACME — vm23/academy), `acme` (public Let's Encrypt, needs `GA_CADDY_DOMAIN`), `off`. Internal-CA root cert path surfaced by install output + `ghostship status`.
 
-**D6 — `ga-caddy-data` volume** persists certs, CA, and resumed config.
+**D6 — `ga-port-data` volume** persists certs, CA, and resumed config.
 
 **D7 — Admin API (2019) on `ga-net` only**, never host-published.
 
-**D8 — `ga-caddy` is the sole TLS terminator.** On vm23 the pre-existing host Caddy is retired once `ga-caddy` is active (Admiral Q1).
+**D8 — `ga-port` is the sole TLS terminator.** On vm23 the pre-existing host Caddy is retired once `ga-port` is active (Admiral Q1).
 
 **D9 — Clean cutover.** When Caddy is enabled the transport's per-port uvicorn threads are not started; Caddy owns the port bindings. No coexistence, no migration window — a **breaking change** (Admiral Q3).
 
@@ -75,11 +75,11 @@ Two layers of Caddy routing:
 
 | File | Change |
 |------|--------|
-| `install.sh` | `GA_CADDY_*` vars; `initial-config.json` (main server, Bearer matcher, 4 TLS modes); `ga-caddy` service binding 443/80 **+ dashboard range** with `GA_API_KEY` env; move dashboard range off `ga-transport`; print internal-CA path |
+| `install.sh` | `GA_CADDY_*` vars; `initial-config.json` (main server, Bearer matcher, 4 TLS modes); `ga-port` service binding 443/80 **+ dashboard range** with `GA_API_KEY` env; move dashboard range off `ga-transport`; print internal-CA path |
 | `transport/config.py` | 6 new fields incl. `ga_caddy_tls_mode` (internal/tailscale/acme/off) |
 | `transport/server.py` | `_caddy_register_crew`/`_caddy_deregister_crew` (per-port servers); `_handle_dashboard_auth`/`_dashboard_login_post`/`_login_ui`; suppress per-port uvicorn threads when Caddy on; `_reconcile_registry` re-registers servers; edge-Bearer main-server routes |
 | `ghostship` CLI | `status` surfaces internal-CA root cert path |
-| compose template | `ga-caddy` service + `ga-caddy-data` volume; admin port internal-only |
+| compose template | `ga-port` service + `ga-port-data` volume; admin port internal-only |
 | docs | new `docs/caddy.md`; `docs/dashboard-proxy.md` (breaking note); `docs/auth.md`; `docs/configuration.md`; release notes |
 
 No change to `transport/Containerfile` (SSO via `caddy-security` is a separate documented `xcaddy` build), crew images, or `ga-net` topology.
@@ -108,6 +108,6 @@ No change to `transport/Containerfile` (SSO via `caddy-security` is a separate d
 ## Open Questions
 
 All resolved by Admiral direction:
-- **Q1 (vm23)** → D8: `ga-caddy` is sole TLS terminator; host Caddy retired.
+- **Q1 (vm23)** → D8: `ga-port` is sole TLS terminator; host Caddy retired.
 - **Q2 (SPA base URL)** → confirmed broken. Port-based routing only; path-prefix and subdomain both dropped. No `GA_DASHBOARD_MODE`.
 - **Q3 (coexistence)** → D9: clean cutover, breaking change, no migration window.

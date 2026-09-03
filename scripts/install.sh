@@ -682,9 +682,9 @@ fi)
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
 $(if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then
 cat <<CADDY_SVC
-  ga-caddy:
+  ga-port:
     image: caddy:2
-    container_name: ga-caddy
+    container_name: ga-port
     restart: always
     ports:
       - "0.0.0.0:${GA_CADDY_HTTP_PORT:-80}:80"
@@ -696,7 +696,7 @@ cat <<CADDY_SVC
       GA_API_KEY: "${GA_API_KEY:-}"
     volumes:
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
-      - ga-caddy-data:/data
+      - ga-port-data:/data
     command: ["caddy", "run", "--config", "/config/initial-config.json", "--resume"]
 CADDY_SVC
 fi)
@@ -704,7 +704,7 @@ networks:
   ga-net:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf 'secrets:\n  ga-api-key:\n    external: true\n'; fi)
-$(if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then printf 'volumes:\n  ga-caddy-data:\n'; fi)
+$(if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then printf 'volumes:\n  ga-port-data:\n'; fi)
 COMPOSE_EOF
 
 echo "✓ compose.yml written to ${DATA_DIR}/compose.yml"
@@ -775,22 +775,22 @@ CADDY_EOF
   echo "✓ Caddy initial-config.json written to ${DATA_DIR}/caddy/initial-config.json"
 
   # Internal CA: surface the root cert path so the operator knows where to
-  # run 'caddy trust'. The cert lives in the ga-caddy-data volume at the
+  # run 'caddy trust'. The cert lives in the ga-port-data volume at the
   # standard Caddy path /data/caddy/pki/authorities/local/root.crt.
   if [[ "${GA_CADDY_TLS_MODE:-internal}" == "internal" ]]; then
-    # Resolve the host-side volume mountpoint for ga-caddy-data.
+    # Resolve the host-side volume mountpoint for ga-port-data.
     _CADDY_DATA_MOUNTPOINT=""
-    if ${_PODMAN_CMD} volume exists ga-caddy-data 2>/dev/null; then
-      _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect ga-caddy-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
+    if ${_PODMAN_CMD} volume exists ga-port-data 2>/dev/null; then
+      _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect ga-port-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
     fi
-    _CADDY_ROOT_CERT_PATH="${_CADDY_DATA_MOUNTPOINT:-(ga-caddy-data not yet created)}/caddy/pki/authorities/local/root.crt"
+    _CADDY_ROOT_CERT_PATH="${_CADDY_DATA_MOUNTPOINT:-(ga-port-data not yet created)}/caddy/pki/authorities/local/root.crt"
     echo ""
     echo "── Caddy internal CA ─────────────────────────────────────────────────"
     echo "TLS mode: internal (Caddy built-in CA)"
     echo "Root CA cert: ${_CADDY_ROOT_CERT_PATH}"
     echo ""
-    echo "After ga-caddy starts, run this once to trust the CA:"
-    echo "  podman exec ga-caddy caddy trust"
+    echo "After ga-port starts, run this once to trust the CA:"
+    echo "  podman exec ga-port caddy trust"
     echo "or import the cert manually from the path above."
     echo "──────────────────────────────────────────────────────────────────────"
     echo ""
@@ -856,7 +856,7 @@ else
   exit 1
 fi
 
-# TRN-92: ga-caddy health check (only when Caddy is enabled)
+# TRN-92: ga-port health check (only when Caddy is enabled)
 if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then
   _caddy_ready=0
   for (( _i=0; _i<_max_wait; _i+=_interval )); do
@@ -870,8 +870,8 @@ if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then
   if [[ "$_caddy_ready" == "1" ]]; then
     echo "✓ Caddy is ready"
   else
-    echo "⚠ Caddy (ga-caddy) did not respond on port ${GA_CADDY_PORT:-443} within ${_max_wait}s"
-    echo "  Check: ${_PODMAN_CMD} logs ga-caddy --tail 20"
+    echo "⚠ Caddy (ga-port) did not respond on port ${GA_CADDY_PORT:-443} within ${_max_wait}s"
+    echo "  Check: ${_PODMAN_CMD} logs ga-port --tail 20"
     echo "  This is non-fatal — Caddy may still be pulling or starting."
   fi
 fi
