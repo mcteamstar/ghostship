@@ -5,24 +5,25 @@
 See `proposal.md — Why` for motivation. Current state relevant to the design:
 
 - The transport is a single Python/uvicorn process on port 64057. It runs as a container named `ga-transport` inside the `ga-net` Podman network.
-- Dashboard UIs get per-port daemon-thread uvicorn servers (ports 64058–64107), each proxying to `gs-{id}:5476`. These spawn a new thread and asyncio event loop per crew.
-- `BearerAuthMiddleware` enforces `GA_API_KEY` on every request. Dashboard ports are currently unauthenticated (TRN-91 gap).
+- Dashboard UIs get per-port daemon-thread uvicorn servers (ports 64058–64107), each proxying to `gs-{id}:5476`. These spawn a new thread and asyncio event loop per crew. The per-port model exists **because the KiroCrew dashboard SPA requires a root origin** — it does not work under a path prefix (`/crews/{id}/ui/`), which was tried and confirmed broken. Each crew UI therefore owns a full origin (`host:PORT/`).
+- `BearerAuthMiddleware` enforces `GA_API_KEY` on every request to the main transport port (64057). Dashboard ports are currently unauthenticated (TRN-91 gap).
 - TLS is either absent (plain HTTP, the default) or via `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` on the transport itself (not widely used).
-- The Caddy project already runs as a separate service on `vm23` (the academy host). That service is managed independently and listens on its own port — it does not share the `ga-net` Podman network with transport containers. The `ga-caddy` introduced here is a separate container joining `ga-net` only; the two cannot conflict.
+- The Caddy project already runs as a separate host-level service on `vm23` (the academy host), managed independently. This design's `ga-caddy` container **replaces** that host Caddy on vm23 (see D8).
 
 ## Goals / Non-Goals
 
 **Goals:**
-- One single exposed port for all external traffic (MCP, files, dashboard UIs, auth)
-- TLS for all three target environments: local dev (internal CA), remote/ACME, Tailscale
-- Cookie-gated dashboard login that browsers can use (no `Authorization` header required)
+- TLS for all target environments: local dev (internal CA), remote/ACME, Tailscale
+- Cookie-gated dashboard login that browsers can use (no `Authorization` header required), applied per crew UI port
+- Preserve the per-port dashboard model (a root origin per crew), which the SPA requires
 - Zero config changes for existing deployments (opt-in via `GA_CADDY_ENABLED=true`)
-- Per-crew route registration/deregistration without Caddy restart
+- Per-crew port↔crew mapping registered/deregistered in Caddy without a Caddy restart
 
 **Non-Goals:**
+- Subdomain-per-crew routing — dropped: subdomains don't work on localhost, and the port-per-crew model already gives each SPA a root origin. There is exactly one dashboard routing mode (port).
+- Path-prefix dashboard routing (`/crews/{id}/ui/`) — confirmed broken by the SPA's root-origin requirement.
 - OAuth/SSO integration (future work — the cookie-gate in this change is `GA_API_KEY`-backed, which is already what operators use today)
-- Subdomain-per-crew (Option C from TRN-92 ticket) — requires wildcard DNS and complicates cert provisioning; path-prefix routing covers all current use cases
-- Removing the per-port daemon-thread model — it stays as a fully functional fallback; no existing deployment is disrupted
+- Coexistence of Caddy mode and the transport's per-port uvicorn listeners — `GA_CADDY_ENABLED=true` is a clean cutover (see D9).
 
 ## Decisions
 
@@ -33,90 +34,135 @@ See `proposal.md — Why` for motivation. Current state relevant to the design:
 **Rationale**: The install base runs local, Tailscale-protected installs where TLS and browser auth are low-priority. Forcing Caddy on every install adds an image pull, a container, and a new dependency path for operators who just want MCP + headless crews. Optional solves the problems for operators who need it without regressing for those who don't.
 
 **Alternatives considered**:
-- *Always-on*: Simpler config, but breaks existing single-port installs and adds a mandatory external dependency.
-- *Option A (status quo + TRN-91 bolt-on)*: Defers TLS entirely. Cookie auth bolted onto 50 separate per-port listeners is harder than doing it once in Caddy.
-- *Option C (subdomain-per-crew)*: Cleaner origin isolation but requires wildcard DNS and complicates ACME provisioning. Not needed: SPAs work fine at a path prefix when their base URL is configured correctly, and the KiroCrew gateway already serves under a configurable root.
+- *Always-on*: Simpler config, but breaks existing installs and adds a mandatory external dependency.
+- *Option A (status quo + TRN-91 bolt-on)*: Defers TLS entirely. Cookie auth bolted onto the transport's own per-port listeners is workable, but Caddy binding the ports directly gives TLS + auth in one component.
+- *Option C (subdomain-per-crew)*: Dropped — see Non-Goals.
 
-### D2: Route management via Caddy admin API, not static Caddyfile
+### D2: MCP/file route management via Caddy admin API, not static Caddyfile
 
-**Chosen**: Transport calls `POST /config/apps/http/servers/ga/routes/.` to append a route, and `DELETE /config/id/crew-{id}` to remove it. Route objects carry `"@id": "crew-{id}"` for O(1) removal. No Caddy restarts.
+**Chosen**: The MCP, file, and health/auth routes live on Caddy's main port (443). Per-crew **dashboard ports** are managed via the Caddy admin API: `launch` calls `POST /config/apps/http/servers/.../` (or `PUT /id/...`) to add a new server listening on the crew's allocated port and proxying to `gs-{id}:5476`; `nuke` calls `DELETE /config/id/crew-{id}` to remove it. Server objects carry `"@id": "crew-{id}"` for O(1) removal. No Caddy restarts.
 
-**Rationale**: Caddy's admin API supports zero-downtime config mutation. Routes are appended to the live in-memory config; removal uses the `@id` shortcut path. This keeps the transport as the single source of truth for crew state (it already owns `crews.json`) — Caddy becomes a stateless routing plane driven by the transport.
+**Rationale**: Caddy's admin API supports zero-downtime config mutation. The transport remains the single source of truth for crew state (it already owns `crews.json` and the port pool) — Caddy becomes a stateless port-binding + TLS + auth plane driven by the transport.
 
-**Alternative considered**: Regenerate a full Caddyfile and reload via `POST /load`. Works but is O(n) on every launch/nuke; requires the transport to maintain a full mental model of all routes and rebuild it on every operation. The append/delete API is cleaner.
+**Alternative considered**: Regenerate a full Caddyfile and reload via `POST /load`. Works but is O(n) on every launch/nuke and requires the transport to rebuild the full config each time. The add/delete-by-`@id` API is cleaner.
 
-**Concurrency note**: The Caddy admin API is ACID per-request but not transactionally isolated across concurrent appends. Concurrent `launch` calls could collide on the routes array. Mitigation: use `Etag`/`If-Match` optimistic locking (Caddy supports it — see [API docs](https://caddyserver.com/docs/api#concurrent-config-changes)) with a single retry on 412. Alternatively, serialize Caddy API calls with the existing `_registry_lock` — simpler, chosen as D2a.
+**Concurrency note**: The Caddy admin API is ACID per-request but not transactionally isolated across concurrent changes. Mitigation: serialize Caddy API calls inside the existing `_registry_lock` (D2a) — the lock is already held during port allocation and the `crews.json` write, so the Caddy call is atomic with those at no extra contention cost. `Etag`/`If-Match` optimistic locking is available as a fallback if lock contention becomes an issue.
 
-**D2a (sub-decision)**: Serialize Caddy API calls inside `_registry_lock`. This is already held when the crew is written to `crews.json`, so extending it to cover the Caddy call makes the operation atomic with the registry write at no extra lock contention cost.
+**D2a (sub-decision)**: Serialize Caddy admin API calls inside `_registry_lock`.
 
 ### D3: BearerAuthMiddleware retained for MCP, not replaced by Caddy
 
-**Chosen**: Caddy forwards `Authorization: Bearer <key>` through to the transport unchanged. The transport's `BearerAuthMiddleware` continues to enforce it.
+**Chosen**: Caddy forwards `Authorization: Bearer <key>` through to the transport unchanged on the MCP/file routes. The transport's `BearerAuthMiddleware` continues to enforce it.
 
-**Rationale**: Defence in depth. The transport should not become fully trusting of anything on `ga-net` — adding Caddy doesn't change the threat model for an operator who wants belt-and-suspenders auth. The transport can still be reached directly (e.g. from another container on `ga-net`) without Caddy in the path.
+**Rationale**: Defence in depth. The transport should not become fully trusting of anything on `ga-net`. The transport can still be reached directly (e.g. from another container on `ga-net`) without Caddy in the path.
 
 **Alternative**: Strip auth at Caddy and trust all `ga-net` traffic inside the transport. Cheaper but weakens the security boundary.
 
-### D4: Cookie-gated login via transport endpoint + Caddy `forward_auth`
+### D4: Dashboard auth — `forward_auth` default, `basicauth` and `caddy-security` alternatives
 
-**Chosen**: Transport exposes `GET /dashboard-auth` (checked by Caddy as `forward_auth`) and `POST /dashboard-login` (accepts `ga_api_key`, issues `gs_session` cookie). Caddy's built-in `forward_auth` directive passes the `Cookie` header to `GET /dashboard-auth`; on 200 it proxies, on 401 it redirects to `/login-ui`.
+**Chosen (default): `forward_auth`.** Each per-crew dashboard server in Caddy runs a `forward_auth` check to `GET /dashboard-auth` on the transport before proxying to the crew gateway. The transport validates a `gs_session` cookie and returns 200 (allow) or 401 (deny). On 401, Caddy redirects the browser to `/login-ui`, which posts `ga_api_key` to `POST /dashboard-login`; the transport issues the `gs_session` cookie. All auth logic stays in the transport — **no Caddy plugin required**, vanilla `caddy:2`. This closes the TRN-91 gap: every dashboard port becomes auth-gated, consistent with `GA_API_KEY`.
 
-**Rationale**: This is exactly what Caddy's `forward_auth` directive is designed for. No third-party plugin required — vanilla `caddy:2`. The transport already holds the API key and manages session cookies (it already does `mc_token_5476` for crew auth), so the pattern is consistent.
+**Alternatives documented as supported upgrade paths (not defaults):**
+- **Caddy `basicauth`** — Caddy handles HTTP Basic Auth natively against a hashed password. No transport changes, no session (credentials on every request). Acceptable for ops tooling; simpler but less friendly for a browser SPA. An operator can swap the per-crew server's `forward_auth` handler for a `basicauth` handler in the Caddyfile/JSON without touching transport code.
+- **`caddy-security` plugin (OIDC/OAuth2)** — full SSO via Google, GitHub, Tailscale identity, Authentik, etc. Requires building the Caddy image with the `caddy-security` plugin (via `xcaddy`). Most powerful, adds a plugin + config dependency. **Documented as a first-class upgrade path**, not an afterthought: the `docs/caddy.md` "SSO" section describes the `xcaddy` build and the config swap, so an operator who wants SSO knows exactly what changes (Caddy config only — see D10 posture).
 
-**Alternative considered**: `caddy-security` plugin (OAuth/OIDC). More powerful but adds a build dependency (Caddy's official Docker image doesn't include it; would need `xcaddy`), and the problem only requires `GA_API_KEY` parity for this release.
+**Rationale**: `forward_auth` is exactly what Caddy's directive is designed for, keeps the session logic where the API key already lives, and needs no plugin. Offering `basicauth` and `caddy-security` as explicit, documented swaps means the auth strength is a Caddy-config decision, not a transport rewrite — the architectural win the Admiral wants.
 
-### D5: TLS mode via `GA_CADDY_TLS_MODE=internal|acme|off`
+### D5: TLS mode via `GA_CADDY_TLS_MODE=internal|tailscale|acme|off`
 
-**Chosen**: Three modes baked into `initial-config.json` at install time:
-- `internal`: `tls internal` — Caddy's built-in local CA. No DNS or external infra needed. Works for local and Tailscale installs.
-- `acme`: ACME with `GA_CADDY_DOMAIN`. Works for public-IP remote installs. Port 80 must be reachable for HTTP-01 challenge.
-- `off`: Caddy serves HTTP only. Useful when TLS is terminated upstream (e.g. a cloud load balancer in front of Caddy).
+**Chosen**: Four modes baked into `initial-config.json` at install time:
+- `internal` (default): Caddy's built-in CA issues self-signed certs. Works on localhost, private IPs, Tailscale addresses, and any hostname — no DNS or external infra needed. The operator trusts Caddy's root CA once (`caddy trust`), after which every crew cert is trusted automatically. Best default for homelab/private-network deployments.
+- `tailscale`: Caddy provisions real browser-trusted certs for `.ts.net` hostnames via Tailscale's ACME endpoint. Requires the Tailscale daemon present on the host. Ideal for vm23/academy deployments — no cert-trust step needed.
+- `acme`: Standard Let's Encrypt / public ACME. For internet-facing deployments with real DNS. Requires `GA_CADDY_DOMAIN` set and ports 80/443 reachable for the ACME challenge.
+- `off`: Plain HTTP, no TLS. For local dev, or when an upstream terminator already handles TLS.
 
-**Rationale**: Each environment has a clear TLS path. `internal` is the right default for the install base (local/Tailscale). `acme` is the answer for remote installs without forcing operators to manage certs manually. `off` exists for edge deployments.
+TLS applies to every listener Caddy owns — the main port and every per-crew dashboard port.
+
+**CA path surfacing (internal mode)**: When `GA_CADDY_TLS_MODE=internal`, operators need the Caddy root CA cert to complete the one-time trust step. The install script prints its path, and `ghostship status` surfaces it. The cert lives in the `ga-caddy-data` volume at the standard Caddy path `/data/caddy/pki/authorities/local/root.crt`; the install output and `ghostship status` translate that to the host-visible location (the `ga-caddy-data` volume mountpoint) so operators know exactly where to point `caddy trust` or their OS/browser trust store.
+
+**Rationale**: Each environment has a clear TLS path. `internal` is the right default for the private-network install base. `tailscale` gives vm23/academy real trusted certs with zero trust-step friction. `acme` is the answer for public internet-facing installs. `off` exists for edge/dev deployments.
 
 ### D6: `ga-caddy` data volume for cert persistence
 
-**Chosen**: A named Podman volume `ga-caddy-data` is mounted at `/data` inside the `ga-caddy` container (standard Caddy data dir). This persists ACME certs and internal CA across container restarts.
+**Chosen**: A named Podman volume `ga-caddy-data` is mounted at `/data` inside the `ga-caddy` container (standard Caddy data dir). This persists ACME certs, the internal CA, and the resumed runtime config across container restarts.
 
 **Rationale**: Without persistence, every restart triggers a new ACME challenge or regenerates the internal CA, breaking browser trust anchors.
 
-### D7: Single `ga-caddy` port on `ga-net` for admin; no host binding for 2019
+### D7: Caddy admin API bound to `ga-net` only; no host binding for 2019
 
 **Chosen**: Admin API port 2019 is only accessible on `ga-net` (transport → Caddy). It is not published to the host. The transport calls `http://ga-caddy:2019` over the internal network.
 
 **Rationale**: Exposes the admin API only to the transport, which is the only caller. Prevents accidental exposure on the host.
 
+### D8: `ga-caddy` is the sole TLS terminator; vm23 host Caddy is retired
+
+**Chosen**: When `GA_CADDY_ENABLED=true`, `ga-caddy` takes over all inbound traffic (443/80 and the dashboard port range). The pre-existing host-level Caddy on vm23 is no longer needed and should be retired once `ga-caddy` is active.
+
+**Rationale** (Admiral decision, Q1): One TLS terminator, not two. Running both is redundant and risks port conflicts. `ga-caddy` publishes the public ports directly; the vm23 operator stops/removes the host Caddy as part of the cutover.
+
+### D9: Clean cutover — no per-port + Caddy coexistence
+
+**Chosen**: When `GA_CADDY_ENABLED=true`, the transport's per-port uvicorn listener threads are **not started**; Caddy owns every dashboard port binding. There is no mode where both run simultaneously. Flipping the flag and re-running `install.sh` is the cutover.
+
+**Rationale** (Admiral decision, Q3): A migration window with both proxies live on the same ports is impossible (port conflict) and unnecessary. The flag is a clean switch. This is a **breaking change** — documented as such.
+
+### D10: MCP/file auth enforced at Caddy + general auth posture
+
+**Chosen**: When `GA_CADDY_ENABLED=true` and `GA_API_KEY` is set, Caddy enforces the Bearer token on the `/mcp*` and `/files/*` routes **before** the request reaches the transport. A request without the correct `Authorization: Bearer <GA_API_KEY>` is rejected at Caddy with 401 and never touches the Python process. The transport keeps `BearerAuthMiddleware` for defence in depth (D3) — it still runs, so a direct `ga-net` call to the transport is still checked.
+
+**Caddy enforcement mechanism**: a matcher on the main-server MCP/file routes that requires the `Authorization` header to equal `Bearer {env.GA_API_KEY}` (Caddy reads `GA_API_KEY` from its own environment, injected via the compose stanza). Requests that don't match are handled by a `static_response` returning 401 with `WWW-Authenticate: Bearer`. (A `basicauth` block with the API key as the password is an equivalent alternative for tooling that can't send a Bearer header.)
+
+**General auth posture** (documented in `design.md` and `docs/auth.md`):
+
+| | `GA_CADDY_ENABLED=false` (today) | `GA_CADDY_ENABLED=true` |
+|---|---|---|
+| MCP / files | `BearerAuthMiddleware` when `GA_API_KEY` set | Caddy rejects bad Bearer at the edge; transport `BearerAuthMiddleware` is defence-in-depth |
+| Dashboard ports | **unauthenticated** (TRN-91 gap) | Caddy `forward_auth` → `gs_session` cookie gate on every port |
+| TLS | none, or direct `GA_TLS_*` | Caddy-terminated on all ports (D5) |
+| Upgrade to SSO | requires transport code | **Caddy-config change only** (swap `forward_auth`→`caddy-security`) — the architectural win |
+
+**Rationale** (Admiral direction): Caddy becomes the first auth gate for all traffic, shrinking the unauthenticated attack surface reaching the Python process to zero on the public path. Because auth strength lives in Caddy config, moving from API-key → Basic → full SSO is a config edit, not a transport rewrite.
+
 ## Architecture
+
+Two layers of Caddy routing:
+1. **Main port (443/80)** — a fixed server for MCP, files, health, and the auth/login endpoints. Static, written at install time.
+2. **Per-crew dashboard ports (64058–64107)** — one Caddy server per allocated port, added/removed dynamically via the admin API as crews launch/nuke. Each has TLS + `forward_auth` + reverse_proxy to `gs-{id}:5476`. This preserves the root-origin-per-crew model the SPA requires.
 
 ```
                   ┌────────────────────────────────────────────────────────┐
   External        │  ga-caddy container (caddy:2 image, ga-net)            │
-  traffic ──────▶ │  :443 (HTTPS)  :80 (HTTP/ACME)                        │
+  traffic ──────▶ │                                                         │
+                  │  MAIN SERVER  :443 (HTTPS)  :80 (HTTP/ACME)            │
+                  │    /mcp*          ────────────────▶ ga-transport:64057 │
+                  │    /files/*       ────────────────▶ ga-transport:64057 │
+                  │    /health        ────────────────▶ ga-transport:64057 │
+                  │    /dashboard-auth────────────────▶ ga-transport:64057 │
+                  │    /login-ui      ────────────────▶ ga-transport:64057 │
+                  │    /dashboard-login───────────────▶ ga-transport:64057 │
                   │                                                         │
-                  │  Route table (managed via admin API):                  │
-                  │  /mcp           ──────────────────▶ ga-transport:64057 │
-                  │  /files/        ──────────────────▶ ga-transport:64057 │
-                  │  /health        ──────────────────▶ ga-transport:64057 │
-                  │  /dashboard-auth──────────────────▶ ga-transport:64057 │
-                  │  /login-ui      ──────────────────▶ ga-transport:64057 │
-                  │  /crews/alpha/ui/ (forward_auth ──▶ ga-transport:64057)│
-                  │                   then proxy ─────▶ gs-alpha:5476      │
-                  │  /crews/beta/ui/  (forward_auth ──▶ ga-transport:64057)│
-                  │                   then proxy ─────▶ gs-beta:5476       │
-                  │  ...                                                    │
+                  │  PER-CREW DASHBOARD SERVERS (dynamic, one per port):   │
+                  │    :64058 (TLS)  forward_auth ──▶ ga-transport:64057   │
+                  │                  then proxy   ──▶ gs-alpha:5476        │
+                  │    :64059 (TLS)  forward_auth ──▶ ga-transport:64057   │
+                  │                  then proxy   ──▶ gs-beta:5476         │
+                  │    ...                                                  │
                   └──────────────────────┬─────────────────────────────────┘
                                          │ admin API :2019 (ga-net only)
+                                         │ launch → PUT /id/crew-{id} (add server on its port)
+                                         │ nuke   → DELETE /id/crew-{id}
                   ┌──────────────────────▼─────────────────────────────────┐
                   │  ga-transport:64057 (Python/uvicorn, ga-net + 127.0.0.1)│
                   │  GA_API_KEY enforced by BearerAuthMiddleware            │
-                  │  launch()  ──▶ POST /config/apps/http/servers/ga/routes │
-                  │  nuke()    ──▶ DELETE /config/id/crew-{id}              │
+                  │  owns the port pool + crews.json                        │
+                  │  launch()  ──▶ allocate port, PUT Caddy server @id      │
+                  │  nuke()    ──▶ DELETE Caddy server @id, release port    │
                   │  /dashboard-auth  (forward_auth endpoint)               │
                   │  /login-ui        (login page)                          │
                   │  /dashboard-login (issues gs_session cookie)            │
                   │                                                         │
-                  │  GA_DASHBOARD_PORT_ENABLED=false (default when Caddy on)│
-                  │  (per-port uvicorn threads NOT started)                 │
+                  │  Per-port uvicorn listener threads NOT started          │
+                  │  (Caddy owns the port bindings when GA_CADDY_ENABLED)   │
                   └──────────────────────┬─────────────────────────────────┘
                                          │ http://gs-{id}:5476 (ga-net)
                   ┌──────────────────────▼─────────────────────────────────┐
@@ -125,7 +171,7 @@ See `proposal.md — Why` for motivation. Current state relevant to the design:
                   └────────────────────────────────────────────────────────┘
 ```
 
-### Caddy initial config skeleton (JSON)
+### Caddy initial config skeleton (JSON) — main server
 
 ```json
 {
@@ -133,18 +179,23 @@ See `proposal.md — Why` for motivation. Current state relevant to the design:
   "apps": {
     "http": {
       "servers": {
-        "ga": {
+        "ga-main": {
           "listen": [":443"],
           "routes": [
             {
               "@id": "ga-transport-mcp",
-              "match": [{"path": ["/mcp*"]}],
+              "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}]}]
             },
             {
               "@id": "ga-transport-files",
-              "match": [{"path": ["/files/*"]}],
+              "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}]}]
+            },
+            {
+              "@id": "ga-mcp-files-reject",
+              "match": [{"path": ["/mcp*", "/files/*"]}],
+              "handle": [{"handler": "static_response", "status_code": 401, "headers": {"Www-Authenticate": ["Bearer"]}, "body": "Unauthorized"}]
             },
             {
               "@id": "ga-transport-misc",
@@ -164,37 +215,36 @@ See `proposal.md — Why` for motivation. Current state relevant to the design:
 }
 ```
 
-Per-crew route appended at `launch`:
+### Per-crew dashboard server added at `launch` (via `PUT /config/apps/http/servers/crew-{id}` or `PUT /id/...`)
+
+A whole HTTP server bound to the crew's allocated port, carrying `"@id": "crew-{id}"`:
 
 ```json
 {
   "@id": "crew-alpha",
-  "match": [{"path": ["/crews/alpha/ui/*"]}],
-  "handle": [
+  "listen": [":64058"],
+  "routes": [
     {
-      "handler": "subroute",
-      "routes": [
+      "handle": [
         {
-          "handle": [
+          "handler": "subroute",
+          "routes": [
             {
-              "handler": "forward_auth",
-              "uri": "http://ga-transport:64057/dashboard-auth",
-              "copy_headers": ["Cookie"]
-            }
-          ]
-        },
-        {
-          "handle": [
-            {
-              "handler": "reverse_proxy",
-              "upstreams": [{"dial": "gs-alpha:5476"}],
-              "headers": {
-                "request": {
-                  "set": {
-                    "Cookie": ["mc_token_5476={cookie_value}"]
-                  }
+              "handle": [
+                {
+                  "handler": "forward_auth",
+                  "uri": "http://ga-transport:64057/dashboard-auth",
+                  "copy_headers": ["X-Crew-Cookie"]
                 }
-              }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{"dial": "gs-alpha:5476"}]
+                }
+              ]
             }
           ]
         }
@@ -204,13 +254,13 @@ Per-crew route appended at `launch`:
 }
 ```
 
-**Note on crew session cookie injection**: The transport currently injects `mc_token_5476` in its Python proxy layer. In Caddy mode, this must shift: either the transport's `/dashboard-auth` endpoint returns the cookie value in a response header (e.g. `X-Crew-Cookie`) that Caddy then rewrites into the upstream request, or the per-crew route is constructed with the static cookie value baked in at registration time. The latter is simpler but requires re-registering the route if the cookie rotates. Recommended: transport's `/dashboard-auth` returns `X-Crew-Cookie: mc_token_5476=<value>` on 200; Caddy's `copy_headers` on `forward_auth` passes it to the proxy handler as a `Cookie` header. This mirrors the existing per-port Python logic.
+**Crew session cookie injection**: The transport currently injects `mc_token_5476` in its Python per-port proxy layer. In Caddy mode this shifts to the `forward_auth` response: the transport's `/dashboard-auth` endpoint returns `X-Crew-Cookie: mc_token_5476=<value>` on a 200, and Caddy's `copy_headers` carries it into the upstream request to the crew gateway. The crew the request belongs to is identified by the incoming port (Caddy passes it, or `/dashboard-auth` maps the port→crew from the registry). This mirrors the existing per-port Python logic exactly, just relocated into Caddy's handler chain.
 
 ### install.sh additions
 
 - New env vars: `GA_CADDY_ENABLED` (default `false`), `GA_CADDY_TLS_MODE` (`internal`/`acme`/`off`), `GA_CADDY_DOMAIN`, `GA_CADDY_PORT` (default 443), `GA_CADDY_HTTP_PORT` (default 80).
-- New section after the compose.yml generation block: write `initial-config.json` to `DATA_DIR/caddy/`.
-- New `ga-caddy` service stanza in compose.yml (conditional on `GA_CADDY_ENABLED=true`):
+- New section after the compose.yml generation block: write `initial-config.json` (main server only) to `DATA_DIR/caddy/`.
+- New `ga-caddy` service stanza in compose.yml (conditional on `GA_CADDY_ENABLED=true`). It binds 443/80 **and the dashboard port range** (since Caddy, not the transport, now owns those ports):
   ```yaml
   ga-caddy:
     image: caddy:2
@@ -219,59 +269,61 @@ Per-crew route appended at `launch`:
     ports:
       - "0.0.0.0:${GA_CADDY_HTTP_PORT:-80}:80"
       - "0.0.0.0:${GA_CADDY_PORT:-443}:443"
+      - "${GA_DASHBOARD_PORT_RANGE_START:-64058}-${_DASHBOARD_PORT_END}:${GA_DASHBOARD_PORT_RANGE_START:-64058}-${_DASHBOARD_PORT_END}"
     networks:
       - ga-net
+    environment:
+      GA_API_KEY: "${GA_API_KEY:-}"
     volumes:
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
       - ga-caddy-data:/data
     command: ["caddy", "run", "--config", "/config/initial-config.json", "--resume"]
   ```
-- Remove `GA_DASHBOARD_PORT_RANGE_START–END` port bindings from `ga-transport` stanza when `GA_CADDY_ENABLED=true`.
+- **Remove** the dashboard port range binding from the `ga-transport` stanza when `GA_CADDY_ENABLED=true` — Caddy owns those ports now, and both binding them is a conflict.
 - New `ga-caddy-data` named volume in compose.yml volumes section.
 
-### transport/server.py additions
+### transport/server.py changes
 
-- `_caddy_admin_url()`: reads `GA_CADDY_ADMIN_URL` (default `http://ga-caddy:2019`).
-- `_caddy_register_crew(crew_id, cookie_value)`: called inside `_registry_lock` at the end of `_finish_crew_setup`, after the cookie is minted. POSTs a route object to `/config/apps/http/servers/ga/routes/.`.
-- `_caddy_deregister_crew(crew_id)`: called in `nuke` before registry removal. Calls `DELETE /config/id/crew-{crew_id}`. Logs a warning on failure, does not raise.
-- `_handle_dashboard_auth(request)`: `GET /dashboard-auth` — reads `gs_session` cookie, checks in-memory token store, returns 200 or 401 + `X-Crew-Cookie` header on 200.
-- `_handle_dashboard_login_post(request)`: `POST /dashboard-login` — validates `ga_api_key`, issues `gs_session` token.
+- `_caddy_admin_url()`: reads `cfg.ga_caddy_admin_url` (default `http://ga-caddy:2019`).
+- `_caddy_register_crew(crew_id, port)`: called inside `_registry_lock` at the end of `launch` after the port is allocated. `PUT`s a whole server object bound to `port` with `@id: crew-{id}` to the Caddy admin API. Retries 3× with backoff; logs warning on failure.
+- `_caddy_deregister_crew(crew_id)`: called in `nuke` before registry removal. `DELETE /config/id/crew-{crew_id}`. Handles 404 gracefully; logs warning, does not raise.
+- `_handle_dashboard_auth(request)`: `GET /dashboard-auth` — reads `gs_session` cookie, checks the in-memory token store, returns 200 + `X-Crew-Cookie` (the crew's `mc_token_5476`) on success or 401 on failure. Determines the crew from the incoming dashboard port.
+- `_handle_dashboard_login_post(request)`: `POST /dashboard-login` — validates `ga_api_key`, issues a `gs_session` token cookie.
 - `_handle_login_ui(request)`: `GET /login-ui` — serves the minimal HTML login form.
-- `_handle_dashboard_port_proxy` and `_start_dashboard_port_server` are conditionally suppressed when `GA_CADDY_ENABLED=True`.
-- `dashboard_url` in `launch` and `crews` returns `https://<domain>/crews/{id}/ui/` when Caddy mode is active.
+- **`_start_dashboard_port_server` / `_handle_dashboard_port_proxy` / the per-port uvicorn threads are NOT started when `cfg.ga_caddy_enabled=True`.** Caddy owns the port bindings; the transport only maintains the port↔crew mapping and pushes it to Caddy.
+- `dashboard_url` in `launch` and `crews` returns `https://<host>:<port>/` (the same per-port URL shape as today, but HTTPS via Caddy) when Caddy mode is active.
 
 ### transport/config.py additions
 
 - `ga_caddy_enabled: bool = False`
 - `ga_caddy_admin_url: str = "http://ga-caddy:2019"`
-- `ga_caddy_tls_mode: str = "internal"` (`internal` | `acme` | `off`)
+- `ga_caddy_tls_mode: str = "internal"` (`internal` | `tailscale` | `acme` | `off`)
 - `ga_caddy_domain: str = ""`
 - `ga_caddy_port: int = 443`
 - `ga_caddy_http_port: int = 80`
 
 ## Risks / Trade-offs
 
-- **[Risk] `ga-caddy` startup race**: If the transport starts before `ga-caddy` is ready, route registration calls during `launch` will fail. → Mitigation: the transport retries Caddy admin API calls up to 3× with exponential backoff (total ~7s). Startup races are bounded.
-- **[Risk] Cookie injection via `forward_auth` response headers requires Caddy 2.x feature verification**: The `copy_headers` field on `forward_auth` and header rewriting in the same route require care with Caddy 2's handler chain ordering. → Mitigation: prototype the route JSON against a running Caddy before committing to this exact structure. A simpler fallback: the transport's `/dashboard-auth` endpoint can return a redirect to a transport-owned cookie-injection page instead of using header rewriting.
-- **[Risk] Existing `vm23/academy` Caddy conflict**: The existing Caddy on vm23 listens on whatever port it was configured for. The new `ga-caddy` container joins `ga-net` only and publishes to configurable ports (default 443/80). There is no conflict as long as both don't bind port 443 on the same host interface. → Mitigation: document that operators must either change `GA_CADDY_PORT` or use the existing vm23 Caddy as a pass-through for the transport (which is a valid and desirable topology — see Open Questions).
-- **[Risk] `caddy --resume` loses routes after restart**: `caddy run --resume` reloads the last saved config from Caddy's data directory, which includes routes appended at runtime. If the data volume exists and the last saved state is good, routes survive restart. If the volume is recreated from scratch, routes are lost. → Mitigation: the transport's `_reconcile_registry` (called at startup) re-registers routes for all crews already in `crews.json`. The re-registration is idempotent (route `@id` already exists → Caddy returns 409 → transport handles gracefully).
-- **[Trade-off] Path-prefix routing breaks SPAs that use `<base href="/">`**: If the KiroCrew dashboard SPA hard-codes `/` as its base, sub-routes under `/crews/{id}/ui/` will 404 on asset loads. → Mitigation: The SPA base URL must be configurable. This is a KiroCrew upstream concern. If `KIROCREW_BASE_URL=/crews/{id}/ui/` is injectable at crew-launch time, it resolves the issue. This should be confirmed before implementation begins (Open Question 2).
+- **[Risk] `ga-caddy` startup race**: If the transport starts before `ga-caddy` is ready, per-crew server registration during `launch` fails. → Mitigation: retry Caddy admin API calls up to 3× with exponential backoff (~7s total). Startup races are bounded.
+- **[Risk] `forward_auth` cookie-injection chain ordering in Caddy 2.x**: `copy_headers` on `forward_auth` plus the downstream reverse_proxy must be verified against a running Caddy. → Mitigation: prototype the server JSON against a live Caddy before committing. Fallback: `/dashboard-auth` redirects to a transport-owned cookie-set page rather than header rewriting.
+- **[Risk] `caddy --resume` loses dynamically-added servers after a volume wipe**: Runtime-added per-crew servers are persisted to Caddy's data dir and restored by `--resume`. If `ga-caddy-data` is recreated from scratch, they are lost. → Mitigation: the transport's `_reconcile_registry` (startup) re-registers a Caddy server for every crew in `crews.json` that has an allocated dashboard port. Re-registration is idempotent (409 on existing `@id` handled gracefully).
+- **[Breaking change] Port ownership moves from transport to Caddy**: When `GA_CADDY_ENABLED=true`, the transport no longer binds 64058–64107; Caddy does. Enabling the flag on a running install requires a reinstall (`install.sh` regenerates compose.yml so only Caddy binds the range). → Mitigation: documented as a breaking change in release notes and `docs/dashboard-proxy.md`. Clean cutover, no coexistence (D9).
 
 ## Migration Plan
 
 1. All existing deployments run unchanged — `GA_CADDY_ENABLED=false` is the default.
-2. To opt in:
+2. To opt in (**breaking cutover**):
    - Set `GA_CADDY_ENABLED=true` in `ghostship.conf`.
    - Set `GA_CADDY_TLS_MODE=internal` (local/Tailscale) or `acme`+`GA_CADDY_DOMAIN` (remote).
-   - Run `./install.sh --config ghostship.conf`.
-   - For internal CA: run `caddy trust` (printed by install script) to add root CA to host/browser.
-3. Existing crews survive — their routes are re-registered at transport startup via `_reconcile_registry`.
-4. Rollback: set `GA_CADDY_ENABLED=false` and re-run `./install.sh`. Transport returns to direct + per-port mode.
+   - On vm23: stop/remove the pre-existing host-level Caddy (D8) — `ga-caddy` takes over inbound traffic.
+   - Run `./install.sh --config ghostship.conf`. The regenerated compose.yml binds the dashboard port range to `ga-caddy`, not `ga-transport`.
+   - For internal CA: run `caddy trust` (printed by install script) to add the root CA to host/browser.
+3. Existing crews survive — their Caddy dashboard servers are re-registered at transport startup via `_reconcile_registry`.
+4. Rollback: set `GA_CADDY_ENABLED=false` and re-run `./install.sh`. Transport returns to direct + per-port uvicorn mode and re-binds the range itself.
 
 ## Open Questions
 
-1. **vm23 topology**: Should `ga-caddy` be the TLS terminator, or should the existing vm23 Caddy proxy to `ga-transport:64057` with TLS handled at that outer layer? The latter avoids a second Caddy and is a valid deployment topology. If so, `GA_CADDY_ENABLED` may be unused on vm23 and the design serves only fresh remote installs. This doesn't change the design but affects the install documentation.
-
-2. **KiroCrew SPA base URL**: Does `ghcr.io/kirodotdev/kirocrew:0.4.0` support a configurable base URL (e.g. `KIROCREW_BASE_URL=/crews/alpha/ui/`) so the dashboard SPA functions correctly under a path prefix in Caddy mode? Without this, path-prefix routing will break asset loads. If not supported, the subdomain-per-crew approach (Option C) becomes more attractive. This must be confirmed before implementation tasks are checked off.
-
-3. **Per-port + Caddy coexistence**: Can a single crew have both a per-port listener (`dashboard_url = http://host:PORT/`) and a Caddy path route (`https://host/crews/{id}/ui/`) simultaneously? Current design says no (per-port suppressed when Caddy enabled), but there may be a use case for offering both during a migration window.
+All prior open questions are resolved (Admiral decisions):
+- **Q1 (vm23 topology)** → D8: `ga-caddy` is the sole TLS terminator; the host Caddy on vm23 is retired.
+- **Q2 (SPA base URL / path-prefix)** → confirmed broken. Dashboard routing stays port-based (root origin per crew); path-prefix and subdomain approaches are both dropped.
+- **Q3 (coexistence)** → D9: clean cutover, no migration window. Documented as a breaking change.
