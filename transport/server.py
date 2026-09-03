@@ -2484,8 +2484,12 @@ def supply(
         tar -czf - ./myrepo | curl -X POST "<url>&unpack=1" --data-binary @-
 
         # Git history (bundle)
-        git bundle create ./myrepo.bundle --all
-        curl -X POST "<url>&bundle=1" --data-binary @./myrepo.bundle
+        # IMPORTANT: always build a fresh bundle immediately before this call.
+        # Never reuse a bundle built for a previous crew or at an earlier point
+        # in time — a stale bundle silently seeds the crew with an outdated
+        # repo snapshot, missing any commits made since the bundle was built.
+        git bundle create /tmp/<crew_id>.bundle --all
+        curl -X POST "<url>&bundle=1" --data-binary @/tmp/<crew_id>.bundle
 
     Args:
         path: Destination path in the workspace (e.g. "repo/config.json",

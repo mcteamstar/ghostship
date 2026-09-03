@@ -128,12 +128,13 @@ curl -X POST "<url>" --data-binary @./config.json
 tar -czf - ./myrepo | curl -X POST "<url>&unpack=1" --data-binary @-
 
 # Full git history — recommended for SDD work (set bundle=True on the supply() call)
-# IMPORTANT: use --all so the bundle includes a valid HEAD ref and the crew
-# can check out a working tree. A branch-specific bundle (e.g.
-# git bundle create ... release/0.2.4) may leave HEAD unresolvable if the
-# branch name contains slashes, resulting in an empty working tree.
-git bundle create /tmp/myrepo.bundle --all
-curl -X POST "<url>&bundle=1" --data-binary @/tmp/myrepo.bundle
+# IMPORTANT: ALWAYS build a fresh bundle immediately before calling supply().
+# Never reuse a /tmp/*.bundle file built for a previous crew or at an earlier
+# point in time — a stale bundle silently seeds the crew with an outdated repo
+# snapshot, missing commits made since the bundle was built.
+# Name the bundle after the crew_id to make reuse of the wrong file obvious.
+git bundle create /tmp/<crew_id>.bundle --all
+curl -X POST "<url>&bundle=1" --data-binary @/tmp/<crew_id>.bundle
 ```
 
 Always deliver the repo to `path="ghostship"` or `path="repo"` — a sibling
