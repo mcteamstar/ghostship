@@ -48,6 +48,25 @@ class _FakeRequest:
         return self._form_data
 
 
+def _get_header(resp: object, name: str) -> str:
+    """Extract a response header value regardless of Response implementation.
+
+    Supports real starlette Response (raw_headers as list of (bytes, bytes))
+    and the lightweight httpx stub (resp.kwargs["headers"] dict).
+    Returns the header value as a str, or "" if not present.
+    """
+    target = name.lower().encode()
+    raw = getattr(resp, "raw_headers", None)
+    if raw is not None:
+        for k, v in raw:
+            if (k.lower() if isinstance(k, bytes) else k.lower().encode()) == target:
+                return v.decode() if isinstance(v, bytes) else v
+        return ""
+    # Stub path
+    kwargs_headers: dict = getattr(resp, "kwargs", {}).get("headers", {})
+    return kwargs_headers.get(name, "")
+
+
 # ---------------------------------------------------------------------------
 # 8.1 — _caddy_register_crew / _caddy_deregister_crew
 # ---------------------------------------------------------------------------
@@ -192,10 +211,20 @@ class DashboardLoginPostTests(unittest.TestCase):
         server.GA_API_KEY = "secret-key"
         resp = self._run({"ga_api_key": "secret-key"})
         self.assertEqual(resp.status_code, 200)
-        # Check that a Set-Cookie header was included (either via headers kwarg or raw_headers)
-        headers = getattr(resp, "kwargs", {}).get("headers", {})
-        cookie = headers.get("Set-Cookie", "")
-        self.assertIn("gs_session=", cookie)
+        # Check that a Set-Cookie header was included.
+        # Starlette's real Response stores headers in raw_headers as (bytes, bytes) pairs;
+        # the httpx stub stores them in resp.kwargs["headers"].  Support both.
+        set_cookie = ""
+        raw = getattr(resp, "raw_headers", None)
+        if raw is not None:
+            for k, v in raw:
+                if k.lower() in (b"set-cookie", "set-cookie"):
+                    set_cookie = v.decode() if isinstance(v, bytes) else v
+                    break
+        else:
+            headers = getattr(resp, "kwargs", {}).get("headers", {})
+            set_cookie = headers.get("Set-Cookie", "")
+        self.assertIn("gs_session=", set_cookie)
 
     def test_valid_key_stores_token(self) -> None:
         server.GA_API_KEY = "secret-key"
@@ -288,9 +317,8 @@ class DashboardAuthTests(unittest.TestCase):
                 {"port": "64058"},
             )
         self.assertEqual(resp.status_code, 200)
-        # The starlette stub stores kwargs (including headers) on resp.kwargs
-        response_headers: dict = resp.kwargs.get("headers", {})
-        x_cookie = response_headers.get("X-Crew-Cookie", "")
+        # Extract X-Crew-Cookie from raw_headers (real starlette) or kwargs (stub).
+        x_cookie = _get_header(resp, "X-Crew-Cookie")
         self.assertIn("mc_token_5476=crew-token-abc123", x_cookie)
 
     def test_valid_session_unknown_port_still_returns_200(self) -> None:
@@ -298,8 +326,7 @@ class DashboardAuthTests(unittest.TestCase):
         token = self._issue_token()
         resp = self._run({"gs_session": token}, {"port": "99999"})
         self.assertEqual(resp.status_code, 200)
-        response_headers: dict = resp.kwargs.get("headers", {})
-        self.assertNotIn("X-Crew-Cookie", response_headers)
+        self.assertEqual(_get_header(resp, "X-Crew-Cookie"), "")
 
 
 # ---------------------------------------------------------------------------

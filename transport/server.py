@@ -1551,6 +1551,9 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         crew_id, dashboard_port, dashboard_url, GA_CADDY_ENABLED,
     )
     return JSONResponse({"dashboard_url": dashboard_url})
+
+
+async def _handle_crew_dashboard_delete(request: Request) -> Response:
     """DELETE /crews/{crew_id}/dashboard — stop the UI listener and release the port.
 
     Stops the per-port uvicorn server, releases the port back to the pool, and
