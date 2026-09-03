@@ -101,6 +101,13 @@ next call against it restarts it transparently. Don't `nuke` a crew just
 because `crews()` shows it stopped; `nuke` is for when you want the
 workspace permanently gone.
 
+**`dashboard=True`** allocates a dedicated port and returns a `dashboard_url`
+for the crew's browser UI. The dashboard is opt-in (`dashboard=False` by
+default). ⚠️ Dashboard ports are unauthenticated beyond an auto-injected
+session cookie — the cookie is issued to any visitor who loads the page. Only
+use `dashboard=True` on deployments protected by Tailscale or a firewall. Do
+not enable it on any deployment reachable from the public internet.
+
 ### 2. Seed the workspace — `supply`
 
 **A freshly launched crew's workspace is empty.** `launch` only seeds the

@@ -91,6 +91,8 @@ What protects the UI ports:
 
 **Recommendation:** Only enable `GA_DASHBOARD_PORT_ENABLED=true` on deployments protected by Tailscale or a network-level firewall. For any deployment reachable from the public internet, set `GA_DASHBOARD_PORT_ENABLED=false` until TRN-91 is shipped.
 
+**Roadmap:** TRN-91 covers a cookie-gated login page to harden individual dashboard ports. TRN-92 covers a bundled Caddy reverse proxy for TLS termination, SSO/OAuth, and per-crew routing — the longer-term answer for production deployments.
+
 ## Port persistence across restarts
 
 Allocated ports are stored in `crews.json`. When the transport restarts, it reads the registry and re-starts the daemon-thread proxy servers for any crews that have a `dashboard_port` assigned, so existing UI URLs continue to work without re-launching the crew.

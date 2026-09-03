@@ -31,6 +31,19 @@ Quick reference for operators and developers. For full docs see the linked files
 | `pickup(task_id, crew_id)` — check one task immediately | collect, get result, check progress |
 | `pickup(crew_id)` — list all tasks in a crew | list, overview, what's happening |
 | `pickup(timeout_secs=N)` — wait until done or timeout | bridge, watch, wait, monitor, hold, patrol, poll |
+| `pickup(agent="ghost", crew_id)` — skim one agent's mailbox only | check ghost mail, ghost inbox |
+
+### pickup response fields (key additions in 0.2.4)
+
+**Task-level** (`pickup(task_id, crew_id)`):
+- `created_at`, `started_at`, `completed_at` — ISO 8601 UTC timestamps (`null` when not yet reached)
+- `<agent>_subjects`, `captain_subjects`, `admiral_subjects` — subject lines with `{subject, received_at}`
+
+**Crew-level** (`pickup(crew_id)`):
+- `agent_subjects` — dict of all 8 mailboxes (ghost, spectre, banshee, wraith, reaper, raven, captain, admiral), each a list of `{subject, received_at}`
+
+**Agent-filter** (`pickup(agent="ghost", crew_id)`):
+- `{"agent": "ghost", "subjects": [...], "mail": N}` — single-inbox response, no task list
 
 ### Resources (read-only, not tools)
 

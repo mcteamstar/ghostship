@@ -49,7 +49,19 @@ In both cases all 8 mailboxes are read; only the reported set differs.
 
 #### Scenario: List all tasks reports all persona, captain, and admiral subjects
 - **WHEN** `pickup` is called with a `crew_id` but no `task_id`
-- **THEN** the response includes subject line summaries for all persona mailboxes plus captain and admiral alongside the existing task list
+- **THEN** the response includes `agent_subjects` with subject line summaries for all 8 mailboxes plus captain and admiral alongside the existing task list
+
+#### Scenario: pickup with agent filter returns single-inbox subjects only
+- **WHEN** `pickup` is called without a `task_id` and with `agent="ghost"`
+- **THEN** the response includes only ghost's mailbox subjects and count — no task list, no other mailbox data
+
+#### Scenario: pickup with agent filter for an empty mailbox
+- **WHEN** `pickup` is called without a `task_id` and with `agent="reaper"` and reaper's mailbox is empty
+- **THEN** the response includes `{"agent": "reaper", "subjects": [], "mail": 0}`
+
+#### Scenario: pickup with invalid agent name returns an error
+- **WHEN** `pickup` is called with `agent="admiral"` (not a persona mailbox)
+- **THEN** the system returns an error indicating the agent name is not valid for this filter
 
 #### Scenario: Poll a specific task with timeout
 - **WHEN** `pickup` is called with a `task_id`, `crew_id`, and `timeout_secs` greater than zero, and the task completes before both `timeout_secs` and `GA_PICKUP_MAX_POLL_SECS` elapse
