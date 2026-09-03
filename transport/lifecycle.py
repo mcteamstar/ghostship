@@ -13,6 +13,7 @@ cycle — lifecycle can call files freely).
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -65,6 +66,7 @@ try:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _write_crew_secret,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -76,6 +78,7 @@ except ModuleNotFoundError:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _write_crew_secret,
     )
 
 try:
@@ -168,6 +171,15 @@ PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 
 # /mcp catalogue dir for mcpServers resolution
 MCP_CATALOGUE_DIR = Path("/mcp")
+
+
+def _secret_identifier(value: str) -> str:
+    """Return a non-reversible opaque label for a secret value.
+
+    Returns ``"sha256:" + hashlib.sha256(value.encode()).hexdigest()[:16]``.
+    Useful for log correlation without storing the plaintext secret.
+    """
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()[:16]
 
 # ── Lifecycle globals ─────────────────────────────────────────────────────────
 
@@ -274,6 +286,12 @@ def _crew_api_with_recovery(
 ) -> Any:
     """Wrap _crew_api with two-phase recovery logic.
 
+    Phase 0 (task still spawning): On 503 from a per-task /api/spawn/*
+    route, KiroCrew's own task record already reports elapsed > 0 before
+    the agent process has finished forking/registering enough to serve
+    the route. Short bounded retry — this is transient and self-resolving
+    within a couple of seconds, not a dead gateway.
+
     Phase 1 (stale cookie): On 400/401/403 from a running container,
     attempt cookie refresh then retry once.
 
@@ -291,6 +309,19 @@ def _crew_api_with_recovery(
             return _crew_api(crew, method, path, **kw)
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
+            if status == 503:
+                # Phase 0: task record exists but the agent process isn't
+                # steerable yet — retry a few times with a short delay
+                # rather than escalating to cookie refresh or restart.
+                for _attempt in range(4):
+                    time.sleep(1.0)
+                    try:
+                        return _crew_api(crew, method, path, **kw)
+                    except httpx.HTTPStatusError as retry_exc:
+                        if retry_exc.response.status_code != 503:
+                            raise
+                        e = retry_exc
+                raise e
             if status not in (400, 401, 403):
                 raise
             # Phase 1: stale cookie — try refresh
@@ -1209,16 +1240,24 @@ def _finish_crew_setup(
     admiral_secret = secrets.token_hex(32)
     policy_signing_key = secrets.token_hex(32)
     try:
-        podman.container_exec_checked(
+        podman.container_exec_stdin(
             container,
-            [
-                "python3", f"{SCRIPTS_DIR}/inject_admiral_secret.py",
-                f"{KIRO_CREW_DIR}/.admiral_secret", admiral_secret,
-            ],
+            ["python3", f"{SCRIPTS_DIR}/inject_admiral_secret.py",
+             f"{KIRO_CREW_DIR}/.admiral_secret"],
+            admiral_secret.encode(),
         )
         logger.info("Injected admiral signing secret for %s", container)
     except Exception as e:
         logger.warning("Failed to inject admiral secret for %s: %s", container, e)
+
+    # TRN-93: persist the admiral secret in a separate file (DATA_DIR/secrets/)
+    # so captain.py can retrieve it for X-Admiral-Sig when sending standing orders.
+    # This is the only place the plaintext is written to disk; crews.json stores
+    # only the non-reversible identifier (admiral_secret_id).
+    try:
+        _write_crew_secret(crew_id, admiral_secret)
+    except Exception as e:
+        logger.warning("Failed to persist admiral secret for %s: %s", crew_id, e)
 
     # depends on: gateway (pre-restart); gateway seeds config on first start
     _patch_crew_config(podman, container)
@@ -1292,12 +1331,14 @@ def _finish_crew_setup(
             "composition": composition,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_used": time.time(),
-            "admiral_secret": admiral_secret,
+            # TRN-93: store non-reversible identifiers only — plaintext secrets
+            # are not needed after injection and must not persist in crews.json.
+            "admiral_secret_id": _secret_identifier(admiral_secret),
             "crew_image_version": crew_image_version,
         }
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
-            crew_entry["policy_signing_key"] = policy_signing_key
+            crew_entry["policy_signing_key_id"] = _secret_identifier(policy_signing_key)
         reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 
@@ -1422,6 +1463,7 @@ def _schedule_monitor() -> None:
                         )
 
                     # Advance next_fire_at in registry after fire (success or failure)
+                    # TRN-89 task 4: write last_checkin_at for captain check-ins
                     _advance_next_fire_at(sched)
                     with _registry_lock:
                         reg = _load_registry()
@@ -1429,6 +1471,12 @@ def _schedule_monitor() -> None:
                         for s in crew_scheds:
                             if s.get("job_id") == sched.get("job_id"):
                                 s["next_fire_at"] = sched["next_fire_at"]
+                                if (
+                                    sched.get("name") == "captain"
+                                    and sched.get("agent") == "raven"
+                                ):
+                                    from datetime import datetime as _datetime, timezone as _tz
+                                    s["last_checkin_at"] = _datetime.now(_tz.utc).isoformat()
                                 break
                         _save_registry(reg)
 

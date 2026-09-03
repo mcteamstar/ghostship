@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.2.3"
+  version: "0.2.4"
 ---
 
 # Ghostship Command
@@ -101,6 +101,13 @@ next call against it restarts it transparently. Don't `nuke` a crew just
 because `crews()` shows it stopped; `nuke` is for when you want the
 workspace permanently gone.
 
+**`dashboard=True`** allocates a dedicated port and returns a `dashboard_url`
+for the crew's browser UI. The dashboard is opt-in (`dashboard=False` by
+default). ⚠️ Dashboard ports are unauthenticated beyond an auto-injected
+session cookie — the cookie is issued to any visitor who loads the page. Only
+use `dashboard=True` on deployments protected by Tailscale or a firewall. Do
+not enable it on any deployment reachable from the public internet.
+
 ### 2. Seed the workspace — `supply`
 
 **A freshly launched crew's workspace is empty.** `launch` only seeds the
@@ -121,6 +128,10 @@ curl -X POST "<url>" --data-binary @./config.json
 tar -czf - ./myrepo | curl -X POST "<url>&unpack=1" --data-binary @-
 
 # Full git history — recommended for SDD work (set bundle=True on the supply() call)
+# IMPORTANT: use --all so the bundle includes a valid HEAD ref and the crew
+# can check out a working tree. A branch-specific bundle (e.g.
+# git bundle create ... release/0.2.4) may leave HEAD unresolvable if the
+# branch name contains slashes, resulting in an empty working tree.
 git bundle create /tmp/myrepo.bundle --all
 curl -X POST "<url>&bundle=1" --data-binary @/tmp/myrepo.bundle
 ```

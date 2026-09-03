@@ -2837,17 +2837,17 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
 
     def test_admiral_secret_injected_before_container_restart(self) -> None:
         """6.3 (trn-36 2.1): admiral secret exec call occurs before container_stop/start."""
-        exec_calls: list[list[str]] = []
+        stdin_calls: list[tuple[int, list[str]]] = []
         stop_calls: list[int] = []
         start_calls: list[int] = []
         call_counter: list[int] = [0]
 
         podman = Mock()
 
-        def track_exec_checked(container: str, cmd: list[str]) -> str:
+        def track_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
             call_counter[0] += 1
-            exec_calls.append((call_counter[0], cmd))
-            return "ok"
+            stdin_calls.append((call_counter[0], cmd))
+            return "admiral secret injected"
 
         def track_stop(name: str) -> None:
             call_counter[0] += 1
@@ -2857,7 +2857,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             call_counter[0] += 1
             start_calls.append(call_counter[0])
 
-        podman.container_exec_checked = Mock(side_effect=track_exec_checked)
+        podman.container_exec_stdin = Mock(side_effect=track_exec_stdin)
+        podman.container_exec_checked = Mock(return_value="ok")
         podman.container_stop = Mock(side_effect=track_stop)
         podman.container_start = Mock(side_effect=track_start)
         podman.container_exec = Mock(return_value="ready")
@@ -2895,14 +2896,14 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 )
 
         self.assertEqual(result["status"], "ready")
-        # Find the admiral secret injection call (first exec_checked call whose
-        # command contains the secret injection marker)
+        # Find the admiral secret injection call (first exec_stdin call whose
+        # command contains inject_admiral_secret.py)
         secret_call_order = None
-        for order, cmd in exec_calls:
-            if len(cmd) >= 3 and "admiral_secret" in cmd[2]:
+        for order, cmd in stdin_calls:
+            if any("admiral_secret" in part for part in cmd):
                 secret_call_order = order
                 break
-        self.assertIsNotNone(secret_call_order, "Admiral secret injection exec call not found")
+        self.assertIsNotNone(secret_call_order, "Admiral secret injection exec_stdin call not found")
         # The container restart (first stop) must come after the secret injection
         first_stop_order = stop_calls[0] if stop_calls else None
         self.assertIsNotNone(first_stop_order, "Expected at least one container_stop call")
@@ -2918,14 +2919,15 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
 
         podman = Mock()
 
-        def capture_exec_checked(container: str, cmd: list[str]) -> str:
-            if len(cmd) >= 3 and cmd[0] == "python3" and cmd[1].endswith(
+        def capture_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
+            if len(cmd) >= 2 and cmd[0] == "python3" and cmd[1].endswith(
                 "/inject_admiral_secret.py"
             ):
                 captured_cmds.append(cmd)
-            return "ok"
+            return "admiral secret injected"
 
-        podman.container_exec_checked = Mock(side_effect=capture_exec_checked)
+        podman.container_exec_stdin = Mock(side_effect=capture_exec_stdin)
+        podman.container_exec_checked = Mock(return_value="ok")
         podman.container_stop = Mock()
         podman.container_start = Mock()
         podman.container_exec = Mock(return_value="ready")
@@ -2966,8 +2968,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             len(captured_cmds), 1, "Expected exactly one admiral secret injection call"
         )
         cmd = captured_cmds[0]
-        # The call passes the secret file path as argv; the fsync durability
-        # guarantee now lives in the baked inject_admiral_secret.py script.
+        # The call passes the secret file path as argv; secret delivered via stdin.
+        # argv[1] is the destination path (e.g. /home/kirocrew/.kiro/crew/.admiral_secret)
         self.assertTrue(cmd[2].endswith("/.admiral_secret"))
         script_path = (
             Path(server.__file__).resolve().parent
@@ -4477,7 +4479,7 @@ class TestProxyQuerySanitisation(unittest.TestCase):
 
     CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
 
-    def _capture_ui_url(self, query_string: bytes) -> str:
+    def _capture_dashboard_url(self, query_string: bytes) -> str:
         captured: list[str] = []
         mock_response = _FakeUpstreamResponse(200, b"ok")
 
@@ -4537,7 +4539,7 @@ class TestProxyQuerySanitisation(unittest.TestCase):
     def test_ui_proxy_strips_cr_lf_and_null(self) -> None:
         query = b"q=hello\r\nworld\x00&limit=10"
         self.assertEqual(
-            self._capture_ui_url(query),
+            self._capture_dashboard_url(query),
             "http://gs-demo:5476/search?q=helloworld&limit=10",
         )
 
@@ -4552,7 +4554,7 @@ class TestProxyQuerySanitisation(unittest.TestCase):
         for query in (b"q=hello&limit=10", b"q=hello%0Aworld&limit=10"):
             with self.subTest(query=query):
                 self.assertEqual(
-                    self._capture_ui_url(query),
+                    self._capture_dashboard_url(query),
                     f"http://gs-demo:5476/search?{query.decode('ascii')}",
                 )
 
@@ -4811,6 +4813,1310 @@ class GitIdentityInjectionTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         self.assertEqual(inject_called, [True], "_inject_git_identity must be called once")
 
+
+
+class Trn89TaskTimestampTests(unittest.TestCase):
+    """TRN-89 Task 1 — task lifecycle timestamps in dispatch and pickup."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_dispatch_response_includes_created_at(self) -> None:
+        """dispatch response includes created_at in ISO 8601 format."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-1"}),
+            patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(server, "_save_registry"),
+        ):
+            result = server.dispatch("do work", agent="ghost", crew_id="demo")
+
+        self.assertIn("created_at", result)
+        self.assertIsNotNone(result["created_at"])
+        # Should be ISO 8601 with timezone
+        self.assertIn("+", result["created_at"])
+
+    def test_pickup_running_task_has_started_at_nonnull_and_completed_at_null(self) -> None:
+        """pickup of running task (elapsed > 0) has started_at non-null, completed_at null."""
+        # Seed a task in _task_timestamps
+        server._task_timestamps["running-task"] = {
+            "created_at": "2026-09-02T00:00:00+00:00",
+            "started_at": None,
+            "completed_at": None,
+        }
+        try:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(lifecycle, "_crew_api", return_value={
+                    "id": "running-task", "agent": "ghost", "done": False,
+                    "elapsed": 10, "turns": 1, "last_tool": "", "result": "", "error": "", "outcome": "",
+                }),
+                patch.object(server, "_get_podman", return_value=Mock()),
+                patch.object(server, "_read_all_mail_counts", return_value={}),
+                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(server, "_read_mail_subjects_archive", return_value=[]),
+            ):
+                result = server.pickup(task_id="running-task", crew_id="demo", timeout_secs=0)
+        finally:
+            server._task_timestamps.pop("running-task", None)
+
+        self.assertIsNotNone(result.get("started_at"))
+        self.assertIsNone(result.get("completed_at"))
+        self.assertEqual(result["created_at"], "2026-09-02T00:00:00+00:00")
+
+    def test_pickup_done_task_has_all_three_timestamps_set(self) -> None:
+        """pickup of done task has created_at, started_at, and completed_at all set."""
+        server._task_timestamps["done-task"] = {
+            "created_at": "2026-09-02T00:00:00+00:00",
+            "started_at": "2026-09-02T00:00:01+00:00",
+            "completed_at": None,  # will be set on done=True pickup
+        }
+        try:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(lifecycle, "_crew_api", return_value={
+                    "id": "done-task", "agent": "ghost", "done": True,
+                    "elapsed": 5, "turns": 2, "last_tool": "", "result": "ok", "error": "", "outcome": "success",
+                }),
+                patch.object(server, "_get_podman", return_value=Mock()),
+                patch.object(server, "_read_all_mail_counts", return_value={}),
+                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(server, "_read_mail_subjects_archive", return_value=[]),
+            ):
+                result = server.pickup(task_id="done-task", crew_id="demo", timeout_secs=0)
+        finally:
+            server._task_timestamps.pop("done-task", None)
+
+        self.assertIsNotNone(result.get("created_at"))
+        self.assertIsNotNone(result.get("started_at"))
+        self.assertIsNotNone(result.get("completed_at"))
+
+    def test_pickup_list_entries_include_timestamp_fields(self) -> None:
+        """pickup list entries include created_at, started_at, completed_at (null if missing)."""
+        server._task_timestamps["known-task"] = {
+            "created_at": "2026-09-02T00:00:00+00:00",
+            "started_at": None,
+            "completed_at": None,
+        }
+        agents = [
+            {"id": "known-task", "done": False, "task": "do work", "agent": "ghost", "elapsed": 0},
+            {"id": "unknown-task", "done": False, "task": "other", "agent": "ghost", "elapsed": 0},
+        ]
+        try:
+            with (
+                patch.object(server, "_require_crew", return_value=self.CREW),
+                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
+                patch.object(server, "_get_podman", return_value=Mock()),
+                patch.object(server, "_read_all_mail_counts", return_value={}),
+                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(server, "_read_mail_subjects_archive", return_value=[]),
+            ):
+                result = server.pickup(crew_id="demo", timeout_secs=0)
+        finally:
+            server._task_timestamps.pop("known-task", None)
+
+        tasks = result["tasks"]
+        known = next(t for t in tasks if t["task_id"] == "known-task")
+        unknown = next(t for t in tasks if t["task_id"] == "unknown-task")
+
+        self.assertEqual(known["created_at"], "2026-09-02T00:00:00+00:00")
+        self.assertIsNone(known["started_at"])
+        self.assertIsNone(known["completed_at"])
+
+        # Unknown task (dispatched before this change or after restart) → all null
+        self.assertIsNone(unknown["created_at"])
+        self.assertIsNone(unknown["started_at"])
+        self.assertIsNone(unknown["completed_at"])
+
+
+class Trn89CrewTimestampTests(unittest.TestCase):
+    """TRN-89 Task 3 — last_task_at in crews list."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def test_dispatch_writes_last_task_at_to_registry(self) -> None:
+        """dispatch writes last_task_at to the crew's registry entry."""
+        reg = {"crews": {"demo": {"container": "gs-demo", "schedules": []}}}
+        save_calls = []
+
+        def fake_save(r):
+            import copy
+            save_calls.append(copy.deepcopy(r))
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-ts"}),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry", side_effect=fake_save),
+        ):
+            server.dispatch("do work", agent="ghost", crew_id="demo")
+
+        self.assertTrue(save_calls, "Expected _save_registry to be called")
+        saved = save_calls[-1]
+        self.assertIn("last_task_at", saved["crews"]["demo"])
+        self.assertIsNotNone(saved["crews"]["demo"]["last_task_at"])
+
+    def test_crews_includes_last_task_at_after_dispatch(self) -> None:
+        """crews() includes last_task_at in each crew entry (null if not present)."""
+        reg = {
+            "crews": {
+                "demo-with-task": {
+                    "container": "gs-demo",
+                    "status": "running",
+                    "composition": "spec-ops",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_task_at": "2026-09-02T00:00:00+00:00",
+                    "cookie": "c",
+                },
+                "demo-no-task": {
+                    "container": "gs-demo2",
+                    "status": "running",
+                    "composition": "spec-ops",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "cookie": "c",
+                },
+            }
+        }
+        with (
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
+            patch.object(server, "_crew_api", return_value=[]),
+            patch.object(lifecycle, "_crew_api", return_value=[]),
+            patch.object(server, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
+            patch.object(lifecycle, "_get_podman", return_value=Mock(system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}})),
+        ):
+            result = server.crews()
+
+        crew_map = {e["crew_id"]: e for e in result["crews"]}
+        self.assertEqual(crew_map["demo-with-task"]["last_task_at"], "2026-09-02T00:00:00+00:00")
+        self.assertIsNone(crew_map["demo-no-task"]["last_task_at"])
+
+
+# ── TRN-80: UI port allocation, CORS injection, launch/crews/nuke wiring ─────
+
+class UiPortAllocationTests(unittest.TestCase):
+    """Tests for _allocate_dashboard_port / _release_dashboard_port (TRN-80 task 3)."""
+
+    def setUp(self) -> None:
+        # Isolate module-level port state for each test
+        server._dashboard_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def test_allocate_returns_range_start_when_empty(self) -> None:
+        with (
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+        ):
+            port = server._allocate_dashboard_port()
+        self.assertEqual(port, 9000)
+        self.assertIn(9000, server._dashboard_ports_in_use)
+
+    def test_allocate_returns_next_free_port(self) -> None:
+        server._dashboard_ports_in_use.add(9000)
+        server._dashboard_ports_in_use.add(9001)
+        with (
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+        ):
+            port = server._allocate_dashboard_port()
+        self.assertEqual(port, 9002)
+        self.assertIn(9002, server._dashboard_ports_in_use)
+
+    def test_allocate_raises_when_exhausted(self) -> None:
+        with (
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 3),
+        ):
+            server._dashboard_ports_in_use.update({9000, 9001, 9002})
+            with self.assertRaises(RuntimeError) as ctx:
+                server._allocate_dashboard_port()
+        self.assertIn("exhausted", str(ctx.exception).lower())
+
+    def test_release_frees_port(self) -> None:
+        server._dashboard_ports_in_use.add(9005)
+        server._release_dashboard_port(9005)
+        self.assertNotIn(9005, server._dashboard_ports_in_use)
+
+    def test_release_is_noop_for_unallocated_port(self) -> None:
+        # Must not raise
+        server._release_dashboard_port(9999)
+
+
+class UiPortLaunchTests(unittest.TestCase):
+    """Tests for launch() UI port wiring (TRN-80 task 4.1)."""
+
+    def setUp(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def _run_launch(self, ga_dashboard_port_enabled: bool = True, ga_host_url: str = "") -> dict:
+        """Run server.launch() with a minimal set of mocks and return the result."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+
+        finish_result = {
+            "crew_id": "demo",
+            "container": "gs-demo",
+            "gateway_url": "http://gs-demo:5476",
+            "status": "ready",
+        }
+
+        def save_registry(reg: dict) -> None:
+            # Simulate what _finish_crew_setup writes
+            if "demo" in reg["crews"] and reg["crews"]["demo"].get("status") != "launching":
+                pass
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry", side_effect=lambda r: None),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", ga_dashboard_port_enabled),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ga_host_url
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            result = server.launch("demo", dashboard=ga_dashboard_port_enabled)
+        return result
+
+    def test_launch_includes_dashboard_url_when_port_enabled(self) -> None:
+        result = self._run_launch(ga_dashboard_port_enabled=True, ga_host_url="")
+        self.assertIn("dashboard_url", result)
+        self.assertIsNotNone(result["dashboard_url"])
+        self.assertTrue(result["dashboard_url"].startswith("http://"))
+        self.assertIn("9000", result["dashboard_url"])
+
+    def test_launch_dashboard_url_uses_ga_host_url_host(self) -> None:
+        result = self._run_launch(ga_dashboard_port_enabled=True, ga_host_url="http://vm23.example.com:64057")
+        self.assertIn("dashboard_url", result)
+        self.assertIn("vm23.example.com", result["dashboard_url"])
+        self.assertIn("9000", result["dashboard_url"])
+
+    def test_launch_dashboard_url_is_none_when_port_disabled(self) -> None:
+        result = self._run_launch(ga_dashboard_port_enabled=False)
+        self.assertIn("dashboard_url", result)
+        self.assertIsNone(result["dashboard_url"])
+
+    def test_launch_passes_ports_to_container_create(self) -> None:
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            server.launch("demo", dashboard=True)
+
+        call_kwargs = podman.container_create.call_args.kwargs
+        self.assertNotIn("ports", call_kwargs, "crew containers must not bind host ports")
+        # dashboard_url should still be in the launch response (transport-side listener)
+        self.assertIn("dashboard_url", finish_result or {})
+
+    def test_launch_no_ports_passed_when_ui_disabled(self) -> None:
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            server.launch("demo")
+
+        call_kwargs = podman.container_create.call_args.kwargs
+        self.assertIsNone(call_kwargs.get("ports"))
+
+
+class UiPortNukeTests(unittest.TestCase):
+    """Tests for nuke() UI port release (TRN-80 task 4.2)."""
+
+    def setUp(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def test_nuke_releases_dashboard_port(self) -> None:
+        server._dashboard_ports_in_use.add(9000)
+        crew = {
+            "container": "gs-demo",
+            "volume": "gs-vol-demo",
+            "home_volume": "gs-home-demo",
+            "dashboard_port": 9000,
+        }
+        registry = {"crews": {"demo": dict(crew)}}
+        podman = Mock()
+        podman.container_stop = Mock()
+        podman.container_remove = Mock()
+        podman.volume_remove = Mock()
+
+        with (
+            patch.object(server, "_get_crew", return_value=crew),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(server, "_get_crew_schedules", return_value=[]),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_cleanup_crew"),
+            patch.object(server, "_captain_order_locks_lock", threading.Lock()),
+            patch.object(server, "_captain_order_locks", {}),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+        ):
+            result = server.nuke("demo", confirm=True)
+
+        self.assertEqual(result["status"], "nuked")
+        self.assertNotIn(9000, server._dashboard_ports_in_use)
+
+    def test_nuke_no_release_when_port_disabled(self) -> None:
+        server._dashboard_ports_in_use.add(9000)
+        crew = {
+            "container": "gs-demo",
+            "volume": "gs-vol-demo",
+            "home_volume": "gs-home-demo",
+            "dashboard_port": 9000,
+        }
+        registry = {"crews": {"demo": dict(crew)}}
+        podman = Mock()
+
+        with (
+            patch.object(server, "_get_crew", return_value=crew),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_crew_api", return_value={"agents": []}),
+            patch.object(server, "_get_crew_schedules", return_value=[]),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_cleanup_crew"),
+            patch.object(server, "_captain_order_locks_lock", threading.Lock()),
+            patch.object(server, "_captain_order_locks", {}),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
+        ):
+            server.nuke("demo", confirm=True)
+
+        # Port should NOT have been released because GA_DASHBOARD_PORT_ENABLED=False
+        self.assertIn(9000, server._dashboard_ports_in_use)
+
+
+class CrewsListUiUrlTests(unittest.TestCase):
+    """Tests for dashboard_url in crews() list (TRN-80 task 5)."""
+
+    def _run_crews(self, crews_data: dict, ga_host_url: str = "") -> list:
+        registry = {"crews": crews_data}
+        with (
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(server, "_crew_api", return_value=[]),
+            patch.object(server, "_get_podman", return_value=Mock(
+                system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}}
+            )),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ga_host_url
+            result = server.crews()
+        return result["crews"]
+
+    def test_crews_includes_dashboard_url_when_port_assigned(self) -> None:
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "dashboard_port": 9005,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(crews_data, ga_host_url="")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["dashboard_url"], "http://localhost:9005/")
+
+    def test_crews_dashboard_url_uses_ga_host_url_host(self) -> None:
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "dashboard_port": 9010,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(crews_data, ga_host_url="http://vm23.example.com:64057")
+        self.assertIn("vm23.example.com:9010", entries[0]["dashboard_url"])
+
+    def test_crews_dashboard_url_is_none_when_no_port(self) -> None:
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(crews_data)
+        self.assertIsNone(entries[0]["dashboard_url"])
+
+
+class CorsOriginInjectionTests(unittest.TestCase):
+    """Tests for CORS origin injection at container_create time (TRN-80 task 6)."""
+
+    def setUp(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def _run_launch_capture_env(self, ga_host_url: str = "") -> dict:
+        """Run server.launch() and return the env dict passed to container_create."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),  # keep env test focused on CORS
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ga_host_url
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            server.launch("demo")
+
+        call_kwargs = podman.container_create.call_args.kwargs
+        return call_kwargs["env"]
+
+    def test_cors_includes_transport_origin_when_ga_host_url_set(self) -> None:
+        env = self._run_launch_capture_env(ga_host_url="http://vm23.example.com:64057")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        self.assertIn("http://vm23.example.com:64057", origins)
+
+    def test_cors_falls_back_to_localhost_when_ga_host_url_unset(self) -> None:
+        env = self._run_launch_capture_env(ga_host_url="")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        self.assertIn("http://localhost:", origins)
+
+    def test_cors_preserves_crew_internal_origin(self) -> None:
+        env = self._run_launch_capture_env(ga_host_url="http://vm23.example.com:64057")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        # Internal origin (container:5476) must still be present
+        self.assertIn("gs-demo", origins)
+        self.assertIn(str(server.CREW_GATEWAY_PORT), origins)
+
+    def test_cors_includes_both_origins_when_existing_value_present(self) -> None:
+        """Both crew-internal and transport origins appear in the comma-separated list."""
+        env = self._run_launch_capture_env(ga_host_url="http://host.example.com:64057")
+        origins = env.get("KIROCREW_CORS_ORIGINS", "")
+        parts = [p.strip() for p in origins.split(",")]
+        self.assertGreaterEqual(len(parts), 2)
+
+
+class LaunchDashboardParamTests(unittest.TestCase):
+    """TRN-80 task 5.3 / 9.1 — launch(dashboard=True/False) port allocation gate."""
+
+    def setUp(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def _run_launch(self, dashboard: bool) -> dict:
+        """Run server.launch() and return the result.  Captures container_create env."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {
+            "crew_id": "demo",
+            "container": "gs-demo",
+            "gateway_url": "http://gs-demo:5476",
+            "status": "ready",
+        }
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry", side_effect=lambda r: None),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server, "_start_dashboard_port_server"),  # prevent real uvicorn thread
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            result = server.launch("demo", dashboard=dashboard)
+        return result
+
+    def test_launch_dashboard_true_allocates_port_and_returns_dashboard_url(self) -> None:
+        """9.1a — launch(dashboard=True) allocates port and returns dashboard_url."""
+        result = self._run_launch(dashboard=True)
+        self.assertIn("dashboard_url", result)
+        self.assertIsNotNone(result["dashboard_url"])
+        self.assertTrue(result["dashboard_url"].startswith("http://"))
+        self.assertIn("9000", result["dashboard_url"])
+        # Port should be marked as in-use
+        self.assertIn(9000, server._dashboard_ports_in_use)
+
+    def test_launch_dashboard_false_does_not_allocate_port(self) -> None:
+        """9.1b — launch(dashboard=False) does NOT allocate port, dashboard_url is null."""
+        result = self._run_launch(dashboard=False)
+        self.assertIn("dashboard_url", result)
+        self.assertIsNone(result["dashboard_url"])
+        # No port should have been allocated
+        self.assertEqual(len(server._dashboard_ports_in_use), 0)
+
+    def test_launch_dashboard_default_is_false(self) -> None:
+        """9.1c — launch() default is dashboard=False (no port allocated)."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "status": "ready"}
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server, "_start_dashboard_port_server"),  # prevent real uvicorn thread
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            result = server.launch("demo")  # no dashboard=... passed
+
+        self.assertIsNone(result.get("dashboard_url"))
+        self.assertEqual(len(server._dashboard_ports_in_use), 0)
+
+
+class DashboardRestEndpointTests(unittest.TestCase):
+    """TRN-80 task 7.1-7.4 — POST/DELETE /crews/{id}/dashboard REST endpoints."""
+
+    def setUp(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    # ── POST /crews/{id}/dashboard ────────────────────────────────────────────
+
+    def test_post_dashboard_allocates_port_and_returns_dashboard_url(self) -> None:
+        """7.1a — POST on crew without dashboard allocates port and returns dashboard_url."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+        registry = {"crews": {"demo": dict(crew)}}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry"),
+                patch.object(server, "_start_dashboard_port_server"),
+                patch.object(server, "_dashboard_app", Mock()),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = ""
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIn("dashboard_url", body)
+        self.assertIsNotNone(body["dashboard_url"])
+        self.assertIn("9000", body["dashboard_url"])
+
+    def test_post_dashboard_noop_when_already_active(self) -> None:
+        """7.1b — POST on crew that already has a dashboard returns existing dashboard_url (no-op)."""
+        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9003}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = ""
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertEqual(body["dashboard_url"], "http://localhost:9003/")
+        # No new port should have been allocated
+        self.assertNotIn(9003, server._dashboard_ports_in_use)
+
+    def test_post_dashboard_503_when_feature_disabled(self) -> None:
+        """7.3a — POST returns 503 when GA_DASHBOARD_PORT_ENABLED=False."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
+            ):
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 503)
+        body = json.loads(response.body)
+        self.assertIn("error", body)
+
+    def test_post_dashboard_404_for_unknown_crew(self) -> None:
+        """7.1c — POST returns 404 for unknown crew."""
+        async def run():
+            with (
+                patch.object(server, "_require_crew", side_effect=KeyError("no such crew")),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            ):
+                request = _FakeStreamRequest(method="POST", path="/crews/unknown/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 404)
+
+    def test_post_dashboard_409_when_port_pool_exhausted(self) -> None:
+        """7.1d — POST returns 409 when port pool is exhausted."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = ""
+                # Fill the pool
+                server._dashboard_ports_in_use.update({9000, 9001})
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 409)
+        body = json.loads(response.body)
+        self.assertIn("error", body)
+
+    def test_post_dashboard_uses_ga_host_url_for_dashboard_url(self) -> None:
+        """7.1e — POST uses GA_HOST_URL hostname in dashboard_url when set."""
+        crew = {"container": "gs-demo", "cookie": "c"}
+        registry = {"crews": {"demo": dict(crew)}}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry"),
+                patch.object(server, "_start_dashboard_port_server"),
+                patch.object(server, "_dashboard_app", Mock()),
+                patch.object(server, "cfg") as mock_cfg,
+            ):
+                mock_cfg.ga_host_url = "http://vm23.example.com:64057"
+                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_post(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIn("vm23.example.com", body["dashboard_url"])
+        self.assertIn("9000", body["dashboard_url"])
+
+    # ── DELETE /crews/{id}/dashboard ──────────────────────────────────────────
+
+    def test_delete_dashboard_stops_listener_and_releases_port(self) -> None:
+        """7.2a — DELETE stops listener, releases port, returns dashboard_url: null."""
+        server._dashboard_ports_in_use.add(9004)
+        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9004}
+        registry = {"crews": {"demo": {**crew}}}
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "_stop_dashboard_port_server") as mock_stop,
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry"),
+            ):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
+                resp = await server._handle_crew_dashboard_delete(request)
+                return resp, mock_stop
+
+        response, mock_stop = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIsNone(body["dashboard_url"])
+        mock_stop.assert_called_once_with(9004)
+        # Port should be released
+        self.assertNotIn(9004, server._dashboard_ports_in_use)
+
+    def test_delete_dashboard_noop_when_no_dashboard_active(self) -> None:
+        """7.2b — DELETE on crew with no dashboard returns dashboard_url: null (no-op)."""
+        crew = {"container": "gs-demo", "cookie": "c"}  # no dashboard_port
+
+        async def run():
+            with patch.object(server, "_require_crew", return_value=crew):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_delete(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.body)
+        self.assertIsNone(body["dashboard_url"])
+
+    def test_delete_dashboard_404_for_unknown_crew(self) -> None:
+        """7.2c — DELETE returns 404 for unknown crew."""
+        async def run():
+            with patch.object(server, "_require_crew", side_effect=KeyError("no such crew")):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/unknown/dashboard")
+                return await server._handle_crew_dashboard_delete(request)
+
+        response = asyncio.run(run())
+        self.assertEqual(response.status_code, 404)
+
+    def test_delete_dashboard_removes_dashboard_port_from_registry(self) -> None:
+        """7.2d — DELETE clears dashboard_port field from registry after stopping listener."""
+        server._dashboard_ports_in_use.add(9007)
+        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9007}
+        registry = {"crews": {"demo": {**crew}}}
+        save_calls = []
+
+        async def run():
+            with (
+                patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "_stop_dashboard_port_server"),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_save_registry", side_effect=lambda r: save_calls.append(
+                    json.loads(json.dumps(r))
+                )),
+            ):
+                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
+                return await server._handle_crew_dashboard_delete(request)
+
+        asyncio.run(run())
+        self.assertTrue(save_calls, "Expected _save_registry to be called")
+        saved_crew = save_calls[-1]["crews"]["demo"]
+        self.assertNotIn("dashboard_port", saved_crew)
+
+    # ── BearerAuthMiddleware routing for /dashboard ───────────────────────────
+
+    def test_middleware_dispatches_post_dashboard_when_auth_passes(self) -> None:
+        """7.4a — POST /crews/demo/dashboard reaches handler after auth passes."""
+        handled = []
+
+        async def fake_post_handler(req):
+            handled.append("post-dashboard")
+            return server.JSONResponse({"dashboard_url": "http://localhost:9000/"})
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/crews/demo/dashboard",
+            "headers": [(b"authorization", b"Bearer testkey")],
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+
+        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
+            status, _, _ = _run_asgi(mw, scope)
+
+        self.assertEqual(status, 200)
+        self.assertIn("post-dashboard", handled)
+
+    def test_middleware_dispatches_delete_dashboard_when_auth_passes(self) -> None:
+        """7.4b — DELETE /crews/demo/dashboard reaches handler after auth passes."""
+        handled = []
+
+        async def fake_delete_handler(req):
+            handled.append("delete-dashboard")
+            return server.JSONResponse({"dashboard_url": None})
+
+        scope = {
+            "type": "http",
+            "method": "DELETE",
+            "path": "/crews/demo/dashboard",
+            "headers": [(b"authorization", b"Bearer testkey")],
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+
+        with patch.object(server, "_handle_crew_dashboard_delete", side_effect=fake_delete_handler):
+            status, _, _ = _run_asgi(mw, scope)
+
+        self.assertEqual(status, 200)
+        self.assertIn("delete-dashboard", handled)
+
+    def test_middleware_returns_401_for_dashboard_when_key_wrong(self) -> None:
+        """7.4c — /crews/demo/dashboard returns 401 when bearer token is wrong."""
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/crews/demo/dashboard",
+            "headers": [(b"authorization", b"Bearer wrongkey")],
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="correctkey")
+        status, _, _ = _run_asgi(mw, scope)
+        self.assertEqual(status, 401)
+
+    def test_middleware_dispatches_dashboard_without_auth_when_no_key(self) -> None:
+        """7.4d — /crews/demo/dashboard is dispatched without auth when GA_API_KEY unset."""
+        handled = []
+
+        async def fake_post_handler(req):
+            handled.append("post-dashboard-no-auth")
+            return server.JSONResponse({"dashboard_url": "http://localhost:9000/"})
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/crews/demo/dashboard",
+            "headers": [],  # No auth header
+        }
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="")  # No key
+
+        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
+            status, _, body = _run_asgi(mw, scope)
+
+        self.assertEqual(status, 200)
+        self.assertIn("post-dashboard-no-auth", handled)
+
+
+class DashboardWebSocketProxyTests(unittest.TestCase):
+    """TRN-80 task 10.3 — WebSocket proxy handler unit tests.
+
+    Verifies that:
+    - A ``websocket`` scope type is routed to the WS proxy path (not the HTTP path).
+    - The upstream disconnect is handled gracefully (no uncaught exception).
+
+    Both ``httpx_ws.aconnect_ws`` and the starlette WebSocket are mocked so no
+    real network connection is made.  Because starlette and uvicorn are stubs in
+    the test environment, the tests exercise the proxy logic by directly calling
+    the inner closure extracted via a minimal _start_dashboard_port_server run.
+    """
+
+    CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ws_scope(path: str = "/api/ws", query_string: bytes = b"") -> dict:
+        """Return a minimal ASGI WebSocket scope."""
+        return {
+            "type": "websocket",
+            "path": path,
+            "query_string": query_string,
+            "headers": [(b"host", b"localhost")],
+        }
+
+    @staticmethod
+    def _make_receive_queue(messages: list[dict]):
+        """Return an async callable that yields queued messages in order."""
+        queue = list(messages)
+
+        async def receive() -> dict:
+            if queue:
+                return queue.pop(0)
+            # Default: signal a clean browser disconnect so the pump loop stops.
+            return {"type": "websocket.disconnect", "code": 1000}
+
+        return receive
+
+    @staticmethod
+    def _make_send_collector():
+        """Return (send coroutine, collected list)."""
+        collected: list[dict] = []
+
+        async def send(msg: dict) -> None:
+            collected.append(msg)
+
+        return send, collected
+
+    # ------------------------------------------------------------------
+    # Test: websocket scope type routes to WS proxy, not HTTP handler
+    # ------------------------------------------------------------------
+
+    def test_websocket_scope_invokes_ws_proxy_not_http_handler(self) -> None:
+        """A ``websocket`` scope type must enter _handle_dashboard_ws_proxy,
+        not fall through to the HTTP handler."""
+        ws_proxy_called = []
+        http_proxy_called = []
+
+        # Capture the ASGI callable from _start_dashboard_port_server by patching
+        # uvicorn.Config to record the ``app`` arg and stub out the server.
+        captured_app: list = []
+
+        class _FakeConfig:
+            def __init__(self, app, **kwargs):
+                captured_app.append(app)
+                self.app = app
+
+        class _FakeServer:
+            def __init__(self, config):
+                self.should_exit = False
+
+        class _FakeThread:
+            def __init__(self, target=None, daemon=None, name=None, **kwargs):
+                self._target = target
+
+            def start(self):
+                pass
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("transport.server.uvicorn.Config", _FakeConfig),
+            patch("transport.server.uvicorn.Server", _FakeServer),
+            patch("transport.server.threading.Thread", _FakeThread),
+        ):
+            server._start_dashboard_port_server(29001, "demo", MagicMock())
+
+        self.assertEqual(len(captured_app), 1, "Expected uvicorn.Config to be called once")
+        proxy_asgi = captured_app[0]
+
+        # Now invoke _proxy_asgi with a websocket scope — the WS handler will be
+        # called.  We verify the routing by checking which inner path is entered.
+        from unittest.mock import AsyncMock
+
+        mock_ws = MagicMock()
+        mock_ws.accept = AsyncMock()
+        mock_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
+        mock_ws.send_text = AsyncMock()
+        mock_ws.send_bytes = AsyncMock()
+        mock_ws.close = AsyncMock()
+
+        aconnect_calls: list[str] = []
+
+        @contextlib.asynccontextmanager
+        async def fake_aconnect_ws(url, headers=None):
+            aconnect_calls.append(url)
+
+            class FakeUpstream:
+                async def receive(self):
+                    raise Exception("upstream disconnect")  # stop the pump
+
+                async def send_text(self, text):
+                    pass
+
+                async def send_bytes(self, data):
+                    pass
+
+            yield FakeUpstream()
+
+        scope = self._ws_scope("/api/ws")
+        receive = self._make_receive_queue([{"type": "websocket.disconnect"}])
+        send, _ = self._make_send_collector()
+
+        # Patch httpx_ws.aconnect_ws and the module-level WebSocket reference
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("httpx_ws.aconnect_ws", new=fake_aconnect_ws),
+            patch.object(server, "_StarletteWebSocket", lambda scope, receive, send: mock_ws),
+        ):
+            asyncio.run(proxy_asgi(scope, receive, send))
+
+        # The WS proxy path was entered (aconnect_ws called with upstream URL)
+        self.assertTrue(aconnect_calls, "Expected httpx_ws.aconnect_ws to be called for websocket scope")
+        self.assertIn("/api/ws", aconnect_calls[0])
+        # mock_ws.accept() must have been called
+        mock_ws.accept.assert_called_once()
+
+        # Clean up port state
+        server._dashboard_port_servers.pop(29001, None)
+        server._dashboard_port_crew.pop(29001, None)
+
+    # ------------------------------------------------------------------
+    # Test: upstream disconnect is handled gracefully
+    # ------------------------------------------------------------------
+
+    def test_upstream_disconnect_handled_gracefully(self) -> None:
+        """When the upstream WS disconnects, the proxy must close cleanly
+        without raising an uncaught exception."""
+        from unittest.mock import AsyncMock
+
+        captured_app: list = []
+
+        class _FakeConfig:
+            def __init__(self, app, **kwargs):
+                captured_app.append(app)
+                self.app = app
+
+        class _FakeServer:
+            def __init__(self, config):
+                self.should_exit = False
+
+        class _FakeThread:
+            def __init__(self, target=None, daemon=None, name=None, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("transport.server.uvicorn.Config", _FakeConfig),
+            patch("transport.server.uvicorn.Server", _FakeServer),
+            patch("transport.server.threading.Thread", _FakeThread),
+        ):
+            server._start_dashboard_port_server(29002, "demo", MagicMock())
+
+        proxy_asgi = captured_app[0]
+
+        mock_ws = MagicMock()
+        mock_ws.accept = AsyncMock()
+        mock_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
+        mock_ws.close = AsyncMock()
+
+        import httpx_ws as _hws
+
+        @contextlib.asynccontextmanager
+        async def fake_aconnect_ws_disconnect(url, headers=None):
+            class FakeUpstreamDisconnect:
+                async def receive(self):
+                    raise _hws.WebSocketDisconnect()
+
+                async def send_text(self, text):
+                    pass
+
+                async def send_bytes(self, data):
+                    pass
+
+            yield FakeUpstreamDisconnect()
+
+        scope = self._ws_scope("/api/ws")
+        receive = self._make_receive_queue([{"type": "websocket.disconnect"}])
+        send, _ = self._make_send_collector()
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch("httpx_ws.aconnect_ws", new=fake_aconnect_ws_disconnect),
+            patch.object(server, "_StarletteWebSocket", lambda scope, receive, send: mock_ws),
+        ):
+            # Should not raise
+            try:
+                asyncio.run(proxy_asgi(scope, receive, send))
+            except Exception as exc:
+                self.fail(f"Upstream disconnect raised uncaught exception: {exc}")
+
+        # websocket.close() should have been called (graceful shutdown)
+        mock_ws.close.assert_called()
+
+        # Clean up
+        server._dashboard_port_servers.pop(29002, None)
+        server._dashboard_port_crew.pop(29002, None)
+
+
+# ── TRN-94 tests ─────────────────────────────────────────────────────────────
+
+
+class PickupAgentSubjectsTests(unittest.TestCase):
+    """TRN-94 tasks 3.3 + 4.4 — agent_subjects and agent filter in pickup."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def _make_skim_result(self) -> dict:
+        """Return a full 8-key skim dict with one ghost message."""
+        names = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven", "captain", "admiral")
+        result = {name: [] for name in names}
+        result["ghost"] = [{"subject": "task result", "received_at": None}]
+        return result
+
+    # ── 3.3: agent_subjects in crew-level pickup ──────────────────────────────
+
+    def test_crew_level_pickup_includes_agent_subjects(self) -> None:
+        """3.3 — crew-level pickup (no task_id) includes agent_subjects field."""
+        agents = [{"id": "a", "done": True, "task": "t1", "agent": "ghost", "elapsed": 5}]
+        skim = self._make_skim_result()
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value=skim),
+        ):
+            result = server.pickup(crew_id="demo", timeout_secs=0)
+        self.assertIn("agent_subjects", result)
+        self.assertEqual(result["agent_subjects"]["ghost"], [{"subject": "task result", "received_at": None}])
+        self.assertEqual(result["agent_subjects"]["raven"], [])
+
+    def test_task_specific_pickup_does_not_include_agent_subjects(self) -> None:
+        """3.3 — task-specific pickup is unchanged (no agent_subjects field)."""
+        task_resp = {
+            "id": "task-1", "agent": "ghost", "done": True, "turns": 2,
+            "last_tool": "shell", "elapsed": 7, "result": "done", "error": "", "outcome": "success",
+        }
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=task_resp),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
+        ):
+            result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
+        self.assertNotIn("agent_subjects", result)
+        self.assertIn("task_id", result)
+
+    # ── 4.4: agent filter ────────────────────────────────────────────────────
+
+    def test_agent_filter_returns_single_inbox_response(self) -> None:
+        """4.4 — agent filter returns single-inbox subjects and count, no task list."""
+        skim = self._make_skim_result()
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.pickup(crew_id="demo", agent="ghost", timeout_secs=0)
+        self.assertEqual(result["agent"], "ghost")
+        self.assertEqual(result["subjects"], [{"subject": "task result", "received_at": None}])
+        self.assertEqual(result["mail"], 1)
+        self.assertNotIn("tasks", result)
+        self.assertNotIn("agent_subjects", result)
+
+    def test_agent_filter_empty_mailbox(self) -> None:
+        """4.4 — agent filter for an empty mailbox returns zero count."""
+        skim = self._make_skim_result()  # only ghost has mail
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.pickup(crew_id="demo", agent="reaper", timeout_secs=0)
+        self.assertEqual(result["agent"], "reaper")
+        self.assertEqual(result["subjects"], [])
+        self.assertEqual(result["mail"], 0)
+
+    def test_invalid_agent_returns_error(self) -> None:
+        """4.4 — invalid agent name returns an error dict."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+        ):
+            result = server.pickup(crew_id="demo", agent="admiral", timeout_secs=0)
+        self.assertIn("error", result)
+        self.assertIn("admiral", result["error"])
+
+    def test_agent_filter_invalid_random_name_returns_error(self) -> None:
+        """4.4 — unknown agent name returns error."""
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=Mock()),
+        ):
+            result = server.pickup(crew_id="demo", agent="kiro", timeout_secs=0)
+        self.assertIn("error", result)
+
+    def test_agent_filter_ignored_when_task_id_set(self) -> None:
+        """4.4 — agent parameter is ignored when task_id is set."""
+        task_resp = {
+            "id": "task-1", "agent": "ghost", "done": True, "turns": 1,
+            "last_tool": "shell", "elapsed": 5, "result": "done", "error": "", "outcome": "success",
+        }
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api", return_value=task_resp),
+            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_read_all_mail_counts", return_value={}),
+            patch.object(server, "_read_all_mail_subjects", return_value={}),
+        ):
+            # agent is set but task_id takes priority
+            result = server.pickup(task_id="task-1", crew_id="demo", agent="ghost", timeout_secs=0)
+        # Should behave as normal single-task pickup
+        self.assertIn("task_id", result)
+        self.assertNotIn("subjects", result)  # not the single-inbox format
 
 
 if __name__ == "__main__":

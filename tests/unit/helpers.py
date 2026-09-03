@@ -86,3 +86,12 @@ class FakePodmanClient:
 
     def container_exec(self, name: str, cmd: list[str], env: dict | None = None) -> str:
         return "ready"
+
+    def container_exec_stdin(
+        self, container: str, cmd: list[str], stdin_data: bytes
+    ) -> str:
+        """Stub: record the call and return a configurable response."""
+        if not hasattr(self, "_exec_stdin_calls"):
+            self._exec_stdin_calls: list[tuple[str, list[str], bytes]] = []
+        self._exec_stdin_calls.append((container, cmd, stdin_data))
+        return getattr(self, "_exec_stdin_response", "admiral secret injected")

@@ -1568,10 +1568,15 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                 return "ready"
 
             def container_exec_checked(self, container: str, cmd: list) -> str:
-                if "inject_admiral_secret.py" in " ".join(cmd):
-                    # Last arg is the secret value
-                    admiral_secret_calls.append(cmd[-1])
                 return "ok"
+
+            def container_exec_stdin(
+                self, container: str, cmd: list, stdin_data: bytes
+            ) -> str:
+                if "inject_admiral_secret.py" in " ".join(cmd):
+                    # Secret is delivered via stdin
+                    admiral_secret_calls.append(stdin_data.decode())
+                return "admiral secret injected"
 
             def container_inspect(self, container: str) -> dict:
                 return {"Config": {"Labels": {}}}
@@ -1645,7 +1650,8 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertTrue(admiral_secret_value, "admiral_secret must be non-empty")
 
     def test_policy_signing_key_stored_in_registry_when_injection_succeeds(self) -> None:
-        """4.4: crews.json entry contains policy_signing_key when policy injection succeeds."""
+        """4.4 (TRN-93): crews.json entry contains policy_signing_key_id (identifier) when
+        policy injection succeeds, not the plaintext policy_signing_key."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
         registry_data, result = self._run_finish_crew_setup(
@@ -1653,16 +1659,14 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         )
 
         crew_entry = registry_data.get("crews", {}).get("demo", {})
-        self.assertIn("policy_signing_key", crew_entry,
-                      "crews.json entry must contain policy_signing_key on success")
-        self.assertTrue(crew_entry["policy_signing_key"],
-                        "policy_signing_key must be a non-empty string")
-
-        # The stored key must match what was forwarded to _inject_policy
-        self.assertEqual(len(inject_policy_calls), 1)
-        self.assertEqual(crew_entry["policy_signing_key"],
-                         inject_policy_calls[0]["policy_signing_key"],
-                         "stored policy_signing_key must match the one passed to _inject_policy")
+        # TRN-93: plaintext secrets are replaced with non-reversible identifiers.
+        self.assertNotIn("policy_signing_key", crew_entry,
+                         "crews.json entry must NOT contain plaintext policy_signing_key (TRN-93)")
+        self.assertIn("policy_signing_key_id", crew_entry,
+                      "crews.json entry must contain policy_signing_key_id on success")
+        val = crew_entry["policy_signing_key_id"]
+        self.assertTrue(str(val).startswith("sha256:"),
+                        f"policy_signing_key_id must be a sha256: identifier, got: {val!r}")
 
     def test_policy_signing_key_absent_from_registry_when_injection_fails(self) -> None:
         """4.4 (failure path): policy_signing_key is NOT stored when injection fails."""

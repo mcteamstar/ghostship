@@ -177,7 +177,7 @@ Registered as `ghostship`:
 | Tool | Name | Description |
 |:-:|:------|:-----|
 | <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
-| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). Repository seeding is a separate step. |
+| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). `dashboard=True` allocates a dedicated port and returns a `dashboard_url` for the crew's browser UI; the default `dashboard=False` leaves the crew headless. Repository seeding is a separate step. |
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
 | <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
@@ -193,5 +193,6 @@ Registered as `ghostship`:
 - [docs/agents.md](docs/agents.md) — the six agent personas, what each owns in the OpenSpec workflow, and how that's enforced (and isn't)
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
+- [docs/dashboard-proxy.md](docs/dashboard-proxy.md) — per-crew browser UI proxy, port allocation, security model
 - [docs/forks.md](docs/forks.md) — fork model: private/internal/public visibility, keeping your fork current with upstream
 - [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations

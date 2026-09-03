@@ -178,8 +178,10 @@ def _verify_file_token(
     try:
         exp = int(expires)
     except (ValueError, TypeError):
+        _security.audit_auth_event(action="verify_file_token", outcome="invalid", source=None)
         return False
     if time.time() > exp:
+        _security.audit_auth_event(action="verify_file_token", outcome="expired", source=None)
         return False
     # Unified payload format: {crew_id}:{path}:{expires}:{method}:{ref}:{flags}
     # flags is a sorted colon-joined set of active boolean options (bundle, unpack).
@@ -193,7 +195,11 @@ def _verify_file_token(
         flags = ":".join(sorted(f for f in ["bundle"] if bundle))
         payload = f"{crew_id}:{path}:{exp}:GET:{ref or ''}:{flags}"
     expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, sig)
+    if hmac.compare_digest(expected, sig):
+        _security.audit_auth_event(action="verify_file_token", outcome="valid", source=None)
+        return True
+    _security.audit_auth_event(action="verify_file_token", outcome="invalid", source=None)
+    return False
 
 
 def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool = False) -> str:
@@ -270,12 +276,28 @@ def _transfer_upload(
         try:
             parent = os.path.dirname(destination.rstrip("/")) or workspace
             podman.container_exec_checked(container, ["mkdir", "-p", parent])
-            return podman.container_exec_checked(
+            # Clone the bundle. If the bundle's HEAD ref contains a slash
+            # (e.g. release/0.2.4) git may fail to resolve it and leave the
+            # working tree empty. Detect that and check out explicitly.
+            result = podman.container_exec_checked(
                 container, ["git", "clone", staged_file, destination]
             )
+            # Check if clone left an empty working tree (no HEAD commit).
+            try:
+                podman.container_exec_checked(
+                    container, ["git", "-C", destination, "rev-parse", "HEAD"]
+                )
+            except RuntimeError:
+                # HEAD unresolvable — check out the first available remote branch.
+                podman.container_exec_checked(
+                    container,
+                    ["bash", "-c",
+                     f"cd {destination} && "
+                     "branch=$(git branch -r | grep -v HEAD | head -1 | sed 's|origin/||' | tr -d ' ') && "
+                     "git checkout -b \"$branch\" \"origin/$branch\""],
+                )
+            return result
         finally:
-            # Bundle mode intentionally relies on git clone for the occupied-
-            # destination check; this cleanup runs on both clone outcomes.
             _cleanup_transfer_stage(podman, container, stage_dir)
 
     try:

@@ -1,5 +1,6 @@
 mcp[cli]==2.0.0
 httpx==0.28.1
+httpx-ws==0.7.0
 croniter==3.0.3
 # Declared explicitly — mcp[cli] pulls these as transitive deps but pinning
 # prevents silent breakage if mcp ever restructures its extras.

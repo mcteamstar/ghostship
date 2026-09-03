@@ -21,7 +21,9 @@ intentionally NOT part of `Config`.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from dataclasses import dataclass, field
 
 
@@ -33,6 +35,24 @@ def _env_bool_default_on(name: str) -> bool:
 def _env_bool_default_off(name: str) -> bool:
     """Falsy unless explicitly enabled (default: off)."""
     return os.environ.get(name, "0").strip() in ("1", "true")
+
+
+_TTL_RE = re.compile(r"^([1-9]\d*)[smhd]$")
+_config_logger = logging.getLogger(__name__)
+
+
+def _validate_token_ttl(value: str, default: str = "24h") -> str:
+    """Validate a KC_GATEWAY_TOKEN_TTL value.
+
+    Accepts values matching ``^\\d+[smhd]$`` with the numeric part > 0.
+    On mismatch, logs a WARNING and returns ``default``.
+    """
+    if _TTL_RE.match(value):
+        return value
+    _config_logger.warning(
+        "KC_GATEWAY_TOKEN_TTL=%r is invalid; falling back to %r", value, default
+    )
+    return default
 
 
 @dataclass
@@ -81,6 +101,11 @@ class Config:
 
     # ── Gateway ──────────────────────────────────────────────────────────────
     kc_gateway_token_ttl: str = "24h"
+
+    # ── Crew UI port allocation (TRN-80) ─────────────────────────────────────
+    ga_dashboard_port_range_start: int = 64058
+    ga_dashboard_port_range_size: int = 50
+    ga_dashboard_port_enabled: bool = True
 
     # ── Transport security (TRN-70) ──────────────────────────────────────────
     ga_tls_min_version: str = "1.2"
@@ -141,7 +166,10 @@ class Config:
             ga_subagent_max_turns=int(
                 os.environ.get("GA_SUBAGENT_MAX_TURNS", "200")
             ),
-            kc_gateway_token_ttl=os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h"),
+            kc_gateway_token_ttl=_validate_token_ttl(os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")),
+            ga_dashboard_port_range_start=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_START", "64058")),
+            ga_dashboard_port_range_size=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_SIZE", "50")),
+            ga_dashboard_port_enabled=_env_bool_default_on("GA_DASHBOARD_PORT_ENABLED"),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
             ga_tls_certfile=os.environ.get("GA_TLS_CERTFILE", "").strip(),
             ga_tls_keyfile=os.environ.get("GA_TLS_KEYFILE", "").strip(),

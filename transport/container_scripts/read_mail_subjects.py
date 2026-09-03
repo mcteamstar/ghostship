@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read Subject lines from mailboxes in one exec.
+"""Read Subject and Date lines from mailboxes in one exec.
 
 Runs inside a crew container via
 ``python3 /scripts/read_mail_subjects.py <mailboxes_json>``.
@@ -12,21 +12,26 @@ Args (argv):
 
 Supports Maildir (``new/`` + ``cur/``) and legacy mbox (a single file).
 Reading never modifies the files. Prints a JSON object mapping mailbox
-name -> list of Subject header values (empty list for an empty mailbox).
+name -> list of ``{"subject": str, "received_at": str | null}`` dicts
+(empty list for an empty mailbox).
 """
 from __future__ import annotations
 
+import email.parser
+import email.utils
 import json
 import os
 import re
 import sys
+from datetime import timezone
 
 
-def read_mailbox(path: str) -> str:
-    """Return the concatenated raw text of all messages in ``path``.
+def read_mailbox(path: str) -> list[str]:
+    """Return individual raw message texts from ``path``.
 
     Supports Maildir (a directory with ``new/`` and ``cur/``) and legacy
-    mbox (a single file).
+    mbox (a single file).  Maildir returns one entry per file; mbox splits
+    on ``^From `` envelope separators.
     """
     if os.path.isdir(os.path.join(path, "new")):
         parts = []
@@ -40,25 +45,57 @@ def read_mailbox(path: str) -> str:
                         parts.append(fh.read())
                 except OSError:
                     pass
-        return "".join(parts)
+        return parts
     if os.path.isfile(path):
         try:
             with open(path) as fh:
-                return fh.read()
+                raw = fh.read()
+            # Split mbox on "From " envelope lines
+            messages = re.split(r"(?m)^From ", raw)
+            return [m for m in messages if m.strip()]
         except OSError:
-            return ""
-    return ""
+            return []
+    return []
+
+
+def _parse_received_at(date_header: str) -> str | None:
+    """Parse an RFC 5322 Date header into an ISO 8601 UTC string, or None."""
+    if not date_header:
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(date_header)
+        return dt.astimezone(timezone.utc).isoformat()
+    except Exception:
+        return None
 
 
 def read_subjects(
     mailboxes: list[str], root: str = "/var/mail"
-) -> dict[str, list[str]]:
-    """Return {name: [subject, ...]} for each mailbox."""
-    subjects: dict[str, list[str]] = {}
+) -> dict[str, list[dict]]:
+    """Return {name: [{"subject": str, "received_at": str|None}, ...]} for each mailbox."""
+    parser = email.parser.HeaderParser()
+    result: dict[str, list[dict]] = {}
     for name in mailboxes:
-        raw = read_mailbox(os.path.join(root, name))
-        subjects[name] = re.findall(r"(?m)^Subject: (.+)$", raw)
-    return subjects
+        messages = read_mailbox(os.path.join(root, name))
+        entries: list[dict] = []
+        for raw in messages:
+            # For mbox messages the first line is the envelope "From <sender> <date>"
+            # line (already stripped of its leading "From " by the splitter).
+            # Skip it so the parser sees RFC 5322 headers starting on line 2.
+            lines = raw.split("\n", 1)
+            if len(lines) == 2 and not lines[0].startswith((" ", "\t")):
+                # Heuristic: if the first line contains no colon it's an mbox
+                # envelope line, not a header field.
+                if ":" not in lines[0]:
+                    raw = lines[1]
+            msg = parser.parsestr(raw)
+            subject = msg.get("Subject", "").strip()
+            if not subject:
+                continue
+            received_at = _parse_received_at(msg.get("Date", ""))
+            entries.append({"subject": subject, "received_at": received_at})
+        result[name] = entries
+    return result
 
 
 def main(argv: list[str]) -> int:

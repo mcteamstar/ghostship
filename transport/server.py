@@ -73,6 +73,11 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse, PlainTextResponse, JSONResponse
 from starlette.routing import Route, Mount
+try:
+    from starlette.websockets import WebSocket as _StarletteWebSocket, WebSocketDisconnect as _StarletteWebSocketDisconnect
+except (ImportError, AttributeError):
+    _StarletteWebSocket = None  # type: ignore[assignment,misc]
+    _StarletteWebSocketDisconnect = Exception  # type: ignore[assignment,misc]
 import uvicorn
 import asyncio
 
@@ -102,6 +107,7 @@ try:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _delete_crew_secret,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -116,6 +122,7 @@ except ModuleNotFoundError:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
+        _delete_crew_secret,
     )
 
 try:
@@ -198,6 +205,7 @@ try:
         _mail_count,
         _read_all_mail_counts,
         _read_all_mail_subjects,
+        _skim_all_mailboxes,
         _read_maildir_subjects_from_tar,
         _read_mail_subjects_archive,
         _captain_jobs,
@@ -225,6 +233,7 @@ except ModuleNotFoundError:
         _mail_count,
         _read_all_mail_counts,
         _read_all_mail_subjects,
+        _skim_all_mailboxes,
         _read_maildir_subjects_from_tar,
         _read_mail_subjects_archive,
         _captain_jobs,
@@ -311,6 +320,11 @@ GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 GA_PICKUP_MAX_POLL_SECS = cfg.ga_pickup_max_poll_secs
 KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
+
+# ── Crew UI port allocation (TRN-80) ─────────────────────────────────────────
+GA_DASHBOARD_PORT_RANGE_START = cfg.ga_dashboard_port_range_start
+GA_DASHBOARD_PORT_RANGE_SIZE = cfg.ga_dashboard_port_range_size
+GA_DASHBOARD_PORT_ENABLED = cfg.ga_dashboard_port_enabled
 
 # ── Git author identity passthrough (TRN-77) ─────────────────────────────────
 # When both vars are set, all four git identity env vars are injected into
@@ -603,6 +617,333 @@ mcp = MCPServer(
     ),
 )
 
+# ── Task timestamps (TRN-89) ──────────────────────────────────────────────────
+# In-memory store for task lifecycle timestamps. Keyed by task_id.
+# Lost on transport restart — acceptable per design decision D1.
+_task_timestamps: dict[str, dict] = {}
+
+# ── UI port pool (TRN-80) ─────────────────────────────────────────────────────
+# Tracks which host ports in the UI port range are currently allocated to a
+# crew. Populated from crews.json at startup (see _startup_events) and mutated
+# only inside _allocate_dashboard_port / _release_dashboard_port. Protected by the global
+# _registry_lock (same lock used for crews.json writes) so allocation and
+# registry persistence are atomic.
+_dashboard_ports_in_use: set[int] = set()
+
+
+def _allocate_dashboard_port() -> int:
+    """Scan the UI port range and allocate the first free port.
+
+    Must be called while holding ``_registry_lock`` so the allocation and
+    the subsequent registry write are atomic.
+
+    Returns the allocated port. Raises RuntimeError if the range is full.
+    """
+    for port in range(
+        GA_DASHBOARD_PORT_RANGE_START,
+        GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE,
+    ):
+        if port not in _dashboard_ports_in_use:
+            _dashboard_ports_in_use.add(port)
+            return port
+    raise RuntimeError("UI port pool exhausted")
+
+
+def _release_dashboard_port(port: int) -> None:
+    """Remove ``port`` from the in-use set (no-op if not present)."""
+    _dashboard_ports_in_use.discard(port)
+
+
+# ── Per-port UI proxy servers (TRN-80) ────────────────────────────────────────
+# Each allocated crew UI port gets its own uvicorn.Server instance running in
+# the same asyncio event loop as the main transport server. Requests on these
+# ports pass through the same BearerAuthMiddleware (GA_API_KEY, rate limiting)
+# and are then proxied to the crew gateway over the internal Podman network.
+# Crew containers are NOT modified — they only expose port 5476 internally.
+_dashboard_port_servers: dict[int, "uvicorn.Server"] = {}
+_dashboard_port_crew: dict[int, str] = {}  # port → crew_id
+_dashboard_port_clients: dict[int, Any] = {}  # port → httpx.AsyncClient (reused per crew)
+# Set at startup to the fully-wrapped ASGI app so per-port servers use the
+# same middleware stack (auth, rate limiting, security headers).
+_dashboard_app: Any = None
+
+
+def _start_dashboard_port_server(port: int, crew_id: str, app: Any) -> None:
+    """Start a lightweight proxy uvicorn server on *port* for *crew_id*.
+
+    Uses a dedicated per-port Starlette app (NOT the MCP app — that can only
+    be started once due to the StreamableHTTP session manager). The proxy app
+    enforces GA_API_KEY auth and proxies all requests to the crew gateway.
+    Safe to call from executor threads.
+    """
+    if port in _dashboard_port_servers:
+        return
+    import httpx as _httpx
+    _dashboard_port_clients[port] = _httpx.AsyncClient()
+    _dashboard_port_crew[port] = crew_id
+
+    # Build a minimal proxy app for this port.
+    async def _proxy_handler(request: Request) -> Response:
+        if GA_API_KEY:
+            auth_values = [
+                v.decode("latin-1")
+                for k, v in request.scope.get("headers", [])
+                if k == b"authorization"
+            ]
+            token = ""
+            if len(auth_values) == 1 and auth_values[0][:7].lower() == "bearer ":
+                token = auth_values[0][7:].strip()
+            if not token or not hmac.compare_digest(token, GA_API_KEY):
+                return Response(
+                    content=b"Unauthorized",
+                    status_code=401,
+                    headers={"www-authenticate": "Bearer"},
+                )
+        return await _handle_dashboard_port_proxy(request, crew_id)
+
+    async def _handle_dashboard_ws_proxy(scope: dict, receive: Any, send: Any) -> None:
+        """Bidirectionally proxy a WebSocket connection to the upstream crew gateway.
+
+        Pattern (per D6):
+        1. Accept the incoming WS connection from the browser.
+        2. Open an outbound WS to the upstream crew gateway via httpx-ws.
+        3. Pump messages between both connections concurrently with asyncio.gather.
+        4. Forward the stored session cookie in the upstream connection headers.
+        5. Handle disconnection from either side gracefully.
+
+        Uses module-level _StarletteWebSocket and _StarletteWebSocketDisconnect,
+        and imports httpx_ws lazily as _local_httpx_ws at call time.
+        """
+        import httpx_ws as _local_httpx_ws
+        _WebSocket = _StarletteWebSocket
+        _WebSocketDisconnect = _StarletteWebSocketDisconnect
+
+        # Look up crew info so we can build the upstream URL and get the cookie.
+        try:
+            crew = _require_crew(crew_id)
+        except (KeyError, ValueError) as exc:
+            # Cannot look up crew — close immediately with a protocol error.
+            logger.warning("WS proxy: crew lookup failed for %s: %s", crew_id, exc)
+            return
+
+        upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+        path = scope.get("path", "/") or "/"
+        query = scope.get("query_string", b"")
+        upstream_url = upstream_base.replace("http://", "ws://") + path
+        if query:
+            upstream_url += "?" + _sanitise_query_string(query)
+
+        # Build forwarded headers: inject session cookie, strip hop-by-hop.
+        forward_headers: dict[str, str] = {}
+        for k, v in scope.get("headers", []):
+            key = k.decode("latin-1").lower()
+            if key in _HOP_BY_HOP_HEADERS or key == "host":
+                continue
+            forward_headers[key] = v.decode("latin-1")
+
+        stored_cookie = crew.get("cookie", "")
+        if stored_cookie:
+            cookie_header = f"mc_token_{CREW_GATEWAY_PORT}={stored_cookie}"
+            existing = forward_headers.get("cookie", "")
+            if existing:
+                cookie_header = f"{existing}; {cookie_header}"
+            forward_headers["cookie"] = cookie_header
+
+        websocket = _WebSocket(scope, receive, send)
+        try:
+            await websocket.accept()
+        except Exception as exc:
+            logger.debug("WS proxy: could not accept incoming connection: %s", exc)
+            return
+
+        try:
+            async with _local_httpx_ws.aconnect_ws(upstream_url, headers=forward_headers) as upstream_ws:
+
+                async def browser_to_upstream() -> None:
+                    """Pump messages from the browser to the upstream gateway."""
+                    try:
+                        while True:
+                            msg = await websocket.receive()
+                            if msg["type"] == "websocket.disconnect":
+                                break
+                            if "bytes" in msg and msg["bytes"] is not None:
+                                await upstream_ws.send_bytes(msg["bytes"])
+                            elif "text" in msg and msg["text"] is not None:
+                                await upstream_ws.send_text(msg["text"])
+                    except (_WebSocketDisconnect, _local_httpx_ws.WebSocketDisconnect):
+                        pass
+                    except Exception as exc:
+                        logger.debug("WS proxy browser->upstream error: %s", exc)
+
+                async def upstream_to_browser() -> None:
+                    """Pump messages from the upstream gateway to the browser."""
+                    try:
+                        while True:
+                            msg = await upstream_ws.receive()
+                            if isinstance(msg, bytes):
+                                await websocket.send_bytes(msg)
+                            else:
+                                await websocket.send_text(msg if isinstance(msg, str) else str(msg))
+                    except (_WebSocketDisconnect, _local_httpx_ws.WebSocketDisconnect):
+                        pass
+                    except Exception as exc:
+                        logger.debug("WS proxy upstream->browser error: %s", exc)
+
+                _pump_tasks = {
+                    asyncio.ensure_future(browser_to_upstream()),
+                    asyncio.ensure_future(upstream_to_browser()),
+                }
+                _done, _pending = await asyncio.wait(
+                    _pump_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for _task in _pending:
+                    _task.cancel()
+                    try:
+                        await _task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+        except (_WebSocketDisconnect, _local_httpx_ws.WebSocketDisconnect):
+            pass
+        except Exception as exc:
+            logger.debug("WS proxy connection error for crew %s: %s", crew_id, exc)
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    # Use a bare ASGI callable so all methods and paths are handled without
+    # Starlette route matching (which can miss root "/" or unknown methods).
+    async def _proxy_asgi(scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            request = Request(scope, receive)
+            response = await _proxy_handler(request)
+            await response(scope, receive, send)
+        elif scope["type"] == "websocket":
+            await _handle_dashboard_ws_proxy(scope, receive, send)
+
+    proxy_app = _proxy_asgi
+    config = uvicorn.Config(proxy_app, host=HOST, port=port, log_level="warning")
+    srv = uvicorn.Server(config)
+    _dashboard_port_servers[port] = srv
+
+    def _run_in_thread() -> None:
+        """Run the per-port uvicorn server in its own thread+event loop."""
+        try:
+            asyncio.run(srv.serve())
+        except Exception as exc:
+            logger.warning("UI port server %d exited: %s", port, exc)
+
+    t = threading.Thread(target=_run_in_thread, daemon=True,
+                         name=f"ui-port-{port}")
+    t.start()
+    logger.info("TRN-80: started UI port server on %d for crew %s", port, crew_id)
+
+
+def _stop_dashboard_port_server(port: int) -> None:
+    """Signal the per-port server to shut down and clean up the mappings."""
+    srv = _dashboard_port_servers.pop(port, None)
+    _dashboard_port_crew.pop(port, None)
+    _dashboard_port_clients.pop(port, None)  # drop the pooled httpx client
+    if srv is not None:
+        srv.should_exit = True
+        logger.info("TRN-80: stopped UI port server on %d", port)
+
+
+async def _handle_dashboard_port_proxy(request: Request, crew_id: str) -> Response:
+    """Proxy a request arriving on a UI port to the crew gateway.
+
+    The full path and query string are forwarded to
+    ``http://gs-{crew_id}:{CREW_GATEWAY_PORT}/{path}``.
+    Auth has already been enforced by BearerAuthMiddleware before this is called.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as exc:
+        return PlainTextResponse(str(exc), status_code=404)
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError as exc:
+        return PlainTextResponse(str(exc), status_code=502)
+
+    upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+    path = request.scope.get("path", "/") or "/"
+    query = request.scope.get("query_string", b"")
+    upstream_url = path
+    if query:
+        upstream_url = f"{path}?{_sanitise_query_string(query)}"
+    upstream_full = f"{upstream_base}{upstream_url}"
+
+    forward_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() != "host"
+    }
+    # Inject the stored session cookie so the browser authenticates automatically.
+    # The crew's mc_token_5476 cookie is stored in the registry at launch time.
+    stored_cookie = crew.get("cookie", "")
+    if stored_cookie:
+        # Merge with any cookie the browser already sent
+        existing = forward_headers.get("cookie", "")
+        cookie_header = f"mc_token_{CREW_GATEWAY_PORT}={stored_cookie}"
+        if existing:
+            cookie_header = f"{existing}; {cookie_header}"
+        forward_headers["cookie"] = cookie_header
+    try:
+        import httpx as _httpx
+        _server_info = request.scope.get("server")
+        _incoming_port = (
+            _server_info[1]
+            if isinstance(_server_info, (list, tuple)) and len(_server_info) > 1
+            else None
+        )
+        _pooled_client = _dashboard_port_clients.get(_incoming_port) if _incoming_port else None
+        if _pooled_client is not None:
+            async with _pooled_client.stream(
+                request.method,
+                upstream_full,
+                headers=forward_headers,
+                content=await request.body(),
+                timeout=60.0,
+            ) as upstream_resp:
+                response_headers = {
+                    k: v for k, v in upstream_resp.headers.items()
+                    if k.lower() not in _HOP_BY_HOP_HEADERS
+                }
+                body = await upstream_resp.aread()
+        else:
+            async with _httpx.AsyncClient() as _client:
+                async with _client.stream(
+                    request.method,
+                    upstream_full,
+                    headers=forward_headers,
+                    content=await request.body(),
+                    timeout=60.0,
+                ) as upstream_resp:
+                    response_headers = {
+                        k: v for k, v in upstream_resp.headers.items()
+                        if k.lower() not in _HOP_BY_HOP_HEADERS
+                    }
+                    body = await upstream_resp.aread()
+        resp = Response(
+            content=body,
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+        )
+        # Set the session cookie on the browser so it authenticates on subsequent
+        # requests (e.g. /api/auth/refresh, WebSocket handshake).
+        if stored_cookie:
+            resp.set_cookie(
+                f"mc_token_{CREW_GATEWAY_PORT}",
+                stored_cookie,
+                path="/",
+                httponly=True,
+                samesite="lax",
+            )
+        return resp
+    except Exception as exc:
+        logger.warning("UI port proxy error for crew %s: %s", crew_id, exc)
+        return PlainTextResponse(f"Proxy error: {exc}", status_code=502)
+
 # _http and _async_http are imported from transport.podman (they are owned by
 # that module; proxy handlers below use _async_http).
 
@@ -618,6 +959,11 @@ _HOP_BY_HOP_HEADERS: frozenset[str] = frozenset({
     "te",
     "trailers",
     "upgrade",
+    # httpx decompresses gzip/br/zstd transparently when using aread(); strip
+    # content-encoding so the browser doesn't try to decompress already-decoded
+    # bytes. content-length is also wrong after decompression so strip it too.
+    "content-encoding",
+    "content-length",
 })
 
 
@@ -814,6 +1160,116 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
 
 
+async def _handle_crew_dashboard_post(request: Request) -> Response:
+    """POST /crews/{crew_id}/dashboard — allocate a UI port and start a listener.
+
+    Allocates a port from the configured range, starts a transport-side proxy
+    listener, and stores dashboard_port in the registry. Returns {"dashboard_url": "..."}.
+    No-op if the crew already has a dashboard — returns the existing dashboard_url.
+
+    Requires GA_DASHBOARD_PORT_ENABLED=true. Returns 503 if the feature is disabled.
+    Returns 404 for unknown crew. Returns 409 if port pool is exhausted.
+    """
+    parsed = _extract_crew_proxy_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, _sub = parsed
+
+    if not GA_DASHBOARD_PORT_ENABLED:
+        return JSONResponse(
+            {"error": "UI port feature is disabled (GA_DASHBOARD_PORT_ENABLED=false)"},
+            status_code=503,
+        )
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # No-op: crew already has a dashboard
+    existing_port = crew.get("dashboard_port")
+    if existing_port is not None:
+        if cfg.ga_host_url:
+            from urllib.parse import urlparse as _urlparse_d
+            _ph = _urlparse_d(cfg.ga_host_url)
+            dashboard_url = f"{_ph.scheme}://{_ph.hostname}:{existing_port}/"
+        else:
+            dashboard_url = f"http://localhost:{existing_port}/"
+        return JSONResponse({"dashboard_url": dashboard_url})
+
+    # Allocate a new port
+    with _registry_lock:
+        try:
+            dashboard_port = _allocate_dashboard_port()
+        except RuntimeError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+
+        reg = _load_registry()
+        if crew_id in reg["crews"]:
+            reg["crews"][crew_id]["dashboard_port"] = dashboard_port
+            _save_registry(reg)
+
+    if cfg.ga_host_url:
+        from urllib.parse import urlparse as _urlparse_d2
+        _ph = _urlparse_d2(cfg.ga_host_url)
+        dashboard_url = f"{_ph.scheme}://{_ph.hostname}:{dashboard_port}/"
+    else:
+        dashboard_url = f"http://localhost:{dashboard_port}/"
+
+    # Start the transport-side listener
+    if _dashboard_app is not None:
+        _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
+
+    logger.info(
+        "TRN-80: POST /crews/%s/dashboard — started UI port %d, dashboard_url=%s",
+        crew_id, dashboard_port, dashboard_url,
+    )
+    return JSONResponse({"dashboard_url": dashboard_url})
+
+
+async def _handle_crew_dashboard_delete(request: Request) -> Response:
+    """DELETE /crews/{crew_id}/dashboard — stop the UI listener and release the port.
+
+    Stops the per-port uvicorn server, releases the port back to the pool, and
+    clears dashboard_port from the registry. Returns {"dashboard_url": null}.
+    No-op if the crew has no dashboard — returns {"dashboard_url": null} without error.
+
+    Returns 404 for unknown crew.
+    """
+    parsed = _extract_crew_proxy_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, _sub = parsed
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    # No-op: crew has no dashboard
+    existing_port = crew.get("dashboard_port")
+    if existing_port is None:
+        return JSONResponse({"dashboard_url": None})
+
+    with _registry_lock:
+        # Re-check under the lock to prevent double-stop from concurrent DELETEs.
+        reg = _load_registry()
+        existing_port = reg["crews"].get(crew_id, {}).get("dashboard_port")
+        if existing_port is None:
+            return JSONResponse({"dashboard_url": None})
+        _stop_dashboard_port_server(int(existing_port))
+        _release_dashboard_port(int(existing_port))
+        reg["crews"][crew_id].pop("dashboard_port", None)
+        reg["crews"][crew_id]["dashboard_url"] = None
+        _save_registry(reg)
+
+    logger.info(
+        "TRN-80: DELETE /crews/%s/dashboard — released UI port %d",
+        crew_id, existing_port,
+    )
+    return JSONResponse({"dashboard_url": None})
+
+
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
@@ -981,6 +1437,17 @@ class BearerAuthMiddleware:
                     response = await handler(request)
                     await response(scope, receive, send)
                     return
+                # TRN-80: per-port UI proxy — requests arriving on a crew UI
+                # port are proxied to that crew's gateway. Auth is skipped here
+                # only when GA_API_KEY is unset; the keyed path checks auth first.
+                _server = scope.get("server")
+                if _server and _dashboard_port_crew:
+                    _incoming_port = _server[1] if isinstance(_server, (list, tuple)) and len(_server) > 1 else None
+                    if _incoming_port and _incoming_port in _dashboard_port_crew:
+                        request = Request(scope, receive)
+                        response = await _handle_dashboard_port_proxy(request, _dashboard_port_crew[_incoming_port])
+                        await response(scope, receive, send)
+                        return
                 # Crew proxy routes (no auth required when GA_API_KEY unset)
                 _path = scope["path"]
                 _parts = _path.lstrip("/").split("/")
@@ -992,6 +1459,21 @@ class BearerAuthMiddleware:
                 if len(_parts) >= 4 and _parts[0] == "crews" and _parts[2] == "api":
                     request = Request(scope, receive)
                     response = await _handle_crew_api_proxy(request)
+                    await response(scope, receive, send)
+                    return
+                # TRN-80: POST/DELETE /crews/{id}/dashboard
+                if (
+                    len(_parts) == 3
+                    and _parts[0] == "crews"
+                    and _parts[2] == "dashboard"
+                ):
+                    request = Request(scope, receive)
+                    if scope["method"] == "POST":
+                        response = await _handle_crew_dashboard_post(request)
+                    elif scope["method"] == "DELETE":
+                        response = await _handle_crew_dashboard_delete(request)
+                    else:
+                        response = PlainTextResponse("Method Not Allowed", status_code=405)
                     await response(scope, receive, send)
                     return
             await self.app(scope, receive, send)
@@ -1037,6 +1519,16 @@ class BearerAuthMiddleware:
             await response(scope, receive, send)
             return
 
+        # TRN-80: per-port UI proxy (auth enforced above)
+        _server = scope.get("server")
+        if _server and _dashboard_port_crew:
+            _incoming_port = _server[1] if isinstance(_server, (list, tuple)) and len(_server) > 1 else None
+            if _incoming_port and _incoming_port in _dashboard_port_crew:
+                request = Request(scope, receive)
+                response = await _handle_dashboard_port_proxy(request, _dashboard_port_crew[_incoming_port])
+                await response(scope, receive, send)
+                return
+
         # Crew UI proxy — /crews/<id>/ui and /crews/<id>/ui/<path>
         # Dispatch after auth passes so GA_API_KEY enforcement applies.
         path = scope["path"]
@@ -1059,6 +1551,22 @@ class BearerAuthMiddleware:
         ):
             request = Request(scope, receive)
             response = await _handle_crew_api_proxy(request)
+            await response(scope, receive, send)
+            return
+
+        # TRN-80: POST/DELETE /crews/{id}/dashboard (keyed path — auth already passed above)
+        if (
+            len(path_parts) == 3
+            and path_parts[0] == "crews"
+            and path_parts[2] == "dashboard"
+        ):
+            request = Request(scope, receive)
+            if scope["method"] == "POST":
+                response = await _handle_crew_dashboard_post(request)
+            elif scope["method"] == "DELETE":
+                response = await _handle_crew_dashboard_delete(request)
+            else:
+                response = PlainTextResponse("Method Not Allowed", status_code=405)
             await response(scope, receive, send)
             return
 
@@ -1670,10 +2178,22 @@ def crews() -> dict:
             "status": status,
             "composition": info.get("composition", "kirocrew"),
             "created_at": info.get("created_at"),
+            "last_task_at": info.get("last_task_at"),  # TRN-89 task 3
             "gateway_healthy": gateway_healthy,
             "crew_image_version": info.get("crew_image_version", "unknown"),
             "agents": [],
         }
+        # TRN-80: derive dashboard_url from stored dashboard_port (None if no port assigned)
+        _ui_p = info.get("dashboard_port")
+        if _ui_p is not None:
+            if cfg.ga_host_url:
+                from urllib.parse import urlparse as _urlparse3
+                _ph = _urlparse3(cfg.ga_host_url)
+                entry["dashboard_url"] = f"{_ph.scheme}://{_ph.hostname}:{_ui_p}/"
+            else:
+                entry["dashboard_url"] = f"http://localhost:{_ui_p}/"
+        else:
+            entry["dashboard_url"] = None
         if "policy_version" in info:
             entry["policy_version"] = info["policy_version"]
         # Try to fetch active tasks from the gateway
@@ -1732,7 +2252,7 @@ def resource_compositions() -> str:
 
 
 @mcp.tool()
-def launch(crew_id: str, composition: str = "spec-ops") -> dict:
+def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False) -> dict:
     """Summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
@@ -1748,6 +2268,12 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
                  unique. Use lowercase letters, numbers, hyphens.
         composition: Crew composition to launch (default: "spec-ops"). See the
                      transport://compositions resource for available compositions.
+        dashboard: When True and GA_DASHBOARD_PORT_ENABLED=True, allocates a dedicated
+                   port from the UI port range and starts a transport-side proxy
+                   listener for the crew's dashboard SPA. The SPA owns its entire
+                   origin so assets, client-side navigation, and hard reloads all
+                   work. Returns dashboard_url in the response. Default is False — crews
+                   are headless unless a dashboard is explicitly requested.
 
     Returns crew_id and status once the gateway is ready (~30s).
     """
@@ -1800,6 +2326,8 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         reg["crews"][crew_id] = {"status": "launching", "container": container}
         _save_registry(reg)
 
+    # TRN-80: initialised before the try so the except block can reference it.
+    dashboard_port: int | None = None
     try:
         podman.network_create(GA_NETWORK)
         podman.volume_create(volume)
@@ -1807,13 +2335,30 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
         logger.info("Created volumes %s, %s", volume, home_volume)
 
         # Build container env — always include CORS and sandbox flag.
-        # When GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are both set, inject
         # all four git identity vars so they are part of the container's process
         # environment from startup and inherited by the gateway and every kiro-cli
         # child it spawns.  /etc/environment is NOT used because it is only read
         # by PAM login sessions, not by non-login processes like the gateway.
+        #
+        # TRN-80: Derive the transport's public origin for CORS injection.
+        # The crew gateway needs to accept API calls from the browser when it is
+        # served from the per-crew UI port (a different origin). We append the
+        # transport's public origin to KIROCREW_CORS_ORIGINS so those calls are
+        # not CORS-rejected. GA_HOST_URL may be "http://host:port/" (strip path),
+        # or we fall back to http://localhost:{PORT}.
+        _transport_public_origin: str
+        if cfg.ga_host_url:
+            from urllib.parse import urlparse as _urlparse
+            _parsed = _urlparse(cfg.ga_host_url)
+            _transport_public_origin = f"{_parsed.scheme}://{_parsed.netloc}"
+        else:
+            _transport_public_origin = f"http://localhost:{PORT}"
+
+        _crew_internal_origin = f"http://{container}:{CREW_GATEWAY_PORT}"
+        _cors_origins = f"{_crew_internal_origin},{_transport_public_origin}"
+
         container_env: dict[str, str] = {
-            "KIROCREW_CORS_ORIGINS": f"http://{container}:{CREW_GATEWAY_PORT}",
+            "KIROCREW_CORS_ORIGINS": _cors_origins,
             "KIROCREW_ALLOW_UNSANDBOXED": "1",
         }
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
@@ -1821,6 +2366,36 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL
             container_env["GIT_COMMITTER_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_COMMITTER_EMAIL"] = GA_GIT_AUTHOR_EMAIL
+
+        # TRN-80: allocate a transport-side UI port for the crew's SPA.
+        # The crew container itself is NOT modified — it stays on the internal
+        # ghost-academy network only. The transport will listen on the allocated
+        # port and proxy to the crew gateway over the internal network.
+        # Port allocation is gated on both the dashboard flag (per-launch opt-in)
+        # and the GA_DASHBOARD_PORT_ENABLED global switch.
+        dashboard_url: str | None = None
+        if dashboard and GA_DASHBOARD_PORT_ENABLED:
+            with _registry_lock:
+                try:
+                    dashboard_port = _allocate_dashboard_port()
+                except RuntimeError as _err:
+                    _cleanup_crew(podman, container, volume, home_volume)
+                    reg = _load_registry()
+                    reg["crews"].pop(crew_id, None)
+                    _save_registry(reg)
+                    return {"error": str(_err)}
+            if cfg.ga_host_url:
+                from urllib.parse import urlparse as _urlparse2
+                _p = _urlparse2(cfg.ga_host_url)
+                _ui_host = f"{_p.scheme}://{_p.hostname}:{dashboard_port}"
+            else:
+                _ui_host = f"http://localhost:{dashboard_port}"
+            dashboard_url = f"{_ui_host}/"
+            # Add the UI port origin to CORS so the SPA's API calls are accepted.
+            container_env["KIROCREW_CORS_ORIGINS"] = (
+                f"{container_env['KIROCREW_CORS_ORIGINS']},{_ui_host}"
+            )
+
         podman.container_create(
             name=container,
             image=image,
@@ -1834,6 +2409,8 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
 
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
         if not _wait_gateway(crew_url, timeout=30):
+            if dashboard_port is not None:
+                _release_dashboard_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
             with _registry_lock:
                 reg = _load_registry()
@@ -1841,12 +2418,33 @@ def launch(crew_id: str, composition: str = "spec-ops") -> dict:
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 30s for crew {crew_id}"}
 
-        return _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
+        # TRN-80: persist dashboard_port in registry, start per-port listener, include dashboard_url.
+        if dashboard_port is not None and "error" not in result:
+            with _registry_lock:
+                reg = _load_registry()
+                if crew_id in reg["crews"]:
+                    reg["crews"][crew_id]["dashboard_port"] = dashboard_port
+                    _save_registry(reg)
+            # Start the transport-side listener for this crew's UI port.
+            # The app reference is injected at startup via _dashboard_app (set below).
+            if _dashboard_app is not None:
+                _start_dashboard_port_server(dashboard_port, crew_id, _dashboard_app)
+            result["dashboard_url"] = dashboard_url
+        elif "error" not in result:
+            result["dashboard_url"] = None
+        return result
 
     except Exception as e:
         logger.error("Launch failed for %s: %s", crew_id, e)
         try:
             _cleanup_crew(podman, container, volume, home_volume)
+        except Exception:
+            pass
+        # TRN-80: free any port allocated before the failure
+        try:
+            if dashboard_port is not None:
+                _release_dashboard_port(dashboard_port)
         except Exception:
             pass
         with _registry_lock:
@@ -1921,6 +2519,7 @@ def supply(
     else:
         curl_example = f'curl -X POST "{url}" --data-binary @./your-file'
 
+    _security.audit_auth_event(action="presign_supply", outcome="issued", source=None)
     return {
         "crew_id": crew_id,
         "path": clean,
@@ -1967,6 +2566,7 @@ def evac(
         return {"error": str(e)}
 
     url = _sign_file_url(crew_id, clean, ref, bundle)
+    _security.audit_auth_event(action="presign_evac", outcome="issued", source=None)
     result = {
         "crew_id": crew_id,
         "path": path,
@@ -2054,11 +2654,21 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     with _registry_lock:
         reg = _load_registry()
+        # TRN-80: stop the per-port server and release the port before removing
+        # the registry entry.
+        if GA_DASHBOARD_PORT_ENABLED:
+            _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
+            if _ui_p is not None:
+                _stop_dashboard_port_server(int(_ui_p))
+                _release_dashboard_port(int(_ui_p))
         reg["crews"].pop(crew_id, None)
         _save_registry(reg)
 
     with _captain_order_locks_lock:
         _captain_order_locks.pop(crew_id, None)
+
+    # TRN-93: remove the per-crew signing-secret file (best-effort).
+    _delete_crew_secret(crew_id)
 
     logger.info("Crew %s nuked", crew_id)
     return {"crew_id": crew_id, "status": "nuked", "container": container}
@@ -2292,18 +2902,17 @@ def captain(
             return result
 
     # ── Captain status — no container wake required ───────────────────────────
-    # For action == "status", read mail subjects via archive API (works on both
-    # running and stopped containers) and return early without calling
-    # _ensure_crew_running. The stop action still needs a running container to
-    # reach the gateway's cron API to disable the job.
+    # For action == "status", skim all 8 mailboxes (works on both running and
+    # stopped containers via _skim_all_mailboxes) and return early without
+    # calling _ensure_crew_running. The stop action still needs a running
+    # container to reach the gateway's cron API to disable the job.
     if action == "status":
         podman = _get_podman()
-        captain_subjects = _read_mail_subjects_archive(
-            podman, crew["container"], _CAPTAIN_MAILBOX_PATH
-        )
-        admiral_subjects = _read_mail_subjects_archive(
-            podman, crew["container"], _ADMIRAL_MAILBOX_PATH
-        )
+        # Single call — covers all 8 mailboxes; falls back to archive API on
+        # stopped containers.
+        agent_mail = _skim_all_mailboxes(podman, crew["container"])
+        captain_subjects = agent_mail.get("captain", [])
+        admiral_subjects = agent_mail.get("admiral", [])
         captain_mail = len(captain_subjects)
         admiral_mail = len(admiral_subjects)
 
@@ -2341,6 +2950,7 @@ def captain(
                 "admiral_mailbox": "admiral@localhost",
                 "admiral_subjects": admiral_subjects,
                 "admiral_mail": admiral_mail,
+                "agent_mail": agent_mail,
             }
 
         status_result = _captain_standing_view(
@@ -2354,6 +2964,7 @@ def captain(
         status_result["admiral_subjects"] = admiral_subjects
         status_result["captain_mail"] = captain_mail
         status_result["admiral_mail"] = admiral_mail
+        status_result["agent_mail"] = agent_mail
         return status_result
 
     # ── Stop — container must be running to reach cron API ───────────────────
@@ -2792,12 +3403,36 @@ def dispatch(
         )
     except CrewUnresponsiveError as e:
         return {"error": str(e)}
+
+    task_id = result.get("id")
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+
+    # TRN-89 task 1: record task timestamps in-memory
+    if task_id:
+        _task_timestamps[task_id] = {
+            "created_at": created_at,
+            "started_at": None,
+            "completed_at": None,
+        }
+
+    # TRN-89 task 3: write last_task_at to crew's registry entry
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            if crew_id in reg["crews"]:
+                reg["crews"][crew_id]["last_task_at"] = created_at
+                _save_registry(reg)
+    except Exception as exc:
+        logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
+
     return {
-        "task_id": result.get("id"),
+        "task_id": task_id,
         "crew_id": crew_id,
         "status": "dispatched",
         "task": task,
         "agent": agent,
+        "created_at": created_at,
     }
 
 
@@ -2861,6 +3496,7 @@ def pickup(
     task_id: str | None = None,
     crew_id: str | None = None,
     timeout_secs: int = 0,
+    agent: str | None = None,
 ) -> dict | list:
     """Check a task's progress, retrieve its completed result, or list all tasks.
 
@@ -2871,6 +3507,11 @@ def pickup(
     Without a task_id: returns all tasks currently running or recently finished
     in the crew, plus a per-agent mail summary. Also: list, overview,
     what's happening.
+
+    Without a task_id and with agent set to a persona name (ghost, spectre,
+    banshee, wraith, reaper, raven): returns only that agent's mailbox subjects
+    and count — no task list, no other mailbox data. agent is ignored when
+    task_id is set.
 
     When timeout_secs > 0, polls every 3s until a task completes or the timeout
     elapses. Returns early with reason="admiral_mail" if new Admiral mail
@@ -2883,6 +3524,9 @@ def pickup(
         crew_id: Which crew the task belongs to. Required.
         timeout_secs: Maximum seconds to poll before returning. 0 means
             check once and return immediately (default).
+        agent: Optional persona name filter (ghost, spectre, banshee, wraith,
+            reaper, raven). When set and task_id is None, returns only that
+            agent's mailbox subjects and count. Ignored when task_id is set.
     """
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
@@ -2899,6 +3543,22 @@ def pickup(
 
     if task_id:
         return _pickup_single(crew, crew_id, task_id, podman, container, effective_timeout)
+    elif agent is not None:
+        # Agent filter: validate and return single-inbox subjects only
+        if agent not in PERSONA_ALLOWLIST:
+            return {
+                "error": (
+                    f"Invalid agent {agent!r}. Must be one of: "
+                    + ", ".join(sorted(PERSONA_ALLOWLIST))
+                )
+            }
+        all_subjects = _skim_all_mailboxes(podman, container)
+        subjects = all_subjects.get(agent, [])
+        return {
+            "agent": agent,
+            "subjects": subjects,
+            "mail": len(subjects),
+        }
     else:
         return _pickup_list(crew, crew_id, podman, container, effective_timeout)
 
@@ -2935,6 +3595,15 @@ def _pickup_single(
         agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
         admiral_mail = mail_counts.get("admiral", 0)
 
+        # TRN-89 task 1: populate task timestamps
+        now = datetime.now(timezone.utc)
+        ts = _task_timestamps.get(task_id, {})
+        elapsed = r.get("elapsed", 0)
+        if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
+            ts["started_at"] = now.isoformat()
+        if ts and done and ts.get("completed_at") is None:
+            ts["completed_at"] = now.isoformat()
+
         out: dict[str, Any] = {
             "task_id": r.get("id"),
             "crew_id": crew_id,
@@ -2946,19 +3615,22 @@ def _pickup_single(
             "error": r.get("error", ""),
             "outcome": r.get("outcome", ""),
             "agent_mail": agent_mail,
+            "created_at": ts.get("created_at") if ts else None,
+            "started_at": ts.get("started_at") if ts else None,
+            "completed_at": ts.get("completed_at") if ts else None,
         }
 
         # Include subject lines for the agent persona, raven, captain, and admiral.
-        # captain/admiral are read via archive API (always live, works on stopped
-        # containers). The admiral_mail count above is still used for the
-        # reason="admiral_mail" early-return signal.
+        # captain/admiral come from the single _read_all_mail_subjects exec above
+        # (same shape: [{subject, received_at}]). The admiral_mail count above is
+        # still used for the reason="admiral_mail" early-return signal.
         if agent_persona:
             out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
         raven_subjects = mail_subjects.get("raven", [])
         if raven_subjects:
             out["raven_subjects"] = raven_subjects
-        captain_subjects = _read_mail_subjects_archive(podman, container, _CAPTAIN_MAILBOX_PATH)
-        admiral_subjects = _read_mail_subjects_archive(podman, container, _ADMIRAL_MAILBOX_PATH)
+        captain_subjects = mail_subjects.get("captain", [])
+        admiral_subjects = mail_subjects.get("admiral", [])
         out["captain_subjects"] = captain_subjects
         out["captain_mail"] = len(captain_subjects)
         out["admiral_subjects"] = admiral_subjects
@@ -3034,19 +3706,23 @@ def _pickup_list(
                 "last_tool": a.get("last_tool", ""),
                 "outcome": a.get("outcome", ""),
                 "error": a.get("error", ""),
+                # TRN-89 task 1: include per-task timestamps (null if missing)
+                "created_at": _task_timestamps.get(a.get("id", ""), {}).get("created_at"),
+                "started_at": _task_timestamps.get(a.get("id", ""), {}).get("started_at"),
+                "completed_at": _task_timestamps.get(a.get("id", ""), {}).get("completed_at"),
             }
             for a in agents
         ]
 
         # Build subject summaries for all persona mailboxes + captain + admiral.
-        # captain/admiral are read via archive API (always live).
+        # captain/admiral come from the single _read_all_mail_subjects exec above.
         subjects_summary: dict[str, list[str]] = {}
         for name in PERSONA_NAMES:
             subs = mail_subjects.get(name, [])
             if subs:
                 subjects_summary[f"{name}_subjects"] = subs
-        captain_subjects = _read_mail_subjects_archive(podman, container, _CAPTAIN_MAILBOX_PATH)
-        admiral_subjects = _read_mail_subjects_archive(podman, container, _ADMIRAL_MAILBOX_PATH)
+        captain_subjects = mail_subjects.get("captain", [])
+        admiral_subjects = mail_subjects.get("admiral", [])
         subjects_summary["captain_subjects"] = captain_subjects
         subjects_summary["captain_mail"] = len(captain_subjects)
         subjects_summary["admiral_subjects"] = admiral_subjects
@@ -3056,6 +3732,7 @@ def _pickup_list(
             "crew_id": crew_id,
             "tasks": task_list,
             "mail_summary": mail_summary,
+            "agent_subjects": mail_subjects,
             **subjects_summary,
         }
 
@@ -3247,6 +3924,17 @@ if __name__ == "__main__":
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
     _reconcile_registry()
+    # TRN-80: restore UI port allocations from persisted registry so restarts
+    # don't re-allocate ports already claimed by existing crews.
+    with _registry_lock:
+        _reg = _load_registry()
+        for _cid, _info in _reg["crews"].items():
+            _p = _info.get("dashboard_port")
+            if _p is not None:
+                _dashboard_ports_in_use.add(int(_p))
+    if _dashboard_ports_in_use:
+        logger.info("TRN-80: restored %d UI port(s) from registry: %s",
+                    len(_dashboard_ports_in_use), sorted(_dashboard_ports_in_use))
     for _warning in _validate_academy():
         logger.warning("Academy validation: %s", _warning)
     threading.Thread(target=_idle_monitor, daemon=True, name="idle-monitor").start()
@@ -3333,4 +4021,21 @@ if __name__ == "__main__":
 
     config = uvicorn.Config(app, host=HOST, port=PORT, log_level="info", **_uvicorn_kwargs)
     server = uvicorn.Server(config)
-    asyncio.run(server.serve())
+
+    # TRN-80: expose the fully-wrapped app to _start_dashboard_port_server so per-port
+    # servers share the same middleware stack (auth, rate limiting, headers).
+    _dashboard_app = app
+
+    async def _main() -> None:
+        # TRN-80: restore per-port UI servers for crews that had a dashboard_port
+        # in the registry before this transport restart.
+        if GA_DASHBOARD_PORT_ENABLED and _dashboard_app is not None:
+            with _registry_lock:
+                _restored_reg = _load_registry()
+            for _cid, _info in _restored_reg["crews"].items():
+                _p = _info.get("dashboard_port")
+                if _p is not None:
+                    _start_dashboard_port_server(int(_p), _cid, _dashboard_app)
+        await server.serve()
+
+    asyncio.run(_main())

@@ -50,12 +50,19 @@ def _install_import_stubs() -> None:
     class ConnectTimeout(Exception):
         pass
 
+    class Response:
+        """Minimal httpx.Response stub — needed by httpx_ws._exceptions at import time."""
+
+        def __init__(self, status_code: int = 200, **kwargs: Any) -> None:
+            self.status_code = status_code
+
     httpx.Client = Client  # type: ignore[attr-defined]
     httpx.AsyncClient = AsyncClient  # type: ignore[attr-defined]
     httpx.HTTPTransport = HTTPTransport  # type: ignore[attr-defined]
     httpx.HTTPStatusError = HTTPStatusError  # type: ignore[attr-defined]
     httpx.ConnectError = ConnectError  # type: ignore[attr-defined]
     httpx.ConnectTimeout = ConnectTimeout  # type: ignore[attr-defined]
+    httpx.Response = Response  # type: ignore[attr-defined]
     sys.modules["httpx"] = httpx
 
     mcp = types.ModuleType("mcp")
@@ -150,15 +157,67 @@ def _install_import_stubs() -> None:
     starlette_responses.JSONResponse = Response  # type: ignore[attr-defined]
     starlette_routing.Route = Route  # type: ignore[attr-defined]
     starlette_routing.Mount = Route  # type: ignore[attr-defined]
+
+    starlette_websockets = types.ModuleType("starlette.websockets")
+
+    class WebSocket:
+        """Minimal starlette WebSocket stub for TRN-80 WS proxy tests."""
+
+        def __init__(self, scope: Any = None, receive: Any = None, send: Any = None) -> None:
+            self.scope = scope or {}
+            self._receive = receive
+            self._send = send
+
+        async def accept(self) -> None:
+            pass
+
+        async def receive(self) -> dict:
+            if self._receive:
+                return await self._receive()
+            return {"type": "websocket.disconnect"}
+
+        async def send_text(self, data: str) -> None:
+            pass
+
+        async def send_bytes(self, data: bytes) -> None:
+            pass
+
+        async def close(self, code: int = 1000) -> None:
+            pass
+
+    class WebSocketDisconnect(Exception):
+        def __init__(self, code: int = 1000) -> None:
+            self.code = code
+
+    starlette_websockets.WebSocket = WebSocket  # type: ignore[attr-defined]
+    starlette_websockets.WebSocketDisconnect = WebSocketDisconnect  # type: ignore[attr-defined]
+    starlette.websockets = starlette_websockets  # type: ignore[attr-defined]
+
     sys.modules.update({
         "starlette": starlette,
         "starlette.applications": starlette_applications,
         "starlette.requests": starlette_requests,
         "starlette.responses": starlette_responses,
         "starlette.routing": starlette_routing,
+        "starlette.websockets": starlette_websockets,
     })
 
-    sys.modules["uvicorn"] = types.ModuleType("uvicorn")
+    uvicorn_mod = types.ModuleType("uvicorn")
+
+    class _UvicornConfig:
+        def __init__(self, app: Any = None, **kwargs: Any) -> None:
+            self.app = app
+
+    class _UvicornServer:
+        def __init__(self, config: Any = None) -> None:
+            self.should_exit = False
+
+        async def serve(self) -> None:
+            pass
+
+    uvicorn_mod.Config = _UvicornConfig  # type: ignore[attr-defined]
+    uvicorn_mod.Server = _UvicornServer  # type: ignore[attr-defined]
+    sys.modules["uvicorn"] = uvicorn_mod
 
 
 try:

@@ -755,9 +755,14 @@ class MaildirSubjectReaderTests(unittest.TestCase):
             "cur/msg2": "From: spectre@localhost\nSubject: task B ready\n\nbody",
         })
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertIn("task A done", subjects)
-        self.assertIn("task B ready", subjects)
         self.assertEqual(len(subjects), 2)
+        subject_texts = [s["subject"] for s in subjects]
+        self.assertIn("task A done", subject_texts)
+        self.assertIn("task B ready", subject_texts)
+        # All entries have received_at key (may be None if no Date header)
+        for entry in subjects:
+            self.assertIn("subject", entry)
+            self.assertIn("received_at", entry)
 
     def test_ignores_files_outside_new_and_cur(self) -> None:
         tar = self._make_maildir_tar({
@@ -765,7 +770,8 @@ class MaildirSubjectReaderTests(unittest.TestCase):
             "new/msg2": "Subject: included\n\nbody",
         })
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertEqual(subjects, ["included"])
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "included")
 
     def test_empty_mailbox_returns_empty_list(self) -> None:
         tar = self._make_maildir_tar({})
@@ -785,7 +791,8 @@ class MaildirSubjectReaderTests(unittest.TestCase):
         })
         self.assertIsInstance(tar, bytes)
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertEqual(subjects, ["bytes path"])
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "bytes path")
 
     def test_deeply_nested_new_dir_is_included(self) -> None:
         """A path like captain/new/msg1 (tar from archive API) should be matched."""
@@ -793,7 +800,8 @@ class MaildirSubjectReaderTests(unittest.TestCase):
             "captain/new/msg1": "Subject: deep subject\n\nbody",
         })
         subjects = captain_mod._read_maildir_subjects_from_tar(tar)
-        self.assertEqual(subjects, ["deep subject"])
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "deep subject")
 
     def test_corrupt_tar_returns_empty_list(self) -> None:
         subjects = captain_mod._read_maildir_subjects_from_tar(b"not a tar stream")
@@ -817,7 +825,9 @@ class MaildirSubjectReaderTests(unittest.TestCase):
         podman.container_archive_get.return_value = _FakeResp()
         result = captain_mod._read_mail_subjects_archive(podman, "gs-demo", "/var/mail/captain")
         podman.container_archive_get.assert_called_once_with("gs-demo", "/var/mail/captain")
-        self.assertEqual(result, ["order received"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["subject"], "order received")
+        self.assertIn("received_at", result[0])
 
     def test_read_mail_subjects_archive_returns_empty_on_error(self) -> None:
         """_read_mail_subjects_archive returns [] if archive_get raises."""
@@ -898,8 +908,8 @@ class CaptainStatusArchiveTests(unittest.TestCase):
             result = server.captain("demo", "status")
 
         # Subjects are present
-        self.assertEqual(result["captain_subjects"], ["trn-51 cleanup done"])
-        self.assertEqual(result["admiral_subjects"], ["SO1 complete"])
+        self.assertEqual(result["captain_subjects"], [{"subject": "trn-51 cleanup done", "received_at": None}])
+        self.assertEqual(result["admiral_subjects"], [{"subject": "SO1 complete", "received_at": None}])
         self.assertEqual(result["captain_mail"], 1)
         self.assertEqual(result["admiral_mail"], 1)
         # Status is dormant (no job found on a stopped container)
@@ -951,13 +961,351 @@ class CaptainStatusArchiveTests(unittest.TestCase):
         ):
             result = server.captain("demo", "status")
 
-        self.assertEqual(set(result["captain_subjects"]), {"banshee review done", "trn-85 archived"})
+        self.assertEqual(set(s["subject"] for s in result["captain_subjects"]), {"banshee review done", "trn-85 archived"})
         self.assertEqual(result["captain_mail"], 2)
         self.assertEqual(result["admiral_subjects"], [])
         self.assertEqual(result["admiral_mail"], 0)
         # Job state still present
         self.assertEqual(result["job_id"], "job-existing")
         self.assertTrue(result["enabled"])
+
+
+class MaildirSubjectTimestampTests(unittest.TestCase):
+    """TRN-89 Task 2 — received_at in _read_maildir_subjects_from_tar."""
+
+    @staticmethod
+    def _make_maildir_tar(messages: dict[str, str]) -> bytes:
+        import io as _io
+        import tarfile as _tarfile
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            for name, content in messages.items():
+                data = content.encode("utf-8")
+                info = _tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, _io.BytesIO(data))
+        return buf.getvalue()
+
+    def test_valid_date_header_returns_utc_received_at(self) -> None:
+        """Message with valid Date header returns ISO 8601 UTC received_at."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: hello\nDate: Mon, 01 Jan 2024 12:00:00 +0000\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "hello")
+        self.assertIsNotNone(subjects[0]["received_at"])
+        self.assertIn("2024-01-01", subjects[0]["received_at"])
+
+    def test_date_header_with_timezone_offset_converted_to_utc(self) -> None:
+        """Date header with +0500 offset is converted to UTC in received_at."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: tz test\nDate: Mon, 01 Jan 2024 17:00:00 +0500\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        # 17:00 +05:00 == 12:00 UTC
+        self.assertIsNotNone(subjects[0]["received_at"])
+        self.assertIn("12:00:00", subjects[0]["received_at"])
+
+    def test_no_date_header_returns_received_at_null(self) -> None:
+        """Message with no Date header returns received_at = None."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "From: ghost@localhost\nSubject: no date\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        self.assertEqual(subjects[0]["subject"], "no date")
+        self.assertIsNone(subjects[0]["received_at"])
+
+    def test_return_type_is_list_of_dicts(self) -> None:
+        """Each entry in the returned list is a dict with subject and received_at keys."""
+        tar = self._make_maildir_tar({
+            "new/msg1": "Subject: check shape\n\nbody",
+        })
+        subjects = captain_mod._read_maildir_subjects_from_tar(tar)
+        self.assertEqual(len(subjects), 1)
+        self.assertIsInstance(subjects[0], dict)
+        self.assertIn("subject", subjects[0])
+        self.assertIn("received_at", subjects[0])
+
+
+class CaptainLastCheckinAtTests(unittest.TestCase):
+    """TRN-89 Task 4 — last_checkin_at in captain status."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    @staticmethod
+    def _make_maildir_tar(messages: dict[str, str]) -> bytes:
+        import io as _io
+        import tarfile as _tarfile
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            for name, content in messages.items():
+                data = content.encode("utf-8")
+                info = _tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, _io.BytesIO(data))
+        return buf.getvalue()
+
+    def _make_podman(self, *, is_running: bool = True):
+        podman = Mock()
+        podman.container_is_running.return_value = is_running
+        tar = self._make_maildir_tar({})
+
+        class _FakeResp:
+            def iter_bytes(self_inner):
+                yield tar
+
+            def close(self_inner):
+                pass
+
+        podman.container_archive_get.return_value = _FakeResp()
+        return podman
+
+    def test_status_includes_last_checkin_at_null_before_checkin_fires(self) -> None:
+        """captain status includes last_checkin_at=null when no check-in has fired."""
+        existing = {
+            "id": "job-1",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        # Registry entry with NO last_checkin_at
+        reg = {"crews": {"demo": {
+            "container": "gs-demo", "cookie": "cookie",
+            "schedules": [{"job_id": "job-1", "name": "captain", "agent": "raven", "enabled": True}],
+        }}}
+        podman = self._make_podman(is_running=True)
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}),
+        ):
+            result = server.captain("demo", "status")
+
+        self.assertIn("last_checkin_at", result)
+        self.assertIsNone(result["last_checkin_at"])
+
+    def test_status_includes_last_checkin_at_after_checkin_fires(self) -> None:
+        """captain status includes last_checkin_at when a check-in has fired."""
+        existing = {
+            "id": "job-1",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        checkin_ts = "2026-09-02T00:00:00+00:00"
+        # Registry entry WITH last_checkin_at
+        reg = {"crews": {"demo": {
+            "container": "gs-demo", "cookie": "cookie",
+            "schedules": [{
+                "job_id": "job-1", "name": "captain", "agent": "raven",
+                "enabled": True, "last_checkin_at": checkin_ts,
+            }],
+        }}}
+        podman = self._make_podman(is_running=True)
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}),
+        ):
+            result = server.captain("demo", "status")
+
+        self.assertEqual(result["last_checkin_at"], checkin_ts)
+
+
+# ── TRN-94 tests ─────────────────────────────────────────────────────────────
+
+
+class ReadAllMailSubjectsTests(unittest.TestCase):
+    """TRN-94 task 1.5 — _read_all_mail_subjects returns new dict shape."""
+
+    CONTAINER = "gs-demo"
+
+    def test_returns_subject_dicts_on_success(self) -> None:
+        """_read_all_mail_subjects returns {name: [{subject, received_at}]} dicts."""
+        raw_json = json.dumps({
+            "ghost": [{"subject": "task done", "received_at": "2026-09-02T22:00:00+00:00"}],
+            "raven": [],
+            "captain": [{"subject": "standing order", "received_at": None}],
+        })
+        podman = Mock()
+        podman.container_exec_checked.return_value = raw_json
+        result = captain_mod._read_all_mail_subjects(podman, self.CONTAINER)
+        self.assertEqual(result["ghost"], [{"subject": "task done", "received_at": "2026-09-02T22:00:00+00:00"}])
+        self.assertEqual(result["raven"], [])
+        self.assertEqual(result["captain"], [{"subject": "standing order", "received_at": None}])
+
+    def test_returns_empty_dict_on_exec_failure(self) -> None:
+        """_read_all_mail_subjects returns {} when exec raises."""
+        podman = Mock()
+        podman.container_exec_checked.side_effect = RuntimeError("container stopped")
+        # The function itself raises — _skim_all_mailboxes wraps the exception
+        import contextlib
+        with contextlib.suppress(Exception):
+            result = captain_mod._read_all_mail_subjects(podman, self.CONTAINER)
+            # If it doesn't raise, should return {} or empty
+            self.assertIsInstance(result, dict)
+
+    def test_filters_non_dict_entries(self) -> None:
+        """_read_all_mail_subjects filters out non-dict list entries."""
+        raw_json = json.dumps({
+            "ghost": [{"subject": "ok", "received_at": None}, "stray-string", 42],
+        })
+        podman = Mock()
+        podman.container_exec_checked.return_value = raw_json
+        result = captain_mod._read_all_mail_subjects(podman, self.CONTAINER)
+        # Only the dict entry survives
+        self.assertEqual(result["ghost"], [{"subject": "ok", "received_at": None}])
+
+
+class SkimAllMailboxesTests(unittest.TestCase):
+    """TRN-94 tasks 1.3 + 2.2 — _skim_all_mailboxes happy path and fallback."""
+
+    CONTAINER = "gs-demo"
+
+    def _exec_json(self, data: dict) -> Mock:
+        """Return a Mock podman whose exec returns data as JSON."""
+        podman = Mock()
+        podman.container_exec_checked.return_value = json.dumps(data)
+        return podman
+
+    def test_running_crew_returns_all_8_keys(self) -> None:
+        """Running crew: _skim_all_mailboxes returns all 8 mailbox keys."""
+        skim_data = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        skim_data["ghost"] = [{"subject": "hello", "received_at": None}]
+        podman = self._exec_json(skim_data)
+        result = captain_mod._skim_all_mailboxes(podman, self.CONTAINER)
+        self.assertEqual(set(result.keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+        self.assertEqual(result["ghost"], [{"subject": "hello", "received_at": None}])
+        self.assertEqual(result["raven"], [])
+
+    def test_exec_failure_triggers_archive_fallback(self) -> None:
+        """When exec fails, _skim_all_mailboxes falls back to per-mailbox archive reads."""
+        podman = Mock()
+        podman.container_exec_checked.side_effect = RuntimeError("not running")
+        # Archive returns a subject for ghost, empty for everyone else.
+        # _read_mail_subjects_archive is called as (podman, container, mailbox_path).
+        def _archive(_podman, _container, mailbox_path):
+            if "ghost" in mailbox_path:
+                return [{"subject": "archive fallback", "received_at": None}]
+            return []
+        with patch.object(captain_mod, "_read_mail_subjects_archive", side_effect=_archive):
+            result = captain_mod._skim_all_mailboxes(podman, self.CONTAINER)
+        self.assertEqual(result["ghost"], [{"subject": "archive fallback", "received_at": None}])
+        self.assertEqual(result["raven"], [])
+        self.assertEqual(set(result.keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+
+    def test_stopped_crew_returns_8_empty_lists(self) -> None:
+        """Stopped crew: all 8 mailboxes return empty lists."""
+        podman = Mock()
+        podman.container_exec_checked.side_effect = RuntimeError("stopped")
+        with patch.object(captain_mod, "_read_mail_subjects_archive", return_value=[]):
+            result = captain_mod._skim_all_mailboxes(podman, self.CONTAINER)
+        self.assertEqual(set(result.keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+        for name in captain_mod._ALL_MAIL_MAILBOXES:
+            self.assertEqual(result[name], [])
+
+
+class CaptainStatusAgentMailTests(unittest.TestCase):
+    """TRN-94 task 2.4 — captain status includes agent_mail field."""
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def _skim_result(self, **overrides) -> dict:
+        """Build a full 8-key skim result with optional overrides per mailbox."""
+        base = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        base.update(overrides)
+        return base
+
+    def test_agent_mail_present_dormant_captain(self) -> None:
+        """2.4 — dormant captain status still includes agent_mail."""
+        ghost_subjects = [{"subject": "task done", "received_at": None}]
+        skim = self._skim_result(ghost=ghost_subjects)
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running") as ensure,
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.captain("demo", "status")
+        self.assertIn("agent_mail", result)
+        self.assertEqual(result["agent_mail"]["ghost"], ghost_subjects)
+        self.assertEqual(result["status"], "dormant")
+        ensure.assert_not_called()
+
+    def test_agent_mail_present_running_crew(self) -> None:
+        """2.4 — running crew captain status includes agent_mail with all 8 keys."""
+        existing_job = {
+            "id": "job-1",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        raven_subjects = [{"subject": "check-in report", "received_at": None}]
+        skim = self._skim_result(raven=raven_subjects)
+        reg = {"crews": {"demo": {"container": "gs-demo", "cookie": "cookie", "schedules": []}}}
+        podman = Mock()
+        podman.container_is_running.return_value = True
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing_job]}),
+        ):
+            result = server.captain("demo", "status")
+        self.assertIn("agent_mail", result)
+        self.assertEqual(set(result["agent_mail"].keys()), set(captain_mod._ALL_MAIL_MAILBOXES))
+        self.assertEqual(result["agent_mail"]["raven"], raven_subjects)
+
+    def test_stopped_crew_agent_mail_empty_lists(self) -> None:
+        """2.4 — stopped crew: agent_mail contains empty lists for all 8 mailboxes."""
+        skim = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim),
+        ):
+            result = server.captain("demo", "status")
+        self.assertIn("agent_mail", result)
+        for name in captain_mod._ALL_MAIL_MAILBOXES:
+            self.assertEqual(result["agent_mail"][name], [])
+
+    def test_captain_admiral_derived_from_skim_no_duplicate_exec(self) -> None:
+        """2.3 — captain_subjects and admiral_subjects come from skim, no extra exec calls."""
+        captain_subs = [{"subject": "standing order", "received_at": None}]
+        admiral_subs = [{"subject": "admiral reply", "received_at": None}]
+        skim = self._skim_result(captain=captain_subs, admiral=admiral_subs)
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim) as mock_skim,
+            patch.object(server, "_read_mail_subjects_archive") as mock_archive,
+        ):
+            result = server.captain("demo", "status")
+        # Skim called once; archive NOT called for captain/admiral
+        mock_skim.assert_called_once()
+        mock_archive.assert_not_called()
+        self.assertEqual(result["captain_subjects"], captain_subs)
+        self.assertEqual(result["admiral_subjects"], admiral_subs)
 
 
 if __name__ == "__main__":

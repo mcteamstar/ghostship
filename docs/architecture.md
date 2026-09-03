@@ -83,19 +83,36 @@ launch(crew_id)
   3. Start crew container (localhost/spec-ops:latest)
   4. Wait for gateway ready (GET / on :5476, 30s timeout)
   5. Inject kiro-cli auth rows into crew's SQLite DB
-  6. Patch KiroCrew config (sandbox=none, skip_permissions=true, spawn_min_memory_gb=0)
-  7. Restart container (workers pick up auth + config)
-  8. Wait for gateway ready again
-  9. Copy manifest-selected agent JSONs (spectre/ghost/banshee/reaper/wraith/raven,
+  6. Inject the admiral signing secret (random 32-byte hex) into
+     `~/.kiro/crew/.admiral_secret` (mode 0600). The secret is piped in over
+     stdin, never passed as an exec argument, so it never appears in
+     `podman exec` argv or `/proc/<pid>/cmdline` (TRN-93). The plaintext is
+     also persisted to `DATA_DIR/secrets/<id>` so Captain can sign standing
+     orders; `crews.json` stores only a non-reversible identifier.
+  7. Patch KiroCrew config (`agent`, `dangerously_skip_permissions=true`,
+     `spawn_min_memory_gb=GA_SPAWN_MIN_MEMORY_GB` [1.5 default],
+     `resource_pressure_gb`, `resource_critical_gb`, `subagent_timeout_secs`,
+     `subagent_max_turns`, `default_agent=ghost`, `reasoning_effort=max`)
+  8. Restart container (workers pick up auth + config)
+  9. Wait for gateway ready again
+  10. Copy manifest-selected agent JSONs (spectre/ghost/banshee/reaper/wraith/raven,
      by default) from /agents bind-mount
-  10. Copy manifest-selected skill dirs (openspec-*, ghostship-mail, ..., by default)
+  11. Copy manifest-selected skill dirs (openspec-*, ghostship-mail, ..., by default)
       from /skills bind-mount
-  11. Copy manifest-selected steering docs (all, by default) from /steering
+  12. Copy manifest-selected steering docs (all, by default) from /steering
       bind-mount (see below)
-  12. Seed a shared OpenSpec store at the workspace root (see below)
-  13. Patch agent model files to the model pinned in each agent's JSON
-  14. Mint a session token with `KC_GATEWAY_TOKEN_TTL` (24h default), exchange for cookie
-  15. Register in /data/crews.json with `last_used` set to setup completion time
+  13. Seed a shared OpenSpec store at the workspace root (see below)
+  14. Inject git author identity — a no-op at this step; `GA_GIT_AUTHOR_NAME`/
+      `GA_GIT_AUTHOR_EMAIL` are set as container env vars at container-create
+      time so they are part of the process environment from startup
+  15. Inject the governance policy: HMAC-SHA256-sign the canonical policy body
+      with a dedicated `policy_signing_key` (distinct from `admiral_secret`) and
+      write `security_policy.json` + `admission_policy.json` into `~/.kiro/crew/`
+      (see [Operator governance](#operator-governance)). Failure is logged but
+      never aborts launch
+  16. Patch agent model files to the model pinned in each agent's JSON
+  17. Mint a session token with `KC_GATEWAY_TOKEN_TTL` (24h default), exchange for cookie
+  18. Register in /data/crews.json with `last_used` set to setup completion time
   └── returns { status: "ready" } (~30s)
 
 nuke(crew_id, confirm=True)

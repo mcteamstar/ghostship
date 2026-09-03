@@ -157,7 +157,29 @@ class ReadMailSubjectsTests(unittest.TestCase):
                 "From: b@localhost\nSubject: second\n\nbody\n"
             )
             subjects = read_mail_subjects.read_subjects(["ghost"], root=td)
-            self.assertEqual(sorted(subjects["ghost"]), ["hello world", "second"])
+            # Returns list of {subject, received_at} dicts
+            self.assertEqual(
+                sorted(subjects["ghost"], key=lambda d: d["subject"]),
+                [
+                    {"subject": "hello world", "received_at": None},
+                    {"subject": "second", "received_at": None},
+                ],
+            )
+
+    def test_reads_subjects_includes_received_at(self) -> None:
+        """read_subjects returns received_at from the Date header."""
+        with tempfile.TemporaryDirectory() as td:
+            base = os.path.join(td, "ghost", "new")
+            os.makedirs(base, exist_ok=True)
+            Path(os.path.join(base, "m1")).write_text(
+                "From: a@localhost\nSubject: timed msg\n"
+                "Date: Wed, 02 Sep 2026 22:00:00 +0000\n\nbody\n"
+            )
+            subjects = read_mail_subjects.read_subjects(["ghost"], root=td)
+            self.assertEqual(len(subjects["ghost"]), 1)
+            entry = subjects["ghost"][0]
+            self.assertEqual(entry["subject"], "timed msg")
+            self.assertEqual(entry["received_at"], "2026-09-02T22:00:00+00:00")
 
     def test_empty_mailbox_yields_empty_list(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -171,7 +193,14 @@ class ReadMailSubjectsTests(unittest.TestCase):
                 "From b\nSubject: order two\n\nbody\n"
             )
             subjects = read_mail_subjects.read_subjects(["captain"], root=td)
-            self.assertEqual(subjects["captain"], ["order one", "order two"])
+            # Returns list of {subject, received_at} dicts
+            self.assertEqual(
+                subjects["captain"],
+                [
+                    {"subject": "order one", "received_at": None},
+                    {"subject": "order two", "received_at": None},
+                ],
+            )
 
 
 class PatchModelsTests(unittest.TestCase):

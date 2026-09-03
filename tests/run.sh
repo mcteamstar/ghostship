@@ -6,6 +6,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_DIR"
 
+# ── venv bootstrap ────────────────────────────────────────────────────────────
+# Create and activate a local venv with transport deps so tests run consistently
+# without polluting the system Python. uv is used when available, else venv+pip.
+VENV_DIR="$REPO_DIR/.venv"
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+  printf '=== Creating .venv ===\n'
+  if command -v uv &>/dev/null; then
+    uv venv "$VENV_DIR" --quiet
+    uv pip install --quiet --python "$VENV_DIR/bin/python" \
+      -r "$REPO_DIR/transport/requirements.txt"
+  else
+    python3 -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/pip" install --quiet -r "$REPO_DIR/transport/requirements.txt"
+  fi
+fi
+# shellcheck source=/dev/null
+source "$VENV_DIR/bin/activate"
+# ─────────────────────────────────────────────────────────────────────────────
+
 declare -a SELECTED_CATEGORIES=()
 
 if [[ $# -eq 0 ]]; then

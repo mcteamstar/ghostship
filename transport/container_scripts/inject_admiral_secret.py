@@ -2,14 +2,19 @@
 """Write the admiral signing secret to a file with fsync.
 
 Runs inside a crew container via
-``python3 /scripts/inject_admiral_secret.py <path> <secret>``.
+``python3 /scripts/inject_admiral_secret.py <path>``.
+
+The secret is read from stdin (``sys.stdin.read().strip()``) so it never
+appears in ``podman exec`` argument lists or ``/proc/<pid>/cmdline``.
 
 The secret must be on the home volume before the post-restart gateway
 starts, so the write is fsync'd before returning.
 
 Args (argv):
-    1. path   — destination file (e.g. /home/kirocrew/.kiro/crew/.admiral_secret)
-    2. secret — the secret string to write
+    1. path — destination file (e.g. /home/kirocrew/.kiro/crew/.admiral_secret)
+
+Stdin:
+    The secret string to write (trailing whitespace is stripped).
 
 The file is created with mode 0600. Prints ``admiral secret injected``.
 """
@@ -32,11 +37,17 @@ def inject_secret(path: str, secret: str) -> None:
         os.close(fd)
 
 
+def inject_admiral_secret(dest: str, stdin_secret: str) -> None:
+    """Public API: write ``stdin_secret`` to ``dest`` (mode 0600) and fsync."""
+    inject_secret(dest, stdin_secret)
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: inject_admiral_secret.py <path> <secret>", file=sys.stderr)
+    if len(argv) != 2:
+        print("usage: inject_admiral_secret.py <path>", file=sys.stderr)
         return 2
-    inject_secret(argv[1], argv[2])
+    secret = sys.stdin.read().strip()
+    inject_admiral_secret(argv[1], secret)
     print("admiral secret injected")
     return 0
 

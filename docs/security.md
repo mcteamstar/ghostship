@@ -21,6 +21,18 @@ so a rollback needs no code change.
   log record, error, and audit line (replaced with `***REDACTED***`).
 - **CI secret scan.** `tests/security_scan.py` runs in the `security-scan` CI
   job and fails the build on a likely committed live secret.
+- **Admiral secret delivery via stdin.** The `admiral_secret` is delivered to
+  container scripts via stdin, not process arguments. `inject_admiral_secret.py`
+  reads the secret from `sys.stdin.read().strip()` so it never appears in
+  `podman exec` argument lists or `/proc/<pid>/cmdline` during the exec's
+  lifetime.
+- **crews.json stores identifiers only.** After `admiral_secret` and
+  `policy_signing_key` are injected into the crew container, `crews.json`
+  retains only a non-reversible identifier for each secret
+  (`"admiral_secret_id": "sha256:<hex[:16]>"`, `"policy_signing_key_id": "sha256:<hex[:16]>"`).
+  The plaintext values exist in memory only for the duration of the injection
+  call and are never written to disk. This closes the residual exposure noted
+  as TRN-16 in earlier versions.
 
 ### Rotating a secret (no code change)
 
