@@ -82,6 +82,12 @@ HOST=0.0.0.0
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_PORT_RANGE_SIZE=50
 GA_DASHBOARD_PORT_ENABLED=true
+# ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────────
+GA_CADDY_ENABLED=false
+GA_CADDY_TLS_MODE=internal
+GA_CADDY_DOMAIN=""
+GA_CADDY_PORT=443
+GA_CADDY_HTTP_PORT=80
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -138,6 +144,8 @@ while [[ $# -gt 0 ]]; do
     --model-default) KC_MODEL_DEFAULT="$2"; shift 2 ;;
     --public-url) GA_HOST_URL="$2"; shift 2 ;;
     --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
+    --caddy-domain) GA_CADDY_DOMAIN="$2"; shift 2 ;;
+    --caddy-tls-mode) GA_CADDY_TLS_MODE="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -610,7 +618,9 @@ services:
       - label=disable
     ports:
       - "127.0.0.1:${PORT}:${PORT}"
-      - "${GA_DASHBOARD_PORT_RANGE_START:-64058}-${_DASHBOARD_PORT_END}:${GA_DASHBOARD_PORT_RANGE_START:-64058}-${_DASHBOARD_PORT_END}"
+$(if [[ "${GA_CADDY_ENABLED:-false}" != "true" ]]; then
+  printf '      - "%s-%s:%s-%s"\n' "${_DASHBOARD_PORT_START}" "${_DASHBOARD_PORT_END}" "${_DASHBOARD_PORT_START}" "${_DASHBOARD_PORT_END}"
+fi)
     networks:
       - ga-net
     volumes:
@@ -664,14 +674,128 @@ services:
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-50}"
       GA_DASHBOARD_PORT_ENABLED: "${GA_DASHBOARD_PORT_ENABLED:-true}"
+      GA_CADDY_ENABLED: "${GA_CADDY_ENABLED:-false}"
+      GA_CADDY_TLS_MODE: "${GA_CADDY_TLS_MODE:-internal}"
+      GA_CADDY_DOMAIN: "${GA_CADDY_DOMAIN:-}"
+      GA_CADDY_PORT: "${GA_CADDY_PORT:-443}"
+      GA_CADDY_HTTP_PORT: "${GA_CADDY_HTTP_PORT:-80}"
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
+$(if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then
+cat <<CADDY_SVC
+  ga-caddy:
+    image: caddy:2
+    container_name: ga-caddy
+    restart: always
+    ports:
+      - "0.0.0.0:${GA_CADDY_HTTP_PORT:-80}:80"
+      - "0.0.0.0:${GA_CADDY_PORT:-443}:443"
+      - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
+    networks:
+      - ga-net
+    environment:
+      GA_API_KEY: "${GA_API_KEY:-}"
+    volumes:
+      - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
+      - ga-caddy-data:/data
+    command: ["caddy", "run", "--config", "/config/initial-config.json", "--resume"]
+CADDY_SVC
+fi)
 networks:
   ga-net:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf 'secrets:\n  ga-api-key:\n    external: true\n'; fi)
+$(if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then printf 'volumes:\n  ga-caddy-data:\n'; fi)
 COMPOSE_EOF
 
 echo "✓ compose.yml written to ${DATA_DIR}/compose.yml"
+
+# ── Generate Caddy initial-config.json (TRN-92) ───────────────────────────────
+# Written only when GA_CADDY_ENABLED=true. The config bootstraps the main-port
+# server with Bearer-gated MCP/file routes and the dashboard-auth endpoints.
+# Per-crew dashboard servers are added at runtime via the Caddy admin API.
+if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then
+  mkdir -p "${DATA_DIR}/caddy"
+
+  # Build the TLS stanza based on GA_CADDY_TLS_MODE.
+  case "${GA_CADDY_TLS_MODE:-internal}" in
+    tailscale)
+      _TLS_STANZA='"tls": {"automation": {"policies": [{"get_certificate": [{"via": "tailscale"}]}]}}'
+      ;;
+    acme)
+      _ACME_DOMAIN="${GA_CADDY_DOMAIN:-}"
+      _TLS_STANZA='"tls": {"automation": {"policies": [{"subjects": ["'"${_ACME_DOMAIN}"'"], "issuers": [{"module": "acme"}]}]}}'
+      ;;
+    off)
+      _TLS_STANZA='"tls": {}'
+      ;;
+    *)  # internal (default)
+      _TLS_STANZA='"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}'
+      ;;
+  esac
+
+  # Generate initial-config.json — main server only, no per-crew servers.
+  cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
+{
+  "admin": {"listen": "0.0.0.0:2019"},
+  "apps": {
+    "http": {
+      "servers": {
+        "ga-main": {
+          "listen": [":${GA_CADDY_PORT:-443}"],
+          "routes": [
+            {
+              "@id": "ga-transport-mcp",
+              "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+            },
+            {
+              "@id": "ga-transport-files",
+              "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+            },
+            {
+              "@id": "ga-mcp-files-reject",
+              "match": [{"path": ["/mcp*", "/files/*"]}],
+              "handle": [{"handler": "static_response", "status_code": 401, "headers": {"Www-Authenticate": ["Bearer"]}, "body": "Unauthorized"}]
+            },
+            {
+              "@id": "ga-transport-misc",
+              "match": [{"path": ["/health", "/dashboard-auth", "/dashboard-auth*", "/login-ui", "/dashboard-login"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+            }
+          ]
+        }
+      }
+    },
+    ${_TLS_STANZA}
+  }
+}
+CADDY_EOF
+
+  echo "✓ Caddy initial-config.json written to ${DATA_DIR}/caddy/initial-config.json"
+
+  # Internal CA: surface the root cert path so the operator knows where to
+  # run 'caddy trust'. The cert lives in the ga-caddy-data volume at the
+  # standard Caddy path /data/caddy/pki/authorities/local/root.crt.
+  if [[ "${GA_CADDY_TLS_MODE:-internal}" == "internal" ]]; then
+    # Resolve the host-side volume mountpoint for ga-caddy-data.
+    _CADDY_DATA_MOUNTPOINT=""
+    if ${_PODMAN_CMD} volume exists ga-caddy-data 2>/dev/null; then
+      _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect ga-caddy-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
+    fi
+    _CADDY_ROOT_CERT_PATH="${_CADDY_DATA_MOUNTPOINT:-(ga-caddy-data not yet created)}/caddy/pki/authorities/local/root.crt"
+    echo ""
+    echo "── Caddy internal CA ─────────────────────────────────────────────────"
+    echo "TLS mode: internal (Caddy built-in CA)"
+    echo "Root CA cert: ${_CADDY_ROOT_CERT_PATH}"
+    echo ""
+    echo "After ga-caddy starts, run this once to trust the CA:"
+    echo "  podman exec ga-caddy caddy trust"
+    echo "or import the cert manually from the path above."
+    echo "──────────────────────────────────────────────────────────────────────"
+    echo ""
+  fi
+fi
 
 # ── Run transport ─────────────────────────────────────────────────────────────
 
@@ -730,6 +854,26 @@ else
   echo "  Last 20 lines of container logs:" >&2
   ${_PODMAN_CMD} logs ga-transport --tail 20 >&2
   exit 1
+fi
+
+# TRN-92: ga-caddy health check (only when Caddy is enabled)
+if [[ "${GA_CADDY_ENABLED:-false}" == "true" ]]; then
+  _caddy_ready=0
+  for (( _i=0; _i<_max_wait; _i+=_interval )); do
+    if curl -sk "https://127.0.0.1:${GA_CADDY_PORT:-443}/health" >/dev/null 2>&1 \
+      || curl -s "http://127.0.0.1:${GA_CADDY_HTTP_PORT:-80}/health" >/dev/null 2>&1; then
+      _caddy_ready=1
+      break
+    fi
+    sleep "$_interval"
+  done
+  if [[ "$_caddy_ready" == "1" ]]; then
+    echo "✓ Caddy is ready"
+  else
+    echo "⚠ Caddy (ga-caddy) did not respond on port ${GA_CADDY_PORT:-443} within ${_max_wait}s"
+    echo "  Check: ${_PODMAN_CMD} logs ga-caddy --tail 20"
+    echo "  This is non-fatal — Caddy may still be pulling or starting."
+  fi
 fi
 
 echo ""

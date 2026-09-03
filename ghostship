@@ -264,6 +264,31 @@ def cmd_status(args: list) -> int:
     print(f"  URL:    http://{port_str}/mcp")
     if uptime_str:
         print(f"  Uptime: {uptime_str}")
+
+    # TRN-92: surface the Caddy root CA cert path when GA_CADDY_TLS_MODE=internal
+    caddy_enabled = os.environ.get("GA_CADDY_ENABLED", "false").lower() == "true"
+    caddy_tls_mode = os.environ.get("GA_CADDY_TLS_MODE", "internal")
+    if caddy_enabled and caddy_tls_mode == "internal":
+        # Try to locate the volume mountpoint for ga-caddy-data
+        try:
+            import json as _json
+            vol_inspect = subprocess.run(
+                podman + ["volume", "inspect", "ga-caddy-data"],
+                capture_output=True,
+                text=True,
+            )
+            if vol_inspect.returncode == 0:
+                vols = _json.loads(vol_inspect.stdout)
+                if vols:
+                    mountpoint = vols[0].get("Mountpoint", "")
+                    cert_path = f"{mountpoint}/caddy/pki/authorities/local/root.crt"
+                    print(f"  Caddy TLS: internal CA (trust once with: podman exec ga-caddy caddy trust)")
+                    print(f"  CA cert:   {cert_path}")
+            else:
+                print("  Caddy TLS: internal CA (ga-caddy-data volume not found — run install.sh first)")
+        except Exception:
+            print("  Caddy TLS: internal CA (run: podman exec ga-caddy caddy trust)")
+
     return 0
 
 

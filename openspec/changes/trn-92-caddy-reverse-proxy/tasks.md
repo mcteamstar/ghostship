@@ -7,8 +7,8 @@
 ## 2. Caddy Admin API — MCP/File Edge Auth
 
 - [x] 2.1 Implement `_caddy_admin_url()` helper reading `cfg.ga_caddy_admin_url` (default `http://ga-caddy:2019`).
-- [ ] 2.2 Generate the main-server `/mcp*` and `/files/*` routes with a Bearer matcher (`Authorization: Bearer {env.GA_API_KEY}`) plus a catch-all 401 `static_response` route, in the `initial-config.json` writer (task 5.3). Verify a bad/missing token is rejected at Caddy.
-- [ ] 2.3 Ensure the `ga-caddy` compose stanza injects `GA_API_KEY` into Caddy's environment so `{env.GA_API_KEY}` resolves.
+- [x] 2.2 Generate the main-server `/mcp*` and `/files/*` routes with a Bearer matcher (`Authorization: Bearer {env.GA_API_KEY}`) plus a catch-all 401 `static_response` route, in the `initial-config.json` writer (task 5.3). Verify a bad/missing token is rejected at Caddy.
+- [x] 2.3 Ensure the `ga-caddy` compose stanza injects `GA_API_KEY` into Caddy's environment so `{env.GA_API_KEY}` resolves.
 
 ## 3. Caddy Admin API — Per-Crew Dashboard Servers
 
@@ -32,18 +32,18 @@
 
 ## 5. install.sh
 
-- [ ] 5.1 Add `GA_CADDY_ENABLED`, `GA_CADDY_TLS_MODE`, `GA_CADDY_DOMAIN`, `GA_CADDY_PORT`, `GA_CADDY_HTTP_PORT` to the built-in defaults block.
-- [ ] 5.2 Add flag parsing for Caddy-specific CLI flags (e.g. `--caddy-domain`, `--caddy-tls-mode`).
-- [ ] 5.3 Generate `${DATA_DIR}/caddy/initial-config.json` (main server: MCP/file routes with Bearer matcher, health, dashboard-auth endpoints; TLS stanza parameterised by `GA_CADDY_TLS_MODE` — internal/tailscale/acme/off; no per-crew servers).
-- [ ] 5.4 Add the `ga-caddy` service stanza to the compose template (conditional on `GA_CADDY_ENABLED=true`): `caddy:2` image; bind 443/80 **and the dashboard port range**; inject `GA_API_KEY` env; mount `initial-config.json` (ro) and `ga-caddy-data`; `caddy run --config ... --resume`.
-- [ ] 5.5 **Move the dashboard port-range binding off `ga-transport`** when `GA_CADDY_ENABLED=true` (Caddy owns those ports; binding on both is a conflict).
-- [ ] 5.6 Add the `ga-caddy-data` named volume to the compose volumes section when Caddy is enabled.
-- [ ] 5.7 When `GA_CADDY_TLS_MODE=internal`, print the Caddy root CA cert path and a `caddy trust` instruction in the post-install output.
-- [ ] 5.8 Add a `ga-caddy` health check to the post-install probe.
+- [x] 5.1 Add `GA_CADDY_ENABLED`, `GA_CADDY_TLS_MODE`, `GA_CADDY_DOMAIN`, `GA_CADDY_PORT`, `GA_CADDY_HTTP_PORT` to the built-in defaults block.
+- [x] 5.2 Add flag parsing for Caddy-specific CLI flags (e.g. `--caddy-domain`, `--caddy-tls-mode`).
+- [x] 5.3 Generate `${DATA_DIR}/caddy/initial-config.json` (main server: MCP/file routes with Bearer matcher, health, dashboard-auth endpoints; TLS stanza parameterised by `GA_CADDY_TLS_MODE` — internal/tailscale/acme/off; no per-crew servers).
+- [x] 5.4 Add the `ga-caddy` service stanza to the compose template (conditional on `GA_CADDY_ENABLED=true`): `caddy:2` image; bind 443/80 **and the dashboard port range**; inject `GA_API_KEY` env; mount `initial-config.json` (ro) and `ga-caddy-data`; `caddy run --config ... --resume`.
+- [x] 5.5 **Move the dashboard port-range binding off `ga-transport`** when `GA_CADDY_ENABLED=true` (Caddy owns those ports; binding on both is a conflict).
+- [x] 5.6 Add the `ga-caddy-data` named volume to the compose volumes section when Caddy is enabled.
+- [x] 5.7 When `GA_CADDY_TLS_MODE=internal`, print the Caddy root CA cert path and a `caddy trust` instruction in the post-install output.
+- [x] 5.8 Add a `ga-caddy` health check to the post-install probe.
 
 ## 6. ghostship CLI
 
-- [ ] 6.1 Surface the Caddy root CA cert path in `ghostship status` output when `GA_CADDY_TLS_MODE=internal`.
+- [x] 6.1 Surface the Caddy root CA cert path in `ghostship status` output when `GA_CADDY_TLS_MODE=internal`.
 
 ## 7. dashboard_url in launch and crews
 
