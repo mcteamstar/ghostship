@@ -46,6 +46,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -2217,6 +2218,124 @@ class TestPolicyInjection(unittest.TestCase):
         crew_list = result["crews"]
         self.assertEqual(len(crew_list), 1)
         self.assertNotIn("policy_version", crew_list[0])
+
+    def test_crews_agent_entry_omits_last_tool(self) -> None:
+        """TRN-95: crews() agent entries no longer include last_tool."""
+        reg = {
+            "crews": {
+                "test-crew": {
+                    "container": "gs-test-crew",
+                    "status": "running",
+                    "composition": "spec-ops",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "cookie": "test-cookie",
+                }
+            }
+        }
+        agents = [
+            {"id": "task-1", "agent": "ghost", "done": False,
+             "elapsed": 12, "last_tool": "shell"},
+        ]
+        mock_podman = Mock(
+            system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}},
+            container_inspect=lambda name: {
+                "State": {"StartedAt": "2026-01-01T00:00:00.000000000Z"}
+            },
+        )
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
+            patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_crew_api", return_value=agents),
+            patch.object(server, "_crew_api", return_value=agents),
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
+            patch.object(server, "_get_podman", return_value=mock_podman),
+        ):
+            result = server.crews()
+
+        agent_entries = result["crews"][0]["agents"]
+        self.assertEqual(len(agent_entries), 1)
+        self.assertNotIn("last_tool", agent_entries[0])
+        # Signal that survives — elapsed_secs — is still present.
+        self.assertEqual(agent_entries[0]["elapsed_secs"], 12)
+
+    def test_crews_running_entry_includes_uptime_secs(self) -> None:
+        """TRN-95: a running crew entry includes an integer uptime_secs."""
+        reg = {
+            "crews": {
+                "test-crew": {
+                    "container": "gs-test-crew",
+                    "status": "running",
+                    "composition": "spec-ops",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "cookie": "test-cookie",
+                }
+            }
+        }
+        # StartedAt 100 seconds before "now"
+        started = datetime.now(timezone.utc) - timedelta(seconds=100)
+        started_iso = started.isoformat()
+        mock_podman = Mock(
+            system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}},
+            container_inspect=lambda name: {"State": {"StartedAt": started_iso}},
+        )
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway", return_value=True),
+            patch.object(server, "_probe_gateway", return_value=True),
+            patch.object(lifecycle, "_crew_api", return_value=[]),
+            patch.object(server, "_crew_api", return_value=[]),
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
+            patch.object(server, "_get_podman", return_value=mock_podman),
+        ):
+            result = server.crews()
+
+        entry = result["crews"][0]
+        self.assertIn("uptime_secs", entry)
+        self.assertIsInstance(entry["uptime_secs"], int)
+        # ~100s, allow a small window for test execution time
+        self.assertGreaterEqual(entry["uptime_secs"], 99)
+        self.assertLessEqual(entry["uptime_secs"], 105)
+
+    def test_crews_stopped_entry_uptime_secs_null(self) -> None:
+        """TRN-95: a stopped crew entry has uptime_secs null (no inspect)."""
+        reg = {
+            "crews": {
+                "stopped-crew": {
+                    "container": "gs-stopped-crew",
+                    "status": "stopped",
+                    "composition": "spec-ops",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "cookie": "test-cookie",
+                }
+            }
+        }
+
+        def _fail_inspect(name):
+            raise AssertionError("container_inspect must not be called for stopped crews")
+
+        mock_podman = Mock(
+            system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}},
+            container_inspect=_fail_inspect,
+        )
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
+            patch.object(server, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_crew_api", return_value=[]),
+            patch.object(server, "_crew_api", return_value=[]),
+            patch.object(lifecycle, "_get_podman", return_value=mock_podman),
+            patch.object(server, "_get_podman", return_value=mock_podman),
+        ):
+            result = server.crews()
+
+        entry = result["crews"][0]
+        self.assertIn("uptime_secs", entry)
+        self.assertIsNone(entry["uptime_secs"])
+
 
 class TestPatchCrewConfig(unittest.TestCase):
     """Tests for _patch_crew_config memory threshold patching."""

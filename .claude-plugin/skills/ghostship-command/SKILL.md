@@ -62,6 +62,12 @@ configurable per install and can differ from what's described below. Don't
 hardcode them:
 
 - `crews()` — every live crew, its status, and its currently running tasks.
+  Per crew you get `status`, `created_at`, `last_task_at`, and — for running
+  crews — `uptime_secs` (seconds since the container started; null when
+  stopped). Each running task lists `task_id`, `agent`, `done`, and
+  `elapsed_secs`. This is a fleet overview: it does NOT carry the current tool
+  or latest output for a task — call `pickup` when you need live per-task
+  detail.
 - resource `transport://compositions` — available `composition` values for `launch`.
 - resource `transport://agents` — the real roster and description for `dispatch`'s `agent` values.
 - resource `transport://orders` — built-in `captain(template=...)` bodies, in full.

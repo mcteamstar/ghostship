@@ -2492,14 +2492,19 @@ async def _handle_logout_post(request: Request) -> Response:
 def crews() -> dict:
     """List all live crews in the registry.
 
-    Shows crew_id, container, status, and created_at for each.
-    Also includes active agents (tasks) running inside each crew.
+    Shows crew_id, container, status, created_at, and last_task_at for each,
+    plus uptime_secs (seconds since the container started; present only for
+    running crews, null otherwise).
+    Also includes active agents (tasks) running inside each crew — each with
+    task_id, agent, done, and elapsed_secs. For live per-task detail (current
+    tool, latest output) use `pickup`, not this overview.
     Also: list crews, show workspaces, what's running, sitrep.
     """
     with _registry_lock:
         reg = _load_registry()
 
     # Host memory visibility
+    podman = None
     try:
         podman = _get_podman()
         host_mem = _get_host_memory_gb_cached(podman)
@@ -2551,6 +2556,25 @@ def crews() -> dict:
             entry["dashboard_url"] = None
         if "policy_version" in info:
             entry["policy_version"] = info["policy_version"]
+        # TRN-95: uptime_secs for running crews, derived from the container's
+        # State.StartedAt via Podman inspect. Omitted (None) for stopped crews
+        # or on any inspect/parse failure.
+        entry["uptime_secs"] = None
+        if status == "running" and podman is not None:
+            try:
+                inspect = podman.container_inspect(info["container"])
+                started_raw = inspect.get("State", {}).get("StartedAt")
+                if started_raw:
+                    started_at = datetime.fromisoformat(
+                        started_raw.replace("Z", "+00:00")
+                    )
+                    if started_at.tzinfo is None:
+                        started_at = started_at.replace(tzinfo=timezone.utc)
+                    entry["uptime_secs"] = int(
+                        (datetime.now(timezone.utc) - started_at).total_seconds()
+                    )
+            except Exception:
+                entry["uptime_secs"] = None  # inspect failed — omit uptime
         # Try to fetch active tasks from the gateway
         try:
             tasks = _crew_api(info, "GET", "/api/spawn")
@@ -2561,7 +2585,6 @@ def crews() -> dict:
                         "agent": a.get("agent", ""),
                         "done": a.get("done", False),
                         "elapsed_secs": int(a.get("elapsed", 0)),
-                        "last_tool": a.get("last_tool", ""),
                     }
                     for a in tasks
                 ]
@@ -2572,7 +2595,6 @@ def crews() -> dict:
                         "agent": a.get("agent", ""),
                         "done": a.get("done", False),
                         "elapsed_secs": int(a.get("elapsed", 0)),
-                        "last_tool": a.get("last_tool", ""),
                     }
                     for a in tasks.get("agents", [])
                 ]
