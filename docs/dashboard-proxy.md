@@ -80,18 +80,37 @@ For a cloud deployment with a security group, open the equivalent port range inb
 
 ## Security
 
-> ⚠️ **Dashboard ports are unauthenticated.** Anyone who can reach the port can open the crew UI. Restrict access at the network layer (Tailscale, firewall, security group) until TRN-91 (cookie-gated login page) is implemented.
+> ⚠️ **Dashboard ports are unauthenticated when Caddy is disabled.** Anyone who can reach the port can open the crew UI. Restrict access at the network layer (Tailscale, firewall, security group). For full authentication, enable the Caddy layer — see [Caddy mode](#caddy-mode) below.
 
-**The dashboard proxy is not currently gated by `GA_API_KEY`.** The transport's bearer-token auth applies to MCP tool calls (port 64057 / the main transport port), but browser requests to the UI ports do not carry an `Authorization` header — and there is no other credential check.
+**The dashboard proxy is not currently gated by `GA_API_KEY` when Caddy is disabled.** The transport's bearer-token auth applies to MCP tool calls (port 64057 / the main transport port), but browser requests to the UI ports do not carry an `Authorization` header — and there is no other credential check.
 
-What protects the UI ports:
+What protects the UI ports in direct mode:
 
-- **Network layer** — on a Tailscale deployment, only devices on your tailnet can reach the host. This is the primary (and currently only) access control.
+- **Network layer** — on a Tailscale deployment, only devices on your tailnet can reach the host. This is the primary access control.
 - **Session cookie** — the injected `mc_token_5476` cookie is scoped to the crew's gateway and signed. A visitor without the cookie sees an onboarding screen and cannot interact with the crew. The cookie is set HttpOnly and SameSite=Lax. Note: the cookie is set on every response, so any visitor who loads the page receives it.
 
-**Recommendation:** Only enable `GA_DASHBOARD_PORT_ENABLED=true` on deployments protected by Tailscale or a network-level firewall. For any deployment reachable from the public internet, set `GA_DASHBOARD_PORT_ENABLED=false` until TRN-91 is shipped.
+**Recommendation:** Only enable `GA_DASHBOARD_PORT_ENABLED=true` on deployments protected by Tailscale or a network-level firewall. For any deployment reachable from the public internet, enable `GA_CADDY_ENABLED=true` (see [Caddy mode](#caddy-mode)) or set `GA_DASHBOARD_PORT_ENABLED=false`.
 
-**Roadmap:** TRN-91 covers a cookie-gated login page to harden individual dashboard ports. TRN-92 covers a bundled Caddy reverse proxy for TLS termination, SSO/OAuth, and per-crew routing — the longer-term answer for production deployments.
+## Caddy mode
+
+> ⚠️ **Breaking change — clean cutover.** Setting `GA_CADDY_ENABLED=true` moves the dashboard port bindings from the transport to Caddy. There is no coexistence window. Re-run `install.sh` after changing the flag. The per-port uvicorn listener threads are not started when Caddy is enabled.
+
+When `GA_CADDY_ENABLED=true`, Caddy takes over all dashboard port bindings and adds authentication to every dashboard port:
+
+```
+Browser → host:64058 (HTTPS, via ga-caddy)
+        → forward_auth check at ga-transport:/dashboard-auth
+        → (on valid gs_session cookie) reverse_proxy → gs-{crew_id}:5476
+```
+
+Key differences from direct mode:
+
+- **TLS on every port.** Caddy terminates HTTPS on the main port (443) and on every per-crew dashboard port. See [caddy.md — TLS modes](caddy.md#tls-modes) for `internal` / `tailscale` / `acme` / `off`.
+- **`gs_session` cookie gate.** Every dashboard port requires a valid `gs_session` cookie issued by `/dashboard-login`. Unauthenticated requests redirect to the login page (`/login-ui`).
+- **No per-port uvicorn threads.** Caddy handles the port binding; the transport manages the port pool and registers/deregisters Caddy servers via the admin API when crews launch/nuke.
+- **Dashboard URLs are HTTPS.** `launch(dashboard=True)` returns `https://host:64058/` when Caddy is enabled.
+
+See [caddy.md](caddy.md) for setup, TLS modes, auth upgrade paths, and migration instructions.
 
 ## Port persistence across restarts
 

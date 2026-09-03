@@ -28,7 +28,7 @@
 - [x] 4.4 Implement `_handle_login_ui`: serves the minimal HTML form (no auth), honours `?next=` for post-login redirect.
 - [x] 4.5 Register `/dashboard-login`, `/dashboard-auth`, `/login-ui` as public routes (served before `BearerAuthMiddleware`'s key check) and add them to the main Caddy server config.
 - [x] 4.6 Add a `dashboard_auth` rate limiter (e.g. `GA_RATE_LIMIT_DASHBOARD_AUTH=60:60`) or exempt these routes deliberately.
-- [ ] 4.7 Document the `basicauth` and `caddy-security` (OIDC/OAuth2, via `xcaddy`) alternatives as config-only swaps in `docs/caddy.md`.
+- [x] 4.7 Document the `basicauth` and `caddy-security` (OIDC/OAuth2, via `xcaddy`) alternatives as config-only swaps in `docs/caddy.md`.
 
 ## 5. install.sh
 
@@ -52,17 +52,17 @@
 
 ## 8. Tests
 
-- [ ] 8.1 Unit tests for `_caddy_register_crew`/`_caddy_deregister_crew`: mock the Caddy admin API, assert the server JSON (listen port, forward_auth, upstream), assert 404-on-deregister handled gracefully.
-- [ ] 8.2 Unit tests for `_handle_dashboard_login_post`: valid key → 200 + Set-Cookie; invalid → 401.
-- [ ] 8.3 Unit tests for `_handle_dashboard_auth`: valid token → 200 + `X-Crew-Cookie`; expired/missing → 401; correct crew resolved from the incoming port.
-- [ ] 8.4 Unit tests asserting per-port uvicorn listeners are NOT started when `GA_CADDY_ENABLED=True`, and ARE started when False.
-- [ ] 8.5 Update `launch`/`nuke` tests to assert Caddy register/deregister when Caddy enabled.
+- [x] 8.1 Unit tests for `_caddy_register_crew`/`_caddy_deregister_crew`: mock the Caddy admin API, assert the server JSON (listen port, forward_auth, upstream), assert 404-on-deregister handled gracefully.
+- [x] 8.2 Unit tests for `_handle_dashboard_login_post`: valid key → 200 + Set-Cookie; invalid → 401.
+- [x] 8.3 Unit tests for `_handle_dashboard_auth`: valid token → 200 + `X-Crew-Cookie`; expired/missing → 401; correct crew resolved from the incoming port.
+- [x] 8.4 Unit tests asserting per-port uvicorn listeners are NOT started when `GA_CADDY_ENABLED=True`, and ARE started when False.
+- [x] 8.5 Update `launch`/`nuke` tests to assert Caddy register/deregister when Caddy enabled.
 - [ ] 8.6 Integration smoke test: start `ga-caddy` + `ga-transport`; `launch` a crew; assert `GET /config/id/crew-{id}` exists and the dashboard port serves HTTPS; assert an unauthenticated `/mcp` is 401 at Caddy; `nuke` and assert the server is gone.
 
 ## 9. Documentation and Release Notes
 
-- [ ] 9.1 Create `docs/caddy.md`: overview, the single port-based routing model, the four TLS modes (internal/tailscale/acme/off with when-to-use), the `forward_auth` auth flow, the `basicauth`/`caddy-security` SSO upgrade path, and the vm23 "retire host Caddy" note.
-- [ ] 9.2 Update `docs/dashboard-proxy.md`: Caddy-mode section, **breaking-change note** (clean cutover, Caddy binds the ports, no coexistence), updated Security section (dashboard ports now auth-gated via forward_auth).
-- [ ] 9.3 Update `docs/auth.md`: `gs_session` cookie lifecycle, `/dashboard-login`, `/dashboard-auth`, edge Bearer enforcement for `/mcp` + `/files`, the auth-posture table (Caddy on vs off).
-- [ ] 9.4 Update `docs/configuration.md`: all `GA_CADDY_*` vars, four TLS modes, internal-CA trust step, interaction with `GA_DASHBOARD_PORT_ENABLED`.
-- [ ] 9.5 Add a release-notes entry: `GA_CADDY_ENABLED=true` is a **breaking** cutover — Caddy binds the dashboard ports, vm23 host Caddy is retired, no coexistence window.
+- [x] 9.1 Create `docs/caddy.md`: overview, the single port-based routing model, the four TLS modes (internal/tailscale/acme/off with when-to-use), the `forward_auth` auth flow, the `basicauth`/`caddy-security` SSO upgrade path, and the vm23 "retire host Caddy" note.
+- [x] 9.2 Update `docs/dashboard-proxy.md`: Caddy-mode section, **breaking-change note** (clean cutover, Caddy binds the ports, no coexistence), updated Security section (dashboard ports now auth-gated via forward_auth).
+- [x] 9.3 Update `docs/auth.md`: `gs_session` cookie lifecycle, `/dashboard-login`, `/dashboard-auth`, edge Bearer enforcement for `/mcp` + `/files`, the auth-posture table (Caddy on vs off).
+- [x] 9.4 Update `docs/configuration.md`: all `GA_CADDY_*` vars, four TLS modes, internal-CA trust step, interaction with `GA_DASHBOARD_PORT_ENABLED`.
+- [x] 9.5 Add a release-notes entry: `GA_CADDY_ENABLED=true` is a **breaking** cutover — Caddy binds the dashboard ports, vm23 host Caddy is retired, no coexistence window.
