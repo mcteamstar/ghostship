@@ -824,16 +824,16 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
         return Response(status_code=401)
 
     token = _gs_session_issue()
-    resp = Response(status_code=200, content="OK")
-    resp.set_cookie(
-        "gs_session",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=True,
-        path="/",
+    # Build Set-Cookie header manually — avoids starlette version differences
+    # and is more explicit about the exact cookie attributes.
+    cookie_value = (
+        f"gs_session={token}; HttpOnly; SameSite=Lax; Secure; Path=/"
     )
-    return resp
+    return Response(
+        status_code=200,
+        content="OK",
+        headers={"Set-Cookie": cookie_value},
+    )
 
 
 async def _handle_dashboard_auth(request: Request) -> Response:
