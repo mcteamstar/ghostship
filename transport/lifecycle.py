@@ -286,6 +286,12 @@ def _crew_api_with_recovery(
 ) -> Any:
     """Wrap _crew_api with two-phase recovery logic.
 
+    Phase 0 (task still spawning): On 503 from a per-task /api/spawn/*
+    route, KiroCrew's own task record already reports elapsed > 0 before
+    the agent process has finished forking/registering enough to serve
+    the route. Short bounded retry — this is transient and self-resolving
+    within a couple of seconds, not a dead gateway.
+
     Phase 1 (stale cookie): On 400/401/403 from a running container,
     attempt cookie refresh then retry once.
 
@@ -303,6 +309,19 @@ def _crew_api_with_recovery(
             return _crew_api(crew, method, path, **kw)
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
+            if status == 503:
+                # Phase 0: task record exists but the agent process isn't
+                # steerable yet — retry a few times with a short delay
+                # rather than escalating to cookie refresh or restart.
+                for _attempt in range(4):
+                    time.sleep(1.0)
+                    try:
+                        return _crew_api(crew, method, path, **kw)
+                    except httpx.HTTPStatusError as retry_exc:
+                        if retry_exc.response.status_code != 503:
+                            raise
+                        e = retry_exc
+                raise e
             if status not in (400, 401, 403):
                 raise
             # Phase 1: stale cookie — try refresh
