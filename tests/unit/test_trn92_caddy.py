@@ -330,7 +330,7 @@ class DashboardAuthTests(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 200)
         # Extract Cookie from raw_headers (real starlette) or kwargs (stub).
-        x_cookie = _get_header(resp, "Cookie")
+        x_cookie = _get_header(resp, "X-Auth-Cookie")
         self.assertIn("mc_token_5476=crew-token-abc123", x_cookie)
 
     def test_valid_session_unknown_port_still_returns_200(self) -> None:
@@ -338,7 +338,7 @@ class DashboardAuthTests(unittest.TestCase):
         token = self._issue_token()
         resp = self._run({"gs_session": token}, {"port": "99999"})
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(_get_header(resp, "Cookie"), "")
+        self.assertEqual(_get_header(resp, "X-Auth-Cookie"), "")
 
 
 # ---------------------------------------------------------------------------

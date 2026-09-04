@@ -728,7 +728,7 @@ def _caddy_register_crew(crew_id: str, port: int) -> None:
                                 "request": {
                                     "set": {
                                         "Cookie": [
-                                            "{http.reverse_proxy.header.Cookie}"
+                                            "{http.reverse_proxy.header.X-Auth-Cookie}"
                                         ]
                                     }
                                 },
@@ -739,7 +739,7 @@ def _caddy_register_crew(crew_id: str, port: int) -> None:
                                 "not": [
                                     {
                                         "vars": {
-                                            "{http.reverse_proxy.header.Cookie}": [""]
+                                            "{http.reverse_proxy.header.X-Auth-Cookie}": [""]
                                         }
                                     }
                                 ]
@@ -919,7 +919,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
                     reg = _load_registry()
                 crew_token = reg.get("crews", {}).get(crew_id_for_open, {}).get("cookie", "")
                 if crew_token:
-                    open_headers["Cookie"] = f"mc_token_5476={crew_token}"
+                    open_headers["X-Auth-Cookie"] = f"mc_token_5476={crew_token}"
             except Exception:
                 pass
         return Response(status_code=200, headers=open_headers)
@@ -971,7 +971,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
 
     headers: dict[str, str] = {}
     if crew_token:
-        headers["Cookie"] = f"mc_token_5476={crew_token}"
+        headers["X-Auth-Cookie"] = f"mc_token_5476={crew_token}"
     return Response(status_code=200, headers=headers)
 
 
