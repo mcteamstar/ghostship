@@ -50,4 +50,4 @@ Already populated at dispatch time (TRN-89) and stored in the registry. No chang
 5. Update `ghostship-command` skill guidance.
 6. Update test assertions on `crews()` response shape.
 
-No deployment migration needed — `GA_CADDY_ENABLED` is unrelated. This is a clean in-place change with no persistent state migration.
+No deployment migration needed — `GA_PORTSIDE_ENABLED` is unrelated. This is a clean in-place change with no persistent state migration.

@@ -89,16 +89,16 @@ What protects the UI ports in direct mode:
 - **Network layer** — on a Tailscale deployment, only devices on your tailnet can reach the host. This is the primary access control.
 - **Session cookie** — the injected `mc_token_5476` cookie is scoped to the crew's gateway and signed. A visitor without the cookie sees an onboarding screen and cannot interact with the crew. The cookie is set HttpOnly and SameSite=Lax. Note: the cookie is set on every response, so any visitor who loads the page receives it.
 
-**Recommendation:** Only enable `GA_DASHBOARD_PORT_ENABLED=true` on deployments protected by Tailscale or a network-level firewall. For any deployment reachable from the public internet, enable `GA_CADDY_ENABLED=true` (see [Caddy mode](#caddy-mode)) or set `GA_DASHBOARD_PORT_ENABLED=false`.
+**Recommendation:** Only enable `GA_DASHBOARD_PORT_ENABLED=true` on deployments protected by Tailscale or a network-level firewall. For any deployment reachable from the public internet, enable `GA_PORTSIDE_ENABLED=true` (see [Caddy mode](#caddy-mode)) or set `GA_DASHBOARD_PORT_ENABLED=false`.
 
 ## Caddy mode
 
-> ⚠️ **Breaking change — clean cutover.** Setting `GA_CADDY_ENABLED=true` moves the dashboard port bindings from the transport to Caddy. There is no coexistence window. Re-run `install.sh` after changing the flag. The per-port uvicorn listener threads are not started when Caddy is enabled.
+> ⚠️ **Breaking change — clean cutover.** Setting `GA_PORTSIDE_ENABLED=true` moves the dashboard port bindings from the transport to Caddy. There is no coexistence window. Re-run `install.sh` after changing the flag. The per-port uvicorn listener threads are not started when Caddy is enabled.
 
-When `GA_CADDY_ENABLED=true`, Caddy takes over all dashboard port bindings and adds authentication to every dashboard port:
+When `GA_PORTSIDE_ENABLED=true`, Caddy takes over all dashboard port bindings and adds authentication to every dashboard port:
 
 ```
-Browser → host:64058 (HTTPS, via ga-port)
+Browser → host:64058 (HTTPS, via ga-portside)
         → forward_auth check at ga-transport:/dashboard-auth
         → (on valid gs_session cookie) reverse_proxy → gs-{crew_id}:5476
 ```

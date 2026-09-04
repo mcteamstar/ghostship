@@ -334,7 +334,7 @@ class DashboardAuthTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class CaddyUvicornSuppressionTests(unittest.TestCase):
-    """8.4 — _start_dashboard_port_server is a no-op when GA_CADDY_ENABLED=True."""
+    """8.4 — _start_dashboard_port_server is a no-op when GA_PORTSIDE_ENABLED=True."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -347,8 +347,8 @@ class CaddyUvicornSuppressionTests(unittest.TestCase):
         server._dashboard_port_servers.clear()
 
     def test_start_port_server_noop_when_caddy_enabled(self) -> None:
-        """When GA_CADDY_ENABLED=True, no uvicorn Server is created."""
-        with patch.object(server, "GA_CADDY_ENABLED", True):
+        """When GA_PORTSIDE_ENABLED=True, no uvicorn Server is created."""
+        with patch.object(server, "GA_PORTSIDE_ENABLED", True):
             server._start_dashboard_port_server(64058, "alpha", Mock())
         # No server created
         self.assertNotIn(64058, server._dashboard_port_servers)
@@ -356,13 +356,13 @@ class CaddyUvicornSuppressionTests(unittest.TestCase):
         self.assertEqual(server._dashboard_port_crew.get(64058), "alpha")
 
     def test_start_port_server_creates_uvicorn_when_caddy_disabled(self) -> None:
-        """When GA_CADDY_ENABLED=False, a uvicorn Server IS created on the port."""
+        """When GA_PORTSIDE_ENABLED=False, a uvicorn Server IS created on the port."""
         mock_app = Mock()
         mock_server = Mock()
         mock_config = Mock()
 
         with (
-            patch.object(server, "GA_CADDY_ENABLED", False),
+            patch.object(server, "GA_PORTSIDE_ENABLED", False),
             patch("transport.server.uvicorn.Config", return_value=mock_config),
             patch("transport.server.uvicorn.Server", return_value=mock_server),
         ):
@@ -412,7 +412,7 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops"}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
             patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
-            patch.object(server, "GA_CADDY_ENABLED", caddy_enabled),
+            patch.object(server, "GA_PORTSIDE_ENABLED", caddy_enabled),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "_caddy_register_crew") as mock_register,
@@ -421,7 +421,7 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             mock_cfg.ga_host_url = ""
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
-            mock_cfg.ga_caddy_enabled = caddy_enabled
+            mock_cfg.ga_portside_enabled = caddy_enabled
             result = server.launch("demo", dashboard=True)
 
         return result, mock_register
@@ -454,7 +454,7 @@ class CaddyLaunchNukeTests(unittest.TestCase):
         )
 
     def test_nuke_caddy_enabled_deregisters(self) -> None:
-        """nuke() calls _caddy_deregister_crew when GA_CADDY_ENABLED=True."""
+        """nuke() calls _caddy_deregister_crew when GA_PORTSIDE_ENABLED=True."""
         reg = {"crews": {"alpha": {"container": "gs-alpha", "volume": "gs-vol-alpha",
                                     "home_volume": "gs-home-alpha", "dashboard_port": 64058}}}
         podman = Mock()
@@ -470,7 +470,7 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             patch.object(server, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
-            patch.object(server, "GA_CADDY_ENABLED", True),
+            patch.object(server, "GA_PORTSIDE_ENABLED", True),
             patch.object(server, "_caddy_deregister_crew") as mock_deregister,
             patch.object(server, "_delete_crew_secret"),
         ):
@@ -480,7 +480,7 @@ class CaddyLaunchNukeTests(unittest.TestCase):
         self.assertEqual(result["status"], "nuked")
 
     def test_nuke_caddy_disabled_does_not_deregister(self) -> None:
-        """nuke() does not call _caddy_deregister_crew when GA_CADDY_ENABLED=False."""
+        """nuke() does not call _caddy_deregister_crew when GA_PORTSIDE_ENABLED=False."""
         reg = {"crews": {"alpha": {"container": "gs-alpha", "volume": "gs-vol-alpha",
                                     "home_volume": "gs-home-alpha", "dashboard_port": 64058}}}
         with (
@@ -491,7 +491,7 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             patch.object(server, "_save_registry"),
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
-            patch.object(server, "GA_CADDY_ENABLED", False),
+            patch.object(server, "GA_PORTSIDE_ENABLED", False),
             patch.object(server, "_caddy_deregister_crew") as mock_deregister,
             patch.object(server, "_stop_dashboard_port_server"),
             patch.object(server, "_delete_crew_secret"),

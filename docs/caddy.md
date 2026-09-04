@@ -1,6 +1,6 @@
 # Caddy Reverse Proxy (TRN-92)
 
-Ghostship can optionally run a Caddy container (`ga-port`) as its TLS terminator, edge auth gate, and dashboard port router. This feature is **opt-in** — set `GA_CADDY_ENABLED=true` in your config and re-run `install.sh`.
+Ghostship can optionally run a Caddy container (`ga-portside`) as its TLS terminator, edge auth gate, and dashboard port router. This feature is **opt-in** — set `GA_PORTSIDE_ENABLED=true` in your config and re-run `install.sh`.
 
 > ⚠️ **Breaking change.** Enabling Caddy is a clean cutover. Caddy binds the dashboard port range (`64058–64107` by default); the transport stops binding those ports. There is no coexistence window. See [Migration](#migration).
 
@@ -10,7 +10,7 @@ Caddy sits in front of all traffic:
 
 ```
                   ┌──────────────────────────────────────────────────────┐
-  External        │  ga-port (caddy:2 image, ga-net)                    │
+  External        │  ga-portside (caddy:2 image, ga-net)                    │
   traffic ──────▶ │                                                       │
                   │  MAIN SERVER  :443 / :80                              │
                   │    /mcp*         ── Bearer check ──▶ ga-transport     │
@@ -52,23 +52,23 @@ Each crew UI gets its own origin (`host:PORT/`) rather than a path prefix. This 
 
 ## TLS modes
 
-Set `GA_CADDY_TLS_MODE` to one of:
+Set `GA_PORTSIDE_TLS_MODE` to one of:
 
 | Mode | When to use | Notes |
 |:-----|:------------|:------|
 | `internal` (default) | Local dev, homelab, Tailscale networks | Caddy's built-in CA issues self-signed certs. Works on any hostname — localhost, private IPs, Tailscale `.ts.net` addresses. Requires a one-time `caddy trust` step to install the Caddy root CA into your host/browser trust store. The cert path is printed by `install.sh` and shown by `ghostship status`. |
-| `tailscale` | Tailscale-connected deployments (recommended for vm23/academy) | Caddy provisions real browser-trusted certs for `.ts.net` hostnames via Tailscale's ACME endpoint. Requires the Tailscale daemon running on the host. No trust step — browsers accept the certs without any setup. Set `GA_CADDY_DOMAIN` to your `.ts.net` hostname. |
-| `acme` | Internet-facing deployments with public DNS | Standard Let's Encrypt / public ACME. Requires `GA_CADDY_DOMAIN` set to a real DNS name and ports 80/443 reachable from the internet for ACME challenges. |
+| `tailscale` | Tailscale-connected deployments (recommended for vm23/academy) | Caddy provisions real browser-trusted certs for `.ts.net` hostnames via Tailscale's ACME endpoint. Requires the Tailscale daemon running on the host. No trust step — browsers accept the certs without any setup. Set `GA_PORTSIDE_DOMAIN` to your `.ts.net` hostname. |
+| `acme` | Internet-facing deployments with public DNS | Standard Let's Encrypt / public ACME. Requires `GA_PORTSIDE_DOMAIN` set to a real DNS name and ports 80/443 reachable from the internet for ACME challenges. |
 | `off` | Local dev, or when an upstream terminator already handles TLS | Plain HTTP on all ports. Useful when running behind a load balancer that terminates TLS. |
 
 TLS applies to every listener Caddy owns — the main port and every per-crew dashboard port. The crew containers themselves are never exposed externally.
 
 ### Internal CA trust step (one-time)
 
-When `GA_CADDY_TLS_MODE=internal`, add the Caddy root CA to your trust store once. `install.sh` prints the path:
+When `GA_PORTSIDE_TLS_MODE=internal`, add the Caddy root CA to your trust store once. `install.sh` prints the path:
 
 ```
-[CADDY] Internal CA root cert: /path/to/ga-port-data/_data/caddy/pki/authorities/local/root.crt
+[CADDY] Internal CA root cert: /path/to/ga-portside-data/_data/caddy/pki/authorities/local/root.crt
 [CADDY] Run once: caddy trust --ca /path/to/root.crt
 ```
 
@@ -79,7 +79,7 @@ When `GA_CADDY_TLS_MODE=internal`, add the Caddy root CA to your trust store onc
 The default auth mechanism for dashboard ports uses Caddy's `forward_auth` handler:
 
 ```
-Browser ──GET :64058/──▶ ga-port
+Browser ──GET :64058/──▶ ga-portside
                             │
                             ├─ forward_auth ──GET /dashboard-auth──▶ ga-transport
                             │                    │ valid gs_session cookie?
@@ -96,7 +96,7 @@ Browser ──GET :64058/──▶ ga-port
 4. On 200, the transport also returns `X-Crew-Cookie: mc_token_5476=<value>`. Caddy's `copy_headers` carries this into the upstream request to the crew gateway, injecting the session cookie.
 5. On 401, Caddy redirects the browser to `/login-ui`, which serves an HTML login form. Submitting the form POSTs to `/dashboard-login` with the operator API key (`GA_API_KEY`). A valid key issues a `gs_session` cookie and the browser retries.
 
-`gs_session` cookies have a configurable TTL (`GA_CADDY_SESSION_TTL_SECS`, default 24 h). Sessions are held in-memory and reset on transport restart.
+`gs_session` cookies have a configurable TTL (`GA_PORTSIDE_SESSION_TTL_SECS`, default 24 h). Sessions are held in-memory and reset on transport restart.
 
 No Caddy plugin is required for this flow. The vanilla `caddy:2` image is sufficient.
 
@@ -105,7 +105,7 @@ No Caddy plugin is required for this flow. The vanilla `caddy:2` image is suffic
 When `GA_API_KEY` is set and Caddy is enabled, the `/mcp*` and `/files/*` routes on the main server require `Authorization: Bearer <GA_API_KEY>`. Requests without the correct token are rejected by Caddy with 401 before they reach the transport process:
 
 ```
-Client ──/mcp──▶ ga-port
+Client ──/mcp──▶ ga-portside
                     │
                     ├─ Authorization: Bearer <correct> ──▶ ga-transport (proxied)
                     └─ missing / wrong Bearer           ──▶ 401 WWW-Authenticate: Bearer
@@ -118,9 +118,9 @@ The transport's own `BearerAuthMiddleware` remains active for defence-in-depth �
 1. Add to your `ghostship.conf` (or `config/ghostship.conf.example`):
 
    ```bash
-   GA_CADDY_ENABLED=true
-   GA_CADDY_TLS_MODE=internal       # or tailscale / acme / off
-   GA_CADDY_DOMAIN=                 # required for tailscale and acme
+   GA_PORTSIDE_ENABLED=true
+   GA_PORTSIDE_TLS_MODE=internal       # or tailscale / acme / off
+   GA_PORTSIDE_DOMAIN=                 # required for tailscale and acme
    ```
 
 2. Re-run `install.sh`:
@@ -132,7 +132,7 @@ The transport's own `BearerAuthMiddleware` remains active for defence-in-depth �
 3. For `internal` mode: trust the Caddy root CA (path printed by step 2):
 
    ```bash
-   caddy trust --ca /path/to/ga-port-data/_data/caddy/pki/authorities/local/root.crt
+   caddy trust --ca /path/to/ga-portside-data/_data/caddy/pki/authorities/local/root.crt
    ```
 
    Or import the cert into your browser's trust store manually.
@@ -181,7 +181,7 @@ This is the recommended path for production deployments where operator-managed a
 
 ## vm23 note — retiring the host Caddy
 
-When `GA_CADDY_ENABLED=true`, `ga-port` becomes the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on vm23 is no longer needed and should be stopped and removed to avoid port conflicts:
+When `GA_PORTSIDE_ENABLED=true`, `ga-portside` becomes the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on vm23 is no longer needed and should be stopped and removed to avoid port conflicts:
 
 ```bash
 sudo systemctl stop caddy
@@ -192,26 +192,26 @@ Run `./install.sh` to apply the new compose stack before stopping the host Caddy
 
 ## Migration
 
-All existing deployments run unchanged — `GA_CADDY_ENABLED=false` is the default. Enabling Caddy is a **breaking cutover**:
+All existing deployments run unchanged — `GA_PORTSIDE_ENABLED=false` is the default. Enabling Caddy is a **breaking cutover**:
 
-1. Set `GA_CADDY_ENABLED=true` in your config (and `GA_CADDY_TLS_MODE`, `GA_CADDY_DOMAIN` if needed).
+1. Set `GA_PORTSIDE_ENABLED=true` in your config (and `GA_PORTSIDE_TLS_MODE`, `GA_PORTSIDE_DOMAIN` if needed).
 2. On vm23: stop the pre-existing host Caddy (see above).
-3. Run `./install.sh --config config/ghostship.conf`. The regenerated `compose.yml` binds the dashboard port range to `ga-port`, not `ga-transport`.
+3. Run `./install.sh --config config/ghostship.conf`. The regenerated `compose.yml` binds the dashboard port range to `ga-portside`, not `ga-transport`.
 4. For `internal` TLS: run `caddy trust` with the printed path.
 5. Existing crews survive — the transport's `_reconcile_registry` re-registers their Caddy servers on startup.
 
-**Rollback:** Set `GA_CADDY_ENABLED=false` and re-run `install.sh`. The transport returns to direct per-port uvicorn mode and re-binds the port range.
+**Rollback:** Set `GA_PORTSIDE_ENABLED=false` and re-run `install.sh`. The transport returns to direct per-port uvicorn mode and re-binds the port range.
 
 ## Configuration reference
 
-See [configuration.md](configuration.md) for the full `GA_CADDY_*` variable table.
+See [configuration.md](configuration.md) for the full `GA_PORTSIDE_*` variable table.
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `GA_CADDY_ENABLED` | `false` | Enable the Caddy layer |
-| `GA_CADDY_TLS_MODE` | `internal` | `internal` / `tailscale` / `acme` / `off` |
-| `GA_CADDY_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
-| `GA_CADDY_PORT` | `443` | Main HTTPS port |
-| `GA_CADDY_HTTP_PORT` | `80` | HTTP port (ACME challenges and redirects) |
-| `GA_CADDY_ADMIN_URL` | `http://ga-port:2019` | Caddy admin API URL (transport-internal) |
-| `GA_CADDY_SESSION_TTL_SECS` | `86400` | Session cookie TTL (seconds) |
+| `GA_PORTSIDE_ENABLED` | `false` | Enable the Caddy layer |
+| `GA_PORTSIDE_TLS_MODE` | `internal` | `internal` / `tailscale` / `acme` / `off` |
+| `GA_PORTSIDE_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
+| `GA_PORTSIDE_PORT` | `443` | Main HTTPS port |
+| `GA_PORTSIDE_HTTP_PORT` | `80` | HTTP port (ACME challenges and redirects) |
+| `GA_PORTSIDE_ADMIN_URL` | `http://ga-portside:2019` | Caddy admin API URL (transport-internal) |
+| `GA_PORTSIDE_SESSION_TTL_SECS` | `86400` | Session cookie TTL (seconds) |

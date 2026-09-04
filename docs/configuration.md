@@ -62,13 +62,13 @@ process sees and what each default means:
 | `GA_DASHBOARD_PORT_ENABLED` | `true` | Enable/disable the per-crew dashboard proxy. When `true` (default), a `launch(dashboard=True)` call (or `POST /crews/{id}/dashboard`) allocates a dedicated host port and returns a `dashboard_url`. Set to `false` to disable port allocation entirely. Config-file-only. See [dashboard-proxy.md](dashboard-proxy.md) |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports in the range (the cap on concurrent crew dashboards). Config-file-only |
-| `GA_CADDY_ENABLED` | `false` | Opt into the Caddy reverse-proxy layer (TRN-92). When `true`, a `ga-port` container is added to the compose stack; it binds ports 443/80 **and** the dashboard port range and becomes the sole TLS terminator and auth gate. The transport's per-port uvicorn listeners are not started. **Breaking** — re-run `install.sh` after changing this value; no coexistence with the old per-port mode. See [caddy.md](caddy.md) |
-| `GA_CADDY_ADMIN_URL` | `http://ga-port:2019` | URL of the Caddy admin API reachable from inside the transport container. Override when running Caddy at a non-default address |
-| `GA_CADDY_TLS_MODE` | `internal` | TLS mode for all Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step — path printed by `install.sh` and `ghostship status`), `tailscale` (browser-trusted `.ts.net` certs via Tailscale ACME; no trust step), `acme` (public Let's Encrypt; requires `GA_CADDY_DOMAIN` and ports 80/443), `off` (plain HTTP). An unrecognised value logs a WARNING and falls back to `internal` |
-| `GA_CADDY_DOMAIN` | _(unset)_ | Domain name used for ACME (Let's Encrypt) certificate requests. Required when `GA_CADDY_TLS_MODE=acme` |
-| `GA_CADDY_PORT` | `443` | HTTPS port Caddy listens on for the main server (MCP, files, auth endpoints) |
-| `GA_CADDY_HTTP_PORT` | `80` | HTTP port Caddy listens on for ACME challenges and HTTP→HTTPS redirects |
-| `GA_CADDY_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard-login`. Sessions are held in-memory and reset on transport restart |
+| `GA_PORTSIDE_ENABLED` | `false` | Opt into the Caddy reverse-proxy layer (TRN-92). When `true`, a `ga-portside` container is added to the compose stack; it binds ports 443/80 **and** the dashboard port range and becomes the sole TLS terminator and auth gate. The transport's per-port uvicorn listeners are not started. **Breaking** — re-run `install.sh` after changing this value; no coexistence with the old per-port mode. See [caddy.md](caddy.md) |
+| `GA_PORTSIDE_ADMIN_URL` | `http://ga-portside:2019` | URL of the Caddy admin API reachable from inside the transport container. Override when running Caddy at a non-default address |
+| `GA_PORTSIDE_TLS_MODE` | `internal` | TLS mode for all Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step — path printed by `install.sh` and `ghostship status`), `tailscale` (browser-trusted `.ts.net` certs via Tailscale ACME; no trust step), `acme` (public Let's Encrypt; requires `GA_PORTSIDE_DOMAIN` and ports 80/443), `off` (plain HTTP). An unrecognised value logs a WARNING and falls back to `internal` |
+| `GA_PORTSIDE_DOMAIN` | _(unset)_ | Domain name used for ACME (Let's Encrypt) certificate requests. Required when `GA_PORTSIDE_TLS_MODE=acme` |
+| `GA_PORTSIDE_PORT` | `443` | HTTPS port Caddy listens on for the main server (MCP, files, auth endpoints) |
+| `GA_PORTSIDE_HTTP_PORT` | `80` | HTTP port Caddy listens on for ACME challenges and HTTP→HTTPS redirects |
+| `GA_PORTSIDE_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard-login`. Sessions are held in-memory and reset on transport restart |
 
 > **Internal constant — not user-settable:**
 > `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each
@@ -131,8 +131,8 @@ nor the flag sets them, the built-in default applies.
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
 `GA_DASHBOARD_PORT_ENABLED`, `GA_DASHBOARD_PORT_RANGE_START`,
-`GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_CADDY_ENABLED`, `GA_CADDY_TLS_MODE`,
-`GA_CADDY_DOMAIN`, `GA_CADDY_PORT`, `GA_CADDY_HTTP_PORT`, `GA_CADDY_SESSION_TTL_SECS`) are **config-file-only** — they
+`GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_PORTSIDE_ENABLED`, `GA_PORTSIDE_TLS_MODE`,
+`GA_PORTSIDE_DOMAIN`, `GA_PORTSIDE_PORT`, `GA_PORTSIDE_HTTP_PORT`, `GA_PORTSIDE_SESSION_TTL_SECS`) are **config-file-only** — they
 have no CLI flag and no ambient-environment-variable input.
 
 ### Error handling

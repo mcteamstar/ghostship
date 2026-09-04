@@ -6,7 +6,7 @@
 
 ## Recommended Option
 
-**Option B** — Caddy as an optional component (`GA_CADDY_ENABLED=true`, default off). Caddy is the **TLS terminator and the first auth gate** for all traffic. It does **not** change the dashboard routing model: the KiroCrew SPA requires a root origin (path-prefix confirmed broken; subdomains don't work on localhost), so dashboards stay port-per-crew — Caddy simply binds those ports.
+**Option B** — Caddy as an optional component (`GA_PORTSIDE_ENABLED=true`, default off). Caddy is the **TLS terminator and the first auth gate** for all traffic. It does **not** change the dashboard routing model: the KiroCrew SPA requires a root origin (path-prefix confirmed broken; subdomains don't work on localhost), so dashboards stay port-per-crew — Caddy simply binds those ports.
 
 ---
 
@@ -49,7 +49,7 @@ Two layers of Caddy routing:
 
 ## Key Decisions
 
-**D1 — Optional, not always-on.** `GA_CADDY_ENABLED=false` default. Existing deploys unaffected.
+**D1 — Optional, not always-on.** `GA_PORTSIDE_ENABLED=false` default. Existing deploys unaffected.
 
 **D2 — Admin API for per-crew servers.** `launch` `PUT`s a Caddy server bound to the crew's port (`@id: crew-{id}`); `nuke` `DELETE`s it. Zero-downtime. Serialized in `_registry_lock` (D2a).
 
@@ -57,7 +57,7 @@ Two layers of Caddy routing:
 
 **D4 — Dashboard auth: `forward_auth` default.** Caddy calls `/dashboard-auth`; transport validates `gs_session` cookie, returns 200/401 and injects the crew's `mc_token_5476` via `X-Crew-Cookie`. No plugin. `basicauth` and `caddy-security` (OIDC/OAuth2 via `xcaddy`) documented as config-only upgrade paths.
 
-**D5 — TLS four modes:** `internal` (default; built-in CA, works anywhere, one-time `caddy trust`), `tailscale` (real trusted `.ts.net` certs via Tailscale ACME — vm23/academy), `acme` (public Let's Encrypt, needs `GA_CADDY_DOMAIN`), `off`. Internal-CA root cert path surfaced by install output + `ghostship status`.
+**D5 — TLS four modes:** `internal` (default; built-in CA, works anywhere, one-time `caddy trust`), `tailscale` (real trusted `.ts.net` certs via Tailscale ACME — vm23/academy), `acme` (public Let's Encrypt, needs `GA_PORTSIDE_DOMAIN`), `off`. Internal-CA root cert path surfaced by install output + `ghostship status`.
 
 **D6 — `ga-port-data` volume** persists certs, CA, and resumed config.
 
@@ -75,8 +75,8 @@ Two layers of Caddy routing:
 
 | File | Change |
 |------|--------|
-| `install.sh` | `GA_CADDY_*` vars; `initial-config.json` (main server, Bearer matcher, 4 TLS modes); `ga-port` service binding 443/80 **+ dashboard range** with `GA_API_KEY` env; move dashboard range off `ga-transport`; print internal-CA path |
-| `transport/config.py` | 6 new fields incl. `ga_caddy_tls_mode` (internal/tailscale/acme/off) |
+| `install.sh` | `GA_PORTSIDE_*` vars; `initial-config.json` (main server, Bearer matcher, 4 TLS modes); `ga-port` service binding 443/80 **+ dashboard range** with `GA_API_KEY` env; move dashboard range off `ga-transport`; print internal-CA path |
+| `transport/config.py` | 6 new fields incl. `ga_portside_tls_mode` (internal/tailscale/acme/off) |
 | `transport/server.py` | `_caddy_register_crew`/`_caddy_deregister_crew` (per-port servers); `_handle_dashboard_auth`/`_dashboard_login_post`/`_login_ui`; suppress per-port uvicorn threads when Caddy on; `_reconcile_registry` re-registers servers; edge-Bearer main-server routes |
 | `ghostship` CLI | `status` surfaces internal-CA root cert path |
 | compose template | `ga-port` service + `ga-port-data` volume; admin port internal-only |

@@ -7,7 +7,7 @@ Provides a cookie-gated login flow that Caddy enforces via `forward_auth` before
 ## Requirements
 
 ### Requirement: forward_auth is the default dashboard auth mechanism
-When `GA_CADDY_ENABLED=true`, each per-crew Caddy dashboard server SHALL run a `forward_auth` handler that calls `GET /dashboard-auth` on the transport (main port) before proxying to the crew gateway. On a 200 response the request SHALL be proxied; on 401 the browser SHALL be redirected to `/login-ui`. This mechanism SHALL require no Caddy plugin. `basicauth` and the `caddy-security` OIDC/OAuth2 plugin SHALL be documented as supported alternatives that are activated by a Caddy-config change, not a transport code change.
+When `GA_PORTSIDE_ENABLED=true`, each per-crew Caddy dashboard server SHALL run a `forward_auth` handler that calls `GET /dashboard-auth` on the transport (main port) before proxying to the crew gateway. On a 200 response the request SHALL be proxied; on 401 the browser SHALL be redirected to `/login-ui`. This mechanism SHALL require no Caddy plugin. `basicauth` and the `caddy-security` OIDC/OAuth2 plugin SHALL be documented as supported alternatives that are activated by a Caddy-config change, not a transport code change.
 
 #### Scenario: forward_auth gates every dashboard request
 - **WHEN** a browser requests a crew dashboard port and Caddy is enabled
@@ -48,13 +48,13 @@ The transport SHALL serve a minimal HTML login page at `GET /login-ui` (no authe
 - **THEN** the response is a valid HTML page with a password form
 
 ### Requirement: MCP/API auth posture with and without Caddy
-When `GA_CADDY_ENABLED=false`, MCP and file auth SHALL be `BearerAuthMiddleware` when `GA_API_KEY` is set, and dashboard ports SHALL be unauthenticated (status quo). When `GA_CADDY_ENABLED=true`, Caddy SHALL be the first auth gate for all traffic — Bearer enforcement for MCP/files at the edge and `forward_auth` for dashboards — while `BearerAuthMiddleware` remains active as defence in depth.
+When `GA_PORTSIDE_ENABLED=false`, MCP and file auth SHALL be `BearerAuthMiddleware` when `GA_API_KEY` is set, and dashboard ports SHALL be unauthenticated (status quo). When `GA_PORTSIDE_ENABLED=true`, Caddy SHALL be the first auth gate for all traffic — Bearer enforcement for MCP/files at the edge and `forward_auth` for dashboards — while `BearerAuthMiddleware` remains active as defence in depth.
 
 #### Scenario: Caddy disabled preserves current posture
-- **WHEN** `GA_CADDY_ENABLED=false`
+- **WHEN** `GA_PORTSIDE_ENABLED=false`
 - **THEN** dashboard ports are unauthenticated and MCP auth is `BearerAuthMiddleware` when `GA_API_KEY` is set
 
 #### Scenario: Caddy enabled makes Caddy the first gate
-- **WHEN** `GA_CADDY_ENABLED=true` and `GA_API_KEY` is set
+- **WHEN** `GA_PORTSIDE_ENABLED=true` and `GA_API_KEY` is set
 - **THEN** an unauthenticated MCP or dashboard request is rejected by Caddy before reaching the transport
 - **THEN** the transport's `BearerAuthMiddleware` still runs for requests that reach it directly over `ga-net`
