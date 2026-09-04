@@ -81,9 +81,13 @@ except (ImportError, AttributeError):
 try:
     from httpx_ws import aconnect_ws as _aconnect_ws
     from wsproto.events import CloseConnection as _WsCloseConnection  # httpx-ws dep
+    from wsproto.events import TextMessage as _WsTextMessage
+    from wsproto.events import BytesMessage as _WsBytesMessage
 except (ImportError, AttributeError):
     _aconnect_ws = None  # type: ignore[assignment,misc]
     _WsCloseConnection = None  # type: ignore[assignment,misc]
+    _WsTextMessage = None  # type: ignore[assignment,misc]
+    _WsBytesMessage = None  # type: ignore[assignment,misc]
 import uvicorn
 import asyncio
 
@@ -1285,10 +1289,15 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
                         # when the upstream ends — propagate as a client close.
                         await ws.close()
                         return
-                    if isinstance(data, (bytes, bytearray)):
-                        await ws.send_bytes(bytes(data))
-                    else:
-                        await ws.send_text(str(data))
+                    # upstream.receive() returns wsproto.events.Event objects,
+                    # not raw bytes/str — dispatch on the event type (TRN-102 fix).
+                    if _WsBytesMessage is not None and isinstance(data, _WsBytesMessage):
+                        await ws.send_bytes(data.data)
+                    elif _WsTextMessage is not None and isinstance(data, _WsTextMessage):
+                        await ws.send_text(data.data)
+                    # Ignore Ping, Pong, CloseConnection and other control events —
+                    # the httpx-ws layer handles Ping/Pong internally; CloseConnection
+                    # surfaces as WebSocketDisconnect which the except above catches.
 
             done, pending = await asyncio.wait(
                 {asyncio.create_task(_client_to_upstream()),

@@ -260,5 +260,115 @@ class CaddyRoutesToTransportTests(unittest.TestCase):
         self.assertNotIn("gs-demo:5476", body)
 
 
+# ── WS relay event-type dispatch ─────────────────────────────────────────────
+
+class WsRelayEventDispatchTests(unittest.TestCase):
+    """Regression: _upstream_to_client must dispatch on wsproto event types,
+    not on raw bytes/str. upstream.receive() returns wsproto.events.Event
+    objects (TextMessage, BytesMessage), never raw bytes or str.
+
+    Bug present before TRN-102 banshee fix: isinstance(data, (bytes, bytearray))
+    always False -> every frame called str(data) -> event object stringified
+    instead of .data extracted -> all WS traffic upstream-to-browser corrupted.
+    """
+
+    def _make_ws_events(self):
+        """Return (TextMessage, BytesMessage) from the live wsproto module."""
+        try:
+            import wsproto.events as ev
+            return ev.TextMessage(data="hello from upstream"), ev.BytesMessage(data=b"\x00\x01\x02")
+        except ImportError:
+            self.skipTest("wsproto not available")
+
+    def test_upstream_text_event_sends_text_not_stringified_object(self) -> None:
+        """A TextMessage event must relay .data as text, not str(event)."""
+        text_evt, _ = self._make_ws_events()
+
+        sent_text: list = []
+        sent_bytes: list = []
+
+        class FakeClientWS:
+            async def send_text(self, data): sent_text.append(data)
+            async def send_bytes(self, data): sent_bytes.append(data)
+            async def close(self): pass
+
+        events = [text_evt]
+        call_count = [0]
+
+        async def fake_receive():
+            if call_count[0] < len(events):
+                event = events[call_count[0]]
+                call_count[0] += 1
+                return event
+            raise Exception("disconnect")
+
+        async def run():
+            ws = FakeClientWS()
+
+            async def _upstream_to_client():
+                while True:
+                    try:
+                        data = await fake_receive()
+                    except Exception:
+                        await ws.close()
+                        return
+                    if server._WsBytesMessage is not None and isinstance(data, server._WsBytesMessage):
+                        await ws.send_bytes(data.data)
+                    elif server._WsTextMessage is not None and isinstance(data, server._WsTextMessage):
+                        await ws.send_text(data.data)
+
+            await _upstream_to_client()
+
+        asyncio.run(run())
+        self.assertEqual(sent_text, ["hello from upstream"])
+        self.assertEqual(sent_bytes, [])
+        # Guard: must not have sent the stringified event object
+        if sent_text:
+            self.assertNotIn("TextMessage", sent_text[0])
+
+    def test_upstream_bytes_event_sends_bytes_not_stringified_object(self) -> None:
+        """A BytesMessage event must relay .data as bytes, not str(event)."""
+        _, bytes_evt = self._make_ws_events()
+
+        sent_text: list = []
+        sent_bytes: list = []
+
+        class FakeClientWS:
+            async def send_text(self, data): sent_text.append(data)
+            async def send_bytes(self, data): sent_bytes.append(data)
+            async def close(self): pass
+
+        events = [bytes_evt]
+        call_count = [0]
+
+        async def fake_receive():
+            if call_count[0] < len(events):
+                event = events[call_count[0]]
+                call_count[0] += 1
+                return event
+            raise Exception("disconnect")
+
+        async def run():
+            ws = FakeClientWS()
+
+            async def _upstream_to_client():
+                while True:
+                    try:
+                        data = await fake_receive()
+                    except Exception:
+                        await ws.close()
+                        return
+                    if server._WsBytesMessage is not None and isinstance(data, server._WsBytesMessage):
+                        await ws.send_bytes(data.data)
+                    elif server._WsTextMessage is not None and isinstance(data, server._WsTextMessage):
+                        await ws.send_text(data.data)
+
+            await _upstream_to_client()
+
+        asyncio.run(run())
+        self.assertEqual(sent_text, [])
+        self.assertEqual(sent_bytes, [b"\x00\x01\x02"])
+
+
 if __name__ == "__main__":
     unittest.main()
