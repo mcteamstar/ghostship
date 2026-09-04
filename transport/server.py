@@ -1081,7 +1081,9 @@ def _jwt_exp(token: str) -> int | None:
         parts = token.split(".")
         if len(parts) < 2:
             return None
-        payload_b64 = parts[1]
+        # KiroCrew tokens are payload.signature (2 parts), not header.payload.signature.
+        # Standard 3-part JWTs use parts[1] as the payload; 2-part tokens use parts[0].
+        payload_b64 = parts[0] if len(parts) == 2 else parts[1]
         # Restore base64 padding stripped by JWT's base64url encoding.
         payload_b64 += "=" * (-len(payload_b64) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode())
