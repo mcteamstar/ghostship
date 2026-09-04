@@ -268,12 +268,16 @@ class DashboardAuthTests(unittest.TestCase):
         # Pre-populate port→crew mapping
         self._orig_port_crew = dict(server._dashboard_port_crew)
         server._dashboard_port_crew.clear()
+        # Set a non-empty API key so session validation is active by default.
+        self._orig_api_key = server.GA_API_KEY
+        server.GA_API_KEY = "test-key"
 
     def tearDown(self) -> None:
         with server._gs_session_store_lock:
             server._gs_session_store.clear()
         server._dashboard_port_crew.clear()
         server._dashboard_port_crew.update(self._orig_port_crew)
+        server.GA_API_KEY = self._orig_api_key
 
     def _issue_token(self) -> str:
         return server._gs_session_issue()
@@ -306,6 +310,12 @@ class DashboardAuthTests(unittest.TestCase):
     def test_invalid_token_returns_401(self) -> None:
         resp = self._run({"gs_session": "nonexistent-token"})
         self.assertEqual(resp.status_code, 401)
+
+    def test_no_api_key_open_access_returns_200(self) -> None:
+        """When GA_API_KEY is unset, all dashboard-auth requests return 200 (open access)."""
+        server.GA_API_KEY = ""
+        resp = self._run({})
+        self.assertEqual(resp.status_code, 200)
 
     def test_valid_session_returns_crew_cookie_for_port(self) -> None:
         token = self._issue_token()

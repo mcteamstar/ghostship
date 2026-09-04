@@ -890,7 +890,14 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     injects it into the upstream request to the crew gateway. The target crew
     is identified from the incoming dashboard port via ``_dashboard_port_crew``.
     Returns 401 on missing/invalid session.
+
+    When ``GA_API_KEY`` is not configured, the dashboard is open-access and
+    all requests are passed through immediately (200) without a session check.
     """
+    # Open-access mode: no API key means no session gate.
+    if not GA_API_KEY:
+        return Response(status_code=200)
+
     # Extract gs_session cookie
     token = request.cookies.get("gs_session", "")
     if not token or not _gs_session_valid(token):
