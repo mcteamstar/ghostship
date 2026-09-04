@@ -470,6 +470,11 @@ KIRO_REGION = cfg.kiro_region
 # flow is skipped entirely (TRN-62). Injected as an env var into crew
 # containers; unset (default) => existing device-code flow is used.
 KIRO_API_KEY = cfg.kiro_api_key
+# Register KIRO_API_KEY with the redaction filter (TRN-70 secrets-management)
+# so the value is scrubbed from logs if it appears in an error or log record,
+# consistent with the GA_API_KEY pattern in _load_api_key().
+if KIRO_API_KEY:
+    _security.register_secret(KIRO_API_KEY)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
