@@ -3,6 +3,7 @@
 - [ ] 1.1 In the `captain stop` block (`transport/server.py` around line 3346): move the registry update outside the `if standing_job.get("enabled", False)` guard so it always runs when `action == "stop"`
 - [ ] 1.2 Change the gateway API failure path from `return {"error": ...}` to `logger.warning(...)` so execution falls through to the registry update — the gateway call is best-effort
 - [ ] 1.3 Verify: if the gateway call fails, `captain stop` still returns a success response (not an error), and the registry is updated to `enabled: false`
+- [ ] 1.4 Handle missing registry entry: if the `for sched in schedules` loop finds no matching entry (e.g. the schedule was never written), log a warning rather than silently doing nothing — the stop should still succeed
 
 ## 2. Tests
 

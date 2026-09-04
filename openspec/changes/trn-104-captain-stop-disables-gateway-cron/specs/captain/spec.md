@@ -8,7 +8,7 @@ When `captain(action="stop")` is called, the ghostship schedule registry entry f
 
 - **WHEN** `captain(action="stop")` is called and the captain check-in job's gateway cron is already `enabled: false` (e.g. Raven paused it via CLI)
 - **THEN** the ghostship registry entry is updated to `enabled: false`
-- **THEN** the idle monitor subsequently sees `enabled: false` in the registry and allows the crew to idle-stop
+- **THEN** the crew is eligible for idle-stop — the gateway already shows `enabled: false`, so the idle monitor's `_cron_has_enabled_job` check passes and the crew stops after `GA_IDLE_TIMEOUT_SECS` with no other activity
 
 #### Scenario: captain stop when gateway cron is enabled
 
