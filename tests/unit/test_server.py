@@ -5220,12 +5220,12 @@ class UiPortLaunchTests(unittest.TestCase):
             result = server.launch("demo", dashboard=ga_portal_enabled)
         return result
 
-    def test_launch_includes_dashboard_url_when_portside_enabled(self) -> None:
-        """TRN-101: launch(dashboard=True) with Portside enabled returns dashboard_url."""
+    def test_launch_includes_dashboard_url_when_portal_enabled(self) -> None:
+        """TRN-101: launch(dashboard=True) with Portal enabled returns dashboard_url."""
         result = self._run_launch(ga_portal_enabled=True, ga_host_url="")
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
-        # Portside internal TLS → https://
+        # Portal internal TLS → https://
         self.assertTrue(result["dashboard_url"].startswith("https://"))
         self.assertIn("9000", result["dashboard_url"])
 
@@ -5236,7 +5236,7 @@ class UiPortLaunchTests(unittest.TestCase):
         self.assertIn("9000", result["dashboard_url"])
 
     def test_launch_dashboard_url_is_none_when_dashboard_false(self) -> None:
-        """TRN-101: dashboard=False always gives dashboard_url=None regardless of Portside."""
+        """TRN-101: dashboard=False always gives dashboard_url=None regardless of Portal."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5328,7 +5328,7 @@ class UiPortLaunchTests(unittest.TestCase):
         self.assertIsNone(call_kwargs.get("ports"))
 
 
-class TRN101LaunchPortsideTests(unittest.TestCase):
+class TRN101LaunchPortalTests(unittest.TestCase):
     """TRN-101: launch(dashboard=True) requires GA_PORTAL_ENABLED=true."""
 
     def setUp(self) -> None:
@@ -5337,8 +5337,8 @@ class TRN101LaunchPortsideTests(unittest.TestCase):
     def tearDown(self) -> None:
         server._dashboard_ports_in_use.clear()
 
-    def _run_launch_portside(self, ga_portal_enabled: bool, dashboard: bool = True) -> dict:
-        """Run launch() with Portside flag set and return result."""
+    def _run_launch_portal(self, ga_portal_enabled: bool, dashboard: bool = True) -> dict:
+        """Run launch() with Portal flag set and return result."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5376,32 +5376,32 @@ class TRN101LaunchPortsideTests(unittest.TestCase):
             result = server.launch("demo", dashboard=dashboard)
         return result
 
-    def test_launch_dashboard_true_portside_disabled_returns_error(self) -> None:
-        """TRN-101 1.1 — launch(dashboard=True) with Portside disabled returns error."""
-        result = self._run_launch_portside(ga_portal_enabled=False, dashboard=True)
+    def test_launch_dashboard_true_portal_disabled_returns_error(self) -> None:
+        """TRN-101 1.1 — launch(dashboard=True) with Portal disabled returns error."""
+        result = self._run_launch_portal(ga_portal_enabled=False, dashboard=True)
         self.assertIn("error", result)
         self.assertIn("GA_PORTAL_ENABLED=true", result["error"])
         self.assertIn("docs/dashboard-proxy.md", result["error"])
 
-    def test_launch_dashboard_true_portside_disabled_allocates_no_port(self) -> None:
+    def test_launch_dashboard_true_portal_disabled_allocates_no_port(self) -> None:
         """TRN-101 1.1 — error path must NOT allocate a port."""
-        self._run_launch_portside(ga_portal_enabled=False, dashboard=True)
+        self._run_launch_portal(ga_portal_enabled=False, dashboard=True)
         self.assertEqual(len(server._dashboard_ports_in_use), 0,
-                         "No port should be allocated when Portside is disabled")
+                         "No port should be allocated when Portal is disabled")
 
-    def test_launch_dashboard_false_portside_disabled_succeeds(self) -> None:
-        """TRN-101: dashboard=False does not require Portside — no error."""
-        result = self._run_launch_portside(ga_portal_enabled=False, dashboard=False)
+    def test_launch_dashboard_false_portal_disabled_succeeds(self) -> None:
+        """TRN-101: dashboard=False does not require Portal — no error."""
+        result = self._run_launch_portal(ga_portal_enabled=False, dashboard=False)
         self.assertNotIn("error", result)
 
-    def test_launch_dashboard_true_portside_enabled_succeeds(self) -> None:
-        """TRN-101: dashboard=True with Portside enabled should NOT return the Portside error."""
-        # Portside enabled path may fail for other reasons in unit test (caddy not running),
+    def test_launch_dashboard_true_portal_enabled_succeeds(self) -> None:
+        """TRN-101: dashboard=True with Portal enabled should NOT return the Portal error."""
+        # Portal enabled path may fail for other reasons in unit test (caddy not running),
         # but must NOT return the 'GA_PORTAL_ENABLED=true' error.
-        result = self._run_launch_portside(ga_portal_enabled=True, dashboard=True)
+        result = self._run_launch_portal(ga_portal_enabled=True, dashboard=True)
         if "error" in result:
             self.assertNotIn("GA_PORTAL_ENABLED=true", result["error"],
-                             "Portside-disabled error must not fire when Portside IS enabled")
+                             "Portal-disabled error must not fire when Portal IS enabled")
 
 
 class UiPortNukeTests(unittest.TestCase):
@@ -5579,7 +5579,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
         server._dashboard_ports_in_use.clear()
 
     def _run_launch(self, dashboard: bool) -> dict:
-        """Run server.launch() and return the result. Portside enabled so dashboard works."""
+        """Run server.launch() and return the result. Portal enabled so dashboard works."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5619,7 +5619,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
         result = self._run_launch(dashboard=True)
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
-        # TRN-101: Portside internal mode → https://
+        # TRN-101: Portal internal mode → https://
         self.assertTrue(result["dashboard_url"].startswith("https://"))
         self.assertIn("9000", result["dashboard_url"])
         # Port should be marked as in-use
@@ -5723,12 +5723,12 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        # TRN-101: Portside internal mode → https://
+        # TRN-101: Portal internal mode → https://
         self.assertIn("9003", body["dashboard_url"])
         # No new port should have been allocated
         self.assertNotIn(9003, server._dashboard_ports_in_use)
 
-    def test_post_dashboard_503_when_portside_disabled(self) -> None:
+    def test_post_dashboard_503_when_portal_disabled(self) -> None:
         """TRN-101 2.4 — POST returns 503 when GA_PORTAL_ENABLED=False."""
         crew = {"container": "gs-demo", "cookie": "c"}
 

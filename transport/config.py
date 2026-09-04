@@ -124,7 +124,7 @@ class Config:
     # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────
     # TRN-101: GA_DASHBOARD_PORT_ENABLED removed — dashboard access is now
     # exclusively gated by GA_PORTAL_ENABLED. The port range config is
-    # retained because Portside still uses it via the transport's port pool.
+    # retained because Portal still uses it via the transport's port pool.
     ga_dashboard_port_range_start: int = 64058
     ga_dashboard_port_range_size: int = 50
 

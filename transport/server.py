@@ -323,7 +323,7 @@ KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
 # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
 # TRN-101: GA_DASHBOARD_PORT_ENABLED removed; dashboard access is exclusively
-# gated by GA_PORTAL_ENABLED. Port range retained — Portside uses it.
+# gated by GA_PORTAL_ENABLED. Port range retained — Portal uses it.
 GA_DASHBOARD_PORT_RANGE_START = cfg.ga_dashboard_port_range_start
 GA_DASHBOARD_PORT_RANGE_SIZE = cfg.ga_dashboard_port_range_size
 
@@ -959,7 +959,7 @@ async def _handle_login_ui(request: Request) -> Response:
 
 
 # ── Dashboard port registry (TRN-92 / TRN-101) ───────────────────────────────
-# TRN-101: The per-port uvicorn proxy pool was removed. Portside (ga-portal)
+# TRN-101: The per-port uvicorn proxy pool was removed. Portal (ga-portal)
 # is the sole dashboard proxy. Port→crew mapping is retained for forward_auth
 # lookups by _handle_dashboard_auth.
 _dashboard_port_crew: dict[int, str] = {}  # port → crew_id
@@ -1182,13 +1182,13 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
 
 async def _handle_crew_dashboard_post(request: Request) -> Response:
-    """POST /crews/{crew_id}/dashboard — allocate a UI port and register with Portside.
+    """POST /crews/{crew_id}/dashboard — allocate a UI port and register with Portal.
 
-    Allocates a port from the configured range, registers it with Portside (Caddy),
+    Allocates a port from the configured range, registers it with Portal (Caddy),
     and stores dashboard_port in the registry. Returns {"dashboard_url": "..."}.
     No-op if the crew already has a dashboard — returns the existing dashboard_url.
 
-    Requires GA_PORTAL_ENABLED=true. Returns 503 if Portside is disabled.
+    Requires GA_PORTAL_ENABLED=true. Returns 503 if Portal is disabled.
     Returns 404 for unknown crew. Returns 409 if port pool is exhausted.
     """
     parsed = _extract_crew_proxy_parts(request.scope["path"])
@@ -1196,7 +1196,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         return PlainTextResponse("Not found", status_code=404)
     crew_id, _segment, _sub = parsed
 
-    # TRN-101: Portside is required for dashboard access.
+    # TRN-101: Portal is required for dashboard access.
     if not GA_PORTAL_ENABLED:
         return JSONResponse(
             {
@@ -1217,7 +1217,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     # No-op: crew already has a dashboard
     existing_port = crew.get("dashboard_port")
     if existing_port is not None:
-        # TRN-101: Portside is enabled here (checked above).
+        # TRN-101: Portal is enabled here (checked above).
         _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
         if cfg.ga_host_url:
             from urllib.parse import urlparse as _urlparse_d
@@ -1239,7 +1239,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
             reg["crews"][crew_id]["dashboard_port"] = dashboard_port
             _save_registry(reg)
 
-    # TRN-92/TRN-101: Portside (Caddy) is the sole dashboard proxy.
+    # TRN-92/TRN-101: Portal (Caddy) is the sole dashboard proxy.
     # GA_PORTAL_TLS_MODE=off means plain HTTP; all other modes use HTTPS.
     _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
     if cfg.ga_host_url:
@@ -1485,7 +1485,7 @@ class BearerAuthMiddleware:
                 # TRN-80: per-port UI proxy — requests arriving on a crew UI
                 # port are proxied to that crew's gateway. Auth is skipped here
                 # only when GA_API_KEY is unset; the keyed path checks auth first.
-                # TRN-101: Per-port proxy removed; Portside (ga-portal) owns all
+                # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
                 # dashboard port bindings. This block is intentionally gone.
                 # Crew proxy routes (no auth required when GA_API_KEY unset)
                 _path = scope["path"]
@@ -1559,7 +1559,7 @@ class BearerAuthMiddleware:
             return
 
         # TRN-80: per-port UI proxy (auth enforced above)
-        # TRN-101: Per-port proxy removed; Portside (ga-portal) owns all
+        # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
         # dashboard port bindings. This block is intentionally gone.
 
         # Crew UI proxy — /crews/<id>/ui and /crews/<id>/ui/<path>
@@ -2338,9 +2338,9 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         composition: Crew composition to launch (default: "spec-ops"). See the
                      transport://compositions resource for available compositions.
         dashboard: When True, allocates a dedicated port from the UI port range
-                   and registers it with Portside (ga-portal) so the crew's
+                   and registers it with Portal (ga-portal) so the crew's
                    dashboard SPA is accessible via HTTPS. Requires
-                   GA_PORTAL_ENABLED=true — returns an error if Portside is
+                   GA_PORTAL_ENABLED=true — returns an error if Portal is
                    disabled. The SPA owns its entire origin so assets,
                    client-side navigation, and hard reloads all work. Returns
                    dashboard_url in the response. Default is False — crews are
@@ -2443,7 +2443,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # ghost-academy network only. The transport will listen on the allocated
         # port and proxy to the crew gateway over the internal network.
         # TRN-101: dashboard=True requires GA_PORTAL_ENABLED=true — the per-port
-        # uvicorn proxy was removed; Portside is the sole dashboard proxy.
+        # uvicorn proxy was removed; Portal is the sole dashboard proxy.
         if dashboard and not GA_PORTAL_ENABLED:
             _cleanup_crew(podman, container, volume, home_volume)
             with _registry_lock:
@@ -2472,7 +2472,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                     reg["crews"].pop(crew_id, None)
                     _save_registry(reg)
                     return {"error": str(_err)}
-            # TRN-92/TRN-101: Portside (Caddy) is the sole dashboard proxy.
+            # TRN-92/TRN-101: Portal (Caddy) is the sole dashboard proxy.
             # Scheme depends on TLS mode.
             _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
             if cfg.ga_host_url:
@@ -2511,7 +2511,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
-        # The per-port uvicorn listener is removed; Portside is the sole proxy.
+        # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:
             with _registry_lock:
                 reg = _load_registry()
@@ -2751,7 +2751,7 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     with _registry_lock:
         reg = _load_registry()
         # TRN-101: Deregister from Caddy and release the port before removing
-        # the registry entry. Per-port uvicorn proxy removed; Portside is sole proxy.
+        # the registry entry. Per-port uvicorn proxy removed; Portal is sole proxy.
         _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
             _caddy_deregister_crew(crew_id)
@@ -4119,7 +4119,7 @@ if __name__ == "__main__":
     server = uvicorn.Server(config)
 
     async def _main() -> None:
-        # TRN-101: Portside is the sole dashboard proxy; the per-port uvicorn
+        # TRN-101: Portal is the sole dashboard proxy; the per-port uvicorn
         # listener threads are removed. On restart, re-register all existing
         # crew servers with Caddy (idempotent — Caddy's --resume may have
         # already loaded them, but we call again so a fresh data-volume wipe

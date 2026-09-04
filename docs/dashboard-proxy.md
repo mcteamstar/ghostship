@@ -2,22 +2,22 @@
 
 Each crew has a KiroCrew gateway UI — a full chat and task management interface. The **dashboard proxy** makes it accessible in a browser.
 
-> **TRN-101 BREAKING CHANGE:** `launch(dashboard=True)` now requires `GA_PORTAL_ENABLED=true`. The transport's per-port uvicorn proxy threads are removed. Dashboard proxying is exclusively handled by Portside (`ga-portal`). See [Migration](#migration) if you are upgrading.
+> **TRN-101 BREAKING CHANGE:** `launch(dashboard=True)` now requires `GA_PORTAL_ENABLED=true`. The transport's per-port uvicorn proxy threads are removed. Dashboard proxying is exclusively handled by Portal (`ga-portal`). See [Migration](#migration) if you are upgrading.
 
 ## Requirements
 
-`GA_PORTAL_ENABLED=true` is required for any crew dashboard. When Portside is disabled, `launch(dashboard=True)` returns an error:
+`GA_PORTAL_ENABLED=true` is required for any crew dashboard. When Portal is disabled, `launch(dashboard=True)` returns an error:
 
 ```
 "dashboard access requires GA_PORTAL_ENABLED=true; re-run install.sh
 and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"
 ```
 
-Crews launched without `dashboard=True` (the default) are headless — no dashboard is allocated and no Portside registration is needed for those crews.
+Crews launched without `dashboard=True` (the default) are headless — no dashboard is allocated and no Portal registration is needed for those crews.
 
 ## How it works
 
-When a dashboard is requested and `GA_PORTAL_ENABLED=true`, the transport allocates a dedicated port from the configured range (default `64058–64107`) and registers it with Portside (Caddy) via the admin API.
+When a dashboard is requested and `GA_PORTAL_ENABLED=true`, the transport allocates a dedicated port from the configured range (default `64058–64107`) and registers it with Portal (Caddy) via the admin API.
 
 ```
 Browser → host:64058 (HTTPS, via ga-portal)
@@ -27,7 +27,7 @@ Browser → host:64058 (HTTPS, via ga-portal)
 
 Key properties:
 
-- **Portside (`ga-portal`) owns all dashboard port bindings.** The transport no longer binds these ports directly.
+- **Portal (`ga-portal`) owns all dashboard port bindings.** The transport no longer binds these ports directly.
 - **Crew containers are untouched.** They only expose port 5476 on the internal Podman network.
 - **TLS on every port.** Caddy terminates HTTPS on the main port (443) and on every per-crew dashboard port. See [caddy.md — TLS modes](caddy.md#tls-modes).
 - **`gs_session` cookie gate.** Every dashboard port requires a valid `gs_session` cookie issued by `/dashboard-login`. Unauthenticated requests redirect to the login page (`/login-ui`).
@@ -37,7 +37,7 @@ Key properties:
 
 ## Setup
 
-Enable Portside and re-run `install.sh`:
+Enable Portal and re-run `install.sh`:
 
 ```bash
 # ghostship.conf
@@ -72,14 +72,14 @@ A crew launched headless (the default) has `dashboard_url: null` in its response
 
 A headless crew can be given a dashboard later — and a dashboard can be released — through two REST endpoints on the transport port. Both require the `Authorization: Bearer <key>` header when `GA_API_KEY` is set.
 
-**`POST /crews/{crew_id}/dashboard`** — allocate a UI port, register with Portside, and store `dashboard_port` in the registry. Returns `{"dashboard_url": "..."}`. No-op if the crew already has a dashboard. Returns 503 if `GA_PORTAL_ENABLED=false`.
+**`POST /crews/{crew_id}/dashboard`** — allocate a UI port, register with Portal, and store `dashboard_port` in the registry. Returns `{"dashboard_url": "..."}`. No-op if the crew already has a dashboard. Returns 503 if `GA_PORTAL_ENABLED=false`.
 
 ```bash
 curl -sX POST http://localhost:64057/crews/my-crew/dashboard | jq
 # → { "dashboard_url": "https://localhost:64058/" }
 ```
 
-**`DELETE /crews/{crew_id}/dashboard`** — deregister from Portside, release the port, and clear `dashboard_port` from the registry. Returns `{"dashboard_url": null}`. No-op if the crew has no dashboard.
+**`DELETE /crews/{crew_id}/dashboard`** — deregister from Portal, release the port, and clear `dashboard_port` from the registry. Returns `{"dashboard_url": null}`. No-op if the crew has no dashboard.
 
 ```bash
 curl -sX DELETE http://localhost:64057/crews/my-crew/dashboard | jq
@@ -96,7 +96,7 @@ curl -sX DELETE http://localhost:64057/crews/my-crew/dashboard | jq
 
 > `GA_DASHBOARD_PORT_ENABLED` was removed in TRN-101. Use `GA_PORTAL_ENABLED=true` instead.
 
-See [caddy.md](caddy.md) for all Portside-related options (`GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, etc.).
+See [caddy.md](caddy.md) for all Portal-related options (`GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, etc.).
 
 ## Firewall
 
@@ -119,7 +119,7 @@ For deployments upgrading from the pre-TRN-101 per-port proxy mode:
 1. Set `GA_PORTAL_ENABLED=true` in `ghostship.conf`
 2. Re-run `install.sh` — `ga-portal` is added to the compose stack and takes over the dashboard ports
 3. If `GA_PORTAL_TLS_MODE=internal` (default): run `caddy trust` once to trust the CA
-4. Existing crews that had dashboard ports will need to be nuked and re-launched so Portside registers them at their new HTTPS URLs
+4. Existing crews that had dashboard ports will need to be nuked and re-launched so Portal registers them at their new HTTPS URLs
 
 For fresh installs, simply set `GA_PORTAL_ENABLED=true` before running `install.sh`.
 

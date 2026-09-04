@@ -2,15 +2,15 @@
 
 ## v0.3.0 (unreleased)
 
-### TRN-101 — Portside-only dashboard proxy ⚠️ BREAKING
+### TRN-101 — Portal-only dashboard proxy ⚠️ BREAKING
 
-`launch(dashboard=True)` now requires `GA_PORTAL_ENABLED=true`. The transport's per-port uvicorn proxy threads are removed. Portside (`ga-portal`) is the sole dashboard proxy implementation.
+`launch(dashboard=True)` now requires `GA_PORTAL_ENABLED=true`. The transport's per-port uvicorn proxy threads are removed. Portal (`ga-portal`) is the sole dashboard proxy implementation.
 
 - **BREAKING:** `launch(dashboard=True)` with `GA_PORTAL_ENABLED=false` returns an error: `"dashboard access requires GA_PORTAL_ENABLED=true; re-run install.sh and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"`.
 - **Removed:** `_start_dashboard_port_server`, `_stop_dashboard_port_server`, `_dashboard_app`, the per-port uvicorn daemon-thread pool, and their startup restore loop.
 - **Removed:** `GA_DASHBOARD_PORT_ENABLED` config flag. Dashboard availability is now solely controlled by `GA_PORTAL_ENABLED`.
 - `POST /crews/{id}/dashboard` returns 503 if `GA_PORTAL_ENABLED=false` (was: 503 if `GA_DASHBOARD_PORT_ENABLED=false`).
-- Dashboard port range config (`GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE`) retained — Portside still uses the transport's port pool.
+- Dashboard port range config (`GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE`) retained — Portal still uses the transport's port pool.
 - **Migration:** Set `GA_PORTAL_ENABLED=true`, re-run `install.sh`, nuke and re-launch any crews that had dashboards. See `docs/dashboard-proxy.md` for the full migration guide.
 
 ### TRN-92 — Caddy reverse proxy ⚠️ BREAKING (opt-in cutover)

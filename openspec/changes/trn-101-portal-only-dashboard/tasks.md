@@ -1,16 +1,16 @@
-## 1. Reject dashboard=True when Portside disabled
+## 1. Reject dashboard=True when Portal disabled
 
 - [x] 1.1 In `launch()` (transport/server.py), when `dashboard=True` and `GA_PORTAL_ENABLED=false`, return an MCP error: `"dashboard access requires GA_PORTAL_ENABLED=true; re-run install.sh and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"` before any port allocation
-- [x] 1.2 Add unit test: `launch(dashboard=True)` with Portside disabled returns the expected error and allocates no port
+- [x] 1.2 Add unit test: `launch(dashboard=True)` with Portal disabled returns the expected error and allocates no port
 
 ## 2. Remove per-port uvicorn proxy machinery
 
 - [x] 2.1 Delete `_start_dashboard_port_server(port, crew_id, app)` and `_stop_dashboard_port_server(port)`
 - [x] 2.2 Delete `_dashboard_app` module-level variable and the startup assignment at line ~4430
 - [x] 2.3 Remove the startup loop that re-starts per-port listeners on container restart (~line 4438)
-- [x] 2.4 In `_handle_crew_dashboard_post`: remove the uvicorn `_start_dashboard_port_server` call; keep port allocation and `_caddy_register_crew`; add the Portside-disabled error guard (task 1.1 covers `launch`, this covers the HTTP path)
+- [x] 2.4 In `_handle_crew_dashboard_post`: remove the uvicorn `_start_dashboard_port_server` call; keep port allocation and `_caddy_register_crew`; add the Portal-disabled error guard (task 1.1 covers `launch`, this covers the HTTP path)
 - [x] 2.5 In `_handle_crew_dashboard_delete`: remove `_stop_dashboard_port_server` call; keep `_caddy_deregister_crew`
-- [x] 2.6 In `nuke()`: remove `_stop_dashboard_port_server` call (Portside deregister is already there)
+- [x] 2.6 In `nuke()`: remove `_stop_dashboard_port_server` call (Portal deregister is already there)
 
 ## 3. Remove GA_DASHBOARD_PORT_ENABLED config
 
@@ -22,7 +22,7 @@
 
 ## 4. Documentation
 
-- [x] 4.1 Update `docs/dashboard-proxy.md`: remove the "Portside disabled" section; document `GA_PORTAL_ENABLED=true` as the requirement; add the migration steps from design.md
+- [x] 4.1 Update `docs/dashboard-proxy.md`: remove the "Portal disabled" section; document `GA_PORTAL_ENABLED=true` as the requirement; add the migration steps from design.md
 - [x] 4.2 Add a breaking-change note in `CHANGELOG.md`
 - [x] 4.3 Update the `launch` MCP tool docstring: note that `dashboard=True` requires `GA_PORTAL_ENABLED=true` and will return an error otherwise
 

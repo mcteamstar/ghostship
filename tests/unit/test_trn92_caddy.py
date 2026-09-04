@@ -402,14 +402,14 @@ class CaddyLaunchNukeTests(unittest.TestCase):
         )
 
     def test_launch_caddy_disabled_returns_error(self) -> None:
-        """TRN-101: launch(dashboard=True) with Portside disabled returns error, not a URL."""
+        """TRN-101: launch(dashboard=True) with Portal disabled returns error, not a URL."""
         result, mock_register = self._run_launch(caddy_enabled=False)
         self.assertIn("error", result)
         self.assertIn("GA_PORTAL_ENABLED=true", result["error"])
         mock_register.assert_not_called()
 
     def test_nuke_deregisters_with_caddy(self) -> None:
-        """nuke() calls _caddy_deregister_crew (always — Portside is the only proxy)."""
+        """nuke() calls _caddy_deregister_crew (always — Portal is the only proxy)."""
         reg = {"crews": {"alpha": {"container": "gs-alpha", "volume": "gs-vol-alpha",
                                     "home_volume": "gs-home-alpha", "dashboard_port": 64058}}}
         podman = Mock()
