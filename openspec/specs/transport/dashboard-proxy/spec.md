@@ -2,43 +2,49 @@
 
 ## Purpose
 
-Defines the port-based routing model for crew dashboard UIs: each crew launched with `dashboard=True` gets a dedicated port. When `GA_PORTAL_ENABLED=true`, `ga-portal` (Caddy) binds those ports and routes traffic through the transport's cookie-injecting proxy endpoint to the crew gateway. When `GA_PORTAL_ENABLED=false`, dashboard access is unavailable (`launch(dashboard=True)` returns an error).
+Defines the port-based routing model for crew dashboard UIs: each crew launched with `dashboard=True` gets a dedicated port. `ga-portal` (Caddy) is always present (TRN-103) and binds those ports, routing traffic through the transport's cookie-injecting proxy endpoint to the crew gateway. Dashboard access is unconditional — `launch(dashboard=True)` SHALL NOT be gated on any `GA_PORTAL_ENABLED` flag.
 
 ## Requirements
 
 ### Requirement: Dashboard routing mode
 
-Dashboard routing SHALL remain port-based — each crew UI is served at a dedicated port from the `GA_DASHBOARD_PORT_RANGE` (default 64058–64107), because the KiroCrew SPA requires a root origin. Path-prefix routing and subdomain routing SHALL NOT be used. `GA_PORTAL_ENABLED=true` is **required** for dashboard access; `launch(dashboard=True)` with Portal disabled SHALL return an error.
+Dashboard routing SHALL remain port-based — each crew UI is served at a dedicated port from the `GA_DASHBOARD_PORT_RANGE` (default 64058–64107), because the KiroCrew SPA requires a root origin. Path-prefix routing and subdomain routing SHALL NOT be used. `ga-portal` (Caddy) is always present (TRN-103); dashboard access SHALL NOT be gated on any `GA_PORTAL_ENABLED` flag. `launch(dashboard=True)` SHALL allocate a port and register the crew with Portal whenever Portal is healthy.
+
+#### Scenario: Dashboard access is unconditional
+
+- **WHEN** `launch(dashboard=True)` is called and `ga-portal` is running
+- **THEN** a port is allocated from `GA_DASHBOARD_PORT_RANGE`, the crew is registered with Portal, and a `dashboard_url` is returned
+- **THEN** no `GA_PORTAL_ENABLED` flag is read or honoured
 
 #### Scenario: Dashboard requires Portal
 
-- **WHEN** `GA_PORTAL_ENABLED=false` and `launch(dashboard=True)` is called
-- **THEN** the call returns an error: `"dashboard access requires GA_PORTAL_ENABLED=true; re-run install.sh and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"`
-- **THEN** no port is allocated and `dashboard_url` is not set
+- **WHEN** `launch(dashboard=True)` is called and `ga-portal` is healthy
+- **THEN** a port is allocated and the crew is registered with Portal; there is no `GA_PORTAL_ENABLED=false` branch and no error is returned on that basis
+- **THEN** if Caddy registration itself fails, `launch` logs a warning but still returns `dashboard_url` (registration failure is non-fatal)
 
 #### Scenario: Caddy-mode dashboard access
 
-- **WHEN** `GA_PORTAL_ENABLED=true` and crew `alpha` is launched with `dashboard=True`
+- **WHEN** crew `alpha` is launched with `dashboard=True`
 - **THEN** the crew dashboard is accessible at the crew's dedicated port (e.g. `http://<host>:64058/`)
 - **THEN** Caddy binds that port and routes to `ga-transport:{PORT}/crews/alpha/ui/`
 - **THEN** `launch` returns a `dashboard_url` of the form `<scheme>://<host>:<port>/`
 
 #### Scenario: dashboard_url shape reflects TLS mode
 
-- **WHEN** `GA_PORTAL_ENABLED=true` and `GA_PORTAL_TLS_MODE=off`
+- **WHEN** `GA_PORTAL_TLS_MODE=off`
 - **THEN** `dashboard_url` uses `http://`
-- **WHEN** `GA_PORTAL_ENABLED=true` and `GA_PORTAL_TLS_MODE` is `internal`, `tailscale`, or `acme`
+- **WHEN** `GA_PORTAL_TLS_MODE` is `internal`, `tailscale`, or `acme`
 - **THEN** `dashboard_url` uses `https://`
 
 ### Requirement: Per-crew dashboard routing when Portal enabled
 
-When `GA_PORTAL_ENABLED=true`, `ga-portal` (Caddy) SHALL route each crew's dashboard port traffic to the transport's cookie-injecting proxy endpoint (`/crews/{crew_id}/ui/`) rather than directly to the crew gateway (`gs-{crew_id}:5476`). The transport proxy endpoint SHALL inject the crew's `mc_token_5476` session cookie on every forwarded request and SHALL handle both HTTP and WebSocket connections.
+`ga-portal` (Caddy) SHALL route each crew's dashboard port traffic to the transport's cookie-injecting proxy endpoint (`/crews/{crew_id}/ui/`) rather than directly to the crew gateway (`gs-{crew_id}:5476`). The transport proxy endpoint SHALL inject the crew's `mc_token_5476` session cookie on every forwarded request and SHALL handle both HTTP and WebSocket connections.
 
 The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the transport. This satisfies the KiroCrew gateway's IP-binding constraint — the cookie is bound to the IP that performed the token exchange, which is `ga-transport`'s IP on `ga-net`.
 
 #### Scenario: Dashboard request via Portal is authenticated
 
-- **WHEN** `GA_PORTAL_ENABLED=true` and a browser requests a crew dashboard port (e.g. `http://host:64058/`)
+- **WHEN** a browser requests a crew dashboard port (e.g. `http://host:64058/`)
 - **THEN** `ga-portal` proxies to `ga-transport:{PORT}/crews/{crew_id}/ui/`
 - **THEN** the transport injects `Cookie: mc_token_5476=<crew_token>` on the forwarded request to `gs-{crew_id}:5476`
 - **THEN** the KiroCrew SPA loads authenticated without a "Session expired" prompt
