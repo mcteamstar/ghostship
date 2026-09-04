@@ -717,19 +717,26 @@ if [[ "${GA_PORTSIDE_ENABLED:-false}" == "true" ]]; then
   mkdir -p "${DATA_DIR}/caddy"
 
   # Build the TLS stanza based on GA_PORTSIDE_TLS_MODE.
+  _AUTO_HTTPS=""  # set to disable auto-HTTPS for TLS_MODE=off
   case "${GA_PORTSIDE_TLS_MODE:-internal}" in
     tailscale)
       _TLS_STANZA='"tls": {"automation": {"policies": [{"get_certificate": [{"via": "tailscale"}]}]}}'
+      _MAIN_LISTEN=":${GA_PORTSIDE_PORT:-443}"
       ;;
     acme)
       _ACME_DOMAIN="${GA_PORTSIDE_DOMAIN:-}"
       _TLS_STANZA='"tls": {"automation": {"policies": [{"subjects": ["'"${_ACME_DOMAIN}"'"], "issuers": [{"module": "acme"}]}]}}'
+      _MAIN_LISTEN=":${GA_PORTSIDE_PORT:-443}"
       ;;
     off)
+      # Plain HTTP — disable auto-HTTPS, listen on the HTTP port.
       _TLS_STANZA='"tls": {}'
+      _MAIN_LISTEN=":${GA_PORTSIDE_HTTP_PORT:-80}"
+      _AUTO_HTTPS='"automatic_https": {"disable": true},'
       ;;
     *)  # internal (default)
       _TLS_STANZA='"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}'
+      _MAIN_LISTEN=":${GA_PORTSIDE_PORT:-443}"
       ;;
   esac
 
@@ -741,7 +748,8 @@ if [[ "${GA_PORTSIDE_ENABLED:-false}" == "true" ]]; then
     "http": {
       "servers": {
         "ga-main": {
-          "listen": [":${GA_PORTSIDE_PORT:-443}"],
+          "listen": ["${_MAIN_LISTEN}"],
+          ${_AUTO_HTTPS}
           "routes": [
             {
               "@id": "ga-transport-mcp",
