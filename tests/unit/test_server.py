@@ -5672,41 +5672,50 @@ class DashboardRestEndpointTests(unittest.TestCase):
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
+                patch.object(server, "_caddy_register_crew") as mock_caddy,
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
                 mock_cfg.ga_portal_tls_mode = "internal"
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                return await server._handle_crew_dashboard_post(request)
+                resp = await server._handle_crew_dashboard_post(request)
+                return resp, mock_caddy
 
-        response = asyncio.run(run())
+        response, mock_caddy = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
         self.assertIn("dashboard_url", body)
         self.assertIsNotNone(body["dashboard_url"])
         self.assertIn("9000", body["dashboard_url"])
+        mock_caddy.assert_called_once_with("demo", 9000, crew_cookie="c")
 
     def test_post_dashboard_noop_when_already_active(self) -> None:
         """7.1b — POST on crew that already has a dashboard returns existing dashboard_url (no-op)."""
         crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9003}
+        registry = {"crews": {"demo": dict(crew)}}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_caddy_register_crew") as mock_caddy,
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
                 mock_cfg.ga_portal_tls_mode = "internal"
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                return await server._handle_crew_dashboard_post(request)
+                resp = await server._handle_crew_dashboard_post(request)
+                return resp, mock_caddy
 
-        response = asyncio.run(run())
+        response, mock_caddy = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
         # TRN-103: Portal internal mode → https://
         self.assertIn("9003", body["dashboard_url"])
         # No new port should have been allocated
         self.assertNotIn(9003, server._dashboard_ports_in_use)
+        # Caddy should NOT be called on no-op
+        mock_caddy.assert_not_called()
 
     def test_post_dashboard_404_for_unknown_crew(self) -> None:
         """7.1c — POST returns 404 for unknown crew."""
@@ -5723,12 +5732,15 @@ class DashboardRestEndpointTests(unittest.TestCase):
     def test_post_dashboard_409_when_port_pool_exhausted(self) -> None:
         """7.1d — POST returns 409 when port pool is exhausted."""
         crew = {"container": "gs-demo", "cookie": "c"}
+        registry = {"crews": {"demo": dict(crew)}}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
+                patch.object(server, "_load_registry", return_value=registry),
+                patch.object(server, "_caddy_register_crew"),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
@@ -5755,18 +5767,21 @@ class DashboardRestEndpointTests(unittest.TestCase):
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
+                patch.object(server, "_caddy_register_crew") as mock_caddy,
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = "http://vm23.example.com:64057"
                 mock_cfg.ga_portal_tls_mode = "internal"
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                return await server._handle_crew_dashboard_post(request)
+                resp = await server._handle_crew_dashboard_post(request)
+                return resp, mock_caddy
 
-        response = asyncio.run(run())
+        response, mock_caddy = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
         self.assertIn("vm23.example.com", body["dashboard_url"])
         self.assertIn("9000", body["dashboard_url"])
+        mock_caddy.assert_called_once_with("demo", 9000, crew_cookie="c")
 
     # ── DELETE /crews/{id}/dashboard ──────────────────────────────────────────
 

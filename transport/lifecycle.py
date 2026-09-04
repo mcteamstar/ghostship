@@ -1457,8 +1457,8 @@ def _schedule_monitor() -> None:
                             crew, crew_id, "POST", "/api/spawn", json=tick_body,
                         )
                     except Exception as e:
-                        logger.warning(
-                            "Schedule monitor: failed to fire job %s on crew %s: %s",
+                        logger.error(
+                            "Schedule monitor: tick dropped — failed to fire job %s on crew %s: %s",
                             sched.get("job_id"), crew_id, e,
                         )
 

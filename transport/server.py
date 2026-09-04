@@ -1136,7 +1136,7 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
 
     # Auto-wake if stopped
     try:
-        crew = _ensure_crew_running(crew, crew_id)
+        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError as e:
         return PlainTextResponse(str(e), status_code=502)
 
@@ -1250,7 +1250,7 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
         await ws.close(code=1008)
         return
     try:
-        crew = _ensure_crew_running(crew, crew_id)
+        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError:
         await ws.close(code=1011)
         return
@@ -1275,8 +1275,8 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
         "Origin": crew_origin,
     }
 
-    await ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
-
+    # C-2: Accept the client connection ONLY after the upstream connection
+    # succeeds. If upstream fails before accept, close with code 1011.
     try:
         async with _aconnect_ws(
             upstream_ws_url,
@@ -1284,6 +1284,7 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
             headers=handshake_headers,
             subprotocols=subprotocols or None,
         ) as upstream:
+            await ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
             async def _client_to_upstream() -> None:
                 while True:
                     msg = await ws.receive()
@@ -1325,6 +1326,15 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
         pass
     except Exception as e:
         logger.warning("UI WS proxy error for crew %s: %s", crew_id, e)
+        # C-2: The upstream connection failed before we accepted the client
+        # (ws.accept is now inside the try block, after _aconnect_ws succeeds).
+        # Send a close frame with code 1011 (internal error) so the client is
+        # not left hanging with an unaccepted connection.
+        try:
+            await send({"type": "websocket.close", "code": 1011})
+        except Exception:
+            pass
+        return
     finally:
         try:
             await ws.close()
@@ -1355,7 +1365,7 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
     # Auto-wake if stopped
     try:
-        crew = _ensure_crew_running(crew, crew_id)
+        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError as e:
         return PlainTextResponse(str(e), status_code=502)
 
@@ -1432,35 +1442,48 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     crew_id, _segment, _sub = parsed
 
     try:
-        crew = _require_crew(crew_id)
+        _require_crew(crew_id)
     except (KeyError, ValueError) as e:
         return PlainTextResponse(str(e), status_code=404)
 
-    # No-op: crew already has a dashboard
-    existing_port = crew.get("dashboard_port")
-    if existing_port is not None:
-        # TRN-103: Portal is always present.
-        _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
-        if cfg.ga_host_url:
-            from urllib.parse import urlparse as _urlparse_d
-            _ph = _urlparse_d(cfg.ga_host_url)
-            dashboard_url = f"{_caddy_scheme}://{_ph.hostname}:{existing_port}/"
-        else:
-            dashboard_url = f"{_caddy_scheme}://localhost:{existing_port}/"
-        return JSONResponse({"dashboard_url": dashboard_url})
-
-    # Allocate a new port
+    # H-2: Consolidate the no-op check and port allocation into a single lock
+    # section, reading the registry under the lock (not the pre-lock crew dict)
+    # to prevent a TOCTOU race that could duplicate port allocation.
+    _crew_cookie_val = ""
+    dashboard_port: int | None = None
     with _registry_lock:
+        reg = _load_registry()
+        crew_entry = reg["crews"].get(crew_id)
+        if crew_entry is None:
+            return PlainTextResponse(f"Crew '{crew_id}' not found", status_code=404)
+
+        # No-op: crew already has a dashboard (checked under the lock).
+        existing_port = crew_entry.get("dashboard_port")
+        if existing_port is not None:
+            _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
+            if cfg.ga_host_url:
+                from urllib.parse import urlparse as _urlparse_d
+                _ph = _urlparse_d(cfg.ga_host_url)
+                dashboard_url = f"{_caddy_scheme}://{_ph.hostname}:{existing_port}/"
+            else:
+                dashboard_url = f"{_caddy_scheme}://localhost:{existing_port}/"
+            return JSONResponse({"dashboard_url": dashboard_url})
+
+        # Allocate a new port under the same lock so allocation and registry
+        # write are atomic (prevents duplicate port allocation from concurrent
+        # POSTs).
         try:
             dashboard_port = _allocate_dashboard_port()
         except RuntimeError as e:
             return JSONResponse({"error": str(e)}, status_code=409)
 
-        reg = _load_registry()
-        if crew_id in reg["crews"]:
-            reg["crews"][crew_id]["dashboard_port"] = dashboard_port
-            _save_registry(reg)
+        reg["crews"][crew_id]["dashboard_port"] = dashboard_port
+        # Extract cookie value now, while still holding the lock.
+        _crew_cookie_val = reg["crews"][crew_id].get("cookie", "")
+        _save_registry(reg)
 
+    # C-1: Call _caddy_register_crew AFTER releasing _registry_lock.
+    # This avoids holding the lock across up to 7 s of blocking I/O.
     # TRN-92/TRN-101: Portal (Caddy) is the sole dashboard proxy.
     # GA_PORTAL_TLS_MODE=off means plain HTTP; all other modes use HTTPS.
     _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
@@ -1470,12 +1493,8 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         dashboard_url = f"{_caddy_scheme}://{_ph.hostname}:{dashboard_port}/"
     else:
         dashboard_url = f"{_caddy_scheme}://localhost:{dashboard_port}/"
-    # Register inside a fresh _registry_lock acquisition — we exited the
-    # previous lock section above.
-    with _registry_lock:
-        reg_for_cookie = _load_registry()
-        _crew_cookie_val = reg_for_cookie.get("crews", {}).get(crew_id, {}).get("cookie", "")
-        _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
+
+    _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
     # Store port→crew mapping for forward_auth lookups.
     _dashboard_port_crew[dashboard_port] = crew_id
 
@@ -1516,13 +1535,17 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         existing_port = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if existing_port is None:
             return JSONResponse({"dashboard_url": None})
-        # TRN-92/TRN-101: Deregister from Caddy (best-effort, inside lock for serialization)
-        _caddy_deregister_crew(crew_id)
+        # C-1: Extract all needed values and mutate registry under the lock,
+        # then call _caddy_deregister_crew AFTER releasing it to avoid holding
+        # the lock across blocking I/O.
         _dashboard_port_crew.pop(int(existing_port), None)
         _release_dashboard_port(int(existing_port))
         reg["crews"][crew_id].pop("dashboard_port", None)
         reg["crews"][crew_id]["dashboard_url"] = None
         _save_registry(reg)
+
+    # C-1: Deregister from Caddy after releasing _registry_lock.
+    _caddy_deregister_crew(crew_id)
 
     logger.info(
         "TRN-101: DELETE /crews/%s/dashboard — released UI port %d",
@@ -2727,14 +2750,17 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
         # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:
+            _crew_cookie_for_caddy = ""
             with _registry_lock:
                 reg = _load_registry()
                 if crew_id in reg["crews"]:
                     reg["crews"][crew_id]["dashboard_port"] = dashboard_port
                     _save_registry(reg)
-                # Register with Caddy inside _registry_lock for atomicity.
-                _crew_cookie_val = reg["crews"].get(crew_id, {}).get("cookie", "")
-                _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
+                # Extract cookie value under the lock; register AFTER releasing it.
+                _crew_cookie_for_caddy = reg["crews"].get(crew_id, {}).get("cookie", "")
+            # C-1: Call _caddy_register_crew AFTER releasing _registry_lock to
+            # avoid holding the lock across up to 7 s of blocking I/O.
+            _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
             # Record port→crew mapping for forward_auth lookups.
             _dashboard_port_crew[dashboard_port] = crew_id
             result["dashboard_url"] = dashboard_url
