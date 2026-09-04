@@ -81,3 +81,9 @@ When registering a per-crew Caddy server via `_caddy_register_crew`, the transpo
 ### Requirement: `ga-portal` network topology
 
 `ga-portal` and `ga-transport` SHALL both be attached to `ga-net` so Caddy can dial `ga-transport:{PORT}`. podman-compose has no implicit default network (unlike Docker Compose), so any two containers that need to communicate must share a named network. `ga-portal` SHALL NOT be configured to make direct connections to crew containers (`gs-*`) — all crew traffic routes via the transport proxy endpoint. The `ga-net` membership does not itself prevent `ga-portal` from reaching crew containers; the constraint is enforced by Caddy's config (all upstreams point to `ga-transport` only).
+
+#### Scenario: ga-portal and ga-transport share ga-net
+
+- **WHEN** `install.sh` generates `compose.yml`
+- **THEN** both `ga-portal` and `ga-transport` services declare `ga-net` in their `networks` block
+- **THEN** no Caddy upstream in the initial config or in any `_caddy_register_crew` call dials a `gs-*` address directly — all upstreams target `ga-transport`
