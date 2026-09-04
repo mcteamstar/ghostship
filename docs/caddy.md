@@ -22,9 +22,11 @@ Caddy sits in front of all traffic:
                   │                                                       │
                   │  PER-CREW DASHBOARD SERVERS (dynamic, one per port):  │
                   │    :64058 (TLS)  forward_auth ──▶ ga-transport        │
-                  │                 then proxy    ──▶ gs-alpha:5476       │
+                  │                 then proxy    ──▶ ga-transport:8000   │
+                  │                             /crews/alpha/ui/{path}    │
                   │    :64059 (TLS)  forward_auth ──▶ ga-transport        │
-                  │                 then proxy    ──▶ gs-beta:5476        │
+                  │                 then proxy    ──▶ ga-transport:8000   │
+                  │                             /crews/beta/ui/{path}     │
                   └────────────────────┬─────────────────────────────────┘
                                        │ admin API :2019 (ga-net only)
                     launch → PUT /id/crew-{id}   (add server on its port)
@@ -86,7 +88,8 @@ Browser ──GET :64058/──▶ ga-portal
                             │                    ├─ YES → 200 + X-Crew-Cookie
                             │                    └─ NO  → 401 → Caddy redirects to /login-ui
                             │
-                            └─ (on 200) reverse_proxy ──▶ gs-alpha:5476
+                            └─ (on 200) reverse_proxy ──▶ ga-transport:8000
+                                        rewrite /crews/alpha/ui/{path}
                                         passes X-Crew-Cookie as cookie header
 ```
 

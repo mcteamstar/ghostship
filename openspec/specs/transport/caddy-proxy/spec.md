@@ -41,12 +41,12 @@ When `GA_API_KEY` is set, the main-server `/mcp*` and `/files/*` routes SHALL re
 - **THEN** the request does not reach the transport process
 
 ### Requirement: Per-crew dashboard server registration
-When a crew is successfully launched, the transport SHALL call the Caddy admin API to add an HTTP server bound to the crew's allocated dashboard port that reverse-proxies to `gs-{crew_id}:5476`, gated by a `forward_auth` handler (see the dashboard-auth capability). The server object SHALL carry `"@id": "crew-{crew_id}"` so it can be addressed directly for removal. `launch(dashboard=True)` SHALL allocate a port and register with `ga-portal` without checking a `GA_PORTAL_ENABLED` flag. The dashboard is always available on deployments where `ga-portal` is healthy.
+When a crew is successfully launched, the transport SHALL call the Caddy admin API to add an HTTP server bound to the crew's allocated dashboard port that reverse-proxies to `ga-transport:8000` with a URI rewrite to `/crews/{crew_id}/ui/{path}`, gated by a `forward_auth` handler (see the dashboard-auth capability). The server object SHALL carry `"@id": "crew-{crew_id}"` so it can be addressed directly for removal. `launch(dashboard=True)` SHALL allocate a port and register with `ga-portal` without checking a `GA_PORTAL_ENABLED` flag. The dashboard is always available on deployments where `ga-portal` is healthy.
 
 #### Scenario: Crew launch registers Caddy dashboard server
 - **WHEN** `launch(crew_id="alpha", dashboard=True)` completes successfully
 - **THEN** `GET /config/id/crew-alpha` on the Caddy admin API returns a server object listening on the allocated port
-- **THEN** the server's upstream is `gs-alpha:5476`
+- **THEN** the server's upstream is `ga-transport:8000` with a rewrite to `/crews/alpha/ui/{path}`
 - **THEN** no per-port uvicorn listener thread is started in the transport
 
 #### Scenario: Dashboard launch always succeeds when portal is healthy
