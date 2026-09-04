@@ -1,6 +1,6 @@
 ## 1. Reject dashboard=True when Portside disabled
 
-- [ ] 1.1 In `launch()` (transport/server.py), when `dashboard=True` and `GA_PORTSIDE_ENABLED=false`, return an MCP error: `"dashboard access requires GA_PORTSIDE_ENABLED=true — see docs/dashboard-proxy.md"` before any port allocation
+- [ ] 1.1 In `launch()` (transport/server.py), when `dashboard=True` and `GA_PORTSIDE_ENABLED=false`, return an MCP error: `"dashboard access requires GA_PORTSIDE_ENABLED=true; re-run install.sh and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"` before any port allocation
 - [ ] 1.2 Add unit test: `launch(dashboard=True)` with Portside disabled returns the expected error and allocates no port
 
 ## 2. Remove per-port uvicorn proxy machinery
@@ -24,6 +24,7 @@
 
 - [ ] 4.1 Update `docs/dashboard-proxy.md`: remove the "Portside disabled" section; document `GA_PORTSIDE_ENABLED=true` as the requirement; add the migration steps from design.md
 - [ ] 4.2 Add a breaking-change note in `CHANGELOG.md`
+- [ ] 4.3 Update the `launch` MCP tool docstring: note that `dashboard=True` requires `GA_PORTSIDE_ENABLED=true` and will return an error otherwise
 
 ## 5. Tests
 

@@ -7,7 +7,7 @@ Dashboard routing SHALL remain port-based — each crew launched with `dashboard
 #### Scenario: Dashboard launch requires Portside
 
 - **WHEN** `GA_PORTSIDE_ENABLED=false` and `launch(dashboard=True)` is called
-- **THEN** the call returns an error: `"dashboard access requires GA_PORTSIDE_ENABLED=true — see docs/dashboard-proxy.md"`
+- **THEN** the call returns an error: `"dashboard access requires GA_PORTSIDE_ENABLED=true; re-run install.sh and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"`
 - **THEN** no port is allocated and `dashboard_url` is not set
 
 #### Scenario: Caddy-mode dashboard access
