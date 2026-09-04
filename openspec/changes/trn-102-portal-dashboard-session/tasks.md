@@ -24,7 +24,8 @@
 - [ ] 3.3 Unit test: `_caddy_register_crew` no longer includes `Cookie` in Caddy config; upstream is `ga-transport:{PORT}`
 - [ ] 3.4 Run `tests/run.sh --unit` — all tests pass
 
-## 4. Docs and cleanup
+## 4. CORS and docs
 
-- [ ] 4.1 Update `docs/dashboard-proxy.md` to describe the transport-proxy routing
-- [ ] 4.2 Close TRN-102 notes about IP mismatch being resolved
+- [ ] 4.1 Verify `KIROCREW_CORS_ORIGINS` — the proxy endpoint is served from the transport's port (8000), not port 64058. Check whether the existing CORS origin injection at container create time covers the transport's external URL; update if needed so the SPA's API calls are not rejected
+- [ ] 4.2 Update `docs/dashboard-proxy.md` to describe the transport-proxy routing
+- [ ] 4.3 Close TRN-102 notes about IP mismatch being resolved

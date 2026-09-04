@@ -26,4 +26,4 @@ The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the tra
 
 ### Requirement: Caddy crew server routes to transport proxy
 
-When registering a per-crew Caddy server via `_caddy_register_crew`, the transport SHALL configure the Caddy `reverse_proxy` to dial `ga-transport:{PORT}/crews/{crew_id}/ui/` rather than `gs-{crew_id}:5476`. The transport SHALL NOT inject the session cookie in the Caddy server config.
+When registering a per-crew Caddy server via `_caddy_register_crew`, the transport SHALL configure the Caddy `reverse_proxy` to dial `ga-transport:{PORT}` and SHALL include a `rewrite` that maps the incoming request path to `/crews/{crew_id}/ui/{original_path}` before forwarding. The transport SHALL NOT inject the session cookie in the Caddy server config.
