@@ -791,7 +791,7 @@ AUTH_EOF
 ${_AUTH_ROUTES}
             {
               "@id": "ga-transport-misc",
-              "match": [{"path": ["/health", "/dashboard-auth", "/dashboard-auth*", "/login-ui", "/dashboard-login"]}],
+              "match": [{"path": ["/health", "/version", "/dashboard-auth", "/dashboard-auth*", "/login-ui", "/dashboard-login"]}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
             }
           ]

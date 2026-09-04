@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.5 (unreleased)
+## v0.3.0 (unreleased)
 
 ### TRN-92 — Caddy reverse proxy ⚠️ BREAKING (opt-in cutover)
 

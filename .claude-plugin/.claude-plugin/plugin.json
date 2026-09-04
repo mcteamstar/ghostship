@@ -1,6 +1,6 @@
 {
   "name": "ghostship",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Command Ghostship fleets over MCP from an agent client.",
   "author": {
     "name": "mcteamstar",
