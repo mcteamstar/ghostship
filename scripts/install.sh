@@ -740,17 +740,9 @@ if [[ "${GA_PORTSIDE_ENABLED:-false}" == "true" ]]; then
       ;;
   esac
 
-  # Generate initial-config.json — main server only, no per-crew servers.
-  cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
-{
-  "admin": {"listen": "0.0.0.0:2019"},
-  "apps": {
-    "http": {
-      "servers": {
-        "ga-main": {
-          "listen": ["${_MAIN_LISTEN}"],
-          ${_AUTO_HTTPS}
-          "routes": [
+  # Build auth routes: gated when GA_API_KEY is set, open passthrough otherwise.
+  if [[ -n "${GA_API_KEY:-}" ]]; then
+    _AUTH_ROUTES=$(cat <<AUTH_EOF
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
@@ -766,6 +758,37 @@ if [[ "${GA_PORTSIDE_ENABLED:-false}" == "true" ]]; then
               "match": [{"path": ["/mcp*", "/files/*"]}],
               "handle": [{"handler": "static_response", "status_code": 401, "headers": {"Www-Authenticate": ["Bearer"]}, "body": "Unauthorized"}]
             },
+AUTH_EOF
+)
+  else
+    # No API key — pass all routes through to the transport (Tailscale-gated).
+    _AUTH_ROUTES=$(cat <<AUTH_EOF
+            {
+              "@id": "ga-transport-mcp",
+              "match": [{"path": ["/mcp*"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+            },
+            {
+              "@id": "ga-transport-files",
+              "match": [{"path": ["/files/*"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+            },
+AUTH_EOF
+)
+  fi
+
+  # Generate initial-config.json — main server only, no per-crew servers.
+  cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
+{
+  "admin": {"listen": "0.0.0.0:2019"},
+  "apps": {
+    "http": {
+      "servers": {
+        "ga-main": {
+          "listen": ["${_MAIN_LISTEN}"],
+          ${_AUTO_HTTPS}
+          "routes": [
+${_AUTH_ROUTES}
             {
               "@id": "ga-transport-misc",
               "match": [{"path": ["/health", "/dashboard-auth", "/dashboard-auth*", "/login-ui", "/dashboard-login"]}],
