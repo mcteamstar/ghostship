@@ -1852,7 +1852,7 @@ _RATE_LIMIT_DEFAULTS: dict[str, tuple[str, int, int]] = {
     # TRN-92: dashboard login endpoint rate limit (default 60 req / 60 s).
     # /dashboard-auth (forward_auth) is called by Caddy per-request; keep it
     # generous. /dashboard-login (the key check) is more sensitive.
-    "dashboard_auth": ("GA_RATE_LIMIT_DASHBOARD_AUTH", 60, 60),
+    "dashboard_auth": ("GA_RATE_LIMIT_DASHBOARD_AUTH", 600, 60),
 }
 
 
