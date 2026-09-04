@@ -1065,9 +1065,17 @@ def _parse_ttl_seconds(ttl: str) -> int:
 
 
 def _jwt_exp(token: str) -> int | None:
-    """Return the ``exp`` claim (epoch seconds) from a JWT without verifying
-    its signature — we trust our own tokens (design.md). Returns None if the
-    token is not a JWT or has no numeric ``exp`` claim.
+    """Return the ``session_exp`` claim (epoch seconds) from a KiroCrew JWT
+    without verifying its signature — we trust our own tokens (design.md).
+
+    KiroCrew tokens have two expiry fields:
+    - ``exp``: short-lived one-time-URL expiry (~5 min from issue)
+    - ``session_exp``: the actual session duration (~24h, matching KC_GATEWAY_TOKEN_TTL)
+
+    We use ``session_exp`` for the near-expiry check so we re-mint based on
+    session lifetime, not on the token URL TTL.
+
+    Returns None if the token is not a JWT or has no numeric ``session_exp`` claim.
     """
     try:
         parts = token.split(".")
@@ -1077,16 +1085,17 @@ def _jwt_exp(token: str) -> int | None:
         # Restore base64 padding stripped by JWT's base64url encoding.
         payload_b64 += "=" * (-len(payload_b64) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode())
-        exp = payload.get("exp")
+        # Use session_exp (session lifetime ~24h) not exp (one-time token URL ~5min).
+        exp = payload.get("session_exp") or payload.get("exp")
         return int(exp) if exp is not None else None
     except Exception:
         return None
 
 
 def _cookie_near_expiry(cookie: str) -> bool:
-    """True if *cookie*'s JWT ``exp`` is within 20% of the configured TTL of
+    """True if *cookie*'s JWT ``session_exp`` is within 20% of the configured TTL of
     expiring (i.e. > 80% of the TTL has elapsed). A cookie that is not a JWT,
-    has no ``exp``, or is already expired is treated as near-expiry so the
+    has no ``session_exp``, or is already expired is treated as near-expiry so the
     proxy re-mints it (TRN-102, design.md "Token refresh").
     """
     exp = _jwt_exp(cookie)
