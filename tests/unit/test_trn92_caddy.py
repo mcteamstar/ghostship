@@ -367,7 +367,7 @@ class CaddyLaunchNukeTests(unittest.TestCase):
         server._dashboard_ports_in_use.clear()
         server._dashboard_port_crew.clear()
 
-    def _run_launch(self, caddy_enabled: bool = True) -> dict:
+    def _run_launch(self) -> dict:
         registry_state = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -394,7 +394,6 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops"}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", caddy_enabled),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "_caddy_register_crew") as mock_register,
@@ -404,32 +403,24 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
-            mock_cfg.ga_portal_enabled = caddy_enabled
             result = server.launch("demo", dashboard=True)
 
         return result, mock_register
 
     def test_launch_caddy_enabled_registers_with_caddy(self) -> None:
-        result, mock_register = self._run_launch(caddy_enabled=True)
+        result, mock_register = self._run_launch()
         mock_register.assert_called_once()
         crew_id, port = mock_register.call_args.args
         self.assertEqual(crew_id, "demo")
         self.assertIsInstance(port, int)
 
     def test_launch_caddy_enabled_returns_https_url(self) -> None:
-        result, _ = self._run_launch(caddy_enabled=True)
+        result, _ = self._run_launch()
         self.assertIn("dashboard_url", result)
         self.assertTrue(
             result["dashboard_url"].startswith("https://"),
             f"Expected https:// URL, got: {result['dashboard_url']}",
         )
-
-    def test_launch_caddy_disabled_returns_error(self) -> None:
-        """TRN-101: launch(dashboard=True) with Portal disabled returns error, not a URL."""
-        result, mock_register = self._run_launch(caddy_enabled=False)
-        self.assertIn("error", result)
-        self.assertIn("GA_PORTAL_ENABLED=true", result["error"])
-        mock_register.assert_not_called()
 
     def test_nuke_deregisters_with_caddy(self) -> None:
         """nuke() calls _caddy_deregister_crew (always — Portal is the only proxy)."""

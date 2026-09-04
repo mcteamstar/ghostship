@@ -2,6 +2,18 @@
 
 ## v0.3.0 (unreleased)
 
+### TRN-103 — Portal is mandatory ⚠️ BREAKING
+
+`ga-portal` (Caddy) is now a required architectural component and is always installed. The `GA_PORTAL_ENABLED` opt-in flag is removed.
+
+- **BREAKING:** `GA_PORTAL_ENABLED` removed from config and code. There is no opt-out and no rollback to the pre-portal per-port uvicorn mode.
+- **Migration:** any deployment that previously ran with `GA_PORTAL_ENABLED=false` must re-run `install.sh` to regenerate `compose.yml`; `ga-portal` is added to the stack and takes over ports 443/80 and the dashboard port range. No data migration.
+- `install.sh` always generates the `ga-portal` service stanza, the Caddy `initial-config.json`, the `ga-portal-data` volume, and the portal health check.
+- `transport/config.py`: `ga_portal_enabled` field and its `from_env()` binding removed.
+- `transport/server.py`: `GA_PORTAL_ENABLED` module global and all its guards removed; the portal-enabled branch is now taken unconditionally in dashboard URL derivation, `launch(dashboard=True)`, the `POST /crews/{id}/dashboard` handler, and the startup Caddy re-registration loop.
+- The other `GA_PORTAL_*` vars (`GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, `GA_PORTAL_PORT`, `GA_PORTAL_HTTP_PORT`, `GA_PORTAL_ADMIN_URL`, `GA_PORTAL_SESSION_TTL_SECS`) are unchanged — they configure how the portal behaves, not whether it runs.
+- Docs updated: `docs/caddy.md`, `docs/dashboard-proxy.md`, `docs/configuration.md`, `config/ghostship.conf.example`.
+
 ### TRN-101 — Portal-only dashboard proxy ⚠️ BREAKING
 
 `launch(dashboard=True)` now requires `GA_PORTAL_ENABLED=true`. The transport's per-port uvicorn proxy threads are removed. Portal (`ga-portal`) is the sole dashboard proxy implementation.

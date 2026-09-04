@@ -123,7 +123,7 @@ class Config:
 
     # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────
     # TRN-101: GA_DASHBOARD_PORT_ENABLED removed — dashboard access is now
-    # exclusively gated by GA_PORTAL_ENABLED. The port range config is
+    # exclusively provided by ga-portal (Caddy). The port range config is
     # retained because Portal still uses it via the transport's port pool.
     ga_dashboard_port_range_start: int = 64058
     ga_dashboard_port_range_size: int = 50
@@ -137,9 +137,9 @@ class Config:
     ga_csp_enforce: bool = False
 
     # ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────
-    # GA_PORTAL_ENABLED=true opts into the Caddy layer; default is false (plain
-    # HTTP, per-port uvicorn dashboard proxies — the pre-TRN-92 behaviour).
-    ga_portal_enabled: bool = False
+    # ga-portal (Caddy) is a required architectural component (TRN-103): it owns
+    # the main HTTPS port and the dashboard port range, and provides the
+    # portal → transport → crew proxy path. It is always started by install.sh.
     # URL of the Caddy admin API, reachable from inside the transport container.
     ga_portal_admin_url: str = "http://ga-portal:2019"
     # TLS mode: internal | tailscale | acme | off
@@ -221,7 +221,6 @@ class Config:
                 "GA_ENFORCE_HTTPS_REDIRECT"
             ),
             ga_csp_enforce=_env_bool_default_off("GA_CSP_ENFORCE"),
-            ga_portal_enabled=_env_bool_default_off("GA_PORTAL_ENABLED"),
             ga_portal_admin_url=os.environ.get("GA_PORTAL_ADMIN_URL", "http://ga-portal:2019").strip(),
             ga_portal_tls_mode=_validate_caddy_tls_mode(
                 os.environ.get("GA_PORTAL_TLS_MODE", "internal").strip()

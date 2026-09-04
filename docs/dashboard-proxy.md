@@ -2,22 +2,15 @@
 
 Each crew has a KiroCrew gateway UI — a full chat and task management interface. The **dashboard proxy** makes it accessible in a browser.
 
-> **TRN-101 BREAKING CHANGE:** `launch(dashboard=True)` now requires `GA_PORTAL_ENABLED=true`. The transport's per-port uvicorn proxy threads are removed. Dashboard proxying is exclusively handled by Portal (`ga-portal`). See [Migration](#migration) if you are upgrading.
+> **TRN-103 BREAKING CHANGE:** `ga-portal` (Portal) is now a required component and is always installed — `GA_PORTAL_ENABLED` was removed. Dashboard proxying is exclusively handled by Portal (`ga-portal`); the transport's per-port uvicorn proxy threads no longer exist. See [Migration](#migration) if you are upgrading.
 
 ## Requirements
 
-`GA_PORTAL_ENABLED=true` is required for any crew dashboard. When Portal is disabled, `launch(dashboard=True)` returns an error:
-
-```
-"dashboard access requires GA_PORTAL_ENABLED=true; re-run install.sh
-and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"
-```
-
-Crews launched without `dashboard=True` (the default) are headless — no dashboard is allocated and no Portal registration is needed for those crews.
+Portal (`ga-portal`) is always present, so any crew launched with `dashboard=True` gets a dashboard. Crews launched without `dashboard=True` (the default) are headless — no dashboard is allocated and no Portal registration is needed for those crews.
 
 ## How it works
 
-When a dashboard is requested and `GA_PORTAL_ENABLED=true`, the transport allocates a dedicated port from the configured range (default `64058–64107`) and registers it with Portal (Caddy) via the admin API.
+When a dashboard is requested, the transport allocates a dedicated port from the configured range (default `64058–64107`) and registers it with Portal (Caddy) via the admin API.
 
 ```
 Browser → host:64058 (HTTPS, via ga-portal)
@@ -52,11 +45,11 @@ Key properties:
 
 ## Setup
 
-Enable Portal and re-run `install.sh`:
+Portal is installed automatically by `install.sh` — no flag is required. Set the TLS mode as needed:
 
 ```bash
 # ghostship.conf
-GA_PORTAL_ENABLED=true
+GA_PORTAL_TLS_MODE=internal   # or tailscale / acme / off
 ```
 
 ```bash
@@ -87,7 +80,7 @@ A crew launched headless (the default) has `dashboard_url: null` in its response
 
 A headless crew can be given a dashboard later — and a dashboard can be released — through two REST endpoints on the transport port. Both require the `Authorization: Bearer <key>` header when `GA_API_KEY` is set.
 
-**`POST /crews/{crew_id}/dashboard`** — allocate a UI port, register with Portal, and store `dashboard_port` in the registry. Returns `{"dashboard_url": "..."}`. No-op if the crew already has a dashboard. Returns 503 if `GA_PORTAL_ENABLED=false`.
+**`POST /crews/{crew_id}/dashboard`** — allocate a UI port, register with Portal, and store `dashboard_port` in the registry. Returns `{"dashboard_url": "..."}`. No-op if the crew already has a dashboard.
 
 ```bash
 curl -sX POST http://localhost:64057/crews/my-crew/dashboard | jq
@@ -105,11 +98,10 @@ curl -sX DELETE http://localhost:64057/crews/my-crew/dashboard | jq
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `GA_PORTAL_ENABLED` | `false` | **Required for dashboard access.** Enable the Caddy reverse-proxy layer |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First port in the UI port range |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports (max concurrent crew dashboards) |
 
-> `GA_DASHBOARD_PORT_ENABLED` was removed in TRN-101. Use `GA_PORTAL_ENABLED=true` instead.
+> `GA_DASHBOARD_PORT_ENABLED` was removed in TRN-101, and `GA_PORTAL_ENABLED` was removed in TRN-103 — Portal is always installed.
 
 See [caddy.md](caddy.md) for all Portal-related options (`GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, etc.).
 
@@ -129,14 +121,14 @@ Allocated ports are stored in `crews.json`. When the transport restarts, it read
 
 ## Migration
 
-For deployments upgrading from the pre-TRN-101 per-port proxy mode:
+For deployments upgrading from a pre-TRN-103 install that had `GA_PORTAL_ENABLED=false` (or the older per-port proxy mode):
 
-1. Set `GA_PORTAL_ENABLED=true` in `ghostship.conf`
-2. Re-run `install.sh` — `ga-portal` is added to the compose stack and takes over the dashboard ports
-3. If `GA_PORTAL_TLS_MODE=internal` (default): run `caddy trust` once to trust the CA
-4. Existing crews that had dashboard ports will need to be nuked and re-launched so Portal registers them at their new HTTPS URLs
+1. Remove any `GA_PORTAL_ENABLED` line from `ghostship.conf` — it is ignored; Portal is always installed.
+2. Re-run `install.sh` — `ga-portal` is added to the compose stack and takes over the dashboard ports.
+3. If `GA_PORTAL_TLS_MODE=internal` (default): run `caddy trust` once to trust the CA.
+4. Existing crews that had dashboard ports will need to be nuked and re-launched so Portal registers them at their new HTTPS URLs.
 
-For fresh installs, simply set `GA_PORTAL_ENABLED=true` before running `install.sh`.
+For fresh installs, no action is needed — Portal is set up by `install.sh`.
 
 ## Limitations
 
