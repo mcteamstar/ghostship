@@ -322,7 +322,7 @@ class DashboardAuthTests(unittest.TestCase):
         token = self._issue_token()
         # Register port→crew and mock registry to return a gateway token
         server._dashboard_port_crew[64058] = "alpha"
-        reg = {"crews": {"alpha": {"gateway_token": "crew-token-abc123"}}}
+        reg = {"crews": {"alpha": {"cookie": "crew-token-abc123"}}}
         with patch.object(server, "_load_registry", return_value=reg):
             resp = self._run(
                 {"gs_session": token},

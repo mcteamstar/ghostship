@@ -917,7 +917,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
             try:
                 with _registry_lock:
                     reg = _load_registry()
-                crew_token = reg.get("crews", {}).get(crew_id_for_open, {}).get("gateway_token", "")
+                crew_token = reg.get("crews", {}).get(crew_id_for_open, {}).get("cookie", "")
                 if crew_token:
                     open_headers["X-Crew-Cookie"] = f"mc_token_5476={crew_token}"
             except Exception:
@@ -965,7 +965,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
         with _registry_lock:
             reg = _load_registry()
         crew_info = reg.get("crews", {}).get(crew_id, {})
-        crew_token = crew_info.get("gateway_token", "")
+        crew_token = crew_info.get("cookie", "")
     except Exception:
         crew_token = ""
 
