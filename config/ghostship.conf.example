@@ -168,26 +168,25 @@
 # Open the port range in your firewall before deploying (e.g. ufw allow 64058:64107/tcp).
 # Dashboard ports are opt-in at launch time (dashboard=True).
 #
-# TRN-101 MIGRATION: GA_DASHBOARD_PORT_ENABLED was removed. Dashboard access now
-# requires GA_PORTAL_ENABLED=true (see Caddy section below). If you previously
-# used GA_DASHBOARD_PORT_ENABLED=true, set GA_PORTAL_ENABLED=true instead and
-# re-run install.sh. See docs/dashboard-proxy.md for migration steps.
+# TRN-101/TRN-103 MIGRATION: GA_DASHBOARD_PORT_ENABLED was removed. Dashboard
+# access is now provided by ga-portal (Caddy), which is always installed. If you
+# previously used GA_DASHBOARD_PORT_ENABLED=true, just re-run install.sh — the
+# portal replaces the per-port proxy. See docs/dashboard-proxy.md.
 #
 # GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_PORT_RANGE_SIZE=50
 
-# ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────────
-# Opt-in Caddy layer that adds TLS termination and cookie-gated auth for all
-# dashboard ports. When enabled, Caddy binds ports 443/80 AND the dashboard
-# port range; the transport's per-port uvicorn listeners are not started.
-# See docs/caddy.md for full setup and the vm23 host-Caddy retirement note.
+# ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
+# ga-portal (Caddy) is a required component and is always installed. It binds
+# ports 443/80 AND the dashboard port range, terminates TLS, and gates auth for
+# all dashboard ports; the transport's per-port uvicorn listeners are not
+# started. See docs/caddy.md for full setup and the vm23 host-Caddy retirement
+# note.
 #
-# ⚠ BREAKING — GA_PORTAL_ENABLED=true is a clean cutover. The dashboard port
-# range moves from ga-transport to ga-portal. There is no coexistence mode.
-# Re-run install.sh after changing this value to regenerate compose.yml.
-#
-# Default: disabled (plain HTTP, per-port uvicorn proxies — pre-TRN-92 behaviour).
-# GA_PORTAL_ENABLED=false
+# TRN-103 MIGRATION: GA_PORTAL_ENABLED was removed — there is no opt-out. Any
+# deployment that previously set GA_PORTAL_ENABLED=false must re-run install.sh
+# to regenerate compose.yml. The GA_PORTAL_* vars below still configure how the
+# portal behaves.
 
 # URL of the Caddy admin API (reachable from ga-transport over ga-net).
 # Override only when running Caddy on a non-standard address.

@@ -2,8 +2,7 @@
 
 Coverage:
   3.1 GET /crews/{id}/ui/ injects mc_token_5476 on the forwarded request
-  3.2 UI proxy returns 404 for unknown crew; dashboard POST returns 503 when
-      GA_PORTAL_ENABLED=false
+  3.2 UI proxy returns 404 for unknown crew
   3.3 _caddy_register_crew upstreams ga-transport (not gs-{id}:5476) with a
       /crews/{id}/ui rewrite and no Cookie header
   + helper unit tests for _parse_ttl_seconds / _jwt_exp / _cookie_near_expiry
@@ -209,25 +208,6 @@ class ErrorPathTests(unittest.TestCase):
 
         resp = asyncio.run(run())
         self.assertEqual(resp.status_code, 404)
-
-    def test_dashboard_post_returns_503_when_portal_disabled(self) -> None:
-        crew = {"container": "gs-demo", "cookie": "x"}
-
-        class _Req:
-            path_params = {"crew_id": "demo"}
-            scope = {"type": "http", "method": "POST", "path": "/crews/demo/dashboard"}
-            async def body(self):
-                return b""
-
-        async def run():
-            with (
-                patch.object(server, "GA_PORTAL_ENABLED", False),
-                patch.object(server, "_require_crew", return_value=crew),
-            ):
-                return await server._handle_crew_dashboard_post(_Req())
-
-        resp = asyncio.run(run())
-        self.assertEqual(resp.status_code, 503)
 
 
 # ── 3.3 — Caddy config routes to the transport, no cookie ────────────────────

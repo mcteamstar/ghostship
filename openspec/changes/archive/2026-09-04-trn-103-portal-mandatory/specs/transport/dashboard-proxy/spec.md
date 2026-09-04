@@ -1,10 +1,4 @@
-# transport/dashboard-proxy Specification
-
-## Purpose
-
-Defines the port-based routing model for crew dashboard UIs: each crew launched with `dashboard=True` gets a dedicated port. `ga-portal` (Caddy) is always present (TRN-103) and binds those ports, routing traffic through the transport's cookie-injecting proxy endpoint to the crew gateway. Dashboard access is unconditional — `launch(dashboard=True)` SHALL NOT be gated on any `GA_PORTAL_ENABLED` flag.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Dashboard routing mode
 
@@ -66,18 +60,3 @@ The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the tra
 
 - **WHEN** the crew gateway returns 403 on a proxied request (e.g. after a container restart invalidates the stored cookie)
 - **THEN** the transport re-mints the cookie and retries the request
-
-### Requirement: Caddy crew server routes to transport proxy
-
-When registering a per-crew Caddy server via `_caddy_register_crew`, the transport SHALL configure the Caddy `reverse_proxy` to dial `ga-transport:{PORT}` and SHALL include a `rewrite` that maps the incoming request path to `/crews/{crew_id}/ui/{original_path}` before forwarding. The transport SHALL NOT inject the session cookie in the Caddy server config.
-
-#### Scenario: Crew Caddy server upstreams the transport with a UI rewrite
-
-- **WHEN** `_caddy_register_crew` registers a per-crew dashboard server
-- **THEN** the crew `reverse_proxy` handler's upstream dial is `ga-transport:{PORT}`, not `gs-{crew_id}:5476`
-- **THEN** the handler includes a `rewrite` mapping the incoming path to `/crews/{crew_id}/ui/{original_path}`
-- **THEN** the handler injects no `Cookie` header — cookie injection is owned by the transport's UI-proxy endpoint
-
-### Requirement: `ga-portal` network topology
-
-`ga-portal` and `ga-transport` SHALL both be attached to `ga-net` so Caddy can dial `ga-transport:{PORT}`. podman-compose has no implicit default network (unlike Docker Compose), so any two containers that need to communicate must share a named network. `ga-portal` SHALL NOT be configured to make direct connections to crew containers (`gs-*`) — all crew traffic routes via the transport proxy endpoint. The `ga-net` membership does not itself prevent `ga-portal` from reaching crew containers; the constraint is enforced by Caddy's config (all upstreams point to `ga-transport` only).

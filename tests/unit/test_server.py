@@ -5180,7 +5180,7 @@ class UiPortLaunchTests(unittest.TestCase):
     def tearDown(self) -> None:
         server._dashboard_ports_in_use.clear()
 
-    def _run_launch(self, ga_portal_enabled: bool = True, ga_host_url: str = "") -> dict:
+    def _run_launch(self, ga_host_url: str = "") -> dict:
         """Run server.launch() with a minimal set of mocks and return the result."""
         registry = {"crews": {}}
         podman = Mock()
@@ -5210,7 +5210,6 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", ga_portal_enabled),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
@@ -5219,12 +5218,12 @@ class UiPortLaunchTests(unittest.TestCase):
             mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
-            result = server.launch("demo", dashboard=ga_portal_enabled)
+            result = server.launch("demo", dashboard=True)
         return result
 
     def test_launch_includes_dashboard_url_when_portal_enabled(self) -> None:
-        """TRN-101: launch(dashboard=True) with Portal enabled returns dashboard_url."""
-        result = self._run_launch(ga_portal_enabled=True, ga_host_url="")
+        """TRN-103: launch(dashboard=True) returns dashboard_url (Portal is always on)."""
+        result = self._run_launch(ga_host_url="")
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
         # Portal internal TLS → https://
@@ -5232,13 +5231,13 @@ class UiPortLaunchTests(unittest.TestCase):
         self.assertIn("9000", result["dashboard_url"])
 
     def test_launch_dashboard_url_uses_ga_host_url_host(self) -> None:
-        result = self._run_launch(ga_portal_enabled=True, ga_host_url="http://vm23.example.com:64057")
+        result = self._run_launch(ga_host_url="http://vm23.example.com:64057")
         self.assertIn("dashboard_url", result)
         self.assertIn("vm23.example.com", result["dashboard_url"])
         self.assertIn("9000", result["dashboard_url"])
 
     def test_launch_dashboard_url_is_none_when_dashboard_false(self) -> None:
-        """TRN-101: dashboard=False always gives dashboard_url=None regardless of Portal."""
+        """TRN-103: dashboard=False always gives dashboard_url=None."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5255,7 +5254,6 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
@@ -5284,7 +5282,6 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
@@ -5317,7 +5314,6 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
@@ -5331,7 +5327,7 @@ class UiPortLaunchTests(unittest.TestCase):
 
 
 class TRN101LaunchPortalTests(unittest.TestCase):
-    """TRN-101: launch(dashboard=True) requires GA_PORTAL_ENABLED=true."""
+    """TRN-103: Portal is always present; launch(dashboard=True) allocates a dashboard."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -5339,8 +5335,8 @@ class TRN101LaunchPortalTests(unittest.TestCase):
     def tearDown(self) -> None:
         server._dashboard_ports_in_use.clear()
 
-    def _run_launch_portal(self, ga_portal_enabled: bool, dashboard: bool = True) -> dict:
-        """Run launch() with Portal flag set and return result."""
+    def _run_launch_portal(self, dashboard: bool = True) -> dict:
+        """Run launch() and return result (Portal is always enabled)."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5366,7 +5362,6 @@ class TRN101LaunchPortalTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", ga_portal_enabled),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
@@ -5378,32 +5373,18 @@ class TRN101LaunchPortalTests(unittest.TestCase):
             result = server.launch("demo", dashboard=dashboard)
         return result
 
-    def test_launch_dashboard_true_portal_disabled_returns_error(self) -> None:
-        """TRN-101 1.1 — launch(dashboard=True) with Portal disabled returns error."""
-        result = self._run_launch_portal(ga_portal_enabled=False, dashboard=True)
-        self.assertIn("error", result)
-        self.assertIn("GA_PORTAL_ENABLED=true", result["error"])
-        self.assertIn("docs/dashboard-proxy.md", result["error"])
-
-    def test_launch_dashboard_true_portal_disabled_allocates_no_port(self) -> None:
-        """TRN-101 1.1 — error path must NOT allocate a port."""
-        self._run_launch_portal(ga_portal_enabled=False, dashboard=True)
-        self.assertEqual(len(server._dashboard_ports_in_use), 0,
-                         "No port should be allocated when Portal is disabled")
-
-    def test_launch_dashboard_false_portal_disabled_succeeds(self) -> None:
-        """TRN-101: dashboard=False does not require Portal — no error."""
-        result = self._run_launch_portal(ga_portal_enabled=False, dashboard=False)
+    def test_launch_dashboard_false_succeeds(self) -> None:
+        """dashboard=False launches a headless crew — no error, no port allocated."""
+        result = self._run_launch_portal(dashboard=False)
         self.assertNotIn("error", result)
+        self.assertEqual(len(server._dashboard_ports_in_use), 0,
+                         "No port should be allocated for a headless crew")
 
-    def test_launch_dashboard_true_portal_enabled_succeeds(self) -> None:
-        """TRN-101: dashboard=True with Portal enabled should NOT return the Portal error."""
-        # Portal enabled path may fail for other reasons in unit test (caddy not running),
-        # but must NOT return the 'GA_PORTAL_ENABLED=true' error.
-        result = self._run_launch_portal(ga_portal_enabled=True, dashboard=True)
-        if "error" in result:
-            self.assertNotIn("GA_PORTAL_ENABLED=true", result["error"],
-                             "Portal-disabled error must not fire when Portal IS enabled")
+    def test_launch_dashboard_true_succeeds(self) -> None:
+        """TRN-103: dashboard=True returns a dashboard_url (Portal is always on)."""
+        result = self._run_launch_portal(dashboard=True)
+        self.assertNotIn("error", result)
+        self.assertIsNotNone(result.get("dashboard_url"))
 
 
 class UiPortNukeTests(unittest.TestCase):
@@ -5461,6 +5442,7 @@ class CrewsListUiUrlTests(unittest.TestCase):
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
+            mock_cfg.ga_portal_tls_mode = "internal"
             result = server.crews()
         return result["crews"]
 
@@ -5477,7 +5459,8 @@ class CrewsListUiUrlTests(unittest.TestCase):
         }
         entries = self._run_crews(crews_data, ga_host_url="")
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["dashboard_url"], "http://localhost:9005/")
+        # TRN-103: Portal is always on; internal TLS mode → https://
+        self.assertEqual(entries[0]["dashboard_url"], "https://localhost:9005/")
 
     def test_crews_dashboard_url_uses_ga_host_url_host(self) -> None:
         crews_data = {
@@ -5535,7 +5518,6 @@ class CorsOriginInjectionTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", False),  # keep env test focused on CORS; no dashboard port
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
@@ -5581,7 +5563,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
         server._dashboard_ports_in_use.clear()
 
     def _run_launch(self, dashboard: bool) -> dict:
-        """Run server.launch() and return the result. Portal enabled so dashboard works."""
+        """Run server.launch() and return the result. Portal is always present."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5604,7 +5586,6 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
@@ -5621,7 +5602,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
         result = self._run_launch(dashboard=True)
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
-        # TRN-101: Portal internal mode → https://
+        # TRN-103: Portal internal mode → https://
         self.assertTrue(result["dashboard_url"].startswith("https://"))
         self.assertIn("9000", result["dashboard_url"])
         # Port should be marked as in-use
@@ -5654,7 +5635,6 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
@@ -5688,7 +5668,6 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
@@ -5714,7 +5693,6 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
@@ -5725,35 +5703,16 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        # TRN-101: Portal internal mode → https://
+        # TRN-103: Portal internal mode → https://
         self.assertIn("9003", body["dashboard_url"])
         # No new port should have been allocated
         self.assertNotIn(9003, server._dashboard_ports_in_use)
-
-    def test_post_dashboard_503_when_portal_disabled(self) -> None:
-        """TRN-101 2.4 — POST returns 503 when GA_PORTAL_ENABLED=False."""
-        crew = {"container": "gs-demo", "cookie": "c"}
-
-        async def run():
-            with (
-                patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_PORTAL_ENABLED", False),
-            ):
-                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                return await server._handle_crew_dashboard_post(request)
-
-        response = asyncio.run(run())
-        self.assertEqual(response.status_code, 503)
-        body = json.loads(response.body)
-        self.assertIn("error", body)
-        self.assertIn("GA_PORTAL_ENABLED=true", body["error"])
 
     def test_post_dashboard_404_for_unknown_crew(self) -> None:
         """7.1c — POST returns 404 for unknown crew."""
         async def run():
             with (
                 patch.object(server, "_require_crew", side_effect=KeyError("no such crew")),
-                patch.object(server, "GA_PORTAL_ENABLED", True),
             ):
                 request = _FakeStreamRequest(method="POST", path="/crews/unknown/dashboard")
                 return await server._handle_crew_dashboard_post(request)
@@ -5768,7 +5727,6 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
                 patch.object(server, "cfg") as mock_cfg,
@@ -5793,7 +5751,6 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),

@@ -82,8 +82,8 @@ HOST=0.0.0.0
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_PORT_RANGE_SIZE=50
 GA_DASHBOARD_PORT_ENABLED=true
-# ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────────
-GA_PORTAL_ENABLED=false
+# ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
+# ga-portal (Caddy) is always installed; there is no opt-out.
 GA_PORTAL_TLS_MODE=internal
 GA_PORTAL_DOMAIN=""
 GA_PORTAL_PORT=443
@@ -618,9 +618,6 @@ services:
       - label=disable
     ports:
       - "127.0.0.1:${PORT}:${PORT}"
-$(if [[ "${GA_PORTAL_ENABLED:-false}" != "true" ]]; then
-  printf '      - "%s-%s:%s-%s"\n' "${_DASHBOARD_PORT_START}" "${_DASHBOARD_PORT_END}" "${_DASHBOARD_PORT_START}" "${_DASHBOARD_PORT_END}"
-fi)
     networks:
       - ga-net
     volumes:
@@ -674,14 +671,11 @@ fi)
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-50}"
       GA_DASHBOARD_PORT_ENABLED: "${GA_DASHBOARD_PORT_ENABLED:-true}"
-      GA_PORTAL_ENABLED: "${GA_PORTAL_ENABLED:-false}"
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-internal}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_PORT: "${GA_PORTAL_PORT:-443}"
       GA_PORTAL_HTTP_PORT: "${GA_PORTAL_HTTP_PORT:-80}"
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
-$(if [[ "${GA_PORTAL_ENABLED:-false}" == "true" ]]; then
-cat <<CADDY_SVC
   ga-portal:
     image: docker.io/caddy:2
     container_name: ga-portal
@@ -698,51 +692,49 @@ cat <<CADDY_SVC
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
       - ga-portal-data:/data
     command: ["caddy", "run", "--config", "/config/initial-config.json", "--resume"]
-CADDY_SVC
-fi)
 networks:
   ga-net:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf 'secrets:\n  ga-api-key:\n    external: true\n'; fi)
-$(if [[ "${GA_PORTAL_ENABLED:-false}" == "true" ]]; then printf 'volumes:\n  ga-portal-data:\n'; fi)
+volumes:
+  ga-portal-data:
 COMPOSE_EOF
 
 echo "✓ compose.yml written to ${DATA_DIR}/compose.yml"
 
-# ── Generate Caddy initial-config.json (TRN-92) ───────────────────────────────
-# Written only when GA_PORTAL_ENABLED=true. The config bootstraps the main-port
+# ── Generate Caddy initial-config.json (TRN-92 / TRN-103) ─────────────────────
+# ga-portal (Caddy) is always installed. This config bootstraps the main-port
 # server with Bearer-gated MCP/file routes and the dashboard-auth endpoints.
 # Per-crew dashboard servers are added at runtime via the Caddy admin API.
-if [[ "${GA_PORTAL_ENABLED:-false}" == "true" ]]; then
-  mkdir -p "${DATA_DIR}/caddy"
+mkdir -p "${DATA_DIR}/caddy"
 
-  # Build the TLS stanza based on GA_PORTAL_TLS_MODE.
-  _AUTO_HTTPS=""  # set to disable auto-HTTPS for TLS_MODE=off
-  case "${GA_PORTAL_TLS_MODE:-internal}" in
-    tailscale)
-      _TLS_STANZA='"tls": {"automation": {"policies": [{"get_certificate": [{"via": "tailscale"}]}]}}'
-      _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
-      ;;
-    acme)
-      _ACME_DOMAIN="${GA_PORTAL_DOMAIN:-}"
-      _TLS_STANZA='"tls": {"automation": {"policies": [{"subjects": ["'"${_ACME_DOMAIN}"'"], "issuers": [{"module": "acme"}]}]}}'
-      _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
-      ;;
-    off)
-      # Plain HTTP — disable auto-HTTPS, listen on the HTTP port.
-      _TLS_STANZA='"tls": {}'
-      _MAIN_LISTEN=":${GA_PORTAL_HTTP_PORT:-80}"
-      _AUTO_HTTPS='"automatic_https": {"disable": true},'
-      ;;
-    *)  # internal (default)
-      _TLS_STANZA='"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}'
-      _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
-      ;;
-  esac
+# Build the TLS stanza based on GA_PORTAL_TLS_MODE.
+_AUTO_HTTPS=""  # set to disable auto-HTTPS for TLS_MODE=off
+case "${GA_PORTAL_TLS_MODE:-internal}" in
+  tailscale)
+    _TLS_STANZA='"tls": {"automation": {"policies": [{"get_certificate": [{"via": "tailscale"}]}]}}'
+    _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
+    ;;
+  acme)
+    _ACME_DOMAIN="${GA_PORTAL_DOMAIN:-}"
+    _TLS_STANZA='"tls": {"automation": {"policies": [{"subjects": ["'"${_ACME_DOMAIN}"'"], "issuers": [{"module": "acme"}]}]}}'
+    _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
+    ;;
+  off)
+    # Plain HTTP — disable auto-HTTPS, listen on the HTTP port.
+    _TLS_STANZA='"tls": {}'
+    _MAIN_LISTEN=":${GA_PORTAL_HTTP_PORT:-80}"
+    _AUTO_HTTPS='"automatic_https": {"disable": true},'
+    ;;
+  *)  # internal (default)
+    _TLS_STANZA='"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}'
+    _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
+    ;;
+esac
 
-  # Build auth routes: gated when GA_API_KEY is set, open passthrough otherwise.
-  if [[ -n "${GA_API_KEY:-}" ]]; then
-    _AUTH_ROUTES=$(cat <<AUTH_EOF
+# Build auth routes: gated when GA_API_KEY is set, open passthrough otherwise.
+if [[ -n "${GA_API_KEY:-}" ]]; then
+  _AUTH_ROUTES=$(cat <<AUTH_EOF
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
@@ -760,9 +752,9 @@ if [[ "${GA_PORTAL_ENABLED:-false}" == "true" ]]; then
             },
 AUTH_EOF
 )
-  else
-    # No API key — pass all routes through to the transport (Tailscale-gated).
-    _AUTH_ROUTES=$(cat <<AUTH_EOF
+else
+  # No API key — pass all routes through to the transport (Tailscale-gated).
+  _AUTH_ROUTES=$(cat <<AUTH_EOF
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"]}],
@@ -775,10 +767,10 @@ AUTH_EOF
             },
 AUTH_EOF
 )
-  fi
+fi
 
-  # Generate initial-config.json — main server only, no per-crew servers.
-  cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
+# Generate initial-config.json — main server only, no per-crew servers.
+cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
 {
   "admin": {"listen": "0.0.0.0:2019"},
   "apps": {
@@ -803,29 +795,28 @@ ${_AUTH_ROUTES}
 }
 CADDY_EOF
 
-  echo "✓ Caddy initial-config.json written to ${DATA_DIR}/caddy/initial-config.json"
+echo "✓ Caddy initial-config.json written to ${DATA_DIR}/caddy/initial-config.json"
 
-  # Internal CA: surface the root cert path so the operator knows where to
-  # run 'caddy trust'. The cert lives in the ga-portal-data volume at the
-  # standard Caddy path /data/caddy/pki/authorities/local/root.crt.
-  if [[ "${GA_PORTAL_TLS_MODE:-internal}" == "internal" ]]; then
-    # Resolve the host-side volume mountpoint for ga-portal-data.
-    _CADDY_DATA_MOUNTPOINT=""
-    if ${_PODMAN_CMD} volume exists ga-portal-data 2>/dev/null; then
-      _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect ga-portal-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
-    fi
-    _CADDY_ROOT_CERT_PATH="${_CADDY_DATA_MOUNTPOINT:-(ga-portal-data not yet created)}/caddy/pki/authorities/local/root.crt"
-    echo ""
-    echo "── Caddy internal CA ─────────────────────────────────────────────────"
-    echo "TLS mode: internal (Caddy built-in CA)"
-    echo "Root CA cert: ${_CADDY_ROOT_CERT_PATH}"
-    echo ""
-    echo "After ga-portal starts, run this once to trust the CA:"
-    echo "  podman exec ga-portal caddy trust"
-    echo "or import the cert manually from the path above."
-    echo "──────────────────────────────────────────────────────────────────────"
-    echo ""
+# Internal CA: surface the root cert path so the operator knows where to
+# run 'caddy trust'. The cert lives in the ga-portal-data volume at the
+# standard Caddy path /data/caddy/pki/authorities/local/root.crt.
+if [[ "${GA_PORTAL_TLS_MODE:-internal}" == "internal" ]]; then
+  # Resolve the host-side volume mountpoint for ga-portal-data.
+  _CADDY_DATA_MOUNTPOINT=""
+  if ${_PODMAN_CMD} volume exists ga-portal-data 2>/dev/null; then
+    _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect ga-portal-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
   fi
+  _CADDY_ROOT_CERT_PATH="${_CADDY_DATA_MOUNTPOINT:-(ga-portal-data not yet created)}/caddy/pki/authorities/local/root.crt"
+  echo ""
+  echo "── Caddy internal CA ─────────────────────────────────────────────────"
+  echo "TLS mode: internal (Caddy built-in CA)"
+  echo "Root CA cert: ${_CADDY_ROOT_CERT_PATH}"
+  echo ""
+  echo "After ga-portal starts, run this once to trust the CA:"
+  echo "  podman exec ga-portal caddy trust"
+  echo "or import the cert manually from the path above."
+  echo "──────────────────────────────────────────────────────────────────────"
+  echo ""
 fi
 
 # ── Run transport ─────────────────────────────────────────────────────────────
@@ -887,24 +878,22 @@ else
   exit 1
 fi
 
-# TRN-92: ga-portal health check (only when Caddy is enabled)
-if [[ "${GA_PORTAL_ENABLED:-false}" == "true" ]]; then
-  _caddy_ready=0
-  for (( _i=0; _i<_max_wait; _i+=_interval )); do
-    if curl -sk "https://127.0.0.1:${GA_PORTAL_PORT:-443}/health" >/dev/null 2>&1 \
-      || curl -s "http://127.0.0.1:${GA_PORTAL_HTTP_PORT:-80}/health" >/dev/null 2>&1; then
-      _caddy_ready=1
-      break
-    fi
-    sleep "$_interval"
-  done
-  if [[ "$_caddy_ready" == "1" ]]; then
-    echo "✓ Caddy is ready"
-  else
-    echo "⚠ Caddy (ga-portal) did not respond on port ${GA_PORTAL_PORT:-443} within ${_max_wait}s"
-    echo "  Check: ${_PODMAN_CMD} logs ga-portal --tail 20"
-    echo "  This is non-fatal — Caddy may still be pulling or starting."
+# TRN-103: ga-portal health check (Caddy is always installed)
+_caddy_ready=0
+for (( _i=0; _i<_max_wait; _i+=_interval )); do
+  if curl -sk "https://127.0.0.1:${GA_PORTAL_PORT:-443}/health" >/dev/null 2>&1 \
+    || curl -s "http://127.0.0.1:${GA_PORTAL_HTTP_PORT:-80}/health" >/dev/null 2>&1; then
+    _caddy_ready=1
+    break
   fi
+  sleep "$_interval"
+done
+if [[ "$_caddy_ready" == "1" ]]; then
+  echo "✓ Caddy is ready"
+else
+  echo "⚠ Caddy (ga-portal) did not respond on port ${GA_PORTAL_PORT:-443} within ${_max_wait}s"
+  echo "  Check: ${_PODMAN_CMD} logs ga-portal --tail 20"
+  echo "  This is non-fatal — Caddy may still be pulling or starting."
 fi
 
 echo ""

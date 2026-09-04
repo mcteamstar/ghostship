@@ -61,7 +61,6 @@ process sees and what each default means:
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Operator email injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` into every crew container at setup time. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only — no CLI flag |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports in the range (the cap on concurrent crew dashboards). Config-file-only |
-| `GA_PORTAL_ENABLED` | `false` | Opt into the Caddy reverse-proxy layer (TRN-92). When `true`, a `ga-portal` container is added to the compose stack; it binds ports 443/80 **and** the dashboard port range and becomes the sole TLS terminator and auth gate. The transport's per-port uvicorn listeners are not started. **Breaking** — re-run `install.sh` after changing this value; no coexistence with the old per-port mode. See [caddy.md](caddy.md) |
 | `GA_PORTAL_ADMIN_URL` | `http://ga-portal:2019` | URL of the Caddy admin API reachable from inside the transport container. Override when running Caddy at a non-default address |
 | `GA_PORTAL_TLS_MODE` | `internal` | TLS mode for all Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step — path printed by `install.sh` and `ghostship status`), `tailscale` (browser-trusted `.ts.net` certs via Tailscale ACME; no trust step), `acme` (public Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). An unrecognised value logs a WARNING and falls back to `internal` |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name used for ACME (Let's Encrypt) certificate requests. Required when `GA_PORTAL_TLS_MODE=acme` |
@@ -130,7 +129,7 @@ nor the flag sets them, the built-in default applies.
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
 `GA_DASHBOARD_PORT_RANGE_START`,
-`GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_PORTAL_ENABLED`, `GA_PORTAL_TLS_MODE`,
+`GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_PORTAL_TLS_MODE`,
 `GA_PORTAL_DOMAIN`, `GA_PORTAL_PORT`, `GA_PORTAL_HTTP_PORT`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
 have no CLI flag and no ambient-environment-variable input.
 

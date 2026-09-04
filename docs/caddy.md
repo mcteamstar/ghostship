@@ -1,8 +1,8 @@
 # Caddy Reverse Proxy (TRN-92)
 
-Ghostship can optionally run a Caddy container (`ga-portal`) as its TLS terminator, edge auth gate, and dashboard port router. This feature is **opt-in** — set `GA_PORTAL_ENABLED=true` in your config and re-run `install.sh`.
+Ghostship runs a Caddy container (`ga-portal`) as its TLS terminator, edge auth gate, and dashboard port router. As of TRN-103 it is a **required** component — `install.sh` always starts it; there is no opt-out.
 
-> ⚠️ **Breaking change.** Enabling Caddy is a clean cutover. Caddy binds the dashboard port range (`64058–64107` by default); the transport stops binding those ports. There is no coexistence window. See [Migration](#migration).
+> ⚠️ **Breaking change (TRN-103).** `GA_PORTAL_ENABLED` was removed. Caddy binds the dashboard port range (`64058–64107` by default); the transport does not bind those ports. Any deployment that previously set `GA_PORTAL_ENABLED=false` must re-run `install.sh`. See [Migration](#migration).
 
 ## How it works
 
@@ -118,7 +118,6 @@ The transport's own `BearerAuthMiddleware` remains active for defence-in-depth �
 1. Add to your `ghostship.conf` (or `config/ghostship.conf.example`):
 
    ```bash
-   GA_PORTAL_ENABLED=true
    GA_PORTAL_TLS_MODE=internal       # or tailscale / acme / off
    GA_PORTAL_DOMAIN=                 # required for tailscale and acme
    ```
@@ -181,7 +180,7 @@ This is the recommended path for production deployments where operator-managed a
 
 ## vm23 note — retiring the host Caddy
 
-When `GA_PORTAL_ENABLED=true`, `ga-portal` becomes the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on vm23 is no longer needed and should be stopped and removed to avoid port conflicts:
+`ga-portal` is the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on vm23 is no longer needed and should be stopped and removed to avoid port conflicts:
 
 ```bash
 sudo systemctl stop caddy
@@ -192,15 +191,15 @@ Run `./install.sh` to apply the new compose stack before stopping the host Caddy
 
 ## Migration
 
-All existing deployments run unchanged — `GA_PORTAL_ENABLED=false` is the default. Enabling Caddy is a **breaking cutover**:
+As of TRN-103, `ga-portal` is always installed and `GA_PORTAL_ENABLED` was removed. Deployments that previously ran with `GA_PORTAL_ENABLED=false` must re-run `install.sh` to adopt the portal:
 
-1. Set `GA_PORTAL_ENABLED=true` in your config (and `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN` if needed).
+1. Remove any `GA_PORTAL_ENABLED` line from your config (it is ignored). Set `GA_PORTAL_TLS_MODE` / `GA_PORTAL_DOMAIN` as needed.
 2. On vm23: stop the pre-existing host Caddy (see above).
 3. Run `./install.sh --config config/ghostship.conf`. The regenerated `compose.yml` binds the dashboard port range to `ga-portal`, not `ga-transport`.
 4. For `internal` TLS: run `caddy trust` with the printed path.
 5. Existing crews survive — the transport's `_reconcile_registry` re-registers their Caddy servers on startup.
 
-**Rollback:** Set `GA_PORTAL_ENABLED=false` and re-run `install.sh`. The transport returns to direct per-port uvicorn mode and re-binds the port range.
+There is no opt-out and no rollback to the pre-portal per-port uvicorn mode; that code path was removed.
 
 ## Configuration reference
 
@@ -208,7 +207,6 @@ See [configuration.md](configuration.md) for the full `GA_PORTAL_*` variable tab
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `GA_PORTAL_ENABLED` | `false` | Enable the Caddy layer |
 | `GA_PORTAL_TLS_MODE` | `internal` | `internal` / `tailscale` / `acme` / `off` |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
 | `GA_PORTAL_PORT` | `443` | Main HTTPS port |

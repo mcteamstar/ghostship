@@ -333,7 +333,7 @@ KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
 # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
 # TRN-101: GA_DASHBOARD_PORT_ENABLED removed; dashboard access is exclusively
-# gated by GA_PORTAL_ENABLED. Port range retained — Portal uses it.
+# provided by ga-portal (Caddy). Port range retained — Portal uses it.
 GA_DASHBOARD_PORT_RANGE_START = cfg.ga_dashboard_port_range_start
 GA_DASHBOARD_PORT_RANGE_SIZE = cfg.ga_dashboard_port_range_size
 
@@ -365,12 +365,11 @@ GA_ENABLE_SECURITY_HEADERS = cfg.ga_enable_security_headers
 GA_ENFORCE_HTTPS_REDIRECT = cfg.ga_enforce_https_redirect
 GA_CSP_ENFORCE = cfg.ga_csp_enforce
 
-# ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────────
-# When GA_PORTAL_ENABLED=true, a ga-portal container owns port bindings for
-# the main HTTPS port AND the dashboard port range (64058–64107). The
+# ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
+# ga-portal (Caddy) is always present: a ga-portal container owns port bindings
+# for the main HTTPS port AND the dashboard port range (64058–64107). The
 # transport does NOT start per-port uvicorn listeners; instead it calls the
 # Caddy admin API to register/deregister per-crew dashboard servers.
-GA_PORTAL_ENABLED = cfg.ga_portal_enabled
 
 # ── Version ───────────────────────────────────────────────────────────────────
 
@@ -1425,26 +1424,12 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     and stores dashboard_port in the registry. Returns {"dashboard_url": "..."}.
     No-op if the crew already has a dashboard — returns the existing dashboard_url.
 
-    Requires GA_PORTAL_ENABLED=true. Returns 503 if Portal is disabled.
     Returns 404 for unknown crew. Returns 409 if port pool is exhausted.
     """
     parsed = _extract_crew_proxy_parts(request.scope["path"])
     if parsed is None:
         return PlainTextResponse("Not found", status_code=404)
     crew_id, _segment, _sub = parsed
-
-    # TRN-101: Portal is required for dashboard access.
-    if not GA_PORTAL_ENABLED:
-        return JSONResponse(
-            {
-                "error": (
-                    "dashboard access requires GA_PORTAL_ENABLED=true; "
-                    "re-run install.sh and re-launch any existing dashboard crews "
-                    "— see docs/dashboard-proxy.md"
-                )
-            },
-            status_code=503,
-        )
 
     try:
         crew = _require_crew(crew_id)
@@ -1454,7 +1439,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     # No-op: crew already has a dashboard
     existing_port = crew.get("dashboard_port")
     if existing_port is not None:
-        # TRN-101: Portal is enabled here (checked above).
+        # TRN-103: Portal is always present.
         _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
         if cfg.ga_host_url:
             from urllib.parse import urlparse as _urlparse_d
@@ -2481,24 +2466,16 @@ def crews() -> dict:
             "agents": [],
         }
         # TRN-80: derive dashboard_url from stored dashboard_port (None if no port assigned)
-        # TRN-92: use HTTPS scheme when GA_PORTAL_ENABLED=True
+        # TRN-103: ga-portal is always present — always use the Caddy scheme.
         _ui_p = info.get("dashboard_port")
         if _ui_p is not None:
-            if GA_PORTAL_ENABLED:
-                _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
-                if cfg.ga_host_url:
-                    from urllib.parse import urlparse as _urlparse3
-                    _ph = _urlparse3(cfg.ga_host_url)
-                    entry["dashboard_url"] = f"{_caddy_scheme}://{_ph.hostname}:{_ui_p}/"
-                else:
-                    entry["dashboard_url"] = f"{_caddy_scheme}://localhost:{_ui_p}/"
+            _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
+            if cfg.ga_host_url:
+                from urllib.parse import urlparse as _urlparse3
+                _ph = _urlparse3(cfg.ga_host_url)
+                entry["dashboard_url"] = f"{_caddy_scheme}://{_ph.hostname}:{_ui_p}/"
             else:
-                if cfg.ga_host_url:
-                    from urllib.parse import urlparse as _urlparse3
-                    _ph = _urlparse3(cfg.ga_host_url)
-                    entry["dashboard_url"] = f"{_ph.scheme}://{_ph.hostname}:{_ui_p}/"
-                else:
-                    entry["dashboard_url"] = f"http://localhost:{_ui_p}/"
+                entry["dashboard_url"] = f"{_caddy_scheme}://localhost:{_ui_p}/"
         else:
             entry["dashboard_url"] = None
         if "policy_version" in info:
@@ -2594,12 +2571,11 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                      transport://compositions resource for available compositions.
         dashboard: When True, allocates a dedicated port from the UI port range
                    and registers it with Portal (ga-portal) so the crew's
-                   dashboard SPA is accessible via HTTPS. Requires
-                   GA_PORTAL_ENABLED=true — returns an error if Portal is
-                   disabled. The SPA owns its entire origin so assets,
-                   client-side navigation, and hard reloads all work. Returns
-                   dashboard_url in the response. Default is False — crews are
-                   headless unless a dashboard is explicitly requested.
+                   dashboard SPA is accessible via HTTPS. The SPA owns its
+                   entire origin so assets, client-side navigation, and hard
+                   reloads all work. Returns dashboard_url in the response.
+                   Default is False — crews are headless unless a dashboard is
+                   explicitly requested.
 
     Returns crew_id and status once the gateway is ready (~30s).
     """
@@ -2697,27 +2673,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # The crew container itself is NOT modified — it stays on the internal
         # ghost-academy network only. The transport will listen on the allocated
         # port and proxy to the crew gateway over the internal network.
-        # TRN-101: dashboard=True requires GA_PORTAL_ENABLED=true — the per-port
-        # uvicorn proxy was removed; Portal is the sole dashboard proxy.
-        if dashboard and not GA_PORTAL_ENABLED:
-            _cleanup_crew(podman, container, volume, home_volume)
-            with _registry_lock:
-                reg = _load_registry()
-                reg["crews"].pop(crew_id, None)
-                _save_registry(reg)
-            return {
-                "error": (
-                    "dashboard access requires GA_PORTAL_ENABLED=true; "
-                    "re-run install.sh and re-launch any existing dashboard crews "
-                    "— see docs/dashboard-proxy.md"
-                )
-            }
-
-        # Port allocation is gated on the dashboard flag (per-launch opt-in).
-        # GA_PORTAL_ENABLED=true is required (checked above); the removed
-        # GA_DASHBOARD_PORT_ENABLED flag no longer gates this path.
+        # TRN-103: ga-portal (Caddy) is always present and is the sole dashboard
+        # proxy; port allocation is gated only on the per-launch dashboard flag.
         dashboard_url: str | None = None
-        if dashboard and GA_PORTAL_ENABLED:
+        if dashboard:
             with _registry_lock:
                 try:
                     dashboard_port = _allocate_dashboard_port()
@@ -4375,22 +4334,21 @@ if __name__ == "__main__":
     server = uvicorn.Server(config)
 
     async def _main() -> None:
-        # TRN-101: Portal is the sole dashboard proxy; the per-port uvicorn
-        # listener threads are removed. On restart, re-register all existing
-        # crew servers with Caddy (idempotent — Caddy's --resume may have
-        # already loaded them, but we call again so a fresh data-volume wipe
-        # is handled gracefully).
-        if GA_PORTAL_ENABLED:
-            with _registry_lock:
-                _restored_reg = _load_registry()
-            for _cid, _info in _restored_reg["crews"].items():
-                _p = _info.get("dashboard_port")
-                if _p is not None:
-                    _dashboard_port_crew[int(_p)] = _cid
-                    with _registry_lock:
-                        _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
-                        _caddy_register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
-            logger.info("TRN-92: Caddy mode enabled — per-port uvicorn listeners suppressed")
+        # TRN-101/TRN-103: Portal (Caddy) is the sole dashboard proxy and is
+        # always present; the per-port uvicorn listener threads are removed. On
+        # restart, re-register all existing crew servers with Caddy (idempotent
+        # — Caddy's --resume may have already loaded them, but we call again so
+        # a fresh data-volume wipe is handled gracefully).
+        with _registry_lock:
+            _restored_reg = _load_registry()
+        for _cid, _info in _restored_reg["crews"].items():
+            _p = _info.get("dashboard_port")
+            if _p is not None:
+                _dashboard_port_crew[int(_p)] = _cid
+                with _registry_lock:
+                    _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
+                    _caddy_register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
+        logger.info("TRN-103: Portal (Caddy) is the sole dashboard proxy")
         await server.serve()
 
     asyncio.run(_main())
