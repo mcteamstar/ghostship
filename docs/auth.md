@@ -6,6 +6,50 @@ JSON). It is stored as a single plain file, `DATA_DIR/ga-kiro-auth`, mode
 into `ga-transport` (as `/data`), so transport reads and writes it directly;
 `install.sh` doesn't need to touch it at all.
 
+## Headless / API key auth (Pro+)
+
+For headless / CI environments and Pro+ users with a kiro-cli API key, the
+interactive device-code flow can be skipped entirely. Set `KIRO_API_KEY` and no
+`POST /login` step is required.
+
+**How it works**
+
+1. Put your key in `ghostship.conf`:
+
+   ```bash
+   cp config/ghostship.conf.example config/ghostship.conf
+   # Edit config/ghostship.conf:
+   KIRO_API_KEY="<your-api-key>"
+   ```
+
+2. Re-run the installer so the transport picks up the new env var:
+
+   ```bash
+   ./install.sh --config config/ghostship.conf
+   ```
+
+3. Launch crews directly — **no `POST /login`, no browser step**:
+
+   ```bash
+   # launch succeeds immediately; the auth guard is bypassed
+   ```
+
+When `KIRO_API_KEY` is set:
+
+- `launch` does **not** call `_initiate_login()` and does **not** require the
+  `ga-kiro-auth` file to exist.
+- The key is injected as a `KIRO_API_KEY` env var into each crew container at
+  creation time; kiro-cli inside the crew authenticates directly from that env
+  var.
+- The `ga-kiro-auth` SQLite auth-row injection (`inject_auth.py`) is skipped —
+  the env var replaces it.
+
+> **Builder ID / device-code flow is unchanged when `KIRO_API_KEY` is unset.**
+> Leaving `KIRO_API_KEY` empty (the default) keeps the existing device-code path
+> in place exactly as described in **First login** below — `ga-kiro-auth`,
+> `POST /login`, and `inject_auth.py` all behave as before. Free-tier / Builder
+> ID users are unaffected.
+
 ## First login
 
 Auth must be completed before `launch` will work. If you attempt to launch a crew without completing auth first, the launch will fail — **do not retry `launch` until auth is confirmed complete**, as any crew created mid-auth will be unauthenticated and must be nuked.

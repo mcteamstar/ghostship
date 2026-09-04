@@ -1682,6 +1682,72 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertNotIn("policy_version", crew_entry,
                          "policy_version must not be stored when injection failed")
 
+    # ── TRN-62: _inject_auth skipped when KIRO_API_KEY is set ────────────────
+
+    def _run_finish_setup_capturing_inject_auth(self, api_key: str):
+        """Run _finish_crew_setup with lifecycle.KIRO_API_KEY set to api_key,
+        returning the _inject_auth Mock so callers can assert on its calls."""
+
+        class CapturingPodman:
+            def container_stop(self, container: str) -> None:
+                pass
+
+            def container_start(self, container: str) -> None:
+                pass
+
+            def container_exec(self, container, cmd, env=None) -> str:
+                return "ready"
+
+            def container_exec_checked(self, container, cmd) -> str:
+                return "ok"
+
+            def container_exec_stdin(self, container, cmd, stdin_data) -> str:
+                return "ok"
+
+            def container_inspect(self, container) -> dict:
+                return {"Config": {"Labels": {}}}
+
+        inject_auth = Mock()
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            registry = data_dir / "crews.json"
+            with (
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry),
+                patch.object(lifecycle, "KIRO_API_KEY", api_key),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_inject_auth", inject_auth),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_copy_agents"),
+                patch.object(lifecycle, "_copy_skills"),
+                patch.object(lifecycle, "_copy_steering"),
+                patch.object(lifecycle, "_seed_openspec_store"),
+                patch.object(lifecycle, "_patch_models"),
+                patch.object(lifecycle, "_mint_cookie", return_value="cookie"),
+                patch.object(lifecycle, "_inject_policy", return_value="1"),
+            ):
+                lifecycle._finish_crew_setup(
+                    CapturingPodman(),
+                    "demo",
+                    "gs-demo",
+                    "gs-vol-demo",
+                    "gs-home-demo",
+                    None if api_key else "auth-b64",
+                )
+        return inject_auth
+
+    def test_inject_auth_skipped_when_api_key_set(self) -> None:
+        """6.1: _finish_crew_setup does NOT call _inject_auth when KIRO_API_KEY
+        is set — the crew authenticates via the injected env var instead."""
+        inject_auth = self._run_finish_setup_capturing_inject_auth("sk-test-key")
+        inject_auth.assert_not_called()
+
+    def test_inject_auth_called_when_api_key_unset(self) -> None:
+        """6.2: existing device-code path unchanged — _inject_auth IS called
+        when KIRO_API_KEY is unset."""
+        inject_auth = self._run_finish_setup_capturing_inject_auth("")
+        inject_auth.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

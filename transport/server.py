@@ -466,6 +466,10 @@ def _write_auth_file(value: str, _path: Path | None = None) -> None:
 KIRO_LICENSE = cfg.kiro_license
 KIRO_IDENTITY_PROVIDER = cfg.kiro_identity_provider
 KIRO_REGION = cfg.kiro_region
+# When set, kiro-cli authenticates via this API key and the device-code auth
+# flow is skipped entirely (TRN-62). Injected as an env var into crew
+# containers; unset (default) => existing device-code flow is used.
+KIRO_API_KEY = cfg.kiro_api_key
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -2622,8 +2626,11 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         return {"error": str(e)}
 
     # ── Auth check — before registry write to avoid orphaned entries ──────────
+    # When KIRO_API_KEY is set (TRN-62), kiro-cli authenticates via the env var
+    # injected into the crew container; the device-code flow, the ga-kiro-auth
+    # file, and auth_b64 injection are all skipped.
     auth_b64: str | None = _read_auth_file() or None
-    if not auth_b64:
+    if not KIRO_API_KEY and not auth_b64:
         result = _initiate_login(podman)
         if result.get("login_pending"):
             return {
@@ -2686,6 +2693,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             "KIROCREW_CORS_ORIGINS": _cors_origins,
             "KIROCREW_ALLOW_UNSANDBOXED": "1",
         }
+        # TRN-62: when an API key is configured, pass it to the crew container so
+        # kiro-cli inside authenticates via the env var (no device-code / SQLite
+        # auth injection). Only set when non-empty so the device-code path is
+        # entirely unaffected when KIRO_API_KEY is unset.
+        if KIRO_API_KEY:
+            container_env["KIRO_API_KEY"] = KIRO_API_KEY
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
             container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL

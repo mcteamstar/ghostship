@@ -1356,6 +1356,108 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         # The registry dict itself must also be untouched
         self.assertNotIn("no-registry-entry", registry["crews"])
 
+    # ── TRN-62: API key auth path tests ──────────────────────────────────────
+
+    def _launch_with_captured_env(
+        self, *, api_key: str, auth_file: str
+    ) -> tuple[dict, dict, Mock, Mock]:
+        """Drive server.launch far enough to reach container_create and
+        _finish_crew_setup, capturing the crew container env and the
+        _initiate_login mock.
+
+        Returns (result, captured_container_env, initiate_login_mock,
+        finish_setup_mock).
+        """
+        captured_env: dict = {}
+
+        def fake_container_create(*args, **kwargs) -> None:
+            captured_env.update(kwargs.get("env", {}))
+
+        podman = Mock()
+        podman.container_create.side_effect = fake_container_create
+        initiate_login = Mock(return_value={
+            "login_url": "https://example.com/device",
+            "code": "XXXX",
+        })
+        finish_setup = Mock(return_value={"crew_id": "api-crew", "status": "ready"})
+
+        with (
+            patch.object(server, "KIRO_API_KEY", api_key),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
+            patch.object(server, "_read_auth_file", return_value=auth_file),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_save_registry"),
+            patch.object(server, "_initiate_login", initiate_login),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", finish_setup),
+        ):
+            result = server.launch("api-crew")
+
+        return result, captured_env, initiate_login, finish_setup
+
+    def test_launch_with_api_key_skips_initiate_login(self) -> None:
+        """6.1: KIRO_API_KEY set and no ga-kiro-auth file — _initiate_login is
+        NOT called; launch proceeds to finish crew setup."""
+        result, _env, initiate_login, finish_setup = self._launch_with_captured_env(
+            api_key="sk-test-key", auth_file=""
+        )
+
+        initiate_login.assert_not_called()
+        finish_setup.assert_called_once()
+        self.assertNotIn("error", result)
+
+    def test_launch_with_api_key_passes_auth_b64_none_to_finish_setup(self) -> None:
+        """6.1: with KIRO_API_KEY set and no auth file, _finish_crew_setup
+        receives auth_b64=None (SQLite auth injection is skipped downstream)."""
+        _result, _env, _initiate_login, finish_setup = self._launch_with_captured_env(
+            api_key="sk-test-key", auth_file=""
+        )
+
+        # _finish_crew_setup(podman, crew_id, container, volume, home_volume,
+        #                    auth_b64, composition, composition_entry)
+        args = finish_setup.call_args.args
+        self.assertIsNone(args[5])
+
+    def test_launch_crew_env_includes_api_key_when_set(self) -> None:
+        """6.3: crew container env includes KIRO_API_KEY when it is set."""
+        _result, env, _initiate_login, _finish_setup = self._launch_with_captured_env(
+            api_key="sk-test-key", auth_file=""
+        )
+
+        self.assertEqual(env.get("KIRO_API_KEY"), "sk-test-key")
+
+    def test_launch_crew_env_omits_api_key_when_unset(self) -> None:
+        """6.3: crew container env has NO KIRO_API_KEY when it is unset — the
+        device-code path (auth file present) is used unchanged."""
+        _result, env, initiate_login, _finish_setup = self._launch_with_captured_env(
+            api_key="", auth_file="existing-auth-b64"
+        )
+
+        self.assertNotIn("KIRO_API_KEY", env)
+        # Device-code guard not triggered because a valid auth file is present.
+        initiate_login.assert_not_called()
+
+    def test_launch_config_exports_api_key(self) -> None:
+        """1.1/1.2/1.3: Config carries kiro_api_key and server exports it."""
+        from transport.config import Config
+
+        cfg = Config(kiro_api_key="from-config")
+        self.assertEqual(cfg.kiro_api_key, "from-config")
+        # from_env reads KIRO_API_KEY
+        with patch.dict(os.environ, {"KIRO_API_KEY": "from-env"}, clear=False):
+            self.assertEqual(Config.from_env().kiro_api_key, "from-env")
+        # server exposes the module-level export
+        self.assertTrue(hasattr(server, "KIRO_API_KEY"))
+
+    def test_install_sh_passes_api_key_env(self) -> None:
+        """4.1: install.sh wires KIRO_API_KEY into the ga-transport env block."""
+        repo_root = Path(__file__).resolve().parents[2]
+        installer = (repo_root / "scripts" / "install.sh").read_text()
+        self.assertIn('KIRO_API_KEY: "${KIRO_API_KEY:-}"', installer)
+
 class _FakeDownstream:
     """Minimal ASGI app that records whether it was called."""
 

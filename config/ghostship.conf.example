@@ -28,6 +28,17 @@
 # KIRO_REGION=""
 # KIRO_LICENSE=""
 
+# Two auth paths for kiro-cli inside crews:
+#   Option A — API key (Pro+, headless): set KIRO_API_KEY to skip the device-code
+#     login flow entirely. The key is injected as an env var into crew containers
+#     and kiro-cli authenticates directly — no POST /login, no browser step.
+#     Re-run install.sh after setting this so the transport picks it up.
+#   Option B — Device code (default, all tiers): leave KIRO_API_KEY unset. After
+#     install, run POST /login once to complete the browser-based auth flow. For
+#     org (IAM Identity Center) licensing, also set the KIRO_IDENTITY_PROVIDER /
+#     KIRO_REGION / KIRO_LICENSE vars above.
+# KIRO_API_KEY=""
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 # Override the default model for all crew agents.
 # KC_MODEL_OVERRIDE=""

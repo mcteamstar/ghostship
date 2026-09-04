@@ -161,6 +161,10 @@ class Config:
     kiro_license: str = ""
     kiro_identity_provider: str = ""
     kiro_region: str = ""
+    # When set, kiro-cli authenticates via this API key (Pro+, headless) and the
+    # device-code auth flow is skipped entirely. Injected as an env var into crew
+    # containers at creation. Unset (default) => device-code flow is used.
+    kiro_api_key: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -232,4 +236,5 @@ class Config:
             kiro_license=os.environ.get("KIRO_LICENSE", ""),
             kiro_identity_provider=os.environ.get("KIRO_IDENTITY_PROVIDER", ""),
             kiro_region=os.environ.get("KIRO_REGION", ""),
+            kiro_api_key=os.environ.get("KIRO_API_KEY", ""),
         )

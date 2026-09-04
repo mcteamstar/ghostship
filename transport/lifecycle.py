@@ -125,6 +125,11 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 cfg = Config.from_env()
 
+# TRN-62: when set, kiro-cli in the crew authenticates via this API key (injected
+# as a container env var by server.launch) and the SQLite auth-row injection
+# (_inject_auth) is skipped. Unset (default) => device-code auth is injected.
+KIRO_API_KEY = cfg.kiro_api_key
+
 # ── Hardcoded container-side paths ────────────────────────────────────────────
 # These match the layout baked into the crew image by the Containerfile.
 KIRO_CLI_DB = "/home/kirocrew/.local/share/kiro-cli/data.sqlite3"
@@ -1233,7 +1238,11 @@ def _finish_crew_setup(
             return {"error": f"Gateway did not recover for crew {crew_id}"}
 
     # depends on: gateway (pre-restart)
-    _inject_auth(podman, container, auth_b64)
+    # TRN-62: when KIRO_API_KEY is set, kiro-cli authenticates via the injected
+    # env var, so the SQLite auth-row injection is skipped. auth_b64 is None on
+    # this path.
+    if not KIRO_API_KEY:
+        _inject_auth(podman, container, auth_b64)
 
     # depends on: container running (pre-restart); must be written before restart
     # so the secret is on the home volume before the post-restart gateway starts
