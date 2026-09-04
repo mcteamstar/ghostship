@@ -121,10 +121,12 @@ class Config:
     # ── Gateway ──────────────────────────────────────────────────────────────
     kc_gateway_token_ttl: str = "24h"
 
-    # ── Crew UI port allocation (TRN-80) ─────────────────────────────────────
+    # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────
+    # TRN-101: GA_DASHBOARD_PORT_ENABLED removed — dashboard access is now
+    # exclusively gated by GA_PORTAL_ENABLED. The port range config is
+    # retained because Portside still uses it via the transport's port pool.
     ga_dashboard_port_range_start: int = 64058
     ga_dashboard_port_range_size: int = 50
-    ga_dashboard_port_enabled: bool = True
 
     # ── Transport security (TRN-70) ──────────────────────────────────────────
     ga_tls_min_version: str = "1.2"
@@ -209,7 +211,6 @@ class Config:
             kc_gateway_token_ttl=_validate_token_ttl(os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")),
             ga_dashboard_port_range_start=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_START", "64058")),
             ga_dashboard_port_range_size=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_SIZE", "50")),
-            ga_dashboard_port_enabled=_env_bool_default_on("GA_DASHBOARD_PORT_ENABLED"),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
             ga_tls_certfile=os.environ.get("GA_TLS_CERTFILE", "").strip(),
             ga_tls_keyfile=os.environ.get("GA_TLS_KEYFILE", "").strip(),

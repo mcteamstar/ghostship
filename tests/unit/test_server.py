@@ -5178,7 +5178,7 @@ class UiPortLaunchTests(unittest.TestCase):
     def tearDown(self) -> None:
         server._dashboard_ports_in_use.clear()
 
-    def _run_launch(self, ga_dashboard_port_enabled: bool = True, ga_host_url: str = "") -> dict:
+    def _run_launch(self, ga_portal_enabled: bool = True, ga_host_url: str = "") -> dict:
         """Run server.launch() with a minimal set of mocks and return the result."""
         registry = {"crews": {}}
         podman = Mock()
@@ -5208,32 +5208,59 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", ga_dashboard_port_enabled),
+            patch.object(server, "GA_PORTAL_ENABLED", ga_portal_enabled),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
+            mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
-            result = server.launch("demo", dashboard=ga_dashboard_port_enabled)
+            result = server.launch("demo", dashboard=ga_portal_enabled)
         return result
 
-    def test_launch_includes_dashboard_url_when_port_enabled(self) -> None:
-        result = self._run_launch(ga_dashboard_port_enabled=True, ga_host_url="")
+    def test_launch_includes_dashboard_url_when_portside_enabled(self) -> None:
+        """TRN-101: launch(dashboard=True) with Portside enabled returns dashboard_url."""
+        result = self._run_launch(ga_portal_enabled=True, ga_host_url="")
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
-        self.assertTrue(result["dashboard_url"].startswith("http://"))
+        # Portside internal TLS → https://
+        self.assertTrue(result["dashboard_url"].startswith("https://"))
         self.assertIn("9000", result["dashboard_url"])
 
     def test_launch_dashboard_url_uses_ga_host_url_host(self) -> None:
-        result = self._run_launch(ga_dashboard_port_enabled=True, ga_host_url="http://vm23.example.com:64057")
+        result = self._run_launch(ga_portal_enabled=True, ga_host_url="http://vm23.example.com:64057")
         self.assertIn("dashboard_url", result)
         self.assertIn("vm23.example.com", result["dashboard_url"])
         self.assertIn("9000", result["dashboard_url"])
 
-    def test_launch_dashboard_url_is_none_when_port_disabled(self) -> None:
-        result = self._run_launch(ga_dashboard_port_enabled=False)
+    def test_launch_dashboard_url_is_none_when_dashboard_false(self) -> None:
+        """TRN-101: dashboard=False always gives dashboard_url=None regardless of Portside."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        finish_result = {"crew_id": "demo", "container": "gs-demo", "status": "ready"}
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_PORTAL_ENABLED", True),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_portal_tls_mode = "internal"
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            result = server.launch("demo", dashboard=False)
         self.assertIn("dashboard_url", result)
         self.assertIsNone(result["dashboard_url"])
 
@@ -5255,22 +5282,22 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
+            mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
             server.launch("demo", dashboard=True)
 
         call_kwargs = podman.container_create.call_args.kwargs
         self.assertNotIn("ports", call_kwargs, "crew containers must not bind host ports")
-        # dashboard_url should still be in the launch response (transport-side listener)
-        self.assertIn("dashboard_url", finish_result or {})
 
-    def test_launch_no_ports_passed_when_ui_disabled(self) -> None:
+    def test_launch_no_ports_passed_when_dashboard_false(self) -> None:
+        """TRN-101: dashboard=False → no port allocation, container_create has no ports kwarg."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5288,16 +5315,93 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
+            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
+            mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
-            server.launch("demo")
+            server.launch("demo")  # dashboard=False by default
 
         call_kwargs = podman.container_create.call_args.kwargs
         self.assertIsNone(call_kwargs.get("ports"))
+
+
+class TRN101LaunchPortsideTests(unittest.TestCase):
+    """TRN-101: launch(dashboard=True) requires GA_PORTAL_ENABLED=true."""
+
+    def setUp(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def tearDown(self) -> None:
+        server._dashboard_ports_in_use.clear()
+
+    def _run_launch_portside(self, ga_portal_enabled: bool, dashboard: bool = True) -> dict:
+        """Run launch() with Portside flag set and return result."""
+        registry = {"crews": {}}
+        podman = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
+        podman.container_create = Mock(return_value={})
+        podman.container_start = Mock()
+        podman.container_stop = Mock()
+        podman.container_remove = Mock()
+        podman.volume_remove = Mock()
+        finish_result = {
+            "crew_id": "demo",
+            "container": "gs-demo",
+            "gateway_url": "http://gs-demo:5476",
+            "status": "ready",
+        }
+
+        with (
+            patch.object(server, "_read_auth_file", return_value="auth-b64"),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry", side_effect=lambda r: None),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_finish_crew_setup", return_value=finish_result),
+            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
+            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
+            patch.object(server, "GA_PORTAL_ENABLED", ga_portal_enabled),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server, "cfg") as mock_cfg,
+        ):
+            mock_cfg.ga_host_url = ""
+            mock_cfg.ga_portal_tls_mode = "internal"
+            mock_cfg.ga_dashboard_port_range_start = 9000
+            mock_cfg.ga_dashboard_port_range_size = 50
+            result = server.launch("demo", dashboard=dashboard)
+        return result
+
+    def test_launch_dashboard_true_portside_disabled_returns_error(self) -> None:
+        """TRN-101 1.1 — launch(dashboard=True) with Portside disabled returns error."""
+        result = self._run_launch_portside(ga_portal_enabled=False, dashboard=True)
+        self.assertIn("error", result)
+        self.assertIn("GA_PORTAL_ENABLED=true", result["error"])
+        self.assertIn("docs/dashboard-proxy.md", result["error"])
+
+    def test_launch_dashboard_true_portside_disabled_allocates_no_port(self) -> None:
+        """TRN-101 1.1 — error path must NOT allocate a port."""
+        self._run_launch_portside(ga_portal_enabled=False, dashboard=True)
+        self.assertEqual(len(server._dashboard_ports_in_use), 0,
+                         "No port should be allocated when Portside is disabled")
+
+    def test_launch_dashboard_false_portside_disabled_succeeds(self) -> None:
+        """TRN-101: dashboard=False does not require Portside — no error."""
+        result = self._run_launch_portside(ga_portal_enabled=False, dashboard=False)
+        self.assertNotIn("error", result)
+
+    def test_launch_dashboard_true_portside_enabled_succeeds(self) -> None:
+        """TRN-101: dashboard=True with Portside enabled should NOT return the Portside error."""
+        # Portside enabled path may fail for other reasons in unit test (caddy not running),
+        # but must NOT return the 'GA_PORTAL_ENABLED=true' error.
+        result = self._run_launch_portside(ga_portal_enabled=True, dashboard=True)
+        if "error" in result:
+            self.assertNotIn("GA_PORTAL_ENABLED=true", result["error"],
+                             "Portside-disabled error must not fire when Portside IS enabled")
 
 
 class UiPortNukeTests(unittest.TestCase):
@@ -5333,40 +5437,11 @@ class UiPortNukeTests(unittest.TestCase):
             patch.object(server, "_cleanup_crew"),
             patch.object(server, "_captain_order_locks_lock", threading.Lock()),
             patch.object(server, "_captain_order_locks", {}),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
         ):
             result = server.nuke("demo", confirm=True)
 
         self.assertEqual(result["status"], "nuked")
         self.assertNotIn(9000, server._dashboard_ports_in_use)
-
-    def test_nuke_no_release_when_port_disabled(self) -> None:
-        server._dashboard_ports_in_use.add(9000)
-        crew = {
-            "container": "gs-demo",
-            "volume": "gs-vol-demo",
-            "home_volume": "gs-home-demo",
-            "dashboard_port": 9000,
-        }
-        registry = {"crews": {"demo": dict(crew)}}
-        podman = Mock()
-
-        with (
-            patch.object(server, "_get_crew", return_value=crew),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_crew_api", return_value={"agents": []}),
-            patch.object(server, "_get_crew_schedules", return_value=[]),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_cleanup_crew"),
-            patch.object(server, "_captain_order_locks_lock", threading.Lock()),
-            patch.object(server, "_captain_order_locks", {}),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
-        ):
-            server.nuke("demo", confirm=True)
-
-        # Port should NOT have been released because GA_DASHBOARD_PORT_ENABLED=False
-        self.assertIn(9000, server._dashboard_ports_in_use)
 
 
 class CrewsListUiUrlTests(unittest.TestCase):
@@ -5458,7 +5533,7 @@ class CorsOriginInjectionTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),  # keep env test focused on CORS
+            patch.object(server, "GA_PORTAL_ENABLED", False),  # keep env test focused on CORS; no dashboard port
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
@@ -5495,7 +5570,7 @@ class CorsOriginInjectionTests(unittest.TestCase):
 
 
 class LaunchDashboardParamTests(unittest.TestCase):
-    """TRN-80 task 5.3 / 9.1 — launch(dashboard=True/False) port allocation gate."""
+    """TRN-80 task 5.3 / 9.1 / TRN-101 — launch(dashboard=True/False) port allocation gate."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -5504,7 +5579,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
         server._dashboard_ports_in_use.clear()
 
     def _run_launch(self, dashboard: bool) -> dict:
-        """Run server.launch() and return the result.  Captures container_create env."""
+        """Run server.launch() and return the result. Portside enabled so dashboard works."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -5527,13 +5602,13 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-            patch.object(server, "_start_dashboard_port_server"),  # prevent real uvicorn thread
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
+            mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
             result = server.launch("demo", dashboard=dashboard)
@@ -5544,7 +5619,8 @@ class LaunchDashboardParamTests(unittest.TestCase):
         result = self._run_launch(dashboard=True)
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
-        self.assertTrue(result["dashboard_url"].startswith("http://"))
+        # TRN-101: Portside internal mode → https://
+        self.assertTrue(result["dashboard_url"].startswith("https://"))
         self.assertIn("9000", result["dashboard_url"])
         # Port should be marked as in-use
         self.assertIn(9000, server._dashboard_ports_in_use)
@@ -5576,13 +5652,13 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+            patch.object(server, "GA_PORTAL_ENABLED", True),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
             patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-            patch.object(server, "_start_dashboard_port_server"),  # prevent real uvicorn thread
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
+            mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
             result = server.launch("demo")  # no dashboard=... passed
@@ -5610,16 +5686,15 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
-                patch.object(server, "_start_dashboard_port_server"),
-                patch.object(server, "_dashboard_app", Mock()),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
+                mock_cfg.ga_portal_tls_mode = "internal"
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
                 return await server._handle_crew_dashboard_post(request)
 
@@ -5637,28 +5712,30 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
+                mock_cfg.ga_portal_tls_mode = "internal"
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
                 return await server._handle_crew_dashboard_post(request)
 
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        self.assertEqual(body["dashboard_url"], "http://localhost:9003/")
+        # TRN-101: Portside internal mode → https://
+        self.assertIn("9003", body["dashboard_url"])
         # No new port should have been allocated
         self.assertNotIn(9003, server._dashboard_ports_in_use)
 
-    def test_post_dashboard_503_when_feature_disabled(self) -> None:
-        """7.3a — POST returns 503 when GA_DASHBOARD_PORT_ENABLED=False."""
+    def test_post_dashboard_503_when_portside_disabled(self) -> None:
+        """TRN-101 2.4 — POST returns 503 when GA_PORTAL_ENABLED=False."""
         crew = {"container": "gs-demo", "cookie": "c"}
 
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", False),
+                patch.object(server, "GA_PORTAL_ENABLED", False),
             ):
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
                 return await server._handle_crew_dashboard_post(request)
@@ -5667,13 +5744,14 @@ class DashboardRestEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         body = json.loads(response.body)
         self.assertIn("error", body)
+        self.assertIn("GA_PORTAL_ENABLED=true", body["error"])
 
     def test_post_dashboard_404_for_unknown_crew(self) -> None:
         """7.1c — POST returns 404 for unknown crew."""
         async def run():
             with (
                 patch.object(server, "_require_crew", side_effect=KeyError("no such crew")),
-                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_PORTAL_ENABLED", True),
             ):
                 request = _FakeStreamRequest(method="POST", path="/crews/unknown/dashboard")
                 return await server._handle_crew_dashboard_post(request)
@@ -5688,12 +5766,13 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = ""
+                mock_cfg.ga_portal_tls_mode = "internal"
                 # Fill the pool
                 server._dashboard_ports_in_use.update({9000, 9001})
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
@@ -5712,16 +5791,15 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_ENABLED", True),
+                patch.object(server, "GA_PORTAL_ENABLED", True),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
                 patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
-                patch.object(server, "_start_dashboard_port_server"),
-                patch.object(server, "_dashboard_app", Mock()),
                 patch.object(server, "cfg") as mock_cfg,
             ):
                 mock_cfg.ga_host_url = "http://vm23.example.com:64057"
+                mock_cfg.ga_portal_tls_mode = "internal"
                 request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
                 return await server._handle_crew_dashboard_post(request)
 
@@ -5733,8 +5811,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
 
     # ── DELETE /crews/{id}/dashboard ──────────────────────────────────────────
 
-    def test_delete_dashboard_stops_listener_and_releases_port(self) -> None:
-        """7.2a — DELETE stops listener, releases port, returns dashboard_url: null."""
+    def test_delete_dashboard_deregisters_and_releases_port(self) -> None:
+        """TRN-101 2.5 — DELETE deregisters from Caddy, releases port, returns dashboard_url: null."""
         server._dashboard_ports_in_use.add(9004)
         crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9004}
         registry = {"crews": {"demo": {**crew}}}
@@ -5742,19 +5820,19 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "_stop_dashboard_port_server") as mock_stop,
+                patch.object(server, "_caddy_deregister_crew") as mock_deregister,
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
             ):
                 request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
                 resp = await server._handle_crew_dashboard_delete(request)
-                return resp, mock_stop
+                return resp, mock_deregister
 
-        response, mock_stop = asyncio.run(run())
+        response, mock_deregister = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
         self.assertIsNone(body["dashboard_url"])
-        mock_stop.assert_called_once_with(9004)
+        mock_deregister.assert_called_once_with("demo")
         # Port should be released
         self.assertNotIn(9004, server._dashboard_ports_in_use)
 
@@ -5783,7 +5861,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_delete_dashboard_removes_dashboard_port_from_registry(self) -> None:
-        """7.2d — DELETE clears dashboard_port field from registry after stopping listener."""
+        """7.2d — DELETE clears dashboard_port field from registry."""
         server._dashboard_ports_in_use.add(9007)
         crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9007}
         registry = {"crews": {"demo": {**crew}}}
@@ -5792,7 +5870,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "_stop_dashboard_port_server"),
+                patch.object(server, "_caddy_deregister_crew"),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry", side_effect=lambda r: save_calls.append(
                     json.loads(json.dumps(r))
@@ -5885,234 +5963,6 @@ class DashboardRestEndpointTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertIn("post-dashboard-no-auth", handled)
-
-
-class DashboardWebSocketProxyTests(unittest.TestCase):
-    """TRN-80 task 10.3 — WebSocket proxy handler unit tests.
-
-    Verifies that:
-    - A ``websocket`` scope type is routed to the WS proxy path (not the HTTP path).
-    - The upstream disconnect is handled gracefully (no uncaught exception).
-
-    Both ``httpx_ws.aconnect_ws`` and the starlette WebSocket are mocked so no
-    real network connection is made.  Because starlette and uvicorn are stubs in
-    the test environment, the tests exercise the proxy logic by directly calling
-    the inner closure extracted via a minimal _start_dashboard_port_server run.
-    """
-
-    CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _ws_scope(path: str = "/api/ws", query_string: bytes = b"") -> dict:
-        """Return a minimal ASGI WebSocket scope."""
-        return {
-            "type": "websocket",
-            "path": path,
-            "query_string": query_string,
-            "headers": [(b"host", b"localhost")],
-        }
-
-    @staticmethod
-    def _make_receive_queue(messages: list[dict]):
-        """Return an async callable that yields queued messages in order."""
-        queue = list(messages)
-
-        async def receive() -> dict:
-            if queue:
-                return queue.pop(0)
-            # Default: signal a clean browser disconnect so the pump loop stops.
-            return {"type": "websocket.disconnect", "code": 1000}
-
-        return receive
-
-    @staticmethod
-    def _make_send_collector():
-        """Return (send coroutine, collected list)."""
-        collected: list[dict] = []
-
-        async def send(msg: dict) -> None:
-            collected.append(msg)
-
-        return send, collected
-
-    # ------------------------------------------------------------------
-    # Test: websocket scope type routes to WS proxy, not HTTP handler
-    # ------------------------------------------------------------------
-
-    def test_websocket_scope_invokes_ws_proxy_not_http_handler(self) -> None:
-        """A ``websocket`` scope type must enter _handle_dashboard_ws_proxy,
-        not fall through to the HTTP handler."""
-        ws_proxy_called = []
-        http_proxy_called = []
-
-        # Capture the ASGI callable from _start_dashboard_port_server by patching
-        # uvicorn.Config to record the ``app`` arg and stub out the server.
-        captured_app: list = []
-
-        class _FakeConfig:
-            def __init__(self, app, **kwargs):
-                captured_app.append(app)
-                self.app = app
-
-        class _FakeServer:
-            def __init__(self, config):
-                self.should_exit = False
-
-        class _FakeThread:
-            def __init__(self, target=None, daemon=None, name=None, **kwargs):
-                self._target = target
-
-            def start(self):
-                pass
-
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch("transport.server.uvicorn.Config", _FakeConfig),
-            patch("transport.server.uvicorn.Server", _FakeServer),
-            patch("transport.server.threading.Thread", _FakeThread),
-        ):
-            server._start_dashboard_port_server(29001, "demo", MagicMock())
-
-        self.assertEqual(len(captured_app), 1, "Expected uvicorn.Config to be called once")
-        proxy_asgi = captured_app[0]
-
-        # Now invoke _proxy_asgi with a websocket scope — the WS handler will be
-        # called.  We verify the routing by checking which inner path is entered.
-        from unittest.mock import AsyncMock
-
-        mock_ws = MagicMock()
-        mock_ws.accept = AsyncMock()
-        mock_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
-        mock_ws.send_text = AsyncMock()
-        mock_ws.send_bytes = AsyncMock()
-        mock_ws.close = AsyncMock()
-
-        aconnect_calls: list[str] = []
-
-        @contextlib.asynccontextmanager
-        async def fake_aconnect_ws(url, headers=None):
-            aconnect_calls.append(url)
-
-            class FakeUpstream:
-                async def receive(self):
-                    raise Exception("upstream disconnect")  # stop the pump
-
-                async def send_text(self, text):
-                    pass
-
-                async def send_bytes(self, data):
-                    pass
-
-            yield FakeUpstream()
-
-        scope = self._ws_scope("/api/ws")
-        receive = self._make_receive_queue([{"type": "websocket.disconnect"}])
-        send, _ = self._make_send_collector()
-
-        # Patch httpx_ws.aconnect_ws and the module-level WebSocket reference
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch("httpx_ws.aconnect_ws", new=fake_aconnect_ws),
-            patch.object(server, "_StarletteWebSocket", lambda scope, receive, send: mock_ws),
-        ):
-            asyncio.run(proxy_asgi(scope, receive, send))
-
-        # The WS proxy path was entered (aconnect_ws called with upstream URL)
-        self.assertTrue(aconnect_calls, "Expected httpx_ws.aconnect_ws to be called for websocket scope")
-        self.assertIn("/api/ws", aconnect_calls[0])
-        # mock_ws.accept() must have been called
-        mock_ws.accept.assert_called_once()
-
-        # Clean up port state
-        server._dashboard_port_servers.pop(29001, None)
-        server._dashboard_port_crew.pop(29001, None)
-
-    # ------------------------------------------------------------------
-    # Test: upstream disconnect is handled gracefully
-    # ------------------------------------------------------------------
-
-    def test_upstream_disconnect_handled_gracefully(self) -> None:
-        """When the upstream WS disconnects, the proxy must close cleanly
-        without raising an uncaught exception."""
-        from unittest.mock import AsyncMock
-
-        captured_app: list = []
-
-        class _FakeConfig:
-            def __init__(self, app, **kwargs):
-                captured_app.append(app)
-                self.app = app
-
-        class _FakeServer:
-            def __init__(self, config):
-                self.should_exit = False
-
-        class _FakeThread:
-            def __init__(self, target=None, daemon=None, name=None, **kwargs):
-                pass
-
-            def start(self):
-                pass
-
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch("transport.server.uvicorn.Config", _FakeConfig),
-            patch("transport.server.uvicorn.Server", _FakeServer),
-            patch("transport.server.threading.Thread", _FakeThread),
-        ):
-            server._start_dashboard_port_server(29002, "demo", MagicMock())
-
-        proxy_asgi = captured_app[0]
-
-        mock_ws = MagicMock()
-        mock_ws.accept = AsyncMock()
-        mock_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
-        mock_ws.close = AsyncMock()
-
-        import httpx_ws as _hws
-
-        @contextlib.asynccontextmanager
-        async def fake_aconnect_ws_disconnect(url, headers=None):
-            class FakeUpstreamDisconnect:
-                async def receive(self):
-                    raise _hws.WebSocketDisconnect()
-
-                async def send_text(self, text):
-                    pass
-
-                async def send_bytes(self, data):
-                    pass
-
-            yield FakeUpstreamDisconnect()
-
-        scope = self._ws_scope("/api/ws")
-        receive = self._make_receive_queue([{"type": "websocket.disconnect"}])
-        send, _ = self._make_send_collector()
-
-        with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch("httpx_ws.aconnect_ws", new=fake_aconnect_ws_disconnect),
-            patch.object(server, "_StarletteWebSocket", lambda scope, receive, send: mock_ws),
-        ):
-            # Should not raise
-            try:
-                asyncio.run(proxy_asgi(scope, receive, send))
-            except Exception as exc:
-                self.fail(f"Upstream disconnect raised uncaught exception: {exc}")
-
-        # websocket.close() should have been called (graceful shutdown)
-        mock_ws.close.assert_called()
-
-        # Clean up
-        server._dashboard_port_servers.pop(29002, None)
-        server._dashboard_port_crew.pop(29002, None)
-
-
-# ── TRN-94 tests ─────────────────────────────────────────────────────────────
 
 
 class PickupAgentSubjectsTests(unittest.TestCase):

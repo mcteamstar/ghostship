@@ -162,15 +162,19 @@
 # GA_GIT_AUTHOR_NAME="Your Name"
 # GA_GIT_AUTHOR_EMAIL="you@example.com"
 
-# ── Crew UI port allocation (TRN-80) ─────────────────────────────────────────
-# When GA_DASHBOARD_PORT_ENABLED=true (default), each new crew is assigned a host port
-# from the range [GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1]
-# so the crew's SPA is reachable at http://<host>:<port>/ as a stable origin.
+# ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
+# Each crew launched with dashboard=True is assigned a host port from the range
+# [GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1].
 # Open the port range in your firewall before deploying (e.g. ufw allow 64058:64107/tcp).
-# Dashboard ports are opt-in at launch time (dashboard=True). Set GA_DASHBOARD_PORT_ENABLED=false to disable entirely.
+# Dashboard ports are opt-in at launch time (dashboard=True).
+#
+# TRN-101 MIGRATION: GA_DASHBOARD_PORT_ENABLED was removed. Dashboard access now
+# requires GA_PORTAL_ENABLED=true (see Caddy section below). If you previously
+# used GA_DASHBOARD_PORT_ENABLED=true, set GA_PORTAL_ENABLED=true instead and
+# re-run install.sh. See docs/dashboard-proxy.md for migration steps.
+#
 # GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_PORT_RANGE_SIZE=50
-# GA_DASHBOARD_PORT_ENABLED=true
 
 # ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────────
 # Opt-in Caddy layer that adds TLS termination and cookie-gated auth for all
