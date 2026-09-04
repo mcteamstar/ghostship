@@ -15,6 +15,7 @@ import httpx
 from tests.e2e.helpers import (
     GHOSTSHIP_E2E_URL,
     GHOSTSHIP_API_KEY,
+    GHOSTSHIP_PODMAN_SOCKET,
     _SKIP_REASON,
     mcp_call as _mcp_call,
     is_error as _is_error,
@@ -372,6 +373,11 @@ class TestAuthExtended(unittest.TestCase):
 
 
 @unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(
+    os.path.exists(GHOSTSHIP_PODMAN_SOCKET),
+    f"GHOSTSHIP_PODMAN_SOCKET not reachable at {GHOSTSHIP_PODMAN_SOCKET} — "
+    "set GHOSTSHIP_PODMAN_SOCKET to the transport's Podman socket path or run on the transport host",
+)
 class TestCaptainStatusStoppedCrew(unittest.TestCase):
     """TRN-51 smoke test: captain status works on stopped crews without waking them.
 

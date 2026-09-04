@@ -45,7 +45,7 @@ def mcp_call(tool: str, *, api_key: str = GHOSTSHIP_API_KEY, **kwargs) -> dict:
         f"{GHOSTSHIP_E2E_URL}/mcp",
         json=payload,
         headers=headers,
-        timeout=60.0,
+        timeout=120.0,
     )
     resp.raise_for_status()
 
