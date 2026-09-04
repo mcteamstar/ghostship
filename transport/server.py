@@ -727,7 +727,7 @@ def _caddy_register_crew(crew_id: str, port: int) -> None:
                                 "handler": "headers",
                                 "request": {
                                     "set": {
-                                        "X-Crew-Cookie": [
+                                        "Cookie": [
                                             "{http.reverse_proxy.header.X-Crew-Cookie}"
                                         ]
                                     }
