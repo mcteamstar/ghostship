@@ -623,10 +623,6 @@ $(if [[ "${GA_PORTAL_ENABLED:-false}" != "true" ]]; then
 fi)
     networks:
       - ga-net
-      # TRN-102: also join the compose default network so ga-portal (which is
-      # no longer on ga-net) can still dial ga-transport:${PORT}. ga-net stays
-      # reserved for transport ↔ crew container traffic.
-      - default
     volumes:
       - ${DATA_DIR}:/data
       - ${DATA_DIR}/academy/agents:/agents:ro
@@ -695,10 +691,7 @@ cat <<CADDY_SVC
       - "0.0.0.0:${GA_PORTAL_PORT:-443}:443"
       - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
     networks:
-      # TRN-102: ga-portal is NOT on ga-net. Caddy dials ga-transport:8000 only
-      # (via the compose default network) and has no network path to crew
-      # containers (gs-*). ga-net is reserved for transport ↔ crew traffic.
-      - default
+      - ga-net
     environment:
       GA_API_KEY: "${GA_API_KEY:-}"
     volumes:
