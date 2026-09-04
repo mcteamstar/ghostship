@@ -82,7 +82,7 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         return resp
 
     def test_register_puts_correct_server_json(self) -> None:
-        """PUT request body contains @id, listen port, forward_auth, reverse_proxy."""
+        """PUT request body contains @id, listen port, forward_auth-equivalent reverse_proxy, and crew reverse_proxy."""
         mock_resp = self._make_response(200)
         mock_put = Mock(return_value=mock_resp)
 
@@ -97,16 +97,17 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(payload["@id"], "crew-alpha")
         self.assertIn(":64058", payload["listen"])
 
-        # Verify forward_auth handler is present
-        subroute = payload["routes"][0]["handle"][0]
-        self.assertEqual(subroute["handler"], "subroute")
-        fwd_auth_handle = subroute["routes"][0]["handle"][0]
-        self.assertEqual(fwd_auth_handle["handler"], "forward_auth")
-        self.assertIn("dashboard-auth", fwd_auth_handle["uri"])
-        self.assertIn("X-Crew-Cookie", fwd_auth_handle["copy_headers"])
+        # Verify forward_auth-equivalent handler is present:
+        # a reverse_proxy with rewrite + handle_response (standard Caddy modules).
+        handles = payload["routes"][0]["handle"]
+        fwd_auth = handles[0]
+        self.assertEqual(fwd_auth["handler"], "reverse_proxy")
+        self.assertIn("dashboard-auth", fwd_auth["rewrite"]["uri"])
+        self.assertIn("handle_response", fwd_auth)
+        self.assertEqual(fwd_auth["upstreams"][0]["dial"], "ga-transport:8000")
 
         # Verify reverse_proxy points to correct upstream
-        proxy_handle = subroute["routes"][1]["handle"][0]
+        proxy_handle = handles[1]
         self.assertEqual(proxy_handle["handler"], "reverse_proxy")
         self.assertEqual(proxy_handle["upstreams"][0]["dial"], "gs-alpha:5476")
 
