@@ -683,7 +683,7 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n
 $(if [[ "${GA_PORTSIDE_ENABLED:-false}" == "true" ]]; then
 cat <<CADDY_SVC
   ga-portside:
-    image: caddy:2
+    image: docker.io/caddy:2
     container_name: ga-portside
     restart: always
     ports:
