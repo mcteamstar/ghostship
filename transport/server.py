@@ -1265,9 +1265,14 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
         f"ws://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}{upstream_path}"
     )
 
-    # Forward the client's requested subprotocols and inject the session cookie.
+    # Forward the client's requested subprotocols and inject the session cookie
+    # and the internal crew origin (required by KiroCrew's WS origin check).
     subprotocols = ws.scope.get("subprotocols") or []
-    handshake_headers = {"Cookie": _crew_cookie(crew)}
+    crew_origin = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+    handshake_headers = {
+        "Cookie": _crew_cookie(crew),
+        "Origin": crew_origin,
+    }
 
     await ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
 
