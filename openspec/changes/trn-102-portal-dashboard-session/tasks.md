@@ -11,11 +11,12 @@
 - [ ] 1.3 Add token refresh: decode JWT `exp` from `crew['cookie']`; if < 20% TTL remaining, call `_mint_cookie` and update registry before forwarding
 - [ ] 1.4 Register the handler in the route table alongside other `/crews/*` endpoints
 
-## 2. Update `_caddy_register_crew`
+## 2. Update `_caddy_register_crew` and network config
 
-- [ ] 2.1 Change the crew `reverse_proxy` upstream from `gs-{crew_id}:5476` to `ga-transport:{PORT}/crews/{crew_id}/ui/`
+- [ ] 2.1 Change the crew `reverse_proxy` upstream to `ga-transport:{PORT}` with a `rewrite` to `/crews/{crew_id}/ui/` + original path
 - [ ] 2.2 Remove the `Cookie` header injection from the Caddy crew proxy config (now handled by the transport)
-- [ ] 2.3 Update the docstring to reflect the new routing
+- [ ] 2.3 Remove `ga-portal` from the `networks: [ga-net]` stanza in the generated `compose.yml` in `scripts/install.sh` — Caddy only needs to reach `ga-transport:{PORT}` via the compose default network
+- [ ] 2.4 Update the docstring to reflect the new routing
 
 ## 3. Tests
 

@@ -27,3 +27,7 @@ The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the tra
 ### Requirement: Caddy crew server routes to transport proxy
 
 When registering a per-crew Caddy server via `_caddy_register_crew`, the transport SHALL configure the Caddy `reverse_proxy` to dial `ga-transport:{PORT}` and SHALL include a `rewrite` that maps the incoming request path to `/crews/{crew_id}/ui/{original_path}` before forwarding. The transport SHALL NOT inject the session cookie in the Caddy server config.
+
+### Requirement: `ga-portal` is not on `ga-net`
+
+`ga-portal` SHALL NOT be attached to the `ga-net` Podman network. All Caddy upstream targets SHALL be `ga-transport:{PORT}` only — Caddy SHALL have no network path to crew containers (`gs-*`). `ga-net` is reserved for transport ↔ crew container communication.
