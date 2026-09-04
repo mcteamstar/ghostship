@@ -82,12 +82,12 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         return resp
 
     def test_register_puts_correct_server_json(self) -> None:
-        """PUT request body contains @id, listen port, forward_auth-equivalent reverse_proxy, and crew reverse_proxy."""
+        """PUT body contains @id, listen port, crew reverse_proxy with Cookie injection. No forward_auth when GA_API_KEY unset."""
         mock_resp = self._make_response(200)
         mock_put = Mock(return_value=mock_resp)
 
         with patch.object(server.httpx, "put", mock_put):
-            server._caddy_register_crew("alpha", 64058)
+            server._caddy_register_crew("alpha", 64058, crew_cookie="test-token-abc123")
 
         mock_put.assert_called_once()
         url: str = mock_put.call_args.args[0]
@@ -97,20 +97,37 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(payload["@id"], "crew-alpha")
         self.assertIn(":64058", payload["listen"])
 
-        # Verify forward_auth-equivalent handler is present:
-        # a reverse_proxy with rewrite + handle_response (standard Caddy modules).
+        # No GA_API_KEY in tests → only the crew reverse_proxy handler (no forward_auth).
         handles = payload["routes"][0]["handle"]
+        self.assertEqual(len(handles), 1)
+        crew_proxy = handles[0]
+        self.assertEqual(crew_proxy["handler"], "reverse_proxy")
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "gs-alpha:5476")
+        # Cookie is injected directly on the request.
+        self.assertEqual(
+            crew_proxy["headers"]["request"]["set"]["Cookie"],
+            ["mc_token_5476=test-token-abc123"],
+        )
+
+    def test_register_with_api_key_includes_forward_auth(self) -> None:
+        """When GA_API_KEY is set, forward_auth handler precedes the crew proxy."""
+        mock_resp = self._make_response(200)
+        mock_put = Mock(return_value=mock_resp)
+
+        with patch.object(server, "GA_API_KEY", "some-key"), \
+             patch.object(server.httpx, "put", mock_put):
+            server._caddy_register_crew("alpha", 64058, crew_cookie="test-token")
+
+        payload: dict = mock_put.call_args.kwargs["json"]
+        handles = payload["routes"][0]["handle"]
+        self.assertEqual(len(handles), 2)
         fwd_auth = handles[0]
         self.assertEqual(fwd_auth["handler"], "reverse_proxy")
         self.assertIn("dashboard-auth", fwd_auth["rewrite"]["uri"])
-        self.assertIn("port=64058", fwd_auth["rewrite"]["uri"])
         self.assertIn("handle_response", fwd_auth)
-        self.assertEqual(fwd_auth["upstreams"][0]["dial"], "ga-transport:8000")
-
-        # Verify reverse_proxy points to correct upstream
-        proxy_handle = handles[1]
-        self.assertEqual(proxy_handle["handler"], "reverse_proxy")
-        self.assertEqual(proxy_handle["upstreams"][0]["dial"], "gs-alpha:5476")
+        crew_proxy = handles[1]
+        self.assertEqual(crew_proxy["handler"], "reverse_proxy")
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "gs-alpha:5476")
 
     def test_register_treats_409_as_idempotent(self) -> None:
         """409 Conflict (existing @id) is treated as success — no retry, no exception."""
@@ -318,27 +335,21 @@ class DashboardAuthTests(unittest.TestCase):
         resp = self._run({})
         self.assertEqual(resp.status_code, 200)
 
-    def test_valid_session_returns_crew_cookie_for_port(self) -> None:
+    def test_valid_session_returns_200(self) -> None:
+        """Valid gs_session returns 200. Cookie injection is handled by Caddy config, not dashboard-auth."""
         token = self._issue_token()
-        # Register port→crew and mock registry to return a gateway token
         server._dashboard_port_crew[64058] = "alpha"
-        reg = {"crews": {"alpha": {"cookie": "crew-token-abc123"}}}
-        with patch.object(server, "_load_registry", return_value=reg):
-            resp = self._run(
-                {"gs_session": token},
-                {"port": "64058"},
-            )
+        resp = self._run(
+            {"gs_session": token},
+            {"port": "64058"},
+        )
         self.assertEqual(resp.status_code, 200)
-        # Extract Cookie from raw_headers (real starlette) or kwargs (stub).
-        x_cookie = _get_header(resp, "Set-Cookie")
-        self.assertIn("mc_token_5476=crew-token-abc123", x_cookie)
 
     def test_valid_session_unknown_port_still_returns_200(self) -> None:
-        """A valid session with an unrecognised port returns 200 (no crew cookie)."""
+        """A valid session with an unrecognised port returns 200."""
         token = self._issue_token()
         resp = self._run({"gs_session": token}, {"port": "99999"})
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(_get_header(resp, "Set-Cookie"), "")
 
 
 # ---------------------------------------------------------------------------
