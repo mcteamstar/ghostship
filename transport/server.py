@@ -3302,34 +3302,57 @@ def captain(
             "mailbox": "captain@localhost",
         }
 
-    if action == "stop" and standing_job.get("enabled", False):
-        try:
-            toggle = _crew_api_with_recovery(
-                crew,
-                crew_id,
-                "POST",
-                f"/api/crons/{standing_job.get('id')}/enable",
-                json={"enabled": False},
-            )
-            if isinstance(toggle, dict) and toggle.get("ok") is False:
-                return {"error": "Could not stop Captain check-in: job not found"}
-        except Exception as exc:
-            return {"error": f"Could not stop Captain check-in: {exc}"}
+    if action == "stop":
+        # Best-effort: disable the gateway cron if it is currently enabled.
+        # A failure here is logged as a warning — it must not block the
+        # registry update below (TRN-104).
+        if standing_job.get("enabled", False):
+            try:
+                toggle = _crew_api_with_recovery(
+                    crew,
+                    crew_id,
+                    "POST",
+                    f"/api/crons/{standing_job.get('id')}/enable",
+                    json={"enabled": False},
+                )
+                if isinstance(toggle, dict) and toggle.get("ok") is False:
+                    logger.warning(
+                        "captain stop: gateway cron %s not found for crew %s",
+                        standing_job.get("id"),
+                        crew_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "captain stop: gateway cron disable failed for crew %s: %s",
+                    crew_id,
+                    exc,
+                )
         standing_job = dict(standing_job)
         standing_job["enabled"] = False
 
-        # TRN-29: Set enabled=False in registry entry (do not remove)
+        # TRN-104 / TRN-29: Always update the registry to disabled, regardless
+        # of the gateway API call result.  This ensures TRN-82's
+        # reconcile-on-restart sees the correct state and the idle monitor can
+        # eventually stop the crew.
         try:
             with _registry_lock:
                 reg = _load_registry()
                 schedules = _get_crew_schedules(reg, crew_id)
+                matched = False
                 for sched in schedules:
                     if sched.get("job_id") == standing_job.get("id"):
                         sched["enabled"] = False
+                        matched = True
                         break
+                if not matched:
+                    logger.warning(
+                        "captain stop: no registry entry found for job %s in crew %s",
+                        standing_job.get("id"),
+                        crew_id,
+                    )
                 _save_registry(reg)
         except Exception as exc:
-            logger.warning("TRN-29: Could not update schedule entry on stop: %s", exc)
+            logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
 
     result = _captain_standing_view(
         crew_id,
