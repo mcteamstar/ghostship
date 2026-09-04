@@ -103,6 +103,7 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         fwd_auth = handles[0]
         self.assertEqual(fwd_auth["handler"], "reverse_proxy")
         self.assertIn("dashboard-auth", fwd_auth["rewrite"]["uri"])
+        self.assertIn("port=64058", fwd_auth["rewrite"]["uri"])
         self.assertIn("handle_response", fwd_auth)
         self.assertEqual(fwd_auth["upstreams"][0]["dial"], "ga-transport:8000")
 

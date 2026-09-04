@@ -699,7 +699,7 @@ def _caddy_register_crew(crew_id: str, port: int) -> None:
     forward_auth_handler = {
         "handler": "reverse_proxy",
         "upstreams": [{"dial": _transport_addr}],
-        "rewrite": {"method": "GET", "uri": "/dashboard-auth"},
+        "rewrite": {"method": "GET", "uri": f"/dashboard-auth?port={port}"},
         "headers": {
             "request": {
                 "set": {
@@ -895,9 +895,34 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     When ``GA_API_KEY`` is not configured, the dashboard is open-access and
     all requests are passed through immediately (200) without a session check.
     """
-    # Open-access mode: no API key means no session gate.
+    # Open-access mode: no API key means no session gate, but we still
+    # inject the crew cookie so the browser is auto-authenticated.
     if not GA_API_KEY:
-        return Response(status_code=200)
+        crew_id_for_open: str | None = None
+        port_str_open = request.query_params.get("port", "")
+        if port_str_open:
+            try:
+                crew_id_for_open = _dashboard_port_crew.get(int(port_str_open))
+            except ValueError:
+                pass
+        if crew_id_for_open is None:
+            fwd_port_open = request.headers.get("x-dashboard-port", "")
+            if fwd_port_open:
+                try:
+                    crew_id_for_open = _dashboard_port_crew.get(int(fwd_port_open))
+                except ValueError:
+                    pass
+        open_headers: dict[str, str] = {}
+        if crew_id_for_open:
+            try:
+                with _registry_lock:
+                    reg = _load_registry()
+                crew_token = reg.get("crews", {}).get(crew_id_for_open, {}).get("gateway_token", "")
+                if crew_token:
+                    open_headers["X-Crew-Cookie"] = f"mc_token_5476={crew_token}"
+            except Exception:
+                pass
+        return Response(status_code=200, headers=open_headers)
 
     # Extract gs_session cookie
     token = request.cookies.get("gs_session", "")
