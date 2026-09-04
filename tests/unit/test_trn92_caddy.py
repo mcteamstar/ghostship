@@ -102,12 +102,11 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(len(handles), 1)
         crew_proxy = handles[0]
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
-        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "gs-alpha:5476")
-        # Cookie is injected directly on the request.
-        self.assertEqual(
-            crew_proxy["headers"]["request"]["set"]["Cookie"],
-            ["mc_token_5476=test-token-abc123"],
-        )
+        # TRN-102: upstream is the transport, not the crew gateway; the path is
+        # rewritten to /crews/{id}/ui/... and NO Cookie is injected in Caddy.
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "ga-transport:8000")
+        self.assertIn("/crews/alpha/ui", crew_proxy["rewrite"]["uri"])
+        self.assertNotIn("headers", crew_proxy)
 
     def test_register_with_api_key_includes_forward_auth(self) -> None:
         """When GA_API_KEY is set, forward_auth handler precedes the crew proxy."""
@@ -127,7 +126,8 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertIn("handle_response", fwd_auth)
         crew_proxy = handles[1]
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
-        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "gs-alpha:5476")
+        # TRN-102: crew proxy upstreams the transport, not the crew gateway.
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "ga-transport:8000")
 
     def test_register_treats_409_as_idempotent(self) -> None:
         """409 Conflict (existing @id) is treated as success — no retry, no exception."""

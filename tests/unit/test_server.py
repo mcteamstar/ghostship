@@ -4213,10 +4213,12 @@ class ProxyHandlerTests(unittest.TestCase):
         self.assertNotIn("host", {k.lower() for k in captured_headers[0]})
         self.assertIn("accept", {k.lower() for k in captured_headers[0]})
 
-    # ── 5.2: UI proxy does NOT inject Cookie ─────────────────────────────────
+    # ── 5.2: UI proxy injects Cookie (TRN-102) ───────────────────────────────
 
-    def test_ui_proxy_does_not_inject_cookie(self) -> None:
-        """5.2: UI proxy must NOT inject mc_token_5476 cookie."""
+    def test_ui_proxy_injects_cookie(self) -> None:
+        """5.2 (TRN-102): UI proxy injects mc_token_5476 so the SPA is
+        pre-authenticated. This reverses the pre-TRN-102 D3 behavior where the
+        browser logged in via the gateway UI directly."""
         captured_headers: list[dict] = []
         mock_ctx = _FakeUpstreamResponse(200, b"ok")
 
@@ -4226,6 +4228,7 @@ class ProxyHandlerTests(unittest.TestCase):
                 patch.object(server, "_require_crew", return_value=self.CREW),
                 patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+                patch.object(server, "_cookie_near_expiry", return_value=False),
             ):
                 request = _FakeStreamRequest(path="/crews/demo/ui")
 
@@ -4240,9 +4243,8 @@ class ProxyHandlerTests(unittest.TestCase):
 
         asyncio.run(run())
         self.assertTrue(captured_headers)
-        # No Cookie header at all, or at least no mc_token injection
         cookie_val = captured_headers[0].get("cookie", "") or captured_headers[0].get("Cookie", "")
-        self.assertNotIn("mc_token_5476", cookie_val)
+        self.assertIn("mc_token_5476=test-cookie-val", cookie_val)
 
     # ── 5.3: API proxy injects cookie and retries on 401/403 ─────────────────
 

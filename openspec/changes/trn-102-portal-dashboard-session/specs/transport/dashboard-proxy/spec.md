@@ -28,6 +28,20 @@ The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the tra
 
 When registering a per-crew Caddy server via `_caddy_register_crew`, the transport SHALL configure the Caddy `reverse_proxy` to dial `ga-transport:{PORT}` and SHALL include a `rewrite` that maps the incoming request path to `/crews/{crew_id}/ui/{original_path}` before forwarding. The transport SHALL NOT inject the session cookie in the Caddy server config.
 
+#### Scenario: Crew Caddy server upstreams the transport with a UI rewrite
+
+- **WHEN** `_caddy_register_crew` registers a per-crew dashboard server
+- **THEN** the crew `reverse_proxy` handler's upstream dial is `ga-transport:{PORT}`, not `gs-{crew_id}:5476`
+- **THEN** the handler includes a `rewrite` mapping the incoming path to `/crews/{crew_id}/ui/{original_path}`
+- **THEN** the handler injects no `Cookie` header — cookie injection is owned by the transport's UI-proxy endpoint
+
 ### Requirement: `ga-portal` is not on `ga-net`
 
 `ga-portal` SHALL NOT be attached to the `ga-net` Podman network. All Caddy upstream targets SHALL be `ga-transport:{PORT}` only — Caddy SHALL have no network path to crew containers (`gs-*`). `ga-net` is reserved for transport ↔ crew container communication.
+
+#### Scenario: Caddy has no network path to crew containers
+
+- **WHEN** the compose stack is generated with `GA_PORTAL_ENABLED=true`
+- **THEN** the `ga-portal` service is not attached to `ga-net`
+- **THEN** `ga-portal` reaches `ga-transport:{PORT}` over the compose default network
+- **THEN** `ga-portal` has no route to any `gs-*` crew container

@@ -78,6 +78,12 @@ try:
 except (ImportError, AttributeError):
     _StarletteWebSocket = None  # type: ignore[assignment,misc]
     _StarletteWebSocketDisconnect = Exception  # type: ignore[assignment,misc]
+try:
+    from httpx_ws import aconnect_ws as _aconnect_ws
+    from wsproto.events import CloseConnection as _WsCloseConnection  # httpx-ws dep
+except (ImportError, AttributeError):
+    _aconnect_ws = None  # type: ignore[assignment,misc]
+    _WsCloseConnection = None  # type: ignore[assignment,misc]
 import uvicorn
 import asyncio
 
@@ -673,36 +679,34 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
     """Register a per-crew Caddy dashboard server via the admin API.
 
     Builds an HTTP server object bound to *port* with ``@id: crew-{crew_id}``.
-    The crew ``reverse_proxy`` injects ``mc_token_5476`` directly on every
-    request so the KiroCrew SPA is pre-authenticated. When ``GA_API_KEY`` is
-    set, a ``forward_auth`` check against ``/dashboard-auth`` gates the proxy.
+    The crew ``reverse_proxy`` dials ``ga-transport:{PORT}`` and rewrites the
+    incoming path to ``/crews/{crew_id}/ui/{original_path}`` (TRN-102). The
+    transport's UI-proxy endpoint injects the ``mc_token_5476`` session cookie
+    from ga-transport's own IP, satisfying the gateway's IP binding — Caddy no
+    longer talks to crew gateways (``gs-*``) directly and no longer injects the
+    cookie itself. When ``GA_API_KEY`` is set, a ``forward_auth`` check against
+    ``/dashboard-auth`` (also on ga-transport) gates the proxy.
 
     Retries up to 3 times with exponential backoff (~7 s total). Logs a
     warning on failure — does not raise, so a Caddy startup race does not
     cause ``launch`` to fail.
 
     Must be called while holding ``_registry_lock``.
+
+    ``crew_cookie`` is accepted for backward-compatible call sites but is no
+    longer used — the transport owns cookie injection (TRN-102).
     """
     _transport_addr = "ga-transport:8000"
 
-    # Inject the KiroCrew session cookie directly on every proxied request.
-    # This is equivalent to what the old per-port uvicorn proxy did in Python.
-    crew_proxy_headers: dict = {}
-    if crew_cookie:
-        crew_proxy_headers = {
-            "request": {
-                "set": {
-                    "Cookie": [f"mc_token_5476={crew_cookie}"],
-                }
-            }
-        }
-
+    # TRN-102: Caddy routes dashboard traffic to the transport's UI proxy, which
+    # injects the session cookie. Rewrite the incoming path so it is prefixed
+    # with /crews/{crew_id}/ui — {http.request.uri.path} preserves the original
+    # path (and Caddy re-appends the query string automatically).
     crew_proxy_handler: dict = {
         "handler": "reverse_proxy",
-        "upstreams": [{"dial": f"gs-{crew_id}:5476"}],
+        "upstreams": [{"dial": _transport_addr}],
+        "rewrite": {"uri": f"/crews/{crew_id}/ui{{http.request.uri.path}}"},
     }
-    if crew_proxy_headers:
-        crew_proxy_handler["headers"] = crew_proxy_headers
 
     # forward_auth equivalent using only standard Caddy modules (no caddy-security).
     # Only used when GA_API_KEY is set — gates access with a gs_session cookie check.
@@ -1039,6 +1043,56 @@ def _sanitise_query_string(raw: bytes) -> str:
     return _QS_CONTROL_CHARS.sub("", raw.decode("latin-1"))
 
 
+def _parse_ttl_seconds(ttl: str) -> int:
+    """Parse a KiroCrew TTL string (e.g. ``24h``, ``30m``, ``3600s``, ``2d``,
+    or a bare integer meaning seconds) into a number of seconds.
+
+    Falls back to 24h (86400 s) if the value cannot be parsed. Used to compute
+    the near-expiry window for transparent cookie refresh (TRN-102).
+    """
+    if not ttl:
+        return 86400
+    m = re.fullmatch(r"\s*(\d+)\s*([smhd]?)\s*", str(ttl).lower())
+    if not m:
+        return 86400
+    value = int(m.group(1))
+    unit = m.group(2) or "s"
+    return value * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+
+
+def _jwt_exp(token: str) -> int | None:
+    """Return the ``exp`` claim (epoch seconds) from a JWT without verifying
+    its signature — we trust our own tokens (design.md). Returns None if the
+    token is not a JWT or has no numeric ``exp`` claim.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        # Restore base64 padding stripped by JWT's base64url encoding.
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode())
+        exp = payload.get("exp")
+        return int(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
+def _cookie_near_expiry(cookie: str) -> bool:
+    """True if *cookie*'s JWT ``exp`` is within 20% of the configured TTL of
+    expiring (i.e. > 80% of the TTL has elapsed). A cookie that is not a JWT,
+    has no ``exp``, or is already expired is treated as near-expiry so the
+    proxy re-mints it (TRN-102, design.md "Token refresh").
+    """
+    exp = _jwt_exp(cookie)
+    if exp is None:
+        return True
+    ttl_secs = _parse_ttl_seconds(KC_GATEWAY_TOKEN_TTL)
+    remaining = exp - time.time()
+    return remaining < 0.20 * ttl_secs
+
+
 async def _handle_crew_ui_proxy(request: Request) -> Response:
     """Reverse-proxy GET/POST to the crew gateway UI at http://gs-{crew_id}:5476/.
 
@@ -1046,9 +1100,12 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
            /crews/{crew_id}/ui/{path}  →  http://gs-{crew_id}:5476/{path}
 
     - Auto-wakes the crew before proxying.
-    - Passes request headers through (minus host).
-    - Does NOT inject any session cookie (browser goes through the normal
-      gateway login UI — see design.md decision D3).
+    - Passes request headers through (minus host and any inbound cookie).
+    - Injects the crew's ``mc_token_5476`` session cookie on every forwarded
+      request so the KiroCrew SPA is pre-authenticated. The cookie is minted
+      from ga-transport's IP, satisfying the gateway's IP binding (TRN-102).
+    - Transparently re-mints the cookie when it is near expiry (> 80% of TTL
+      elapsed) before forwarding, so sessions never interrupt (TRN-102).
     - Streams the upstream response body without buffering.
     - Returns 404 for unknown crew_id.
     """
@@ -1069,6 +1126,14 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
     except RuntimeError as e:
         return PlainTextResponse(str(e), status_code=502)
 
+    # TRN-102: transparently re-mint the session cookie when it is near expiry
+    # so the browser session never sees a "Session expired" prompt. Best-effort:
+    # a failed refresh falls through to the existing (possibly stale) cookie,
+    # and the 401/403 retry below still recovers.
+    if _cookie_near_expiry(crew.get("cookie", "")):
+        logger.info("UI proxy: cookie near expiry for crew %s — refreshing", crew_id)
+        _refresh_cookie(crew, crew_id)
+
     # Build upstream URL
     upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
     upstream_path = f"/{sub_path}" if sub_path else "/"
@@ -1078,21 +1143,51 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
         upstream_url = f"{upstream_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{upstream_url}"
 
-    # Forward headers minus host
+    # Forward headers minus host and any inbound cookie, then inject the crew's
+    # session cookie. The cookie is minted from ga-transport's IP so the gateway's
+    # IP binding is satisfied — Caddy (ga-portal) proxies here rather than to the
+    # crew gateway directly (TRN-102).
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() != "host"
+        if k.lower() != "host" and k.lower() != "cookie"
     }
+    forward_headers["Cookie"] = _crew_cookie(crew)
 
-    # Proxy and stream
+    # Proxy and stream, retrying once with a fresh cookie on 401/403 (stale token).
+    body = await request.body()
     try:
         async with _async_http.stream(
             request.method,
             upstream_full,
             headers=forward_headers,
-            content=await request.body(),
+            content=body,
         ) as upstream_resp:
+            if upstream_resp.status_code in (401, 403):
+                await upstream_resp.aread()  # drain so the context can close
+                logger.info(
+                    "UI proxy: upstream %d for crew %s — refreshing cookie",
+                    upstream_resp.status_code, crew_id,
+                )
+                if _refresh_cookie(crew, crew_id):
+                    forward_headers["Cookie"] = _crew_cookie(crew)
+                    async with _async_http.stream(
+                        request.method,
+                        upstream_full,
+                        headers=forward_headers,
+                        content=body,
+                    ) as retry_resp:
+                        response_headers = {
+                            k: v
+                            for k, v in retry_resp.headers.items()
+                            if k.lower() not in _HOP_BY_HOP_HEADERS
+                        }
+                        retry_body = await retry_resp.aread()
+                    return Response(
+                        content=retry_body,
+                        status_code=retry_resp.status_code,
+                        headers=response_headers,
+                    )
             # Strip hop-by-hop headers from forwarded response
             response_headers = {
                 k: v
@@ -1101,15 +1196,116 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
             }
             # Read body fully so we can close the upstream context; for large
             # responses this is acceptable given the 60 s timeout constraint.
-            body = await upstream_resp.aread()
+            body_out = await upstream_resp.aread()
         return Response(
-            content=body,
+            content=body_out,
             status_code=upstream_resp.status_code,
             headers=response_headers,
         )
     except Exception as e:
         logger.warning("UI proxy error for crew %s: %s", crew_id, e)
         return PlainTextResponse(f"Proxy error: {e}", status_code=502)
+
+
+async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
+    """Reverse-proxy a WebSocket upgrade for /crews/{crew_id}/ui/{path} to the
+    crew gateway at ws://gs-{crew_id}:5476/{path} (TRN-102, task 1.2).
+
+    Bidirectionally relays text and binary frames between the browser-side
+    Starlette WebSocket and the upstream connection opened with
+    ``httpx_ws.aconnect_ws``. The crew's ``mc_token_5476`` session cookie is
+    injected on the upstream handshake so the gateway accepts the connection
+    from ga-transport's IP. A disconnect on either side tears down the other.
+    """
+    if _StarletteWebSocket is None or _aconnect_ws is None:
+        # No WS support available (dependency-free test env) — reject cleanly.
+        await send({"type": "websocket.close", "code": 1011})
+        return
+
+    ws = _StarletteWebSocket(scope, receive=receive, send=send)
+
+    parsed = _extract_crew_proxy_parts(scope["path"])
+    if parsed is None:
+        await ws.close(code=1008)
+        return
+    crew_id, _segment, sub_path = parsed
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError):
+        await ws.close(code=1008)
+        return
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError:
+        await ws.close(code=1011)
+        return
+
+    if _cookie_near_expiry(crew.get("cookie", "")):
+        _refresh_cookie(crew, crew_id)
+
+    upstream_path = f"/{sub_path}" if sub_path else "/"
+    query = scope.get("query_string", b"")
+    if query:
+        upstream_path = f"{upstream_path}?{_sanitise_query_string(query)}"
+    upstream_ws_url = (
+        f"ws://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}{upstream_path}"
+    )
+
+    # Forward the client's requested subprotocols and inject the session cookie.
+    subprotocols = ws.scope.get("subprotocols") or []
+    handshake_headers = {"Cookie": _crew_cookie(crew)}
+
+    await ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
+
+    try:
+        async with _aconnect_ws(
+            upstream_ws_url,
+            _async_http,
+            headers=handshake_headers,
+            subprotocols=subprotocols or None,
+        ) as upstream:
+            async def _client_to_upstream() -> None:
+                while True:
+                    msg = await ws.receive()
+                    if msg["type"] == "websocket.disconnect":
+                        await upstream.close()
+                        return
+                    if msg.get("text") is not None:
+                        await upstream.send_text(msg["text"])
+                    elif msg.get("bytes") is not None:
+                        await upstream.send_bytes(msg["bytes"])
+
+            async def _upstream_to_client() -> None:
+                while True:
+                    try:
+                        data = await upstream.receive()
+                    except Exception:
+                        # httpx-ws raises WebSocketDisconnect / CloseConnection
+                        # when the upstream ends — propagate as a client close.
+                        await ws.close()
+                        return
+                    if isinstance(data, (bytes, bytearray)):
+                        await ws.send_bytes(bytes(data))
+                    else:
+                        await ws.send_text(str(data))
+
+            done, pending = await asyncio.wait(
+                {asyncio.create_task(_client_to_upstream()),
+                 asyncio.create_task(_upstream_to_client())},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+    except _StarletteWebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning("UI WS proxy error for crew %s: %s", crew_id, e)
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 async def _handle_crew_api_proxy(request: Request) -> Response:
@@ -1473,6 +1669,22 @@ class BearerAuthMiddleware:
     _PUBLIC_PATHS: set[str] = {"/health"}
 
     async def __call__(self, scope, receive, send) -> None:
+        # TRN-102: WebSocket upgrades for /crews/<id>/ui/<path> are proxied to
+        # the crew gateway with the session cookie injected. Access is gated by
+        # Caddy's forward_auth upstream (keyed deployments); the transport's
+        # bearer check applies to HTTP scopes only, so WS is dispatched here.
+        if scope["type"] == "websocket":
+            _ws_parts = scope.get("path", "").lstrip("/").split("/")
+            if (
+                len(_ws_parts) >= 3
+                and _ws_parts[0] == "crews"
+                and _ws_parts[2] == "ui"
+            ):
+                await _handle_crew_ui_ws_proxy(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
+
         # Public routes — served without any authentication check
         if scope["type"] == "http":
             public_handler = self._public_routes.get(
