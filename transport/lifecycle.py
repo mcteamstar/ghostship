@@ -1242,6 +1242,19 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "reasoning_effort": "max",
         "subagent_timeout_secs": GA_SUBAGENT_TIMEOUT_SECS,
         "subagent_max_turns": GA_SUBAGENT_MAX_TURNS,
+        # ``sandbox="off"`` disables the kiro-cli inner namespace sandbox.
+        # The config key and value are not new — "off" has been valid since
+        # before 0.5.0. What changed in 0.5.0 is that sandbox="auto" (the
+        # default) now issues a MS_REMOUNT|MS_BIND|MS_RDONLY mount to seal
+        # credential directories read-only, and this call is fail-closed:
+        # kiro-cli calls sys.exit(rc=1) if the mount fails rather than
+        # continuing unsandboxed. Under Podman rootless the kernel denies the
+        # remount (errno EPERM — no seccomp allowance for MS_REMOUNT inside a
+        # user namespace), so every agent spawn failed with AcpRuntimeDead rc=1.
+        # Setting "off" short-circuits detect_backend() to return "none", so the
+        # namespace sandbox setup (and the failing mount) are never attempted.
+        # The Podman container itself remains the OS-level isolation boundary.
+        "sandbox": "off",
     }
     # KC_MODEL_DEFAULT sets agent.default_model — a global fallback that applies
     # when no per-agent model field overrides it. Precedence (high→low):
@@ -1496,6 +1509,11 @@ def _start_login_container(podman: PodmanClient) -> str:
         "image": KC_BASE_IMAGE,
         "netns": {"nsmode": "bridge"},
         "Networks": {GA_STARBOARD_NETWORK: {}},
+        # Use the default gateway command — kirocrew-entrypoint seeds
+        # ~/.kiro/crew/config.json which kiro-cli requires. The gateway will
+        # stall on AcpAuthRequired (no auth yet) and be killed by the 0.5.0
+        # loop watchdog after ~35s, but GET /login polls the auth DB
+        # continuously and will catch a completed auth before that window.
         # No volumes — ephemeral writable layer only
     })
     podman.container_start(name)

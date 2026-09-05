@@ -2249,6 +2249,10 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     # kiro-cli ignores --identity-provider / --region flags in interactive/PTY
     # mode (upstream bug kiro#6120). Use a raw-socket exec so we can write
     # stdin answers to the interactive prompts automatically.
+    # With --license pro the provider-selection menu is skipped; kiro-cli goes
+    # straight to Start URL → Region, then makes a network round-trip to AWS
+    # to register the device (which takes a few seconds) before printing the
+    # URL. Deadline is 45s to accommodate that round-trip.
     cmd = ["kiro-cli", "login", "--use-device-flow"] + (
         ["--license", KIRO_LICENSE] if KIRO_LICENSE else []
     )
@@ -2262,8 +2266,13 @@ def _initiate_login(podman: "PodmanClient") -> dict:
 
     pty_sock.setblocking(False)
 
-    # ── Read output, answer prompts, wait for device URL (max 15s) ───────────
-    deadline = time.time() + 15.0
+    # ── Read output, answer prompts, wait for device URL (max 45s) ───────────
+    # After answering the Start URL and Region prompts, kiro-cli makes a
+    # network round-trip to AWS IAM Identity Center to register the device
+    # before printing the verification URL. This takes a few seconds on a
+    # warm network but can be slow. 45s (up from the original 15s) gives
+    # comfortable headroom for that call to complete.
+    deadline = time.time() + 45.0
     collected = bytearray()
     login_url: str | None = None
     login_code: str | None = None
@@ -2338,7 +2347,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
         _nuke_login_container(podman, container)
         with _login_pending_lock:
             _login_pending = None
-        return {"error": f"kiro-cli did not produce a login URL within 15s.\nOutput:\n{raw_output}"}
+        return {"error": f"kiro-cli did not produce a login URL within 45s.\nOutput:\n{raw_output}"}
 
     # ── Hand off remaining stream to background thread ────────────────────────
     pty_sock.setblocking(True)
