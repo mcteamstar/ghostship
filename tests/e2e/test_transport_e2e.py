@@ -31,6 +31,37 @@ from tests.e2e.helpers import (
     is_error as _is_error,
 )
 
+# ── Module-level shared crew ──────────────────────────────────────────────────
+# TestDispatchPickup and TestSupplyEvac share this crew. It is launched once
+# per test file (in setUpModule) and torn down once (in tearDownModule).
+# TestCrewLifecycle, TestAuthGate, and TestKiroAuthCycle are unaffected.
+
+SHARED_CREW_ID = "e2e-shared-main"
+
+# Module-level launch result — stored for test_launch_response_shape if needed
+# by any class that wants it.
+_SHARED_LAUNCH_RESULT: dict = {}
+
+
+def setUpModule():  # noqa: N802
+    if not GHOSTSHIP_E2E_URL:
+        return  # all classes skip via @skipUnless anyway
+    try:
+        _mcp_call("nuke", crew_id=SHARED_CREW_ID, confirm=True)
+    except Exception:
+        pass
+    result = _mcp_call("launch", crew_id=SHARED_CREW_ID)
+    _SHARED_LAUNCH_RESULT.update(result)
+    if result.get("status") != "ready":
+        raise RuntimeError(f"setUpModule: failed to launch {SHARED_CREW_ID}: {result}")
+
+
+def tearDownModule():  # noqa: N802
+    try:
+        _mcp_call("nuke", crew_id=SHARED_CREW_ID, confirm=True)
+    except Exception:
+        pass
+
 
 # ── 2. Health check ───────────────────────────────────────────────────────────
 
@@ -101,30 +132,13 @@ class TestCrewLifecycle(unittest.TestCase):
 
 @unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
 class TestDispatchPickup(unittest.TestCase):
-    CREW_ID = "e2e-dispatch"
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
-        except Exception:
-            pass
-        result = _mcp_call("launch", crew_id=cls.CREW_ID)
-        if result.get("status") != "ready":
-            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
-        except Exception:
-            pass
+    CREW_ID = SHARED_CREW_ID
 
     def test_dispatch_and_pickup(self):
         # Dispatch a trivial task
         dispatch = _mcp_call(
             "dispatch",
-            crew_id=self.__class__.CREW_ID,
+            crew_id=self.CREW_ID,
             agent="ghost",
             task="Print the word DONE and nothing else.",
         )
@@ -136,7 +150,7 @@ class TestDispatchPickup(unittest.TestCase):
         deadline = time.time() + 120
         result = None
         while time.time() < deadline:
-            status = _mcp_call("pickup", crew_id=self.__class__.CREW_ID, task_id=task_id)
+            status = _mcp_call("pickup", crew_id=self.CREW_ID, task_id=task_id)
             if status.get("done"):
                 result = status
                 break
@@ -154,46 +168,29 @@ class TestDispatchPickup(unittest.TestCase):
 
 @unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
 class TestSupplyEvac(unittest.TestCase):
-    CREW_ID = "e2e-files"
+    CREW_ID = SHARED_CREW_ID
     TEST_PAYLOAD = b"hello e2e ghostship"
     TEST_PATH = "repo/e2e-test.txt"
 
-    @classmethod
-    def setUpClass(cls):
-        try:
-            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
-        except Exception:
-            pass
-        result = _mcp_call("launch", crew_id=cls.CREW_ID)
-        if result.get("status") != "ready":
-            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
-        except Exception:
-            pass
-
     def test_supply_and_evac(self):
         # Get presigned upload URL
-        supply = _mcp_call("supply", crew_id=self.__class__.CREW_ID, path=self.__class__.TEST_PATH)
+        supply = _mcp_call("supply", crew_id=self.CREW_ID, path=self.TEST_PATH)
         upload_url = supply.get("delivery_url")
         self.assertIsNotNone(upload_url, f"No delivery_url in supply response: {supply}")
 
         # Upload payload
-        up = httpx.post(upload_url, content=self.__class__.TEST_PAYLOAD, timeout=30.0)
+        up = httpx.post(upload_url, content=self.TEST_PAYLOAD, timeout=30.0)
         self.assertIn(up.status_code, (200, 201), f"Upload failed: {up.status_code} {up.text}")
 
         # Get presigned download URL
-        evac = _mcp_call("evac", crew_id=self.__class__.CREW_ID, path=self.__class__.TEST_PATH)
+        evac = _mcp_call("evac", crew_id=self.CREW_ID, path=self.TEST_PATH)
         download_url = evac.get("url")
         self.assertIsNotNone(download_url, f"No url in evac response: {evac}")
 
         # Download and verify
         down = httpx.get(download_url, timeout=30.0)
         self.assertEqual(down.status_code, 200)
-        self.assertEqual(down.content, self.__class__.TEST_PAYLOAD)
+        self.assertEqual(down.content, self.TEST_PAYLOAD)
 
 
 # ── 6. Auth gate ──────────────────────────────────────────────────────────────
