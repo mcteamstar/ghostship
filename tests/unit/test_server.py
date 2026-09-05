@@ -573,7 +573,7 @@ class PickupTimeoutTests(unittest.TestCase):
         self.assertFalse(result.get("error"))
 
     def test_pickup_poll_cap_fires_before_caller_timeout(self) -> None:
-        """5.3b — internal GA_PICKUP_MAX_POLL_SECS cap fires before caller timeout_secs;
+        """5.3b — internal 30s poll cap fires before caller timeout_secs;
         response is a normal dict with reason='timeout', not a transport error."""
         clock = [0.0]
 
@@ -589,9 +589,8 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_read_all_mail_subjects", return_value={}),
             patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
             patch.object(server.time, "sleep", side_effect=advance),
-            patch.object(server, "GA_PICKUP_MAX_POLL_SECS", 5),
         ):
-            # caller requests 60s, but the internal cap is 5s
+            # caller requests 60s, but the internal cap is 30s
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
 
         # Must be a normal dict — no exception raised
@@ -1212,30 +1211,14 @@ class FireImmediatelyTests(unittest.TestCase):
         self.assertNotIn("POST /api/spawn", api_paths)
 
 class GatewayTokenAndProjectionTests(unittest.TestCase):
-    def test_gateway_token_uses_default_and_configured_ttl(self) -> None:
+    def test_gateway_token_uses_hardcoded_ttl(self) -> None:
+        """KC_GATEWAY_TOKEN_TTL is now hardcoded to '24h'; verify it is passed to kirocrew token."""
         podman = Mock()
         podman.container_exec.return_value = "token=abc123"
-        old_ttl = server.KC_GATEWAY_TOKEN_TTL
-        try:
-            with patch.object(lifecycle, "_http", CookieHTTP()):
-                server.KC_GATEWAY_TOKEN_TTL = "24h"
-                lifecycle.KC_GATEWAY_TOKEN_TTL = "24h"
-                self.assertEqual(
-                    server._mint_cookie(podman, "gs-demo", "http://gs-demo:5476"),
-                    "session-cookie",
-                )
-                self.assertEqual(podman.container_exec.call_args.args[1][-1], "24h")
-
-                server.KC_GATEWAY_TOKEN_TTL = "2h"
-                lifecycle.KC_GATEWAY_TOKEN_TTL = "2h"
-                self.assertEqual(
-                    server._mint_cookie(podman, "gs-demo", "http://gs-demo:5476"),
-                    "session-cookie",
-                )
-                self.assertEqual(podman.container_exec.call_args.args[1][-1], "2h")
-        finally:
-            server.KC_GATEWAY_TOKEN_TTL = old_ttl
-            lifecycle.KC_GATEWAY_TOKEN_TTL = old_ttl
+        with patch.object(lifecycle, "_http", CookieHTTP()):
+            result = server._mint_cookie(podman, "gs-demo", "http://gs-demo:5476")
+        self.assertEqual(result, "session-cookie")
+        self.assertEqual(podman.container_exec.call_args.args[1][-1], "24h")
 
     def test_read_auth_file_missing_returns_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1281,7 +1264,6 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         installer = (repo_root / "scripts" / "install.sh").read_text()
         self.assertIn('${DATA_DIR}:/data', installer)
-        self.assertIn('KC_GATEWAY_TOKEN_TTL', installer)
         self.assertNotIn("podman secret inspect ga-kiro-auth", installer)
         self.assertNotIn("SECRETS_DIR", installer)
         self.assertNotIn("/run/podman-secrets", installer)

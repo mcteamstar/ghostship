@@ -65,32 +65,26 @@ GA_MACHINE_NAME=ghost-academy
 GA_MAX_CREWS=20
 GA_MAX_ACTIVE_CREWS=3
 GA_IDLE_TIMEOUT_SECS=300
-GA_FILE_TTL_SECS=300
 GA_SUBAGENT_TIMEOUT_SECS=3600
 GA_SUBAGENT_MAX_TURNS=200
 GA_CREW_AGENT=kiro
-GA_PICKUP_MAX_POLL_SECS=30
-KC_GATEWAY_TOKEN_TTL=24h
 GA_MIN_FREE_MEM_GB=2.0
-GA_MEMORY_WAIT_SECS=60
 GA_SPAWN_MIN_MEMORY_GB=1.5
 GA_RESOURCE_PRESSURE_GB=2.0
 GA_RESOURCE_CRITICAL_GB=1.0
 GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
-HOST=0.0.0.0
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_PORT_RANGE_SIZE=50
 GA_DASHBOARD_PORT_ENABLED=true
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is always installed; there is no opt-out.
-# GA_PORTAL_PORT is the single port Caddy listens on regardless of TLS mode.
+# Caddy listens on PORT (same port as the transport, resolved above).
 # Default: plain HTTP on 64057 — zero-config installs work at
 # http://localhost:64057/mcp with no TLS setup required.
 # To enable TLS: set GA_PORTAL_TLS_MODE=acme + GA_PORTAL_DOMAIN (any port).
 GA_PORTAL_TLS_MODE=off
 GA_PORTAL_DOMAIN=""
-GA_PORTAL_PORT=64057
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -111,6 +105,14 @@ if [[ -n "$CONFIG_FILE" ]]; then
   if [[ ! -r "$CONFIG_FILE" ]]; then
     echo "Error: config file is not readable: $CONFIG_FILE" >&2
     exit 1
+  fi
+  # Migration guard: GA_PORTAL_PORT was renamed to PORT in TRN-111.
+  # If the config file sets GA_PORTAL_PORT, warn and substitute to PORT before sourcing.
+  if grep -qE '^[[:space:]]*GA_PORTAL_PORT=' "$CONFIG_FILE" 2>/dev/null; then
+    echo "⚠ Deprecated GA_PORTAL_PORT found in config — auto-migrating to PORT" >&2
+    _MIGRATED_CONFIG="$(mktemp)"
+    sed 's/^\([[:space:]]*\)GA_PORTAL_PORT=/\1PORT=/' "$CONFIG_FILE" > "$_MIGRATED_CONFIG"
+    CONFIG_FILE="$_MIGRATED_CONFIG"
   fi
   # TRUST ASSUMPTION: this executes arbitrary shell code from the path the user
   # passed via --config. The caller is trusted — this is intentional: config
@@ -653,12 +655,9 @@ services:
       GA_MAX_CREWS: "${GA_MAX_CREWS:-20}"
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
       GA_IDLE_TIMEOUT_SECS: "${GA_IDLE_TIMEOUT_SECS:-300}"
-      GA_FILE_TTL_SECS: "${GA_FILE_TTL_SECS:-300}"
       GA_SUBAGENT_TIMEOUT_SECS: "${GA_SUBAGENT_TIMEOUT_SECS:-3600}"
       GA_SUBAGENT_MAX_TURNS: "${GA_SUBAGENT_MAX_TURNS:-200}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
-      GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
-      KC_GATEWAY_TOKEN_TTL: "${KC_GATEWAY_TOKEN_TTL:-24h}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
       KIRO_LICENSE: "${KIRO_LICENSE:-}"
@@ -666,15 +665,12 @@ services:
       KC_MODEL_OVERRIDE: "${KC_MODEL_OVERRIDE:-}"
       KC_MODEL_DEFAULT: "${KC_MODEL_DEFAULT:-}"
       GA_MIN_FREE_MEM_GB: "${GA_MIN_FREE_MEM_GB:-2.0}"
-      GA_MEMORY_WAIT_SECS: "${GA_MEMORY_WAIT_SECS:-60}"
       GA_SPAWN_MIN_MEMORY_GB: "${GA_SPAWN_MIN_MEMORY_GB:-1.5}"
       GA_RESOURCE_PRESSURE_GB: "${GA_RESOURCE_PRESSURE_GB:-2.0}"
       GA_RESOURCE_CRITICAL_GB: "${GA_RESOURCE_CRITICAL_GB:-1.0}"
       GA_GIT_AUTHOR_NAME: "${GA_GIT_AUTHOR_NAME:-}"
       GA_GIT_AUTHOR_EMAIL: "${GA_GIT_AUTHOR_EMAIL:-}"
       GA_ENABLE_SECURITY_HEADERS: "${GA_ENABLE_SECURITY_HEADERS:-1}"
-      GA_ENFORCE_HTTPS_REDIRECT: "${GA_ENFORCE_HTTPS_REDIRECT:-0}"
-      GA_CSP_ENFORCE: "${GA_CSP_ENFORCE:-0}"
       GA_TLS_MIN_VERSION: "${GA_TLS_MIN_VERSION:-1.2}"
       GA_TLS_CERTFILE: "${GA_TLS_CERTFILE:-}"
       GA_TLS_KEYFILE: "${GA_TLS_KEYFILE:-}"
@@ -689,7 +685,7 @@ services:
       GA_DASHBOARD_PORT_ENABLED: "${GA_DASHBOARD_PORT_ENABLED:-true}"
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
-      GA_PORTAL_PORT: "${GA_PORTAL_PORT:-64057}"
+      GA_PORTAL_PORT: "${PORT:-64057}"
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
@@ -698,7 +694,7 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
     container_name: ga-portal
     restart: always
     ports:
-      - "0.0.0.0:${GA_PORTAL_PORT:-64057}:${GA_PORTAL_PORT:-64057}"
+      - "0.0.0.0:${PORT:-64057}:${PORT:-64057}"
       - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
     networks:
       - ga-portside
@@ -736,22 +732,22 @@ _AUTO_HTTPS=""  # set to disable auto-HTTPS for TLS_MODE=off
 case "${GA_PORTAL_TLS_MODE:-off}" in
   tailscale)
     _TLS_STANZA='"tls": {"automation": {"policies": [{"get_certificate": [{"via": "tailscale"}]}]}}'
-    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
+    _MAIN_LISTEN=":${PORT:-64057}"
     ;;
   acme)
     _ACME_DOMAIN="${GA_PORTAL_DOMAIN:-}"
     _TLS_STANZA='"tls": {"automation": {"policies": [{"subjects": ["'"${_ACME_DOMAIN}"'"], "issuers": [{"module": "acme"}]}]}}'
-    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
+    _MAIN_LISTEN=":${PORT:-64057}"
     ;;
   off)
     # Plain HTTP — disable auto-HTTPS, listen on the HTTP port.
     _TLS_STANZA='"tls": {}'
-    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
+    _MAIN_LISTEN=":${PORT:-64057}"
     _AUTO_HTTPS='"automatic_https": {"disable": true},'
     ;;
   *)  # internal (default)
     _TLS_STANZA='"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}'
-    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
+    _MAIN_LISTEN=":${PORT:-64057}"
     ;;
 esac
 
@@ -875,6 +871,7 @@ else
   _COMPOSE_ENV=""
 fi
 eval "${_COMPOSE_ENV} podman rm -f ga-transport" >/dev/null 2>&1 || true
+eval "${_COMPOSE_ENV} podman rm -f ga-portal" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${DATA_DIR}/compose.yml\" up -d --force-recreate --remove-orphans"
 echo "✓ ga-transport container started"
 
@@ -921,7 +918,7 @@ _caddy_ready=0
 _caddy_scheme="http"
 [[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sk "${_caddy_scheme}://127.0.0.1:${GA_PORTAL_PORT:-64057}/health" >/dev/null 2>&1; then
+  if curl -sk "${_caddy_scheme}://127.0.0.1:${PORT:-64057}/health" >/dev/null 2>&1; then
     _caddy_ready=1
     break
   fi
@@ -930,7 +927,7 @@ done
 if [[ "$_caddy_ready" == "1" ]]; then
   echo "✓ Caddy is ready"
 else
-  echo "⚠ Caddy (ga-portal) did not respond on port ${GA_PORTAL_PORT:-64057} within ${_max_wait}s"
+  echo "⚠ Caddy (ga-portal) did not respond on port ${PORT:-64057} within ${_max_wait}s"
   echo "  Check: ${_PODMAN_CMD} logs ga-portal --tail 20"
   echo "  This is non-fatal — Caddy may still be pulling or starting."
 fi

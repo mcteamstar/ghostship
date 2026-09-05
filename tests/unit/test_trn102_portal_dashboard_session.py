@@ -86,15 +86,15 @@ class TtlAndJwtHelperTests(unittest.TestCase):
 
     def test_cookie_near_expiry_fresh_token_is_false(self) -> None:
         # Fresh 24h token → ~full TTL remaining → not near expiry.
-        with patch.object(server, "KC_GATEWAY_TOKEN_TTL", "24h"):
-            fresh = _make_jwt(int(time.time()) + 86000)
-            self.assertFalse(server._cookie_near_expiry(fresh))
+        # TTL is hardcoded to "24h" in _cookie_near_expiry.
+        fresh = _make_jwt(int(time.time()) + 86000)
+        self.assertFalse(server._cookie_near_expiry(fresh))
 
     def test_cookie_near_expiry_old_token_is_true(self) -> None:
         # Only 10 min left on a 24h TTL → < 20% remaining → near expiry.
-        with patch.object(server, "KC_GATEWAY_TOKEN_TTL", "24h"):
-            old = _make_jwt(int(time.time()) + 600)
-            self.assertTrue(server._cookie_near_expiry(old))
+        # TTL is hardcoded to "24h" in _cookie_near_expiry.
+        old = _make_jwt(int(time.time()) + 600)
+        self.assertTrue(server._cookie_near_expiry(old))
 
     def test_cookie_near_expiry_non_jwt_is_true(self) -> None:
         # A non-JWT cookie cannot be reasoned about → treat as near-expiry.

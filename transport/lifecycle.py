@@ -164,13 +164,11 @@ GA_CREW_AGENT = cfg.ga_crew_agent
 KC_MODEL_OVERRIDE = cfg.kc_model_override
 KC_MODEL_DEFAULT = cfg.kc_model_default
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
-GA_MEMORY_WAIT_SECS = cfg.ga_memory_wait_secs
 GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
 GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
-KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
 PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
@@ -516,7 +514,7 @@ def _ensure_crew_running(
 
         # Pre-launch memory gate: wait for balloon to deflate before starting
         if GA_MIN_FREE_MEM_GB > 0:
-            free_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, GA_MEMORY_WAIT_SECS)
+            free_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 60)
             if free_gb < GA_MIN_FREE_MEM_GB:
                 raise RuntimeError(
                     f"Insufficient available memory to start crew {crew_id}: "
@@ -812,7 +810,7 @@ def _mint_cookie(podman: PodmanClient, container: str, crew_url: str) -> str | N
     try:
         raw = podman.container_exec(
             container,
-            ["kirocrew", "token", "--ttl", KC_GATEWAY_TOKEN_TTL],
+            ["kirocrew", "token", "--ttl", "24h"],
         )
         m = re.search(r'token=([A-Za-z0-9._-]+)', raw)
         if not m:

@@ -4,7 +4,6 @@ Covers:
   - TestStdinSecretDelivery:  inject_admiral_secret.py reads secret from stdin
   - TestCrewsJsonHygiene:     crews.json stores identifiers, not plaintext secrets
   - TestContainerHardeningFlags: no_new_privileges + cap_drop in container specs
-  - TestTokenTTLValidation:   _validate_token_ttl branches and WARNING emission
   - TestFileTransferAudit:    audit_auth_event called for presign and verify paths
 """
 from __future__ import annotations
@@ -36,7 +35,6 @@ inject_admiral_secret_mod = importlib.import_module("inject_admiral_secret")
 from tests.unit.test_file_transfer import server  # noqa: F401  (installs stubs)
 
 import transport.lifecycle as lifecycle
-import transport.config as config_mod
 import transport.files as files_mod
 import transport.podman as podman_mod
 
@@ -418,73 +416,6 @@ class TestContainerHardeningFlags(unittest.TestCase):
                       "worker_run spec must drop CAP_NET_RAW")
         self.assertIn("CAP_SYS_ADMIN", cap_drop,
                       "worker_run spec must drop CAP_SYS_ADMIN")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 6.4 — Token TTL validation
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestTokenTTLValidation(unittest.TestCase):
-    """_validate_token_ttl accepts valid values and warns + falls back on invalid ones."""
-
-    def setUp(self) -> None:
-        # Force reload of config module's logger so our assertLogs captures it
-        self._validate = config_mod._validate_token_ttl
-
-    def test_valid_24h(self) -> None:
-        self.assertEqual(self._validate("24h"), "24h")
-
-    def test_valid_3600s(self) -> None:
-        self.assertEqual(self._validate("3600s"), "3600s")
-
-    def test_valid_7d(self) -> None:
-        self.assertEqual(self._validate("7d"), "7d")
-
-    def test_valid_30m(self) -> None:
-        self.assertEqual(self._validate("30m"), "30m")
-
-    def test_valid_1h(self) -> None:
-        self.assertEqual(self._validate("1h"), "1h")
-
-    def test_invalid_banana_falls_back(self) -> None:
-        with self.assertLogs("transport.config", level="WARNING") as cm:
-            result = self._validate("banana")
-        self.assertEqual(result, "24h")
-        self.assertTrue(any("KC_GATEWAY_TOKEN_TTL" in msg for msg in cm.output),
-                        "Warning must mention KC_GATEWAY_TOKEN_TTL")
-
-    def test_invalid_zero_h_falls_back(self) -> None:
-        with self.assertLogs("transport.config", level="WARNING") as cm:
-            result = self._validate("0h")
-        self.assertEqual(result, "24h")
-        self.assertTrue(any("KC_GATEWAY_TOKEN_TTL" in msg for msg in cm.output))
-
-    def test_invalid_negative_falls_back(self) -> None:
-        with self.assertLogs("transport.config", level="WARNING") as cm:
-            result = self._validate("-1m")
-        self.assertEqual(result, "24h")
-
-    def test_invalid_empty_falls_back(self) -> None:
-        with self.assertLogs("transport.config", level="WARNING") as cm:
-            result = self._validate("")
-        self.assertEqual(result, "24h")
-
-    def test_invalid_no_unit_falls_back(self) -> None:
-        with self.assertLogs("transport.config", level="WARNING") as cm:
-            result = self._validate("24")
-        self.assertEqual(result, "24h")
-
-    def test_custom_default(self) -> None:
-        with self.assertLogs("transport.config", level="WARNING"):
-            result = self._validate("bad", default="12h")
-        self.assertEqual(result, "12h")
-
-    def test_warning_includes_invalid_value(self) -> None:
-        with self.assertLogs("transport.config", level="WARNING") as cm:
-            self._validate("garbage_value")
-        combined = " ".join(cm.output)
-        self.assertIn("garbage_value", combined,
-                      "Warning must include the invalid value for diagnostics")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

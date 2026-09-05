@@ -69,7 +69,6 @@ cfg = Config.from_env()
 
 PORT = cfg.port
 DATA_DIR = Path(cfg.transport_data_dir)
-GA_FILE_TTL_SECS = cfg.ga_file_ttl_secs  # 5 min default
 SCRIPTS_DIR = "/scripts"
 CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
@@ -152,7 +151,7 @@ def _sign_file_url(
     bundle: bool = False,
 ) -> str:
     """Return a short-lived presigned URL for a crew workspace file or bundle."""
-    expires = int(time.time()) + GA_FILE_TTL_SECS
+    expires = int(time.time()) + 300
     flags = ":".join(sorted(f for f in ["bundle"] if bundle))
     payload = f"{crew_id}:{path}:{expires}:GET:{ref or ''}:{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -208,7 +207,7 @@ def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool
     The mode (unpack/bundle) is included in the signed HMAC payload so a token
     signed for a plain write cannot be replayed as an unpack or bundle clone.
     """
-    expires = int(time.time()) + GA_FILE_TTL_SECS
+    expires = int(time.time()) + 300
     flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and bundle) or (f == "unpack" and unpack)))
     payload = f"{crew_id}:{path}:{expires}:POST::{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -493,7 +492,7 @@ async def _handle_file_get(request: Request) -> Response:
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac> — stream file
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&ref=HEAD — diff
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&bundle=1 — git bundle
-    Token is short-lived (GA_FILE_TTL_SECS, default 5 min).
+    Token is short-lived (300, default 5 min).
     """
     crew_id = request.path_params.get("crew_id", "")
     path = request.path_params.get("path", "")
@@ -684,7 +683,7 @@ async def _handle_file_put(request: Request) -> Response:
     POST /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&bundle=1
       Body: git bundle bytes — cloned into {path} in the workspace.
 
-    Token is short-lived (GA_FILE_TTL_SECS, default 5 min).
+    Token is short-lived (300, default 5 min).
     Intermediate directories are created automatically.
     """
     crew_id = request.path_params.get("crew_id", "")

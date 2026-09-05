@@ -9,6 +9,8 @@ Allow operators to set install.sh defaults in a shell config file rather than pa
 ### Requirement: Config file sourcing with correct precedence
 The system SHALL accept a `--config <path>` flag pointing to a shell file that exports configuration variables. The config file SHALL be sourced BEFORE other flags are processed, so that command-line flags take precedence over values from the config file. Every supported variable SHALL be assigned a literal built-in default BEFORE the config file is sourced, so the config file's assignment (if any) unconditionally overrides that default rather than an ambient value inherited from the invoking shell's environment. Resolution order for every variable: built-in default → config file → command-line flag (where a corresponding flag exists). The system SHALL NOT treat an environment variable exported in the invoking shell as a configuration input at any point in this resolution — an ambient value with no corresponding config-file entry or flag SHALL be ignored, and the built-in default SHALL apply instead. A command-line flag is not required to mirror a single config-file variable one-to-one; a flag MAY represent a composite concept spanning what were previously multiple separate variables (for example, `--public-url` setting `GA_HOST_URL`, which replaced the separate `GA_FILE_PUBLIC_URL`/`GA_MCP_PUBLIC_URL` variables).
 
+Before sourcing the config file, `install.sh` SHALL check whether it contains `GA_PORTAL_PORT`. If found, it SHALL print a deprecation warning and automatically substitute `GA_PORTAL_PORT` with `PORT` in the effective config, so that existing config files continue to work without requiring manual edits.
+
 #### Scenario: Config file sets defaults, no flags override
 - **WHEN** `install.sh` runs with `--config ./my.conf` and `my.conf` exports `PORT=9000`
 - **AND** no `--port` flag is passed
@@ -30,6 +32,12 @@ The system SHALL accept a `--config <path>` flag pointing to a shell file that e
 #### Scenario: Config file with all supported variables
 - **WHEN** a config file exports any combination of: `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE`, `PORT`, `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT`, `GA_API_KEY`, `GA_HOST_URL`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MACHINE_CPUS`, `GA_MACHINE_MEMORY`, `GA_MACHINE_DISK`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`
 - **THEN** each exported variable SHALL act as a default, overridable by its corresponding flag where one exists
+- **AND** the following variables SHALL no longer be supported as operator-configurable inputs and SHALL be ignored if present: `GA_PORTAL_PORT` (superseded by `PORT`), `HOST`, `GA_PORTAL_ADMIN_URL`, `GA_FILE_TTL_SECS`, `GA_PICKUP_MAX_POLL_SECS`, `GA_MEMORY_WAIT_SECS`, `KC_GATEWAY_TOKEN_TTL`, `GA_ENFORCE_HTTPS_REDIRECT`, `GA_CSP_ENFORCE`
+
+#### Scenario: GA_PORTAL_PORT in config file is auto-migrated
+- **WHEN** `install.sh` runs with `--config ./my.conf` and `my.conf` contains `GA_PORTAL_PORT=9000`
+- **THEN** `install.sh` SHALL print a deprecation warning stating `GA_PORTAL_PORT` is renamed to `PORT`
+- **AND** the effective value of `PORT` SHALL be `9000` (the migration is applied automatically — no manual edit required)
 
 #### Scenario: Config file sets git author identity
 - **WHEN** `install.sh` runs with `--config ./my.conf` and `my.conf` exports `GA_GIT_AUTHOR_NAME="Your Name"` and `GA_GIT_AUTHOR_EMAIL="you@example.com"`
@@ -50,6 +58,11 @@ The system SHALL accept a `--config <path>` flag pointing to a shell file that e
 ### Requirement: Config file format documentation
 `docs/configuration.md` SHALL document the config file format (shell file exporting variables), list all supported variables, and state the resolution order explicitly: built-in default → config file → command-line flag, with no ambient-environment-variable tier. It SHALL also state, for variables that are passed through into the transport container's own runtime environment, that this is a distinct later step (`install.sh` baking its own already-resolved values into `podman run -e` flags) and not something an operator sets by exporting a variable in any shell.
 
+The documentation SHALL also document the full model precedence chain:
+`dispatch(model=...)` > `KC_MODEL_OVERRIDE` > per-agent model field > `KC_MODEL_DEFAULT` > KiroCrew built-in default
+
+Variables removed from the operator-configurable surface (`HOST`, `GA_PORTAL_ADMIN_URL`, `GA_FILE_TTL_SECS`, `GA_PICKUP_MAX_POLL_SECS`, `GA_MEMORY_WAIT_SECS`, `KC_GATEWAY_TOKEN_TTL`, `GA_ENFORCE_HTTPS_REDIRECT`, `GA_CSP_ENFORCE`) SHALL NOT appear in the supported variable list. `GA_PORTAL_PORT` SHALL appear only as a deprecated alias with a note pointing to `PORT`.
+
 #### Scenario: Config file section present in docs
 - **WHEN** reading `docs/configuration.md`
 - **THEN** it SHALL contain a "Config file" section explaining that the file is a shell script exporting variables, listing all supported variable names, and stating the resolution order: built-in default → config file → command-line flag
@@ -57,6 +70,14 @@ The system SHALL accept a `--config <path>` flag pointing to a shell file that e
 #### Scenario: No ambient environment variable tier documented
 - **WHEN** reading `docs/configuration.md`
 - **THEN** it SHALL NOT describe exporting a variable in the invoking shell as a supported way to configure `install.sh` or `uninstall.sh`
+
+#### Scenario: Model precedence table present in docs
+- **WHEN** reading `docs/configuration.md`
+- **THEN** it SHALL include a model precedence table or section documenting: `dispatch(model=...)` > `KC_MODEL_OVERRIDE` > per-agent model > `KC_MODEL_DEFAULT` > KiroCrew built-in
+
+#### Scenario: Removed vars absent from docs
+- **WHEN** reading `docs/configuration.md`
+- **THEN** the removed variables SHALL NOT appear as supported operator-configurable inputs
 
 ### Requirement: Auth docs config file reference
 `docs/auth.md` SHALL document the config file as the first item in identity provider resolution order (config file → flags → interactive prompt) and include an example config file snippet for identity provider settings.

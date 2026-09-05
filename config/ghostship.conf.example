@@ -5,28 +5,19 @@
 # install.sh) — uncomment and edit only the ones you want to override.
 # Full reference: docs/configuration.md
 
-# ── Network ───────────────────────────────────────────────────────────────────
-# Port the transport listens on (MCP + file transfer on the same port).
+# ── Common ────────────────────────────────────────────────────────────────────
+# Port the transport (and ga-portal / Caddy) listen on.
+# Note: GA_PORTAL_PORT is the deprecated alias for PORT — use PORT instead.
+#   Old config files using GA_PORTAL_PORT are auto-migrated by install.sh.
 # PORT=64057
-
-# Interface the transport binds inside the container. Default 0.0.0.0 binds all
-# interfaces; host-side install.sh publishes to 127.0.0.1 only. Set to 127.0.0.1
-# for loopback-only binding on non-containerised installs.
-# HOST=0.0.0.0
 
 # Public URL baked into presigned evac/supply links.
 # For local installs, leave unset (defaults to http://localhost:<PORT>).
 # For remote installs, set to the publicly reachable address.
 # GA_HOST_URL=""
 
-# ── Authentication ────────────────────────────────────────────────────────────
 # API key for MCP endpoint auth. Leave unset for local/trusted installs.
 # GA_API_KEY=""
-
-# kiro-cli identity provider (omit to use default Builder ID / free tier).
-# KIRO_IDENTITY_PROVIDER=""
-# KIRO_REGION=""
-# KIRO_LICENSE=""
 
 # Two auth paths for kiro-cli inside crews:
 #   Option A — API key (Pro+, headless): set KIRO_API_KEY to skip the device-code
@@ -36,17 +27,27 @@
 #   Option B — Device code (default, all tiers): leave KIRO_API_KEY unset. After
 #     install, run POST /login once to complete the browser-based auth flow. For
 #     org (IAM Identity Center) licensing, also set the KIRO_IDENTITY_PROVIDER /
-#     KIRO_REGION / KIRO_LICENSE vars above.
+#     KIRO_REGION / KIRO_LICENSE vars below.
 # KIRO_API_KEY=""
 
-# ── Model ─────────────────────────────────────────────────────────────────────
-# Override the default model for all crew agents.
+# kiro-cli identity provider (omit to use default Builder ID / free tier).
+# KIRO_IDENTITY_PROVIDER=""
+# KIRO_REGION=""
+# KIRO_LICENSE=""
+
+# Override the model for all crew agents.
 # KC_MODEL_OVERRIDE=""
 
 # Set a global model fallback for agents that don't have a per-agent model set.
-# Lower precedence than KC_MODEL_OVERRIDE and per-agent model fields.
-# Precedence: KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
+# Precedence: dispatch(model=...) > KC_MODEL_OVERRIDE > per-agent model field > KC_MODEL_DEFAULT > KiroCrew built-in
 # KC_MODEL_DEFAULT=""
+
+# When both vars are set, all crew commits carry the operator's identity as
+# both author and committer. Unset → per-persona identity is used (default).
+# GA_GIT_AUTHOR_NAME="Your Name"
+# GA_GIT_AUTHOR_EMAIL="you@example.com"
+
+# ── Advanced ──────────────────────────────────────────────────────────────────
 
 # ── Dedicated Podman Machine ──────────────────────────────────────────────────
 # Provision an isolated Podman machine (macOS) or instance (Linux) exclusively
@@ -90,9 +91,6 @@
 # Set to 0 to disable the gate entirely.
 # GA_MIN_FREE_MEM_GB=2.0
 
-# How long to wait (seconds) for memory to free up before failing the launch.
-# GA_MEMORY_WAIT_SECS=60
-
 # ── KiroCrew memory thresholds ────────────────────────────────────────────────
 # Written to config.local.json inside each crew at launch.
 # GA_SPAWN_MIN_MEMORY_GB=1.5
@@ -119,19 +117,6 @@
 # non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
 # GA_CREW_AGENT=kiro
 
-# ── File transfer ─────────────────────────────────────────────────────────────
-# TTL (seconds) for presigned evac/supply file URLs.
-# GA_FILE_TTL_SECS=300
-
-# Max seconds to poll for a pickup file to appear before giving up.
-# GA_PICKUP_MAX_POLL_SECS=30
-
-# ── Gateway ───────────────────────────────────────────────────────────────────
-# TTL for the KiroCrew gateway token minted for each crew.
-# Accepted format: <N>[s|m|h|d] where N is a positive integer, e.g. 24h, 3600s, 7d, 30m.
-# Invalid values are rejected at startup with a WARNING; the default 24h is used instead.
-# KC_GATEWAY_TOKEN_TTL=24h
-
 # ── Transport TLS / security headers (TRN-70) ─────────────────────────────────
 # Minimum TLS version enforced when the app terminates TLS directly ("1.2"/"1.3").
 # GA_TLS_MIN_VERSION=1.2
@@ -142,12 +127,6 @@
 
 # Emit baseline security headers (HSTS, etc.). Default on.
 # GA_ENABLE_SECURITY_HEADERS=1
-
-# 301-redirect plaintext HTTP to HTTPS. Staged rollout; default off.
-# GA_ENFORCE_HTTPS_REDIRECT=0
-
-# Send CSP as enforcing rather than report-only. Staged rollout; default off.
-# GA_CSP_ENFORCE=0
 
 # ── HTTP rate limiting (TRN-52) ───────────────────────────────────────────────
 # Per-endpoint sliding-window request limits. Each value is "<count>:<window_secs>"
@@ -164,14 +143,6 @@
 # GA_RATE_LIMIT_FILES=60:60
 # /crews/*/api/* — proxied crew API (default 120 req / 60 s).
 # GA_RATE_LIMIT_CREW_API=120:60
-
-# ── Git author identity ───────────────────────────────────────────────────────
-# When both vars are set, all crew commits carry the operator's identity as
-# both author and committer. Unset → per-persona identity is used (default).
-# Note: this applies to ALL agents — Ghost, Banshee, etc. will all commit as
-# the configured operator. Leave unset to keep per-persona differentiation.
-# GA_GIT_AUTHOR_NAME="Your Name"
-# GA_GIT_AUTHOR_EMAIL="you@example.com"
 
 # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
 # Each crew launched with dashboard=True is assigned a host port from the range
@@ -199,10 +170,6 @@
 # to regenerate compose.yml. The GA_PORTAL_* vars below still configure how the
 # portal behaves.
 
-# URL of the Caddy admin API (reachable from ga-transport over ga-portside).
-# Override only when running Caddy on a non-standard address.
-# GA_PORTAL_ADMIN_URL=http://ga-portal:2019
-
 # TLS mode. Choose one that fits your environment:
 #
 #   internal (default) — Caddy built-in CA issues self-signed certs. Works
@@ -225,11 +192,6 @@
 
 # Domain for ACME (Let's Encrypt). Required when GA_PORTAL_TLS_MODE=acme.
 # GA_PORTAL_DOMAIN=""
-
-# Port Caddy listens on. Works for both HTTP and HTTPS — TLS mode is independent
-# of port choice. Default 64057 matches the old direct-transport endpoint so
-# existing MCP client configs work without changes.
-# GA_PORTAL_PORT=64057
 
 # TTL (seconds) for gs_session cookies issued by /dashboard-login.
 # Default 86400 (24 h). Sessions are in-memory only and reset on transport restart.

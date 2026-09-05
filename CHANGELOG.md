@@ -2,6 +2,37 @@
 
 ## v0.3.0 (unreleased)
 
+### TRN-111 — Config consolidation: remove 8 dead env vars, rename GA_PORTAL_PORT → PORT ⚠️ BREAKING
+
+Removes 8 env vars that are now hardcoded internally and renames `GA_PORTAL_PORT` to `PORT`.
+
+**Breaking change — GA_PORTAL_PORT renamed to PORT:**
+
+- `GA_PORTAL_PORT` is removed. Use `PORT` (which already existed) for the same purpose.
+- **Auto-migration:** `install.sh` detects `GA_PORTAL_PORT` in config files and automatically rewrites it to `PORT` before sourcing. A deprecation warning is printed. No operator action is required for existing config files, but you should update your config to use `PORT` to silence the warning.
+- `install.sh` now also explicitly removes the `ga-portal` container before `compose up` (in addition to `ga-transport`) to prevent port binding conflicts on upgrade.
+
+**Removed env vars (internal — no operator action needed, defaults unchanged):**
+
+| Variable | Was | Now |
+|:---------|:----|:----|
+| `GA_FILE_TTL_SECS` | configurable, default 300 | hardcoded to `300` |
+| `GA_PICKUP_MAX_POLL_SECS` | configurable, default 30 | hardcoded to `30` |
+| `GA_MEMORY_WAIT_SECS` | configurable, default 60 | hardcoded to `60` |
+| `KC_GATEWAY_TOKEN_TTL` | configurable, default `24h` | hardcoded to `"24h"` |
+| `GA_ENFORCE_HTTPS_REDIRECT` | staged flag, default `0` | unconditionally `False` (Caddy owns redirects) |
+| `GA_CSP_ENFORCE` | staged flag, default `0` | unconditionally `True` (always enforce CSP) |
+| `GA_PORTAL_ADMIN_URL` | configurable, default `http://ga-portal:2019` | hardcoded to `"http://ga-portal:2019"` |
+
+**Code changes:**
+
+- `transport/config.py`: removed 8 fields (`ga_file_ttl_secs`, `ga_pickup_max_poll_secs`, `ga_memory_wait_secs`, `kc_gateway_token_ttl`, `ga_enforce_https_redirect`, `ga_csp_enforce`, `ga_portal_admin_url`, `ga_portal_port`) and their `from_env()` bindings. Removed `_validate_token_ttl` and `_TTL_RE`. Removed unused `_env_bool_default_off`.
+- `transport/server.py`: removed 6 module-level constants (`GA_FILE_TTL_SECS`, `GA_PICKUP_MAX_POLL_SECS`, `GA_MEMORY_WAIT_SECS`, `KC_GATEWAY_TOKEN_TTL`, `GA_ENFORCE_HTTPS_REDIRECT`, `GA_CSP_ENFORCE`); hardcoded their values at all call sites. `_caddy_admin_url()` now returns the hardcoded literal instead of reading `cfg.ga_portal_admin_url`.
+- `transport/lifecycle.py`: removed `GA_MEMORY_WAIT_SECS` and `KC_GATEWAY_TOKEN_TTL` module constants; hardcoded values at call sites.
+- `docs/configuration.md`: removed the 8 vars from the reference table; updated `GA_PORTAL_PORT` entry to deprecated alias; added **Model precedence** section.
+- `config/ghostship.conf.example`: restructured with `# ── Common ──` and `# ── Advanced ──` sections; removed all 8 deleted vars and `GA_PORTAL_PORT`.
+- Ticket: TRN-111.
+
 ### TRN-113 — KiroCrew base image bump 0.4.0 → 0.5.0
 
 Bumps the pinned KiroCrew base image from `0.4.0` to `0.5.0` across the crew
