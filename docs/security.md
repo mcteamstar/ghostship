@@ -91,31 +91,9 @@ detected from the scheme or `X-Forwarded-Proto` (TLS is terminated at the edge).
 Minimum TLS is 1.2. When the app terminates TLS directly (non-edge installs),
 set `GA_TLS_CERTFILE` / `GA_TLS_KEYFILE`; `GA_TLS_MIN_VERSION` sets the floor.
 
-### Staged cutover of the BREAKING change
+### HTTPS redirect and CSP enforcement
 
-The plaintext-HTTP → HTTPS redirect is **BREAKING** for HTTP-only clients and is
-rolled out in stages, each config-toggled:
-
-1. **Monitor** — leave `GA_ENFORCE_HTTPS_REDIRECT=0`; plaintext hits are served
-   and logged so affected clients are identified.
-2. **Notify** — announce the cutover date and the HTTPS endpoints to those
-   clients before flipping the flag.
-3. **Enforce** — set `GA_ENFORCE_HTTPS_REDIRECT=1`; plaintext requests receive a
-   301 to their HTTPS equivalent and no application content is served over
-   plaintext. Health probes (`/health`) are exempt.
-4. **CSP enforce** — CSP ships report-only (`GA_CSP_ENFORCE=0`) first; after
-   triaging report-only violations, set `GA_CSP_ENFORCE=1` to enforce.
-
-**Rollback:** set `GA_ENFORCE_HTTPS_REDIRECT=0` and/or `GA_CSP_ENFORCE=0` and
-restart — no code change.
-
-### Client notice (pre-cutover)
-
-> The Ghost Academy transport will require HTTPS for all external endpoints on
-> the announced cutover date. Plaintext HTTP requests will be redirected (HTTP
-> 301) to their HTTPS equivalent and will no longer be served directly. Update
-> integrations to use the `https://` endpoints before the cutover. HSTS will be
-> sent on HTTPS responses. No endpoint paths change — only the scheme.
+HTTPS redirect is handled unconditionally by Caddy. CSP is unconditionally enforced. Neither behaviour is configurable via environment variables.
 
 ## Input validation
 
