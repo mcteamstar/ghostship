@@ -1629,13 +1629,13 @@ class TransportSecretMiddleware:
 
         # Extract X-Transport-Token from request headers.
         headers = dict(scope.get("headers", []))
-        token = headers.get(b"x-portal-token", b"").decode("latin-1")
+        token = headers.get(b"x-transport-token", b"").decode("latin-1")
 
         if not hmac.compare_digest(token, self._secret):
             response = Response(
                 content="Unauthorized",
                 status_code=401,
-                headers={"WWW-Authenticate": "Portal"},
+                headers={"WWW-Authenticate": "Transport-Token"},
             )
             await response(scope, receive, send)
             return

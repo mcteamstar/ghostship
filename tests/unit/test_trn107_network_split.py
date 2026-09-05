@@ -104,7 +104,7 @@ class TransportSecretMiddlewareTests(unittest.TestCase):
         downstream = _FakeDownstream()
         secret = "my-portal-secret-abc123"
         mw = server.TransportSecretMiddleware(downstream, transport_secret=secret)
-        scope = _http_scope(headers=[(b"x-portal-token", secret.encode())])
+        scope = _http_scope(headers=[(b"x-transport-token", secret.encode())])
         status, _, _ = _run_asgi(mw, scope)
         self.assertEqual(status, 200)
         self.assertTrue(downstream.called)
@@ -113,7 +113,7 @@ class TransportSecretMiddlewareTests(unittest.TestCase):
         """Request with wrong X-Transport-Token value → 401."""
         downstream = _FakeDownstream()
         mw = server.TransportSecretMiddleware(downstream, transport_secret="correct")
-        scope = _http_scope(headers=[(b"x-portal-token", b"wrong")])
+        scope = _http_scope(headers=[(b"x-transport-token", b"wrong")])
         status, _, _ = _run_asgi(mw, scope)
         self.assertEqual(status, 401)
         self.assertFalse(downstream.called)
