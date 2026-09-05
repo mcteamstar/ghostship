@@ -386,3 +386,109 @@ class PodmanNetworkHelperTests(unittest.TestCase):
         )
         networks = client.container_networks("gs-missing")
         self.assertEqual(networks, [])
+
+    def test_network_connect_raises_on_non_409_error(self) -> None:
+        """Fix 5: network_connect raises on a non-409 HTTP error."""
+        import httpx
+        client = self._make_client()
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server Error", request=MagicMock(), response=resp
+        )
+        client._c.post.return_value = resp
+        with self.assertRaises(httpx.HTTPStatusError):
+            client.network_connect("gs-alpha", "ga-starboard")
+
+    def test_network_connect_200_does_not_raise(self) -> None:
+        """Fix 5: network_connect succeeds silently on 200."""
+        client = self._make_client()
+        resp = MagicMock()
+        resp.status_code = 200
+        client._c.post.return_value = resp
+        # Should not raise
+        client.network_connect("gs-alpha", "ga-starboard")
+
+    def test_network_connect_204_does_not_raise(self) -> None:
+        """Fix 5: network_connect succeeds silently on 204."""
+        client = self._make_client()
+        resp = MagicMock()
+        resp.status_code = 204
+        client._c.post.return_value = resp
+        # Should not raise
+        client.network_connect("gs-alpha", "ga-starboard")
+
+
+# ── Fix 4: cookie refresh after migration ─────────────────────────────────────
+
+class MigrateCrewNetworkCookieTests(unittest.TestCase):
+    """Fix 4: _migrate_crew_network refreshes the session cookie after a successful
+    migration so the crew does not start with a stale token risking a 401."""
+
+    def _make_podman(self, *, container_networks: list[str]) -> MagicMock:
+        podman = MagicMock()
+        podman.container_networks.return_value = container_networks
+        podman.container_stop.return_value = None
+        podman.container_start.return_value = None
+        podman.network_connect.return_value = None
+        podman.network_disconnect.return_value = None
+        return podman
+
+    def test_cookie_refreshed_on_successful_migration(self) -> None:
+        """After gateway is ready, _mint_cookie is called and registry updated."""
+        podman = self._make_podman(container_networks=["ga-net"])
+        reg = {"crews": {"alpha": {"container": "gs-alpha", "status": "running", "cookie": "old-cookie"}}}
+
+        with (
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
+            patch.object(lifecycle, "_mint_cookie", return_value="new-cookie") as mint,
+            patch.object(lifecycle, "_registry_lock"),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry") as save,
+        ):
+            result = lifecycle._migrate_crew_network(podman, "alpha", "gs-alpha")
+
+        self.assertTrue(result)
+        mint.assert_called_once()
+        save.assert_called_once()
+        self.assertEqual(reg["crews"]["alpha"]["cookie"], "new-cookie")
+        self.assertEqual(reg["crews"]["alpha"]["status"], "running")
+
+    def test_migration_returns_true_even_if_cookie_refresh_fails(self) -> None:
+        """If _mint_cookie returns None, migration still returns True (non-fatal)."""
+        podman = self._make_podman(container_networks=["ga-net"])
+        reg = {"crews": {"alpha": {"container": "gs-alpha", "status": "running", "cookie": "old-cookie"}}}
+
+        with (
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
+            patch.object(lifecycle, "_mint_cookie", return_value=None),
+            patch.object(lifecycle, "_registry_lock"),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
+        ):
+            result = lifecycle._migrate_crew_network(podman, "alpha", "gs-alpha")
+
+        self.assertTrue(result)
+        # Cookie was NOT updated (mint returned None)
+        self.assertEqual(reg["crews"]["alpha"]["cookie"], "old-cookie")
+
+    def test_no_cookie_refresh_when_gateway_not_ready(self) -> None:
+        """_mint_cookie is NOT called when the gateway fails to become ready."""
+        podman = self._make_podman(container_networks=["ga-net"])
+
+        with (
+            patch.object(lifecycle, "_wait_gateway", return_value=False),
+            patch.object(lifecycle, "_mint_cookie") as mint,
+        ):
+            result = lifecycle._migrate_crew_network(podman, "alpha", "gs-alpha")
+
+        self.assertFalse(result)
+        mint.assert_not_called()
+
+    def test_network_connect_exception_causes_migration_failure(self) -> None:
+        """Fix 5+4 integration: network_connect raising causes migration to return False."""
+        podman = self._make_podman(container_networks=["ga-net"])
+        podman.network_connect.side_effect = RuntimeError("connection refused")
+
+        result = lifecycle._migrate_crew_network(podman, "alpha", "gs-alpha")
+        self.assertFalse(result)
