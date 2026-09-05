@@ -14,12 +14,19 @@ When a dashboard is requested, the transport allocates a dedicated port from the
 
 ```
 Browser → host:64058 (HTTPS, via ga-portal)
-        → forward_auth check at ga-transport:8000/dashboard-auth
-        → (on valid gs_session cookie) reverse_proxy → ga-transport:8000
+        → forward_auth check at ga-transport:{PORT}/dashboard-auth
+        → (on valid gs_session cookie) reverse_proxy → ga-transport:{PORT}
               rewrite → /crews/{crew_id}/ui/{original_path}
         → transport injects Cookie: mc_token_5476=<crew_token>
         → gs-{crew_id}:5476
 ```
+
+Every hop from `ga-portal` to `ga-transport` also carries an `X-Transport-Token`
+header (the `GA_TRANSPORT_SECRET`, read from the mounted Podman secret file) —
+see [network-split spec](../openspec/specs/transport/network-split/spec.md). A
+route to `ga-transport` missing or misconfiguring this header gets a 401 before
+it reaches any dashboard logic; a stale or wrong `{PORT}` value gets a 502
+before that.
 
 > **TRN-102:** Caddy no longer proxies dashboard traffic to `gs-{crew_id}:5476` directly. It routes to the transport's cookie-injecting UI-proxy endpoint (`/crews/{crew_id}/ui/`), which forwards to the crew gateway. This resolves the **403 — IP mismatch** the gateway returned when the session cookie (minted from `ga-transport`'s IP) was presented on a request arriving from `ga-portal`'s IP: with TRN-102 the crew gateway is reached exclusively from `ga-transport`, so the cookie's IP binding is always satisfied.
 

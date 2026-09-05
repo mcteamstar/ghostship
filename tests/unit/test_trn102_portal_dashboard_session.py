@@ -226,11 +226,16 @@ class CaddyRoutesToTransportTests(unittest.TestCase):
 
         payload = mock_put.call_args.kwargs["json"]
         crew_proxy = payload["routes"][0]["handle"][-1]
-        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "ga-transport:8000")
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], f"ga-transport:{server.PORT}")
         self.assertEqual(crew_proxy["rewrite"]["uri"],
                          "/crews/demo/ui{http.request.uri.path}")
         # No Cookie is injected by Caddy anymore — the transport handles it.
-        self.assertNotIn("headers", crew_proxy)
+        # TRN-107: the portal secret header is injected instead.
+        self.assertNotIn("Cookie", crew_proxy["headers"]["request"]["set"])
+        self.assertEqual(
+            crew_proxy["headers"]["request"]["set"]["X-Transport-Token"],
+            ["{file./run/secrets/ga-transport-secret}"],
+        )
 
     def test_crew_proxy_never_dials_crew_gateway_directly(self) -> None:
         mock_put = Mock(return_value=self._resp(200))

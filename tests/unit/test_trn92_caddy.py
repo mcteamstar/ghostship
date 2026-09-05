@@ -104,9 +104,14 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
         # TRN-102: upstream is the transport, not the crew gateway; the path is
         # rewritten to /crews/{id}/ui/... and NO Cookie is injected in Caddy.
-        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "ga-transport:8000")
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], f"ga-transport:{server.PORT}")
         self.assertIn("/crews/alpha/ui", crew_proxy["rewrite"]["uri"])
-        self.assertNotIn("headers", crew_proxy)
+        # TRN-107: every route to ga-transport carries the portal secret header,
+        # regardless of whether GA_API_KEY is set.
+        self.assertEqual(
+            crew_proxy["headers"]["request"]["set"]["X-Transport-Token"],
+            ["{file./run/secrets/ga-transport-secret}"],
+        )
 
     def test_register_with_api_key_includes_forward_auth(self) -> None:
         """When GA_API_KEY is set, forward_auth handler precedes the crew proxy."""
@@ -124,10 +129,15 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(fwd_auth["handler"], "reverse_proxy")
         self.assertIn("dashboard-auth", fwd_auth["rewrite"]["uri"])
         self.assertIn("handle_response", fwd_auth)
+        # TRN-107: forward_auth also carries the portal secret header.
+        self.assertEqual(
+            fwd_auth["headers"]["request"]["set"]["X-Transport-Token"],
+            ["{file./run/secrets/ga-transport-secret}"],
+        )
         crew_proxy = handles[1]
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
         # TRN-102: crew proxy upstreams the transport, not the crew gateway.
-        self.assertEqual(crew_proxy["upstreams"][0]["dial"], "ga-transport:8000")
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], f"ga-transport:{server.PORT}")
 
     def test_register_treats_409_as_idempotent(self) -> None:
         """409 Conflict (existing @id) is treated as success — no retry, no exception."""

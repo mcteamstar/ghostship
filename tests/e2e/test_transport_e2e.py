@@ -19,6 +19,7 @@ Optional:
 import os
 import time
 import unittest
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -193,7 +194,61 @@ class TestSupplyEvac(unittest.TestCase):
         self.assertEqual(down.content, self.TEST_PAYLOAD)
 
 
-# ── 6. Auth gate ──────────────────────────────────────────────────────────────
+# ── 6. Dashboard proxy ────────────────────────────────────────────────────────
+#
+# Regression coverage: a crew launched with dashboard=True must actually be
+# reachable through ga-portal's per-crew dashboard port. This exact path
+# silently broke in production (first a 502, then a 401) after two unrelated
+# changes — the transport's internal port moving off a stale literal
+# (TRN-111 PORT consolidation) and the GA_TRANSPORT_SECRET gate shipping
+# without updating the dashboard registration code (TRN-107) — while every
+# other e2e test (health, dispatch, supply/evac, crew lifecycle) kept
+# passing, because none of them ever hit a dashboard port.
+
+
+@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+class TestDashboardProxy(unittest.TestCase):
+    CREW_ID = "e2e-dashboard"
+
+    def setUp(self):
+        try:
+            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+        except Exception:
+            pass
+
+    def tearDown(self):
+        try:
+            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+        except Exception:
+            pass
+
+    def test_dashboard_url_is_reachable(self):
+        result = _mcp_call("launch", crew_id=self.CREW_ID, dashboard=True)
+        self.assertEqual(result.get("status"), "ready")
+        dashboard_url = result.get("dashboard_url")
+        self.assertTrue(dashboard_url, f"Expected dashboard_url in launch response: {result}")
+
+        # dashboard_url's host is whatever GA_HOST_URL/localhost was baked in
+        # at install time, which may not be how this test process reaches the
+        # transport host. Keep its scheme/port, swap in GHOSTSHIP_E2E_URL's host.
+        e2e_host = urlsplit(GHOSTSHIP_E2E_URL).hostname
+        parts = urlsplit(dashboard_url)
+        probe_url = urlunsplit(
+            (parts.scheme, f"{e2e_host}:{parts.port}", parts.path or "/", "", "")
+        )
+
+        resp = httpx.get(probe_url, timeout=15.0, verify=False)
+        self.assertEqual(
+            resp.status_code,
+            200,
+            f"Dashboard proxy chain broken (ga-portal -> ga-transport -> "
+            f"gs-{self.CREW_ID}): GET {probe_url} -> {resp.status_code} "
+            f"{resp.text[:300]!r}",
+        )
+        self.assertIn("text/html", resp.headers.get("content-type", ""))
+
+
+# ── 7. Auth gate ──────────────────────────────────────────────────────────────
 
 
 @unittest.skipUnless(
@@ -233,7 +288,7 @@ class TestAuthGate(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
 
-# ── 7. Kiro auth cycle (opt-in, destructive) ─────────────────────────────────
+# ── 8. Kiro auth cycle (opt-in, destructive) ─────────────────────────────────
 
 
 @unittest.skipUnless(

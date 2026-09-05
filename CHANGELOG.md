@@ -2,6 +2,43 @@
 
 ## v0.3.0 (unreleased)
 
+### Fix — Crew dashboards were unreachable (502, then 401) since TRN-107/TRN-111
+
+Every crew launched with `dashboard=True` 502'd, and after the fix below, would
+have 401'd — the dashboard proxy path was never actually exercised end-to-end
+after two independently-landed changes.
+
+- `transport/server.py`'s `_caddy_register_crew` hardcoded `ga-transport:8000`
+  as the Caddy upstream dial target — a value that stopped meaning anything
+  once TRN-111 consolidated the transport's internal listen port onto the
+  single `PORT` variable (default `64057`). Every dashboard request 502'd
+  with `connect: connection refused`. Fixed to dial `ga-transport:{PORT}`
+  using the same module-level `PORT` constant the transport binds to.
+- `_caddy_register_crew`'s dynamically-built Caddy handlers (the crew
+  `reverse_proxy` and, when `GA_API_KEY` is set, the `forward_auth` handler)
+  never injected the `X-Transport-Token` header that TRN-107's
+  `TransportSecretMiddleware` requires on every request to `ga-transport`
+  ("every route without exception" per the network-split spec) — the static
+  Caddy config `install.sh` generates already did this, but the transport's
+  own dynamic per-crew registration was missed when TRN-107 shipped. Once the
+  port fix above stopped masking it, every dashboard request 401'd instead.
+  Fixed by injecting the same `{file./run/secrets/ga-transport-secret}`
+  header on both handlers.
+- Found by manually smoke-testing `launch(dashboard=True)` after the TRN-111
+  port rename — no existing test caught it because `tests/unit/test_trn92_caddy.py`
+  and `tests/unit/test_trn102_portal_dashboard_session.py` asserted the stale
+  `:8000` dial and the *absence* of headers as the expected/correct behavior,
+  and no e2e test exercised the dashboard path at all. Both test files
+  updated to assert the real dial target and the token header; a new
+  regression test class added to `tests/unit/test_trn107_network_split.py`
+  asserting `_caddy_register_crew`'s output directly (closing the gap between
+  the TRN-107 middleware tests and the TRN-92/TRN-102 code that has to satisfy
+  it); a new `TestDashboardProxy` e2e test added to `tests/e2e/test_transport_e2e.py`
+  that launches a crew with `dashboard=True` and fetches its `dashboard_url`.
+- `docs/dashboard-proxy.md`'s architecture diagram updated from the stale
+  `ga-transport:8000` to `ga-transport:{PORT}`, with a note on the
+  `X-Transport-Token` requirement.
+
 ### TRN-111 — Config consolidation: remove 8 dead env vars, rename GA_PORTAL_PORT → PORT ⚠️ BREAKING
 
 Removes 8 env vars that are now hardcoded internally and renames `GA_PORTAL_PORT` to `PORT`.
