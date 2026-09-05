@@ -72,6 +72,33 @@ DATA_DIR = Path(cfg.transport_data_dir)
 SCRIPTS_DIR = "/scripts"
 CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
+# SEC-01 — ref parameter validation
+_REF_RE = re.compile(r"^[a-zA-Z0-9_./:@^~\-]+$")
+
+
+def _validate_ref(ref: str) -> str:
+    """Validate a git ref parameter. Raises ValueError on invalid input."""
+    if not ref:
+        return ref
+    if ref.startswith("-"):
+        raise ValueError(f"ref must not start with '-': {ref!r}")
+    if not _REF_RE.match(ref):
+        raise ValueError(f"Invalid ref: {ref!r}")
+    return ref
+
+
+# SEC-02 — path traversal boundary enforcement
+def _safe_workspace_path(workspace_root: str, raw_path: str) -> Path:
+    """Resolve raw_path relative to workspace_root and verify it stays inside.
+    Raises ValueError if the resolved path escapes the workspace root.
+    """
+    root = Path(workspace_root).resolve()
+    clean = raw_path.lstrip("/")
+    resolved = (root / clean).resolve()
+    if not str(resolved).startswith(str(root)):
+        raise ValueError(f"Path escapes workspace root: {raw_path!r}")
+    return resolved
+
 
 # ── File-URL signing secret ───────────────────────────────────────────────────
 
@@ -362,6 +389,8 @@ def worker_git_bundle(
     bundle_ref = ref if ref else "--all"
     # `git bundle create -` writes the bundle to stdout, so no temp file / no
     # writable mount is needed — the volume can stay read-only.
+    # Note: `git bundle create` does not support `--` to end option processing;
+    # injection is prevented by _validate_ref validating `ref` before this call.
     return podman.worker_run(
         volume,
         ["git", "-C", repo_dir, "bundle", "create", "-", bundle_ref],
@@ -507,11 +536,21 @@ async def _handle_file_get(request: Request) -> Response:
     if not _verify_file_token(crew_id, path, expires, sig, ref, bundle):
         return PlainTextResponse("Forbidden", status_code=403)
 
+    # SEC-01: validate ref before any git invocation
+    try:
+        ref = _validate_ref(ref) if ref else ref
+    except ValueError as e:
+        return PlainTextResponse(str(e), status_code=400)
+
+    # SEC-02: resolve path and enforce workspace boundary
+    try:
+        _safe_workspace_path(KIRO_WORKSPACE_ROOT, path)
+    except ValueError as e:
+        return PlainTextResponse(str(e), status_code=400)
+
     # Sanitise path — no traversal outside workspace
     clean = path.lstrip("/")
     if not clean:
-        return PlainTextResponse("Invalid path", status_code=400)
-    if ".." in clean.split("/"):
         return PlainTextResponse("Invalid path", status_code=400)
 
     _ensure_crew_running, _require_crew = _crew_helpers()
@@ -589,6 +628,9 @@ async def _handle_file_get(request: Request) -> Response:
             bundle_path = f"{ws}/.kirocrew-bundle-{secrets.token_hex(16)}.bundle"
             try:
                 bundle_ref = ref if ref else "--all"
+                # Note: `git bundle create` does not support `--` to end option
+                # processing; injection is prevented by _validate_ref validating
+                # `ref` before any git invocation.
                 podman.container_exec_checked(
                     crew["container"],
                     ["git", "-C", repo_root, "bundle", "create", bundle_path, bundle_ref],
@@ -703,10 +745,14 @@ async def _handle_file_put(request: Request) -> Response:
     if not _verify_file_token(crew_id, path, expires, sig, mode=mode):
         return PlainTextResponse("Forbidden", status_code=403)
 
+    # SEC-02: resolve path and enforce workspace boundary
+    try:
+        _safe_workspace_path(KIRO_WORKSPACE_ROOT, path)
+    except ValueError as e:
+        return PlainTextResponse(str(e), status_code=400)
+
     # Sanitise path — no traversal outside workspace
     clean = path.lstrip("/")
-    if ".." in clean.split("/"):
-        return PlainTextResponse("Invalid path", status_code=400)
 
     _ensure_crew_running, _require_crew = _crew_helpers()
     try:
