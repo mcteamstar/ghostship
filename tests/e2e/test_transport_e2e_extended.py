@@ -40,6 +40,10 @@ _SHARED_LAUNCH_RESULT: dict = {}
 def setUpModule():  # noqa: N802
     if not GHOSTSHIP_E2E_URL:
         return  # all classes skip via @skipUnless anyway
+    # Stagger: when running in parallel with test_transport_e2e.py, delay this
+    # file's shared-crew launch so both setUpModule calls don't fire at the same
+    # time and saturate the host's max-active-crews limit.
+    time.sleep(35)
     try:
         _mcp_call("nuke", crew_id=SHARED_CREW_ID, confirm=True)
     except Exception:
