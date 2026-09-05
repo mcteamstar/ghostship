@@ -744,5 +744,90 @@ class FileGetBranchingTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
 
+
+# ── FileSecretPersistenceTests (F-3) ─────────────────────────────────────────
+#
+# Test _load_or_create_file_secret from transport/files.py:
+#   1. First call creates DATA_DIR/ga-file-secret with mode 0600.
+#   2. Second call returns the same secret (no regeneration).
+#   3. GA_FILE_SECRET env var overrides the on-disk secret.
+#
+# DATA_DIR is patched to a temp directory for full isolation.
+
+
+class FileSecretPersistenceTests(unittest.TestCase):
+    """Tests for _load_or_create_file_secret (F-3)."""
+
+    def test_creates_secret_file_with_correct_mode(self) -> None:
+        """First call creates DATA_DIR/ga-file-secret with mode 0600."""
+        import os
+        import stat
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with (
+                patch.object(files_mod, "DATA_DIR", tmp_path),
+                patch.dict(os.environ, {}, clear=False),
+            ):
+                os.environ.pop("GA_FILE_SECRET", None)
+                secret = files_mod._load_or_create_file_secret()
+
+            secret_file = tmp_path / "ga-file-secret"
+            self.assertTrue(secret_file.exists(), "ga-file-secret was not created")
+            self.assertTrue(len(secret) > 0, "returned secret must be non-empty")
+            file_mode = stat.S_IMODE(secret_file.stat().st_mode)
+            self.assertEqual(
+                file_mode,
+                0o600,
+                f"Expected mode 0600 but got 0{file_mode:o}",
+            )
+
+    def test_reuses_existing_secret_on_second_call(self) -> None:
+        """Second call returns the same secret -- does not regenerate."""
+        import os
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with patch.object(files_mod, "DATA_DIR", tmp_path):
+                os.environ.pop("GA_FILE_SECRET", None)
+                first = files_mod._load_or_create_file_secret()
+                second = files_mod._load_or_create_file_secret()
+
+        self.assertEqual(
+            first,
+            second,
+            "Second call returned a different secret -- file was regenerated",
+        )
+
+    def test_env_var_override_takes_precedence(self) -> None:
+        """GA_FILE_SECRET env var overrides the on-disk secret."""
+        import os
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with (
+                patch.object(files_mod, "DATA_DIR", tmp_path),
+                patch.dict(os.environ, {"GA_FILE_SECRET": "env-override-secret"}),
+            ):
+                result = files_mod._load_or_create_file_secret()
+
+        self.assertEqual(
+            result,
+            "env-override-secret",
+            "GA_FILE_SECRET env var was not honoured",
+        )
+        # The file must not be created when env var short-circuits file access.
+        self.assertFalse(
+            (tmp_path / "ga-file-secret").exists(),
+            "ga-file-secret must not be created when GA_FILE_SECRET is set",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

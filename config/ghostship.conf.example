@@ -6,6 +6,10 @@
 # Full reference: docs/configuration.md
 
 # ── Common ────────────────────────────────────────────────────────────────────
+# Bind address for the transport uvicorn server.
+# Inside the container this should stay at the default (all interfaces).
+# HOST=0.0.0.0
+
 # Port the transport (and ga-portal / Caddy) listen on.
 # Note: GA_PORTAL_PORT is the deprecated alias for PORT — use PORT instead.
 #   Old config files using GA_PORTAL_PORT are auto-migrated by install.sh.
