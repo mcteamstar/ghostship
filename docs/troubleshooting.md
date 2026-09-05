@@ -118,9 +118,9 @@ Timed out waiting for crew gateway (30s)
    ```bash
    podman logs gs-<crew_id>
    ```
-3. Verify the `ga-net` network exists and the container joined it:
+3. Verify the `ga-starboard` network exists and the container joined it:
    ```bash
-   podman network inspect ga-net
+   podman network inspect ga-starboard
    ```
 
 If the container exits immediately, it's usually a missing auth file or a
@@ -149,8 +149,8 @@ podman restart gs-<crew_id>
 
 The transport has a pre-launch memory gate controlled by `GA_MIN_FREE_MEM_GB`
 (default `2.0`). Before starting a crew container, the transport checks
-available host memory and waits up to `GA_MEMORY_WAIT_SECS` (default `60`)
-for sufficient headroom.
+available host memory and waits up to 60 seconds for sufficient headroom
+(this wait duration is hardcoded and is not configurable via environment variable).
 
 ### Symptoms
 
@@ -217,16 +217,16 @@ If `install.sh` fails with a machine-related error:
    ```bash
    podman machine list
    ```
-2. If the `ghostship` machine shows as "stopped", start it manually:
+2. If the `ghost-academy` machine shows as "stopped", start it manually:
    ```bash
-   podman machine start ghostship
+   podman machine start ghost-academy
    ```
 3. If `init` failed (machine doesn't appear in the list), check available
    disk and memory — the machine requires the configured `GA_MACHINE_DISK`
    (default 100 GB) free disk space.
 4. Check for conflicting machine names:
    ```bash
-   podman machine inspect ghostship
+   podman machine inspect ghost-academy
    ```
 
 ### Dedicated socket not found (Linux)

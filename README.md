@@ -87,6 +87,8 @@ options, and how to keep your fork current with upstream.
 
 Before your first `launch`, complete the device auth flow — open the URL returned by `POST /login` or by calling `launch` without auth. See [docs/auth.md](docs/auth.md) for the walkthrough.
 
+> **Shortcut:** `ghostship setup` automatically registers the MCP server and installs skill symlinks for detected agent clients (kiro-cli, Claude Code, opencode). Run it after `./install.sh` as an alternative to the manual JSON/CLI steps below. It is idempotent — safe to re-run.
+
 **Kiro (via Power):**
 
 Install the ghostship power from the Powers panel → Add Custom Power → Import from GitHub:
