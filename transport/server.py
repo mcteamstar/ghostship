@@ -33,11 +33,11 @@ Auth flow:
   and injected into each crew's isolated kiro-cli SQLite DB.
 
 Networking:
-  All crew containers join ga-net. Transport reaches them by name:
+  All crew containers join ga-starboard. Transport reaches them by name:
   http://gs-<id>:5476. Container-name DNS confirmed working.
 
 Naming:
-  ga-* is Ghost Academy infrastructure (ga-transport, ga-net) — fixed,
+  ga-* is Ghost Academy infrastructure (ga-transport, ga-portside, ga-starboard) — fixed,
   singleton names. gs-* is per-crew ghostship resources (gs-<crew_id>,
   gs-vol-<crew_id>, gs-home-<crew_id>) — the separate prefix means a
   crew_id can never collide with a ga-* infra name, since they're
@@ -285,7 +285,8 @@ KC_IMAGE = cfg.kc_image
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
 KC_BASE_IMAGE = cfg.kc_base_image
-GA_NETWORK = "ga-net"
+GA_PORTSIDE_NETWORK = "ga-portside"
+GA_STARBOARD_NETWORK = "ga-starboard"
 GA_MAX_CREWS = cfg.ga_max_crews
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"
@@ -418,6 +419,34 @@ def _load_api_key() -> str:
 GA_API_KEY = _load_api_key()
 
 
+def _load_portal_secret() -> str:
+    """Load GA_PORTAL_SECRET from Podman secret file (TRN-107).
+
+    Reads /run/secrets/ga-portal-secret. Returns empty string when the file is
+    absent (allows transport to start in dev/test environments without the
+    secret). Registers the value with the log redaction filter when non-empty.
+    """
+    _logger = logging.getLogger(__name__)
+    secret_path = Path("/run/secrets/ga-portal-secret")
+    try:
+        if secret_path.is_file():
+            secret = secret_path.read_text().strip()
+            if secret:
+                _security.register_secret(secret)
+                return secret
+    except Exception:
+        pass
+
+    _logger.warning(
+        "GA_PORTAL_SECRET is not set — PortalSecretMiddleware will run in "
+        "pass-through mode. Set up ga-portal-secret via install.sh for production."
+    )
+    return ""
+
+
+GA_PORTAL_SECRET = _load_portal_secret()
+
+
 def _auth_file_path() -> Path:
     """Return the reusable kiro-cli auth file under the data mount."""
     return DATA_DIR / GA_AUTH_FILE
@@ -491,7 +520,8 @@ try:
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
-        GA_NETWORK,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
         KIRO_CLI_DB,
         KIRO_CREW_DIR,
@@ -546,7 +576,8 @@ except ModuleNotFoundError:
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
-        GA_NETWORK,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
         KIRO_CLI_DB,
         KIRO_CREW_DIR,
@@ -1566,6 +1597,50 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
+
+
+class PortalSecretMiddleware:
+    """ASGI middleware enforcing the GA_PORTAL_SECRET X-Portal-Token gate (TRN-107).
+
+    When ``portal_secret`` is non-empty, every incoming HTTP request must carry
+    an ``X-Portal-Token`` header whose value matches ``portal_secret`` exactly
+    (constant-time comparison). Requests missing the header or presenting a
+    wrong value receive HTTP 401 immediately, before any other middleware.
+
+    This middleware is the outermost gate — it runs before ``BearerAuthMiddleware``
+    and ``SecurityHeadersMiddleware``. Crew containers on ``ga-starboard`` can dial
+    ``ga-transport``, but they never receive ``GA_PORTAL_SECRET`` and therefore
+    cannot forge the header.
+
+    When ``portal_secret`` is empty (e.g. dev/test environment without the
+    Podman secret) the middleware is a transparent pass-through.
+
+    Non-HTTP ASGI scopes (WebSocket, lifespan) pass through unchanged.
+    """
+
+    def __init__(self, app, portal_secret: str = "") -> None:
+        self.app = app
+        self._secret = portal_secret
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or not self._secret:
+            await self.app(scope, receive, send)
+            return
+
+        # Extract X-Portal-Token from request headers.
+        headers = dict(scope.get("headers", []))
+        token = headers.get(b"x-portal-token", b"").decode("latin-1")
+
+        if not hmac.compare_digest(token, self._secret):
+            response = Response(
+                content="Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": "Portal"},
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 class RateLimitMiddleware:
@@ -2666,7 +2741,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
     # TRN-80: initialised before the try so the except block can reference it.
     dashboard_port: int | None = None
     try:
-        podman.network_create(GA_NETWORK)
+        podman.network_create(GA_STARBOARD_NETWORK)
         podman.volume_create(volume)
         podman.volume_create(home_volume)
         logger.info("Created volumes %s, %s", volume, home_volume)
@@ -2746,7 +2821,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             name=container,
             image=image,
             env=container_env,
-            network=GA_NETWORK,
+            network=GA_STARBOARD_NETWORK,
             workspace_volume=volume,
             home_volume=home_volume,
         )
@@ -4356,6 +4431,15 @@ if __name__ == "__main__":
         enforce_redirect=GA_ENFORCE_HTTPS_REDIRECT,
         csp_enforce=GA_CSP_ENFORCE,
     )
+    # TRN-107: PortalSecretMiddleware is the absolute outermost gate — it
+    # rejects any request that is not from ga-portal (i.e. missing or wrong
+    # X-Portal-Token) before any other middleware sees it. When GA_PORTAL_SECRET
+    # is empty (dev/test) this is a transparent pass-through.
+    app = PortalSecretMiddleware(app, portal_secret=GA_PORTAL_SECRET)
+    if GA_PORTAL_SECRET:
+        logger.info("Portal secret authentication: enabled (X-Portal-Token required)")
+    else:
+        logger.info("Portal secret authentication: disabled (GA_PORTAL_SECRET unset)")
     if GA_API_KEY:
         logger.info("MCP API-key authentication: enabled")
     else:
