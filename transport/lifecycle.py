@@ -1453,6 +1453,53 @@ def _schedule_monitor() -> None:
                             _save_registry(reg)
                         continue
 
+                    # TRN-108: check gateway enabled state — gateway is source of truth.
+                    # After waking the crew, fetch /api/crons and check whether this
+                    # specific job is still enabled. The registry may lag behind a
+                    # `kirocrew cron pause` issued inside the container (TRN-82 only
+                    # syncs on restart). Fail-open: if the fetch raises, proceed.
+                    job_id = sched.get("job_id")
+                    try:
+                        cron_payload = _crew_api(crew, "GET", "/api/crons")
+                        gateway_jobs = (
+                            cron_payload.get("jobs", [])
+                            if isinstance(cron_payload, dict)
+                            else []
+                        )
+                        gateway_job = next(
+                            (
+                                j
+                                for j in gateway_jobs
+                                if isinstance(j, dict) and j.get("id") == job_id
+                            ),
+                            None,
+                        )
+                        if gateway_job is not None and not gateway_job.get("enabled", True):
+                            logger.info(
+                                "Schedule monitor: job %s on crew %s is disabled in"
+                                " gateway — skipping and syncing registry",
+                                job_id,
+                                crew_id,
+                            )
+                            with _registry_lock:
+                                reg = _load_registry()
+                                crew_scheds = _get_crew_schedules(reg, crew_id)
+                                for s in crew_scheds:
+                                    if s.get("job_id") == job_id:
+                                        s["enabled"] = False
+                                        break
+                                _save_registry(reg)
+                            continue
+                    except Exception as e:
+                        logger.warning(
+                            "Schedule monitor: could not fetch gateway cron state"
+                            " for job %s on crew %s: %s — proceeding",
+                            job_id,
+                            crew_id,
+                            e,
+                        )
+                        # Fail-open: proceed to fire if gateway unreachable after wake.
+
                     # Fire the tick
                     try:
                         tick_body: dict[str, Any] = {
