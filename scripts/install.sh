@@ -483,11 +483,12 @@ fi
 
 # ── Network ───────────────────────────────────────────────────────────────────
 
-${_PODMAN_CMD} network exists ga-net 2>/dev/null || ${_PODMAN_CMD} network create ga-net
+${_PODMAN_CMD} network exists ga-portside 2>/dev/null || ${_PODMAN_CMD} network create ga-portside
+${_PODMAN_CMD} network exists ga-starboard 2>/dev/null || ${_PODMAN_CMD} network create ga-starboard
 if [[ "${GA_DEDICATED_MACHINE}" == "true" ]]; then
-  echo "✓ ga-net network ready on dedicated instance '${GA_MACHINE_NAME}' (DNS-enabled by default)"
+  echo "✓ ga-portside and ga-starboard networks ready on dedicated instance '${GA_MACHINE_NAME}' (DNS-enabled by default)"
 else
-  echo "✓ ga-net network ready (DNS-enabled by default)"
+  echo "✓ ga-portside and ga-starboard networks ready (DNS-enabled by default)"
 fi
 
 # ── Pre-warm + build images ──────────────────────────────────────────────────
@@ -570,6 +571,16 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
+# ── Podman secret for GA_PORTAL_SECRET (TRN-107) ─────────────────────────────
+# Idempotent: only generate if the secret does not already exist. This ensures
+# the same secret is reused across reinstalls (Caddy and transport stay in sync).
+if ! ${_PODMAN_CMD} secret inspect ga-portal-secret >/dev/null 2>&1; then
+  openssl rand -hex 32 | ${_PODMAN_CMD} secret create ga-portal-secret -
+  echo "✓ Podman secret 'ga-portal-secret' created (new)"
+else
+  echo "✓ Podman secret 'ga-portal-secret' already exists (keeping existing)"
+fi
+
 # ── Copy academy/ and crews/ into the data volume ────────────────────────────
 # Snapshot academy/ subdirectories and crews/ from the repo into DATA_DIR so
 # the transport container has no runtime dependency on the repo checkout path.
@@ -619,7 +630,8 @@ services:
     ports:
       - "127.0.0.1:${PORT}:${PORT}"
     networks:
-      - ga-net
+      - ga-portside
+      - ga-starboard
     volumes:
       - ${DATA_DIR}:/data
       - ${DATA_DIR}/academy/agents:/agents:ro
@@ -676,7 +688,9 @@ services:
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_PORT: "${GA_PORTAL_PORT:-443}"
       GA_PORTAL_HTTP_PORT: "${GA_PORTAL_HTTP_PORT:-80}"
-$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
+    secrets:
+      - ga-portal-secret
+$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
   ga-portal:
     image: docker.io/caddy:2
     container_name: ga-portal
@@ -686,17 +700,24 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n
       - "0.0.0.0:${GA_PORTAL_PORT:-443}:443"
       - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
     networks:
-      - ga-net
+      - ga-portside
     environment:
       GA_API_KEY: "${GA_API_KEY:-}"
+    secrets:
+      - ga-portal-secret
     volumes:
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
       - ga-portal-data:/data
     command: ["caddy", "run", "--config", "/config/initial-config.json", "--resume"]
 networks:
-  ga-net:
+  ga-portside:
     external: true
-$(if [[ -n "${GA_API_KEY:-}" ]]; then printf 'secrets:\n  ga-api-key:\n    external: true\n'; fi)
+  ga-starboard:
+    external: true
+secrets:
+  ga-portal-secret:
+    external: true
+$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '  ga-api-key:\n    external: true\n'; fi)
 volumes:
   ga-portal-data:
 COMPOSE_EOF
@@ -733,18 +754,23 @@ case "${GA_PORTAL_TLS_MODE:-internal}" in
     ;;
 esac
 
+# The portal-token header injected on every upstream request (TRN-107).
+# Caddy reads the secret from the mounted Podman secret file using the
+# {file.<path>} placeholder (Caddy v2.7+).
+_PORTAL_TOKEN_HEADER='"headers": {"request": {"set": {"X-Portal-Token": ["{file./run/secrets/ga-portal-secret}"]}}}'
+
 # Build auth routes: gated when GA_API_KEY is set, open passthrough otherwise.
 if [[ -n "${GA_API_KEY:-}" ]]; then
   _AUTH_ROUTES=$(cat <<AUTH_EOF
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-transport-files",
               "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-mcp-files-reject",
@@ -759,12 +785,12 @@ else
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-transport-files",
               "match": [{"path": ["/files/*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
             },
 AUTH_EOF
 )
@@ -785,7 +811,7 @@ ${_AUTH_ROUTES}
             {
               "@id": "ga-transport-misc",
               "match": [{"path": ["/health", "/version", "/dashboard-auth", "/dashboard-auth*", "/login-ui", "/dashboard-login"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}]}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
             }
           ]
         }
@@ -899,6 +925,21 @@ fi
 
 echo ""
 echo "=== Post-install ==="
+
+# ── Best-effort ga-net cleanup (TRN-107) ─────────────────────────────────────
+# If ga-net exists and has no containers, remove it (migration complete).
+# This is a no-op on fresh installs. Silently skipped if the network still
+# has containers (migration will run at transport startup via _reconcile_registry).
+if ${_PODMAN_CMD} network exists ga-net 2>/dev/null; then
+  _ga_net_containers="$(${_PODMAN_CMD} network inspect ga-net --format '{{len .Containers}}' 2>/dev/null || echo "1")"
+  if [[ "${_ga_net_containers}" == "0" ]]; then
+    ${_PODMAN_CMD} network rm ga-net >/dev/null 2>&1 \
+      && echo "✓ ga-net removed (empty, migration complete)" \
+      || echo "  ga-net removal skipped (in use or error)"
+  else
+    echo "  ga-net still has ${_ga_net_containers} container(s) — will be migrated at transport startup"
+  fi
+fi
 echo "Register the MCP server (one-time):"
 echo "  kiro-cli mcp add --name ghostship --url http://localhost:${PORT}/mcp --scope global"
 echo ""

@@ -151,7 +151,8 @@ CREW_CONTAINER_PREFIX = "gs-"
 CREW_VOLUME_PREFIX = "gs-vol-"
 CREW_HOME_VOLUME_PREFIX = "gs-home-"
 
-GA_NETWORK = "ga-net"
+GA_PORTSIDE_NETWORK = "ga-portside"
+GA_STARBOARD_NETWORK = "ga-starboard"
 GA_LOGIN_CONTAINER_PREFIX = "ga-login-"
 
 # ── Config-driven constants ───────────────────────────────────────────────────
@@ -1004,10 +1005,69 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
             logger.warning("Failed to re-seed job %s on crew %s: %s", sched.get("name"), crew_id, e)
 
 
+def _migrate_crew_network(podman: "PodmanClient", crew_id: str, container: str) -> bool:
+    """Migrate a crew container from ga-net to ga-starboard.
+
+    Returns True if migration was performed or not needed, False if migration
+    failed (the crew will be marked stopped by the caller).
+
+    Algorithm (D3 from design.md):
+    1. If already on ga-starboard — no-op (skip).
+    2. If on ga-net:
+       a. Connect ga-transport to ga-starboard (idempotent).
+       b. Stop container.
+       c. Disconnect container from ga-net (best-effort).
+       d. Connect container to ga-starboard.
+       e. Start → wait → refresh cookie.
+    """
+    try:
+        nets = podman.container_networks(container)
+    except Exception as e:
+        logger.warning("Could not read networks for crew %s: %s", crew_id, e)
+        return True  # unknown state — don't block startup
+
+    if GA_STARBOARD_NETWORK in nets:
+        # Already migrated — nothing to do.
+        return True
+
+    if "ga-net" not in nets:
+        # Neither on old nor new network — unusual but not an error; leave alone.
+        logger.info("Crew %s (%s) is not on ga-net or ga-starboard; skipping migration", crew_id, container)
+        return True
+
+    logger.info("Migrating crew %s (%s) from ga-net to %s", crew_id, container, GA_STARBOARD_NETWORK)
+    try:
+        # Step a: ensure ga-transport is on starboard (idempotent).
+        podman.network_connect("ga-transport", GA_STARBOARD_NETWORK)
+
+        # Step b: stop container.
+        podman.container_stop(container)
+
+        # Step c: disconnect from ga-net (best-effort).
+        podman.network_disconnect(container, "ga-net")
+
+        # Step d: connect to ga-starboard.
+        podman.network_connect(container, GA_STARBOARD_NETWORK)
+
+        # Step e: start and wait for gateway.
+        podman.container_start(container)
+        crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+        if _wait_gateway(crew_url, timeout=30):
+            logger.info("Crew %s migrated to %s successfully", crew_id, GA_STARBOARD_NETWORK)
+            return True
+        else:
+            logger.warning("Crew %s gateway not ready after migration", crew_id)
+            return False
+    except Exception as e:
+        logger.warning("Migration failed for crew %s: %s", crew_id, e)
+        return False
+
+
 def _reconcile_registry() -> None:
     """On startup: restart stopped crew containers, remove truly gone ones.
     Also sweeps any orphaned ga-login-* containers left over from a transport
     restart that occurred mid-login flow.
+    Migrates any crew containers still on ga-net to ga-starboard (D3).
     """
     try:
         podman = _get_podman()
@@ -1040,44 +1100,59 @@ def _reconcile_registry() -> None:
         if not podman.container_exists(container):
             logger.info("Removing gone crew from registry: %s", cid)
             to_remove.append(cid)
-        elif not podman.container_is_running(container):
-            # Container exists but stopped (e.g. VM reboot) — restart it
-            logger.info("Restarting stopped crew on startup: %s", cid)
+        else:
+            # ── Network migration (D3): move from ga-net to ga-starboard ─────
+            # Run migration before the restart loop so the container is on the
+            # right network when it starts.
             try:
-                podman.container_start(container)
-                crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-                # D-07: Apply config overrides before the gateway reads them,
-                # then restart so the gateway loads the patched values.
-                # Must mirror the _ensure_crew_running pattern:
-                #   patch → stop → start → wait
-                # Writing config after _wait_gateway means the gateway has
-                # already loaded config.local.json and will not see the patch
-                # until the next restart.
-                _patch_crew_config(podman, container)
-                podman.container_stop(container)
-                podman.container_start(container)
-                if _wait_gateway(crew_url, timeout=30):
-                    new_cookie = _mint_cookie(podman, container, crew_url)
-                    updates[cid] = {
-                        "status": "running",
-                        "last_used": time.time(),
-                        **({} if not new_cookie else {"cookie": new_cookie}),
-                    }
-                    logger.info("Crew %s restored", cid)
-                    # TRN-29: Re-seed gateway schedules from registry
-                    restored_crew = dict(info)
-                    if new_cookie:
-                        restored_crew["cookie"] = new_cookie
-                    try:
-                        _reseed_crew_schedules(restored_crew, cid, info)
-                    except Exception as e:
-                        logger.warning("Schedule re-seed failed for crew %s: %s", cid, e)
-                else:
-                    logger.warning("Crew %s gateway not ready after restart — leaving stopped", cid)
+                migrated = _migrate_crew_network(podman, cid, container)
+                if not migrated:
+                    logger.warning("Network migration failed for crew %s — marking stopped", cid)
                     updates[cid] = {"status": "stopped"}
+                    continue
             except Exception as e:
-                logger.warning("Could not restart crew %s: %s", cid, e)
+                logger.warning("Unexpected error during migration for crew %s: %s", cid, e)
                 updates[cid] = {"status": "stopped"}
+                continue
+
+            if not podman.container_is_running(container):
+                # Container exists but stopped (e.g. VM reboot) — restart it
+                logger.info("Restarting stopped crew on startup: %s", cid)
+                try:
+                    podman.container_start(container)
+                    crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+                    # D-07: Apply config overrides before the gateway reads them,
+                    # then restart so the gateway loads the patched values.
+                    # Must mirror the _ensure_crew_running pattern:
+                    #   patch → stop → start → wait
+                    # Writing config after _wait_gateway means the gateway has
+                    # already loaded config.local.json and will not see the patch
+                    # until the next restart.
+                    _patch_crew_config(podman, container)
+                    podman.container_stop(container)
+                    podman.container_start(container)
+                    if _wait_gateway(crew_url, timeout=30):
+                        new_cookie = _mint_cookie(podman, container, crew_url)
+                        updates[cid] = {
+                            "status": "running",
+                            "last_used": time.time(),
+                            **({} if not new_cookie else {"cookie": new_cookie}),
+                        }
+                        logger.info("Crew %s restored", cid)
+                        # TRN-29: Re-seed gateway schedules from registry
+                        restored_crew = dict(info)
+                        if new_cookie:
+                            restored_crew["cookie"] = new_cookie
+                        try:
+                            _reseed_crew_schedules(restored_crew, cid, info)
+                        except Exception as e:
+                            logger.warning("Schedule re-seed failed for crew %s: %s", cid, e)
+                    else:
+                        logger.warning("Crew %s gateway not ready after restart — leaving stopped", cid)
+                        updates[cid] = {"status": "stopped"}
+                except Exception as e:
+                    logger.warning("Could not restart crew %s: %s", cid, e)
+                    updates[cid] = {"status": "stopped"}
 
     # Write all changes back under the lock in one pass
     with _registry_lock:
@@ -1089,6 +1164,25 @@ def _reconcile_registry() -> None:
                 reg["crews"][cid].update(fields)
         _save_registry(reg)
     logger.info("Registry reconciled. Live crews: %s", list(reg["crews"].keys()))
+
+    # ── Best-effort ga-net removal after migration ────────────────────────────
+    # If all crews have been migrated away from ga-net, clean it up.
+    try:
+        all_containers_after = podman._req("GET", "/libpod/containers/json", params={"all": "true"})
+        ga_net_containers = [
+            c for c in all_containers_after
+            if "ga-net" in (c.get("Networks") or {})
+        ]
+        if not ga_net_containers:
+            podman.network_rm("ga-net")
+            logger.info("ga-net removed — all crews migrated to %s", GA_STARBOARD_NETWORK)
+        else:
+            logger.info(
+                "ga-net still has %d container(s) — not removing",
+                len(ga_net_containers),
+            )
+    except Exception as e:
+        logger.warning("Best-effort ga-net removal failed: %s", e)
 
 
 def _patch_crew_config(podman: PodmanClient, container: str) -> None:
@@ -1380,12 +1474,12 @@ def _start_login_container(podman: PodmanClient) -> str:
     """
     token = secrets.token_hex(8)
     name = f"{GA_LOGIN_CONTAINER_PREFIX}{token}"
-    podman.network_create(GA_NETWORK)
+    podman.network_create(GA_STARBOARD_NETWORK)
     podman._req("POST", "/libpod/containers/create", json={
         "name": name,
         "image": KC_BASE_IMAGE,
         "netns": {"nsmode": "bridge"},
-        "Networks": {GA_NETWORK: {}},
+        "Networks": {GA_STARBOARD_NETWORK: {}},
         # No volumes — ephemeral writable layer only
     })
     podman.container_start(name)
