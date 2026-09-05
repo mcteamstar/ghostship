@@ -35,7 +35,30 @@ from tests.e2e.helpers import (
 class TestErrorPaths(unittest.TestCase):
     """Non-happy-path calls should return structured errors, never 500."""
 
+    # Retained constant for the three non-existent-crew tests below, which need
+    # no live crew: test_nuke_nonexistent_crew, test_dispatch_nonexistent_crew,
+    # test_evac_nonexistent_crew.
     GHOST_CREW = "e2e-does-not-exist"
+
+    # Shared live crew for stateless error-path tests, launched once for the class.
+    CREW_ID = "e2e-err-shared"
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
+        except Exception:
+            pass
+        result = _mcp_call("launch", crew_id=cls.CREW_ID)
+        if result.get("status") != "ready":
+            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
+        except Exception:
+            pass
 
     def test_nuke_nonexistent_crew(self):
         result = _mcp_call("nuke", crew_id=self.GHOST_CREW, confirm=True)
@@ -113,19 +136,22 @@ class TestErrorPaths(unittest.TestCase):
 class TestScheduleTool(unittest.TestCase):
     CREW_ID = "e2e-schedule"
 
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
-        print(f"\n[e2e] setUp: launching {self.CREW_ID}...", flush=True)
-        result = _mcp_call("launch", crew_id=self.CREW_ID)
-        self.assertEqual(result.get("status"), "ready")
-        print(f"[e2e] {self.CREW_ID} ready", flush=True)
+        print(f"\n[e2e] setUpClass: launching {cls.CREW_ID}...", flush=True)
+        result = _mcp_call("launch", crew_id=cls.CREW_ID)
+        if result.get("status") != "ready":
+            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
+        print(f"[e2e] {cls.CREW_ID} ready", flush=True)
 
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
 
@@ -134,7 +160,7 @@ class TestScheduleTool(unittest.TestCase):
         created = _mcp_call(
             "schedule",
             action="create",
-            crew_id=self.CREW_ID,
+            crew_id=self.__class__.CREW_ID,
             name="e2e-test-job",
             message="echo e2e",
             interval=300,
@@ -145,24 +171,24 @@ class TestScheduleTool(unittest.TestCase):
         self.assertIsNotNone(job_id, f"No job_id in: {created}")
 
         # Verify it appears in list
-        listed = _mcp_call("schedule", action="list", crew_id=self.CREW_ID)
+        listed = _mcp_call("schedule", action="list", crew_id=self.__class__.CREW_ID)
         self.assertFalse(_is_error(listed), f"List failed: {listed}")
         job_ids = [j["job_id"] for j in listed.get("jobs", [])]
         self.assertIn(job_id, job_ids, f"Job {job_id} not in list: {job_ids}")
 
         # Cancel it
-        cancelled = _mcp_call("schedule", action="cancel", crew_id=self.CREW_ID, job_id=job_id)
+        cancelled = _mcp_call("schedule", action="cancel", crew_id=self.__class__.CREW_ID, job_id=job_id)
         self.assertFalse(_is_error(cancelled), f"Cancel failed: {cancelled}")
 
         # Verify it's gone
-        listed_after = _mcp_call("schedule", action="list", crew_id=self.CREW_ID)
+        listed_after = _mcp_call("schedule", action="list", crew_id=self.__class__.CREW_ID)
         job_ids_after = [j["job_id"] for j in listed_after.get("jobs", [])]
         self.assertNotIn(job_id, job_ids_after, f"Job still present after cancel: {job_ids_after}")
 
     def test_cancel_nonexistent_job(self):
         # Cancelling a non-existent job_id is idempotent — returns cancelled, not an error
         result = _mcp_call(
-            "schedule", action="cancel", crew_id=self.CREW_ID, job_id="00000000"
+            "schedule", action="cancel", crew_id=self.__class__.CREW_ID, job_id="00000000"
         )
         self.assertFalse(_is_error(result), f"Unexpected error: {result}")
         self.assertEqual(result.get("status"), "cancelled")
@@ -175,19 +201,22 @@ class TestScheduleTool(unittest.TestCase):
 class TestSteerTool(unittest.TestCase):
     CREW_ID = "e2e-steer"
 
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
-        print(f"\n[e2e] setUp: launching {self.CREW_ID}...", flush=True)
-        result = _mcp_call("launch", crew_id=self.CREW_ID)
-        self.assertEqual(result.get("status"), "ready")
-        print(f"[e2e] {self.CREW_ID} ready", flush=True)
+        print(f"\n[e2e] setUpClass: launching {cls.CREW_ID}...", flush=True)
+        result = _mcp_call("launch", crew_id=cls.CREW_ID)
+        if result.get("status") != "ready":
+            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
+        print(f"[e2e] {cls.CREW_ID} ready", flush=True)
 
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
 
@@ -197,9 +226,9 @@ class TestSteerTool(unittest.TestCase):
         # complete before our steer call since it has to start the agent first.
         dispatch = _mcp_call(
             "dispatch",
-            crew_id=self.CREW_ID,
+            crew_id=self.__class__.CREW_ID,
             agent="ghost",
-            task="Wait 60 seconds before doing anything, then say DONE.",
+            task="Wait 25 seconds before doing anything, then say DONE.",
         )
         task_id = dispatch.get("task_id")
         self.assertIsNotNone(task_id)
@@ -209,7 +238,7 @@ class TestSteerTool(unittest.TestCase):
         deadline = time.time() + 30
         started = False
         while time.time() < deadline:
-            status = _mcp_call("pickup", crew_id=self.CREW_ID, task_id=task_id)
+            status = _mcp_call("pickup", crew_id=self.__class__.CREW_ID, task_id=task_id)
             if not status.get("done") and status.get("elapsed_secs", 0) > 0:
                 print(f"[e2e] task running ({status.get('elapsed_secs')}s), steering...", flush=True)
                 started = True
@@ -222,7 +251,7 @@ class TestSteerTool(unittest.TestCase):
         steer_result = _mcp_call(
             "steer",
             task_id=task_id,
-            crew_id=self.CREW_ID,
+            crew_id=self.__class__.CREW_ID,
             message="Actually just say DONE immediately.",
         )
         self.assertFalse(_is_error(steer_result), f"Steer returned error: {steer_result}")
@@ -232,7 +261,7 @@ class TestSteerTool(unittest.TestCase):
         result = _mcp_call(
             "steer",
             task_id="00000000",
-            crew_id=self.CREW_ID,
+            crew_id=self.__class__.CREW_ID,
             message="hello",
         )
         self.assertTrue(_is_error(result), f"Expected error steering nonexistent task: {result}")
@@ -264,6 +293,7 @@ class TestResponseSchemas(unittest.TestCase):
             pass
         print(f"\n[e2e] setUpClass: launching {cls.CREW_ID}...", flush=True)
         result = _mcp_call("launch", crew_id=cls.CREW_ID)
+        cls._launch_result = result
         if result.get("status") != "ready":
             raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
         print(f"[e2e] {cls.CREW_ID} ready", flush=True)
@@ -276,20 +306,13 @@ class TestResponseSchemas(unittest.TestCase):
             pass
 
     def test_launch_response_shape(self):
-        # Already launched in setUp — launch a second named crew for a clean shape check
-        crew_id = "e2e-schema-shape"
-        try:
-            _mcp_call("nuke", crew_id=crew_id, confirm=True)
-        except Exception:
-            pass
-        result = _mcp_call("launch", crew_id=crew_id)
-        try:
-            self.assertEqual(result.get("crew_id"), crew_id)
-            self.assertEqual(result.get("status"), "ready")
-            self.assertIn("container", result)
-            self.assertIn("gateway_url", result)
-        finally:
-            _mcp_call("nuke", crew_id=crew_id, confirm=True)
+        # Assert on the launch result captured once in setUpClass — no second
+        # crew launch needed.
+        result = self.__class__._launch_result
+        self.assertEqual(result.get("crew_id"), self.__class__.CREW_ID)
+        self.assertEqual(result.get("status"), "ready")
+        self.assertIn("container", result)
+        self.assertIn("gateway_url", result)
 
     def test_crews_response_shape(self):
         result = _mcp_call("crews")
