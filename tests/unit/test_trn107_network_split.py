@@ -492,3 +492,67 @@ class MigrateCrewNetworkCookieTests(unittest.TestCase):
 
         result = lifecycle._migrate_crew_network(podman, "alpha", "gs-alpha")
         self.assertFalse(result)
+
+
+# ── Regression: TRN-107 secret header must reach the per-crew dashboard route ──
+#
+# The TransportSecretMiddleware tests above (7.2-7.5) only prove the gate
+# itself works in isolation. They do NOT prove that _caddy_register_crew
+# (TRN-92/TRN-102, in transport/server.py) actually sends the header Caddy
+# needs to get past that gate. This class closes that gap directly: it was
+# the missing link that let a real crew dashboard 401 in production while
+# every existing unit test still passed.
+
+class CaddyRegisterCrewTransportSecretTests(unittest.TestCase):
+    """_caddy_register_crew must inject X-Transport-Token on every route it builds."""
+
+    def _resp(self, status: int = 200) -> Mock:
+        resp = Mock()
+        resp.status_code = status
+        resp.text = ""
+        return resp
+
+    def test_crew_proxy_dials_configured_port_not_a_stale_literal(self) -> None:
+        """The crew reverse_proxy must dial ga-transport:{PORT} (server.PORT),
+        not a hardcoded literal left over from before the TRN-111 port
+        consolidation (previously a stale ':8000' that no process listened on,
+        causing every dashboard request to 502)."""
+        mock_put = Mock(return_value=self._resp(200))
+        with patch.object(server.httpx, "put", mock_put):
+            server._caddy_register_crew("alpha", 64058)
+
+        payload = mock_put.call_args.kwargs["json"]
+        crew_proxy = payload["routes"][0]["handle"][-1]
+        self.assertEqual(crew_proxy["upstreams"][0]["dial"], f"ga-transport:{server.PORT}")
+
+    def test_crew_proxy_carries_transport_secret_header(self) -> None:
+        """Without GA_API_KEY, the sole crew-proxy handler still carries the
+        portal secret header — TransportSecretMiddleware rejects ga-transport
+        requests missing it regardless of GA_API_KEY."""
+        mock_put = Mock(return_value=self._resp(200))
+        with patch.object(server.httpx, "put", mock_put):
+            server._caddy_register_crew("alpha", 64058)
+
+        payload = mock_put.call_args.kwargs["json"]
+        crew_proxy = payload["routes"][0]["handle"][-1]
+        self.assertEqual(
+            crew_proxy["headers"]["request"]["set"]["X-Transport-Token"],
+            ["{file./run/secrets/ga-transport-secret}"],
+        )
+
+    def test_forward_auth_handler_carries_transport_secret_header(self) -> None:
+        """With GA_API_KEY set, the forward_auth handler (which also dials
+        ga-transport) must carry the same portal secret header."""
+        mock_put = Mock(return_value=self._resp(200))
+        with (
+            patch.object(server, "GA_API_KEY", "some-key"),
+            patch.object(server.httpx, "put", mock_put),
+        ):
+            server._caddy_register_crew("alpha", 64058)
+
+        payload = mock_put.call_args.kwargs["json"]
+        fwd_auth = payload["routes"][0]["handle"][0]
+        self.assertEqual(
+            fwd_auth["headers"]["request"]["set"]["X-Transport-Token"],
+            ["{file./run/secrets/ga-transport-secret}"],
+        )

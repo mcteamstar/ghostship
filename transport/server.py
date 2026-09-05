@@ -731,16 +731,26 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
     ``crew_cookie`` is accepted for backward-compatible call sites but is no
     longer used — the transport owns cookie injection (TRN-102).
     """
-    _transport_addr = "ga-transport:8000"
+    _transport_addr = f"ga-transport:{PORT}"
 
     # TRN-102: Caddy routes dashboard traffic to the transport's UI proxy, which
     # injects the session cookie. Rewrite the incoming path so it is prefixed
     # with /crews/{crew_id}/ui — {http.request.uri.path} preserves the original
     # path (and Caddy re-appends the query string automatically).
+    # TRN-107: every upstream request to ga-transport must carry the portal
+    # secret, read from the mounted Podman secret file — same placeholder
+    # install.sh uses for the static routes. Without this, TransportSecretMiddleware
+    # rejects the request with 401 before it ever reaches the UI-proxy or
+    # dashboard-auth handlers.
+    _transport_token_header = {
+        "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"],
+    }
+
     crew_proxy_handler: dict = {
         "handler": "reverse_proxy",
         "upstreams": [{"dial": _transport_addr}],
         "rewrite": {"uri": f"/crews/{crew_id}/ui{{http.request.uri.path}}"},
+        "headers": {"request": {"set": dict(_transport_token_header)}},
     }
 
     # forward_auth equivalent using only standard Caddy modules (no caddy-security).
@@ -754,6 +764,7 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
                 "set": {
                     "X-Forwarded-Method": ["{http.request.method}"],
                     "X-Forwarded-Uri": ["{http.request.uri}"],
+                    **_transport_token_header,
                 }
             },
         },
