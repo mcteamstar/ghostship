@@ -696,18 +696,18 @@ class PodmanClient(ContainerRuntime):
         """Connect a container to a network (idempotent — ignores 'already connected' errors).
 
         Wraps ``POST /libpod/networks/{network}/connect``.
+        Raises on non-409 HTTP errors or connection failures so callers such as
+        _migrate_crew_network can detect and log migration failures rather than
+        silently continuing with a broken network state.
         """
-        try:
-            r = self._c.post(
-                f"/libpod/networks/{network}/connect",
-                json={"Container": container},
-            )
-            if r.status_code not in (200, 204):
-                # 409 means already connected — treat as success.
-                if r.status_code != 409:
-                    r.raise_for_status()
-        except Exception:
-            pass  # best-effort; callers log on failure
+        r = self._c.post(
+            f"/libpod/networks/{network}/connect",
+            json={"Container": container},
+        )
+        if r.status_code not in (200, 204):
+            # 409 means already connected — treat as success (idempotent).
+            if r.status_code != 409:
+                r.raise_for_status()
 
     def network_disconnect(self, container: str, network: str) -> None:
         """Disconnect a container from a network (best-effort).

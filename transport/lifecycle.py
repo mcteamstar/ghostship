@@ -1052,12 +1052,28 @@ def _migrate_crew_network(podman: "PodmanClient", crew_id: str, container: str) 
         # Step e: start and wait for gateway.
         podman.container_start(container)
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-        if _wait_gateway(crew_url, timeout=30):
-            logger.info("Crew %s migrated to %s successfully", crew_id, GA_STARBOARD_NETWORK)
-            return True
-        else:
+        if not _wait_gateway(crew_url, timeout=30):
             logger.warning("Crew %s gateway not ready after migration", crew_id)
             return False
+
+        # Step f: refresh cookie so the first request after migration does not
+        # hit a 401 from a stale token.  Mirrors the same pattern used in
+        # _ensure_crew_running and _reconcile_registry.
+        new_cookie = _mint_cookie(podman, container, crew_url)
+        if new_cookie:
+            with _registry_lock:
+                reg = _load_registry()
+                if crew_id in reg["crews"]:
+                    reg["crews"][crew_id]["cookie"] = new_cookie
+                    reg["crews"][crew_id]["status"] = "running"
+                    _save_registry(reg)
+            logger.info("Crew %s migrated to %s successfully (cookie refreshed)", crew_id, GA_STARBOARD_NETWORK)
+        else:
+            logger.warning(
+                "Crew %s migrated to %s but cookie refresh failed — stale cookie may cause 401",
+                crew_id, GA_STARBOARD_NETWORK,
+            )
+        return True
     except Exception as e:
         logger.warning("Migration failed for crew %s: %s", crew_id, e)
         return False
