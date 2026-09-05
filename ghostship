@@ -209,7 +209,9 @@ def cmd_status(args: list) -> int:
         print("  Run 'ghostship start' to bring it back up.")
         return 0
 
-    # Parse port bindings
+    # Parse port bindings from ga-transport. When Caddy (ga-portal) fronts the
+    # transport, the transport has no host port binding — fall back to PORT
+    # (the single Caddy listen port, default 64057).
     port_str = "unknown"
     try:
         ports = json.loads(ports_json)
@@ -223,6 +225,9 @@ def cmd_status(args: list) -> int:
                     break
     except (json.JSONDecodeError, AttributeError, TypeError):
         pass
+    if port_str == "unknown":
+        # Transport has no host binding (Caddy is the external listener).
+        port_str = f"localhost:{os.environ.get('PORT', '64057')}"
 
     # Compute uptime
     uptime_str = ""

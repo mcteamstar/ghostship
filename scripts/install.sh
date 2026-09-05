@@ -632,8 +632,6 @@ services:
     restart: always
     security_opt:
       - label=disable
-    ports:
-      - "127.0.0.1:${PORT}:${PORT}"
     networks:
       - ga-portside
       - ga-starboard
@@ -847,9 +845,11 @@ fi
 # Kill any stale rootlessport process that may be holding the transport port
 # open from a previous (possibly interrupted) install. These survive container
 # removal and will cause compose up to fail with "address already in use".
+# ga-transport no longer binds a host port (Caddy is the external listener),
+# so only check for stale rootlessport on ga-portal's port (PORT).
 for _pid in $(pgrep -x rootlessport 2>/dev/null); do
-  if ss -tlnp 2>/dev/null | grep -q "127.0.0.1:${PORT}.*pid=${_pid}"; then
-    kill "$_pid" 2>/dev/null && echo "✓ killed stale rootlessport on port ${PORT} (pid ${_pid})" || true
+  if ss -tlnp 2>/dev/null | grep -q "0.0.0.0:${PORT:-64057}.*pid=${_pid}"; then
+    kill "$_pid" 2>/dev/null && echo "✓ killed stale rootlessport on port ${PORT:-64057} (pid ${_pid})" || true
     sleep 0.5
   fi
 done
@@ -886,25 +886,22 @@ echo "=== Health check ==="
 _max_wait=30
 _interval=2
 _ready=0
-# TRN-107: GA_TRANSPORT_SECRET is the outermost gate — direct port hits return 401.
-# Read the secret to probe the transport directly, falling back to a 401 check
-# (which still confirms the transport is up and enforcing the middleware).
-_transport_secret=""
-if [[ -f "/run/secrets/ga-transport-secret" ]]; then
-  _transport_secret="$(cat /run/secrets/ga-transport-secret)"
-fi
+# Transport has no host port (Caddy is the external listener). Probe via
+# podman exec so we don't need a host-side binding.
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  _http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "X-Transport-Token: ${_transport_secret}" \
-    "http://127.0.0.1:${PORT}/health" 2>/dev/null)
-  if [[ "$_http_code" == "200" || "$_http_code" == "401" ]]; then
+  if ${_PODMAN_CMD} exec ga-transport python3 -c "
+import urllib.request, os
+secret = open('/run/secrets/ga-transport-secret').read().strip() if os.path.exists('/run/secrets/ga-transport-secret') else ''
+req = urllib.request.Request('http://127.0.0.1:${PORT}/health', headers={'X-Transport-Token': secret})
+urllib.request.urlopen(req)
+" >/dev/null 2>&1; then
     _ready=1
     break
   fi
   sleep "$_interval"
 done
 if [[ "$_ready" == "1" ]]; then
-  echo "✓ Transport is ready (responded on http://127.0.0.1:${PORT}/health)"
+  echo "✓ Transport is ready (container-internal health check passed)"
 else
   echo "✗ Transport did not become ready within ${_max_wait}s" >&2
   echo "  Last 20 lines of container logs:" >&2
