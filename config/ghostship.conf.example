@@ -221,16 +221,15 @@
 #   off — Plain HTTP, no TLS. For local dev or when an upstream terminator
 #     already handles TLS.
 #
-# GA_PORTAL_TLS_MODE=internal
+# GA_PORTAL_TLS_MODE=off   ← default: plain HTTP
 
 # Domain for ACME (Let's Encrypt). Required when GA_PORTAL_TLS_MODE=acme.
 # GA_PORTAL_DOMAIN=""
 
-# HTTPS port Caddy listens on (main entry point for MCP and dashboard ports).
-# GA_PORTAL_PORT=443
-
-# HTTP port Caddy listens on (ACME challenges and HTTP→HTTPS redirects).
-# GA_PORTAL_HTTP_PORT=80
+# Port Caddy listens on. Works for both HTTP and HTTPS — TLS mode is independent
+# of port choice. Default 64057 matches the old direct-transport endpoint so
+# existing MCP client configs work without changes.
+# GA_PORTAL_PORT=64057
 
 # TTL (seconds) for gs_session cookies issued by /dashboard-login.
 # Default 86400 (24 h). Sessions are in-memory only and reset on transport restart.

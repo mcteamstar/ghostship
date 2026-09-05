@@ -151,9 +151,7 @@ class Config:
     # Domain name used for ACME (Let's Encrypt) certificate requests.
     ga_portal_domain: str = ""
     # HTTPS port Caddy listens on (main port).
-    ga_portal_port: int = 443
-    # HTTP port Caddy listens on (redirects, ACME challenges).
-    ga_portal_http_port: int = 80
+    ga_portal_port: int = 64057    # HTTP port Caddy listens on (redirects, ACME challenges).
     # Session TTL for gs_session cookies (dashboard login); default 24 h.
     ga_portal_session_ttl_secs: int = 86400
 
@@ -237,8 +235,7 @@ class Config:
                 os.environ.get("GA_PORTAL_TLS_MODE", "internal").strip()
             ),
             ga_portal_domain=os.environ.get("GA_PORTAL_DOMAIN", "").strip(),
-            ga_portal_port=int(os.environ.get("GA_PORTAL_PORT", "443")),
-            ga_portal_http_port=int(os.environ.get("GA_PORTAL_HTTP_PORT", "80")),
+            ga_portal_port=int(os.environ.get("GA_PORTAL_PORT", "64057")),
             ga_portal_session_ttl_secs=int(os.environ.get("GA_PORTAL_SESSION_TTL_SECS", "86400")),
             kiro_license=os.environ.get("KIRO_LICENSE", ""),
             kiro_identity_provider=os.environ.get("KIRO_IDENTITY_PROVIDER", ""),

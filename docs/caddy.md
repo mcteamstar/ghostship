@@ -213,6 +213,6 @@ See [configuration.md](configuration.md) for the full `GA_PORTAL_*` variable tab
 | `GA_PORTAL_TLS_MODE` | `internal` | `internal` / `tailscale` / `acme` / `off` |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
 | `GA_PORTAL_PORT` | `443` | Main HTTPS port |
-| `GA_PORTAL_HTTP_PORT` | `80` | HTTP port (ACME challenges and redirects) |
+| `GA_PORTAL_PORT` | `64057` | Port Caddy listens on (HTTP or HTTPS, any port). |
 | `GA_PORTAL_ADMIN_URL` | `http://ga-portal:2019` | Caddy admin API URL (transport-internal) |
 | `GA_PORTAL_SESSION_TTL_SECS` | `86400` | Session cookie TTL (seconds) |

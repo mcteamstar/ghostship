@@ -84,10 +84,13 @@ GA_DASHBOARD_PORT_RANGE_SIZE=50
 GA_DASHBOARD_PORT_ENABLED=true
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is always installed; there is no opt-out.
-GA_PORTAL_TLS_MODE=internal
+# GA_PORTAL_PORT is the single port Caddy listens on regardless of TLS mode.
+# Default: plain HTTP on 64057 — zero-config installs work at
+# http://localhost:64057/mcp with no TLS setup required.
+# To enable TLS: set GA_PORTAL_TLS_MODE=acme + GA_PORTAL_DOMAIN (any port).
+GA_PORTAL_TLS_MODE=off
 GA_PORTAL_DOMAIN=""
-GA_PORTAL_PORT=443
-GA_PORTAL_HTTP_PORT=80
+GA_PORTAL_PORT=64057
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -684,10 +687,9 @@ services:
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-50}"
       GA_DASHBOARD_PORT_ENABLED: "${GA_DASHBOARD_PORT_ENABLED:-true}"
-      GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-internal}"
+      GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
-      GA_PORTAL_PORT: "${GA_PORTAL_PORT:-443}"
-      GA_PORTAL_HTTP_PORT: "${GA_PORTAL_HTTP_PORT:-80}"
+      GA_PORTAL_PORT: "${GA_PORTAL_PORT:-64057}"
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
@@ -696,8 +698,7 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
     container_name: ga-portal
     restart: always
     ports:
-      - "0.0.0.0:${GA_PORTAL_HTTP_PORT:-80}:80"
-      - "0.0.0.0:${GA_PORTAL_PORT:-443}:443"
+      - "0.0.0.0:${GA_PORTAL_PORT:-64057}:${GA_PORTAL_PORT:-64057}"
       - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
     networks:
       - ga-portside
@@ -732,25 +733,25 @@ mkdir -p "${DATA_DIR}/caddy"
 
 # Build the TLS stanza based on GA_PORTAL_TLS_MODE.
 _AUTO_HTTPS=""  # set to disable auto-HTTPS for TLS_MODE=off
-case "${GA_PORTAL_TLS_MODE:-internal}" in
+case "${GA_PORTAL_TLS_MODE:-off}" in
   tailscale)
     _TLS_STANZA='"tls": {"automation": {"policies": [{"get_certificate": [{"via": "tailscale"}]}]}}'
-    _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
+    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
     ;;
   acme)
     _ACME_DOMAIN="${GA_PORTAL_DOMAIN:-}"
     _TLS_STANZA='"tls": {"automation": {"policies": [{"subjects": ["'"${_ACME_DOMAIN}"'"], "issuers": [{"module": "acme"}]}]}}'
-    _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
+    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
     ;;
   off)
     # Plain HTTP — disable auto-HTTPS, listen on the HTTP port.
     _TLS_STANZA='"tls": {}'
-    _MAIN_LISTEN=":${GA_PORTAL_HTTP_PORT:-80}"
+    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
     _AUTO_HTTPS='"automatic_https": {"disable": true},'
     ;;
   *)  # internal (default)
     _TLS_STANZA='"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}'
-    _MAIN_LISTEN=":${GA_PORTAL_PORT:-443}"
+    _MAIN_LISTEN=":${GA_PORTAL_PORT:-64057}"
     ;;
 esac
 
@@ -827,7 +828,7 @@ echo "✓ Caddy initial-config.json written to ${DATA_DIR}/caddy/initial-config.
 # Internal CA: surface the root cert path so the operator knows where to
 # run 'caddy trust'. The cert lives in the ga-portal-data volume at the
 # standard Caddy path /data/caddy/pki/authorities/local/root.crt.
-if [[ "${GA_PORTAL_TLS_MODE:-internal}" == "internal" ]]; then
+if [[ "${GA_PORTAL_TLS_MODE:-off}" == "internal" ]]; then
   # Resolve the host-side volume mountpoint for ga-portal-data.
   _CADDY_DATA_MOUNTPOINT=""
   if ${_PODMAN_CMD} volume exists ga-portal-data 2>/dev/null; then
@@ -917,9 +918,10 @@ fi
 
 # TRN-103: ga-portal health check (Caddy is always installed)
 _caddy_ready=0
+_caddy_scheme="http"
+[[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sk "https://127.0.0.1:${GA_PORTAL_PORT:-443}/health" >/dev/null 2>&1 \
-    || curl -s "http://127.0.0.1:${GA_PORTAL_HTTP_PORT:-80}/health" >/dev/null 2>&1; then
+  if curl -sk "${_caddy_scheme}://127.0.0.1:${GA_PORTAL_PORT:-64057}/health" >/dev/null 2>&1; then
     _caddy_ready=1
     break
   fi
@@ -928,7 +930,7 @@ done
 if [[ "$_caddy_ready" == "1" ]]; then
   echo "✓ Caddy is ready"
 else
-  echo "⚠ Caddy (ga-portal) did not respond on port ${GA_PORTAL_PORT:-443} within ${_max_wait}s"
+  echo "⚠ Caddy (ga-portal) did not respond on port ${GA_PORTAL_PORT:-64057} within ${_max_wait}s"
   echo "  Check: ${_PODMAN_CMD} logs ga-portal --tail 20"
   echo "  This is non-fatal — Caddy may still be pulling or starting."
 fi
