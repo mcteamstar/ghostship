@@ -967,6 +967,7 @@ async def _handle_login_ui(request: Request) -> Response:
     redirect.
     """
     next_url = request.query_params.get("next", "/")
+    next_url_escaped = _security.encode_html_attr(next_url)
     # Simple HTML login page — no external dependencies.
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -996,7 +997,7 @@ async def _handle_login_ui(request: Request) -> Response:
 <div class="card">
   <h1>👻 Ghost Academy</h1>
   <form id="f" method="post" action="/dashboard-login">
-    <input type="hidden" name="next" value="{next_url}">
+    <input type="hidden" name="next" value="{next_url_escaped}">
     <label for="k">API Key</label>
     <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
     <button type="submit">Sign in</button>

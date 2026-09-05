@@ -289,13 +289,24 @@ def _transfer_upload(
                 )
             except RuntimeError:
                 # HEAD unresolvable — check out the first available remote branch.
-                podman.container_exec_checked(
-                    container,
-                    ["bash", "-c",
-                     f"cd {destination} && "
-                     "branch=$(git branch -r | grep -v HEAD | head -1 | sed 's|origin/||' | tr -d ' ') && "
-                     "git checkout -b \"$branch\" \"origin/$branch\""],
+                # Use list-form exec calls (no shell, no interpolation) to avoid
+                # shell injection via the destination path.
+                branches_output = podman.container_exec_checked(
+                    container, ["git", "-C", destination, "branch", "-r"]
                 )
+                # Parse remote branches in Python; skip the HEAD pointer line.
+                branch = ""
+                for line in branches_output.splitlines():
+                    stripped = line.strip()
+                    if stripped and "HEAD" not in stripped:
+                        # Strip "origin/" prefix to get the local branch name.
+                        branch = stripped.removeprefix("origin/").strip()
+                        break
+                if branch:
+                    podman.container_exec_checked(
+                        container,
+                        ["git", "-C", destination, "checkout", "-b", branch, f"origin/{branch}"],
+                    )
             return result
         finally:
             _cleanup_transfer_stage(podman, container, stage_dir)
