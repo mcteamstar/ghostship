@@ -1,16 +1,22 @@
 ## MODIFIED Requirements
 
-### Requirement: Containerfiles pin to kirocrew:0.5.0
+### Requirement: Containerfiles pin to kirocrew:0.4.0
 
 All ghostship Containerfiles that reference the KiroCrew base image SHALL pin
 to `kirocrew:0.5.0`.
 
-#### Scenario: Containerfile updated to 0.5.0 pin
+#### Scenario: Containerfile updated to 0.4.0 pin
 - **WHEN** a ghostship Containerfile is built after this change
 - **THEN** it resolves `FROM ghcr.io/kirodotdev/kirocrew:0.5.0` as the base
   layer and the resulting image is compatible with the 0.5.0 governance API
 
-### Requirement: Numeric config fields are bounds-enforced in KiroCrew 0.5.0
+#### Scenario: Old pin triggers build failure
+- **WHEN** a Containerfile still references `kirocrew:0.4.x` or `kirocrew:latest`
+  after this change is applied
+- **THEN** the build CI job fails or the resulting image is flagged as
+  incompatible during the regression test pass
+
+### Requirement: Numeric config fields are bounds-enforced in KiroCrew 0.4.0
 
 The `_patch_crew_config` function SHALL only write numeric config fields that
 fall within KiroCrew 0.5.0's enforced bounds. Any field value outside the
@@ -38,6 +44,30 @@ a valid disable sentinel and SHALL NOT be rejected by the gateway.
   the gateway's enforced range
 - **THEN** the gateway rejects the request with a 4xx response, and the
   transport logs the rejection before proceeding with crew teardown
+
+### Requirement: Env-declaring MCP servers are not pooled by default
+
+KiroCrew 0.5.0 uses per-connection isolation for MCP servers ("misbehaving
+servers get isolated per-connection"). Ghostship's `_copy_agents()` SHALL
+continue to automatically set `poolable: false` on any server entry that
+contains a `headers` field when writing into a crew's `~/.kiro/mcp.json`.
+The `poolable` field SHALL remain honoured by 0.5.0; catalogue entries do not
+need to declare it explicitly.
+
+#### Scenario: HTTP server with headers gets poolable: false
+- **WHEN** a catalogue entry contains a `headers` field
+- **THEN** the entry written into the crew's `mcp.json` includes `"poolable": false`
+
+#### Scenario: HTTP server without headers is written as-is
+- **WHEN** a catalogue entry has no `headers` field
+- **THEN** the entry is written into `mcp.json` without a `poolable` key added
+
+#### Scenario: poolable field still honoured under 0.5.0 per-connection isolation
+- **WHEN** a crew runs on KiroCrew 0.5.0 and `mcp.json` contains `"poolable": false`
+- **THEN** the gateway respects the field and does not pool that server across
+  connections, consistent with 0.4.0 behaviour
+
+## ADDED Requirements
 
 ### Requirement: Governance policy templates validated against 0.5.0 stricter validator
 

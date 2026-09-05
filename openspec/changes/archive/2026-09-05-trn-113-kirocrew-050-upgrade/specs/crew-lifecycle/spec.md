@@ -1,22 +1,5 @@
 ## MODIFIED Requirements
 
-### Requirement: Containerfiles pin to kirocrew:0.5.0
-
-All ghostship Containerfiles that reference the KiroCrew base image SHALL pin
-to `kirocrew:0.5.0`. A Containerfile left pinned at `0.4.x` or `latest` will
-pull an incompatible base image.
-
-#### Scenario: Containerfile updated to 0.5.0 pin
-- **WHEN** a ghostship Containerfile is built after this change
-- **THEN** it resolves `FROM ghcr.io/kirodotdev/kirocrew:0.5.0` as the base
-  layer and the resulting image is compatible with the 0.5.0 API surface
-
-#### Scenario: Old pin triggers build failure
-- **WHEN** a Containerfile still references `kirocrew:0.4.x` or `kirocrew:latest`
-  after this change is applied
-- **THEN** the build CI job fails or the resulting image is flagged as
-  incompatible during the regression test pass
-
 ### Requirement: Configurable spawn_min_memory_gb patch
 
 The `_patch_crew_config` function SHALL write `GA_SPAWN_MIN_MEMORY_GB` (default
