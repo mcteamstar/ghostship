@@ -71,7 +71,7 @@ container inherits.
 
 Any catalogue entry containing a `headers` field has `poolable: false`
 automatically added when written into a crew's `mcp.json`. This prevents
-KiroCrew 0.4.0 from pooling auth-bearing HTTP servers. You do not need to
+KiroCrew 0.5.0 from pooling auth-bearing HTTP servers. You do not need to
 declare `poolable: false` in the catalogue file itself.
 
 ## Wiring a server into a composition

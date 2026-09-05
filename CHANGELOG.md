@@ -2,6 +2,19 @@
 
 ## v0.3.0 (unreleased)
 
+### TRN-113 — KiroCrew base image bump 0.4.0 → 0.5.0
+
+Bumps the pinned KiroCrew base image from `0.4.0` to `0.5.0` across the crew
+base image and the ephemeral login container, and refreshes the stale `0.4.0`
+version strings that track the pin.
+
+- **Crew base image:** `crews/_base/admission/Containerfile` `FROM ghcr.io/kirodotdev/kirocrew:0.4.0` → `0.5.0` (+ pin comment).
+- **Login container:** `KC_BASE_IMAGE` bumped to `0.5.0` in `config/ghostship.conf.example` and in `transport/config.py`'s hard-coded fallback default (dataclass default + `from_env` fallback).
+- **Pre-seeded kiro-cli DB re-verified:** `crews/_base/graduation/seed_kiro_db.py` migration schema and row count confirmed to still produce `(count, max_version) = (10, 9)`; version banners in `seed_kiro_db.py` and `crews/_base/graduation/Containerfile` updated to reference KiroCrew 0.5.0. The live-image `SELECT COUNT(*), MAX(version) FROM migrations` comparison against `ghcr.io/kirodotdev/kirocrew:0.5.0` must be run on a host with podman before release — see the migration checklist in the graduation Containerfile.
+- **Stale reference refresh:** `scripts/uninstall.sh` cleanup message, `academy/mcp/README.md` pooling note, and the `GA_CREW_AGENT` comment in `config/ghostship.conf.example`.
+- **Validation (no edits needed):** governance policy templates (`academy/policies/{default,strict,research}.json`), agent specs (`academy/agents/{ghost,spectre,banshee,wraith,reaper,raven}.json`), and the `poolable: false` MCP auto-injection in `transport/lifecycle.py` all confirmed well-formed / intact against 0.5.0's stricter validators.
+- Ticket: TRN-113.
+
 ### TRN-103 — Portal is mandatory ⚠️ BREAKING
 
 `ga-portal` (Caddy) is now a required architectural component and is always installed. The `GA_PORTAL_ENABLED` opt-in flag is removed.

@@ -93,7 +93,7 @@ class Config:
 
     # ── Images ───────────────────────────────────────────────────────────────
     kc_image: str = "localhost/spec-ops:latest"
-    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew:0.4.0"
+    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew:0.5.0"
 
     # ── Crew lifecycle ───────────────────────────────────────────────────────
     ga_max_crews: int = 20
@@ -188,7 +188,7 @@ class Config:
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
             kc_base_image=os.environ.get(
-                "KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:0.4.0"
+                "KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:0.5.0"
             ),
             ga_max_crews=int(os.environ.get("GA_MAX_CREWS", "20")),
             ga_max_active_crews=int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3")),
