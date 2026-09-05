@@ -963,13 +963,32 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     return Response(status_code=200)
 
 
+# SEC-09 — open redirect guard for /login-ui ?next=
+def _validate_next_url(url: str) -> str:
+    """Validate next_url is a safe same-origin relative path.
+
+    Returns a sanitised path, falling back to "/" for any value that could
+    enable an open redirect (protocol-relative URLs, javascript: URIs, or
+    anything that is not a relative path).
+    """
+    if not url:
+        return "/"
+    # Must be a relative path starting with / but not // (protocol-relative)
+    # and must not contain a colon before the first slash (no javascript: etc.)
+    if not url.startswith("/") or url.startswith("//"):
+        return "/"
+    if ":" in url.split("/")[0]:
+        return "/"
+    return url
+
+
 async def _handle_login_ui(request: Request) -> Response:
     """GET /login-ui — serve the minimal HTML login form.
 
     Accepts an optional ``?next=<url>`` query parameter for post-login
     redirect.
     """
-    next_url = request.query_params.get("next", "/")
+    next_url = _validate_next_url(request.query_params.get("next", "/"))
     next_url_escaped = _security.encode_html_attr(next_url)
     # Simple HTML login page — no external dependencies.
     html = f"""<!DOCTYPE html>

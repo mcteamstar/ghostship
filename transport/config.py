@@ -132,11 +132,10 @@ class Config:
     kiro_api_key: str = ""
 
     # ── Portal secret (TRN-107) ──────────────────────────────────────────────
-    # Shared secret between ga-portal (Caddy) and ga-transport. Caddy injects
-    # X-Transport-Token on every upstream request; transport rejects any request
-    # that is missing or has a wrong X-Transport-Token value.
-    # Loaded at startup from /run/secrets/ga-transport-secret via _load_transport_secret().
-    ga_transport_secret: str = ""
+    # The transport secret is loaded directly via _load_transport_secret() in
+    # server.py from the Podman secrets file (/run/secrets/ga-transport-secret).
+    # It is NOT part of the Config dataclass — keeping it out of Config avoids
+    # accidental logging or serialisation of the plaintext secret value.
 
     @classmethod
     def from_env(cls) -> "Config":

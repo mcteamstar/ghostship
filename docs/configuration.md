@@ -147,6 +147,8 @@ nor the flag sets them, the built-in default applies.
 | `KC_MODEL_DEFAULT` | `--model-default` |
 | `GA_API_KEY` | `--api-key` |
 | `GA_HOST_URL` | `--public-url` |
+| `GA_PORTAL_DOMAIN` | `--caddy-domain` |
+| `GA_PORTAL_TLS_MODE` | `--caddy-tls-mode` |
 
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
@@ -244,6 +246,7 @@ built-in default is used and a `WARNING` naming the variable is logged.
 | `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` and sub-paths — headroom for multi-tool orchestration |
 | `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` — protects git subprocess execution |
 | `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/{id}/api/*` — the proxied crew REST API |
+| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard-auth` — the Caddy `forward_auth` endpoint polled on every dashboard request |
 
 **State is in-memory only and is not persisted.** Restarting the transport
 process resets all counters to zero — no caller is pre-limited based on

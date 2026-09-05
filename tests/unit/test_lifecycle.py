@@ -1527,6 +1527,44 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
             with server._login_pending_lock:
                 server._login_pending = None
 
+    def test_login_pty_timeout_45s_returns_error_and_nukes_container(self) -> None:
+        """F-4: when the 45s PTY deadline fires without a URL appearing,
+        _handle_login_post returns an error response and nukes the login
+        container (TRN-113 / LoginFlowEdgeCaseTests task 7.4)."""
+        podman = Mock()
+        fake_sock = Mock()
+        fake_sock.fileno.return_value = 5
+        # recv always returns non-URL content so the URL-extraction loop never breaks.
+        fake_sock.recv.return_value = b"Loading...\n"
+
+        with (
+            patch.object(server, "_read_auth_file", return_value=""),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_start_login_container", return_value="ga-login-pty45"),
+            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(server, "time") as mock_time,
+            patch.object(server, "select") as mock_select,
+            patch.object(podman, "container_exec", return_value="kiro-cli"),
+            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-pty45", fake_sock)),
+        ):
+            # Simulate: start=1000, first deadline check=1000 (inside loop),
+            # second check=1046 (past 45s deadline) — loop exits, error returned.
+            mock_time.time.side_effect = [
+                1000.0,   # sentinel start timestamp
+                1000.0,   # _start_login_container timestamp restore
+                1000.0,   # deadline = time.time() + 45.0  -> deadline=1045
+                1000.0,   # first while time.time() < deadline (inside loop)
+                1046.0,   # second check — past 45s — loop exits
+            ]
+            mock_select.select.return_value = ([fake_sock], [], [])
+            request = Mock()
+            response = asyncio.run(server._handle_login_post(request))
+
+        self.assertEqual(response.status_code, 500)
+        body = response.body.decode() if isinstance(response.body, bytes) else response.body
+        self.assertIn("45s", body)
+        nuke.assert_called_once_with(podman, "ga-login-pty45")
+
 
 # ── AdmiralSecretHardeningTests (TRN-53) ─────────────────────────────────────
 #
@@ -1747,6 +1785,63 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         when KIRO_API_KEY is unset."""
         inject_auth = self._run_finish_setup_capturing_inject_auth("")
         inject_auth.assert_called_once()
+
+
+# ── PatchCrewConfigTests (F-2) ───────────────────────────────────────────────
+#
+# ``_patch_crew_config`` is defined in lifecycle.py → patch lifecycle.X.
+# The function calls podman.container_exec with the overrides b64-encoded in
+# the last argv position. We capture that call and decode the dict to inspect
+# the written values.
+
+
+class PatchCrewConfigTests(unittest.TestCase):
+    """Tests for _patch_crew_config (TRN-113 / F-2)."""
+
+    def _call_patch_crew_config(self) -> dict:
+        """Call lifecycle._patch_crew_config with a stub podman that captures
+        the container_exec call, then decode and return the agent_overrides dict."""
+        import base64
+        import json as _json
+
+        exec_calls: list[list[str]] = []
+
+        class CapturingPodman:
+            def container_exec(
+                self, container: str, cmd: list[str], env: dict | None = None
+            ) -> str:
+                exec_calls.append(cmd)
+                return "patched config.local.json"
+
+        lifecycle._patch_crew_config(CapturingPodman(), "gs-demo")
+
+        self.assertTrue(exec_calls, "container_exec was never called")
+        cmd = exec_calls[0]
+        # cmd = ["python3", ".../patch_crew_config.py", "<config_path>", "<b64>"]
+        overrides_b64 = cmd[-1]
+        return _json.loads(base64.b64decode(overrides_b64).decode())
+
+    def test_patch_crew_config_sets_sandbox_off(self) -> None:
+        """sandbox must be 'off' -- without it every agent spawn fails under
+        rootless Podman because kiro-cli 0.5.0+ is fail-closed on the
+        MS_REMOUNT inside a user namespace (TRN-113)."""
+        overrides = self._call_patch_crew_config()
+        self.assertEqual(
+            overrides.get("sandbox"),
+            "off",
+            f"Expected sandbox='off' but got: {overrides.get('sandbox')!r}",
+        )
+
+    def test_patch_crew_config_sets_dangerously_skip_permissions(self) -> None:
+        """dangerously_skip_permissions must be True so the transport (different
+        UID) can write config.local.json inside the crew container."""
+        overrides = self._call_patch_crew_config()
+        self.assertIs(
+            overrides.get("dangerously_skip_permissions"),
+            True,
+            f"Expected dangerously_skip_permissions=True but got: "
+            f"{overrides.get('dangerously_skip_permissions')!r}",
+        )
 
 
 # ── TRN-108: schedule monitor gateway source-of-truth ────────────────────────

@@ -491,7 +491,13 @@ def _ensure_crew_running(
         # the refreshed crew dict
         logger.info("Crew %s restart already in progress — waiting", crew_id)
         event.wait(timeout=45)
-        return _get_crew(crew_id)
+        crew_after = _get_crew(crew_id)
+        if crew_after.get("status") in ("stopped", "launching", None):
+            raise RuntimeError(
+                f"Crew {crew_id} restart (concurrent) failed -- status is still "
+                f"{crew_after.get('status')!r}"
+            )
+        return crew_after
 
     # We are the leader — do the restart
     try:
@@ -1627,6 +1633,7 @@ def _schedule_monitor() -> None:
                         # Fail-open: proceed to fire if gateway unreachable after wake.
 
                     # Fire the tick
+                    fired = False
                     try:
                         tick_body: dict[str, Any] = {
                             "task": sched.get("message", ""),
@@ -1638,29 +1645,31 @@ def _schedule_monitor() -> None:
                         _crew_api_with_recovery(
                             crew, crew_id, "POST", "/api/spawn", json=tick_body,
                         )
+                        fired = True
                     except Exception as e:
                         logger.error(
                             "Schedule monitor: tick dropped — failed to fire job %s on crew %s: %s",
                             sched.get("job_id"), crew_id, e,
                         )
 
-                    # Advance next_fire_at in registry after fire (success or failure)
-                    # TRN-89 task 4: write last_checkin_at for captain check-ins
-                    _advance_next_fire_at(sched)
-                    with _registry_lock:
-                        reg = _load_registry()
-                        crew_scheds = _get_crew_schedules(reg, crew_id)
-                        for s in crew_scheds:
-                            if s.get("job_id") == sched.get("job_id"):
-                                s["next_fire_at"] = sched["next_fire_at"]
-                                if (
-                                    sched.get("name") == "captain"
-                                    and sched.get("agent") == "raven"
-                                ):
-                                    from datetime import datetime as _datetime, timezone as _tz
-                                    s["last_checkin_at"] = _datetime.now(_tz.utc).isoformat()
-                                break
-                        _save_registry(reg)
+                    if fired:
+                        # Advance next_fire_at in registry only on success
+                        # TRN-89 task 4: write last_checkin_at for captain check-ins
+                        _advance_next_fire_at(sched)
+                        with _registry_lock:
+                            reg = _load_registry()
+                            crew_scheds = _get_crew_schedules(reg, crew_id)
+                            for s in crew_scheds:
+                                if s.get("job_id") == sched.get("job_id"):
+                                    s["next_fire_at"] = sched["next_fire_at"]
+                                    if (
+                                        sched.get("name") == "captain"
+                                        and sched.get("agent") == "raven"
+                                    ):
+                                        from datetime import datetime as _datetime, timezone as _tz
+                                        s["last_checkin_at"] = _datetime.now(_tz.utc).isoformat()
+                                    break
+                            _save_registry(reg)
 
                     # H-2: For one-shot (delay) jobs, delete the cron from the
                     # gateway so its annual cron expression never fires again.
