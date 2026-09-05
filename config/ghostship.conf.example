@@ -199,7 +199,7 @@
 # to regenerate compose.yml. The GA_PORTAL_* vars below still configure how the
 # portal behaves.
 
-# URL of the Caddy admin API (reachable from ga-transport over ga-net).
+# URL of the Caddy admin API (reachable from ga-transport over ga-portside).
 # Override only when running Caddy on a non-standard address.
 # GA_PORTAL_ADMIN_URL=http://ga-portal:2019
 

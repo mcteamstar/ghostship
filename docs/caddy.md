@@ -10,7 +10,7 @@ Caddy sits in front of all traffic:
 
 ```
                   ┌──────────────────────────────────────────────────────┐
-  External        │  ga-portal (caddy:2 image, ga-net)                    │
+  External        │  ga-portal (caddy:2 image, ga-portside)                │
   traffic ──────▶ │                                                       │
                   │  MAIN SERVER  :443 / :80                              │
                   │    /mcp*         ── Bearer check ──▶ ga-transport     │
@@ -28,7 +28,7 @@ Caddy sits in front of all traffic:
                   │                 then proxy    ──▶ ga-transport:8000   │
                   │                             /crews/beta/ui/{path}     │
                   └────────────────────┬─────────────────────────────────┘
-                                       │ admin API :2019 (ga-net only)
+                                       │ admin API :2019 (ga-portside only)
                     launch → PUT /id/crew-{id}   (add server on its port)
                     nuke   → DELETE /id/crew-{id}
                   ┌────────────────────▼─────────────────────────────────┐
@@ -36,7 +36,7 @@ Caddy sits in front of all traffic:
                   │  BearerAuthMiddleware (defence in depth)              │
                   │  Caddy admin API calls serialised inside _registry_lock│
                   └────────────────────┬─────────────────────────────────┘
-                                       │ http://gs-{id}:5476 (ga-net)
+                                       │ http://gs-{id}:5476 (ga-starboard)
                   ┌────────────────────▼─────────────────────────────────┐
                   │  gs-alpha:5476   gs-beta:5476   ...                  │
                   │  (crew containers, never exposed externally)          │
@@ -114,7 +114,7 @@ Client ──/mcp──▶ ga-portal
                     └─ missing / wrong Bearer           ──▶ 401 WWW-Authenticate: Bearer
 ```
 
-The transport's own `BearerAuthMiddleware` remains active for defence-in-depth — it still runs, so a direct connection to `ga-transport` on `ga-net` is still checked.
+The transport's own `BearerAuthMiddleware` remains active for defence-in-depth — it still runs, so a direct connection to `ga-transport` on `ga-starboard` is still checked.
 
 ## Quickstart
 
@@ -210,7 +210,7 @@ See [configuration.md](configuration.md) for the full `GA_PORTAL_*` variable tab
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `GA_PORTAL_TLS_MODE` | `internal` | `internal` / `tailscale` / `acme` / `off` |
+| `GA_PORTAL_TLS_MODE` | `off` | `internal` / `tailscale` / `acme` / `off` |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
 | `GA_PORTAL_PORT` | `443` | Main HTTPS port |
 | `GA_PORTAL_PORT` | `64057` | Port Caddy listens on (HTTP or HTTPS, any port). |

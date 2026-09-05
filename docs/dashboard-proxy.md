@@ -38,10 +38,10 @@ Key properties:
 
 ## Network topology
 
-`ga-net` (the internal Podman network) is reserved for **transport ↔ crew container** traffic:
+`ga-starboard` (the internal Podman network) is reserved for **transport ↔ crew container** traffic:
 
-- `ga-transport` is on `ga-net` (to reach `gs-*` crew gateways) **and** the compose default network (so `ga-portal` can dial it).
-- `ga-portal` (Caddy) is **not** on `ga-net`. It reaches `ga-transport:8000` over the compose default network and has no route to any crew container. The trust boundary — the external-facing proxy cannot touch crew gateways directly — is enforced by network topology, not just config.
+- `ga-transport` is on `ga-starboard` (to reach `gs-*` crew gateways) **and** `ga-portside` (so `ga-portal` can dial it).
+- `ga-portal` (Caddy) is on `ga-portside` only. It reaches `ga-transport:8000` over `ga-portside` and has no route to any crew container. The trust boundary — the external-facing proxy cannot touch crew gateways directly — is enforced by network topology, not just config.
 
 ## Setup
 

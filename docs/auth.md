@@ -473,7 +473,7 @@ succeeds.
   is a lower-impact capability in the current single-operator, isolated-container
   use case.
 
-## Dashboard session auth (Caddy mode, `GA_PORTAL_ENABLED=true`)
+## Dashboard session auth (Caddy / Portal mode)
 
 When the Caddy reverse proxy is enabled, dashboard ports are protected by a session cookie gate instead of being unauthenticated. See [caddy.md](caddy.md) for setup.
 
@@ -521,7 +521,7 @@ Sessions are single-process, in-memory. A transport restart clears all sessions 
 
 ### Bearer enforcement at the edge
 
-When `GA_PORTAL_ENABLED=true` and `GA_API_KEY` is set:
+When `GA_API_KEY` is set (Portal is always active):
 
 - `/mcp*` and `/files/*` routes on Caddy's main port (443) require `Authorization: Bearer <GA_API_KEY>`. Caddy rejects bad or missing tokens before the request reaches the transport.
 - The transport's own `BearerAuthMiddleware` remains active as a defence-in-depth layer.
@@ -529,9 +529,9 @@ When `GA_PORTAL_ENABLED=true` and `GA_API_KEY` is set:
 
 ### Auth posture summary
 
-| | `GA_PORTAL_ENABLED=false` | `GA_PORTAL_ENABLED=true` |
-|:--|:--|:--|
-| MCP / files | `BearerAuthMiddleware` when `GA_API_KEY` set | Caddy rejects bad Bearer at the edge; `BearerAuthMiddleware` is defence-in-depth |
-| Dashboard ports | **Unauthenticated** — network-layer only (Tailscale/firewall) | `forward_auth` → `gs_session` cookie gate on every port |
-| TLS | None, or direct `GA_TLS_*` | Caddy-terminated on all ports (`GA_PORTAL_TLS_MODE`) |
-| Auth upgrade to SSO | Requires transport code changes | Caddy-config change only (swap `forward_auth` → `caddy-security`) |
+| | Current (Portal always active) |
+|:--|:--|
+| MCP / files | Caddy rejects bad Bearer at the edge; `BearerAuthMiddleware` is defence-in-depth |
+| Dashboard ports | `forward_auth` → `gs_session` cookie gate on every port |
+| TLS | Caddy-terminated on all ports (`GA_PORTAL_TLS_MODE`) |
+| Auth upgrade to SSO | Caddy-config change only (swap `forward_auth` → `caddy-security`) |
