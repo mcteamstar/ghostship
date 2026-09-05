@@ -1,4 +1,4 @@
-# Design: TRN-107 — Portside/Per-Crew Network Split
+# Design: TRN-107 — Portside/Starboard Network Split
 
 ## Context
 
@@ -6,164 +6,166 @@ See `proposal.md` — Why for motivation.
 
 **Current state:**
 - Single Podman network `ga-net` contains: `ga-portal`, `ga-transport`, all `gs-*` crew containers, and ephemeral `ga-login-*` containers.
-- `ga-transport` is declared as `GA_NETWORK = "ga-net"` in both `lifecycle.py` and `server.py`.
-- `install.sh` creates `ga-net` with `podman network exists ga-net || podman network create ga-net` and emits it in `compose.yml` as an external network for both `ga-portal` and `ga-transport`.
-- `podman.py` `container_create` takes a single `network: str` parameter and sets `"Networks": {network: {}}`.
+- `ga-transport` declared as `GA_NETWORK = "ga-net"` in both `lifecycle.py` and `server.py`.
+- `install.sh` creates `ga-net` and emits it in `compose.yml` as external for both `ga-portal` and `ga-transport`.
+- `podman.py` `container_create` takes a single `network: str` parameter.
 - `worker_run` already uses `"netns": {"nsmode": "none"}` — no change needed.
-- `_start_login_container` in `lifecycle.py` calls `podman.network_create(GA_NETWORK)` then `"Networks": {GA_NETWORK: {}}`.
 
-**Key constraint:** Podman per-network DNS means every container on a network can resolve every other container on that network by hostname. Per-crew private networks provide per-crew DNS namespaces: `gs-alpha` is not resolvable from `gs-beta`'s network.
+**Final topology:**
 
 ```
   Internet / host
        │
-  [ga-portal]
-       │  ga-portside
-  [ga-transport]  ← joins portside + every ga-crew-{id}
-       │  ga-crew-alpha        ga-crew-beta
-  [gs-alpha]                 [gs-beta]
-       (isolated)              (isolated)
+  [ga-portal]──────────────────────────────┐
+       │              ga-portside          │
+  [ga-transport]                           │
+       │              ga-starboard         │
+  [gs-alpha]  [gs-beta]  [gs-gamma]  ...   │
+  (all crews, shared)                      │
+                                           │
+  GA_PORTAL_SECRET flows on ga-portside ───┘
+  (ga-transport rejects any request missing X-Portal-Token)
 ```
 
 ## Goals / Non-Goals
 
 **Goals:**
-- `ga-portal` cannot reach crew containers by hostname.
-- Crew containers cannot reach `ga-portal` by hostname.
-- Crew containers cannot reach each other by hostname (default).
-- `ga-transport` remains reachable from each crew on its per-crew network.
-- Explicit opt-in crew-to-crew peering is possible when the Admiral requires it.
-- `BearerAuthMiddleware` remains as defence-in-depth.
+- `ga-portal` cannot reach crew containers by hostname — crew containers not on `ga-portside`.
+- Crew containers cannot reach `ga-portal` by hostname — `ga-portal` not on `ga-starboard`.
+- Crew containers cannot reach `ga-transport` MCP routes — `GA_PORTAL_SECRET` token required; crew containers never have it.
+- Crew containers cannot authenticate to each other's gateways — IP-bound `mc_token_5476` cookies return 403.
+- `ga-transport` remains reachable from each crew via DNS on `ga-starboard`.
+- `BearerAuthMiddleware` and `GA_PORTAL_SECRET` middleware both remain as defence-in-depth.
 - Existing crews are migrated without requiring operator intervention.
+- Simple, static network model — no dynamic network create/destroy per crew.
 
 **Non-goals:**
-- Prevent crew containers from reaching `ga-transport` on their per-crew network at the network layer — Podman DNS will resolve `ga-transport` from each `ga-crew-{id}` network, and that is acceptable because the transport's own auth middleware handles rejection. Full network-layer blocking of crew → transport would require additional Podman network policies not available in rootless mode.
+- Block crew containers from reaching `ga-transport` at the TCP layer — crews are on `ga-starboard` and can dial `ga-transport`. The `GA_PORTAL_SECRET` middleware closes this at the application layer.
 - Firewall or iptables rules — Podman rootless mode has limited network policy support.
+- Per-crew DNS isolation — not needed; the token and cookie controls are the relevant security barriers.
 
 ## Decisions
 
-### D1: Migration path — detect and migrate on startup (Option A)
+### D1: Network topology — shared ga-starboard (not per-crew)
 
-**Choice:** Option A — `_reconcile_registry` detects crews on `ga-net` and migrates each to its own `ga-crew-{crew_id}` network at transport startup.
+**Choice:** `ga-portside` (static, portal↔transport only) + `ga-starboard` (static, transport↔all crews).
+
+**Rationale:** Per-crew networks were the original design (D6 below covers the comparison). The security goals — close crew→portal, close crew→transport MCP, close crew→crew — are all achieved by the token and cookie controls. Per-crew networks add dynamic create/destroy on every launch/nuke, transport reconnect operations, and `peer_crews` wiring complexity. None of these costs provide additional security benefit beyond what `GA_PORTAL_SECRET` and IP-bound cookies already provide. Shared `ga-starboard` is operationally simpler and equally secure.
+
+### D2: GA_PORTAL_SECRET — always present, always enforced
+
+**Choice:** Generate at install time (`openssl rand -hex 32`). Store as Podman secret `ga-portal-secret`. Mount into `ga-transport` at `/run/secrets/ga-portal-secret`. Inject into `ga-portal` as env var `GA_PORTAL_SECRET`.
+
+**Caddy config** adds header on ALL upstream requests (MCP, files, dashboard, health — every route):
+```
+header_up X-Portal-Token {env.GA_PORTAL_SECRET}
+```
+
+**Transport middleware** rejects any request missing `X-Portal-Token` with 401. This check runs before `BearerAuthMiddleware` — it is the outermost gate. Crew containers on `ga-starboard` never receive `GA_PORTAL_SECRET` and cannot forge the header.
+
+**Transport startup** loads the secret via `_load_portal_secret()` — same pattern as `_load_api_key()`. The secret is registered with the redaction filter so it never appears in logs.
+
+**GA_API_KEY** remains optional — it is external client auth at the Caddy edge only. Separate concern, unchanged.
+
+### D3: Migration path — detect and migrate on startup (Option A)
+
+**Choice:** `_reconcile_registry` detects crews on `ga-net` and migrates each to `ga-starboard` at transport startup.
 
 **Rationale:**
 - Option B (nuke required) forces operators to destroy crew workspaces on upgrade — too disruptive.
-- Option C (parallel `ga-net` + per-crew support) adds ongoing complexity and indefinite support burden.
-- Option A is a one-time cost at the first startup after the upgrade. The migration is stop → disconnect → connect → start → wait for gateway, which is already idempotent via `_ensure_crew_running`.
+- Option C (parallel support) adds ongoing complexity and indefinite support burden.
+- Option A is a one-time cost at the first startup after the upgrade.
 
 **Migration algorithm in `_reconcile_registry`:**
-1. For each crew in registry, check if its container is attached to `ga-net` but not `ga-crew-{crew_id}` via `podman inspect`.
-2. If so: create `ga-crew-{crew_id}`, connect transport to it, stop container, call `podman network disconnect ga-net <container>`, call `podman network connect ga-crew-{crew_id} <container>`, start container, wait for gateway, refresh cookie.
-3. Update registry status.
-4. After all crews processed, if `ga-net` has no containers left, attempt `podman network rm ga-net` (best-effort, log warning on failure).
+1. For each crew in registry, call `container_networks(container)`.
+2. If `ga-starboard` already present: skip — no migration needed.
+3. If `ga-net` present but `ga-starboard` absent:
+   1. `podman.network_connect("ga-transport", "ga-starboard")` (idempotent — transport is already on starboard after compose restart, but call is safe to repeat)
+   2. Stop container.
+   3. `podman.network_disconnect(container, "ga-net")` (best-effort).
+   4. `podman.network_connect(container, "ga-starboard")`.
+   5. Start container → `_wait_gateway` → refresh cookie.
+4. After all crews processed, if `ga-net` exists and is empty: `podman.network_rm("ga-net")` (best-effort, log warning on failure).
 
-### D2: DNS — does ga-transport resolve gs-* hostnames on per-crew networks?
+### D4: DNS — does ga-transport resolve gs-* on ga-starboard?
 
-**Answer: Yes.** When `gs-{crew_id}` joins `ga-crew-{crew_id}`, it is resolvable as `gs-{crew_id}` from any container also on that network — including `ga-transport`. The transport dials `http://gs-{crew_id}:5476` and this continues to work unchanged.
+**Yes.** When `gs-{crew_id}` joins `ga-starboard`, it is resolvable as `gs-{crew_id}` from any container also on that network, including `ga-transport`. The transport dials `http://gs-{crew_id}:5476` and this continues to work unchanged.
 
-**Isolation benefit over shared starboard:** `gs-alpha` is NOT on `ga-crew-beta`, so it cannot resolve `gs-beta` by hostname — and vice versa. This is stronger isolation than the original shared `ga-starboard` design.
+**Crew→crew:** `gs-alpha` CAN resolve `gs-beta` by hostname on `ga-starboard`. However, `gs-beta`'s gateway port 5476 uses IP-bound `mc_token_5476` cookies. Empirically confirmed: a cross-crew request returns 403. This is the crew→crew control.
 
-**Verification from codebase:** `_crew_url` returns `f"http://{crew['container']}:{CREW_GATEWAY_PORT}"`. Container-name DNS confirmed working per the `server.py` module docstring. No change required here.
+**Crew→portal:** `ga-portal` is NOT on `ga-starboard`. Crew containers cannot resolve `ga-portal` by hostname.
 
-### D3: Worker containers — no network (unchanged)
+### D5: Worker containers — no network (unchanged)
 
-`worker_run` already uses `"netns": {"nsmode": "none"}`. Workers mount the crew volume read-only and run git/Python commands with no network access. This is correct and unchanged.
+`worker_run` already uses `"netns": {"nsmode": "none"}`. Workers mount the crew volume read-only and run git/Python commands with no network access. Unchanged.
 
-### D4: MCP catalogue containers — not managed by ghostship
+### D6: Why NOT per-crew networks
 
-The `/mcp` catalogue files are JSON descriptors mounted from the host into `ga-transport` at `/mcp:ro`. There are no "MCP catalogue containers" — the MCP servers referenced in `academy/mcp/*.json` are network-addressed external services resolved at crew runtime inside the crew container. They are not managed by ghostship and this change does not affect them.
+**Per-crew design (previous):** Each crew gets its own `ga-crew-{crew_id}` network. Transport joins every per-crew network dynamically. Stronger DNS isolation — `gs-alpha` cannot resolve `gs-beta`.
 
-### D5: Does ga-portal need per-crew access?
+**Shared starboard (final):** All crews share `ga-starboard`. Simpler lifecycle. `GA_PORTAL_SECRET` closes crew→transport MCP. IP-bound cookies close crew→crew session auth (confirmed: 403 empirically).
 
-No. `ga-portal` only dials `ga-transport:{PORT}` (portside) and `ga-transport:2019` (Caddy admin API). It has no reason to reach `gs-*` containers directly. `_caddy_register_crew` targets `ga-transport:8000` not `gs-*` (confirmed in `server.py`).
+**Decision:** The DNS isolation benefit of per-crew networks is real but not the relevant security boundary. The actual threats are: (a) crew→portal API hijack, closed at network layer; (b) crew→transport MCP, closed by `GA_PORTAL_SECRET`; (c) crew→crew, closed by IP-bound cookies. Per-crew networks add significant operational complexity — dynamic network lifecycle, transport reconnect calls, `peer_crews` parameter, peering asymmetry — without neutralising any remaining threat. Shared starboard is correct.
 
-### D6: Three design options considered
+### D7: podman.py — network_connect / network_disconnect / container_networks
 
-**Option A — Per-crew networks, no built-in peering (rejected as incomplete)**
+Three new methods needed for migration (D3) and the container assignment changes:
 
-Each crew gets its own `ga-crew-{crew_id}` network. No mechanism for cross-crew communication. Rejected as the sole option because it provides no escape hatch for use cases where the Admiral needs to wire two crews together.
+- `network_connect(container, network)` — `POST /libpod/networks/{network}/connect`
+- `network_disconnect(container, network)` — `POST /libpod/networks/{network}/disconnect`
+- `container_networks(container) -> list[str]` — parse `NetworkSettings.Networks` from `container_inspect`
 
-**Option B — Per-crew networks + opt-in peering via `peer_crews` (chosen)**
+`container_create` keeps `network: str` (single network per container — all crew containers go to `ga-starboard`, login containers go to `ga-starboard`). No signature change required.
 
-Same per-crew isolation as Option A, plus `launch()` gains an optional `peer_crews: list[str]` parameter. When specified, the new crew also joins each named peer's `ga-crew-{peer_id}` network. This allows explicit wiring — e.g. a coordinator crew that needs to reach worker crews directly. Default is no peering: `peer_crews=[]`.
+### D8: Constant naming
 
-Peering is asymmetric unless the peer is also launched with the caller in its `peer_crews`. The Admiral decides which crews are peered. The transport does not enforce or validate peer existence at launch time (log a warning if a peer's network does not exist).
-
-**Option C — Shared `ga-starboard` for all crews (original design, kept for comparison only)**
-
-Single shared network `ga-starboard` for all `gs-*` containers. Simpler to implement but weaker isolation:
-- `gs-alpha` can resolve and dial `gs-beta:5476` directly.
-- All crew containers can reach `ga-transport` on the same flat network.
-
-**Recommendation: Option B.** Per-crew isolation is the correct default; opt-in peering handles the coordinator use case cleanly without compromising the default.
-
-### D7: podman.py container_create — multi-network support
-
-`container_create` currently takes a single `network: str`. Two approaches:
-
-- Change the `network` parameter to `networks: list[str]`. The Podman API body `"Networks"` is already a dict — passing multiple keys is straightforward.
-
-**Choice:** Change `container_create` to accept `networks: list[str]` and build `"Networks": {n: {} for n in networks}`. All existing call sites pass a single network today; they will pass `[f"ga-crew-{crew_id}"]` after this change. The `ContainerRuntime` ABC signature is updated accordingly.
-
-### D8: Constant naming — dynamic per-crew names
-
-Replace `GA_NETWORK = "ga-net"` with a single constant and a naming function:
+Replace `GA_NETWORK = "ga-net"` with two static constants:
 
 ```python
 GA_PORTSIDE_NETWORK = "ga-portside"
-
-def crew_network(crew_id: str) -> str:
-    return f"ga-crew-{crew_id}"
+GA_STARBOARD_NETWORK = "ga-starboard"
 ```
 
-`GA_PORTSIDE_NETWORK` is defined in `lifecycle.py` (authoritative) and imported by `server.py`. There is no `GA_STARBOARD_NETWORK` constant — per-crew network names are computed dynamically. `compose.yml` declares only `ga-portside` as external; per-crew networks are created and destroyed at runtime.
+Defined in `lifecycle.py` (authoritative), imported by `server.py` and any other module that references network names. No dynamic naming functions needed — both networks are static.
 
-### D9: Network lifecycle — launch and nuke
+### D9: GA_PORTAL_SECRET redaction
 
-**launch:**
-1. Compute `net = crew_network(crew_id)`.
-2. `podman.network_create(net)` (idempotent).
-3. `podman.network_connect("ga-transport", net)` — transport joins the crew's network.
-4. Create crew container with `networks=[net]`.
-5. If `peer_crews` specified: for each `peer_id` in `peer_crews`, `podman.network_connect(container, crew_network(peer_id))` — connect the new crew to each peer's network (log warning if peer network doesn't exist).
-
-**nuke:**
-1. Stop and remove crew container.
-2. `podman.network_disconnect("ga-transport", net)` (best-effort — transport may already have left).
-3. `podman.network_rm(net)` (best-effort — log warning on failure, never raise).
+The secret is registered with the transport's log redaction filter on startup (same mechanism as `GA_API_KEY`). It must never appear in any log line, error message, or debug trace. The `_load_portal_secret()` function follows the same pattern as `_load_api_key()`: reads from `/run/secrets/ga-portal-secret`, raises `RuntimeError` with a safe message if absent, registers the value with the redactor.
 
 ## Risks / Trade-offs
 
-**[Risk] Crew containers can still DNS-resolve `ga-transport` on their per-crew network** → Mitigation: `BearerAuthMiddleware` enforces auth on all non-exempt routes; rate limiting applies. This was always the case. The per-crew split closes crew-to-crew reachability, which is stronger than shared starboard.
+**[Risk] Crew containers can DNS-resolve and dial ga-transport on ga-starboard** → Mitigation: `GA_PORTAL_SECRET` middleware rejects all requests missing `X-Portal-Token`. Crew containers never receive the secret. `BearerAuthMiddleware` remains as a second layer.
 
-**[Risk] Many active crews = many network_connect calls on transport** → Mitigation: each connect call is a fast local Podman API call. At normal scale (tens of crews) this is negligible. At very high scale (hundreds) a future optimisation could batch this.
+**[Risk] Crew containers can DNS-resolve each other on ga-starboard** → Mitigation: IP-bound `mc_token_5476` cookies return 403 for cross-crew attempts. Confirmed empirically.
 
-**[Risk] Asymmetric peering confusion** → Mitigation: document that `peer_crews` is one-directional. If bidirectional peering is needed, both `launch()` calls must name each other. This is intentional — the Admiral controls wiring explicitly.
+**[Risk] GA_PORTAL_SECRET leaks into logs** → Mitigation: registered with redaction filter at startup. Never passed as a CLI argument or environment variable visible in `ps`.
 
-**[Risk] Migration stop/start during transport restart causes brief crew downtime** → Mitigation: `_reconcile_registry` already restarts stopped crews; the migration is the same code path. Downtime is bounded by `_wait_gateway` (30s timeout per crew).
+**[Risk] Migration stop/start causes brief crew downtime** → Mitigation: `_reconcile_registry` already restarts stopped crews; migration uses the same code path. Downtime is bounded by `_wait_gateway` (30s timeout per crew).
 
-**[Risk] `ga-net` removal fails if a container still references it** → Mitigation: removal is best-effort and logged as a warning; ghostship does not fail to start.
+**[Risk] `ga-net` removal fails if a container still references it** → Mitigation: removal is best-effort and logged as a warning; transport does not fail to start.
 
-**[Risk] macOS: `podman network connect` inside a machine VM** → Mitigation: all podman calls go through the dedicated machine socket via `_PODMAN_CMD` and `PodmanClient`. The connect/disconnect calls use the same `self._req("POST", ...)` path and work on both macOS (inside VM) and Linux.
+**[Risk] Tests that mock GA_NETWORK** → Tests patching `GA_NETWORK` on `lifecycle` and `server` must be updated to patch `GA_PORTSIDE_NETWORK` and `GA_STARBOARD_NETWORK`. Bounded test-only change.
 
-**[Trade-off] Tests that mock network constants** → Tests currently patch `GA_NETWORK` on both `lifecycle` and `server`. After this change they must patch `GA_PORTSIDE_NETWORK` and use `crew_network(crew_id)` directly. This is a bounded test-only change.
+**[Trade-off] Crew containers can resolve each other by hostname** → Accepted. DNS visibility without auth is not a meaningful attack vector — the auth controls (cookies, `GA_PORTAL_SECRET`) are the actual barrier. The per-crew DNS isolation was defence-in-depth at a level that is not needed given the other two controls.
 
 ## Migration Plan
 
 1. **Install upgrade** (`install.sh` re-run):
-   - Creates `ga-portside` (idempotent). Does NOT create per-crew networks — those are dynamic.
-   - Stops and recreates `ga-transport` container (now on portside only in compose) and `ga-portal` container (portside only, unchanged).
-   - Existing `ga-net` is left in place — it may still have crew containers attached.
+   - Creates `ga-portside` and `ga-starboard` (both idempotent).
+   - Generates `ga-portal-secret` Podman secret (idempotent — skip if already exists).
+   - Recreates `ga-transport` container (now on both portside and starboard in compose) and `ga-portal` container (portside only).
+   - Updates Caddy config to inject `X-Portal-Token` header on all upstream requests.
+   - Existing `ga-net` left in place — may still have crew containers attached.
 
 2. **Transport startup** (`_reconcile_registry`):
-   - Detects any `gs-{crew_id}` container attached to `ga-net` but not `ga-crew-{crew_id}`.
-   - For each such crew: creates `ga-crew-{crew_id}`, connects transport to it, migrates container (disconnect `ga-net`, connect `ga-crew-{crew_id}`), starts, waits, refreshes cookie.
-   - After all crews migrated, attempts to remove `ga-net` if empty.
+   - Detects any `gs-{crew_id}` container on `ga-net` but not `ga-starboard`.
+   - For each such crew: connects transport to starboard (idempotent), migrates container (disconnect `ga-net`, connect `ga-starboard`), starts, waits, refreshes cookie.
+   - After all crews migrated, removes `ga-net` if empty (best-effort).
 
 3. **Rollback**:
-   - Re-run the previous `install.sh` version (which recreates `ga-net` and uses the old images).
-   - The old transport restarts; old `_reconcile_registry` doesn't know about per-crew networks and won't disconnect crews from `ga-crew-{id}` — those containers will have an extra network attached. This is harmless for rollback.
-   - Clean rollback: `podman network connect ga-net <container>` for each crew, then remove per-crew networks when empty.
+   - Re-run the previous `install.sh` version to restore `ga-net` and use old images.
+   - Old transport's `_reconcile_registry` does not know about `ga-starboard` — will not disconnect crews. Containers may have an extra network attached. Harmless for rollback.
+   - Clean rollback: `podman network connect ga-net <container>` for each crew, then remove `ga-starboard` and `ga-portside` when empty.
 
 ## Open Questions
 
