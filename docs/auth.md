@@ -6,6 +6,50 @@ JSON). It is stored as a single plain file, `DATA_DIR/ga-kiro-auth`, mode
 into `ga-transport` (as `/data`), so transport reads and writes it directly;
 `install.sh` doesn't need to touch it at all.
 
+## Headless / API key auth (Pro+)
+
+For headless / CI environments and Pro+ users with a kiro-cli API key, the
+interactive device-code flow can be skipped entirely. Set `KIRO_API_KEY` and no
+`POST /login` step is required.
+
+**How it works**
+
+1. Put your key in `ghostship.conf`:
+
+   ```bash
+   cp config/ghostship.conf.example config/ghostship.conf
+   # Edit config/ghostship.conf:
+   KIRO_API_KEY="<your-api-key>"
+   ```
+
+2. Re-run the installer so the transport picks up the new env var:
+
+   ```bash
+   ./install.sh --config config/ghostship.conf
+   ```
+
+3. Launch crews directly — **no `POST /login`, no browser step**:
+
+   ```bash
+   # launch succeeds immediately; the auth guard is bypassed
+   ```
+
+When `KIRO_API_KEY` is set:
+
+- `launch` does **not** call `_initiate_login()` and does **not** require the
+  `ga-kiro-auth` file to exist.
+- The key is injected as a `KIRO_API_KEY` env var into each crew container at
+  creation time; kiro-cli inside the crew authenticates directly from that env
+  var.
+- The `ga-kiro-auth` SQLite auth-row injection (`inject_auth.py`) is skipped —
+  the env var replaces it.
+
+> **Builder ID / device-code flow is unchanged when `KIRO_API_KEY` is unset.**
+> Leaving `KIRO_API_KEY` empty (the default) keeps the existing device-code path
+> in place exactly as described in **First login** below — `ga-kiro-auth`,
+> `POST /login`, and `inject_auth.py` all behave as before. Free-tier / Builder
+> ID users are unaffected.
+
 ## First login
 
 Auth must be completed before `launch` will work. If you attempt to launch a crew without completing auth first, the launch will fail — **do not retry `launch` until auth is confirmed complete**, as any crew created mid-auth will be unauthenticated and must be nuked.
@@ -428,3 +472,66 @@ succeeds.
   Admiral standing orders; it can only forge security policy signatures, which
   is a lower-impact capability in the current single-operator, isolated-container
   use case.
+
+## Dashboard session auth (Caddy / Portal mode)
+
+When the Caddy reverse proxy is enabled, dashboard ports are protected by a session cookie gate instead of being unauthenticated. See [caddy.md](caddy.md) for setup.
+
+### Auth flow overview
+
+```
+Browser ──GET :64058/──▶ ga-portal
+                            │
+                            ├─ forward_auth ──GET /dashboard-auth──▶ ga-transport
+                            │                 valid gs_session?
+                            │                 ├─ YES → 200 + X-Crew-Cookie header
+                            │                 └─ NO  → 401 → Caddy → redirect to /login-ui
+                            │
+                            └─ (on 200) reverse_proxy ──▶ gs-{crew_id}:5476
+                                         X-Crew-Cookie injected as cookie
+```
+
+### Dashboard endpoints
+
+Three new HTTP routes on the main transport port (64057):
+
+**`GET /login-ui`** — Serves the HTML login form. Accepts an optional `?next=<url>` query parameter for post-login redirect. Publicly accessible (no auth).
+
+**`POST /dashboard-login`** — Accepts a `ga_api_key` form field. If it matches `GA_API_KEY` (constant-time comparison), issues a `gs_session` cookie and returns 200. Returns 401 on mismatch or when `GA_API_KEY` is not set. Cookie attributes: `HttpOnly; SameSite=Lax; Secure; Path=/`.
+
+**`GET /dashboard-auth`** — Caddy's `forward_auth` target. Validates the `gs_session` cookie from the incoming request. On a valid session:
+- Returns 200.
+- If the request includes a `?port=<N>` parameter (as configured in the Caddy `forward_auth` URI), looks up the crew mapped to that port and returns `X-Crew-Cookie: mc_token_5476=<crew_token>`. Caddy's `copy_headers` directive carries this into the upstream request, authenticating the browser to the crew gateway.
+- Returns 200 without the `X-Crew-Cookie` header if the port is unknown (session still valid; crew cookie injection is best-effort).
+
+Returns 401 if the session is missing, invalid, or expired.
+
+### `gs_session` cookie lifecycle
+
+| Step | Event |
+|:-----|:------|
+| Issued | Operator submits valid `GA_API_KEY` to `POST /dashboard-login` |
+| Stored | In-memory `dict[token → expiry]` in the transport process |
+| TTL | `GA_PORTAL_SESSION_TTL_SECS` (default 86400 = 24 h) |
+| Validated | On every request to a Caddy-gated dashboard port, via `forward_auth` call to `/dashboard-auth` |
+| Purged | On expiry check, or on transport restart (in-memory only) |
+| Rotated | Log out and log back in via `/login-ui` |
+
+Sessions are single-process, in-memory. A transport restart clears all sessions — users must log in again. The session store has no persistence, database, or shared state.
+
+### Bearer enforcement at the edge
+
+When `GA_API_KEY` is set (Portal is always active):
+
+- `/mcp*` and `/files/*` routes on Caddy's main port (443) require `Authorization: Bearer <GA_API_KEY>`. Caddy rejects bad or missing tokens before the request reaches the transport.
+- The transport's own `BearerAuthMiddleware` remains active as a defence-in-depth layer.
+- `/dashboard-auth`, `/login-ui`, and `/dashboard-login` are public routes — they are exempt from the Bearer check (auth is the point of those endpoints).
+
+### Auth posture summary
+
+| | Current (Portal always active) |
+|:--|:--|
+| MCP / files | Caddy rejects bad Bearer at the edge; `BearerAuthMiddleware` is defence-in-depth |
+| Dashboard ports | `forward_auth` → `gs_session` cookie gate on every port |
+| TLS | Caddy-terminated on all ports (`GA_PORTAL_TLS_MODE`) |
+| Auth upgrade to SSO | Caddy-config change only (swap `forward_auth` → `caddy-security`) |

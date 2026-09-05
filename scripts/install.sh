@@ -65,23 +65,26 @@ GA_MACHINE_NAME=ghost-academy
 GA_MAX_CREWS=20
 GA_MAX_ACTIVE_CREWS=3
 GA_IDLE_TIMEOUT_SECS=300
-GA_FILE_TTL_SECS=300
 GA_SUBAGENT_TIMEOUT_SECS=3600
 GA_SUBAGENT_MAX_TURNS=200
 GA_CREW_AGENT=kiro
-GA_PICKUP_MAX_POLL_SECS=30
-KC_GATEWAY_TOKEN_TTL=24h
 GA_MIN_FREE_MEM_GB=2.0
-GA_MEMORY_WAIT_SECS=60
 GA_SPAWN_MIN_MEMORY_GB=1.5
 GA_RESOURCE_PRESSURE_GB=2.0
 GA_RESOURCE_CRITICAL_GB=1.0
 GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
-HOST=0.0.0.0
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_PORT_RANGE_SIZE=50
 GA_DASHBOARD_PORT_ENABLED=true
+# ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
+# ga-portal (Caddy) is always installed; there is no opt-out.
+# Caddy listens on PORT (same port as the transport, resolved above).
+# Default: plain HTTP on 64057 — zero-config installs work at
+# http://localhost:64057/mcp with no TLS setup required.
+# To enable TLS: set GA_PORTAL_TLS_MODE=acme + GA_PORTAL_DOMAIN (any port).
+GA_PORTAL_TLS_MODE=off
+GA_PORTAL_DOMAIN=""
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -102,6 +105,14 @@ if [[ -n "$CONFIG_FILE" ]]; then
   if [[ ! -r "$CONFIG_FILE" ]]; then
     echo "Error: config file is not readable: $CONFIG_FILE" >&2
     exit 1
+  fi
+  # Migration guard: GA_PORTAL_PORT was renamed to PORT in TRN-111.
+  # If the config file sets GA_PORTAL_PORT, warn and substitute to PORT before sourcing.
+  if grep -qE '^[[:space:]]*GA_PORTAL_PORT=' "$CONFIG_FILE" 2>/dev/null; then
+    echo "⚠ Deprecated GA_PORTAL_PORT found in config — auto-migrating to PORT" >&2
+    _MIGRATED_CONFIG="$(mktemp)"
+    sed 's/^\([[:space:]]*\)GA_PORTAL_PORT=/\1PORT=/' "$CONFIG_FILE" > "$_MIGRATED_CONFIG"
+    CONFIG_FILE="$_MIGRATED_CONFIG"
   fi
   # TRUST ASSUMPTION: this executes arbitrary shell code from the path the user
   # passed via --config. The caller is trusted — this is intentional: config
@@ -138,6 +149,8 @@ while [[ $# -gt 0 ]]; do
     --model-default) KC_MODEL_DEFAULT="$2"; shift 2 ;;
     --public-url) GA_HOST_URL="$2"; shift 2 ;;
     --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
+    --caddy-domain) GA_PORTAL_DOMAIN="$2"; shift 2 ;;
+    --caddy-tls-mode) GA_PORTAL_TLS_MODE="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -475,11 +488,12 @@ fi
 
 # ── Network ───────────────────────────────────────────────────────────────────
 
-${_PODMAN_CMD} network exists ga-net 2>/dev/null || ${_PODMAN_CMD} network create ga-net
+${_PODMAN_CMD} network exists ga-portside 2>/dev/null || ${_PODMAN_CMD} network create ga-portside
+${_PODMAN_CMD} network exists ga-starboard 2>/dev/null || ${_PODMAN_CMD} network create ga-starboard
 if [[ "${GA_DEDICATED_MACHINE}" == "true" ]]; then
-  echo "✓ ga-net network ready on dedicated instance '${GA_MACHINE_NAME}' (DNS-enabled by default)"
+  echo "✓ ga-portside and ga-starboard networks ready on dedicated instance '${GA_MACHINE_NAME}' (DNS-enabled by default)"
 else
-  echo "✓ ga-net network ready (DNS-enabled by default)"
+  echo "✓ ga-portside and ga-starboard networks ready (DNS-enabled by default)"
 fi
 
 # ── Pre-warm + build images ──────────────────────────────────────────────────
@@ -562,6 +576,16 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
+# ── Podman secret for GA_TRANSPORT_SECRET (TRN-107) ─────────────────────────────
+# Idempotent: only generate if the secret does not already exist. This ensures
+# the same secret is reused across reinstalls (Caddy and transport stay in sync).
+if ! ${_PODMAN_CMD} secret inspect ga-transport-secret >/dev/null 2>&1; then
+  openssl rand -hex 32 | ${_PODMAN_CMD} secret create ga-transport-secret -
+  echo "✓ Podman secret 'ga-transport-secret' created (new)"
+else
+  echo "✓ Podman secret 'ga-transport-secret' already exists (keeping existing)"
+fi
+
 # ── Copy academy/ and crews/ into the data volume ────────────────────────────
 # Snapshot academy/ subdirectories and crews/ from the repo into DATA_DIR so
 # the transport container has no runtime dependency on the repo checkout path.
@@ -608,11 +632,9 @@ services:
     restart: always
     security_opt:
       - label=disable
-    ports:
-      - "127.0.0.1:${PORT}:${PORT}"
-      - "${GA_DASHBOARD_PORT_RANGE_START:-64058}-${_DASHBOARD_PORT_END}:${GA_DASHBOARD_PORT_RANGE_START:-64058}-${_DASHBOARD_PORT_END}"
     networks:
-      - ga-net
+      - ga-portside
+      - ga-starboard
     volumes:
       - ${DATA_DIR}:/data
       - ${DATA_DIR}/academy/agents:/agents:ro
@@ -631,27 +653,22 @@ services:
       GA_MAX_CREWS: "${GA_MAX_CREWS:-20}"
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
       GA_IDLE_TIMEOUT_SECS: "${GA_IDLE_TIMEOUT_SECS:-300}"
-      GA_FILE_TTL_SECS: "${GA_FILE_TTL_SECS:-300}"
       GA_SUBAGENT_TIMEOUT_SECS: "${GA_SUBAGENT_TIMEOUT_SECS:-3600}"
       GA_SUBAGENT_MAX_TURNS: "${GA_SUBAGENT_MAX_TURNS:-200}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
-      GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
-      KC_GATEWAY_TOKEN_TTL: "${KC_GATEWAY_TOKEN_TTL:-24h}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
       KIRO_LICENSE: "${KIRO_LICENSE:-}"
+      KIRO_API_KEY: "${KIRO_API_KEY:-}"
       KC_MODEL_OVERRIDE: "${KC_MODEL_OVERRIDE:-}"
       KC_MODEL_DEFAULT: "${KC_MODEL_DEFAULT:-}"
       GA_MIN_FREE_MEM_GB: "${GA_MIN_FREE_MEM_GB:-2.0}"
-      GA_MEMORY_WAIT_SECS: "${GA_MEMORY_WAIT_SECS:-60}"
       GA_SPAWN_MIN_MEMORY_GB: "${GA_SPAWN_MIN_MEMORY_GB:-1.5}"
       GA_RESOURCE_PRESSURE_GB: "${GA_RESOURCE_PRESSURE_GB:-2.0}"
       GA_RESOURCE_CRITICAL_GB: "${GA_RESOURCE_CRITICAL_GB:-1.0}"
       GA_GIT_AUTHOR_NAME: "${GA_GIT_AUTHOR_NAME:-}"
       GA_GIT_AUTHOR_EMAIL: "${GA_GIT_AUTHOR_EMAIL:-}"
       GA_ENABLE_SECURITY_HEADERS: "${GA_ENABLE_SECURITY_HEADERS:-1}"
-      GA_ENFORCE_HTTPS_REDIRECT: "${GA_ENFORCE_HTTPS_REDIRECT:-0}"
-      GA_CSP_ENFORCE: "${GA_CSP_ENFORCE:-0}"
       GA_TLS_MIN_VERSION: "${GA_TLS_MIN_VERSION:-1.2}"
       GA_TLS_CERTFILE: "${GA_TLS_CERTFILE:-}"
       GA_TLS_KEYFILE: "${GA_TLS_KEYFILE:-}"
@@ -664,23 +681,175 @@ services:
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-50}"
       GA_DASHBOARD_PORT_ENABLED: "${GA_DASHBOARD_PORT_ENABLED:-true}"
-$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '    secrets:\n      - ga-api-key\n'; fi)
+      GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
+      GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
+    secrets:
+      - ga-transport-secret
+$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
+  ga-portal:
+    image: docker.io/caddy:2
+    container_name: ga-portal
+    restart: always
+    ports:
+      - "0.0.0.0:${PORT:-64057}:${PORT:-64057}"
+      - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
+    networks:
+      - ga-portside
+    environment:
+      GA_API_KEY: "${GA_API_KEY:-}"
+    secrets:
+      - ga-transport-secret
+    volumes:
+      - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
+      - ga-portal-data:/data
+    command: ["caddy", "run", "--config", "/config/initial-config.json", "--resume"]
 networks:
-  ga-net:
+  ga-portside:
     external: true
-$(if [[ -n "${GA_API_KEY:-}" ]]; then printf 'secrets:\n  ga-api-key:\n    external: true\n'; fi)
+  ga-starboard:
+    external: true
+secrets:
+  ga-transport-secret:
+    external: true
+$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '  ga-api-key:\n    external: true\n'; fi)
+volumes:
+  ga-portal-data:
 COMPOSE_EOF
 
 echo "✓ compose.yml written to ${DATA_DIR}/compose.yml"
+
+# ── Generate Caddy initial-config.json (TRN-92 / TRN-103) ─────────────────────
+# ga-portal (Caddy) is always installed. This config bootstraps the main-port
+# server with Bearer-gated MCP/file routes and the dashboard-auth endpoints.
+# Per-crew dashboard servers are added at runtime via the Caddy admin API.
+mkdir -p "${DATA_DIR}/caddy"
+
+# Build the TLS stanza based on GA_PORTAL_TLS_MODE.
+_AUTO_HTTPS=""  # set to disable auto-HTTPS for TLS_MODE=off
+case "${GA_PORTAL_TLS_MODE:-off}" in
+  tailscale)
+    _TLS_STANZA='"tls": {"automation": {"policies": [{"get_certificate": [{"via": "tailscale"}]}]}}'
+    _MAIN_LISTEN=":${PORT:-64057}"
+    ;;
+  acme)
+    _ACME_DOMAIN="${GA_PORTAL_DOMAIN:-}"
+    _TLS_STANZA='"tls": {"automation": {"policies": [{"subjects": ["'"${_ACME_DOMAIN}"'"], "issuers": [{"module": "acme"}]}]}}'
+    _MAIN_LISTEN=":${PORT:-64057}"
+    ;;
+  off)
+    # Plain HTTP — disable auto-HTTPS, listen on the HTTP port.
+    _TLS_STANZA='"tls": {}'
+    _MAIN_LISTEN=":${PORT:-64057}"
+    _AUTO_HTTPS='"automatic_https": {"disable": true},'
+    ;;
+  *)  # internal (default)
+    _TLS_STANZA='"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}'
+    _MAIN_LISTEN=":${PORT:-64057}"
+    ;;
+esac
+
+# The portal-token header injected on every upstream request (TRN-107).
+# Caddy reads the secret from the mounted Podman secret file using the
+# {file.<path>} placeholder (Caddy v2.7+).
+_PORTAL_TOKEN_HEADER='"headers": {"request": {"set": {"X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"]}}}'
+
+# Build auth routes: gated when GA_API_KEY is set, open passthrough otherwise.
+if [[ -n "${GA_API_KEY:-}" ]]; then
+  _AUTH_ROUTES=$(cat <<AUTH_EOF
+            {
+              "@id": "ga-transport-mcp",
+              "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+            },
+            {
+              "@id": "ga-transport-files",
+              "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+            },
+            {
+              "@id": "ga-mcp-files-reject",
+              "match": [{"path": ["/mcp*", "/files/*"]}],
+              "handle": [{"handler": "static_response", "status_code": 401, "headers": {"Www-Authenticate": ["Bearer"]}, "body": "Unauthorized"}]
+            },
+AUTH_EOF
+)
+else
+  # No API key — pass all routes through to the transport (Tailscale-gated).
+  _AUTH_ROUTES=$(cat <<AUTH_EOF
+            {
+              "@id": "ga-transport-mcp",
+              "match": [{"path": ["/mcp*"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+            },
+            {
+              "@id": "ga-transport-files",
+              "match": [{"path": ["/files/*"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+            },
+AUTH_EOF
+)
+fi
+
+# Generate initial-config.json — main server only, no per-crew servers.
+cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
+{
+  "admin": {"listen": "0.0.0.0:2019"},
+  "apps": {
+    "http": {
+      "servers": {
+        "ga-main": {
+          "listen": ["${_MAIN_LISTEN}"],
+          ${_AUTO_HTTPS}
+          "routes": [
+${_AUTH_ROUTES}
+            {
+              "@id": "ga-transport-misc",
+              "match": [{"path": ["/health", "/version", "/dashboard-auth", "/dashboard-auth*", "/login-ui", "/dashboard-login", "/login", "/login*", "/logout"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+            }
+          ]
+        }
+      }
+    },
+    ${_TLS_STANZA}
+  }
+}
+CADDY_EOF
+
+echo "✓ Caddy initial-config.json written to ${DATA_DIR}/caddy/initial-config.json"
+
+# Internal CA: surface the root cert path so the operator knows where to
+# run 'caddy trust'. The cert lives in the ga-portal-data volume at the
+# standard Caddy path /data/caddy/pki/authorities/local/root.crt.
+if [[ "${GA_PORTAL_TLS_MODE:-off}" == "internal" ]]; then
+  # Resolve the host-side volume mountpoint for ga-portal-data.
+  _CADDY_DATA_MOUNTPOINT=""
+  if ${_PODMAN_CMD} volume exists ga-portal-data 2>/dev/null; then
+    _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect ga-portal-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
+  fi
+  _CADDY_ROOT_CERT_PATH="${_CADDY_DATA_MOUNTPOINT:-(ga-portal-data not yet created)}/caddy/pki/authorities/local/root.crt"
+  echo ""
+  echo "── Caddy internal CA ─────────────────────────────────────────────────"
+  echo "TLS mode: internal (Caddy built-in CA)"
+  echo "Root CA cert: ${_CADDY_ROOT_CERT_PATH}"
+  echo ""
+  echo "After ga-portal starts, run this once to trust the CA:"
+  echo "  podman exec ga-portal caddy trust"
+  echo "or import the cert manually from the path above."
+  echo "──────────────────────────────────────────────────────────────────────"
+  echo ""
+fi
 
 # ── Run transport ─────────────────────────────────────────────────────────────
 
 # Kill any stale rootlessport process that may be holding the transport port
 # open from a previous (possibly interrupted) install. These survive container
 # removal and will cause compose up to fail with "address already in use".
+# ga-transport no longer binds a host port (Caddy is the external listener),
+# so only check for stale rootlessport on ga-portal's port (PORT).
 for _pid in $(pgrep -x rootlessport 2>/dev/null); do
-  if ss -tlnp 2>/dev/null | grep -q "127.0.0.1:${PORT}.*pid=${_pid}"; then
-    kill "$_pid" 2>/dev/null && echo "✓ killed stale rootlessport on port ${PORT} (pid ${_pid})" || true
+  if ss -tlnp 2>/dev/null | grep -q "0.0.0.0:${PORT:-64057}.*pid=${_pid}"; then
+    kill "$_pid" 2>/dev/null && echo "✓ killed stale rootlessport on port ${PORT:-64057} (pid ${_pid})" || true
     sleep 0.5
   fi
 done
@@ -701,6 +870,7 @@ else
   _COMPOSE_ENV=""
 fi
 eval "${_COMPOSE_ENV} podman rm -f ga-transport" >/dev/null 2>&1 || true
+eval "${_COMPOSE_ENV} podman rm -f ga-portal" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${DATA_DIR}/compose.yml\" up -d --force-recreate --remove-orphans"
 echo "✓ ga-transport container started"
 
@@ -716,15 +886,22 @@ echo "=== Health check ==="
 _max_wait=30
 _interval=2
 _ready=0
+# Transport has no host port (Caddy is the external listener). Probe via
+# podman exec so we don't need a host-side binding.
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+  if ${_PODMAN_CMD} exec ga-transport python3 -c "
+import urllib.request, os
+secret = open('/run/secrets/ga-transport-secret').read().strip() if os.path.exists('/run/secrets/ga-transport-secret') else ''
+req = urllib.request.Request('http://127.0.0.1:${PORT}/health', headers={'X-Transport-Token': secret})
+urllib.request.urlopen(req)
+" >/dev/null 2>&1; then
     _ready=1
     break
   fi
   sleep "$_interval"
 done
 if [[ "$_ready" == "1" ]]; then
-  echo "✓ Transport is ready (responded on http://127.0.0.1:${PORT}/health)"
+  echo "✓ Transport is ready (container-internal health check passed)"
 else
   echo "✗ Transport did not become ready within ${_max_wait}s" >&2
   echo "  Last 20 lines of container logs:" >&2
@@ -732,8 +909,42 @@ else
   exit 1
 fi
 
+# TRN-103: ga-portal health check (Caddy is always installed)
+_caddy_ready=0
+_caddy_scheme="http"
+[[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
+for (( _i=0; _i<_max_wait; _i+=_interval )); do
+  if curl -sk "${_caddy_scheme}://127.0.0.1:${PORT:-64057}/health" >/dev/null 2>&1; then
+    _caddy_ready=1
+    break
+  fi
+  sleep "$_interval"
+done
+if [[ "$_caddy_ready" == "1" ]]; then
+  echo "✓ Caddy is ready"
+else
+  echo "⚠ Caddy (ga-portal) did not respond on port ${PORT:-64057} within ${_max_wait}s"
+  echo "  Check: ${_PODMAN_CMD} logs ga-portal --tail 20"
+  echo "  This is non-fatal — Caddy may still be pulling or starting."
+fi
+
 echo ""
 echo "=== Post-install ==="
+
+# ── Best-effort ga-net cleanup (TRN-107) ─────────────────────────────────────
+# If ga-net exists and has no containers, remove it (migration complete).
+# This is a no-op on fresh installs. Silently skipped if the network still
+# has containers (migration will run at transport startup via _reconcile_registry).
+if ${_PODMAN_CMD} network exists ga-net 2>/dev/null; then
+  _ga_net_containers="$(${_PODMAN_CMD} network inspect ga-net --format '{{len .Containers}}' 2>/dev/null || echo "1")"
+  if [[ "${_ga_net_containers}" == "0" ]]; then
+    ${_PODMAN_CMD} network rm ga-net >/dev/null 2>&1 \
+      && echo "✓ ga-net removed (empty, migration complete)" \
+      || echo "  ga-net removal skipped (in use or error)"
+  else
+    echo "  ga-net still has ${_ga_net_containers} container(s) — will be migrated at transport startup"
+  fi
+fi
 echo "Register the MCP server (one-time):"
 echo "  kiro-cli mcp add --name ghostship --url http://localhost:${PORT}/mcp --scope global"
 echo ""

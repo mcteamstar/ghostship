@@ -5,37 +5,49 @@
 # install.sh) — uncomment and edit only the ones you want to override.
 # Full reference: docs/configuration.md
 
-# ── Network ───────────────────────────────────────────────────────────────────
-# Port the transport listens on (MCP + file transfer on the same port).
+# ── Common ────────────────────────────────────────────────────────────────────
+# Port the transport (and ga-portal / Caddy) listen on.
+# Note: GA_PORTAL_PORT is the deprecated alias for PORT — use PORT instead.
+#   Old config files using GA_PORTAL_PORT are auto-migrated by install.sh.
 # PORT=64057
-
-# Interface the transport binds inside the container. Default 0.0.0.0 binds all
-# interfaces; host-side install.sh publishes to 127.0.0.1 only. Set to 127.0.0.1
-# for loopback-only binding on non-containerised installs.
-# HOST=0.0.0.0
 
 # Public URL baked into presigned evac/supply links.
 # For local installs, leave unset (defaults to http://localhost:<PORT>).
 # For remote installs, set to the publicly reachable address.
 # GA_HOST_URL=""
 
-# ── Authentication ────────────────────────────────────────────────────────────
 # API key for MCP endpoint auth. Leave unset for local/trusted installs.
 # GA_API_KEY=""
+
+# Two auth paths for kiro-cli inside crews:
+#   Option A — API key (Pro+, headless): set KIRO_API_KEY to skip the device-code
+#     login flow entirely. The key is injected as an env var into crew containers
+#     and kiro-cli authenticates directly — no POST /login, no browser step.
+#     Re-run install.sh after setting this so the transport picks it up.
+#   Option B — Device code (default, all tiers): leave KIRO_API_KEY unset. After
+#     install, run POST /login once to complete the browser-based auth flow. For
+#     org (IAM Identity Center) licensing, also set the KIRO_IDENTITY_PROVIDER /
+#     KIRO_REGION / KIRO_LICENSE vars below.
+# KIRO_API_KEY=""
 
 # kiro-cli identity provider (omit to use default Builder ID / free tier).
 # KIRO_IDENTITY_PROVIDER=""
 # KIRO_REGION=""
 # KIRO_LICENSE=""
 
-# ── Model ─────────────────────────────────────────────────────────────────────
-# Override the default model for all crew agents.
+# Override the model for all crew agents.
 # KC_MODEL_OVERRIDE=""
 
 # Set a global model fallback for agents that don't have a per-agent model set.
-# Lower precedence than KC_MODEL_OVERRIDE and per-agent model fields.
-# Precedence: KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
+# Precedence: dispatch(model=...) > KC_MODEL_OVERRIDE > per-agent model field > KC_MODEL_DEFAULT > KiroCrew built-in
 # KC_MODEL_DEFAULT=""
+
+# When both vars are set, all crew commits carry the operator's identity as
+# both author and committer. Unset → per-persona identity is used (default).
+# GA_GIT_AUTHOR_NAME="Your Name"
+# GA_GIT_AUTHOR_EMAIL="you@example.com"
+
+# ── Advanced ──────────────────────────────────────────────────────────────────
 
 # ── Dedicated Podman Machine ──────────────────────────────────────────────────
 # Provision an isolated Podman machine (macOS) or instance (Linux) exclusively
@@ -79,9 +91,6 @@
 # Set to 0 to disable the gate entirely.
 # GA_MIN_FREE_MEM_GB=2.0
 
-# How long to wait (seconds) for memory to free up before failing the launch.
-# GA_MEMORY_WAIT_SECS=60
-
 # ── KiroCrew memory thresholds ────────────────────────────────────────────────
 # Written to config.local.json inside each crew at launch.
 # GA_SPAWN_MIN_MEMORY_GB=1.5
@@ -101,25 +110,12 @@
 # KC_IMAGE=localhost/spec-ops:latest
 
 # Upstream base image used for ephemeral kiro-cli-only containers (e.g. login).
-# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.4.0
+# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.5.0
 
 # ── Crew agent ────────────────────────────────────────────────────────────────
 # KiroCrew agent name written to config.local.json inside each crew. Must be
-# non-empty (KiroCrew 0.4.0 requires it). Override for a differently-named agent.
+# non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
 # GA_CREW_AGENT=kiro
-
-# ── File transfer ─────────────────────────────────────────────────────────────
-# TTL (seconds) for presigned evac/supply file URLs.
-# GA_FILE_TTL_SECS=300
-
-# Max seconds to poll for a pickup file to appear before giving up.
-# GA_PICKUP_MAX_POLL_SECS=30
-
-# ── Gateway ───────────────────────────────────────────────────────────────────
-# TTL for the KiroCrew gateway token minted for each crew.
-# Accepted format: <N>[s|m|h|d] where N is a positive integer, e.g. 24h, 3600s, 7d, 30m.
-# Invalid values are rejected at startup with a WARNING; the default 24h is used instead.
-# KC_GATEWAY_TOKEN_TTL=24h
 
 # ── Transport TLS / security headers (TRN-70) ─────────────────────────────────
 # Minimum TLS version enforced when the app terminates TLS directly ("1.2"/"1.3").
@@ -131,12 +127,6 @@
 
 # Emit baseline security headers (HSTS, etc.). Default on.
 # GA_ENABLE_SECURITY_HEADERS=1
-
-# 301-redirect plaintext HTTP to HTTPS. Staged rollout; default off.
-# GA_ENFORCE_HTTPS_REDIRECT=0
-
-# Send CSP as enforcing rather than report-only. Staged rollout; default off.
-# GA_CSP_ENFORCE=0
 
 # ── HTTP rate limiting (TRN-52) ───────────────────────────────────────────────
 # Per-endpoint sliding-window request limits. Each value is "<count>:<window_secs>"
@@ -154,20 +144,63 @@
 # /crews/*/api/* — proxied crew API (default 120 req / 60 s).
 # GA_RATE_LIMIT_CREW_API=120:60
 
-# ── Git author identity ───────────────────────────────────────────────────────
-# When both vars are set, all crew commits carry the operator's identity as
-# both author and committer. Unset → per-persona identity is used (default).
-# Note: this applies to ALL agents — Ghost, Banshee, etc. will all commit as
-# the configured operator. Leave unset to keep per-persona differentiation.
-# GA_GIT_AUTHOR_NAME="Your Name"
-# GA_GIT_AUTHOR_EMAIL="you@example.com"
-
-# ── Crew UI port allocation (TRN-80) ─────────────────────────────────────────
-# When GA_DASHBOARD_PORT_ENABLED=true (default), each new crew is assigned a host port
-# from the range [GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1]
-# so the crew's SPA is reachable at http://<host>:<port>/ as a stable origin.
+# ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
+# Each crew launched with dashboard=True is assigned a host port from the range
+# [GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1].
 # Open the port range in your firewall before deploying (e.g. ufw allow 64058:64107/tcp).
-# Dashboard ports are opt-in at launch time (dashboard=True). Set GA_DASHBOARD_PORT_ENABLED=false to disable entirely.
+# Dashboard ports are opt-in at launch time (dashboard=True).
+#
+# TRN-101/TRN-103 MIGRATION: GA_DASHBOARD_PORT_ENABLED was removed. Dashboard
+# access is now provided by ga-portal (Caddy), which is always installed. If you
+# previously used GA_DASHBOARD_PORT_ENABLED=true, just re-run install.sh — the
+# portal replaces the per-port proxy. See docs/dashboard-proxy.md.
+#
 # GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_PORT_RANGE_SIZE=50
-# GA_DASHBOARD_PORT_ENABLED=true
+
+# ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
+# ga-portal (Caddy) is a required component and is always installed. It binds
+# ports 443/80 AND the dashboard port range, terminates TLS, and gates auth for
+# all dashboard ports; the transport's per-port uvicorn listeners are not
+# started. See docs/caddy.md for full setup and the vm23 host-Caddy retirement
+# note.
+#
+# TRN-103 MIGRATION: GA_PORTAL_ENABLED was removed — there is no opt-out. Any
+# deployment that previously set GA_PORTAL_ENABLED=false must re-run install.sh
+# to regenerate compose.yml. The GA_PORTAL_* vars below still configure how the
+# portal behaves.
+
+# TLS mode. Choose one that fits your environment:
+#
+#   internal (default) — Caddy built-in CA issues self-signed certs. Works
+#     on localhost, private IPs, and Tailscale addresses without DNS.
+#     One-time operator trust step required: install.sh prints the exact command.
+#     Ideal for homelab and private-network deployments.
+#
+#   tailscale — Real browser-trusted certs from Tailscale ACME for .ts.net
+#     hostnames. Requires the Tailscale daemon on the host. No trust step.
+#     Ideal for vm23/academy deployments.
+#
+#   acme — Public Let's Encrypt certificate for GA_PORTAL_DOMAIN. Requires
+#     GA_PORTAL_DOMAIN set and ports 80/443 reachable for ACME challenge.
+#     Ideal for internet-facing deployments.
+#
+#   off — Plain HTTP, no TLS. For local dev or when an upstream terminator
+#     already handles TLS.
+#
+# GA_PORTAL_TLS_MODE=off   ← default: plain HTTP
+
+# Domain for ACME (Let's Encrypt). Required when GA_PORTAL_TLS_MODE=acme.
+# GA_PORTAL_DOMAIN=""
+
+# TTL (seconds) for gs_session cookies issued by /dashboard-login.
+# Default 86400 (24 h). Sessions are in-memory only and reset on transport restart.
+# GA_PORTAL_SESSION_TTL_SECS=86400
+
+# TRN-107: GA_TRANSPORT_SECRET is auto-generated by install.sh and stored as a
+# Podman secret (ga-transport-secret). It is NOT configured here — install.sh
+# handles generation (idempotent: preserved across reinstalls). The value is
+# injected into both ga-transport and ga-portal at container start time via
+# the Podman secrets mechanism. To rotate the secret, delete the Podman secret
+# and re-run install.sh: podman secret rm ga-transport-secret && ./scripts/install.sh
+# GA_TRANSPORT_SECRET=""

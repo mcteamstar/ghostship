@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.2.4"
+  version: "0.3.0"
 ---
 
 # Ghostship Command
@@ -62,6 +62,12 @@ configurable per install and can differ from what's described below. Don't
 hardcode them:
 
 - `crews()` — every live crew, its status, and its currently running tasks.
+  Per crew you get `status`, `created_at`, `last_task_at`, and — for running
+  crews — `uptime_secs` (seconds since the container started; null when
+  stopped). Each running task lists `task_id`, `agent`, `done`, and
+  `elapsed_secs`. This is a fleet overview: it does NOT carry the current tool
+  or latest output for a task — call `pickup` when you need live per-task
+  detail.
 - resource `transport://compositions` — available `composition` values for `launch`.
 - resource `transport://agents` — the real roster and description for `dispatch`'s `agent` values.
 - resource `transport://orders` — built-in `captain(template=...)` bodies, in full.
@@ -128,12 +134,13 @@ curl -X POST "<url>" --data-binary @./config.json
 tar -czf - ./myrepo | curl -X POST "<url>&unpack=1" --data-binary @-
 
 # Full git history — recommended for SDD work (set bundle=True on the supply() call)
-# IMPORTANT: use --all so the bundle includes a valid HEAD ref and the crew
-# can check out a working tree. A branch-specific bundle (e.g.
-# git bundle create ... release/0.2.4) may leave HEAD unresolvable if the
-# branch name contains slashes, resulting in an empty working tree.
-git bundle create /tmp/myrepo.bundle --all
-curl -X POST "<url>&bundle=1" --data-binary @/tmp/myrepo.bundle
+# IMPORTANT: ALWAYS build a fresh bundle immediately before calling supply().
+# Never reuse a /tmp/*.bundle file built for a previous crew or at an earlier
+# point in time — a stale bundle silently seeds the crew with an outdated repo
+# snapshot, missing commits made since the bundle was built.
+# Name the bundle after the crew_id to make reuse of the wrong file obvious.
+git bundle create /tmp/<crew_id>.bundle --all
+curl -X POST "<url>&bundle=1" --data-binary @/tmp/<crew_id>.bundle
 ```
 
 Always deliver the repo to `path="ghostship"` or `path="repo"` — a sibling

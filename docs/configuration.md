@@ -15,7 +15,7 @@ process sees and what each default means:
 | `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host regardless of this value. |
 | `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
-| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.4.0` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
+| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.5.0` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
 | `GA_MAX_CREWS` | `20` | Maximum number of registered crews (running + stopped). Stopped crews cost no memory, so this is primarily a housekeeping limit on how many persistent workspaces you keep around. Raise it freely on unconstrained hosts |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum number of simultaneously running (active) crew containers. Enforced when a stopped crew is restarted — if the running count already equals this limit, the restart is refused until another crew idles out. Set to `0` to disable the active limit entirely. At ~2–3 GB per running crew, the default of 3 fits comfortably on an 8 GB host |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
@@ -24,33 +24,27 @@ process sees and what each default means:
 | `TRANSPORT_DATA_DIR` | `/data` | Registry + data dir |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path — on Linux this is your host uid (`id -u`); on macOS it's the `podman machine` guest's uid (`podman machine ssh -- id -u`), which is often different |
 | `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links — set this for all externally-reachable deployments |
-| `GA_FILE_TTL_SECS` | `300` | Seconds a presigned `evac`/`supply` URL stays valid before expiring |
-| `KC_GATEWAY_TOKEN_TTL` | `24h` | Duration passed to `kirocrew token --ttl` when setup, restart recovery, or startup reconciliation mints a gateway session token; independent of file URL expiry |
 | `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs — set explicitly if you need presigned URLs to survive a transport restart |
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins — see [auth.md](auth.md) |
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) required before starting a crew container. Compared against `MemAvailable` from `/proc/meminfo` (which includes reclaimable page cache and buffers), with a fallback to `MemFree` on kernels that do not expose `MemAvailable`. The transport polls in 5-second intervals up to `GA_MEMORY_WAIT_SECS` for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
+| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) required before starting a crew container. Compared against `MemAvailable` from `/proc/meminfo` (which includes reclaimable page cache and buffers), with a fallback to `MemFree` on kernels that do not expose `MemAvailable`. The transport polls in 5-second intervals up to 60 seconds for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) exclusively for Ghost Academy. Crew containers are fully isolated from the host's default Podman runtime. Set to `false` to use the default socket instead |
 | `GA_MACHINE_CPUS` | `8` | vCPUs allocated to the dedicated Podman machine VM (macOS only) — a cap on concurrent vCPU threads, not a reservation; the host scheduler time-shares real cores across them like any other process. Ignored on Linux |
 | `GA_MACHINE_MEMORY` | `16384` | Memory in MB allocated to the dedicated Podman machine VM (macOS only) — a ceiling, not an upfront reservation (Apple's Virtualization.framework backs guest RAM on demand, so idle usage stays far below this). Ignored on Linux |
 | `GA_MACHINE_DISK` | `100` | Disk size in GB allocated to the dedicated Podman machine VM (macOS only) — backed by a sparse file, so this is an apparent-size ceiling; actual disk blocks are only consumed as data is written. Ignored on Linux |
 | `GA_MACHINE_NAME` | `ghost-academy` | Name of the dedicated machine (macOS) or systemd service suffix (Linux). Used as the machine name in `podman machine` commands and as the service name in `podman-<name>.socket`/`.service` |
-| `GA_MEMORY_WAIT_SECS` | `60` | Maximum seconds to wait for sufficient memory before returning an error. Only relevant when `GA_MIN_FREE_MEM_GB > 0` |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Value patched into each crew's `resource_pressure_gb` config — KiroCrew throttles subagent spawning below this threshold |
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
-| `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.4.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
-| `GA_PICKUP_MAX_POLL_SECS` | `30` | Maximum seconds the transport holds an HTTP connection open during a `pickup(timeout_secs=N)` long-poll. When this cap fires before the caller's `timeout_secs` elapses, `pickup` returns a normal JSON response with `"reason": "timeout"` so the caller can re-poll — the MCP transport error path is never used for a clean timeout expiry. Set lower if your MCP client has a short read timeout; set higher if you have confirmed your client tolerates longer-lived connections |
+| `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.5.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
 | `GA_TLS_MIN_VERSION` | `1.2` | Minimum TLS version enforced when the transport terminates TLS directly (passed as `ssl_version` to uvicorn). Values: `1.2` or `1.3`. Only takes effect when `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` are set |
 | `GA_TLS_CERTFILE` | _(unset)_ | Path to a TLS certificate file. Setting both this and `GA_TLS_KEYFILE` enables direct TLS termination in the transport rather than relying on an edge terminator |
 | `GA_TLS_KEYFILE` | _(unset)_ | Path to the TLS private key file paired with `GA_TLS_CERTFILE` |
 | `GA_ENABLE_SECURITY_HEADERS` | `1` | Emit baseline security response headers (HSTS, etc.). On unless set to `0`, `false`, or empty |
-| `GA_ENFORCE_HTTPS_REDIRECT` | `0` | 301-redirect plaintext HTTP requests to HTTPS. Staged rollout — default off until the monitored plaintext window and client notice are complete. Enable with `1` or `true` |
-| `GA_CSP_ENFORCE` | `0` | Send the Content-Security-Policy header as enforcing rather than report-only. Staged rollout — default off until report-only violations are triaged. Enable with `1` or `true` |
 | `GA_RATE_LIMIT_ENABLED` | `true` | Master switch for HTTP rate limiting. Set to `false` to disable the `RateLimitMiddleware` entirely; any other value (default) leaves it enabled. See [Rate limiting](#rate-limiting) below |
 | `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` limit in `<count>:<window_secs>` format (both positive integers). On parse failure the default is used and a `WARNING` is logged naming the variable |
 | `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` limit in `<count>:<window_secs>` format |
@@ -59,17 +53,50 @@ process sees and what each default means:
 | `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/*/api/*` limit in `<count>:<window_secs>` format |
 | `GA_GIT_AUTHOR_NAME` | _(unset)_ | Operator name injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup time. When set together with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. When unset, per-persona git identity is used (e.g. `Ghost <ghost@localhost>`). Config-file-only — no CLI flag |
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Operator email injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` into every crew container at setup time. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only — no CLI flag |
-| `GA_DASHBOARD_PORT_ENABLED` | `true` | Enable/disable the per-crew dashboard proxy. When `true` (default), a `launch(dashboard=True)` call (or `POST /crews/{id}/dashboard`) allocates a dedicated host port and returns a `dashboard_url`. Set to `false` to disable port allocation entirely. Config-file-only. See [dashboard-proxy.md](dashboard-proxy.md) |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports in the range (the cap on concurrent crew dashboards). Config-file-only |
+| `GA_PORTAL_TLS_MODE` | `off` | TLS mode for all Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step — path printed by `install.sh` and `ghostship status`), `tailscale` (browser-trusted `.ts.net` certs via Tailscale ACME; no trust step), `acme` (public Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). An unrecognised value logs a WARNING and falls back to `internal` |
+| `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name used for ACME (Let's Encrypt) certificate requests. Required when `GA_PORTAL_TLS_MODE=acme` |
+| `PORT` / ~~`GA_PORTAL_PORT`~~ | `64057` | Port Caddy listens on. TLS mode is independent — HTTP or HTTPS on any port. `GA_PORTAL_PORT` is the deprecated alias for `PORT`; install.sh auto-migrates config files that still use the old name. |
+| `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard-login`. Sessions are held in-memory and reset on transport restart |
+| `GA_TRANSPORT_SECRET` | _(auto-generated by `install.sh`)_ | **Not user-settable directly.** Shared secret between `ga-portal` (Caddy) and `ga-transport`. `install.sh` generates it with `openssl rand -hex 32` and stores it as Podman secret `ga-transport-secret`. Caddy injects it as `X-Transport-Token` on every upstream request; transport rejects requests missing or presenting a wrong token with HTTP 401 (TRN-107). The secret is idempotent — preserved across reinstalls so the portal and transport stay in sync. To rotate it, delete the `ga-transport-secret` Podman secret and re-run `install.sh`. |
+
+> **Network topology (TRN-107):** Two static Podman networks replace the retired `ga-net`:
+> - **`ga-portside`** — `ga-portal` ↔ `ga-transport` only. Crew containers are not on this network.
+> - **`ga-starboard`** — `ga-transport` ↔ all crew containers (`gs-*`) and login containers.
+>
+> Crew containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked
+> at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` cannot reach crew containers
+> by hostname (not on `ga-starboard`). See `docs/architecture.md` for the full security model.
+>
+> **Upgrading from a version using `ga-net`:** The transport automatically migrates existing
+> crew containers from `ga-net` to `ga-starboard` on first startup after the upgrade.
+> No operator action is required. `ga-net` is removed when empty.
 
 > **Internal constant — not user-settable:**
 > `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each
-> crew container's gateway over the internal `ga-net` network. It is
+> crew container's gateway over the internal `ga-starboard` network. It is
 > hardcoded in `server.py` and is **not** configurable via environment
 > variable. Changing it would require rebuilding both the crew image and the
 > transport. All user-facing routes — MCP, the REST API, and file transfer —
 > are served on the single `PORT` above; there is no separate file-server port.
+
+## Model precedence
+
+The model used for a given agent task is resolved through the following chain,
+from highest to lowest precedence:
+
+1. **`dispatch(model=...)`** — per-call override passed directly in the `dispatch` tool invocation. Always wins.
+2. **`KC_MODEL_OVERRIDE`** — operator-wide override set in config or via `--model`. Overrides everything below it.
+3. **Per-agent model field** — the `model` field in the agent's JSON file under `academy/agents/`. Specific to that agent.
+4. **`KC_MODEL_DEFAULT`** — operator-wide fallback written as `default_model` in `config.local.json`. Applies when none of the above is set.
+5. **KiroCrew built-in default** — KiroCrew's own model default. Used when no operator or per-agent setting is present.
+
+The most common configuration patterns:
+
+- **Headless / uniform model**: set `KC_MODEL_OVERRIDE` — every agent uses the same model regardless of their per-agent JSON.
+- **Per-agent customization with a fallback**: leave `KC_MODEL_OVERRIDE` unset, set `KC_MODEL_DEFAULT` for non-customized agents, and set per-agent model fields for agents that need a different model.
+- **KiroCrew default everywhere**: leave both `KC_MODEL_OVERRIDE` and `KC_MODEL_DEFAULT` unset — KiroCrew's built-in default applies throughout.
 
 ## Config file
 
@@ -123,8 +150,9 @@ nor the flag sets them, the built-in default applies.
 
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
-`GA_DASHBOARD_PORT_ENABLED`, `GA_DASHBOARD_PORT_RANGE_START`,
-`GA_DASHBOARD_PORT_RANGE_SIZE`) are **config-file-only** — they
+`GA_DASHBOARD_PORT_RANGE_START`,
+`GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_PORTAL_TLS_MODE`,
+`GA_PORTAL_DOMAIN`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
 have no CLI flag and no ambient-environment-variable input.
 
 ### Error handling
@@ -227,7 +255,7 @@ local deployment; a deliberate restart is an effective limit reset.
 Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew:0.4.0
+FROM ghcr.io/kirodotdev/kirocrew:0.5.0
 USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     nodejs npm \   # already included
@@ -335,7 +363,7 @@ Behaviour:
   entry is skipped; the remaining servers are still written and crew setup
   continues.
 - **An entry containing a `headers` field** → `poolable: false` is added
-  automatically when written into `mcp.json` (KiroCrew 0.4.0 must not pool
+  automatically when written into `mcp.json` (KiroCrew 0.5.0 must not pool
   auth-bearing HTTP servers). The catalogue file does not need to declare it.
 
 ### Secret substitution (`${VAR}`)

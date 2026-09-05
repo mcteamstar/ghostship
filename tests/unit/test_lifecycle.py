@@ -1682,6 +1682,243 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertNotIn("policy_version", crew_entry,
                          "policy_version must not be stored when injection failed")
 
+    # ── TRN-62: _inject_auth skipped when KIRO_API_KEY is set ────────────────
+
+    def _run_finish_setup_capturing_inject_auth(self, api_key: str):
+        """Run _finish_crew_setup with lifecycle.KIRO_API_KEY set to api_key,
+        returning the _inject_auth Mock so callers can assert on its calls."""
+
+        class CapturingPodman:
+            def container_stop(self, container: str) -> None:
+                pass
+
+            def container_start(self, container: str) -> None:
+                pass
+
+            def container_exec(self, container, cmd, env=None) -> str:
+                return "ready"
+
+            def container_exec_checked(self, container, cmd) -> str:
+                return "ok"
+
+            def container_exec_stdin(self, container, cmd, stdin_data) -> str:
+                return "ok"
+
+            def container_inspect(self, container) -> dict:
+                return {"Config": {"Labels": {}}}
+
+        inject_auth = Mock()
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            registry = data_dir / "crews.json"
+            with (
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry),
+                patch.object(lifecycle, "KIRO_API_KEY", api_key),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_inject_auth", inject_auth),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_copy_agents"),
+                patch.object(lifecycle, "_copy_skills"),
+                patch.object(lifecycle, "_copy_steering"),
+                patch.object(lifecycle, "_seed_openspec_store"),
+                patch.object(lifecycle, "_patch_models"),
+                patch.object(lifecycle, "_mint_cookie", return_value="cookie"),
+                patch.object(lifecycle, "_inject_policy", return_value="1"),
+            ):
+                lifecycle._finish_crew_setup(
+                    CapturingPodman(),
+                    "demo",
+                    "gs-demo",
+                    "gs-vol-demo",
+                    "gs-home-demo",
+                    None if api_key else "auth-b64",
+                )
+        return inject_auth
+
+    def test_inject_auth_skipped_when_api_key_set(self) -> None:
+        """6.1: _finish_crew_setup does NOT call _inject_auth when KIRO_API_KEY
+        is set — the crew authenticates via the injected env var instead."""
+        inject_auth = self._run_finish_setup_capturing_inject_auth("sk-test-key")
+        inject_auth.assert_not_called()
+
+    def test_inject_auth_called_when_api_key_unset(self) -> None:
+        """6.2: existing device-code path unchanged — _inject_auth IS called
+        when KIRO_API_KEY is unset."""
+        inject_auth = self._run_finish_setup_capturing_inject_auth("")
+        inject_auth.assert_called_once()
+
+
+# ── TRN-108: schedule monitor gateway source-of-truth ────────────────────────
+
+
+class ScheduleMonitorGatewayTests(unittest.TestCase):
+    """TRN-108: _schedule_monitor checks the gateway /api/crons after waking
+    the crew; the registry is the fallback, not the authority.
+
+    Strategy: call _schedule_monitor's inner body once by monkey-patching
+    ``time.sleep`` (to avoid the infinite outer loop) and patching out the
+    parts we don't want to exercise per test.  The function under test
+    resolves _crew_api, _crew_api_with_recovery, _load_registry, _save_registry,
+    _get_crew_schedules, _ensure_crew_running etc. from lifecycle's namespace,
+    so all patches are on ``lifecycle.*`` (call-site principle, design.md §2).
+    """
+
+    # Shared fixture helpers ──────────────────────────────────────────────────
+
+    def _sched(self, **overrides: object) -> dict:
+        """Minimal schedule entry with sensible defaults."""
+        base: dict = {
+            "job_id": "job-abc",
+            "enabled": True,
+            "next_fire_at": 0.0,  # always due
+            "message": "tick",
+            "agent": "raven",
+        }
+        base.update(overrides)
+        return base
+
+    def _crew_info(self, sched: dict) -> dict:
+        return {"container": "gs-demo", "cookie": "cookie", "schedules": [sched]}
+
+    def _registry(self, sched: dict) -> dict:
+        return {"crews": {"demo": self._crew_info(sched)}}
+
+    def _run_one_cycle(
+        self,
+        sched: dict,
+        *,
+        crew_api_side_effect: object = None,
+        crew_api_return_value: object = None,
+        ensure_raises: Exception | None = None,
+        registry_enabled: bool = True,
+    ) -> Mock:
+        """Run exactly one iteration of _schedule_monitor's inner loop and
+        return the _crew_api_with_recovery mock so tests can assert on it.
+
+        Uses a sentinel exception to break out of the outer ``while True`` loop
+        after the first pass through.
+        """
+
+        class _BreakLoop(Exception):
+            pass
+
+        sched["enabled"] = registry_enabled
+
+        crew_obj = {"container": "gs-demo", "cookie": "cookie"}
+
+        # A reload of the registry inside the loop must reflect our sched.
+        def _fake_load_registry() -> dict:
+            return self._registry(sched)
+
+        crew_api_mock = Mock()
+        if crew_api_side_effect is not None:
+            crew_api_mock.side_effect = crew_api_side_effect
+        elif crew_api_return_value is not None:
+            crew_api_mock.return_value = crew_api_return_value
+
+        spawn_mock = Mock()
+
+        sleep_calls = [0]
+
+        def _fake_sleep(n: float) -> None:
+            sleep_calls[0] += 1
+            if sleep_calls[0] > 1:
+                raise _BreakLoop
+
+        ensure_mock = Mock()
+        if ensure_raises:
+            ensure_mock.side_effect = ensure_raises
+        else:
+            ensure_mock.return_value = crew_obj
+
+        save_mock = Mock()
+
+        with (
+            patch.object(lifecycle, "time") as time_mock,
+            patch.object(lifecycle, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(lifecycle, "_save_registry", save_mock),
+            patch.object(lifecycle, "_get_crew_schedules", return_value=[sched]),
+            patch.object(lifecycle, "_ensure_crew_running", ensure_mock),
+            patch.object(lifecycle, "_crew_api", crew_api_mock),
+            patch.object(lifecycle, "_crew_api_with_recovery", spawn_mock),
+            patch.object(lifecycle, "_advance_next_fire_at"),
+        ):
+            time_mock.sleep.side_effect = _fake_sleep
+            time_mock.time.return_value = 9999.0  # always past next_fire_at=0
+            try:
+                lifecycle._schedule_monitor()
+            except _BreakLoop:
+                pass
+
+        return spawn_mock, crew_api_mock, save_mock
+
+    # ── 3.1: gateway disabled → skip and write back ───────────────────────────
+
+    def test_gateway_disabled_skips_fire_and_writes_back(self) -> None:
+        """3.1: when /api/crons reports enabled=false, spawn is not called and
+        the registry entry is updated to enabled=false."""
+        sched = self._sched()
+        cron_payload = {"jobs": [{"id": "job-abc", "enabled": False}]}
+        spawn_mock, _, save_mock = self._run_one_cycle(
+            sched, crew_api_return_value=cron_payload
+        )
+        spawn_mock.assert_not_called()
+        # save_registry must have been called (write-back)
+        self.assertTrue(save_mock.called, "expected _save_registry to be called")
+        # The sched dict in the registry should have been mutated to enabled=False
+        self.assertFalse(sched.get("enabled"), "registry entry must be set to enabled=False")
+
+    # ── 3.2: gateway enabled → fire normally ─────────────────────────────────
+
+    def test_gateway_enabled_fires_normally(self) -> None:
+        """3.2: when /api/crons reports enabled=true, spawn IS called."""
+        sched = self._sched()
+        cron_payload = {"jobs": [{"id": "job-abc", "enabled": True}]}
+        spawn_mock, _, _ = self._run_one_cycle(
+            sched, crew_api_return_value=cron_payload
+        )
+        spawn_mock.assert_called_once()
+
+    # ── 3.3: job absent from gateway listing → fire (fail-open) ─────────────
+
+    def test_gateway_missing_job_fires_normally(self) -> None:
+        """3.3: when /api/crons returns no matching job_id, spawn IS called
+        (fail-open — unknown job is treated as enabled)."""
+        sched = self._sched()
+        cron_payload = {"jobs": []}  # no jobs at all
+        spawn_mock, _, _ = self._run_one_cycle(
+            sched, crew_api_return_value=cron_payload
+        )
+        spawn_mock.assert_called_once()
+
+    # ── 3.4: gateway raises + registry disabled → skip ──────────────────────
+
+    def test_gateway_raises_registry_disabled_skips(self) -> None:
+        """3.4: when _crew_api raises AND registry has enabled=false, spawn is
+        NOT called — the registry fallback is honoured."""
+        sched = self._sched(enabled=False)
+        spawn_mock, _, _ = self._run_one_cycle(
+            sched,
+            crew_api_side_effect=RuntimeError("connection refused"),
+            registry_enabled=False,
+        )
+        # The top-of-loop fast-path sched.get("enabled", True) is False → continue
+        # before _ensure_crew_running is even reached.
+        spawn_mock.assert_not_called()
+
+    # ── 3.5: gateway raises + registry enabled → fire (fail-open) ────────────
+
+    def test_gateway_raises_registry_enabled_fires(self) -> None:
+        """3.5: when _crew_api raises AND registry has enabled=true (or absent),
+        spawn IS called — fail-open fallback to registry."""
+        sched = self._sched()
+        spawn_mock, _, _ = self._run_one_cycle(
+            sched,
+            crew_api_side_effect=RuntimeError("network timeout"),
+        )
+        spawn_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

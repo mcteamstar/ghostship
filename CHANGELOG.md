@@ -1,5 +1,128 @@
 # Changelog
 
+## v0.3.0 (unreleased)
+
+### Fix — Crew dashboards were unreachable (502, then 401) since TRN-107/TRN-111
+
+Every crew launched with `dashboard=True` 502'd, and after the fix below, would
+have 401'd — the dashboard proxy path was never actually exercised end-to-end
+after two independently-landed changes.
+
+- `transport/server.py`'s `_caddy_register_crew` hardcoded `ga-transport:8000`
+  as the Caddy upstream dial target — a value that stopped meaning anything
+  once TRN-111 consolidated the transport's internal listen port onto the
+  single `PORT` variable (default `64057`). Every dashboard request 502'd
+  with `connect: connection refused`. Fixed to dial `ga-transport:{PORT}`
+  using the same module-level `PORT` constant the transport binds to.
+- `_caddy_register_crew`'s dynamically-built Caddy handlers (the crew
+  `reverse_proxy` and, when `GA_API_KEY` is set, the `forward_auth` handler)
+  never injected the `X-Transport-Token` header that TRN-107's
+  `TransportSecretMiddleware` requires on every request to `ga-transport`
+  ("every route without exception" per the network-split spec) — the static
+  Caddy config `install.sh` generates already did this, but the transport's
+  own dynamic per-crew registration was missed when TRN-107 shipped. Once the
+  port fix above stopped masking it, every dashboard request 401'd instead.
+  Fixed by injecting the same `{file./run/secrets/ga-transport-secret}`
+  header on both handlers.
+- Found by manually smoke-testing `launch(dashboard=True)` after the TRN-111
+  port rename — no existing test caught it because `tests/unit/test_trn92_caddy.py`
+  and `tests/unit/test_trn102_portal_dashboard_session.py` asserted the stale
+  `:8000` dial and the *absence* of headers as the expected/correct behavior,
+  and no e2e test exercised the dashboard path at all. Both test files
+  updated to assert the real dial target and the token header; a new
+  regression test class added to `tests/unit/test_trn107_network_split.py`
+  asserting `_caddy_register_crew`'s output directly (closing the gap between
+  the TRN-107 middleware tests and the TRN-92/TRN-102 code that has to satisfy
+  it); a new `TestDashboardProxy` e2e test added to `tests/e2e/test_transport_e2e.py`
+  that launches a crew with `dashboard=True` and fetches its `dashboard_url`.
+- `docs/dashboard-proxy.md`'s architecture diagram updated from the stale
+  `ga-transport:8000` to `ga-transport:{PORT}`, with a note on the
+  `X-Transport-Token` requirement.
+
+### TRN-111 — Config consolidation: remove 8 dead env vars, rename GA_PORTAL_PORT → PORT ⚠️ BREAKING
+
+Removes 8 env vars that are now hardcoded internally and renames `GA_PORTAL_PORT` to `PORT`.
+
+**Breaking change — GA_PORTAL_PORT renamed to PORT:**
+
+- `GA_PORTAL_PORT` is removed. Use `PORT` (which already existed) for the same purpose.
+- **Auto-migration:** `install.sh` detects `GA_PORTAL_PORT` in config files and automatically rewrites it to `PORT` before sourcing. A deprecation warning is printed. No operator action is required for existing config files, but you should update your config to use `PORT` to silence the warning.
+- `install.sh` now also explicitly removes the `ga-portal` container before `compose up` (in addition to `ga-transport`) to prevent port binding conflicts on upgrade.
+
+**Removed env vars (internal — no operator action needed, defaults unchanged):**
+
+| Variable | Was | Now |
+|:---------|:----|:----|
+| `GA_FILE_TTL_SECS` | configurable, default 300 | hardcoded to `300` |
+| `GA_PICKUP_MAX_POLL_SECS` | configurable, default 30 | hardcoded to `30` |
+| `GA_MEMORY_WAIT_SECS` | configurable, default 60 | hardcoded to `60` |
+| `KC_GATEWAY_TOKEN_TTL` | configurable, default `24h` | hardcoded to `"24h"` |
+| `GA_ENFORCE_HTTPS_REDIRECT` | staged flag, default `0` | unconditionally `False` (Caddy owns redirects) |
+| `GA_CSP_ENFORCE` | staged flag, default `0` | unconditionally `True` (always enforce CSP) |
+| `GA_PORTAL_ADMIN_URL` | configurable, default `http://ga-portal:2019` | hardcoded to `"http://ga-portal:2019"` |
+
+**Code changes:**
+
+- `transport/config.py`: removed 8 fields (`ga_file_ttl_secs`, `ga_pickup_max_poll_secs`, `ga_memory_wait_secs`, `kc_gateway_token_ttl`, `ga_enforce_https_redirect`, `ga_csp_enforce`, `ga_portal_admin_url`, `ga_portal_port`) and their `from_env()` bindings. Removed `_validate_token_ttl` and `_TTL_RE`. Removed unused `_env_bool_default_off`.
+- `transport/server.py`: removed 6 module-level constants (`GA_FILE_TTL_SECS`, `GA_PICKUP_MAX_POLL_SECS`, `GA_MEMORY_WAIT_SECS`, `KC_GATEWAY_TOKEN_TTL`, `GA_ENFORCE_HTTPS_REDIRECT`, `GA_CSP_ENFORCE`); hardcoded their values at all call sites. `_caddy_admin_url()` now returns the hardcoded literal instead of reading `cfg.ga_portal_admin_url`.
+- `transport/lifecycle.py`: removed `GA_MEMORY_WAIT_SECS` and `KC_GATEWAY_TOKEN_TTL` module constants; hardcoded values at call sites.
+- `docs/configuration.md`: removed the 8 vars from the reference table; updated `GA_PORTAL_PORT` entry to deprecated alias; added **Model precedence** section.
+- `config/ghostship.conf.example`: restructured with `# ── Common ──` and `# ── Advanced ──` sections; removed all 8 deleted vars and `GA_PORTAL_PORT`.
+- Ticket: TRN-111.
+
+### TRN-113 — KiroCrew base image bump 0.4.0 → 0.5.0
+
+Bumps the pinned KiroCrew base image from `0.4.0` to `0.5.0` across the crew
+base image and the ephemeral login container, and refreshes the stale `0.4.0`
+version strings that track the pin.
+
+- **Crew base image:** `crews/_base/admission/Containerfile` `FROM ghcr.io/kirodotdev/kirocrew:0.4.0` → `0.5.0` (+ pin comment).
+- **Login container:** `KC_BASE_IMAGE` bumped to `0.5.0` in `config/ghostship.conf.example` and in `transport/config.py`'s hard-coded fallback default (dataclass default + `from_env` fallback).
+- **Pre-seeded kiro-cli DB re-verified:** `crews/_base/graduation/seed_kiro_db.py` migration schema and row count confirmed to still produce `(count, max_version) = (10, 9)`; version banners in `seed_kiro_db.py` and `crews/_base/graduation/Containerfile` updated to reference KiroCrew 0.5.0. The live-image `SELECT COUNT(*), MAX(version) FROM migrations` comparison against `ghcr.io/kirodotdev/kirocrew:0.5.0` must be run on a host with podman before release — see the migration checklist in the graduation Containerfile.
+- **Stale reference refresh:** `scripts/uninstall.sh` cleanup message, `academy/mcp/README.md` pooling note, and the `GA_CREW_AGENT` comment in `config/ghostship.conf.example`.
+- **Validation (no edits needed):** governance policy templates (`academy/policies/{default,strict,research}.json`), agent specs (`academy/agents/{ghost,spectre,banshee,wraith,reaper,raven}.json`), and the `poolable: false` MCP auto-injection in `transport/lifecycle.py` all confirmed well-formed / intact against 0.5.0's stricter validators.
+- Ticket: TRN-113.
+
+### TRN-103 — Portal is mandatory ⚠️ BREAKING
+
+`ga-portal` (Caddy) is now a required architectural component and is always installed. The `GA_PORTAL_ENABLED` opt-in flag is removed.
+
+- **BREAKING:** `GA_PORTAL_ENABLED` removed from config and code. There is no opt-out and no rollback to the pre-portal per-port uvicorn mode.
+- **Migration:** any deployment that previously ran with `GA_PORTAL_ENABLED=false` must re-run `install.sh` to regenerate `compose.yml`; `ga-portal` is added to the stack and takes over ports 443/80 and the dashboard port range. No data migration.
+- `install.sh` always generates the `ga-portal` service stanza, the Caddy `initial-config.json`, the `ga-portal-data` volume, and the portal health check.
+- `transport/config.py`: `ga_portal_enabled` field and its `from_env()` binding removed.
+- `transport/server.py`: `GA_PORTAL_ENABLED` module global and all its guards removed; the portal-enabled branch is now taken unconditionally in dashboard URL derivation, `launch(dashboard=True)`, the `POST /crews/{id}/dashboard` handler, and the startup Caddy re-registration loop.
+- The other `GA_PORTAL_*` vars (`GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, `GA_PORTAL_PORT`, `GA_PORTAL_HTTP_PORT`, `GA_PORTAL_ADMIN_URL`, `GA_PORTAL_SESSION_TTL_SECS`) are unchanged — they configure how the portal behaves, not whether it runs.
+- Docs updated: `docs/caddy.md`, `docs/dashboard-proxy.md`, `docs/configuration.md`, `config/ghostship.conf.example`.
+
+### TRN-101 — Portal-only dashboard proxy ⚠️ BREAKING
+
+`launch(dashboard=True)` now requires `GA_PORTAL_ENABLED=true`. The transport's per-port uvicorn proxy threads are removed. Portal (`ga-portal`) is the sole dashboard proxy implementation.
+
+- **BREAKING:** `launch(dashboard=True)` with `GA_PORTAL_ENABLED=false` returns an error: `"dashboard access requires GA_PORTAL_ENABLED=true; re-run install.sh and re-launch any existing dashboard crews — see docs/dashboard-proxy.md"`.
+- **Removed:** `_start_dashboard_port_server`, `_stop_dashboard_port_server`, `_dashboard_app`, the per-port uvicorn daemon-thread pool, and their startup restore loop.
+- **Removed:** `GA_DASHBOARD_PORT_ENABLED` config flag. Dashboard availability is now solely controlled by `GA_PORTAL_ENABLED`.
+- `POST /crews/{id}/dashboard` returns 503 if `GA_PORTAL_ENABLED=false` (was: 503 if `GA_DASHBOARD_PORT_ENABLED=false`).
+- Dashboard port range config (`GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE`) retained — Portal still uses the transport's port pool.
+- **Migration:** Set `GA_PORTAL_ENABLED=true`, re-run `install.sh`, nuke and re-launch any crews that had dashboards. See `docs/dashboard-proxy.md` for the full migration guide.
+
+### TRN-92 — Caddy reverse proxy ⚠️ BREAKING (opt-in cutover)
+
+`GA_PORTAL_ENABLED=true` is an opt-in, breaking cutover — no coexistence with the existing per-port mode. Re-run `install.sh` after enabling.
+
+- `GA_PORTAL_ENABLED=true` adds a `ga-portal` container (vanilla `caddy:2` image) to the compose stack. It becomes the sole TLS terminator and auth gate for all ports.
+- **Port ownership change:** Caddy binds the dashboard port range (default `64058–64107`) **and** ports 443/80. The transport no longer binds those ports. The transport's per-port uvicorn listener threads are not started.
+- **Dashboard auth gating:** every dashboard port is now protected by a `forward_auth` → `gs_session` cookie gate. Unauthenticated requests redirect to `/login-ui`; `POST /dashboard-login` issues a session cookie when the operator's `GA_API_KEY` is correct.
+- **MCP/file Bearer enforcement at the edge:** when `GA_API_KEY` is set, Caddy rejects bad or missing `Authorization: Bearer` on `/mcp*` and `/files/*` before requests reach the transport.
+- **Four TLS modes:** `internal` (Caddy built-in CA, default), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt), `off` (plain HTTP). A one-time `caddy trust` step is required for `internal` mode; the cert path is printed by `install.sh` and surfaced by `ghostship status`.
+- **New transport endpoints:** `GET /login-ui`, `POST /dashboard-login`, `GET /dashboard-auth`.
+- **Dynamic Caddy server management:** `launch` registers a per-crew Caddy server via the admin API; `nuke` removes it. Transport startup re-registers servers from `crews.json` (idempotent). No Caddy restarts on crew changes.
+- **Dashboard URLs become HTTPS:** `launch(dashboard=True)` returns `https://host:PORT/` when Caddy is enabled.
+- **vm23 host Caddy retirement:** `ga-portal` replaces the host-level Caddy on vm23. Stop and disable the host Caddy before or alongside the `install.sh` cutover.
+- New env vars: `GA_PORTAL_ENABLED`, `GA_PORTAL_ADMIN_URL`, `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, `GA_PORTAL_PORT`, `GA_PORTAL_HTTP_PORT`, `GA_PORTAL_SESSION_TTL_SECS`.
+- Rate limiter extended with `dashboard_auth` endpoint (`GA_RATE_LIMIT_DASHBOARD_AUTH`, default 60 req/60 s).
+- See [docs/caddy.md](docs/caddy.md) for setup, TLS modes, auth upgrade paths (`basicauth`, `caddy-security` SSO), and migration.
+
 ## v0.2.4 (2026-09-03)
 
 ### TRN-80 — Per-crew dashboard proxy

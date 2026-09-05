@@ -322,12 +322,12 @@ class TestBuildRateLimiters(unittest.TestCase):
                 os.environ[k] = self._saved[k]
 
     def test_enabled_builds_five_limiters_with_defaults(self):
-        """Default (enabled) build yields the five endpoint limiters."""
+        """Default (enabled) build yields the six endpoint limiters."""
         limiters = server._build_rate_limiters()
         self.assertIsNotNone(limiters)
         self.assertEqual(
             set(limiters),
-            {"login_get", "login_post", "mcp", "files", "crew_api"},
+            {"login_get", "login_post", "mcp", "files", "crew_api", "dashboard_auth"},
         )
         # Defaults per spec.
         self.assertEqual(

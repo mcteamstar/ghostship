@@ -228,11 +228,11 @@ class TestTransportSecurity(unittest.TestCase):
         self.assertFalse(mw._is_https({"scheme": "http", "headers": []}))
 
     def test_plaintext_hit_logged_during_monitoring_window(self):
-        """Plaintext HTTP hits are logged during the monitoring window (task 3.4).
+        """Plaintext HTTP hits are logged (task 3.4).
 
-        When GA_ENFORCE_HTTPS_REDIRECT=0 (monitoring phase) a plaintext request
-        should emit a log entry so operators can identify affected clients before
-        the cutover.
+        HTTPS redirect is now unconditionally disabled (Caddy owns redirects).
+        Plaintext requests should still emit a log entry so operators can
+        identify affected clients.
         """
         import asyncio
 

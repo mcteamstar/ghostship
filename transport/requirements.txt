@@ -6,3 +6,4 @@ croniter==3.0.3
 # prevents silent breakage if mcp ever restructures its extras.
 starlette>=0.27.0,<2.0.0
 uvicorn>=0.31.1,<1.0.0
+unittest-parallel==1.8.6
