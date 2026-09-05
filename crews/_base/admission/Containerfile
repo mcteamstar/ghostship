@@ -13,10 +13,10 @@
 # This is a build dependency, not a launchable composition — it is NOT
 # listed in crews/registry.json.
 #
-# Pinned to 0.4.0 semver tag — deterministic, conventionally stable.
+# Pinned to 0.5.0 semver tag — deterministic, conventionally stable.
 # When upstream releases a newer version, update this line and run install.sh
 # to rebuild.
-FROM ghcr.io/kirodotdev/kirocrew:0.4.0
+FROM ghcr.io/kirodotdev/kirocrew:0.5.0
 
 USER root
 

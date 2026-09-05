@@ -4,10 +4,14 @@ Baked into the crew image at build time so kiro-cli finds the DB already
 initialised — transport only needs to INSERT auth_kv rows at launch,
 with no migration wait and no restart cycle.
 
-⚠️  Migration schema from kiro-cli 2.20.0 / KiroCrew 0.4.0 (10 rows, versions 0-9).
-    Verified current as of 2026-08-28. If kiro-cli adds migrations in a future
-    release, update this file to include the new rows.
-    See crews/_base/Containerfile for the upgrade checklist.
+⚠️  Migration schema for KiroCrew 0.5.0 (10 rows, versions 0-9, max_version 9).
+    Re-verified for the 0.5.0 base-image bump (TRN-113): the hard-coded seed
+    still produces (count, max_version) = (10, 9). The exact kiro-cli version
+    shipped in ghcr.io/kirodotdev/kirocrew:0.5.0 and a live
+    `SELECT COUNT(*), MAX(version) FROM migrations` comparison against that
+    image must be confirmed on a host with podman before release — if the count
+    or schema differ, add the new INSERT INTO migrations rows / CREATE TABLE
+    changes here. See crews/_base/graduation/Containerfile for the checklist.
 """
 import os
 import pathlib

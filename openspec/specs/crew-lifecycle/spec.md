@@ -142,7 +142,7 @@ The setup steps SHALL execute in dependency order:
 10. Wait for KiroCrew to seed built-in agent files (gateway-dependent)
 11. Patch model overrides — write `agents` directory files **before** calling
     any gateway endpoint, because the agents directory is write-protected at
-    runtime in KiroCrew 0.4.0
+    runtime in KiroCrew 0.5.0
 12. Mint session cookie
 13. Read version label, write registry entry
 
@@ -158,7 +158,7 @@ field SHALL be sourced from the `GA_CREW_AGENT` transport environment variable
 The `_copy_agents` call (step 7) — and any other setup step that writes agent
 JSON files into `KIRO_AGENTS_DIR` — SHALL occur **after** the post-restart
 gateway is ready and SHALL NOT be called after the gateway is already serving
-requests, because KiroCrew 0.4.0 makes the agents directory write-protected at
+requests, because KiroCrew 0.5.0 makes the agents directory write-protected at
 runtime.
 
 #### Scenario: Successful setup
@@ -192,7 +192,7 @@ runtime.
 #### Scenario: Agent files written before runtime write-protection
 - **WHEN** `_copy_agents` is called during crew setup
 - **THEN** the agent JSON files are written to `KIRO_AGENTS_DIR` during the
-  post-restart gateway startup window, before KiroCrew 0.4.0 makes that
+  post-restart gateway startup window, before KiroCrew 0.5.0 makes that
   directory write-protected at runtime
 
 ### Requirement: Crew and resource naming convention
@@ -391,7 +391,7 @@ The `_patch_crew_config` function SHALL write `GA_SPAWN_MIN_MEMORY_GB` (default
 hardcoded value `0`.
 
 The `spawn_min_memory_gb` field SHALL be written as a native config file entry
-(not via a runtime workaround) because KiroCrew 0.4.0 fixes the loader that
+(not via a runtime workaround) because KiroCrew 0.5.0 fixes the loader that
 previously ignored this field in config files.
 
 #### Scenario: Default spawn threshold
@@ -411,7 +411,7 @@ previously ignored this field in config files.
 - **WHEN** a stopped crew container is restarted via `_ensure_crew_running`
 - **THEN** the stop/start/patch/stop/start workaround sequence is NOT executed;
   instead a single `_patch_crew_config` + restart sequence is used, because
-  KiroCrew 0.4.0 reads `spawn_min_memory_gb` from the config file correctly
+  KiroCrew 0.5.0 reads `spawn_min_memory_gb` from the config file correctly
 
 ### Requirement: Configurable resource pressure thresholds
 
