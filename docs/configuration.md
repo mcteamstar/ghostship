@@ -15,7 +15,7 @@ process sees and what each default means:
 | `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host regardless of this value. |
 | `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
-| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.4.0` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
+| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.5.0` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
 | `GA_MAX_CREWS` | `20` | Maximum number of registered crews (running + stopped). Stopped crews cost no memory, so this is primarily a housekeeping limit on how many persistent workspaces you keep around. Raise it freely on unconstrained hosts |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum number of simultaneously running (active) crew containers. Enforced when a stopped crew is restarted — if the running count already equals this limit, the restart is refused until another crew idles out. Set to `0` to disable the active limit entirely. At ~2–3 GB per running crew, the default of 3 fits comfortably on an 8 GB host |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
@@ -43,7 +43,7 @@ process sees and what each default means:
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
-| `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.4.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
+| `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.5.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Maximum seconds the transport holds an HTTP connection open during a `pickup(timeout_secs=N)` long-poll. When this cap fires before the caller's `timeout_secs` elapses, `pickup` returns a normal JSON response with `"reason": "timeout"` so the caller can re-poll — the MCP transport error path is never used for a clean timeout expiry. Set lower if your MCP client has a short read timeout; set higher if you have confirmed your client tolerates longer-lived connections |
 | `GA_TLS_MIN_VERSION` | `1.2` | Minimum TLS version enforced when the transport terminates TLS directly (passed as `ssl_version` to uvicorn). Values: `1.2` or `1.3`. Only takes effect when `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` are set |
 | `GA_TLS_CERTFILE` | _(unset)_ | Path to a TLS certificate file. Setting both this and `GA_TLS_KEYFILE` enables direct TLS termination in the transport rather than relying on an edge terminator |
@@ -245,7 +245,7 @@ local deployment; a deliberate restart is an effective limit reset.
 Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew:0.4.0
+FROM ghcr.io/kirodotdev/kirocrew:0.5.0
 USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     nodejs npm \   # already included
@@ -353,7 +353,7 @@ Behaviour:
   entry is skipped; the remaining servers are still written and crew setup
   continues.
 - **An entry containing a `headers` field** → `poolable: false` is added
-  automatically when written into `mcp.json` (KiroCrew 0.4.0 must not pool
+  automatically when written into `mcp.json` (KiroCrew 0.5.0 must not pool
   auth-bearing HTTP servers). The catalogue file does not need to declare it.
 
 ### Secret substitution (`${VAR}`)
