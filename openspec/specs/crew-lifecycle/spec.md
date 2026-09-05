@@ -556,6 +556,20 @@ The effective model for any given agent is resolved in this precedence order (hi
 - **WHEN** both `KC_MODEL_OVERRIDE` and `KC_MODEL_DEFAULT` are set
 - **THEN** `_patch_models` writes `KC_MODEL_OVERRIDE` into every agent JSON's `"model"` field, making `KC_MODEL_DEFAULT` irrelevant in practice (the per-agent field is now set, so the default is never reached)
 
+### Requirement: Crew config patches sandbox=off for Podman rootless compatibility
+
+The `_patch_crew_config` function SHALL write `"sandbox": "off"` into the `agent` block of `config.local.json`. This disables the KiroCrew inner namespace sandbox, which since 0.5.0 performs a `MS_REMOUNT|MS_BIND|MS_RDONLY` bind-mount to seal credential directories read-only and exits rc=1 (fail-closed) if that mount fails. Under Podman rootless the kernel denies this remount with EPERM because user namespaces inside rootless containers do not have the required mount permission; without this override every agent spawn fails immediately with `AcpRuntimeDead`. The `"sandbox": "off"` value is a pre-existing KiroCrew config option — it short-circuits `detect_backend()` to return `"none"` before the mount is attempted. The Podman container itself remains the OS-level isolation boundary.
+
+#### Scenario: Crew spawns succeed on Podman rootless
+- **WHEN** a crew is launched on a Podman rootless host (the standard ghostship deployment)
+- **THEN** `config.local.json` contains `"sandbox": "off"` inside the `agent` block
+- **AND** agent dispatches complete without `AcpRuntimeDead: process exited (rc=1)`
+
+#### Scenario: sandbox=off does not affect authentication or governance
+- **WHEN** `"sandbox": "off"` is patched into the crew config
+- **THEN** kiro-cli authentication, model selection, and all governance policy checks remain fully enforced
+- **AND** only the inner Linux user-namespace bind-mount step is bypassed
+
 ### Requirement: Active crew limit enforced before restart
 
 The transport SHALL enforce a separate limit on simultaneously running crew

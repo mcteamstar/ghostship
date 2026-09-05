@@ -21,7 +21,7 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 - **THEN** the `ga-transport` service does not bind the dashboard port range
 
 ### Requirement: Initial Caddy JSON configuration
-`install.sh` SHALL write an `initial-config.json` under `DATA_DIR` that bootstraps Caddy with a main HTTP server (default port 443) carrying: MCP routes (`/mcp*`), file-transfer routes (`/files/*`), health (`/health`), and the dashboard-auth endpoints (`/dashboard-auth`, `/login-ui`, `/dashboard-login`). The initial config SHALL contain no per-crew dashboard servers — those are added at runtime. The config SHALL be loaded via `caddy run --config /config/initial-config.json --resume`.
+`install.sh` SHALL write an `initial-config.json` under `DATA_DIR` that bootstraps Caddy with a main HTTP server (default port 443) carrying: MCP routes (`/mcp*`), file-transfer routes (`/files/*`), health (`/health`), the login/logout endpoints (`/login`, `/login*`, `/logout`), and the dashboard-auth endpoints (`/dashboard-auth`, `/login-ui`, `/dashboard-login`). The initial config SHALL contain no per-crew dashboard servers — those are added at runtime. The config SHALL be loaded via `caddy run --config /config/initial-config.json --resume`.
 
 #### Scenario: Caddy starts with initial config
 - **WHEN** the `ga-portal` container starts for the first time
