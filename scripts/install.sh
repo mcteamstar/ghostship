@@ -889,8 +889,18 @@ echo "=== Health check ==="
 _max_wait=30
 _interval=2
 _ready=0
+# TRN-107: GA_TRANSPORT_SECRET is the outermost gate — direct port hits return 401.
+# Read the secret to probe the transport directly, falling back to a 401 check
+# (which still confirms the transport is up and enforcing the middleware).
+_transport_secret=""
+if [[ -f "/run/secrets/ga-transport-secret" ]]; then
+  _transport_secret="$(cat /run/secrets/ga-transport-secret)"
+fi
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+  _http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "X-Transport-Token: ${_transport_secret}" \
+    "http://127.0.0.1:${PORT}/health" 2>/dev/null)
+  if [[ "$_http_code" == "200" || "$_http_code" == "401" ]]; then
     _ready=1
     break
   fi
