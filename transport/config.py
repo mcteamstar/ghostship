@@ -23,8 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 def _env_bool_default_on(name: str) -> bool:
@@ -32,12 +31,6 @@ def _env_bool_default_on(name: str) -> bool:
     return os.environ.get(name, "1").strip() not in ("0", "false", "")
 
 
-def _env_bool_default_off(name: str) -> bool:
-    """Falsy unless explicitly enabled (default: off)."""
-    return os.environ.get(name, "0").strip() in ("1", "true")
-
-
-_TTL_RE = re.compile(r"^([1-9]\d*)[smhd]$")
 _config_logger = logging.getLogger(__name__)
 
 
@@ -56,20 +49,6 @@ def _validate_caddy_tls_mode(value: str, default: str = "internal") -> str:
         value,
         sorted(_CADDY_TLS_MODES),
         default,
-    )
-    return default
-
-
-def _validate_token_ttl(value: str, default: str = "24h") -> str:
-    """Validate a KC_GATEWAY_TOKEN_TTL value.
-
-    Accepts values matching ``^\\d+[smhd]$`` with the numeric part > 0.
-    On mismatch, logs a WARNING and returns ``default``.
-    """
-    if _TTL_RE.match(value):
-        return value
-    _config_logger.warning(
-        "KC_GATEWAY_TOKEN_TTL=%r is invalid; falling back to %r", value, default
     )
     return default
 
@@ -100,8 +79,6 @@ class Config:
     ga_max_active_crews: int = 3
     ga_idle_timeout_secs: int = 300
     ga_crew_agent: str = "kiro"
-    ga_file_ttl_secs: int = 300
-    ga_pickup_max_poll_secs: int = 30
 
     # ── Model ────────────────────────────────────────────────────────────────
     kc_model_override: str = ""
@@ -109,7 +86,6 @@ class Config:
 
     # ── Memory gate / thresholds ─────────────────────────────────────────────
     ga_min_free_mem_gb: float = 2.0
-    ga_memory_wait_secs: int = 60
     ga_spawn_min_memory_gb: float = 1.5
     ga_resource_pressure_gb: float = 2.0
     ga_resource_critical_gb: float = 1.0
@@ -117,9 +93,6 @@ class Config:
     # ── Subagent timeouts ────────────────────────────────────────────────────
     ga_subagent_timeout_secs: int = 3600
     ga_subagent_max_turns: int = 200
-
-    # ── Gateway ──────────────────────────────────────────────────────────────
-    kc_gateway_token_ttl: str = "24h"
 
     # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────
     # TRN-101: GA_DASHBOARD_PORT_ENABLED removed — dashboard access is now
@@ -133,15 +106,11 @@ class Config:
     ga_tls_certfile: str = ""
     ga_tls_keyfile: str = ""
     ga_enable_security_headers: bool = True
-    ga_enforce_https_redirect: bool = False
-    ga_csp_enforce: bool = False
 
     # ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────
     # ga-portal (Caddy) is a required architectural component (TRN-103): it owns
     # the main HTTPS port and the dashboard port range, and provides the
     # portal → transport → crew proxy path. It is always started by install.sh.
-    # URL of the Caddy admin API, reachable from inside the transport container.
-    ga_portal_admin_url: str = "http://ga-portal:2019"
     # TLS mode: internal | tailscale | acme | off
     # - internal (default): Caddy built-in CA; requires a one-time `caddy trust`
     # - tailscale: real certs from Tailscale ACME for .ts.net hostnames
@@ -150,8 +119,6 @@ class Config:
     ga_portal_tls_mode: str = "internal"
     # Domain name used for ACME (Let's Encrypt) certificate requests.
     ga_portal_domain: str = ""
-    # HTTPS port Caddy listens on (main port).
-    ga_portal_port: int = 64057    # HTTP port Caddy listens on (redirects, ACME challenges).
     # Session TTL for gs_session cookies (dashboard login); default 24 h.
     ga_portal_session_ttl_secs: int = 86400
 
@@ -194,14 +161,9 @@ class Config:
             ga_max_active_crews=int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3")),
             ga_idle_timeout_secs=int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300")),
             ga_crew_agent=os.environ.get("GA_CREW_AGENT", "kiro"),
-            ga_file_ttl_secs=int(os.environ.get("GA_FILE_TTL_SECS", "300")),
-            ga_pickup_max_poll_secs=int(
-                os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30")
-            ),
             kc_model_override=os.environ.get("KC_MODEL_OVERRIDE", ""),
             kc_model_default=os.environ.get("KC_MODEL_DEFAULT", ""),
             ga_min_free_mem_gb=float(os.environ.get("GA_MIN_FREE_MEM_GB", "2.0")),
-            ga_memory_wait_secs=int(os.environ.get("GA_MEMORY_WAIT_SECS", "60")),
             ga_spawn_min_memory_gb=float(
                 os.environ.get("GA_SPAWN_MIN_MEMORY_GB", "1.5")
             ),
@@ -217,7 +179,6 @@ class Config:
             ga_subagent_max_turns=int(
                 os.environ.get("GA_SUBAGENT_MAX_TURNS", "200")
             ),
-            kc_gateway_token_ttl=_validate_token_ttl(os.environ.get("KC_GATEWAY_TOKEN_TTL", "24h")),
             ga_dashboard_port_range_start=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_START", "64058")),
             ga_dashboard_port_range_size=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_SIZE", "50")),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
@@ -226,16 +187,10 @@ class Config:
             ga_enable_security_headers=_env_bool_default_on(
                 "GA_ENABLE_SECURITY_HEADERS"
             ),
-            ga_enforce_https_redirect=_env_bool_default_off(
-                "GA_ENFORCE_HTTPS_REDIRECT"
-            ),
-            ga_csp_enforce=_env_bool_default_off("GA_CSP_ENFORCE"),
-            ga_portal_admin_url=os.environ.get("GA_PORTAL_ADMIN_URL", "http://ga-portal:2019").strip(),
             ga_portal_tls_mode=_validate_caddy_tls_mode(
                 os.environ.get("GA_PORTAL_TLS_MODE", "internal").strip()
             ),
             ga_portal_domain=os.environ.get("GA_PORTAL_DOMAIN", "").strip(),
-            ga_portal_port=int(os.environ.get("GA_PORTAL_PORT", "64057")),
             ga_portal_session_ttl_secs=int(os.environ.get("GA_PORTAL_SESSION_TTL_SECS", "86400")),
             kiro_license=os.environ.get("KIRO_LICENSE", ""),
             kiro_identity_provider=os.environ.get("KIRO_IDENTITY_PROVIDER", ""),

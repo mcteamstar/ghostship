@@ -321,16 +321,12 @@ GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 GA_CREW_AGENT = cfg.ga_crew_agent
 KC_MODEL_OVERRIDE = cfg.kc_model_override
 KC_MODEL_DEFAULT = cfg.kc_model_default
-GA_FILE_TTL_SECS = cfg.ga_file_ttl_secs  # 5 min default
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
-GA_MEMORY_WAIT_SECS = cfg.ga_memory_wait_secs
 GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
 GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
-GA_PICKUP_MAX_POLL_SECS = cfg.ga_pickup_max_poll_secs
-KC_GATEWAY_TOKEN_TTL = cfg.kc_gateway_token_ttl
 
 # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
 # TRN-101: GA_DASHBOARD_PORT_ENABLED removed; dashboard access is exclusively
@@ -355,16 +351,12 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 #   directly (ssl_version passed to uvicorn). Values: "1.2" or "1.3".
 # GA_TLS_CERTFILE / GA_TLS_KEYFILE: enable direct TLS termination when set.
 # GA_ENABLE_SECURITY_HEADERS: emit baseline security headers (default on).
-# GA_ENFORCE_HTTPS_REDIRECT: 301-redirect plaintext HTTP to HTTPS (staged;
-#   default off until the monitored plaintext window + client notice is done).
-# GA_CSP_ENFORCE: send CSP as enforcing rather than report-only (staged;
-#   default off until report-only violations are triaged).
+# HTTPS redirect: unconditionally disabled (Caddy owns redirects).
+# CSP: unconditionally enforced (always emit CSP headers).
 GA_TLS_MIN_VERSION = cfg.ga_tls_min_version
 GA_TLS_CERTFILE = cfg.ga_tls_certfile
 GA_TLS_KEYFILE = cfg.ga_tls_keyfile
 GA_ENABLE_SECURITY_HEADERS = cfg.ga_enable_security_headers
-GA_ENFORCE_HTTPS_REDIRECT = cfg.ga_enforce_https_redirect
-GA_CSP_ENFORCE = cfg.ga_csp_enforce
 
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is always present: a ga-portal container owns port bindings
@@ -714,8 +706,8 @@ def _release_dashboard_port(port: int) -> None:
 # ── Caddy admin API helpers (TRN-92) ─────────────────────────────────────────
 
 def _caddy_admin_url() -> str:
-    """Return the Caddy admin API base URL from config."""
-    return cfg.ga_portal_admin_url
+    """Return the Caddy admin API base URL."""
+    return "http://ga-portal:2019"
 
 
 def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None:
@@ -1110,7 +1102,7 @@ def _jwt_exp(token: str) -> int | None:
 
     KiroCrew tokens have two expiry fields:
     - ``exp``: short-lived one-time-URL expiry (~5 min from issue)
-    - ``session_exp``: the actual session duration (~24h, matching KC_GATEWAY_TOKEN_TTL)
+    - ``session_exp``: the actual session duration (~24h)
 
     We use ``session_exp`` for the near-expiry check so we re-mint based on
     session lifetime, not on the token URL TTL.
@@ -1143,7 +1135,7 @@ def _cookie_near_expiry(cookie: str) -> bool:
     exp = _jwt_exp(cookie)
     if exp is None:
         return True
-    ttl_secs = _parse_ttl_seconds(KC_GATEWAY_TOKEN_TTL)
+    ttl_secs = _parse_ttl_seconds("24h")
     remaining = exp - time.time()
     return remaining < 0.20 * ttl_secs
 
@@ -2042,11 +2034,9 @@ class SecurityHeadersMiddleware:
 
         https = self._is_https(scope)
 
-        # Log plaintext HTTP traffic during the monitoring window (TRN-70 task 3.4).
-        # When enforce_redirect is off, we are in the monitored window phase — log
-        # every non-health plaintext hit so operators can identify affected clients
-        # before flipping GA_ENFORCE_HTTPS_REDIRECT. Once enforce_redirect is on,
-        # the redirect itself is the record of the hit.
+        # Log plaintext HTTP traffic (TRN-70 task 3.4).
+        # HTTPS redirect is disabled (Caddy owns redirects); log plaintext hits
+        # for visibility.
         if not https and scope.get("path") != "/health":
             source = None
             for k, v in scope.get("headers", []):
@@ -2058,12 +2048,10 @@ class SecurityHeadersMiddleware:
                 if client:
                     source = client[0]
             logger.info(
-                "plaintext HTTP hit: method=%s path=%s source=%s "
-                "(enforce_redirect=%s)",
+                "plaintext HTTP hit: method=%s path=%s source=%s",
                 scope.get("method", "?"),
                 scope.get("path", "/"),
                 source or "-",
-                "on" if self._enforce_redirect else "off",
             )
 
         # Plaintext → HTTPS 301 redirect (staged; skip health probes).
@@ -2967,7 +2955,7 @@ def supply(
         "method": "POST",
         "unpack": unpack,
         "bundle": bundle,
-        "expires_secs": GA_FILE_TTL_SECS,
+        "expires_secs": 300,
         "example": curl_example,
     }
 
@@ -3011,7 +2999,7 @@ def evac(
         "crew_id": crew_id,
         "path": path,
         "bundle": bundle,
-        "expires_secs": GA_FILE_TTL_SECS,
+        "expires_secs": 300,
     }
     if ref:
         result["ref"] = ref
@@ -4002,7 +3990,7 @@ def pickup(
         return {"error": str(e)}
 
     container = crew["container"]
-    effective_timeout = min(max(0, timeout_secs), GA_PICKUP_MAX_POLL_SECS) if timeout_secs > 0 else 0
+    effective_timeout = min(max(0, timeout_secs), 30) if timeout_secs > 0 else 0
 
     if task_id:
         return _pickup_single(crew, crew_id, task_id, podman, container, effective_timeout)
@@ -4432,14 +4420,14 @@ if __name__ == "__main__":
         )
     else:
         logger.info("HTTP rate limiting: disabled (GA_RATE_LIMIT_ENABLED=false)")
-    # Transport-security wrapper: security headers, HSTS, and the staged
-    # HTTP→HTTPS redirect (TRN-70). Outermost so headers land on every response
-    # and the redirect precedes auth.
+    # Transport-security wrapper: security headers, HSTS, and CSP enforcement
+    # (TRN-70). HTTPS redirect is disabled — Caddy owns redirects. CSP is
+    # unconditionally enforced.
     app = SecurityHeadersMiddleware(
         app,
         enable_headers=GA_ENABLE_SECURITY_HEADERS,
-        enforce_redirect=GA_ENFORCE_HTTPS_REDIRECT,
-        csp_enforce=GA_CSP_ENFORCE,
+        enforce_redirect=False,
+        csp_enforce=True,
     )
     # TRN-107: TransportSecretMiddleware is the absolute outermost gate — it
     # rejects any request that is not from ga-portal (i.e. missing or wrong
@@ -4455,10 +4443,8 @@ if __name__ == "__main__":
     else:
         logger.info("MCP API-key authentication: disabled (GA_API_KEY unset)")
     logger.info(
-        "Transport security: headers=%s https_redirect=%s csp=%s",
+        "Transport security: headers=%s https_redirect=disabled csp=enforce",
         "on" if GA_ENABLE_SECURITY_HEADERS else "off",
-        "enforced" if GA_ENFORCE_HTTPS_REDIRECT else "staged-off",
-        "enforce" if GA_CSP_ENFORCE else "report-only",
     )
 
     # Enforce a minimum TLS version when the app terminates TLS directly.
