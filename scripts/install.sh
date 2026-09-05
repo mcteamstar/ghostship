@@ -76,7 +76,6 @@ GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_PORT_RANGE_SIZE=50
-GA_DASHBOARD_PORT_ENABLED=true
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is always installed; there is no opt-out.
 # Caddy listens on PORT (same port as the transport, resolved above).
@@ -680,7 +679,6 @@ services:
       GA_RATE_LIMIT_CREW_API: "${GA_RATE_LIMIT_CREW_API:-120:60}"
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-50}"
-      GA_DASHBOARD_PORT_ENABLED: "${GA_DASHBOARD_PORT_ENABLED:-true}"
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
     secrets:
