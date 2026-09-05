@@ -8,7 +8,7 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 
 ### Requirement: `ga-portal` is always present
 
-`ga-portal` SHALL always be included in the generated `compose.yml` and started by `install.sh`. There is no opt-out flag. The `GA_PORTAL_ENABLED` environment variable is removed and SHALL NOT be read or honoured. The service SHALL bind the public HTTPS port (default 443), the HTTP port (default 80) for ACME challenges and redirects, AND the dashboard port range (default 64058–64107) — Caddy owns those port bindings, not the transport. The Caddy admin API (port 2019) SHALL be bound to the internal `ga-net` network only and SHALL NOT be published to the host. The `ga-transport` service SHALL NOT bind the dashboard port range.
+`ga-portal` SHALL always be included in the generated `compose.yml` and started by `install.sh`. There is no opt-out flag. The `GA_PORTAL_ENABLED` environment variable is removed and SHALL NOT be read or honoured. The service SHALL bind `GA_PORTAL_PORT` (default 64057) AND the dashboard port range (default 64058–64107) — Caddy owns those port bindings, not the transport. The Caddy admin API (port 2019) SHALL be bound to the internal `ga-portside` network only and SHALL NOT be published to the host. The `ga-transport` service SHALL NOT bind the dashboard port range. `ga-portal` SHALL be attached to `ga-portside` only and SHALL NOT be attached to `ga-starboard`.
 
 #### Scenario: Install always starts ga-portal
 - **WHEN** `install.sh` runs
@@ -17,7 +17,7 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 
 #### Scenario: Fresh install includes Caddy config
 - **WHEN** `install.sh` runs
-- **THEN** `compose.yml` contains a `ga-portal` service with the `caddy:2` image, ports `80:80`, `443:443`, and the dashboard range, and no `2019:2019` host mapping
+- **THEN** `compose.yml` contains a `ga-portal` service with the `caddy:2` image, `GA_PORTAL_PORT` and the dashboard range bound, and no `2019:2019` host mapping
 - **THEN** the `ga-transport` service does not bind the dashboard port range
 
 ### Requirement: Initial Caddy JSON configuration
@@ -73,3 +73,15 @@ On startup, the transport SHALL re-register a Caddy dashboard server for every c
 #### Scenario: Restart re-registers dashboard servers
 - **WHEN** the transport restarts with Caddy enabled and two crews in `crews.json` have dashboard ports
 - **THEN** both `crew-{id}` servers exist on the Caddy admin API after `_reconcile_registry` runs
+
+### Requirement: `X-Transport-Token` header injection
+
+Caddy's JSON config SHALL add `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}` on every `reverse_proxy` directive targeting `ga-transport`. This applies to ALL upstream routes — MCP, files, dashboard, health — without exception. The header value is the `GA_TRANSPORT_SECRET` environment variable, which is mounted into `ga-portal` from the `ga-transport-secret` Podman secret at install time.
+
+No Caddy route SHALL forward a request to `ga-transport` without this header. The transport middleware rejects any request that arrives without it.
+
+#### Scenario: X-Transport-Token injection applies to every route
+
+- **WHEN** `install.sh` writes the Caddy `initial-config.json`
+- **THEN** every `reverse_proxy` handler targeting `ga-transport` includes `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}`
+- **THEN** per-crew dashboard servers registered via `_caddy_register_crew` also include this header
