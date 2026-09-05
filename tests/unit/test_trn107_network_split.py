@@ -1,11 +1,11 @@
-"""Unit tests for TRN-107 — Portside/Starboard network split and GA_PORTAL_SECRET.
+"""Unit tests for TRN-107 — Portside/Starboard network split and GA_TRANSPORT_SECRET.
 
 Covers:
   7.1  GA_PORTSIDE_NETWORK / GA_STARBOARD_NETWORK constant values
-  7.2  PortalSecretMiddleware: missing header → 401
-  7.3  PortalSecretMiddleware: correct header → pass-through
-  7.4  PortalSecretMiddleware: wrong header value → 401
-  7.5  PortalSecretMiddleware: pass-through when portal_secret is empty
+  7.2  TransportSecretMiddleware: missing header → 401
+  7.3  TransportSecretMiddleware: correct header → pass-through
+  7.4  TransportSecretMiddleware: wrong header value → 401
+  7.5  TransportSecretMiddleware: pass-through when transport_secret is empty
   7.6  _migrate_crew_network: already on ga-starboard → no-op
   7.7  _migrate_crew_network: on ga-net → full migration sequence
   7.8  _migrate_crew_network: gateway not ready after migration → returns False
@@ -85,44 +85,44 @@ class NetworkConstantTests(unittest.TestCase):
         self.assertEqual(server.GA_STARBOARD_NETWORK, "ga-starboard")
 
 
-# ── 7.2–7.5: PortalSecretMiddleware ──────────────────────────────────────────
+# ── 7.2–7.5: TransportSecretMiddleware ──────────────────────────────────────────
 
-class PortalSecretMiddlewareTests(unittest.TestCase):
-    """Tests for PortalSecretMiddleware (TRN-107 outermost gate)."""
+class TransportSecretMiddlewareTests(unittest.TestCase):
+    """Tests for TransportSecretMiddleware (TRN-107 outermost gate)."""
 
     def test_missing_header_returns_401(self) -> None:
-        """Request with no X-Portal-Token header → 401."""
+        """Request with no X-Transport-Token header → 401."""
         downstream = _FakeDownstream()
-        mw = server.PortalSecretMiddleware(downstream, portal_secret="correct-secret")
+        mw = server.TransportSecretMiddleware(downstream, transport_secret="correct-secret")
         scope = _http_scope()  # no headers
         status, headers, body = _run_asgi(mw, scope)
         self.assertEqual(status, 401)
         self.assertFalse(downstream.called)
 
     def test_correct_header_passes_through(self) -> None:
-        """Request with correct X-Portal-Token → forwarded to downstream (200)."""
+        """Request with correct X-Transport-Token → forwarded to downstream (200)."""
         downstream = _FakeDownstream()
         secret = "my-portal-secret-abc123"
-        mw = server.PortalSecretMiddleware(downstream, portal_secret=secret)
+        mw = server.TransportSecretMiddleware(downstream, transport_secret=secret)
         scope = _http_scope(headers=[(b"x-portal-token", secret.encode())])
         status, _, _ = _run_asgi(mw, scope)
         self.assertEqual(status, 200)
         self.assertTrue(downstream.called)
 
     def test_wrong_header_value_returns_401(self) -> None:
-        """Request with wrong X-Portal-Token value → 401."""
+        """Request with wrong X-Transport-Token value → 401."""
         downstream = _FakeDownstream()
-        mw = server.PortalSecretMiddleware(downstream, portal_secret="correct")
+        mw = server.TransportSecretMiddleware(downstream, transport_secret="correct")
         scope = _http_scope(headers=[(b"x-portal-token", b"wrong")])
         status, _, _ = _run_asgi(mw, scope)
         self.assertEqual(status, 401)
         self.assertFalse(downstream.called)
 
-    def test_empty_portal_secret_is_pass_through(self) -> None:
-        """When portal_secret is empty, middleware is a transparent pass-through."""
+    def test_empty_transport_secret_is_pass_through(self) -> None:
+        """When transport_secret is empty, middleware is a transparent pass-through."""
         downstream = _FakeDownstream()
-        mw = server.PortalSecretMiddleware(downstream, portal_secret="")
-        scope = _http_scope()  # no X-Portal-Token header
+        mw = server.TransportSecretMiddleware(downstream, transport_secret="")
+        scope = _http_scope()  # no X-Transport-Token header
         status, _, _ = _run_asgi(mw, scope)
         self.assertEqual(status, 200)
         self.assertTrue(downstream.called)
@@ -130,7 +130,7 @@ class PortalSecretMiddlewareTests(unittest.TestCase):
     def test_non_http_scope_passes_through(self) -> None:
         """Non-HTTP scopes (websocket, lifespan) pass through unchanged."""
         downstream = _FakeDownstream()
-        mw = server.PortalSecretMiddleware(downstream, portal_secret="secret")
+        mw = server.TransportSecretMiddleware(downstream, transport_secret="secret")
         scope = {"type": "lifespan"}
 
         async def _noop(msg=None):
@@ -145,7 +145,7 @@ class PortalSecretMiddlewareTests(unittest.TestCase):
     def test_401_response_body_is_unauthorized(self) -> None:
         """Rejected requests return 401 with 'Unauthorized' body."""
         downstream = _FakeDownstream()
-        mw = server.PortalSecretMiddleware(downstream, portal_secret="secret")
+        mw = server.TransportSecretMiddleware(downstream, transport_secret="secret")
         scope = _http_scope()
         status, _, body = _run_asgi(mw, scope)
         self.assertEqual(status, 401)

@@ -26,7 +26,7 @@
 - [x] 3.2 Call `_migrate_crew_network` inside `_reconcile_registry` for each crew before the existing start/stop logic; log `INFO` for each migration, `WARNING` on failure; mark crew `stopped` on failure and continue
 - [x] 3.3 After all crews processed, add best-effort `ga-net` removal: if `ga-net` exists and has no containers, call `podman.network_rm("ga-net")`; log warning on failure, never raise
 
-## 4. install.sh — Network provisioning and GA_PORTAL_SECRET
+## 4. install.sh — Network provisioning and GA_TRANSPORT_SECRET
 
 - [x] 4.1 Replace the single `ga-net` creation block with two idempotent creates:
   ```bash
@@ -34,29 +34,29 @@
   ${_PODMAN_CMD} network exists ga-starboard 2>/dev/null || ${_PODMAN_CMD} network create ga-starboard
   ```
 - [x] 4.2 Update `compose.yml` generation: `ga-portal` declares only `ga-portside`; `ga-transport` declares both `ga-portside` and `ga-starboard`; top-level `networks:` declares both as `{external: true}`; remove `ga-net`
-- [x] 4.3 Generate `GA_PORTAL_SECRET` and write Podman secret (idempotent — skip if already exists):
+- [x] 4.3 Generate `GA_TRANSPORT_SECRET` and write Podman secret (idempotent — skip if already exists):
   ```bash
-  if ! ${_PODMAN_CMD} secret inspect ga-portal-secret >/dev/null 2>&1; then
-    openssl rand -hex 32 | ${_PODMAN_CMD} secret create ga-portal-secret -
+  if ! ${_PODMAN_CMD} secret inspect ga-transport-secret >/dev/null 2>&1; then
+    openssl rand -hex 32 | ${_PODMAN_CMD} secret create ga-transport-secret -
   fi
   ```
-- [x] 4.4 Update Caddy config generation: add `header_up X-Portal-Token {file./run/secrets/ga-portal-secret}` to every `reverse_proxy` block targeting `ga-transport` (using Caddy file placeholder)
-- [x] 4.5 Mount `ga-portal-secret` into `ga-transport` at `/run/secrets/ga-portal-secret` in the compose service definition; mount into `ga-portal` from the same secret
+- [x] 4.4 Update Caddy config generation: add `header_up X-Transport-Token {file./run/secrets/ga-transport-secret}` to every `reverse_proxy` block targeting `ga-transport` (using Caddy file placeholder)
+- [x] 4.5 Mount `ga-transport-secret` into `ga-transport` at `/run/secrets/ga-transport-secret` in the compose service definition; mount into `ga-portal` from the same secret
 - [x] 4.6 Add best-effort `ga-net` cleanup: if `ga-net` exists and has no containers, remove it; skip silently if it has containers
 
-## 5. transport/config.py — GA_PORTAL_SECRET field
+## 5. transport/config.py — GA_TRANSPORT_SECRET field
 
-- [x] 5.1 Add `ga_portal_secret: str` field to the transport config dataclass
-- [x] 5.2 Add `_load_portal_secret()` function following the `_load_api_key()` pattern: reads from `/run/secrets/ga-portal-secret`; logs warning if absent; registers the loaded value with the log redaction filter (implemented in server.py as GA_PORTAL_SECRET, same pattern as GA_API_KEY)
-- [x] 5.3 Call `_load_portal_secret()` during transport startup config initialisation, immediately after `_load_api_key()`
+- [x] 5.1 Add `ga_transport_secret: str` field to the transport config dataclass
+- [x] 5.2 Add `_load_transport_secret()` function following the `_load_api_key()` pattern: reads from `/run/secrets/ga-transport-secret`; logs warning if absent; registers the loaded value with the log redaction filter (implemented in server.py as GA_TRANSPORT_SECRET, same pattern as GA_API_KEY)
+- [x] 5.3 Call `_load_transport_secret()` during transport startup config initialisation, immediately after `_load_api_key()`
 
-## 6. transport/server.py — GA_PORTAL_SECRET middleware and constant updates
+## 6. transport/server.py — GA_TRANSPORT_SECRET middleware and constant updates
 
 - [x] 6.1 Update imports from `lifecycle`: replace `GA_NETWORK` import with `GA_PORTSIDE_NETWORK` and `GA_STARBOARD_NETWORK`
 - [x] 6.2 Update all `server.py` references to `GA_NETWORK` to use `GA_PORTSIDE_NETWORK` or `GA_STARBOARD_NETWORK` as appropriate
-- [x] 6.3 Add `PortalSecretMiddleware` (ASGI middleware) that:
-  - Reads `GA_PORTAL_SECRET` (module-level constant, loaded from Podman secret)
-  - On every incoming HTTP request: checks for `X-Portal-Token` header
+- [x] 6.3 Add `TransportSecretMiddleware` (ASGI middleware) that:
+  - Reads `GA_TRANSPORT_SECRET` (module-level constant, loaded from Podman secret)
+  - On every incoming HTTP request: checks for `X-Transport-Token` header
   - If header absent or value does not match secret: return HTTP 401 immediately, before any other middleware
   - If header matches: pass to next handler
   - Installed as the outermost layer, outside `SecurityHeadersMiddleware`
@@ -65,7 +65,7 @@
 
 - [x] 7.1 Update any test that mocks or patches `GA_NETWORK` to patch `GA_PORTSIDE_NETWORK` and/or `GA_STARBOARD_NETWORK` (no existing tests patched GA_NETWORK directly — verified clean)
 - [x] 7.2 Update any test that calls `container_create` with network=`"ga-net"` to pass `network=GA_STARBOARD_NETWORK` (no existing tests called with ga-net — verified clean)
-- [x] 7.3 Add unit test for `PortalSecretMiddleware`: missing header → 401; correct header → passes through; wrong header value → 401
+- [x] 7.3 Add unit test for `TransportSecretMiddleware`: missing header → 401; correct header → passes through; wrong header value → 401
 - [x] 7.4 Add unit test for `_migrate_crew_network`: mock `container_networks` returning `["ga-net"]` for `gs-alpha`; verify: `network_connect("ga-transport", "ga-starboard")`, stop, `network_disconnect(container, "ga-net")`, `network_connect(container, "ga-starboard")`, start, wait sequence
 - [x] 7.5 Add unit test for `_migrate_crew_network` with container already on `ga-starboard`: verify no migration steps are called
 - [x] 7.6 Add unit test for migration failure: mock `_wait_gateway` returning False; verify crew is marked `stopped`, transport does not raise
@@ -74,7 +74,7 @@
 
 ## 8. Docs
 
-- [x] 8.1 Update `docs/architecture.md` — added Networking section with ASCII diagram, portside/starboard topology, three-control security model, GA_PORTAL_SECRET lifecycle, migration notes
-- [x] 8.2 Update `docs/configuration.md`: updated `ga-net` reference to `ga-starboard`; documented `GA_PORTAL_SECRET` and network topology; added migration note
+- [x] 8.1 Update `docs/architecture.md` — added Networking section with ASCII diagram, portside/starboard topology, three-control security model, GA_TRANSPORT_SECRET lifecycle, migration notes
+- [x] 8.2 Update `docs/configuration.md`: updated `ga-net` reference to `ga-starboard`; documented `GA_TRANSPORT_SECRET` and network topology; added migration note
 - [x] 8.3 Check `README.md` for `ga-net` or per-crew network references — none found; no changes required
 

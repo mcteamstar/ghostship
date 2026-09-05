@@ -571,14 +571,14 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
-# ── Podman secret for GA_PORTAL_SECRET (TRN-107) ─────────────────────────────
+# ── Podman secret for GA_TRANSPORT_SECRET (TRN-107) ─────────────────────────────
 # Idempotent: only generate if the secret does not already exist. This ensures
 # the same secret is reused across reinstalls (Caddy and transport stay in sync).
-if ! ${_PODMAN_CMD} secret inspect ga-portal-secret >/dev/null 2>&1; then
-  openssl rand -hex 32 | ${_PODMAN_CMD} secret create ga-portal-secret -
-  echo "✓ Podman secret 'ga-portal-secret' created (new)"
+if ! ${_PODMAN_CMD} secret inspect ga-transport-secret >/dev/null 2>&1; then
+  openssl rand -hex 32 | ${_PODMAN_CMD} secret create ga-transport-secret -
+  echo "✓ Podman secret 'ga-transport-secret' created (new)"
 else
-  echo "✓ Podman secret 'ga-portal-secret' already exists (keeping existing)"
+  echo "✓ Podman secret 'ga-transport-secret' already exists (keeping existing)"
 fi
 
 # ── Copy academy/ and crews/ into the data volume ────────────────────────────
@@ -689,7 +689,7 @@ services:
       GA_PORTAL_PORT: "${GA_PORTAL_PORT:-443}"
       GA_PORTAL_HTTP_PORT: "${GA_PORTAL_HTTP_PORT:-80}"
     secrets:
-      - ga-portal-secret
+      - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
   ga-portal:
     image: docker.io/caddy:2
@@ -704,7 +704,7 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
     environment:
       GA_API_KEY: "${GA_API_KEY:-}"
     secrets:
-      - ga-portal-secret
+      - ga-transport-secret
     volumes:
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
       - ga-portal-data:/data
@@ -715,7 +715,7 @@ networks:
   ga-starboard:
     external: true
 secrets:
-  ga-portal-secret:
+  ga-transport-secret:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '  ga-api-key:\n    external: true\n'; fi)
 volumes:
@@ -757,7 +757,7 @@ esac
 # The portal-token header injected on every upstream request (TRN-107).
 # Caddy reads the secret from the mounted Podman secret file using the
 # {file.<path>} placeholder (Caddy v2.7+).
-_PORTAL_TOKEN_HEADER='"headers": {"request": {"set": {"X-Portal-Token": ["{file./run/secrets/ga-portal-secret}"]}}}'
+_PORTAL_TOKEN_HEADER='"headers": {"request": {"set": {"X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"]}}}'
 
 # Build auth routes: gated when GA_API_KEY is set, open passthrough otherwise.
 if [[ -n "${GA_API_KEY:-}" ]]; then

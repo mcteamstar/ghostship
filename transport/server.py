@@ -419,15 +419,15 @@ def _load_api_key() -> str:
 GA_API_KEY = _load_api_key()
 
 
-def _load_portal_secret() -> str:
-    """Load GA_PORTAL_SECRET from Podman secret file (TRN-107).
+def _load_transport_secret() -> str:
+    """Load GA_TRANSPORT_SECRET from Podman secret file (TRN-107).
 
-    Reads /run/secrets/ga-portal-secret. Returns empty string when the file is
+    Reads /run/secrets/ga-transport-secret. Returns empty string when the file is
     absent (allows transport to start in dev/test environments without the
     secret). Registers the value with the log redaction filter when non-empty.
     """
     _logger = logging.getLogger(__name__)
-    secret_path = Path("/run/secrets/ga-portal-secret")
+    secret_path = Path("/run/secrets/ga-transport-secret")
     try:
         if secret_path.is_file():
             secret = secret_path.read_text().strip()
@@ -438,13 +438,13 @@ def _load_portal_secret() -> str:
         pass
 
     _logger.warning(
-        "GA_PORTAL_SECRET is not set — PortalSecretMiddleware will run in "
-        "pass-through mode. Set up ga-portal-secret via install.sh for production."
+        "GA_TRANSPORT_SECRET is not set — TransportSecretMiddleware will run in "
+        "pass-through mode. Set up ga-transport-secret via install.sh for production."
     )
     return ""
 
 
-GA_PORTAL_SECRET = _load_portal_secret()
+GA_TRANSPORT_SECRET = _load_transport_secret()
 
 
 def _auth_file_path() -> Path:
@@ -1599,35 +1599,35 @@ async def _handle_version_get(request: Request) -> Response:
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
 
-class PortalSecretMiddleware:
-    """ASGI middleware enforcing the GA_PORTAL_SECRET X-Portal-Token gate (TRN-107).
+class TransportSecretMiddleware:
+    """ASGI middleware enforcing the GA_TRANSPORT_SECRET X-Transport-Token gate (TRN-107).
 
-    When ``portal_secret`` is non-empty, every incoming HTTP request must carry
-    an ``X-Portal-Token`` header whose value matches ``portal_secret`` exactly
+    When ``transport_secret`` is non-empty, every incoming HTTP request must carry
+    an ``X-Transport-Token`` header whose value matches ``transport_secret`` exactly
     (constant-time comparison). Requests missing the header or presenting a
     wrong value receive HTTP 401 immediately, before any other middleware.
 
     This middleware is the outermost gate — it runs before ``BearerAuthMiddleware``
     and ``SecurityHeadersMiddleware``. Crew containers on ``ga-starboard`` can dial
-    ``ga-transport``, but they never receive ``GA_PORTAL_SECRET`` and therefore
+    ``ga-transport``, but they never receive ``GA_TRANSPORT_SECRET`` and therefore
     cannot forge the header.
 
-    When ``portal_secret`` is empty (e.g. dev/test environment without the
+    When ``transport_secret`` is empty (e.g. dev/test environment without the
     Podman secret) the middleware is a transparent pass-through.
 
     Non-HTTP ASGI scopes (WebSocket, lifespan) pass through unchanged.
     """
 
-    def __init__(self, app, portal_secret: str = "") -> None:
+    def __init__(self, app, transport_secret: str = "") -> None:
         self.app = app
-        self._secret = portal_secret
+        self._secret = transport_secret
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http" or not self._secret:
             await self.app(scope, receive, send)
             return
 
-        # Extract X-Portal-Token from request headers.
+        # Extract X-Transport-Token from request headers.
         headers = dict(scope.get("headers", []))
         token = headers.get(b"x-portal-token", b"").decode("latin-1")
 
@@ -4431,15 +4431,15 @@ if __name__ == "__main__":
         enforce_redirect=GA_ENFORCE_HTTPS_REDIRECT,
         csp_enforce=GA_CSP_ENFORCE,
     )
-    # TRN-107: PortalSecretMiddleware is the absolute outermost gate — it
+    # TRN-107: TransportSecretMiddleware is the absolute outermost gate — it
     # rejects any request that is not from ga-portal (i.e. missing or wrong
-    # X-Portal-Token) before any other middleware sees it. When GA_PORTAL_SECRET
+    # X-Transport-Token) before any other middleware sees it. When GA_TRANSPORT_SECRET
     # is empty (dev/test) this is a transparent pass-through.
-    app = PortalSecretMiddleware(app, portal_secret=GA_PORTAL_SECRET)
-    if GA_PORTAL_SECRET:
-        logger.info("Portal secret authentication: enabled (X-Portal-Token required)")
+    app = TransportSecretMiddleware(app, transport_secret=GA_TRANSPORT_SECRET)
+    if GA_TRANSPORT_SECRET:
+        logger.info("Portal secret authentication: enabled (X-Transport-Token required)")
     else:
-        logger.info("Portal secret authentication: disabled (GA_PORTAL_SECRET unset)")
+        logger.info("Portal secret authentication: disabled (GA_TRANSPORT_SECRET unset)")
     if GA_API_KEY:
         logger.info("MCP API-key authentication: enabled")
     else:

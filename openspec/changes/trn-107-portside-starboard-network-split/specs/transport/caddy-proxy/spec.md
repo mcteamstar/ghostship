@@ -8,9 +8,9 @@ The Caddy admin API (port 2019) SHALL remain bound to `0.0.0.0` inside the `ga-p
 
 The requirement that no Caddy upstream in the initial config or in any `_caddy_register_crew` call dials a `gs-*` address directly is unchanged and further enforced by the network split — even if a Caddy config error introduced a `gs-*` upstream, the connection would fail because `gs-*` containers are not on `ga-portside`.
 
-### Requirement: `X-Portal-Token` header injection
+### Requirement: `X-Transport-Token` header injection
 
-Caddy's Caddyfile/JSON config SHALL add `header_up X-Portal-Token {env.GA_PORTAL_SECRET}` on every `reverse_proxy` directive targeting `ga-transport`. This applies to ALL upstream routes — MCP, files, dashboard, health — without exception. The header value is the `GA_PORTAL_SECRET` environment variable, which is mounted into `ga-portal` from the `ga-portal-secret` Podman secret at install time.
+Caddy's Caddyfile/JSON config SHALL add `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}` on every `reverse_proxy` directive targeting `ga-transport`. This applies to ALL upstream routes — MCP, files, dashboard, health — without exception. The header value is the `GA_TRANSPORT_SECRET` environment variable, which is mounted into `ga-portal` from the `ga-transport-secret` Podman secret at install time.
 
 No Caddy route SHALL forward a request to `ga-transport` without this header. The transport middleware will reject any request that arrives without it.
 
@@ -30,7 +30,7 @@ No Caddy route SHALL forward a request to `ga-transport` without this header. Th
 - **WHEN** Caddy is given a misconfigured upstream pointing to `gs-<crew_id>:5476`
 - **THEN** the DNS lookup fails — `gs-*` names are not resolvable from `ga-portside`
 
-#### Scenario: X-Portal-Token is injected on all upstream routes
+#### Scenario: X-Transport-Token is injected on all upstream routes
 
 - **WHEN** Caddy proxies any request to `ga-transport` (MCP, dashboard, files, health)
-- **THEN** the request includes `X-Portal-Token: <value of GA_PORTAL_SECRET>`
+- **THEN** the request includes `X-Transport-Token: <value of GA_TRANSPORT_SECRET>`

@@ -62,60 +62,60 @@ The constants `GA_PORTSIDE_NETWORK = "ga-portside"` and `GA_STARBOARD_NETWORK = 
 - **WHEN** `worker_run` creates a `gs-worker-*` container
 - **THEN** the container has `netns: none` — unchanged from current behaviour
 
-### Requirement: GA_PORTAL_SECRET internal token
+### Requirement: GA_TRANSPORT_SECRET internal token
 
-The system SHALL generate an internal secret `GA_PORTAL_SECRET` at install time. This token SHALL be the primary control preventing crew containers on `ga-starboard` from accessing `ga-transport` MCP and API routes.
+The system SHALL generate an internal secret `GA_TRANSPORT_SECRET` at install time. This token SHALL be the primary control preventing crew containers on `ga-starboard` from accessing `ga-transport` MCP and API routes.
 
 **Generation and storage:**
 - Generated at install time: `openssl rand -hex 32`
-- Written as Podman secret `ga-portal-secret`
-- Mounted into `ga-transport` at `/run/secrets/ga-portal-secret`
-- Injected into `ga-portal` as environment variable `GA_PORTAL_SECRET`
-- `GA_PORTAL_SECRET` generation SHALL be idempotent at re-install (skip if secret already exists)
+- Written as Podman secret `ga-transport-secret`
+- Mounted into `ga-transport` at `/run/secrets/ga-transport-secret`
+- Injected into `ga-portal` as environment variable `GA_TRANSPORT_SECRET`
+- `GA_TRANSPORT_SECRET` generation SHALL be idempotent at re-install (skip if secret already exists)
 
 **Caddy config (`ga-portal`):**
-- SHALL add `header_up X-Portal-Token {env.GA_PORTAL_SECRET}` to ALL upstream requests to `ga-transport`, including MCP, files, dashboard, and health routes — every route without exception
+- SHALL add `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}` to ALL upstream requests to `ga-transport`, including MCP, files, dashboard, and health routes — every route without exception
 
 **Transport middleware:**
-- SHALL reject any request missing the `X-Portal-Token` header with HTTP 401 before `BearerAuthMiddleware` runs
-- SHALL load the secret at startup via `_load_portal_secret()` — same pattern as `_load_api_key()`: reads from `/run/secrets/ga-portal-secret`, raises `RuntimeError` with a safe message if absent
+- SHALL reject any request missing the `X-Transport-Token` header with HTTP 401 before `BearerAuthMiddleware` runs
+- SHALL load the secret at startup via `_load_transport_secret()` — same pattern as `_load_api_key()`: reads from `/run/secrets/ga-transport-secret`, raises `RuntimeError` with a safe message if absent
 - SHALL register the secret value with the log redaction filter so it never appears in logs
-- `transport/config.py` SHALL gain a `ga_portal_secret` field populated by `_load_portal_secret()`
+- `transport/config.py` SHALL gain a `ga_transport_secret` field populated by `_load_transport_secret()`
 
-**Crew containers on `ga-starboard` SHALL NOT receive `GA_PORTAL_SECRET` in any form** — neither as an environment variable, a mounted secret, nor via any other mechanism.
+**Crew containers on `ga-starboard` SHALL NOT receive `GA_TRANSPORT_SECRET` in any form** — neither as an environment variable, a mounted secret, nor via any other mechanism.
 
 **GA_API_KEY** remains optional and is a separate concern — external client auth at the Caddy edge only. This change does not alter `GA_API_KEY` behaviour.
 
 #### Scenario: Request with correct portal token reaches transport
 
-- **WHEN** Caddy proxies a request to `ga-transport` with `X-Portal-Token: <correct-value>`
+- **WHEN** Caddy proxies a request to `ga-transport` with `X-Transport-Token: <correct-value>`
 - **THEN** the portal secret middleware allows the request to proceed to the next handler
 
 #### Scenario: Request missing portal token is rejected
 
-- **WHEN** any caller (including a crew container on ga-starboard) dials `ga-transport:{PORT}` without an `X-Portal-Token` header
+- **WHEN** any caller (including a crew container on ga-starboard) dials `ga-transport:{PORT}` without an `X-Transport-Token` header
 - **THEN** the transport returns HTTP 401 — the request never reaches an MCP handler or `BearerAuthMiddleware`
 
 #### Scenario: Request with wrong portal token is rejected
 
-- **WHEN** a caller sends a request with `X-Portal-Token: <wrong-value>`
+- **WHEN** a caller sends a request with `X-Transport-Token: <wrong-value>`
 - **THEN** the transport returns HTTP 401
 
 #### Scenario: Portal secret never appears in logs
 
 - **WHEN** any transport log line is emitted during a request cycle
-- **THEN** the value of `GA_PORTAL_SECRET` does not appear in the log output
+- **THEN** the value of `GA_TRANSPORT_SECRET` does not appear in the log output
 
 #### Scenario: Transport fails to start if secret is absent
 
-- **WHEN** `_load_portal_secret()` cannot read `/run/secrets/ga-portal-secret`
+- **WHEN** `_load_transport_secret()` cannot read `/run/secrets/ga-transport-secret`
 - **THEN** the transport raises `RuntimeError` with a safe error message (not the secret value) and refuses to start
 
 ### Requirement: install.sh provisions portside and starboard
 
 `install.sh` SHALL create both `ga-portside` and `ga-starboard` (each idempotent). `compose.yml` SHALL declare both as external. `ga-portal` is assigned to `ga-portside`; `ga-transport` is assigned to both `ga-portside` and `ga-starboard`. Per-crew or per-login networks are NOT created by `install.sh` and are NOT in `compose.yml`.
 
-`install.sh` SHALL generate `GA_PORTAL_SECRET` and write it as the `ga-portal-secret` Podman secret. This step SHALL be idempotent — if the secret already exists with the correct name, do not regenerate it.
+`install.sh` SHALL generate `GA_TRANSPORT_SECRET` and write it as the `ga-transport-secret` Podman secret. This step SHALL be idempotent — if the secret already exists with the correct name, do not regenerate it.
 
 `install.sh` SHALL also include a best-effort `ga-net` cleanup step: if `ga-net` exists and has no containers, remove it silently; skip if it has containers.
 
@@ -136,10 +136,10 @@ The system SHALL generate an internal secret `GA_PORTAL_SECRET` at install time.
 - **THEN** `ga-transport` declares `ga-portside` and `ga-starboard` in its `networks:` block
 - **THEN** the top-level `networks:` block declares both as `{external: true}`
 
-#### Scenario: Caddy config injects X-Portal-Token
+#### Scenario: Caddy config injects X-Transport-Token
 
 - **WHEN** `install.sh` writes the Caddy config for `ga-portal`
-- **THEN** every `reverse_proxy` directive targeting `ga-transport` includes `header_up X-Portal-Token {env.GA_PORTAL_SECRET}`
+- **THEN** every `reverse_proxy` directive targeting `ga-transport` includes `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}`
 
 ### Requirement: Migration of existing crews on startup
 

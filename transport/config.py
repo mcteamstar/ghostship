@@ -168,10 +168,10 @@ class Config:
 
     # ── Portal secret (TRN-107) ──────────────────────────────────────────────
     # Shared secret between ga-portal (Caddy) and ga-transport. Caddy injects
-    # X-Portal-Token on every upstream request; transport rejects any request
-    # that is missing or has a wrong X-Portal-Token value.
-    # Loaded at startup from /run/secrets/ga-portal-secret via _load_portal_secret().
-    ga_portal_secret: str = ""
+    # X-Transport-Token on every upstream request; transport rejects any request
+    # that is missing or has a wrong X-Transport-Token value.
+    # Loaded at startup from /run/secrets/ga-transport-secret via _load_transport_secret().
+    ga_transport_secret: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
