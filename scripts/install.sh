@@ -540,14 +540,19 @@ VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 # Some build backends (observed with podman) do not reliably invalidate a
 # cached layer when only a --build-arg value changes, silently baking a
 # stale VERSION into an image whose tag/creation time otherwise look fresh.
-# Detect that here and force --no-cache ONLY when the currently-tagged
-# image's baked version actually differs from VERSION -- an ordinary
-# reinstall with no version bump still gets the normal cache speed-up.
+# Also detect mid-release source changes within the same VERSION by hashing
+# the transport source tree and comparing against the baked label.
+# Force --no-cache when either the version or the source hash has changed.
+_TRANSPORT_SOURCE_HASH="$(find "$GHOSTSHIP_DIR/transport" -type f | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')"
 _TRANSPORT_BUILD_FLAGS=()
 if ${_PODMAN_CMD} image exists localhost/transport:latest 2>/dev/null; then
   _baked_transport_version="$(${_PODMAN_CMD} run --rm localhost/transport:latest sh -c 'echo $TRANSPORT_VERSION' 2>/dev/null || true)"
+  _baked_transport_hash="$(${_PODMAN_CMD} inspect localhost/transport:latest --format '{{ index .Labels "org.ghostship.source-hash" }}' 2>/dev/null || true)"
   if [[ "$_baked_transport_version" != "$VERSION" ]]; then
     echo "  Detected stale localhost/transport:latest version ('$_baked_transport_version' != '$VERSION') -- forcing a clean rebuild."
+    _TRANSPORT_BUILD_FLAGS=(--no-cache)
+  elif [[ -n "$_baked_transport_hash" && "$_baked_transport_hash" != "$_TRANSPORT_SOURCE_HASH" ]]; then
+    echo "  Detected stale localhost/transport:latest source (hash mismatch) -- forcing a clean rebuild."
     _TRANSPORT_BUILD_FLAGS=(--no-cache)
   fi
 fi
@@ -599,6 +604,7 @@ echo "Building localhost/transport:latest ..."
 ${_PODMAN_CMD} build -t localhost/transport:latest \
   "${_TRANSPORT_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}" \
+  --build-arg SOURCE_HASH="${_TRANSPORT_SOURCE_HASH}" \
   "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
