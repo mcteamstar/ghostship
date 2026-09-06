@@ -10,8 +10,11 @@ namespace even though ``server`` re-exports them.
 
 from __future__ import annotations
 
+import json
+import os
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.unit.helpers import registry, server  # noqa: F401
@@ -63,6 +66,93 @@ class AdvanceNextFireAtTests(unittest.TestCase):
         job = {"job_id": "j5", "interval_secs": None, "cron_expr": None, "one_shot": False}
         registry._advance_next_fire_at(job)
         self.assertEqual(job["next_fire_at"], registry._NEVER_FIRE_AT)
+
+
+class SaveRegistryDurabilityTests(unittest.TestCase):
+    """Tests for _save_registry durability guarantees (TRN-124)."""
+
+    def test_fsync_is_called_on_save(self, tmp_path: Path | None = None) -> None:
+        """_save_registry calls os.fsync before returning (task 3.1)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            reg_path = test_dir / "crews.json"
+            test_reg = {"crews": {"c1": {"name": "test"}}}
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch("os.fsync") as mock_fsync,
+            ):
+                registry._save_registry(test_reg)
+
+            mock_fsync.assert_called_once()
+            saved = json.loads(reg_path.read_text())
+            self.assertEqual(saved, test_reg)
+
+    def test_tmp_file_created_with_mode_0o600(self) -> None:
+        """_save_registry opens .tmp with mode 0o600 (task 3.2)."""
+        import tempfile
+        captured_modes: list[int] = []
+        real_os_open = os.open
+
+        def capturing_os_open(path: str, flags: int, mode: int = 0o777) -> int:
+            captured_modes.append((path, mode))
+            return real_os_open(path, flags, mode)
+
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            reg_path = test_dir / "crews.json"
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch("os.open", side_effect=capturing_os_open),
+            ):
+                registry._save_registry({"crews": {}})
+
+        # Find the call for the .tmp file
+        tmp_calls = [(p, m) for (p, m) in captured_modes if p.endswith(".tmp")]
+        self.assertTrue(tmp_calls, "Expected os.open to be called for the .tmp file")
+        _, mode = tmp_calls[0]
+        self.assertEqual(mode, 0o600, f"Expected mode 0o600, got 0o{mode:o}")
+
+    def test_corrupt_json_raises_and_renames_to_corrupt(self) -> None:
+        """Corrupt crews.json raises, creates .corrupt, removes original (task 3.3)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            reg_path = test_dir / "crews.json"
+            corrupt_path = reg_path.with_suffix(".corrupt")
+            # Write invalid JSON
+            reg_path.write_text("{ this is not json }")
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                self.assertLogs("transport.registry", level="ERROR") as log_ctx,
+            ):
+                with self.assertRaises(json.JSONDecodeError):
+                    registry._load_registry()
+                # Assertions must be inside the tempfile context so the dir exists
+                self.assertTrue(corrupt_path.exists(), "crews.json.corrupt should exist")
+                self.assertFalse(reg_path.exists(), "crews.json should have been renamed")
+            self.assertTrue(
+                any("corrupt" in msg.lower() or "parse" in msg.lower() for msg in log_ctx.output),
+                f"Expected ERROR log mentioning corrupt/parse, got: {log_ctx.output}",
+            )
+
+    def test_missing_file_returns_empty_registry(self) -> None:
+        """_load_registry returns {\"crews\": {}} when file is absent (task 3.4)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            reg_path = test_dir / "crews.json"
+            # File does not exist
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+            ):
+                result = registry._load_registry()
+
+        self.assertEqual(result, {"crews": {}})
 
 
 if __name__ == "__main__":

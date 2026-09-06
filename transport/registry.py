@@ -37,6 +37,11 @@ def _load_registry() -> dict:
     try:
         if REGISTRY_PATH.exists():
             return json.loads(REGISTRY_PATH.read_text())
+    except json.JSONDecodeError as e:
+        logger.error("Registry file is corrupt and cannot be parsed: %s", e)
+        corrupt = REGISTRY_PATH.with_suffix(".corrupt")
+        os.replace(REGISTRY_PATH, corrupt)
+        raise
     except Exception as e:
         logger.warning("Failed to load registry: %s", e)
     return {"crews": {}}
@@ -45,7 +50,16 @@ def _load_registry() -> dict:
 def _save_registry(reg: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = REGISTRY_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(reg, indent=2))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            fd = -1
+            f.write(json.dumps(reg, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if fd != -1:
+            os.close(fd)
     os.replace(tmp, REGISTRY_PATH)
     os.chmod(REGISTRY_PATH, 0o600)
 
