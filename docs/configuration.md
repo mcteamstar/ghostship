@@ -184,6 +184,34 @@ Then override any single value at the command line:
 # PORT=8080 (flag wins), all other values from config file
 ```
 
+## Client-only install
+
+`scripts/install.sh --client-only` wires the `ghostship` CLI and the agent
+harnesses (kiro-cli, Claude Code, opencode) to an already-running transport
+— usually a shared remote academy — without executing any container
+infrastructure. In this mode the script skips the Podman prerequisites check,
+dedicated machine/network setup, image builds, and `compose up`; it installs
+the `~/.local/bin/ghostship` symlink and then calls `ghostship setup` to
+register the MCP entry and skill symlinks for every detected agent client.
+
+```bash
+./install.sh --client-only --url https://academy.example.com/mcp
+```
+
+Flags accepted in `--client-only` mode:
+
+- `--url <transport-url>` — the MCP endpoint the client connects to. Default:
+  `http://localhost:64057/mcp` (matches the full-install port). Forwarded to
+  `ghostship setup --url`.
+- `--api-key <key>` — optional bearer token for the transport. When supplied,
+  `ghostship setup` registers the MCP entry with an `Authorization: Bearer`
+  header. Omit it for an unauthenticated (e.g. Tailscale-gated or local)
+  transport.
+
+`--client-only` is idempotent: re-running it with the same arguments produces
+the same end state and does not accumulate duplicate MCP entries or symlinks.
+These flags are one-shot wiring options and are **not** config-file variables.
+
 ## Git repository transfer
 
 See the [Seed or extract a Git repository](../README.md#seed-or-extract-a-git-repository)

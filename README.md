@@ -70,6 +70,14 @@ cp config/ghostship.conf.example config/ghostship.conf
 ./install.sh --api-key <key>
 ```
 
+**Client-only install** — for a machine that connects to an already-running (usually remote) transport, `--client-only` wires up just the `ghostship` CLI and the agent harnesses (kiro-cli, Claude Code, opencode) and skips all container infrastructure (no Podman check, no image builds, no `compose up`):
+
+```bash
+./install.sh --client-only --url https://academy.example.com/mcp
+```
+
+`--url` selects the transport to connect to (default `http://localhost:64057/mcp`). Add `--api-key <key>` if the remote transport requires a bearer token. See [Client-only install](docs/configuration.md#client-only-install) in the configuration docs.
+
 To uninstall: `ghostship uninstall`. If ghostship stops after a reboot, run `ghostship start` to bring it back without reinstalling.
 
 **Updating academy/ and crews/** — `./install.sh` snapshots `academy/` and `crews/` from the repo into the data volume. The transport has no runtime dependency on the repo checkout path. After editing files under `academy/` or `crews/`, re-run `./install.sh` for changes to take effect. See [Updating academy/ and crews/](docs/configuration.md#updating-academy-and-crews) in the configuration docs.

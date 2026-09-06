@@ -76,6 +76,14 @@ GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_PORT_RANGE_SIZE=50
+# ── Client-only install (TRN-115) ────────────────────────────────────────────
+# --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
+# transport WITHOUT running any container-infrastructure steps. --url selects
+# which transport the client connects to (default matches the full-install
+# port); --api-key sets the MCP bearer token. Flag-only — not config-file vars.
+CLIENT_ONLY=false
+CLIENT_ONLY_URL="http://localhost:64057/mcp"
+CLIENT_ONLY_API_KEY=""
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is always installed; there is no opt-out.
 # Caddy listens on PORT (same port as the transport, resolved above).
@@ -150,9 +158,38 @@ while [[ $# -gt 0 ]]; do
     --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
     --caddy-domain) GA_PORTAL_DOMAIN="$2"; shift 2 ;;
     --caddy-tls-mode) GA_PORTAL_TLS_MODE="$2"; shift 2 ;;
+    --client-only) CLIENT_ONLY=true; shift ;;
+    --url) CLIENT_ONLY_URL="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+# ── Client-only early-exit (TRN-115) ─────────────────────────────────────────
+# When --client-only is set, wire the ghostship CLI + agent harnesses to a
+# (usually remote) transport and skip ALL container-infrastructure steps:
+# Podman prerequisites, machine/network setup, image builds, compose up.
+# The --api-key flag reuses the existing GA_API_KEY parser case above.
+if [[ "$CLIENT_ONLY" == "true" ]]; then
+  CLIENT_ONLY_API_KEY="${GA_API_KEY:-}"
+
+  # Install the ghostship CLI symlink (same logic as the full install path).
+  _LOCAL_BIN="${HOME}/.local/bin"
+  mkdir -p "${_LOCAL_BIN}"
+  ln -sf "${GHOSTSHIP_DIR}/ghostship" "${_LOCAL_BIN}/ghostship"
+  echo "✓ ghostship CLI linked to ${_LOCAL_BIN}/ghostship"
+
+  # Wire all detected agent harnesses via ghostship setup. Call the repo-local
+  # binary directly (not through PATH) so this works before ~/.local/bin is on
+  # PATH. Forward --api-key only when a key was provided.
+  "$GHOSTSHIP_DIR/ghostship" setup --url "$CLIENT_ONLY_URL" ${CLIENT_ONLY_API_KEY:+--api-key "$CLIENT_ONLY_API_KEY"}
+
+  # PATH warning (same one-liner as the full install path).
+  if [[ ":${PATH}:" != *":${_LOCAL_BIN}:"* ]]; then
+    echo "  Add ~/.local/bin to your PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
+
+  exit 0
+fi
 
 if [[ -z "${KIRO_IDENTITY_PROVIDER:-}" && -t 0 ]]; then
   read -rp "kiro-cli identity provider URL (blank = default Builder ID login): " KIRO_IDENTITY_PROVIDER
