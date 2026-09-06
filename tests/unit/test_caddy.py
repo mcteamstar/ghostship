@@ -229,18 +229,29 @@ class CaddyDeregisterCrewTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class DashboardLoginPostTests(unittest.TestCase):
-    """8.2 — _handle_dashboard_login_post: key validation + cookie issuance."""
+    """8.2 — _handle_dashboard_login_post: key validation + cookie issuance.
+
+    Updated for TRN-122: tests that submit forms include the correct CSRF token
+    so the CSRF check passes and the API-key check is reached.  Tests that
+    intentionally omit the token now expect 403 (CSRF rejected before API key).
+    """
+
+    _KNOWN_TOKEN = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
 
     def setUp(self) -> None:
         # Reset the session store between tests
         with server._gs_session_store_lock:
             server._gs_session_store.clear()
         self._orig_api_key = server.GA_API_KEY
+        # Pin the CSRF token so tests can include the correct value in forms.
+        self._orig_csrf_token = server._dashboard_csrf_token
+        server._dashboard_csrf_token = self._KNOWN_TOKEN
 
     def tearDown(self) -> None:
         with server._gs_session_store_lock:
             server._gs_session_store.clear()
         server.GA_API_KEY = self._orig_api_key
+        server._dashboard_csrf_token = self._orig_csrf_token
 
     def _run(self, form_data: dict[str, str] | None = None) -> "server.Response":
         req = _FakeRequest(form_data=form_data or {})
@@ -248,7 +259,7 @@ class DashboardLoginPostTests(unittest.TestCase):
 
     def test_valid_key_returns_200_with_set_cookie(self) -> None:
         server.GA_API_KEY = "secret-key"
-        resp = self._run({"ga_api_key": "secret-key"})
+        resp = self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "secret-key"})
         self.assertEqual(resp.status_code, 200)
         # Check that a Set-Cookie header was included.
         # Starlette's real Response stores headers in raw_headers as (bytes, bytes) pairs;
@@ -267,30 +278,34 @@ class DashboardLoginPostTests(unittest.TestCase):
 
     def test_valid_key_stores_token(self) -> None:
         server.GA_API_KEY = "secret-key"
-        self._run({"ga_api_key": "secret-key"})
+        self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "secret-key"})
         with server._gs_session_store_lock:
             self.assertGreater(len(server._gs_session_store), 0)
 
     def test_invalid_key_returns_401(self) -> None:
         server.GA_API_KEY = "secret-key"
-        resp = self._run({"ga_api_key": "wrong-key"})
+        # CSRF token is correct so the CSRF check passes; API key is wrong → 401.
+        resp = self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "wrong-key"})
         self.assertEqual(resp.status_code, 401)
 
     def test_invalid_key_does_not_issue_cookie(self) -> None:
         server.GA_API_KEY = "secret-key"
-        self._run({"ga_api_key": "wrong-key"})
+        self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "wrong-key"})
         with server._gs_session_store_lock:
             self.assertEqual(len(server._gs_session_store), 0)
 
     def test_no_api_key_configured_returns_401(self) -> None:
         server.GA_API_KEY = ""
-        resp = self._run({"ga_api_key": "anything"})
+        resp = self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "anything"})
         self.assertEqual(resp.status_code, 401)
 
-    def test_empty_form_returns_401(self) -> None:
+    def test_empty_form_returns_403(self) -> None:
+        """TRN-122: empty form (no CSRF token) returns 403, not 401.
+        CSRF check precedes the API-key check (design.md D4).
+        """
         server.GA_API_KEY = "secret-key"
         resp = self._run({})
-        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.status_code, 403)
 
 
 # ---------------------------------------------------------------------------

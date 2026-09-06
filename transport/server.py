@@ -756,6 +756,12 @@ _task_timestamps_lock = threading.Lock()
 _gs_session_store: dict[str, float] = {}
 _gs_session_store_lock = threading.Lock()
 
+# ── Dashboard CSRF token (TRN-122) ────────────────────────────────────────────
+# Single random token generated at process startup and held for the process
+# lifetime.  Embedded in the GET /login-ui form and validated on every
+# POST /dashboard-login before the API-key check.  See design.md D1.
+_dashboard_csrf_token: str = secrets.token_hex(32)
+
 
 def _gs_session_issue() -> str:
     """Mint a new gs_session token and record it with its expiry."""
@@ -793,8 +799,14 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
     try:
         form = await request.form()
         provided = str(form.get("ga_api_key", ""))
+        # TRN-122: read and validate CSRF token before touching the API-key path.
+        # Fail-fast on forged submissions (design.md D4).
+        provided_csrf = str(form.get("csrf_token", ""))
     except Exception:
         return Response(status_code=400)
+
+    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
+        return Response(status_code=403)
 
     if not hmac.compare_digest(provided, GA_API_KEY):
         return Response(status_code=401)
@@ -898,6 +910,10 @@ async def _handle_login_ui(request: Request) -> Response:
     """
     next_url = _validate_next_url(request.query_params.get("next", "/"))
     next_url_escaped = _security.encode_html_attr(next_url)
+    # TRN-122: embed the startup CSRF token in the form so POST /dashboard-login
+    # can validate it.  encode_html_attr applied for defence-in-depth (hex output
+    # is already safe, but the pattern matches next_url_escaped usage above).
+    csrf_token_escaped = _security.encode_html_attr(_dashboard_csrf_token)
     # Simple HTML login page — no external dependencies.
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -928,6 +944,7 @@ async def _handle_login_ui(request: Request) -> Response:
   <h1>👻 Ghost Academy</h1>
   <form id="f" method="post" action="/dashboard-login">
     <input type="hidden" name="next" value="{next_url_escaped}">
+    <input type="hidden" name="csrf_token" value="{csrf_token_escaped}">
     <label for="k">API Key</label>
     <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
     <button type="submit">Sign in</button>
