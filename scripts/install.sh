@@ -740,10 +740,9 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
       - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
     networks:
       - ga-portside
-    environment:
-      GA_API_KEY: "${GA_API_KEY:-}"
     secrets:
       - ga-transport-secret
+$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
     volumes:
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
       - ga-portal-data:/data
@@ -803,12 +802,12 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   _AUTH_ROUTES=$(cat <<AUTH_EOF
             {
               "@id": "ga-transport-mcp",
-              "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
+              "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {file./run/secrets/ga-api-key}"]}}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-transport-files",
-              "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
+              "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {file./run/secrets/ga-api-key}"]}}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
