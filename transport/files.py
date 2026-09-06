@@ -199,6 +199,7 @@ def _verify_file_token(
     ref: str | None = None,
     bundle: bool = False,
     mode: str | None = None,
+    force: bool = False,
 ) -> bool:
     """Verify a presigned file URL token. Returns False if invalid or expired."""
     try:
@@ -210,11 +211,11 @@ def _verify_file_token(
         _security.audit_auth_event(action="verify_file_token", outcome="expired", source=None)
         return False
     # Unified payload format: {crew_id}:{path}:{expires}:{method}:{ref}:{flags}
-    # flags is a sorted colon-joined set of active boolean options (bundle, unpack).
+    # flags is a sorted colon-joined set of active boolean options (bundle, force, unpack).
     # mode=None means GET (download); mode is a string ("", "unpack", "bundle") for POST (upload).
     if mode is not None:
         # Upload (POST) path — reconstruct flags the same way _sign_upload_url does
-        flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and mode == "bundle") or (f == "unpack" and mode == "unpack")))
+        flags = ":".join(sorted(f for f in ["bundle", "force", "unpack"] if (f == "bundle" and mode == "bundle") or (f == "force" and force) or (f == "unpack" and mode == "unpack")))
         payload = f"{crew_id}:{path}:{exp}:POST::{flags}"
     else:
         # Download (GET) path
@@ -228,14 +229,15 @@ def _verify_file_token(
     return False
 
 
-def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool = False) -> str:
+def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool = False, force: bool = False) -> str:
     """Return a short-lived presigned upload URL for a crew workspace path.
 
-    The mode (unpack/bundle) is included in the signed HMAC payload so a token
-    signed for a plain write cannot be replayed as an unpack or bundle clone.
+    The mode (unpack/bundle/force) is included in the signed HMAC payload so a
+    token signed for a plain write cannot be replayed as an unpack or bundle
+    clone, and a force flag cannot be added after signing.
     """
     expires = int(time.time()) + 300
-    flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and bundle) or (f == "unpack" and unpack)))
+    flags = ":".join(sorted(f for f in ["bundle", "force", "unpack"] if (f == "bundle" and bundle) or (f == "force" and force) or (f == "unpack" and unpack)))
     payload = f"{crew_id}:{path}:{expires}:POST::{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
@@ -289,6 +291,7 @@ def _transfer_upload(
     body: bytes,
     unpack: bool,
     bundle: bool = False,
+    force: bool = False,
 ) -> str:
     """Stage and write one upload without putting its bytes in exec inputs."""
     stage_dir, staged_file, outer_tar = _build_outer_transfer_tar(body, workspace)
@@ -302,6 +305,13 @@ def _transfer_upload(
         try:
             parent = os.path.dirname(destination.rstrip("/")) or workspace
             podman.container_exec_checked(container, ["mkdir", "-p", parent])
+            # When force=True, remove the destination before cloning so an
+            # existing repo does not block the clone. This uses list-form to
+            # avoid shell injection via the destination path. The stage is
+            # already written at this point; we only delete the destination,
+            # not the stage.
+            if force:
+                podman.container_exec_checked(container, ["rm", "-rf", destination])
             # Clone the bundle. If the bundle's HEAD ref contains a slash
             # (e.g. release/0.2.4) git may fail to resolve it and leave the
             # working tree empty. Detect that and check out explicitly.
@@ -734,6 +744,7 @@ async def _handle_file_put(request: Request) -> Response:
     sig = request.query_params.get("sig", "")
     unpack = request.query_params.get("unpack", "0") in ("1", "true", "yes")
     bundle = request.query_params.get("bundle", "0") in ("1", "true", "yes")
+    force = request.query_params.get("force", "0") in ("1", "true", "yes")
 
     if not CREW_ID_RE.fullmatch(crew_id):
         return PlainTextResponse("Invalid crew_id", status_code=400)
@@ -742,7 +753,7 @@ async def _handle_file_put(request: Request) -> Response:
         return PlainTextResponse("unpack and bundle cannot both be enabled", status_code=400)
 
     mode = "unpack" if unpack else ("bundle" if bundle else "")
-    if not _verify_file_token(crew_id, path, expires, sig, mode=mode):
+    if not _verify_file_token(crew_id, path, expires, sig, mode=mode, force=force):
         return PlainTextResponse("Forbidden", status_code=403)
 
     # SEC-02: resolve path and enforce workspace boundary
@@ -782,6 +793,7 @@ async def _handle_file_put(request: Request) -> Response:
             body,
             unpack,
             bundle,
+            force,
         )
         return PlainTextResponse(result.strip() or fallback)
     except Exception as e:

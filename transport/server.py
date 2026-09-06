@@ -2260,6 +2260,7 @@ def supply(
     crew_id: str | None = None,
     unpack: bool = False,
     bundle: bool = False,
+    force: bool = False,
 ) -> dict:
     """Deliver a file, archive, or git bundle into a crew's workspace via a presigned upload URL.
 
@@ -2271,6 +2272,10 @@ def supply(
     it will be extracted at the given path in the workspace. For a real
     git checkout, set bundle=True and POST the output of ``git bundle create``;
     the bundle is cloned into the destination inside the crew.
+
+    When bundle=True and force=True, any existing directory at the destination
+    is removed before the bundle is cloned. Default force=False preserves the
+    existing "reject occupied destination" behaviour.
 
     Pairs with evac, which extracts files, diffs, or git bundles out. Together
     they are the complete file exchange protocol for crew workspaces.
@@ -2291,12 +2296,19 @@ def supply(
         git bundle create /tmp/<crew_id>.bundle --all
         curl -X POST "<url>&bundle=1" --data-binary @/tmp/<crew_id>.bundle
 
+        # Re-seed (force=True removes existing destination first)
+        git bundle create /tmp/<crew_id>.bundle --all
+        curl -X POST "<url>&bundle=1&force=1" --data-binary @/tmp/<crew_id>.bundle
+
     Args:
         path: Destination path in the workspace (e.g. "repo/config.json",
               "repo" when unpacking a tar, or "repo" for a bundle clone).
         crew_id: Which crew workspace to deliver into. Required.
         unpack: If True, the upload URL will unpack a tar/tar.gz at path.
         bundle: If True, the upload URL will clone a git bundle into path.
+        force: When True with bundle=True, removes an existing destination
+               before cloning. Default False preserves the existing "reject
+               occupied destination" behaviour.
     """
     if unpack and bundle:
         return {"error": "unpack and bundle cannot both be True"}
@@ -2310,11 +2322,13 @@ def supply(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    url = _sign_upload_url(crew_id, clean, unpack=unpack, bundle=bundle)
+    url = _sign_upload_url(crew_id, clean, unpack=unpack, bundle=bundle, force=force)
     if unpack:
         url += "&unpack=1"
     if bundle:
         url += "&bundle=1"
+    if force:
+        url += "&force=1"
 
     if bundle:
         curl_example = f'curl -X POST "{url}" --data-binary @./your-repo.bundle'
@@ -2331,6 +2345,7 @@ def supply(
         "method": "POST",
         "unpack": unpack,
         "bundle": bundle,
+        "force": force,
         "expires_secs": 300,
         "example": curl_example,
     }
