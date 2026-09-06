@@ -1,28 +1,28 @@
 ## 1. Dead Code Removal
 
-- [ ] 1.1 Remove the body of `_inject_git_identity` in `transport/lifecycle.py`, leaving only the function signature; replace its call site in `_finish_crew_setup` with a comment noting that git identity vars are injected at container-create time; remove the two `_inject_git_identity` imports in `transport/server.py` (lines ~541 and ~597)
-- [ ] 1.2 Remove the `KIROCREW_ALLOW_UNSANDBOXED: "1"` env injection from the `launch` handler in `transport/server.py`; add a comment referencing `sandbox: off` config as the replacement
-- [ ] 1.3 Run `tests/run.sh` (or equivalent) and confirm all existing tests pass
+- [x] 1.1 Remove the body of `_inject_git_identity` in `transport/lifecycle.py`, leaving only the function signature; replace its call site in `_finish_crew_setup` with a comment noting that git identity vars are injected at container-create time; remove the two `_inject_git_identity` imports in `transport/server.py` (lines ~541 and ~597)
+- [x] 1.2 Remove the `KIROCREW_ALLOW_UNSANDBOXED: "1"` env injection from the `launch` handler in `transport/server.py`; add a comment referencing `sandbox: off` config as the replacement
+- [x] 1.3 Run `tests/run.sh` (or equivalent) and confirm all existing tests pass
 
 ## 2. Auth Header Parse Deduplication
 
-- [ ] 2.1 Add a `_parse_bearer_token(header_value: str) -> str | None` helper in `transport/server.py` that extracts the token from an `Authorization: Bearer <token>` header, returns `None` on any malformed input
-- [ ] 2.2 Replace the two inline `[:7].lower() == "bearer "` checks in `BearerAuthMiddleware` and any other call sites with calls to `_parse_bearer_token`
-- [ ] 2.3 Run the test suite and confirm all existing tests pass
+- [x] 2.1 Add a `_parse_bearer_token(header_value: str) -> str | None` helper in `transport/server.py` that extracts the token from an `Authorization: Bearer <token>` header, returns `None` on any malformed input
+- [x] 2.2 Replace the two inline `[:7].lower() == "bearer "` checks in `BearerAuthMiddleware` and any other call sites with calls to `_parse_bearer_token`
+- [x] 2.3 Run the test suite and confirm all existing tests pass
 
 ## 3. `_crew_api_with_recovery` Phase Extraction
 
-- [ ] 3.1 Extract the 503 retry block from `_crew_api_with_recovery` into `_phase0_transient_503(crew, method, path, **kw)` in `transport/lifecycle.py`
-- [ ] 3.2 Extract the 400/401/403 cookie-refresh block into `_phase1_stale_cookie(crew, crew_id, method, path, **kw)` in `transport/lifecycle.py`
-- [ ] 3.3 Extract the connection-error restart block into `_phase2_dead_gateway(crew, crew_id, method, path, **kw)` in `transport/lifecycle.py`
-- [ ] 3.4 Update `_crew_api_with_recovery` to delegate to the three helpers; add a one-line phase-label comment at each delegation point
-- [ ] 3.5 Run the test suite and confirm all existing tests pass; update any mock paths that now target the phase helpers
+- [x] 3.1 Extract the 503 retry block from `_crew_api_with_recovery` into `_phase0_transient_503(crew, method, path, **kw)` in `transport/lifecycle.py`
+- [x] 3.2 Extract the 400/401/403 cookie-refresh block into `_phase1_stale_cookie(crew, crew_id, method, path, **kw)` in `transport/lifecycle.py`
+- [x] 3.3 Extract the connection-error restart block into `_phase2_dead_gateway(crew, crew_id, method, path, **kw)` in `transport/lifecycle.py`
+- [x] 3.4 Update `_crew_api_with_recovery` to delegate to the three helpers; add a one-line phase-label comment at each delegation point
+- [x] 3.5 Run the test suite and confirm all existing tests pass; update any mock paths that now target the phase helpers
 
 ## 4. `_initiate_login` Internal Documentation
 
-- [ ] 4.1 Add section-header comments to `_initiate_login` in `transport/server.py` (matching the style used in `_crew_api_with_recovery`): `# ── Phase: acquire lock / TOCTOU guard`, `# ── Phase: start login container`, `# ── Phase: wait for kiro-cli`, `# ── Phase: PTY exec + prompt loop`, `# ── Phase: drain thread + finalise`
-- [ ] 4.2 Add an inline comment explaining the 45-second deadline and the reason for the `select`-based read loop (non-blocking PTY drain to avoid blocking the event loop)
-- [ ] 4.3 No behaviour change — verify by running the test suite
+- [x] 4.1 Add section-header comments to `_initiate_login` in `transport/server.py` (matching the style used in `_crew_api_with_recovery`): `# ── Phase: acquire lock / TOCTOU guard`, `# ── Phase: start login container`, `# ── Phase: wait for kiro-cli`, `# ── Phase: PTY exec + prompt loop`, `# ── Phase: drain thread + finalise`
+- [x] 4.2 Add an inline comment explaining the 45-second deadline and the reason for the `select`-based read loop (non-blocking PTY drain to avoid blocking the event loop)
+- [x] 4.3 No behaviour change — verify by running the test suite
 
 ## 5. Schedule/Idle Monitor Documentation
 
