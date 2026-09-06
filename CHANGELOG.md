@@ -4,9 +4,9 @@
 
 ### Captain templates
 
-- **`independent-review`** — dispatches four concurrent independent reviewers (Wraith for docs, three Banshees for security/quality/test-coverage) scoped to a named change and consolidates findings by severity.
-- **`independent-review-all`** — same as `independent-review` but scoped to the entire codebase rather than a single change.
-- **`sdd-parallel`** — drives multiple named OpenSpec changes concurrently through the standard SDD lifecycle; accepts a comma-separated `change_name` list.
+- **`independent-review`** — dispatches four concurrent independent reviewers (Wraith for docs, three Banshees for security/quality/test-coverage); `change_name` is optional — when provided, scopes the review to that change; when omitted, reviews the entire codebase. Consolidates findings by severity. (`independent-review-all` is merged into this template and deleted.)
+- **`sdd`** — drives one or more named OpenSpec changes through the standard Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a single name or a comma-separated list for parallel multi-change execution with automatic worktree isolation and merge reconciliation. (`sdd-parallel` is merged into this template and deleted.)
+- **`<change?>`** token in `transport/captain.py` — optional change-name token: substitutes the provided name when `change_name` is given, or `"entire codebase"` when omitted. Raises if mixed with required `<change>` or `<changes>` in the same template body.
 
 ### Install
 
