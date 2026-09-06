@@ -45,6 +45,27 @@ captain(crew_id="trn-review", action="order", template="independent-review", cha
 
 Alternative considered: a single template with conditional prose for Raven to parse. Rejected — relies on Raven parsing its own rendered mail subject for a scope signal, which is fragile. Alternative considered: a new `{{CHANGE_SCOPE}}` placeholder in `captain.py`. Rejected — requires modifying captain.py, which is out of scope.
 
+### Decision: `sdd-parallel` template takes `<changes>` token (comma-separated list)
+
+The existing `sdd` template substitutes a single `<change>` literal. Running two `sdd` captains for different changes requires two separate crews because:
+1. The captain holds only one standing order at a time.
+2. The dispatch-coordination logic in `sdd` keys on `<change>` + `<persona>` in task descriptions — two changes would produce false-positive duplicate detection.
+
+`sdd-parallel` solves this with a `<changes>` token that takes a comma-separated list (e.g. `"trn-110,trn-115"`). The template body instructs Raven to:
+- Parse `<changes>` into individual change names on first receipt
+- Maintain a per-change state table in its working notes
+- Run each change's SDD lifecycle independently, namespacing all intent markers and task description prefixes with the change name (the existing `SDD dispatch <intent_id> <change> <persona>` format already does this — the change name is embedded, so cross-change collision cannot occur)
+- Report per-change completion to `admiral@localhost` as each finishes
+- Send a final summary when all changes are done, then self-cancel
+
+`_resolve_order_template()` in `transport/captain.py` needs a small extension: when the body contains `<changes>` (not `<change>`), substitute the raw `change_name` string directly (the caller is responsible for passing the comma-separated list) and validate each individual name with `_validate_captain_change_name`. This is a minimal addition — the existing `<change>` path is untouched.
+
+Alternative considered: a separate `changes: list[str]` parameter on the `captain` MCP tool. Rejected — breaking API change; the comma-separated convention in `change_name` is sufficient and requires no schema change.
+
+### Decision: Parallel SDD namespace isolation is implicit in the existing intent format
+
+The `sdd` template already requires Raven to embed the change name in every intent marker subject line (`dispatching <persona> <intent_id>` with `SDD dispatch <intent_id> <change> <persona>` in the task description). This means two changes running in parallel naturally produce non-colliding intent records — `trn-110` and `trn-115` appear as distinct strings in task descriptions. No new coordination primitive is needed; the existing format is already namespace-safe when extended to multiple changes.
+
 ### Decision: Three concurrent Banshee dispatches differentiated by task description prefix
 
 Three of the four reviewers are Banshee instances. The dispatch-coordination guard checks the `agent` field and task description. To let Raven track three concurrent Banshee tasks without false-positive duplicate detection, each Banshee dispatch uses a unique, descriptive task description prefix: `REVIEW security <intent_id>`, `REVIEW quality <intent_id>`, `REVIEW test-coverage <intent_id>`. Raven checks for these specific prefixes in `kirocrew spawn list` rather than only the `agent: banshee` field.

@@ -22,4 +22,23 @@
 
 ## 4. Documentation
 
-- [ ] 4.1 Add the `independent-review` and `independent-review-all` templates to the `captain` tool's docstring examples in `transport/server.py` so the MCP tool description surfaces both invocation forms to agent callers
+- [ ] 4.1 Add the `independent-review`, `independent-review-all`, and `sdd-parallel` templates to the `captain` tool's docstring examples in `transport/server.py` so the MCP tool description surfaces all invocation forms to agent callers
+
+## 5. `sdd-parallel` order template
+
+- [ ] 5.1 Create `academy/orders/sdd-parallel.md` with YAML front-matter (`description: "Drive multiple named OpenSpec changes concurrently through the standard SDD lifecycle."`) and a `<changes>` token (comma-separated change names, e.g. `trn-110,trn-115`) as the first substitution
+- [ ] 5.2 Write the opening orientation block: Raven parses `<changes>` into a list of individual change names on first receipt and maintains a per-change state table (change name → current phase, last dispatched persona, pending intent IDs) in its working notes
+- [ ] 5.3 Write the per-change lifecycle prose — for each change independently, Raven applies the same Spectre → Ghost → Banshee → Reaper dispatch-coordination logic as the `sdd` template; all intent markers and task description prefixes use the existing `SDD dispatch <intent_id> <change> <persona>` format so cross-change collision cannot occur
+- [ ] 5.4 Write the independent progress clause: a change that reaches archive does not block or affect other changes still in progress; Raven sends a per-change completion mail to `admiral@localhost` when each individual change finishes
+- [ ] 5.5 Write the final summary clause: when all changes are done, Raven sends a summary mail to `admiral@localhost` listing each change and its outcome, then self-cancels the captain job
+- [ ] 5.6 Include `{{RAVEN_GATEWAY_ORIENTATION}}`, `{{RAVEN_STORE_RESOLUTION}}`, and `{{RAVEN_SELF_CANCEL}}` placeholders at the appropriate points
+
+## 6. `transport/captain.py` — `<changes>` token support
+
+- [ ] 6.1 In `_resolve_order_template()`, add a branch: after the existing `<change>` substitution block, check if the body contains `<changes>`; if so, validate that `change_name` is not None and not empty, split on comma, strip whitespace, call `_validate_captain_change_name` on each element, and substitute `<changes>` with the original `change_name` string (the template body receives the raw comma-separated value as-is)
+- [ ] 6.2 Ensure `<change>` and `<changes>` are mutually exclusive in a template body — if both are present, raise `ValueError("Template body must not contain both <change> and <changes>")`
+- [ ] 6.3 Add unit tests in `tests/unit/test_captain.py`:
+  - `test_resolve_sdd_parallel_substitutes_changes` — call `_resolve_order_template("sdd-parallel", change_name="trn-110,trn-115")`, assert `<changes>` is replaced and `<change>` is absent
+  - `test_resolve_sdd_parallel_validates_each_name` — pass an invalid individual name (e.g. `"trn-110,bad name!"`) and assert `ValueError` is raised
+  - `test_resolve_sdd_parallel_requires_change_name` — call with `change_name=None` and assert `ValueError`
+  - `test_resolve_template_rejects_both_tokens` — create a synthetic template body containing both `<change>` and `<changes>` and assert `ValueError`
