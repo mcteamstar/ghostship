@@ -802,6 +802,66 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertEqual(payload["cron"], "0 9 * * 1")
         self.assertNotIn("cron_expr", payload)
 
+    # ── TRN-110 task 6.3 — <changes> token tests ─────────────────────────────
+
+    def test_resolve_sdd_parallel_substitutes_changes(self) -> None:
+        """sdd-parallel: <changes> is replaced and no bare <change> token remains."""
+        resolved = server._resolve_order_template("sdd-parallel", "trn-110,trn-115")
+        self.assertNotIn("<changes>", resolved)
+        # The raw comma-separated value should appear as-is in the body
+        self.assertIn("trn-110,trn-115", resolved)
+        # No residual <change> token either
+        self.assertNotIn("<change>", resolved)
+
+    def test_resolve_sdd_parallel_validates_each_name(self) -> None:
+        """sdd-parallel: an invalid individual name raises ValueError."""
+        with self.assertRaises(ValueError):
+            server._resolve_order_template("sdd-parallel", "trn-110,bad name!")
+
+    def test_resolve_sdd_parallel_requires_change_name(self) -> None:
+        """sdd-parallel: change_name=None raises ValueError."""
+        with self.assertRaises(ValueError):
+            server._resolve_order_template("sdd-parallel", None)
+
+    # ── TRN-110 tasks 3.1–3.3 — independent-review template resolution ────────
+
+    def test_resolve_independent_review_scopes_to_change(self) -> None:
+        """Task 3.1: independent-review with change_name substitutes Scope line, no residual {{...}}."""
+        resolved = server._resolve_order_template("independent-review", "trn-107")
+        self.assertIn("Scope: change trn-107", resolved)
+        self.assertNotIn("<change>", resolved)
+        import re as _re
+        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
+
+    def test_resolve_independent_review_requires_change_name(self) -> None:
+        """Task 3.2: independent-review with change_name=None raises ValueError (<change> present)."""
+        with self.assertRaises(ValueError):
+            server._resolve_order_template("independent-review", None)
+
+    def test_resolve_independent_review_all_whole_codebase(self) -> None:
+        """Task 3.3: independent-review-all with change_name=None yields Scope: entire codebase, no residual tokens."""
+        resolved = server._resolve_order_template("independent-review-all", None)
+        self.assertIn("Scope: entire codebase", resolved)
+        self.assertNotIn("<change>", resolved)
+        self.assertNotIn("<changes>", resolved)
+        import re as _re
+        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
+
+    def test_resolve_template_rejects_both_tokens(self) -> None:
+        """A template body containing both <change> and <changes> raises ValueError."""
+        import tempfile, os
+        orders_dir = server._resolve_orders_dir()
+        test_template = orders_dir / "_test_both_tokens.md"
+        try:
+            test_template.write_text(
+                "Body with both <change> and <changes> tokens.\n"
+            )
+            with self.assertRaises(ValueError) as ctx:
+                server._resolve_order_template("_test_both_tokens", "trn-110")
+            self.assertIn("both", str(ctx.exception))
+        finally:
+            test_template.unlink(missing_ok=True)
+
 
 class MaildirSubjectReaderTests(unittest.TestCase):
     """Task 2.3 — _read_maildir_subjects_from_tar with synthetic tar bytes."""
