@@ -39,7 +39,10 @@ def _load_registry() -> dict:
             return json.loads(REGISTRY_PATH.read_text())
     except json.JSONDecodeError as e:
         logger.error("Registry file is corrupt and cannot be parsed: %s", e)
-        corrupt = REGISTRY_PATH.with_suffix(".corrupt")
+        # Append ".corrupt" rather than with_suffix(), which would REPLACE the
+        # ".json" suffix and produce "crews.corrupt". The spec mandates the
+        # quarantine file be named "crews.json.corrupt".
+        corrupt = REGISTRY_PATH.with_name(REGISTRY_PATH.name + ".corrupt")
         os.replace(REGISTRY_PATH, corrupt)
         raise
     except Exception as e:

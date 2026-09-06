@@ -121,7 +121,7 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             test_dir = Path(td)
             reg_path = test_dir / "crews.json"
-            corrupt_path = reg_path.with_suffix(".corrupt")
+            corrupt_path = reg_path.with_name(reg_path.name + ".corrupt")
             # Write invalid JSON
             reg_path.write_text("{ this is not json }")
             with (
@@ -133,6 +133,10 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
                     registry._load_registry()
                 # Assertions must be inside the tempfile context so the dir exists
                 self.assertTrue(corrupt_path.exists(), "crews.json.corrupt should exist")
+                self.assertEqual(
+                    corrupt_path.name, "crews.json.corrupt",
+                    "Quarantine file must be named crews.json.corrupt per spec",
+                )
                 self.assertFalse(reg_path.exists(), "crews.json should have been renamed")
             self.assertTrue(
                 any("corrupt" in msg.lower() or "parse" in msg.lower() for msg in log_ctx.output),
