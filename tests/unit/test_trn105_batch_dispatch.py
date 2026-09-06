@@ -99,6 +99,33 @@ class BatchRegistryCRUDTests(unittest.TestCase):
             self._seed_crew()
             self.assertIsNone(registry._get_batch("demo", "nope"))
 
+    def test_find_batch_by_task_ids_match(self) -> None:
+        """_find_batch_by_task_ids returns the entry matching the task_ids set."""
+        with self._isolated():
+            self._seed_crew()
+            registry._write_batch(
+                "demo", "b-match", ["t1", "t2", "t3"], status="pending",
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+            # Order-independent match.
+            found = registry._find_batch_by_task_ids("demo", ["t3", "t1", "t2"])
+            self.assertIsNotNone(found)
+            self.assertEqual(found["batch_id"], "b-match")
+
+    def test_find_batch_by_task_ids_no_match(self) -> None:
+        """Returns None when no batch has exactly these task_ids."""
+        with self._isolated():
+            self._seed_crew()
+            registry._write_batch("demo", "b1", ["t1", "t2"], status="pending")
+            self.assertIsNone(registry._find_batch_by_task_ids("demo", ["t1", "t3"]))
+            self.assertIsNone(registry._find_batch_by_task_ids("demo", ["t1"]))
+
+    def test_find_batch_by_task_ids_unknown_crew(self) -> None:
+        """Returns None for an unknown crew."""
+        with self._isolated():
+            self._seed_crew()
+            self.assertIsNone(registry._find_batch_by_task_ids("nope", ["t1"]))
+
 
 class NukeRemovesBatchesTests(unittest.TestCase):
     """Task 5.1 (cont.) — nuke drops the crew entry including its batches key."""
@@ -310,6 +337,58 @@ class PickupBatchTests(unittest.TestCase):
 
         self.assertEqual(out["reason"], "admiral_mail")
         self.assertFalse(out["done"])
+
+
+class PickupBatchStatusUpdateTests(unittest.TestCase):
+    """Banshee finding fix: verify pickup(task_ids) marks batch complete via _find_batch_by_task_ids."""
+
+    CREW = {"container": "gs-demo"}
+
+    def test_pickup_marks_batch_complete_when_all_done(self) -> None:
+        """pickup(task_ids=[...]) looks up the batch_id and calls _update_batch_status(complete)."""
+        marked: dict = {}
+
+        def _pickup_single(crew, crew_id, tid, podman, container, timeout):
+            return {"task_id": tid, "done": True, "result": "ok"}
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=object()),
+            patch.object(server, "_pickup_single", side_effect=_pickup_single),
+            patch.object(server, "_read_all_mail_counts", return_value={"admiral": 0}),
+            # Simulate registry having a batch record for this task_ids set.
+            patch.object(
+                server, "_find_batch_by_task_ids",
+                return_value={"batch_id": "batch-abc", "task_ids": ["id1", "id2"]},
+            ),
+            patch.object(server, "_update_batch_status", side_effect=lambda c, b, s: marked.update({"args": (c, b, s)})),
+        ):
+            out = server.pickup(task_ids=["id1", "id2"], crew_id="demo", timeout_secs=30)
+
+        self.assertTrue(out["done"])
+        self.assertEqual(marked.get("args"), ("demo", "batch-abc", "complete"))
+
+    def test_pickup_graceful_when_no_batch_record(self) -> None:
+        """pickup(task_ids) works correctly when no matching batch record exists."""
+
+        def _pickup_single(crew, crew_id, tid, podman, container, timeout):
+            return {"task_id": tid, "done": True, "result": "ok"}
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=object()),
+            patch.object(server, "_pickup_single", side_effect=_pickup_single),
+            patch.object(server, "_read_all_mail_counts", return_value={"admiral": 0}),
+            patch.object(server, "_find_batch_by_task_ids", return_value=None),
+            patch.object(server, "_update_batch_status") as update_mock,
+        ):
+            out = server.pickup(task_ids=["id1", "id2"], crew_id="demo", timeout_secs=30)
+
+        self.assertTrue(out["done"])
+        # No batch_id -> _update_batch_status should NOT be called.
+        update_mock.assert_not_called()
 
 
 if __name__ == "__main__":

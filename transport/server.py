@@ -171,6 +171,7 @@ try:
         _get_batch,
         _update_batch_status,
         _delete_batch,
+        _find_batch_by_task_ids,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -190,6 +191,7 @@ except ModuleNotFoundError:
         _get_batch,
         _update_batch_status,
         _delete_batch,
+        _find_batch_by_task_ids,
     )
 
 try:
@@ -3533,9 +3535,17 @@ def pickup(
         # Route to the batch pickup orchestrator in lifecycle.py, injecting the
         # single-task pickup and mail-count helpers to avoid a lifecycle->server
         # import cycle. effective_timeout already applies the standard cap.
+        # Look up the batch_id so _pickup_batch can mark the batch complete
+        # when all members finish (spec: "batch status SHALL be updated to
+        # complete when all tasks complete"). Best-effort — if the batch record
+        # is not found (e.g. caller assembled task_ids manually, or registry was
+        # reset) pickup still works; the status just won't be updated.
+        batch_record = _find_batch_by_task_ids(crew_id, task_ids)
+        found_batch_id = batch_record["batch_id"] if batch_record else None
         return _pickup_batch(
             crew, crew_id, task_ids, podman, container, effective_timeout,
             _pickup_single, _read_all_mail_counts,
+            batch_id=found_batch_id,
             update_batch_status=_update_batch_status,
         )
 
