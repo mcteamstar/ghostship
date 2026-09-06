@@ -4,7 +4,7 @@
 
 Extend the task orchestration spec to cover the new `tasks` parameter on `dispatch` and the new `task_ids` parameter on `pickup`. All existing requirements in `openspec/specs/task-orchestration/spec.md` remain in force; this file adds only the batch-path requirements.
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: dispatch accepts tasks list as an alternative overload
 
