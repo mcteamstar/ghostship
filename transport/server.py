@@ -2532,7 +2532,11 @@ def captain(
     ``order`` requires exactly one of ``message`` or ``template``. A named
     template is resolved before it is written to ``captain@localhost``;
     ``sdd`` is the built-in template and uses ``change_name`` to name the
-    OpenSpec change it should drive. The resolved order shares the same
+    OpenSpec change it should drive — pass a comma-separated list for
+    parallel multi-change execution with automatic worktree isolation.
+    ``independent-review`` is the built-in review template; ``change_name``
+    is optional — when provided it scopes the review to that change; when
+    omitted it reviews the entire codebase. The resolved order shares the same
     recurring Raven check-in as a hand-written message. ``stop`` pauses that
     check-in without deleting it, and ``status`` reports its durable state.
 
@@ -2547,10 +2551,13 @@ def captain(
         crew_id: Which crew's Captain to manage. Required.
         action: One of ``order``, ``stop``, or ``status``.
         message: Free-form standing order text.
-        template: Name of a built-in standing-order template, currently
-            ``sdd``.
-        change_name: Substitution value for a template that names an OpenSpec
-            change.
+        template: Name of a built-in standing-order template. Available
+            templates: ``sdd`` (single or multi-change lifecycle),
+            ``independent-review`` (scoped or whole-codebase review).
+        change_name: Substitution value for a template. For ``sdd``, accepts
+            a single change name or a comma-separated list for multi-change
+            mode. For ``independent-review``, optional — omit to review the
+            entire codebase.
         cron: Cron expression for a new standing-orders check-in.
         interval: Fixed interval in seconds for a new standing-orders check-in.
         timezone: IANA timezone for cron interpretation, matching schedule().
@@ -2579,8 +2586,6 @@ def captain(
         if cron is not None and interval is not None:
             return {"error": "Provide cron or interval, not both"}
         if has_template:
-            if change_name is None and template == "sdd":
-                return {"error": "template 'sdd' requires change_name"}
             try:
                 order_message = _resolve_order_template(template, change_name)
             except ValueError as exc:

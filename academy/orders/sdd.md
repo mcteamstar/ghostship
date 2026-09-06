@@ -1,5 +1,5 @@
 ---
-description: "Drive a named OpenSpec change through the standard Spectre → Ghost → Banshee → Reaper lifecycle."
+description: "Drive one or more named OpenSpec changes through the standard Spectre → Ghost → Banshee → Reaper lifecycle. Pass a comma-separated list for parallel multi-change execution with automatic worktree isolation."
 ---
 Drive OpenSpec change '<change>' through the standard lifecycle.
 
@@ -10,6 +10,35 @@ On every check-in, assess this change's real OpenSpec artifact status and its ta
 When new standing orders arrive while a previously-dispatched persona task is still in flight, steer it with the new context rather than waiting for it to finish.
 
 {{RAVEN_STORE_RESOLUTION}}
+
+## Multi-change mode
+
+On the first check-in, inspect the value of `<change>`. If it contains a comma, parse it as a comma-separated list of change names and enter multi-change mode:
+
+```
+for each change in list:
+    git -C repo worktree add ../repo-<change-name> -b <change-name> HEAD
+```
+
+Maintain a per-change state table in your working notes:
+
+```
+change name → current phase, last dispatched persona, pending intent IDs, worktree path
+```
+
+In multi-change mode, dispatch each change's personas with the worktree path embedded in the task description:
+
+```
+SDD dispatch <intent_id> <change-name> <persona> — cd /home/kirocrew/workplace/kirocrew-workspace/repo-<change-name> && ...
+```
+
+This ensures each agent works in the correct isolated worktree rather than the shared main checkout.
+
+When all changes in the list are archived, proceed to the **Reconciliation phase** below.
+
+If `<change>` does not contain a comma, use existing single-change behaviour — no worktree, no reconciliation phase.
+
+## Dispatch coordination (single-change or per-change in multi-change mode)
 
 Before dispatching any persona, apply this layered dispatch-coordination check to the target persona, in order:
 
@@ -29,6 +58,10 @@ Once the idempotency check confirms no prior intent is active, generate a unique
 
 After writing the pending marker, re-scan `raven@localhost`. If another unconfirmed pending marker for the same persona is older (compare Maildir arrival/`Date`, then `Message-ID` for a tie), hold; only the oldest marker proceeds. This post-write election prevents overlapping check-ins from both spawning. The winning check-in calls the authenticated `/api/spawn`, then immediately writes a confirmation message with subject `dispatching <persona> <spawn_task_id>` using the ID returned by the gateway; include the `intent_id` in its body to link the two records. If `/api/spawn` fails, write no confirmation and let the pending marker become stale only after the subsequent confirmation check described above.
 
+## Lifecycle rules
+
+Apply these rules to each change independently (in multi-change mode, one check-in dispatches at most one persona for one change):
+
 - If the proposal, design, specs, or tasks artifact is not complete, dispatch Spectre to continue proposing or updating the change. Take no other dispatching action in that check-in.
 - Once planning is complete, if tasks.md has any unchecked item, dispatch Ghost to implement the remaining tasks.
 - Once every tasks.md item is checked and implementation is complete, if no review has been recorded since the last implementation dispatch, dispatch Banshee to independently review the implementation, fix findings that fit this change, and end with an explicit unresolved-findings verdict.
@@ -36,6 +69,25 @@ After writing the pending marker, re-scan `raven@localhost`. If another unconfir
 - If Banshee still reports unresolved findings after one fix-and-re-review cycle for the current implementation, escalate to the Admiral instead of dispatching another review or fix cycle.
 - Confirm that the change is actually archived by reading real OpenSpec state on a later check-in; never assert completion from memory alone.
 - {{RAVEN_SELF_CANCEL}}
+
+## Reconciliation phase (multi-change mode only)
+
+When all changes in the list are archived, execute the reconciliation phase:
+
+```
+for each change in list:
+    git -C repo merge --no-ff <change-name> -m "merge: <change-name>"
+bash tests/run.sh --unit
+```
+
+On success (all merges applied, tests green):
+- Remove worktrees: `git -C repo worktree remove ../repo-<change-name> --force` for each change
+- Mail `admiral@localhost` with subject `sdd complete — all changes merged, tests green` and list each change merged
+- Self-cancel
+
+On conflict or test failure:
+- Mail `admiral@localhost` with subject `sdd merge failed — manual intervention needed` and include the full error output
+- Self-cancel
 
 Note: exit code 2 from `verify-admiral-sig` indicates a transient race condition — the signing secret file was not found after retries (typically during container startup). Raven should hold the current cycle and not escalate to Admiral; the secret will be available on the next scheduled check-in.
 

@@ -158,10 +158,20 @@ def _resolve_order_template(
     body = _substitute_placeholders(body)
     if "<change>" in body and "<changes>" in body:
         raise ValueError("Template body must not contain both <change> and <changes>")
+    if "<change?>" in body:
+        if "<change>" in body or "<changes>" in body:
+            raise ValueError("Template body must not mix <change?> with <change> or <changes>")
+        scope = change_name if change_name else "entire codebase"
+        if change_name:
+            _validate_captain_change_name(change_name)
+        body = body.replace("<change?>", scope)
     if "<change>" in body:
         if change_name is None:
             raise ValueError(f"Template {template!r} requires change_name")
-        _validate_captain_change_name(change_name)
+        # Validate each individual name in a potentially comma-separated value
+        names = [n.strip() for n in change_name.split(",")]
+        for name in names:
+            _validate_captain_change_name(name)
         body = body.replace("<change>", change_name)
     if "<changes>" in body:
         if not change_name:
