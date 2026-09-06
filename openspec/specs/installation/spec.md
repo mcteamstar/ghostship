@@ -3,9 +3,7 @@
 ## Purpose
 
 Install and run Ghost Academy locally on either macOS or Linux with a single script, handling the platform differences (podman-machine VM vs native Podman) transparently so the rest of the system never needs to know which OS it's on.
-
 ## Requirements
-
 ### Requirement: Cross-platform Podman provisioning
 The system SHALL detect the host OS via `uname -s` and verify that `podman` and `podman-compose` are installed before proceeding. If either is missing, `install.sh` SHALL exit with a clear error and print the install command for the detected OS. Podman and podman-compose are prerequisites that must be installed before running `install.sh` — the script does not install them itself.
 
@@ -329,7 +327,7 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 - **THEN** `podman compose down` stops and removes the container cleanly
 
 ### Requirement: Shell scripts reorganised under scripts/
-`start.sh` and `uninstall.sh` SHALL be located at `scripts/start.sh` and `scripts/uninstall.sh` respectively. `install.sh` at the repo root SHALL remain as a shim that delegates to `scripts/install.sh` with all arguments forwarded, preserving backward compatibility for existing workflows.
+`start.sh` and `uninstall.sh` SHALL be located at `scripts/start.sh` and `scripts/uninstall.sh` respectively. `install.sh` at the repo root SHALL remain as a shim that delegates to `scripts/install.sh` with all arguments forwarded, preserving backward compatibility for existing workflows. The shim SHALL forward `--client-only` and all other flags unchanged.
 
 #### Scenario: start.sh and uninstall.sh in scripts/
 - **WHEN** a user clones the repository
@@ -338,6 +336,10 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 #### Scenario: install.sh shim at root
 - **WHEN** `./install.sh [flags]` is invoked
 - **THEN** `scripts/install.sh [flags]` runs with all arguments forwarded and the exit code is preserved
+
+#### Scenario: install.sh shim forwards --client-only
+- **WHEN** `./install.sh --client-only [flags]` is invoked
+- **THEN** `scripts/install.sh --client-only [flags]` runs with all arguments forwarded and the exit code is preserved
 
 ### Requirement: ghostship CLI available on PATH after install
 `scripts/install.sh` SHALL make the `ghostship` CLI script available on `PATH` after a successful run.
@@ -392,3 +394,4 @@ format (or `true`/`false` for the master switch). Comments SHALL explain the for
   installation
 - **THEN** the `GA_RATE_LIMIT_*` entries are present, commented out, and show the
   correct default values
+

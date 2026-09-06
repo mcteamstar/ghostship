@@ -3,9 +3,7 @@
 ## Purpose
 
 The `ghostship` CLI provides a first-class command-line interface for installing, managing, and wiring up a ghostship transport — replacing manual shell-script invocations and JSON-file editing with discoverable, idempotent, scriptable subcommands.
-
 ## Requirements
-
 ### Requirement: CLI entry point
 The system SHALL provide an executable `ghostship` script at the repository root that dispatches to subcommands. The script SHALL use only Python 3 stdlib (no third-party deps). Running `ghostship --help` or `ghostship` with no arguments SHALL print a usage summary listing all available subcommands.
 
@@ -22,7 +20,7 @@ The system SHALL provide an executable `ghostship` script at the repository root
 - **THEN** the version string from the `VERSION` file in the repo root is printed and the process exits 0
 
 ### Requirement: Transport lifecycle subcommands
-The system SHALL provide subcommands that delegate to the shell scripts under `scripts/`. Each subcommand SHALL forward unrecognised flags to the underlying script unchanged.
+The system SHALL provide subcommands that delegate to the shell scripts under `scripts/`. Each subcommand SHALL forward unrecognised flags to the underlying script unchanged. `ghostship install --client-only [flags]` SHALL forward all flags including `--client-only`, `--url`, and `--api-key` to `scripts/install.sh`.
 
 #### Scenario: ghostship install
 - **WHEN** `ghostship install [flags]` is invoked
@@ -43,6 +41,10 @@ The system SHALL provide subcommands that delegate to the shell scripts under `s
 #### Scenario: ghostship upgrade
 - **WHEN** `ghostship upgrade [flags]` is invoked
 - **THEN** `scripts/install.sh [flags]` runs (which unconditionally rebuilds images and recreates the transport container) and exit code is forwarded
+
+#### Scenario: ghostship install --client-only forwarded
+- **WHEN** `ghostship install --client-only --url https://remote.example.com/mcp --api-key secret` is invoked
+- **THEN** `scripts/install.sh --client-only --url https://remote.example.com/mcp --api-key secret` runs and the exit code is forwarded
 
 ### Requirement: Transport status
 The system SHALL provide `ghostship status` that reports transport health without requiring an MCP connection.
@@ -112,3 +114,4 @@ The system SHALL ensure the `ghostship` command is accessible on `PATH` after a 
 #### Scenario: ~/.local/bin not on PATH
 - **WHEN** `scripts/install.sh` completes and `~/.local/bin` is not on `PATH`
 - **THEN** a one-line message is printed explaining how to add it to `PATH`
+
