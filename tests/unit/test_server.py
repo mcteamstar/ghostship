@@ -4912,13 +4912,14 @@ class GitIdentityInjectionTests(unittest.TestCase):
         self.assertEqual(env["GIT_COMMITTER_EMAIL"], "ada@example.com")
 
     def test_both_vars_set_preserves_existing_env_keys(self) -> None:
-        """4.1 — git identity vars are additive; KIROCREW_CORS_ORIGINS and
-        KIROCREW_ALLOW_UNSANDBOXED are still present alongside them."""
+        """4.1 — git identity vars are additive; KIROCREW_CORS_ORIGINS is still present
+        alongside them.  KIROCREW_ALLOW_UNSANDBOXED was removed (replaced by
+        sandbox: off config) so it is no longer expected in the env dict."""
         create_calls = self._capture_create_calls("Test User", "test@example.com")
         env = create_calls[0]["env"]
 
         self.assertIn("KIROCREW_CORS_ORIGINS", env)
-        self.assertIn("KIROCREW_ALLOW_UNSANDBOXED", env)
+        self.assertNotIn("KIROCREW_ALLOW_UNSANDBOXED", env)
 
     # ── 4.2: GA_GIT_AUTHOR_NAME unset → git vars absent from create env ──────
 
@@ -4953,34 +4954,28 @@ class GitIdentityInjectionTests(unittest.TestCase):
 
     def test_inject_git_identity_is_noop_does_not_exec(self) -> None:
         """_inject_git_identity must never call container_exec_checked.
-        The /etc/environment approach is removed; identity is in process env."""
+        The /etc/environment approach is removed; identity is in process env.
+        The function body is a single-line no-op; only the signature is kept."""
         podman = Mock()
         podman.container_exec_checked = Mock()
 
-        with (
-            patch.object(server, "GA_GIT_AUTHOR_NAME", "Ada Lovelace"),
-            patch.object(server, "GA_GIT_AUTHOR_EMAIL", "ada@example.com"),
-        ):
-            server._inject_git_identity(podman, "gs-test")
+        # Call via lifecycle (where the function lives)
+        lifecycle._inject_git_identity(podman, "gs-test")
 
         podman.container_exec_checked.assert_not_called()
 
     # ── Integration: _finish_crew_setup still calls _inject_git_identity ─────
 
-    def test_finish_crew_setup_calls_inject_git_identity(self) -> None:
-        """_inject_git_identity is called during _finish_crew_setup (no-op, but
-        the call must remain so the call-site comment stays accurate)."""
-        inject_called: list[bool] = []
-
+    def test_finish_crew_setup_completes_successfully_without_inject_git_identity(self) -> None:
+        """_inject_git_identity is no longer called during _finish_crew_setup.
+        The call site was replaced with a comment; the function signature is
+        kept in lifecycle for backward-compat but is never invoked from setup."""
         podman = Mock()
         podman.container_stop = Mock()
         podman.container_start = Mock()
         podman.container_exec = Mock(return_value="ready")
         podman.container_exec_checked = Mock(return_value="ok")
         podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
-
-        def fake_inject_git_identity(p: Any, container: str) -> None:
-            inject_called.append(True)
 
         with tempfile.TemporaryDirectory() as tmp:
             import contextlib
@@ -5003,8 +4998,6 @@ class GitIdentityInjectionTests(unittest.TestCase):
                 _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
                 _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
                 _stack.enter_context(patch.object(server, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(lifecycle, "_inject_git_identity", side_effect=fake_inject_git_identity))
-                _stack.enter_context(patch.object(server, "_inject_git_identity", side_effect=fake_inject_git_identity))
                 _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
                 _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
                 _stack.enter_context(patch.object(lifecycle, "_patch_models"))
@@ -5016,7 +5009,6 @@ class GitIdentityInjectionTests(unittest.TestCase):
                 )
 
         self.assertEqual(result["status"], "ready")
-        self.assertEqual(inject_called, [True], "_inject_git_identity must be called once")
 
 
 

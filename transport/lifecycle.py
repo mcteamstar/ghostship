@@ -281,6 +281,144 @@ class CrewUnresponsiveError(RuntimeError):
     pass
 
 
+def _phase0_transient_503(
+    crew: dict,
+    method: str,
+    path: str,
+    **kw: Any,
+) -> Any:
+    """Phase 0: task still spawning — short bounded retry on 503.
+
+    On 503 from a per-task /api/spawn/* route, KiroCrew's own task record
+    already reports elapsed > 0 before the agent process has finished
+    forking/registering enough to serve the route.  Short bounded retry —
+    this is transient and self-resolving within a couple of seconds.
+
+    Re-raises the last 503 error if all retries are exhausted.
+    Raises any non-503 HTTPStatusError immediately without retrying.
+    """
+    for _attempt in range(4):
+        time.sleep(1.0)
+        try:
+            return _crew_api(crew, method, path, **kw)
+        except httpx.HTTPStatusError as retry_exc:
+            if retry_exc.response.status_code != 503:
+                raise
+            last_exc = retry_exc
+    raise last_exc
+
+
+def _phase1_stale_cookie(
+    crew: dict,
+    crew_id: str,
+    method: str,
+    path: str,
+    **kw: Any,
+) -> Any:
+    """Phase 1: stale cookie — attempt cookie refresh then retry once.
+
+    On 400/401/403 from a running container, refreshes the session cookie
+    and retries the request.  If the refresh fails or the retry fails,
+    escalates to Phase 2 (full gateway restart).
+
+    Returns the API result on success.
+    Raises CrewUnresponsiveError if Phase 2 restart also fails.
+    """
+    logger.info(
+        "Crew %s stale-cookie phase — attempting cookie refresh",
+        crew_id,
+    )
+    if _refresh_cookie(crew, crew_id):
+        try:
+            return _crew_api(crew, method, path, **kw)
+        except Exception as _retry_exc:
+            logger.warning(
+                "Crew %s phase-1 retry failed after cookie refresh: %s — "
+                "escalating to full restart",
+                crew_id, _retry_exc,
+            )
+
+    # Phase 1 failed — escalate to full restart
+    logger.info(
+        "Crew %s cookie refresh failed or retry failed — "
+        "escalating to full restart",
+        crew_id,
+    )
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"cookie refresh and container restart but the gateway "
+            f"did not recover. Suggestion: check crew status with "
+            f"crews() or try again in a moment."
+        )
+    try:
+        return _crew_api(crew, method, path, **kw)
+    except Exception:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"cookie refresh and container restart but the gateway "
+            f"did not recover. Suggestion: check crew status with "
+            f"crews() or try again in a moment."
+        )
+
+
+def _phase2_dead_gateway(
+    crew: dict,
+    crew_id: str,
+    method: str,
+    path: str,
+    **kw: Any,
+) -> Any:
+    """Phase 2: connection error — probe then restart only if dead.
+
+    On a connection error from a running container, first probes liveness.
+    If the gateway is alive (transient error), retries directly.
+    If the gateway is dead, restarts via _ensure_crew_running and retries.
+
+    Returns the API result on success.
+    Raises CrewUnresponsiveError if the gateway cannot be recovered.
+    """
+    logger.info(
+        "Crew %s connection-error phase — probing gateway liveness",
+        crew_id,
+    )
+    crew_url = _crew_url(crew)
+    if _probe_gateway(crew_url):
+        # Gateway is actually alive — transient error, retry directly
+        try:
+            return _crew_api(crew, method, path, **kw)
+        except Exception:
+            raise CrewUnresponsiveError(
+                f"crew {crew_id} is unresponsive — gateway responded to "
+                f"liveness probe but API call failed twice. Suggestion: "
+                f"check crew status with crews() or try again in a moment."
+            )
+    logger.info(
+        "Crew %s gateway confirmed dead — restarting",
+        crew_id,
+    )
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"container restart but the gateway did not recover. "
+            f"Suggestion: check crew status with crews() or try "
+            f"again in a moment."
+        )
+    try:
+        return _crew_api(crew, method, path, **kw)
+    except Exception:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"container restart but the gateway did not recover. "
+            f"Suggestion: check crew status with crews() or try "
+            f"again in a moment."
+        )
+
+
 def _crew_api_with_recovery(
     crew: dict,
     crew_id: str,
@@ -288,7 +426,7 @@ def _crew_api_with_recovery(
     path: str,
     **kw: Any,
 ) -> Any:
-    """Wrap _crew_api with two-phase recovery logic.
+    """Wrap _crew_api with three-phase recovery logic.
 
     Phase 0 (task still spawning): On 503 from a per-task /api/spawn/*
     route, KiroCrew's own task record already reports elapsed > 0 before
@@ -314,104 +452,16 @@ def _crew_api_with_recovery(
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status == 503:
-                # Phase 0: task record exists but the agent process isn't
-                # steerable yet — retry a few times with a short delay
-                # rather than escalating to cookie refresh or restart.
-                for _attempt in range(4):
-                    time.sleep(1.0)
-                    try:
-                        return _crew_api(crew, method, path, **kw)
-                    except httpx.HTTPStatusError as retry_exc:
-                        if retry_exc.response.status_code != 503:
-                            raise
-                        e = retry_exc
-                raise e
+                # ── Phase 0: transient 503 while task process is still starting ──
+                return _phase0_transient_503(crew, method, path, **kw)
             if status not in (400, 401, 403):
                 raise
-            # Phase 1: stale cookie — try refresh
-            logger.info(
-                "Crew %s returned %d — attempting cookie refresh",
-                crew_id, status,
-            )
-            if _refresh_cookie(crew, crew_id):
-                # Retry with refreshed cookie
-                try:
-                    return _crew_api(crew, method, path, **kw)
-                except Exception as _retry_exc:
-                    logger.warning(
-                        "Crew %s phase-1 retry failed after cookie refresh: %s — "
-                        "escalating to full restart",
-                        crew_id, _retry_exc,
-                    )
-
-            # Phase 1 failed — escalate to full restart
-            logger.info(
-                "Crew %s cookie refresh failed or retry failed — "
-                "escalating to full restart",
-                crew_id,
-            )
-            try:
-                crew = _ensure_crew_running(crew, crew_id)
-            except RuntimeError:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"cookie refresh and container restart but the gateway "
-                    f"did not recover. Suggestion: check crew status with "
-                    f"crews() or try again in a moment."
-                )
-
-            # Final retry after restart
-            try:
-                return _crew_api(crew, method, path, **kw)
-            except Exception:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"cookie refresh and container restart but the gateway "
-                    f"did not recover. Suggestion: check crew status with "
-                    f"crews() or try again in a moment."
-                )
+            # ── Phase 1: stale cookie ─────────────────────────────────────────
+            return _phase1_stale_cookie(crew, crew_id, method, path, **kw)
 
         except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
-            # Phase 2: connection error — probe then restart only if dead
-            logger.info(
-                "Crew %s connection error — probing gateway liveness",
-                crew_id,
-            )
-            crew_url = _crew_url(crew)
-            if _probe_gateway(crew_url):
-                # Gateway is actually alive — transient error, retry directly
-                try:
-                    return _crew_api(crew, method, path, **kw)
-                except Exception:
-                    raise CrewUnresponsiveError(
-                        f"crew {crew_id} is unresponsive — gateway responded to "
-                        f"liveness probe but API call failed twice. Suggestion: "
-                        f"check crew status with crews() or try again in a moment."
-                    )
-            logger.info(
-                "Crew %s gateway confirmed dead — restarting",
-                crew_id,
-            )
-            try:
-                crew = _ensure_crew_running(crew, crew_id)
-            except RuntimeError:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"container restart but the gateway did not recover. "
-                    f"Suggestion: check crew status with crews() or try "
-                    f"again in a moment."
-                )
-
-            # Retry after restart
-            try:
-                return _crew_api(crew, method, path, **kw)
-            except Exception:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"container restart but the gateway did not recover. "
-                    f"Suggestion: check crew status with crews() or try "
-                    f"again in a moment."
-                )
+            # ── Phase 2: connection error / dead gateway ──────────────────────
+            return _phase2_dead_gateway(crew, crew_id, method, path, **kw)
 
 
 def _require_crew(crew_id: str | None) -> dict:
@@ -1281,22 +1331,7 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
 
 
 def _inject_git_identity(podman: PodmanClient, container: str) -> None:
-    """No-op. Git identity is now injected at container_create time.
-
-    The original implementation wrote GIT_AUTHOR_NAME/EMAIL/GIT_COMMITTER_NAME/
-    GIT_COMMITTER_EMAIL to /etc/environment inside the container.  That approach
-    does not work: /etc/environment is only read by PAM login sessions (pam_env),
-    not by the non-login gateway process or the kiro-cli subprocesses it spawns.
-    The gateway builds its child environment from ``{**os.environ}`` which was
-    fixed at container-create time — writes to /etc/environment after that are
-    invisible to any running or future subprocess.
-
-    The vars are now passed in the container_create env= dict (see launch()),
-    so they are in the gateway's process env from startup and inherited by every
-    kiro-cli child through the ``{**os.environ}`` chain in AcpRuntime.spawn().
-    Container stop/start cycles preserve the create-time env, so idle-stop
-    recovery via _ensure_crew_running also works correctly.
-    """
+    """No-op — kept as signature only; see call site for explanation."""
 
 
 def _inject_policy(
@@ -1414,10 +1449,12 @@ def _finish_crew_setup(
     # depends on: gateway (post-restart)
     _seed_openspec_store(podman, container)
 
-    # Git identity vars (GA_GIT_AUTHOR_NAME/EMAIL) are injected at container_create
-    # time so they are part of the process env from startup.  _inject_git_identity
-    # is a no-op kept for call-site symmetry; the real work is done in launch().
-    _inject_git_identity(podman, container)
+    # Git identity vars (GIT_AUTHOR_NAME/EMAIL/GIT_COMMITTER_NAME/EMAIL) are
+    # injected at container_create time via the env= dict in launch(), so they
+    # are in the gateway's process env from startup and inherited by every
+    # kiro-cli child.  Container stop/start cycles preserve the create-time
+    # env, so idle-stop recovery also works correctly.  _inject_git_identity
+    # was a no-op stub kept for call-site symmetry; it has been removed.
 
     # depends on: policy_signing_key (already generated above), filesystem
     policy_version = None

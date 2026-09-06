@@ -538,7 +538,6 @@ try:
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
-        _inject_git_identity,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
@@ -594,7 +593,6 @@ except ModuleNotFoundError:
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
-        _inject_git_identity,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
@@ -1622,6 +1620,25 @@ async def _handle_version_get(request: Request) -> Response:
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
 
+def _parse_bearer_token(header_value: str) -> str | None:
+    """Extract the token from an ``Authorization: Bearer <token>`` header value.
+
+    Returns the token string if the header is well-formed (case-insensitive
+    ``Bearer`` scheme, exactly one space, no embedded spaces in the token).
+    Returns ``None`` on any malformed or missing input.
+    """
+    if not header_value:
+        return None
+    if len(header_value) < 8:
+        return None
+    if header_value[:7].lower() != "bearer ":
+        return None
+    token = header_value[7:].strip()
+    if not token or " " in token:
+        return None
+    return token
+
+
 class TransportSecretMiddleware:
     """ASGI middleware enforcing the GA_TRANSPORT_SECRET X-Transport-Token gate (TRN-107).
 
@@ -1746,9 +1763,7 @@ class RateLimitMiddleware:
         bearer: str | None = None
         for k, v in scope.get("headers", []):
             if k == b"authorization":
-                val = v.decode("latin-1")
-                if val[:7].lower() == "bearer ":
-                    bearer = val[7:].strip()
+                bearer = _parse_bearer_token(v.decode("latin-1"))
                 break
         caller = self._caller_key(scope, bearer)
 
@@ -1911,11 +1926,11 @@ class BearerAuthMiddleware:
 
         value = auth_values[0]
         # Must be "Bearer <token>" (case-insensitive scheme)
-        if not value[:7].lower() == "bearer " or " " in value[7:].strip():
+        token = _parse_bearer_token(value)
+        if token is None:
             await self._reject(send, scope)
             return
 
-        token = value[7:].strip()
         if not token or not hmac.compare_digest(token, self._key):
             await self._reject(send, scope)
             return
@@ -2226,6 +2241,10 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     Callers must NOT hold _login_pending_lock when calling this.
     """
     global _login_pending
+    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
+    # _login_pending_lock serialises concurrent callers: the first one through
+    # sets the sentinel immediately before releasing the lock, so any race
+    # between "is flow pending?" and "start a flow" is eliminated.
     with _login_pending_lock:
         if _login_pending is not None:
             return {"login_pending": True}
@@ -2236,7 +2255,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             "state": "starting",
         }
 
-    # ── Start ephemeral container ─────────────────────────────────────────────
+    # ── Phase: start login container ──────────────────────────────────────────
     try:
         container = _start_login_container(podman)
     except Exception as e:
@@ -2253,7 +2272,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             "state": "started",
         }
 
-    # ── Wait for kiro-cli to be available in the container ────────────────────
+    # ── Phase: wait for kiro-cli ───────────────────────────────────────────────
     for _ in range(10):
         try:
             check = podman.container_exec(container, ["which", "kiro-cli"])
@@ -2263,14 +2282,25 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             pass
         time.sleep(0.5)
 
-    # ── Start PTY+stdin exec ──────────────────────────────────────────────────
+    # ── Phase: PTY exec + prompt loop ─────────────────────────────────────────
     # kiro-cli ignores --identity-provider / --region flags in interactive/PTY
     # mode (upstream bug kiro#6120). Use a raw-socket exec so we can write
     # stdin answers to the interactive prompts automatically.
     # With --license pro the provider-selection menu is skipped; kiro-cli goes
     # straight to Start URL → Region, then makes a network round-trip to AWS
     # to register the device (which takes a few seconds) before printing the
-    # URL. Deadline is 45s to accommodate that round-trip.
+    # URL.
+    #
+    # Deadline is 45 seconds to accommodate the AWS IAM Identity Center
+    # round-trip that happens after the user answers the Region prompt.  The
+    # device-registration call can take several seconds on a warm network; 45s
+    # gives comfortable headroom without leaving users waiting indefinitely on
+    # a failed flow.
+    #
+    # The read loop uses select() rather than a blocking recv() so it can poll
+    # for the URL without blocking the event loop thread.  PTY sockets are set
+    # non-blocking; select() with a 0.1s timeout yields control between chunks
+    # so the outer deadline check and prompt-matching logic run frequently.
     cmd = ["kiro-cli", "login", "--use-device-flow"] + (
         ["--license", KIRO_LICENSE] if KIRO_LICENSE else []
     )
@@ -2284,7 +2314,8 @@ def _initiate_login(podman: "PodmanClient") -> dict:
 
     pty_sock.setblocking(False)
 
-    # ── Read output, answer prompts, wait for device URL (max 45s) ───────────
+    # ── Phase: PTY read loop ───────────────────────────────────────────────────
+    # Read output, answer prompts, wait for device URL (max 45s).
     # After answering the Start URL and Region prompts, kiro-cli makes a
     # network round-trip to AWS IAM Identity Center to register the device
     # before printing the verification URL. This takes a few seconds on a
@@ -2367,7 +2398,10 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             _login_pending = None
         return {"error": f"kiro-cli did not produce a login URL within 45s.\nOutput:\n{raw_output}"}
 
-    # ── Hand off remaining stream to background thread ────────────────────────
+    # ── Phase: drain thread + finalise ────────────────────────────────────────
+    # Hand off remaining PTY stream to a background daemon thread so the
+    # socket is drained to EOF (avoiding a broken-pipe in the container) without
+    # blocking the event loop.  The thread exits when kiro-cli closes the pty.
     pty_sock.setblocking(True)
 
     def _drain_pty() -> None:
@@ -2799,7 +2833,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
 
         container_env: dict[str, str] = {
             "KIROCREW_CORS_ORIGINS": _cors_origins,
-            "KIROCREW_ALLOW_UNSANDBOXED": "1",
+            # Sandbox mode is controlled via the crew's sandbox: config key;
+            # KIROCREW_ALLOW_UNSANDBOXED was removed (replaced by sandbox: off).
         }
         # TRN-62: when an API key is configured, pass it to the crew container so
         # kiro-cli inside authenticates via the env var (no device-code / SQLite
