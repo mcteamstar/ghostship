@@ -17,6 +17,7 @@ from tests.e2e.helpers import (
     GHOSTSHIP_API_KEY,
     GHOSTSHIP_PODMAN_SOCKET,
     _SKIP_REASON,
+    _TRANSPORT_REACHABLE,
     mcp_call as _mcp_call,
     is_error as _is_error,
     container_stop as _container_stop,
@@ -38,7 +39,7 @@ _SHARED_LAUNCH_RESULT: dict = {}
 
 
 def setUpModule():  # noqa: N802
-    if not GHOSTSHIP_E2E_URL:
+    if not _TRANSPORT_REACHABLE:
         return  # all classes skip via @skipUnless anyway
     # Stagger: when running in parallel with test_transport_e2e.py, delay this
     # file's shared-crew launch so both setUpModule calls don't fire at the same
@@ -64,7 +65,7 @@ def tearDownModule():  # noqa: N802
 # ── 1. Error paths ────────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestErrorPaths(unittest.TestCase):
     """Non-happy-path calls should return structured errors, never 500."""
 
@@ -148,7 +149,7 @@ class TestErrorPaths(unittest.TestCase):
 # ── 2. Schedule tool ──────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestScheduleTool(unittest.TestCase):
     CREW_ID = SHARED_CREW_ID
 
@@ -194,7 +195,7 @@ class TestScheduleTool(unittest.TestCase):
 # ── 3. Steer tool ─────────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestSteerTool(unittest.TestCase):
     # Dedicated crew — steers a long-running task; sharing would make
     # task-list assertions ambiguous.
@@ -269,7 +270,7 @@ class TestSteerTool(unittest.TestCase):
 # ── 4. Response schemas ───────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestResponseSchemas(unittest.TestCase):
     """Verify all expected fields are present on tool responses."""
 
@@ -369,7 +370,7 @@ class TestAuthExtended(unittest.TestCase):
 # ── 6. TRN-51: Captain status on stopped crew ─────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 @unittest.skipUnless(
     os.path.exists(GHOSTSHIP_PODMAN_SOCKET),
     f"GHOSTSHIP_PODMAN_SOCKET not reachable at {GHOSTSHIP_PODMAN_SOCKET} — "

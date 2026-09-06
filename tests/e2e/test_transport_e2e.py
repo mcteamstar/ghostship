@@ -28,6 +28,7 @@ from tests.e2e.helpers import (
     GHOSTSHIP_API_KEY,
     GHOSTSHIP_E2E_KIRO_AUTH,
     _SKIP_REASON,
+    _TRANSPORT_REACHABLE,
     mcp_call as _mcp_call,
     is_error as _is_error,
 )
@@ -45,7 +46,7 @@ _SHARED_LAUNCH_RESULT: dict = {}
 
 
 def setUpModule():  # noqa: N802
-    if not GHOSTSHIP_E2E_URL:
+    if not _TRANSPORT_REACHABLE:
         return  # all classes skip via @skipUnless anyway
     try:
         _mcp_call("nuke", crew_id=SHARED_CREW_ID, confirm=True)
@@ -67,7 +68,7 @@ def tearDownModule():  # noqa: N802
 # ── 2. Health check ───────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestHealthCheck(unittest.TestCase):
     def test_health(self):
         resp = httpx.get(f"{GHOSTSHIP_E2E_URL}/health", timeout=10.0)
@@ -88,7 +89,7 @@ class TestHealthCheck(unittest.TestCase):
 # ── 3. Crew lifecycle ─────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestCrewLifecycle(unittest.TestCase):
     CREW_ID = "e2e-lifecycle"
 
@@ -131,7 +132,7 @@ class TestCrewLifecycle(unittest.TestCase):
 # ── 4. Dispatch + pickup ──────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestDispatchPickup(unittest.TestCase):
     CREW_ID = SHARED_CREW_ID
 
@@ -167,7 +168,7 @@ class TestDispatchPickup(unittest.TestCase):
 # ── 5. Supply + evac round-trip ───────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestSupplyEvac(unittest.TestCase):
     CREW_ID = SHARED_CREW_ID
     TEST_PAYLOAD = b"hello e2e ghostship"
@@ -206,7 +207,7 @@ class TestSupplyEvac(unittest.TestCase):
 # passing, because none of them ever hit a dashboard port.
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestDashboardProxy(unittest.TestCase):
     CREW_ID = "e2e-dashboard"
 
