@@ -11,6 +11,7 @@
 ### Install
 
 - **`--client-only`** flag — skips all container infrastructure (no Podman check, no image builds, no `compose up`) and wires up just the `ghostship` CLI and agent harness integrations. Designed for machines connecting to an already-running remote transport. Use with `--url` and optionally `--api-key`.
+- **Transport source hash detection** — `install.sh` now hashes the transport source tree and embeds it as a label on the built image. On subsequent installs, if the version matches but the source has changed (mid-release commits), a clean rebuild is forced automatically.
 
 ---
 
