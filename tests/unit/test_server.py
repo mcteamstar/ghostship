@@ -3283,3 +3283,223 @@ class PickupAgentSubjectsTests(unittest.TestCase):
         # Should behave as normal single-task pickup
         self.assertIn("task_id", result)
         self.assertNotIn("subjects", result)  # not the single-inbox format
+
+
+# ── TRN-123: _task_timestamps lock (tasks 4.1 / 4.2) ─────────────────────────
+
+
+class TaskTimestampsLockTests(unittest.TestCase):
+    """Concurrency tests for the _task_timestamps threading.Lock (TRN-123).
+
+    These exercise the locked read-modify-write access pattern directly (the
+    "dispatch-style" write and the "_pickup_single-style" read-modify-write)
+    rather than the full MCP handlers, which require heavy podman/gateway
+    mocking irrelevant to the data-race under test.
+    """
+
+    def setUp(self) -> None:
+        # Isolate each test from leftover state / other tests.
+        server._task_timestamps.clear()
+
+    def tearDown(self) -> None:
+        server._task_timestamps.clear()
+
+    def test_concurrent_dispatch_writes_no_lost_entries(self) -> None:
+        """4.1: many threads writing distinct task_ids all land, none lost."""
+        import concurrent.futures
+
+        n = 500
+
+        def _dispatch_style_write(i: int) -> None:
+            task_id = f"task-{i}"
+            created_at = datetime.now(timezone.utc).isoformat()
+            # Mirror the locked write in server.dispatch / _dispatch_batch.
+            with server._task_timestamps_lock:
+                server._task_timestamps[task_id] = {
+                    "created_at": created_at,
+                    "started_at": None,
+                    "completed_at": None,
+                }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            list(ex.map(_dispatch_style_write, range(n)))
+
+        self.assertEqual(len(server._task_timestamps), n)
+        for i in range(n):
+            entry = server._task_timestamps.get(f"task-{i}")
+            self.assertIsNotNone(entry, f"task-{i} missing")
+            # No partially-overwritten record: every key present.
+            self.assertEqual(
+                set(entry.keys()), {"created_at", "started_at", "completed_at"}
+            )
+            self.assertIsNotNone(entry["created_at"])
+
+    def test_interleaved_write_and_read_modify_write_no_corruption(self) -> None:
+        """4.2: a dispatch-style write racing a pickup-style RMW for the same
+        task_id never corrupts started_at / completed_at."""
+        import concurrent.futures
+
+        task_id = "task-shared"
+
+        def _dispatch_write() -> None:
+            created_at = datetime.now(timezone.utc).isoformat()
+            with server._task_timestamps_lock:
+                server._task_timestamps[task_id] = {
+                    "created_at": created_at,
+                    "started_at": None,
+                    "completed_at": None,
+                }
+
+        def _pickup_rmw(done: bool) -> None:
+            now = datetime.now(timezone.utc)
+            # Mirror the locked RMW in server._pickup_single.
+            with server._task_timestamps_lock:
+                ts = server._task_timestamps.get(task_id, {})
+                if ts and ts.get("started_at") is None:
+                    ts["started_at"] = now.isoformat()
+                if ts and done and ts.get("completed_at") is None:
+                    ts["completed_at"] = now.isoformat()
+
+        # Seed the entry first so the RMW threads have something to update.
+        _dispatch_write()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            futs = []
+            for i in range(200):
+                # Interleave repeated writes and read-modify-writes.
+                futs.append(ex.submit(_dispatch_write))
+                futs.append(ex.submit(_pickup_rmw, i % 2 == 0))
+            for f in futs:
+                f.result()
+
+        entry = server._task_timestamps[task_id]
+        # The record must always have exactly the three canonical keys — never a
+        # partial dict produced by an interrupted read-modify-write.
+        self.assertEqual(
+            set(entry.keys()), {"created_at", "started_at", "completed_at"}
+        )
+        # started_at / completed_at are either None or a valid ISO string; never
+        # a torn / non-string value.
+        for k in ("created_at", "started_at", "completed_at"):
+            v = entry[k]
+            self.assertTrue(v is None or isinstance(v, str))
+
+
+# ── TRN-123: _dashboard_port_crew lock (tasks 5.1 / 5.2) ─────────────────────
+
+
+class _StubRequest:
+    """Minimal request stub carrying the attributes the dashboard handlers read."""
+
+    def __init__(
+        self,
+        *,
+        path: str = "",
+        query_params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ) -> None:
+        self.scope = {"path": path}
+        self.query_params = query_params or {}
+        self.headers = headers or {}
+        self.cookies = cookies or {}
+
+
+class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
+    """Concurrency tests for the _dashboard_port_crew threading.Lock (TRN-123)."""
+
+    def setUp(self) -> None:
+        with server._dashboard_port_crew_lock:
+            server._dashboard_port_crew.clear()
+
+    def tearDown(self) -> None:
+        with server._dashboard_port_crew_lock:
+            server._dashboard_port_crew.clear()
+
+    async def test_concurrent_dashboard_post_consistent_mapping(self) -> None:
+        """5.1: concurrent _handle_crew_dashboard_post calls for the same crew
+        leave a consistent port→crew mapping (no duplicate ports, no lost
+        entries)."""
+        crew_id = "demo"
+
+        # Each POST allocates a fresh port and registers it. We simulate a
+        # registry that has no dashboard yet so every call proceeds to the
+        # allocate + register + map path.
+        port_counter = {"n": 40000}
+        alloc_lock = threading.Lock()
+
+        def _fake_load_registry() -> dict:
+            # A fresh (no dashboard_port) crew entry every call so the handler
+            # walks the allocation path rather than the no-op branch.
+            return {"crews": {crew_id: {"cookie": "c"}}}
+
+        def _fake_allocate_port() -> int:
+            with alloc_lock:
+                port_counter["n"] += 1
+                return port_counter["n"]
+
+        with (
+            patch.object(server, "_require_crew", return_value=None),
+            patch.object(server, "_extract_crew_proxy_parts", return_value=(crew_id, "dashboard", "")),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_allocate_dashboard_port", side_effect=_fake_allocate_port),
+            patch.object(server, "_caddy_register_crew"),
+        ):
+            reqs = [_StubRequest(path=f"/crews/{crew_id}/dashboard") for _ in range(50)]
+            results = await asyncio.gather(
+                *(server._handle_crew_dashboard_post(r) for r in reqs)
+            )
+
+        self.assertEqual(len(results), 50)
+        # Every allocated port maps back to the crew — no lost / partial entries.
+        with server._dashboard_port_crew_lock:
+            snapshot = dict(server._dashboard_port_crew)
+        self.assertEqual(len(snapshot), 50, "expected 50 distinct port mappings")
+        # No duplicate ports (dict keys are unique by construction) and every
+        # value is the crew_id.
+        self.assertTrue(all(v == crew_id for v in snapshot.values()))
+
+    async def test_auth_read_races_delete_never_partial(self) -> None:
+        """5.2: _handle_dashboard_auth reading while an entry is being deleted
+        sees the entry present or absent — never a partial/torn value."""
+        crew_id = "demo"
+        port = 41000
+        with server._dashboard_port_crew_lock:
+            server._dashboard_port_crew[port] = crew_id
+
+        # A "delete-style" writer removing the mapping under the lock, mirroring
+        # the locked pop in _handle_crew_dashboard_delete / nuke.
+        def _delete_writer() -> None:
+            for _ in range(200):
+                with server._dashboard_port_crew_lock:
+                    server._dashboard_port_crew.pop(port, None)
+                with server._dashboard_port_crew_lock:
+                    server._dashboard_port_crew[port] = crew_id
+
+        stop = threading.Event()
+
+        def _delete_loop() -> None:
+            while not stop.is_set():
+                _delete_writer()
+
+        writer = threading.Thread(target=_delete_loop)
+        writer.start()
+        try:
+            with (
+                patch.object(server, "GA_API_KEY", "k"),
+                patch.object(server, "_gs_session_valid", return_value=True),
+            ):
+                for _ in range(200):
+                    req = _StubRequest(
+                        query_params={"port": str(port)},
+                        cookies={"gs_session": "tok"},
+                    )
+                    resp = await server._handle_dashboard_auth(req)
+                    # The handler returns a Response with an int status_code —
+                    # a torn read would raise or produce something non-200.
+                    self.assertEqual(resp.status_code, 200)
+        finally:
+            stop.set()
+            writer.join(timeout=5)

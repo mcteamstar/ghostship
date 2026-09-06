@@ -2017,5 +2017,134 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
         spawn_mock.assert_called_once()
 
 
+# ── TRN-123: per-crew serialisation of _ensure_crew_running (tasks 6.1 / 6.2) ─
+
+
+class _CountingPodman:
+    """Podman stand-in that counts container_start calls per container and
+    blocks briefly in the leader path so the second concurrent caller is
+    guaranteed to arrive while the first is still restarting."""
+
+    def __init__(self) -> None:
+        self.start_calls: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._first_start = threading.Event()
+
+    def container_is_running(self, name: str) -> bool:
+        return False
+
+    def container_start(self, name: str) -> None:
+        with self._lock:
+            self.start_calls[name] = self.start_calls.get(name, 0) + 1
+        # Hold the leader inside the critical section long enough for the
+        # second caller to reach the leader-election gate.
+        if not self._first_start.is_set():
+            self._first_start.set()
+            time.sleep(0.15)
+
+    def container_stop(self, name: str) -> None:
+        pass
+
+    def system_info(self) -> dict:
+        return {"host": {"memAvailable": 8 * 1024**3}}
+
+
+class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    """TRN-123: concurrent _ensure_crew_running callers must not double-start."""
+
+    def setUp(self) -> None:
+        # Clear any leftover leader-election state between tests.
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events.clear()
+
+    def tearDown(self) -> None:
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events.clear()
+
+    async def test_same_crew_starts_container_exactly_once(self) -> None:
+        """6.1: two coroutines calling _ensure_crew_running for the same stopped
+        crew result in exactly one container_start."""
+        podman = _CountingPodman()
+        crew = {"container": "gs-demo", "status": "stopped", "cookie": "old"}
+        original = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
+            mint = Mock(return_value="new-cookie")
+            with (
+                patch.object(lifecycle, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_mint_cookie", mint),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_touch_crew"),
+                patch.object(lifecycle, "_probe_gateway", return_value=True),
+                patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": crew}}),
+                patch.object(lifecycle, "_save_registry"),
+                patch.object(
+                    lifecycle,
+                    "_get_crew",
+                    return_value={"container": "gs-demo", "status": "running", "cookie": "new-cookie"},
+                ),
+            ):
+                results = await asyncio.gather(
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew, "demo", touch=False),
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew, "demo", touch=False),
+                )
+        finally:
+            lifecycle.GA_MIN_FREE_MEM_GB = original
+
+        self.assertEqual(len(results), 2)
+        # The leader-election guard must ensure only ONE caller runs the restart
+        # body. _mint_cookie is invoked exactly once inside that body, so a
+        # second leader (a double-start race) would call it twice.
+        self.assertEqual(
+            mint.call_count,
+            1,
+            f"expected exactly one leader restart, got {mint.call_count}",
+        )
+
+    async def test_different_crews_start_independently(self) -> None:
+        """6.2: two coroutines for different crew_ids each start their own
+        container without serialising against each other."""
+        podman = _CountingPodman()
+        crew_a = {"container": "gs-a", "status": "stopped", "cookie": "a"}
+        crew_b = {"container": "gs-b", "status": "stopped", "cookie": "b"}
+        original = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
+            with (
+                patch.object(lifecycle, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_touch_crew"),
+                patch.object(lifecycle, "_probe_gateway", return_value=True),
+                patch.object(
+                    lifecycle,
+                    "_load_registry",
+                    return_value={"crews": {"a": crew_a, "b": crew_b}},
+                ),
+                patch.object(lifecycle, "_save_registry"),
+                patch.object(
+                    lifecycle,
+                    "_get_crew",
+                    return_value={"status": "running", "cookie": "new-cookie", "container": "gs-x"},
+                ),
+            ):
+                results = await asyncio.gather(
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew_a, "a", touch=False),
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew_b, "b", touch=False),
+                )
+        finally:
+            lifecycle.GA_MIN_FREE_MEM_GB = original
+
+        self.assertEqual(len(results), 2)
+        # Each distinct crew ran its own leader restart body — the leader path
+        # issues two container_start calls (initial start + restart after the
+        # config re-patch). Different crew_ids do not serialise against one
+        # another, so BOTH crews complete their restart.
+        self.assertEqual(podman.start_calls.get("gs-a", 0), 2)
+        self.assertEqual(podman.start_calls.get("gs-b", 0), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

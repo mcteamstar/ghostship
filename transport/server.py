@@ -739,6 +739,10 @@ mcp = MCPServer(
 # In-memory store for task lifecycle timestamps. Keyed by task_id.
 # Lost on transport restart — acceptable per design decision D1.
 _task_timestamps: dict[str, dict] = {}
+# TRN-123: guards all read-modify-write access to _task_timestamps. The dict is
+# written by dispatch (worker thread) and read-modified-written by pickup
+# handlers (worker threads); without this lock those accesses race.
+_task_timestamps_lock = threading.Lock()
 
 # ── UI port pool + Caddy admin API (TRN-80 / TRN-92) ─────────────────────────
 # _dashboard_ports_in_use, _allocate_dashboard_port, _release_dashboard_port,
@@ -842,7 +846,8 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     if port_str:
         try:
             port_int = int(port_str)
-            crew_id = _dashboard_port_crew.get(port_int)
+            with _dashboard_port_crew_lock:
+                crew_id = _dashboard_port_crew.get(port_int)
         except ValueError:
             pass
 
@@ -851,7 +856,8 @@ async def _handle_dashboard_auth(request: Request) -> Response:
         fwd_port = request.headers.get("x-dashboard-port", "")
         if fwd_port:
             try:
-                crew_id = _dashboard_port_crew.get(int(fwd_port))
+                with _dashboard_port_crew_lock:
+                    crew_id = _dashboard_port_crew.get(int(fwd_port))
             except ValueError:
                 pass
 
@@ -951,6 +957,32 @@ async def _handle_login_ui(request: Request) -> Response:
 # is the sole dashboard proxy. Port→crew mapping is retained for forward_auth
 # lookups by _handle_dashboard_auth.
 _dashboard_port_crew: dict[int, str] = {}  # port → crew_id
+# TRN-123: guards all read-modify-write access to _dashboard_port_crew. Written
+# from _handle_crew_dashboard_post/_delete, launch, nuke and _main, and read in
+# _handle_dashboard_auth — a mix of asyncio and startup contexts.
+_dashboard_port_crew_lock = threading.Lock()
+
+# TRN-123: per-crew asyncio lock registry serialising concurrent
+# _ensure_crew_running call sites in the async proxy handlers, so that
+# concurrent coroutines for the same crew do not each dispatch a redundant
+# probe-then-start thread. The registry dict itself is populated lazily under a
+# threading.Lock because it is also touched from non-async startup paths.
+_ensure_running_locks: dict[str, asyncio.Lock] = {}
+_ensure_running_locks_lock = threading.Lock()
+
+
+def _get_ensure_running_lock(crew_id: str) -> asyncio.Lock:
+    """Return the per-crew asyncio.Lock for crew_id, creating it lazily.
+
+    Guarded by _ensure_running_locks_lock so concurrent first-time callers do
+    not each create a separate lock object for the same crew.
+    """
+    with _ensure_running_locks_lock:
+        lock = _ensure_running_locks.get(crew_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _ensure_running_locks[crew_id] = lock
+        return lock
 
 
 # _http and _async_http are imported from transport.podman (they are owned by
@@ -1101,7 +1133,8 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
 
     # Auto-wake if stopped
     try:
-        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
+        async with _get_ensure_running_lock(crew_id):
+            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError as e:
         return PlainTextResponse(str(e), status_code=502)
 
@@ -1215,7 +1248,8 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
         await ws.close(code=1008)
         return
     try:
-        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
+        async with _get_ensure_running_lock(crew_id):
+            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError:
         await ws.close(code=1011)
         return
@@ -1330,7 +1364,8 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
     # Auto-wake if stopped
     try:
-        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
+        async with _get_ensure_running_lock(crew_id):
+            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError as e:
         return PlainTextResponse(str(e), status_code=502)
 
@@ -1461,7 +1496,8 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
 
     _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
     # Store port→crew mapping for forward_auth lookups.
-    _dashboard_port_crew[dashboard_port] = crew_id
+    with _dashboard_port_crew_lock:
+        _dashboard_port_crew[dashboard_port] = crew_id
 
     logger.info(
         "TRN-101: POST /crews/%s/dashboard — UI port %d, dashboard_url=%s",
@@ -1503,7 +1539,8 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         # C-1: Extract all needed values and mutate registry under the lock,
         # then call _caddy_deregister_crew AFTER releasing it to avoid holding
         # the lock across blocking I/O.
-        _dashboard_port_crew.pop(int(existing_port), None)
+        with _dashboard_port_crew_lock:
+            _dashboard_port_crew.pop(int(existing_port), None)
         _release_dashboard_port(int(existing_port))
         reg["crews"][crew_id].pop("dashboard_port", None)
         reg["crews"][crew_id]["dashboard_url"] = None
@@ -2242,7 +2279,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             # avoid holding the lock across up to 7 s of blocking I/O.
             _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
             # Record port→crew mapping for forward_auth lookups.
-            _dashboard_port_crew[dashboard_port] = crew_id
+            with _dashboard_port_crew_lock:
+                _dashboard_port_crew[dashboard_port] = crew_id
             result["dashboard_url"] = dashboard_url
         elif "error" not in result:
             result["dashboard_url"] = None
@@ -2491,7 +2529,8 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
             _caddy_deregister_crew(crew_id)
-            _dashboard_port_crew.pop(int(_ui_p), None)
+            with _dashboard_port_crew_lock:
+                _dashboard_port_crew.pop(int(_ui_p), None)
             _release_dashboard_port(int(_ui_p))
         # TRN-105: explicitly drop any batch records so no orphan batch entry
         # survives a nuke. Popping the crew entry below already removes them,
@@ -3312,11 +3351,12 @@ def dispatch(
 
     # TRN-89 task 1: record task timestamps in-memory
     if task_id:
-        _task_timestamps[task_id] = {
-            "created_at": created_at,
-            "started_at": None,
-            "completed_at": None,
-        }
+        with _task_timestamps_lock:
+            _task_timestamps[task_id] = {
+                "created_at": created_at,
+                "started_at": None,
+                "completed_at": None,
+            }
 
     # TRN-89 task 3: write last_task_at to crew's registry entry
     _record_last_task_at(crew_id, created_at)
@@ -3391,11 +3431,12 @@ def _dispatch_batch(
         task_ids.append(tid)
         # Per-task timestamp + last_task_at, using this task's response time.
         task_created = datetime.now(timezone.utc).isoformat()
-        _task_timestamps[tid] = {
-            "created_at": task_created,
-            "started_at": None,
-            "completed_at": None,
-        }
+        with _task_timestamps_lock:
+            _task_timestamps[tid] = {
+                "created_at": task_created,
+                "started_at": None,
+                "completed_at": None,
+            }
         _record_last_task_at(crew_id, task_created)
 
     if dispatch_error is None:
@@ -3625,12 +3666,13 @@ def _pickup_single(
 
         # TRN-89 task 1: populate task timestamps
         now = datetime.now(timezone.utc)
-        ts = _task_timestamps.get(task_id, {})
-        elapsed = r.get("elapsed", 0)
-        if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
-            ts["started_at"] = now.isoformat()
-        if ts and done and ts.get("completed_at") is None:
-            ts["completed_at"] = now.isoformat()
+        with _task_timestamps_lock:
+            ts = _task_timestamps.get(task_id, {})
+            elapsed = r.get("elapsed", 0)
+            if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
+                ts["started_at"] = now.isoformat()
+            if ts and done and ts.get("completed_at") is None:
+                ts["completed_at"] = now.isoformat()
 
         out: dict[str, Any] = {
             "task_id": r.get("id"),
@@ -3723,6 +3765,15 @@ def _pickup_list(
         }
         admiral_mail = mail_counts.get("admiral", 0)
 
+        # TRN-123: snapshot the timestamp entries for the listed agents under
+        # the lock, then build the response list from the snapshot so the
+        # comprehension does not read _task_timestamps concurrently with writes.
+        with _task_timestamps_lock:
+            _ts_snapshot = {
+                a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
+                for a in agents
+            }
+
         task_list = [
             {
                 "task_id": a.get("id"),
@@ -3735,9 +3786,9 @@ def _pickup_list(
                 "outcome": a.get("outcome", ""),
                 "error": a.get("error", ""),
                 # TRN-89 task 1: include per-task timestamps (null if missing)
-                "created_at": _task_timestamps.get(a.get("id", ""), {}).get("created_at"),
-                "started_at": _task_timestamps.get(a.get("id", ""), {}).get("started_at"),
-                "completed_at": _task_timestamps.get(a.get("id", ""), {}).get("completed_at"),
+                "created_at": _ts_snapshot.get(a.get("id", ""), {}).get("created_at"),
+                "started_at": _ts_snapshot.get(a.get("id", ""), {}).get("started_at"),
+                "completed_at": _ts_snapshot.get(a.get("id", ""), {}).get("completed_at"),
             }
             for a in agents
         ]
@@ -4089,7 +4140,8 @@ if __name__ == "__main__":
         for _cid, _info in _restored_reg["crews"].items():
             _p = _info.get("dashboard_port")
             if _p is not None:
-                _dashboard_port_crew[int(_p)] = _cid
+                with _dashboard_port_crew_lock:
+                    _dashboard_port_crew[int(_p)] = _cid
                 with _registry_lock:
                     _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
                     _caddy_register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
