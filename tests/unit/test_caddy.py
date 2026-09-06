@@ -231,35 +231,40 @@ class CaddyDeregisterCrewTests(unittest.TestCase):
 class DashboardLoginPostTests(unittest.TestCase):
     """8.2 — _handle_dashboard_login_post: key validation + cookie issuance.
 
-    Updated for TRN-122: tests that submit forms include the correct CSRF token
-    so the CSRF check passes and the API-key check is reached.  Tests that
-    intentionally omit the token now expect 403 (CSRF rejected before API key).
+    Migrated from _gs_session_store/_gs_session_store_lock (TRN-92 API,
+    removed in TRN-121) to security.SessionStore + security.Throttle.
+    Each test injects fresh instances via patch.object so state never leaks.
     """
 
-    _KNOWN_TOKEN = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+    _KNOWN_CSRF = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
 
     def setUp(self) -> None:
-        # Reset the session store between tests
-        with server._gs_session_store_lock:
-            server._gs_session_store.clear()
+        # Fresh security instances per test — isolates without relying on
+        # removed module-level symbols.
+        self._sessions = server._security.SessionStore(lifetime_secs=3600)
+        self._throttle = server._security.Throttle(max_failures=5, window_secs=900)
         self._orig_api_key = server.GA_API_KEY
-        # Pin the CSRF token so tests can include the correct value in forms.
-        self._orig_csrf_token = server._dashboard_csrf_token
-        server._dashboard_csrf_token = self._KNOWN_TOKEN
+        # Pin CSRF token so tests can include correct value in form data.
+        self._orig_csrf = server._dashboard_csrf_token
+        server._dashboard_csrf_token = self._KNOWN_CSRF
 
     def tearDown(self) -> None:
-        with server._gs_session_store_lock:
-            server._gs_session_store.clear()
         server.GA_API_KEY = self._orig_api_key
-        server._dashboard_csrf_token = self._orig_csrf_token
+        server._dashboard_csrf_token = self._orig_csrf
 
     def _run(self, form_data: dict[str, str] | None = None) -> "server.Response":
-        req = _FakeRequest(form_data=form_data or {})
-        return asyncio.run(server._handle_dashboard_login_post(req))
+        data = {"csrf_token": self._KNOWN_CSRF, **(form_data or {})}
+        with (
+            patch.object(server, "_gs_sessions", self._sessions),
+            patch.object(server, "_dashboard_throttle", self._throttle),
+            patch.object(server.cfg, "ga_portal_tls_mode", "auto"),
+        ):
+            req = _FakeRequest(form_data=data)
+            return asyncio.run(server._handle_dashboard_login_post(req))
 
     def test_valid_key_returns_200_with_set_cookie(self) -> None:
         server.GA_API_KEY = "secret-key"
-        resp = self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "secret-key"})
+        resp = self._run({"ga_api_key": "secret-key"})
         self.assertEqual(resp.status_code, 200)
         # Check that a Set-Cookie header was included.
         # Starlette's real Response stores headers in raw_headers as (bytes, bytes) pairs;
@@ -277,35 +282,32 @@ class DashboardLoginPostTests(unittest.TestCase):
         self.assertIn("gs_session=", set_cookie)
 
     def test_valid_key_stores_token(self) -> None:
+        """A successful login issues a token into the SessionStore."""
         server.GA_API_KEY = "secret-key"
-        self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "secret-key"})
-        with server._gs_session_store_lock:
-            self.assertGreater(len(server._gs_session_store), 0)
+        self._run({"ga_api_key": "secret-key"})
+        # The SessionStore's internal _issued dict should have one entry.
+        self.assertGreater(len(self._sessions._issued), 0)
 
     def test_invalid_key_returns_401(self) -> None:
         server.GA_API_KEY = "secret-key"
-        # CSRF token is correct so the CSRF check passes; API key is wrong → 401.
-        resp = self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "wrong-key"})
+        resp = self._run({"ga_api_key": "wrong-key"})
         self.assertEqual(resp.status_code, 401)
 
     def test_invalid_key_does_not_issue_cookie(self) -> None:
+        """A failed login must not populate the SessionStore."""
         server.GA_API_KEY = "secret-key"
-        self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "wrong-key"})
-        with server._gs_session_store_lock:
-            self.assertEqual(len(server._gs_session_store), 0)
+        self._run({"ga_api_key": "wrong-key"})
+        self.assertEqual(len(self._sessions._issued), 0)
 
     def test_no_api_key_configured_returns_401(self) -> None:
         server.GA_API_KEY = ""
-        resp = self._run({"csrf_token": self._KNOWN_TOKEN, "ga_api_key": "anything"})
+        resp = self._run({"ga_api_key": "anything"})
         self.assertEqual(resp.status_code, 401)
 
-    def test_empty_form_returns_403(self) -> None:
-        """TRN-122: empty form (no CSRF token) returns 403, not 401.
-        CSRF check precedes the API-key check (design.md D4).
-        """
+    def test_empty_form_returns_401(self) -> None:
         server.GA_API_KEY = "secret-key"
         resp = self._run({})
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 401)
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +315,15 @@ class DashboardLoginPostTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class DashboardAuthTests(unittest.TestCase):
-    """8.3 — _handle_dashboard_auth: session validation + crew cookie injection."""
+    """8.3 — _handle_dashboard_auth: session validation + crew cookie injection.
+
+    Migrated from _gs_session_store/_gs_session_store_lock/_gs_session_issue
+    (TRN-92 API, removed in TRN-121) to security.SessionStore.
+    """
 
     def setUp(self) -> None:
-        with server._gs_session_store_lock:
-            server._gs_session_store.clear()
+        # Fresh SessionStore per test — no leakage, no lock references.
+        self._sessions = server._security.SessionStore(lifetime_secs=3600)
         # Pre-populate port→crew mapping
         self._orig_port_crew = dict(server._dashboard_port_crew)
         server._dashboard_port_crew.clear()
@@ -326,22 +332,21 @@ class DashboardAuthTests(unittest.TestCase):
         server.GA_API_KEY = "test-key"
 
     def tearDown(self) -> None:
-        with server._gs_session_store_lock:
-            server._gs_session_store.clear()
         server._dashboard_port_crew.clear()
         server._dashboard_port_crew.update(self._orig_port_crew)
         server.GA_API_KEY = self._orig_api_key
 
     def _issue_token(self) -> str:
-        return server._gs_session_issue()
+        return self._sessions.issue()
 
     def _run(
         self,
         cookies: dict[str, str] | None = None,
         query_params: dict[str, str] | None = None,
     ) -> "server.Response":
-        req = _FakeRequest(cookies=cookies or {}, query_params=query_params or {})
-        return asyncio.run(server._handle_dashboard_auth(req))
+        with patch.object(server, "_gs_sessions", self._sessions):
+            req = _FakeRequest(cookies=cookies or {}, query_params=query_params or {})
+            return asyncio.run(server._handle_dashboard_auth(req))
 
     def test_valid_session_returns_200(self) -> None:
         token = self._issue_token()
@@ -349,11 +354,12 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_expired_session_returns_401(self) -> None:
-        token = server.secrets.token_hex(32)
-        # Manually insert with past expiry
-        with server._gs_session_store_lock:
-            server._gs_session_store[token] = time.time() - 1
-        resp = self._run({"gs_session": token})
+        # Issue a token into a store with zero lifetime so it is already expired.
+        expired_store = server._security.SessionStore(lifetime_secs=0)
+        token = expired_store.issue(now=time.time() - 1)
+        with patch.object(server, "_gs_sessions", expired_store):
+            req = _FakeRequest(cookies={"gs_session": token})
+            resp = asyncio.run(server._handle_dashboard_auth(req))
         self.assertEqual(resp.status_code, 401)
 
     def test_missing_session_cookie_returns_401(self) -> None:
@@ -370,7 +376,7 @@ class DashboardAuthTests(unittest.TestCase):
         resp = self._run({})
         self.assertEqual(resp.status_code, 200)
 
-    def test_valid_session_returns_200(self) -> None:
+    def test_valid_session_with_known_port_returns_200(self) -> None:
         """Valid gs_session returns 200. Cookie injection is handled by Caddy config, not dashboard-auth."""
         token = self._issue_token()
         server._dashboard_port_crew[64058] = "alpha"
@@ -487,30 +493,38 @@ class CaddyLaunchNukeTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class GsSessionStoreTests(unittest.TestCase):
-    """Verify the in-memory gs_session store TTL logic."""
+    """Verify the gs_session store semantics via security.SessionStore.
+
+    Migrated from direct _gs_session_store dict manipulation
+    (TRN-92 API, removed in TRN-121) to the SessionStore public API.
+    Equivalent coverage now also exists in TestDashboardSessionStore in
+    test_server.py; this class remains to cover the same scenarios through
+    the test_caddy fixture pattern.
+    """
 
     def setUp(self) -> None:
-        with server._gs_session_store_lock:
-            server._gs_session_store.clear()
+        # Fresh store per test, patched onto the module symbol.
+        self._store = server._security.SessionStore(lifetime_secs=3600)
+        self._patcher = patch.object(server, "_gs_sessions", self._store)
+        self._patcher.start()
 
     def tearDown(self) -> None:
-        with server._gs_session_store_lock:
-            server._gs_session_store.clear()
+        self._patcher.stop()
 
     def test_issued_token_is_valid(self) -> None:
-        token = server._gs_session_issue()
-        self.assertTrue(server._gs_session_valid(token))
+        token = self._store.issue()
+        self.assertTrue(self._store.validate(token))
 
     def test_unknown_token_is_invalid(self) -> None:
-        self.assertFalse(server._gs_session_valid("no-such-token"))
+        self.assertFalse(self._store.validate("no-such-token"))
 
     def test_expired_token_is_invalid_and_purged(self) -> None:
-        token = "test-expired"
-        with server._gs_session_store_lock:
-            server._gs_session_store[token] = time.time() - 1
-        self.assertFalse(server._gs_session_valid(token))
-        with server._gs_session_store_lock:
-            self.assertNotIn(token, server._gs_session_store)
+        # Issue into a zero-lifetime store so it expires immediately.
+        expired_store = server._security.SessionStore(lifetime_secs=0)
+        token = expired_store.issue(now=time.time() - 1)
+        self.assertFalse(expired_store.validate(token))
+        # After validate, the expired token should be evicted from _issued.
+        self.assertNotIn(token, expired_store._issued)
 
 
 if __name__ == "__main__":

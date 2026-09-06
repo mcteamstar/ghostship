@@ -750,38 +750,20 @@ _task_timestamps_lock = threading.Lock()
 # transport/caddy.py (TRN-116) and are imported at the top of this file. The
 # port-pool helpers must still be called while holding _registry_lock.
 
-# ── Dashboard session store (TRN-92) ─────────────────────────────────────────
-# In-memory token → expiry mapping for gs_session cookies.
-# Lost on transport restart (acceptable — users re-login).
-_gs_session_store: dict[str, float] = {}
-_gs_session_store_lock = threading.Lock()
+# ── Dashboard session store (TRN-92 / TRN-121) ───────────────────────────────
+# Dashboard login is guarded by security.Throttle (brute-force protection) and
+# gs_session cookies are backed by security.SessionStore (bounded, revocable).
+# Both carry their own internal lock and hold state in memory — lost on
+# transport restart (acceptable — users re-login; an active attacker only
+# regains the throttle window).
+_dashboard_throttle = _security.Throttle(max_failures=5, window_secs=900)
+_gs_sessions = _security.SessionStore(lifetime_secs=cfg.ga_portal_session_ttl_secs)
 
 # ── Dashboard CSRF token (TRN-122) ────────────────────────────────────────────
 # Single random token generated at process startup and held for the process
 # lifetime.  Embedded in the GET /login-ui form and validated on every
 # POST /dashboard-login before the API-key check.  See design.md D1.
 _dashboard_csrf_token: str = secrets.token_hex(32)
-
-
-def _gs_session_issue() -> str:
-    """Mint a new gs_session token and record it with its expiry."""
-    token = secrets.token_hex(32)
-    expiry = time.time() + cfg.ga_portal_session_ttl_secs
-    with _gs_session_store_lock:
-        _gs_session_store[token] = expiry
-    return token
-
-
-def _gs_session_valid(token: str) -> bool:
-    """Return True if *token* exists and has not expired."""
-    with _gs_session_store_lock:
-        expiry = _gs_session_store.get(token)
-        if expiry is None:
-            return False
-        if time.time() > expiry:
-            _gs_session_store.pop(token, None)
-            return False
-        return True
 
 
 # ── Dashboard auth HTTP handlers (TRN-92) ─────────────────────────────────────
@@ -796,6 +778,13 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
     if not GA_API_KEY:
         # No API key configured — dashboard login is only meaningful with one.
         return Response(status_code=401)
+
+    source = _request_source(request)
+    # Throttle brute-force attempts before touching the credential (avoids a
+    # timing oracle on the reject path — see design D3).
+    if _dashboard_throttle.is_locked(account="dashboard", source=source):
+        return Response(status_code=429)
+
     try:
         form = await request.form()
         provided = str(form.get("ga_api_key", ""))
@@ -809,13 +798,19 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
         return Response(status_code=403)
 
     if not hmac.compare_digest(provided, GA_API_KEY):
+        _dashboard_throttle.record_failure(account="dashboard", source=source)
         return Response(status_code=401)
 
-    token = _gs_session_issue()
+    _dashboard_throttle.record_success(account="dashboard", source=source)
+
+    token = _gs_sessions.issue()
     # Build Set-Cookie header manually — avoids starlette version differences
-    # and is more explicit about the exact cookie attributes.
+    # and is more explicit about the exact cookie attributes. The Secure flag
+    # is only set when the portal runs behind TLS (TRN-121); a plain-HTTP
+    # portal must not set Secure or the browser drops the cookie.
+    secure_attr = "; Secure" if cfg.ga_portal_tls_mode != "off" else ""
     cookie_value = (
-        f"gs_session={token}; HttpOnly; SameSite=Lax; Secure; Path=/"
+        f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"
     )
     return Response(
         status_code=200,
@@ -842,7 +837,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
 
     # Extract gs_session cookie
     token = request.cookies.get("gs_session", "")
-    if not token or not _gs_session_valid(token):
+    if not token or not _gs_sessions.validate(token):
         return Response(status_code=401)
 
     # Determine which crew this request is for by looking up the incoming port.
@@ -881,6 +876,32 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     # Valid session — return 200 to allow Caddy to proxy to the crew gateway.
     # The mc_token_5476 cookie is injected by the Caddy crew proxy config.
     return Response(status_code=200)
+
+
+async def _handle_dashboard_logout_post(request: Request) -> Response:
+    """POST /dashboard-logout — revoke the gs_session and clear the cookie.
+
+    Validates the current ``gs_session`` cookie; returns 401 when it is
+    missing/invalid. On a valid token, revokes it in the session store and
+    responds with a ``Set-Cookie`` header that clears the cookie in the
+    browser (TRN-121).
+    """
+    token = request.cookies.get("gs_session", "")
+    if not _gs_sessions.validate(token):
+        return Response(status_code=401)
+
+    _gs_sessions.revoke(token)
+    return Response(
+        status_code=200,
+        content="OK",
+        headers={
+            "Set-Cookie": (
+                "gs_session=; Max-Age=0; "
+                "Expires=Thu, 01 Jan 1970 00:00:00 GMT; "
+                "HttpOnly; SameSite=Lax; Path=/"
+            )
+        },
+    )
 
 
 # SEC-09 — open redirect guard for /login-ui ?next=
@@ -4070,6 +4091,7 @@ if __name__ == "__main__":
         public_routes={
             ("GET",  "/version"): _handle_version_get,
             ("POST", "/dashboard-login"): _handle_dashboard_login_post,
+            ("POST", "/dashboard-logout"): _handle_dashboard_logout_post,
             ("GET",  "/dashboard-auth"): _handle_dashboard_auth,
             ("GET",  "/login-ui"): _handle_login_ui,
         },
