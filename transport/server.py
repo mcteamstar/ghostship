@@ -62,6 +62,7 @@ import re
 import secrets
 import time
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -166,6 +167,10 @@ try:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_batch,
+        _get_batch,
+        _update_batch_status,
+        _delete_batch,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -181,6 +186,10 @@ except ModuleNotFoundError:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_batch,
+        _get_batch,
+        _update_batch_status,
+        _delete_batch,
     )
 
 try:
@@ -601,6 +610,7 @@ try:
         _nuke_login_container,
         _patch_crew_config,
         _patch_models,
+        _pickup_batch,
         _probe_gateway,
         _read_auth_from_crew,
         _reconcile_registry,
@@ -656,6 +666,7 @@ except ModuleNotFoundError:
         _nuke_login_container,
         _patch_crew_config,
         _patch_models,
+        _pickup_batch,
         _probe_gateway,
         _read_auth_from_crew,
         _reconcile_registry,
@@ -2465,6 +2476,13 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             _caddy_deregister_crew(crew_id)
             _dashboard_port_crew.pop(int(_ui_p), None)
             _release_dashboard_port(int(_ui_p))
+        # TRN-105: explicitly drop any batch records so no orphan batch entry
+        # survives a nuke. Popping the crew entry below already removes them,
+        # but clearing here keeps the intent explicit and in the same atomic
+        # write that removes the crew.
+        _crew_entry = reg["crews"].get(crew_id)
+        if _crew_entry is not None:
+            _crew_entry.pop("batches", None)
         reg["crews"].pop(crew_id, None)
         _save_registry(reg)
 
@@ -3184,12 +3202,13 @@ def _schedule_list(crew_id: str | None) -> dict:
 
 @mcp.tool()
 def dispatch(
-    task: str,
+    task: str | None = None,
     agent: str = "ghost",
     crew_id: str | None = None,
     model: str | None = None,
+    tasks: list[str] | None = None,
 ) -> dict:
-    """Spawn a task on a KiroCrew agent, dispatched for autonomous execution.
+    """Spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
     research, coding, shell commands, file edits, anything that can run
@@ -3197,16 +3216,46 @@ def dispatch(
     use schedule(delay=N) instead.
     Also: dropoff, send, assign.
 
-    Returns a task_id to use with status/pickup/update.
+    Single task: pass ``task=`` and get back one ``task_id``.
+
+    Batch: pass ``tasks=[...]`` (a list of task strings) to dispatch N tasks
+    atomically against the same crew. All tasks in a batch share the same
+    ``agent``, ``model``, and ``crew_id``. The batch is dispatched sequentially
+    against ``/api/spawn`` and recorded in the transport registry under a single
+    ``batch_id``; the response includes ``batch_id`` and per-task ``task_ids``.
+    The batch size must be between 2 and ``GA_BATCH_MAX_TASKS`` (default 20, read
+    from the ``GA_BATCH_MAX_TASKS`` env var). Collect batch results in one call
+    with ``pickup(task_ids=[...], timeout_secs=N)``.
+
+    ``task`` and ``tasks`` are mutually exclusive — supply exactly one. Existing
+    single-task callers are unaffected.
+
+    Returns:
+        Single: ``{"task_id", "crew_id", "status": "dispatched", "task",
+        "agent", "created_at"}``.
+        Batch (all started): ``{"batch_id", "task_ids", "crew_id",
+        "status": "dispatched", "agent", "created_at"}``.
+        Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
+        the ``task_ids`` assigned so far, and an ``error`` field naming the
+        failure. Tasks that never received a ``task_id`` are the lost members.
 
     Args:
-        task: What to do. Be specific — the agent has no other context.
+        task: What to do (single dispatch). Be specific — the agent has no
+            other context. Mutually exclusive with ``tasks``.
         agent: Which agent to use. Default is 'ghost' (general-purpose).
         crew_id: Which crew to dispatch to. Required — use launch first.
-        model: Optional model override for this task only. It outranks
-            KC_MODEL_OVERRIDE and per-agent config for this call. It has no
-            effect on later steer/continue operations.
+        model: Optional model override for this call only. It outranks
+            KC_MODEL_OVERRIDE and per-agent config. It has no effect on later
+            steer/continue operations.
+        tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
+            dispatch. Mutually exclusive with ``task``.
     """
+    # Mutual-exclusion + presence guard (task 2.2).
+    if task is not None and tasks is not None:
+        return {"error": "Provide either task or tasks, not both"}
+    if task is None and tasks is None:
+        return {"error": "Provide task or tasks"}
+
     try:
         model = _validate_model(model)
     except ValueError as e:
@@ -3215,6 +3264,10 @@ def dispatch(
         _validate_agent(agent)
     except ValueError as e:
         return {"error": str(e)}
+
+    if tasks is not None:
+        return _dispatch_batch(tasks, agent, crew_id, model)
+
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
@@ -3244,6 +3297,20 @@ def dispatch(
         }
 
     # TRN-89 task 3: write last_task_at to crew's registry entry
+    _record_last_task_at(crew_id, created_at)
+
+    return {
+        "task_id": task_id,
+        "crew_id": crew_id,
+        "status": "dispatched",
+        "task": task,
+        "agent": agent,
+        "created_at": created_at,
+    }
+
+
+def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
+    """Write last_task_at to the crew's registry entry (best-effort)."""
     try:
         with _registry_lock:
             reg = _load_registry()
@@ -3253,13 +3320,84 @@ def dispatch(
     except Exception as exc:
         logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
 
+
+def _dispatch_batch(
+    tasks: list[str],
+    agent: str,
+    crew_id: str | None,
+    model: str | None,
+) -> dict:
+    """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
+
+    Validation (size, agent, model) has already run in ``dispatch``. On the
+    first CrewUnresponsiveError or unexpected failure the loop breaks and a
+    ``partial`` batch is recorded with the task_ids assigned so far.
+    """
+    # Size validation (task 2.3).
+    max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
+    if len(tasks) == 0 or len(tasks) == 1:
+        return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
+    if len(tasks) > max_tasks:
+        return {"error": f"tasks exceeds maximum batch size of {max_tasks}"}
+
+    try:
+        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+    except (ValueError, KeyError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    batch_id = str(uuid.uuid4())
+    task_ids: list[str] = []
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    dispatch_error: str | None = None
+
+    for t in tasks:
+        body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
+        if model is not None:
+            body["model"] = model
+        try:
+            result = _crew_api_with_recovery(
+                crew, crew_id, "POST", "/api/spawn", json=body,
+            )
+        except (CrewUnresponsiveError, RuntimeError, ValueError) as e:
+            dispatch_error = str(e)
+            break
+        tid = result.get("id")
+        if not tid:
+            dispatch_error = "spawn returned no task id"
+            break
+        task_ids.append(tid)
+        # Per-task timestamp + last_task_at, using this task's response time.
+        task_created = datetime.now(timezone.utc).isoformat()
+        _task_timestamps[tid] = {
+            "created_at": task_created,
+            "started_at": None,
+            "completed_at": None,
+        }
+        _record_last_task_at(crew_id, task_created)
+
+    if dispatch_error is None:
+        # Task 2.5: full success.
+        _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
+        return {
+            "batch_id": batch_id,
+            "task_ids": task_ids,
+            "crew_id": crew_id,
+            "status": "dispatched",
+            "agent": agent,
+            "created_at": created_at,
+        }
+
+    # Task 2.6: partial failure. Record what was started; surface the error.
+    _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
     return {
-        "task_id": task_id,
+        "batch_id": batch_id,
+        "task_ids": task_ids,
         "crew_id": crew_id,
-        "status": "dispatched",
-        "task": task,
+        "status": "partial",
         "agent": agent,
         "created_at": created_at,
+        "error": dispatch_error,
     }
 
 
@@ -3324,12 +3462,27 @@ def pickup(
     crew_id: str | None = None,
     timeout_secs: int = 0,
     agent: str | None = None,
+    task_ids: list[str] | None = None,
 ) -> dict | list:
     """Check a task's progress, retrieve its completed result, or list all tasks.
 
     With a task_id: returns current state including mail counts. Sessions are
     preserved after completion — use steer to continue the session, or nuke to
     destroy it. Also: collect, get result, check progress.
+
+    With a task_ids list (batch pickup): polls every listed task and returns a
+    dict keyed by task_id, each value the full single-task pickup shape, plus
+    top-level ``done`` (True only when every member is done), ``completed_tasks``,
+    and ``total_tasks``. When ``timeout_secs > 0`` the call blocks until all
+    tasks are done, the timeout fires, or new Admiral mail arrives; each polling
+    round is capped at ``GA_PICKUP_MAX_POLL_SECS`` (default 30 s), and a capped
+    return carries ``"reason": "timeout"`` — re-call to keep waiting. With
+    ``timeout_secs == 0`` it returns a one-shot snapshot of each task. Admiral
+    mail arriving mid-poll returns early with ``"reason": "admiral_mail"``. A
+    task the gateway does not know about (404) is reported as
+    ``{"task_id", "done": false, "lost": true, "error": "task not found in gateway"}``
+    rather than failing the whole batch; the batch ``done`` is then ``false``.
+    ``task_id`` and ``task_ids`` are mutually exclusive.
 
     Without a task_id: returns all tasks currently running or recently finished
     in the crew, plus a per-agent mail summary. Also: list, overview,
@@ -3354,7 +3507,15 @@ def pickup(
         agent: Optional persona name filter (ghost, spectre, banshee, wraith,
             reaper, raven). When set and task_id is None, returns only that
             agent's mailbox subjects and count. Ignored when task_id is set.
+        task_ids: A list of task IDs for blocking batch pickup. Mutually
+            exclusive with task_id. Must be non-empty.
     """
+    # Batch mutual-exclusion + empty guards (tasks 4.2, 4.3).
+    if task_id is not None and task_ids is not None:
+        return {"error": "Provide either task_id or task_ids, not both"}
+    if task_ids is not None and len(task_ids) == 0:
+        return {"error": "task_ids must not be empty"}
+
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
@@ -3367,6 +3528,16 @@ def pickup(
 
     container = crew["container"]
     effective_timeout = min(max(0, timeout_secs), 30) if timeout_secs > 0 else 0
+
+    if task_ids is not None:
+        # Route to the batch pickup orchestrator in lifecycle.py, injecting the
+        # single-task pickup and mail-count helpers to avoid a lifecycle->server
+        # import cycle. effective_timeout already applies the standard cap.
+        return _pickup_batch(
+            crew, crew_id, task_ids, podman, container, effective_timeout,
+            _pickup_single, _read_all_mail_counts,
+            update_batch_status=_update_batch_status,
+        )
 
     if task_id:
         return _pickup_single(crew, crew_id, task_id, podman, container, effective_timeout)

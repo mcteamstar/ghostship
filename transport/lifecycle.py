@@ -1588,6 +1588,127 @@ except ModuleNotFoundError:
 
 _schedule_monitor = _monitors._schedule_monitor
 _idle_monitor = _monitors._idle_monitor
+# ── Batch pickup (TRN-105) ────────────────────────────────────────────────────
+# GA_PICKUP_MAX_POLL_SECS caps the wall time of one _pickup_batch call, mirroring
+# the single-task pickup internal cap (default 30 s). Read from env so operators
+# can tune it without a config-dataclass change.
+GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
+
+_BATCH_POLL_INTERVAL_SECS = 3
+
+
+def _pickup_batch(
+    crew: dict,
+    crew_id: str,
+    task_ids: list[str],
+    podman: "PodmanClient",
+    container: str,
+    timeout_secs: int,
+    pickup_single,
+    read_all_mail_counts,
+    batch_id: str | None = None,
+    update_batch_status=None,
+) -> dict:
+    """Blocking multi-task pickup: collect results for every id in *task_ids*.
+
+    Orchestrates per-round sequential calls to ``pickup_single(timeout_secs=0)``
+    for each task id, aggregating into a dict keyed by task_id. The whole call
+    is capped at ``GA_PICKUP_MAX_POLL_SECS`` of wall time (each round polls all
+    members once, then sleeps 3 s). A task the gateway does not know about (404
+    / missing) is marked ``{"done": false, "lost": true, ...}`` rather than
+    raising, so the other members' results survive.
+
+    ``pickup_single`` and ``read_all_mail_counts`` are injected by the caller
+    (server.py) to avoid a lifecycle->server import cycle. ``update_batch_status``
+    (optional) is called with (crew_id, batch_id, "complete") when every task is
+    done and a ``batch_id`` is known.
+
+    Response shape::
+
+        {
+          "<task_id>": {<single-task pickup shape> | lost-marker},
+          ...,
+          "done": bool,          # True only when every member is done
+          "completed_tasks": int,
+          "total_tasks": int,
+          "reason": "timeout" | "admiral_mail",   # only when it applies
+        }
+    """
+    total = len(task_ids)
+
+    # Cap the batch wall time at GA_PICKUP_MAX_POLL_SECS regardless of the
+    # requested timeout — identical to the single-task internal cap contract.
+    capped_timeout = min(max(0, timeout_secs), GA_PICKUP_MAX_POLL_SECS)
+
+    # Admiral-mail early-return baseline read before the first round.
+    if capped_timeout > 0:
+        initial_counts = read_all_mail_counts(podman, container)
+        initial_admiral_mail = initial_counts.get("admiral", 0)
+    else:
+        initial_admiral_mail = 0
+
+    deadline = time.monotonic() + capped_timeout
+
+    def _poll_round() -> tuple[dict, int]:
+        """Poll every task once; return (results, done_count)."""
+        results: dict[str, Any] = {}
+        done_count = 0
+        for tid in task_ids:
+            res = pickup_single(crew, crew_id, tid, podman, container, 0)
+            # Lost member: gateway returns 404 for an unknown task id. The
+            # single-task path surfaces that as an error string; normalise it
+            # to an explicit lost marker so the batch survives.
+            err = res.get("error", "") if isinstance(res, dict) else ""
+            if err and ("404" in str(err) or "not found" in str(err).lower()):
+                res = {
+                    "task_id": tid,
+                    "done": False,
+                    "lost": True,
+                    "error": "task not found in gateway",
+                }
+            results[tid] = res
+            if res.get("done"):
+                done_count += 1
+        return results, done_count
+
+    while True:
+        results, done_count = _poll_round()
+        all_done = done_count == total and total > 0
+
+        out: dict[str, Any] = dict(results)
+        out["done"] = all_done
+        out["completed_tasks"] = done_count
+        out["total_tasks"] = total
+
+        if all_done:
+            if batch_id is not None and update_batch_status is not None:
+                try:
+                    update_batch_status(crew_id, batch_id, "complete")
+                except Exception as exc:  # best-effort; do not fail the pickup
+                    logger.warning(
+                        "TRN-105: could not mark batch %s complete: %s",
+                        batch_id, exc,
+                    )
+            return out
+
+        # Snapshot mode (timeout_secs == 0): one query per task, no blocking.
+        if capped_timeout == 0:
+            return out
+
+        # Admiral-mail early-return: re-read the count and bail if it grew.
+        admiral_mail = read_all_mail_counts(podman, container).get("admiral", 0)
+        if admiral_mail > initial_admiral_mail:
+            out["reason"] = "admiral_mail"
+            return out
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            out["reason"] = "timeout"
+            return out
+
+        time.sleep(min(_BATCH_POLL_INTERVAL_SECS, remaining))
+
+
 _cron_activity_since = _monitors._cron_activity_since
 _cron_has_enabled_job = _monitors._cron_has_enabled_job
 
