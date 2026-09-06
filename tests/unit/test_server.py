@@ -4668,6 +4668,42 @@ class ProxyHandlerTests(unittest.TestCase):
         # The stale inbound cookie must NOT be present
         self.assertNotIn("stale-val", cookie_val)
 
+    # ── 9.1 (TRN-116): non-2xx upstream is surfaced with its status code ─────
+
+    def _run_ui_proxy_with_upstream(self, status_code: int, body: bytes):
+        """Drive _handle_crew_ui_proxy against an upstream that returns the given
+        status_code, returning the handler's Response."""
+        request = _FakeStreamRequest(path="/crews/demo/ui")
+
+        async def run():
+            with (
+                patch.object(lifecycle, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(server, "_cookie_near_expiry", return_value=False),
+            ):
+                mock_ctx = _FakeUpstreamResponse(
+                    status_code, body, {"content-type": "text/plain"}
+                )
+                with patch.object(server._async_http, "stream", return_value=mock_ctx):
+                    return await server._handle_crew_ui_proxy(request)
+
+        return asyncio.run(run())
+
+    def test_ui_proxy_surfaces_502_from_upstream(self) -> None:
+        """9.1a: a 502 from the crew gateway is passed through unchanged, not
+        rewritten to 200 or masked as a generic proxy error."""
+        response = self._run_ui_proxy_with_upstream(502, b"bad gateway")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.body, b"bad gateway")
+
+    def test_ui_proxy_surfaces_503_from_upstream(self) -> None:
+        """9.1b: a 503 from the crew gateway is surfaced with its own status code."""
+        response = self._run_ui_proxy_with_upstream(503, b"unavailable")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.body, b"unavailable")
+
 class TestProxyQuerySanitisation(unittest.TestCase):
     """Verify raw query controls are removed by both proxy handlers."""
 
@@ -5498,7 +5534,12 @@ class UiPortNukeTests(unittest.TestCase):
 class CrewsListUiUrlTests(unittest.TestCase):
     """Tests for dashboard_url in crews() list (TRN-80 task 5)."""
 
-    def _run_crews(self, crews_data: dict, ga_host_url: str = "") -> list:
+    def _run_crews(
+        self,
+        crews_data: dict,
+        ga_host_url: str = "",
+        portal_tls_mode: str = "internal",
+    ) -> list:
         registry = {"crews": crews_data}
         with (
             patch.object(server, "_load_registry", return_value=registry),
@@ -5510,7 +5551,7 @@ class CrewsListUiUrlTests(unittest.TestCase):
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
-            mock_cfg.ga_portal_tls_mode = "internal"
+            mock_cfg.ga_portal_tls_mode = portal_tls_mode
             result = server.crews()
         return result["crews"]
 
@@ -5556,6 +5597,47 @@ class CrewsListUiUrlTests(unittest.TestCase):
         }
         entries = self._run_crews(crews_data)
         self.assertIsNone(entries[0]["dashboard_url"])
+
+    # ── 9.2 (TRN-116): dashboard URL when Caddy portal TLS is off ────────────
+
+    def test_crews_dashboard_url_uses_http_when_tls_off(self) -> None:
+        """9.2a: with ga_portal_tls_mode='off' the dashboard URL uses http://
+        and the direct port, not the Caddy-proxied https:// URL."""
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "dashboard_port": 9005,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(crews_data, ga_host_url="", portal_tls_mode="off")
+        self.assertEqual(entries[0]["dashboard_url"], "http://localhost:9005/")
+        self.assertTrue(entries[0]["dashboard_url"].startswith("http://"))
+
+    def test_crews_dashboard_url_http_with_ga_host_when_tls_off(self) -> None:
+        """9.2b: tls-off honours the ga_host_url host but keeps the http:// scheme
+        and the crew's own dashboard port (not the ga_host_url port)."""
+        crews_data = {
+            "demo": {
+                "container": "gs-demo",
+                "status": "running",
+                "composition": "spec-ops",
+                "created_at": None,
+                "dashboard_port": 9010,
+                "cookie": "c",
+            }
+        }
+        entries = self._run_crews(
+            crews_data,
+            ga_host_url="http://vm23.example.com:64057",
+            portal_tls_mode="off",
+        )
+        url = entries[0]["dashboard_url"]
+        self.assertTrue(url.startswith("http://"))
+        self.assertIn("vm23.example.com:9010", url)
 
 
 class CorsOriginInjectionTests(unittest.TestCase):

@@ -53,6 +53,6 @@
 
 ## 9. Test Coverage Gaps
 
-- [ ] 9.1 Add tests in `tests/unit/test_server.py` for `_handle_crew_ui_proxy` when the upstream crew gateway returns a non-2xx response (e.g. 502, 503) — assert the error is surfaced correctly to the caller
-- [ ] 9.2 Add tests for dashboard URL construction when Caddy TLS is off — assert the URL uses `http://` and the direct port rather than the Caddy-proxied HTTPS URL
-- [ ] 9.3 Run the full test suite and confirm all tests pass including the new ones
+- [x] 9.1 Add tests in `tests/unit/test_server.py` for `_handle_crew_ui_proxy` when the upstream crew gateway returns a non-2xx response (e.g. 502, 503) — assert the error is surfaced correctly to the caller
+- [x] 9.2 Add tests for dashboard URL construction when Caddy TLS is off — assert the URL uses `http://` and the direct port rather than the Caddy-proxied HTTPS URL
+- [x] 9.3 Run the full test suite and confirm all tests pass including the new ones
