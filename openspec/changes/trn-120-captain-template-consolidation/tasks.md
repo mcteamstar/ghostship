@@ -11,9 +11,9 @@
 
 - [ ] 2.1 Update front-matter description to: `"Dispatch four concurrent independent reviewers and consolidate their findings. Scoped to a named change when change_name is provided; reviews the entire codebase when omitted."`
 - [ ] 2.2 Replace `Scope: change <change>` with `Scope: <change?>` on the first body line
-- [ ] 2.3 Replace all remaining `<change>` occurrences in the body with `<change?>` (task prefixes, mail subjects, consolidation subject line)
+- [ ] 2.3 Replace the `<change>` token occurrences in the body with `<change?>` — specifically the `Scope:` line and the mail subject lines (`review docs done <change>`, `review security done <change>`, etc.) and the consolidated mail subject. Note: `<change>` appearing in task description prefixes like `REVIEW docs <intent_id> <change>` are already-substituted prose instructions to Raven, not unresolved tokens — replace those with `<change?>` too so they substitute correctly at resolution time
 - [ ] 2.4 Delete `academy/orders/independent-review-all.md`
-- [ ] 2.5 Run `bash tests/run.sh --unit 2>&1 | tail -5` — confirm all tests pass (the existing `independent-review` tests should still pass; `independent-review-all` tests should be removed or updated)
+- [ ] 2.5 Run `bash tests/run.sh --unit 2>&1 | tail -5` — confirm all tests pass; update any existing `test_captain.py` tests for `independent-review` that currently expect a required `change_name` (they should now accept `change_name=None` and verify it resolves to `"entire codebase"`)
 
 ## 3. Update `academy/orders/sdd.md` — multi-change support
 
