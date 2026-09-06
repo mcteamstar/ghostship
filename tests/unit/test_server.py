@@ -5209,8 +5209,8 @@ class UiPortAllocationTests(unittest.TestCase):
 
     def test_allocate_returns_range_start_when_empty(self) -> None:
         with (
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
         ):
             port = server._allocate_dashboard_port()
         self.assertEqual(port, 9000)
@@ -5220,8 +5220,8 @@ class UiPortAllocationTests(unittest.TestCase):
         server._dashboard_ports_in_use.add(9000)
         server._dashboard_ports_in_use.add(9001)
         with (
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
         ):
             port = server._allocate_dashboard_port()
         self.assertEqual(port, 9002)
@@ -5229,8 +5229,8 @@ class UiPortAllocationTests(unittest.TestCase):
 
     def test_allocate_raises_when_exhausted(self) -> None:
         with (
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 3),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 3),
         ):
             server._dashboard_ports_in_use.update({9000, 9001, 9002})
             with self.assertRaises(RuntimeError) as ctx:
@@ -5287,8 +5287,8 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
             patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ga_host_url
@@ -5360,8 +5360,8 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
             patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
@@ -5441,8 +5441,8 @@ class TRN101LaunchPortalTests(unittest.TestCase):
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
             patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
@@ -5666,8 +5666,8 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
             patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
@@ -5715,8 +5715,8 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "cfg") as mock_cfg,
         ):
             mock_cfg.ga_host_url = ""
@@ -5748,8 +5748,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+                patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
                 patch.object(server, "_caddy_register_crew") as mock_caddy,
@@ -5817,8 +5817,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
+                patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_caddy_register_crew"),
                 patch.object(server, "cfg") as mock_cfg,
@@ -5843,8 +5843,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+                patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+                patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
                 patch.object(server, "_caddy_register_crew") as mock_caddy,

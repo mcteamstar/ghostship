@@ -118,7 +118,9 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         mock_resp = self._make_response(200)
         mock_put = Mock(return_value=mock_resp)
 
-        with patch.object(server, "GA_API_KEY", "some-key"), \
+        # TRN-116: _caddy_register_crew moved to transport/caddy.py and reads
+        # GA_API_KEY from that module's globals, so patch it there.
+        with patch.object(server._caddy, "GA_API_KEY", "some-key"), \
              patch.object(server.httpx, "put", mock_put):
             server._caddy_register_crew("alpha", 64058, crew_cookie="test-token")
 
@@ -404,8 +406,8 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value=finish_result),
             patch.object(server, "_resolve_composition", return_value={"name": "spec-ops"}),
             patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_START", 9000),
+            patch.object(server._caddy, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
             patch.object(server, "_caddy_register_crew") as mock_register,
             patch.object(server, "cfg") as mock_cfg,
         ):

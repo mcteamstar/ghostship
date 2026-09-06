@@ -39,10 +39,10 @@
 
 ## 7. Extract `transport/caddy.py`
 
-- [ ] 7.1 Create `transport/caddy.py` containing `_caddy_admin_url`, `_allocate_dashboard_port`, `_release_dashboard_port`, `_caddy_register_crew`, `_caddy_deregister_crew`; note that `_allocate_dashboard_port` and `_release_dashboard_port` must be called while holding `_registry_lock` (imported from `lifecycle`)
-- [ ] 7.2 Update `transport/server.py` to import these helpers from `caddy` / `transport.caddy` using the dual-path pattern
-- [ ] 7.3 Update `tests/unit/test_server.py` mock paths for any Caddy helpers that moved
-- [ ] 7.4 Run the full test suite and confirm all tests pass
+- [x] 7.1 Create `transport/caddy.py` containing `_caddy_admin_url`, `_allocate_dashboard_port`, `_release_dashboard_port`, `_caddy_register_crew`, `_caddy_deregister_crew`; note that `_allocate_dashboard_port` and `_release_dashboard_port` must be called while holding `_registry_lock` (imported from `lifecycle`)
+- [x] 7.2 Update `transport/server.py` to import these helpers from `caddy` / `transport.caddy` using the dual-path pattern
+- [x] 7.3 Update `tests/unit/test_server.py` mock paths for any Caddy helpers that moved
+- [x] 7.4 Run the full test suite and confirm all tests pass
 
 ## 8. Extract `transport/monitors.py`
 
