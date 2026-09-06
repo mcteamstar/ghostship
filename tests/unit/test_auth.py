@@ -32,6 +32,8 @@ import httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
+
+
 class _FakeDownstream:
     """Minimal ASGI app that records whether it was called."""
 
