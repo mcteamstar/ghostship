@@ -46,10 +46,10 @@
 
 ## 8. Extract `transport/monitors.py`
 
-- [ ] 8.1 Create `transport/monitors.py` containing `_schedule_monitor`, `_idle_monitor`, `_cron_activity_since`, `_cron_has_enabled_job`; import `_crew_api_with_recovery`, `_ensure_crew_running`, and related constants from `lifecycle` / `transport.lifecycle` using the dual-path pattern
-- [ ] 8.2 Update `transport/lifecycle.py` to remove these functions and import `start_monitors` (or equivalent) from `monitors` / `transport.monitors`
-- [ ] 8.3 Update `tests/unit/test_lifecycle.py` mock paths for monitor functions that moved
-- [ ] 8.4 Run the full test suite and confirm all tests pass
+- [x] 8.1 Create `transport/monitors.py` containing `_schedule_monitor`, `_idle_monitor`, `_cron_activity_since`, `_cron_has_enabled_job`; import `_crew_api_with_recovery`, `_ensure_crew_running`, and related constants from `lifecycle` / `transport.lifecycle` using the dual-path pattern
+- [x] 8.2 Update `transport/lifecycle.py` to remove these functions and import `start_monitors` (or equivalent) from `monitors` / `transport.monitors`
+- [x] 8.3 Update `tests/unit/test_lifecycle.py` mock paths for monitor functions that moved
+- [x] 8.4 Run the full test suite and confirm all tests pass
 
 ## 9. Test Coverage Gaps
 

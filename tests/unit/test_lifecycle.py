@@ -46,6 +46,7 @@ from tests.unit.helpers import (  # noqa: F401
     FakePodmanClient,
     academy,
     lifecycle,
+    monitors,
     server,
 )
 import transport.registry as _registry_mod
@@ -1855,8 +1856,9 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
     ``time.sleep`` (to avoid the infinite outer loop) and patching out the
     parts we don't want to exercise per test.  The function under test
     resolves _crew_api, _crew_api_with_recovery, _load_registry, _save_registry,
-    _get_crew_schedules, _ensure_crew_running etc. from lifecycle's namespace,
-    so all patches are on ``lifecycle.*`` (call-site principle, design.md §2).
+    _get_crew_schedules, _ensure_crew_running etc. from the ``monitors`` module
+    namespace (TRN-116 §8 moved the loops there), so all patches are on
+    ``monitors.*`` (call-site principle, design.md §2).
     """
 
     # Shared fixture helpers ──────────────────────────────────────────────────
@@ -1930,14 +1932,14 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
         save_mock = Mock()
 
         with (
-            patch.object(lifecycle, "time") as time_mock,
-            patch.object(lifecycle, "_load_registry", side_effect=_fake_load_registry),
-            patch.object(lifecycle, "_save_registry", save_mock),
-            patch.object(lifecycle, "_get_crew_schedules", return_value=[sched]),
-            patch.object(lifecycle, "_ensure_crew_running", ensure_mock),
-            patch.object(lifecycle, "_crew_api", crew_api_mock),
-            patch.object(lifecycle, "_crew_api_with_recovery", spawn_mock),
-            patch.object(lifecycle, "_advance_next_fire_at"),
+            patch.object(monitors, "time") as time_mock,
+            patch.object(monitors, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(monitors, "_save_registry", save_mock),
+            patch.object(monitors, "_get_crew_schedules", return_value=[sched]),
+            patch.object(monitors, "_ensure_crew_running", ensure_mock),
+            patch.object(monitors, "_crew_api", crew_api_mock),
+            patch.object(monitors, "_crew_api_with_recovery", spawn_mock),
+            patch.object(monitors, "_advance_next_fire_at"),
         ):
             time_mock.sleep.side_effect = _fake_sleep
             time_mock.time.return_value = 9999.0  # always past next_fire_at=0

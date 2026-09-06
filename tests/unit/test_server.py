@@ -55,7 +55,7 @@ from unittest.mock import ANY, Mock, MagicMock, patch
 import httpx
 import transport.registry as _registry_mod  # noqa: F401
 
-from tests.unit.helpers import Request, server, lifecycle, academy  # noqa: F401
+from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -2671,20 +2671,14 @@ class IdleMonitorTests(unittest.TestCase):
             sleep_called[0] = True
 
         with (
-            patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_http", FakeHTTP()),
-            patch.object(server, "_http", FakeHTTP()),
-            patch.object(lifecycle, "_touch_crew", side_effect=touch),
-            patch.object(server, "_touch_crew", side_effect=touch),
-            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crew_items)}),
-            patch.object(server, "_load_registry", return_value={"crews": dict(crew_items)}),
-            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
-            patch.object(server, "_save_registry", side_effect=save_reg),
-            patch.object(lifecycle, "_mint_cookie", return_value=mint_cookie_return),
-            patch.object(server, "_mint_cookie", return_value=mint_cookie_return),
-            patch.object(server.time, "sleep", side_effect=fake_sleep),
-            patch.object(server.time, "time", return_value=1000.0),
+            patch.object(monitors, "_get_podman", return_value=podman),
+            patch.object(monitors, "_http", FakeHTTP()),
+            patch.object(monitors, "_touch_crew", side_effect=touch),
+            patch.object(monitors, "_load_registry", return_value={"crews": dict(crew_items)}),
+            patch.object(monitors, "_save_registry", side_effect=save_reg),
+            patch.object(monitors, "_mint_cookie", return_value=mint_cookie_return),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=1000.0),
         ):
             try:
                 server._idle_monitor()
@@ -3596,17 +3590,12 @@ class ScheduleMonitorTests(unittest.TestCase):
                 raise StopIteration("break after one iteration")
 
         with (
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-            patch.object(lifecycle, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
-            patch.object(server, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
-            patch.object(server.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors, "_load_registry", return_value=reg),
+            patch.object(monitors, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(monitors, "_crew_api_with_recovery", side_effect=api),
+            patch.object(monitors, "_save_registry", side_effect=fake_save),
+            patch.object(monitors, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
         ):
             try:
                 server._schedule_monitor()
