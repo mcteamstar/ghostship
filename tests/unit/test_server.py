@@ -3503,3 +3503,78 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
         finally:
             stop.set()
             writer.join(timeout=5)
+
+
+# ── TRN-123: _get_ensure_running_lock helper (asyncio lock registry) ──────────
+
+
+class GetEnsureRunningLockTests(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for the _get_ensure_running_lock helper (TRN-123).
+
+    Verifies that the helper:
+    - Returns an asyncio.Lock for a given crew_id.
+    - Returns the *same* lock object on repeated calls for the same crew_id
+      (identity, not a new lock each time).
+    - Returns *different* lock objects for different crew_ids.
+    - Is safe to call concurrently from multiple threads (no lost writes or
+      duplicate lock objects due to a race on the registry dict).
+    """
+
+    def setUp(self) -> None:
+        # Isolate each test: clear the registry so tests don't share lock state.
+        with server._ensure_running_locks_lock:
+            server._ensure_running_locks.clear()
+
+    def tearDown(self) -> None:
+        with server._ensure_running_locks_lock:
+            server._ensure_running_locks.clear()
+
+    async def test_returns_asyncio_lock(self) -> None:
+        """_get_ensure_running_lock returns an asyncio.Lock."""
+        lock = server._get_ensure_running_lock("crew-a")
+        self.assertIsInstance(lock, asyncio.Lock)
+
+    async def test_same_crew_same_lock_identity(self) -> None:
+        """Repeated calls for the same crew_id return the identical object."""
+        lock1 = server._get_ensure_running_lock("crew-a")
+        lock2 = server._get_ensure_running_lock("crew-a")
+        self.assertIs(lock1, lock2)
+
+    async def test_different_crews_different_locks(self) -> None:
+        """Different crew_ids get distinct lock objects."""
+        lock_a = server._get_ensure_running_lock("crew-a")
+        lock_b = server._get_ensure_running_lock("crew-b")
+        self.assertIsNot(lock_a, lock_b)
+
+    async def test_concurrent_first_access_same_crew_same_lock(self) -> None:
+        """Concurrent first-time calls for the same crew_id from multiple
+        threads must all receive the identical lock object (no duplicate creation
+        due to a race on the registry dict)."""
+        import concurrent.futures
+
+        results = []
+
+        def _fetch() -> asyncio.Lock:
+            return server._get_ensure_running_lock("crew-concurrent")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            results = list(ex.map(lambda _: _fetch(), range(50)))
+
+        # All 50 calls must have received the same lock object.
+        first = results[0]
+        self.assertIsInstance(first, asyncio.Lock)
+        self.assertTrue(
+            all(r is first for r in results),
+            "Concurrent first-time callers received different lock objects — "
+            "registry dict is not properly protected.",
+        )
+
+    async def test_lock_is_functional_as_asyncio_mutex(self) -> None:
+        """The returned lock can actually be acquired and released as an
+        asyncio mutex — verifying it is bound to the running event loop."""
+        lock = server._get_ensure_running_lock("crew-functional")
+        async with lock:
+            # While held, a non-blocking acquire attempt should fail.
+            acquired = lock.locked()
+            self.assertTrue(acquired, "Lock should be held inside async with block")
+        self.assertFalse(lock.locked(), "Lock should be released after async with block")

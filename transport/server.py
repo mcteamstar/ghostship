@@ -3673,6 +3673,10 @@ def _pickup_single(
                 ts["started_at"] = now.isoformat()
             if ts and done and ts.get("completed_at") is None:
                 ts["completed_at"] = now.isoformat()
+            # TRN-123: snapshot ts under the lock so the post-lock reads below
+            # see a stable copy rather than a live reference that a concurrent
+            # _pickup_single or _dispatch_batch could mutate after release.
+            ts = dict(ts)
 
         out: dict[str, Any] = {
             "task_id": r.get("id"),
