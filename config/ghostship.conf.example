@@ -166,7 +166,7 @@
 # ga-portal (Caddy) is a required component and is always installed. It binds
 # ports 443/80 AND the dashboard port range, terminates TLS, and gates auth for
 # all dashboard ports; the transport's per-port uvicorn listeners are not
-# started. See docs/caddy.md for full setup and the vm23 host-Caddy retirement
+# started. See docs/caddy.md for full setup and the host-Caddy retirement
 # note.
 #
 # TRN-103 MIGRATION: GA_PORTAL_ENABLED was removed — there is no opt-out. Any
@@ -183,7 +183,7 @@
 #
 #   tailscale — Real browser-trusted certs from Tailscale ACME for .ts.net
 #     hostnames. Requires the Tailscale daemon on the host. No trust step.
-#     Ideal for vm23/academy deployments.
+#     Ideal for your-server deployments.
 #
 #   acme — Public Let's Encrypt certificate for GA_PORTAL_DOMAIN. Requires
 #     GA_PORTAL_DOMAIN set and ports 80/443 reachable for ACME challenge.

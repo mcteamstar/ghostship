@@ -8,7 +8,7 @@ See `proposal.md — Why` for motivation. Current state relevant to the design:
 - Dashboard UIs get per-port daemon-thread uvicorn servers (ports 64058–64107), each proxying to `gs-{id}:5476`. These spawn a new thread and asyncio event loop per crew. The per-port model exists **because the KiroCrew dashboard SPA requires a root origin** — it does not work under a path prefix (`/crews/{id}/ui/`), which was tried and confirmed broken. Each crew UI therefore owns a full origin (`host:PORT/`).
 - `BearerAuthMiddleware` enforces `GA_API_KEY` on every request to the main transport port (64057). Dashboard ports are currently unauthenticated (TRN-91 gap).
 - TLS is either absent (plain HTTP, the default) or via `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` on the transport itself (not widely used).
-- The Caddy project already runs as a separate host-level service on `vm23` (the academy host), managed independently. This design's `ga-caddy` container **replaces** that host Caddy on vm23 (see D8).
+- The Caddy project already runs as a separate host-level service on your server, managed independently. This design's `ga-caddy` container **replaces** that host Caddy on your server (see D8).
 
 ## Goals / Non-Goals
 
@@ -72,7 +72,7 @@ See `proposal.md — Why` for motivation. Current state relevant to the design:
 
 **Chosen**: Four modes baked into `initial-config.json` at install time:
 - `internal` (default): Caddy's built-in CA issues self-signed certs. Works on localhost, private IPs, Tailscale addresses, and any hostname — no DNS or external infra needed. The operator trusts Caddy's root CA once (`caddy trust`), after which every crew cert is trusted automatically. Best default for homelab/private-network deployments.
-- `tailscale`: Caddy provisions real browser-trusted certs for `.ts.net` hostnames via Tailscale's ACME endpoint. Requires the Tailscale daemon present on the host. Ideal for vm23/academy deployments — no cert-trust step needed.
+- `tailscale`: Caddy provisions real browser-trusted certs for `.ts.net` hostnames via Tailscale's ACME endpoint. Requires the Tailscale daemon present on the host. Ideal for your-server deployments — no cert-trust step needed.
 - `acme`: Standard Let's Encrypt / public ACME. For internet-facing deployments with real DNS. Requires `GA_CADDY_DOMAIN` set and ports 80/443 reachable for the ACME challenge.
 - `off`: Plain HTTP, no TLS. For local dev, or when an upstream terminator already handles TLS.
 
@@ -80,7 +80,7 @@ TLS applies to every listener Caddy owns — the main port and every per-crew da
 
 **CA path surfacing (internal mode)**: When `GA_CADDY_TLS_MODE=internal`, operators need the Caddy root CA cert to complete the one-time trust step. The install script prints its path, and `ghostship status` surfaces it. The cert lives in the `ga-caddy-data` volume at the standard Caddy path `/data/caddy/pki/authorities/local/root.crt`; the install output and `ghostship status` translate that to the host-visible location (the `ga-caddy-data` volume mountpoint) so operators know exactly where to point `caddy trust` or their OS/browser trust store.
 
-**Rationale**: Each environment has a clear TLS path. `internal` is the right default for the private-network install base. `tailscale` gives vm23/academy real trusted certs with zero trust-step friction. `acme` is the answer for public internet-facing installs. `off` exists for edge/dev deployments.
+**Rationale**: Each environment has a clear TLS path. `internal` is the right default for the private-network install base. `tailscale` gives your-server real trusted certs with zero trust-step friction. `acme` is the answer for public internet-facing installs. `off` exists for edge/dev deployments.
 
 ### D6: `ga-caddy` data volume for cert persistence
 
@@ -94,11 +94,11 @@ TLS applies to every listener Caddy owns — the main port and every per-crew da
 
 **Rationale**: Exposes the admin API only to the transport, which is the only caller. Prevents accidental exposure on the host.
 
-### D8: `ga-caddy` is the sole TLS terminator; vm23 host Caddy is retired
+### D8: `ga-caddy` is the sole TLS terminator; host Caddy is retired
 
-**Chosen**: When `GA_CADDY_ENABLED=true`, `ga-caddy` takes over all inbound traffic (443/80 and the dashboard port range). The pre-existing host-level Caddy on vm23 is no longer needed and should be retired once `ga-caddy` is active.
+**Chosen**: When `GA_CADDY_ENABLED=true`, `ga-caddy` takes over all inbound traffic (443/80 and the dashboard port range). The pre-existing host-level Caddy on your-server is no longer needed and should be retired once `ga-caddy` is active.
 
-**Rationale** (Admiral decision, Q1): One TLS terminator, not two. Running both is redundant and risks port conflicts. `ga-caddy` publishes the public ports directly; the vm23 operator stops/removes the host Caddy as part of the cutover.
+**Rationale** (Admiral decision, Q1): One TLS terminator, not two. Running both is redundant and risks port conflicts. `ga-caddy` publishes the public ports directly; the server operator stops/removes the host Caddy as part of the cutover.
 
 ### D9: Clean cutover — no per-port + Caddy coexistence
 
@@ -315,7 +315,7 @@ A whole HTTP server bound to the crew's allocated port, carrying `"@id": "crew-{
 2. To opt in (**breaking cutover**):
    - Set `GA_CADDY_ENABLED=true` in `ghostship.conf`.
    - Set `GA_CADDY_TLS_MODE=internal` (local/Tailscale) or `acme`+`GA_CADDY_DOMAIN` (remote).
-   - On vm23: stop/remove the pre-existing host-level Caddy (D8) — `ga-caddy` takes over inbound traffic.
+   - On your server: stop/remove the pre-existing host-level Caddy (D8) — `ga-caddy` takes over inbound traffic.
    - Run `./install.sh --config ghostship.conf`. The regenerated compose.yml binds the dashboard port range to `ga-caddy`, not `ga-transport`.
    - For internal CA: run `caddy trust` (printed by install script) to add the root CA to host/browser.
 3. Existing crews survive — their Caddy dashboard servers are re-registered at transport startup via `_reconcile_registry`.
@@ -324,6 +324,6 @@ A whole HTTP server bound to the crew's allocated port, carrying `"@id": "crew-{
 ## Open Questions
 
 All prior open questions are resolved (Admiral decisions):
-- **Q1 (vm23 topology)** → D8: `ga-caddy` is the sole TLS terminator; the host Caddy on vm23 is retired.
+- **Q1 (server topology)** → D8: `ga-caddy` is the sole TLS terminator; the host Caddy on your server is retired.
 - **Q2 (SPA base URL / path-prefix)** → confirmed broken. Dashboard routing stays port-based (root origin per crew); path-prefix and subdomain approaches are both dropped.
 - **Q3 (coexistence)** → D9: clean cutover, no migration window. Documented as a breaking change.

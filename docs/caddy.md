@@ -59,7 +59,7 @@ Set `GA_PORTAL_TLS_MODE` to one of:
 | Mode | When to use | Notes |
 |:-----|:------------|:------|
 | `internal` (default) | Local dev, homelab, Tailscale networks | Caddy's built-in CA issues self-signed certs. Works on any hostname — localhost, private IPs, Tailscale `.ts.net` addresses. Requires a one-time `caddy trust` step to install the Caddy root CA into your host/browser trust store. The cert path is printed by `install.sh` and shown by `ghostship status`. |
-| `tailscale` | Tailscale-connected deployments (recommended for vm23/academy) | Caddy provisions real browser-trusted certs for `.ts.net` hostnames via Tailscale's ACME endpoint. Requires the Tailscale daemon running on the host. No trust step — browsers accept the certs without any setup. Set `GA_PORTAL_DOMAIN` to your `.ts.net` hostname. |
+| `tailscale` | Tailscale-connected deployments (recommended for your-server) | Caddy provisions real browser-trusted certs for `.ts.net` hostnames via Tailscale's ACME endpoint. Requires the Tailscale daemon running on the host. No trust step — browsers accept the certs without any setup. Set `GA_PORTAL_DOMAIN` to your `.ts.net` hostname. |
 | `acme` | Internet-facing deployments with public DNS | Standard Let's Encrypt / public ACME. Requires `GA_PORTAL_DOMAIN` set to a real DNS name and ports 80/443 reachable from the internet for ACME challenges. |
 | `off` | Local dev, or when an upstream terminator already handles TLS | Plain HTTP on all ports. Useful when running behind a load balancer that terminates TLS. |
 
@@ -181,9 +181,9 @@ Replace the `caddy:2` image reference in `compose.yml` with your custom image. T
 
 This is the recommended path for production deployments where operator-managed accounts, MFA, or organisation SSO is required.
 
-## vm23 note — retiring the host Caddy
+## Retiring the host Caddy
 
-`ga-portal` is the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on vm23 is no longer needed and should be stopped and removed to avoid port conflicts:
+`ga-portal` is the sole TLS terminator and takes over all inbound traffic on ports 443/80 and the dashboard port range. The pre-existing host-level Caddy on your server is no longer needed and should be stopped and removed to avoid port conflicts:
 
 ```bash
 sudo systemctl stop caddy
@@ -197,7 +197,7 @@ Run `./install.sh` to apply the new compose stack before stopping the host Caddy
 As of TRN-103, `ga-portal` is always installed and `GA_PORTAL_ENABLED` was removed. Deployments that previously ran with `GA_PORTAL_ENABLED=false` must re-run `install.sh` to adopt the portal:
 
 1. Remove any `GA_PORTAL_ENABLED` line from your config (it is ignored). Set `GA_PORTAL_TLS_MODE` / `GA_PORTAL_DOMAIN` as needed.
-2. On vm23: stop the pre-existing host Caddy (see above).
+2. On your server: stop the pre-existing host Caddy (see above).
 3. Run `./install.sh --config config/ghostship.conf`. The regenerated `compose.yml` binds the dashboard port range to `ga-portal`, not `ga-transport`.
 4. For `internal` TLS: run `caddy trust` with the printed path.
 5. Existing crews survive — the transport's `_reconcile_registry` re-registers their Caddy servers on startup.
