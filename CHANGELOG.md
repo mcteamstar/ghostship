@@ -1,6 +1,20 @@
 # Changelog
 
-## v0.3.0 (unreleased)
+## v0.3.1 (unreleased)
+
+### Captain templates
+
+- **`independent-review`** — dispatches four concurrent independent reviewers (Wraith for docs, three Banshees for security/quality/test-coverage) scoped to a named change and consolidates findings by severity.
+- **`independent-review-all`** — same as `independent-review` but scoped to the entire codebase rather than a single change.
+- **`sdd-parallel`** — drives multiple named OpenSpec changes concurrently through the standard SDD lifecycle; accepts a comma-separated `change_name` list.
+
+### Install
+
+- **`--client-only`** flag — skips all container infrastructure (no Podman check, no image builds, no `compose up`) and wires up just the `ghostship` CLI and agent harness integrations. Designed for machines connecting to an already-running remote transport. Use with `--url` and optionally `--api-key`.
+
+---
+
+## v0.3.0
 
 ### Breaking changes
 
