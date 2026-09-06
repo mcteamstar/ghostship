@@ -1,6 +1,6 @@
 ## 1. Dead Code Removal
 
-- [ ] 1.1 Remove the body of `_inject_git_identity` in `transport/lifecycle.py`, leaving only the function signature; replace its call site in `_finish_crew_setup` with a comment noting that git identity vars are injected at container-create time
+- [ ] 1.1 Remove the body of `_inject_git_identity` in `transport/lifecycle.py`, leaving only the function signature; replace its call site in `_finish_crew_setup` with a comment noting that git identity vars are injected at container-create time; remove the two `_inject_git_identity` imports in `transport/server.py` (lines ~541 and ~597)
 - [ ] 1.2 Remove the `KIROCREW_ALLOW_UNSANDBOXED: "1"` env injection from the `launch` handler in `transport/server.py`; add a comment referencing `sandbox: off` config as the replacement
 - [ ] 1.3 Run `tests/run.sh` (or equivalent) and confirm all existing tests pass
 

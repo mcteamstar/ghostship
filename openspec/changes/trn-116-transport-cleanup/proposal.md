@@ -1,6 +1,8 @@
 ## Why
 
-The transport codebase has grown substantially during the 0.3.0 cycle: `server.py` is 4531 lines, `lifecycle.py` is 1884 lines, and `files.py` is 794 lines. The result is files that are difficult to navigate, contain duplicated patterns, and have dead code that misleads readers. This cleanup pass runs before 0.4.0 development begins, when the surface area of the codebase will expand again.
+The transport codebase has grown substantially during the 0.3.0 cycle: `server.py` is 4531 lines, `lifecycle.py` is 1884 lines, `files.py` is 794 lines, and `captain.py` is 601 lines. The result is files that are difficult to navigate, contain duplicated patterns, and have dead code that misleads readers. This cleanup pass runs before 0.4.0 development begins, when the surface area of the codebase will expand again.
+
+_Assessed against `release/0.3.1` (post TRN-110, TRN-115). Line counts unchanged since 0.3.0; all tasks below remain undone._
 
 ## What Changes
 
@@ -9,6 +11,7 @@ The transport codebase has grown substantially during the 0.3.0 cycle: `server.p
   - Auth middleware (`TransportSecretMiddleware`, `BearerAuthMiddleware`, `SecurityHeadersMiddleware`, and supporting helpers currently mixed into `server.py`)
   - Caddy management (`_caddy_register_crew`, `_caddy_deregister_crew`, port allocation helpers — currently in `server.py`)
   - Schedule/idle monitors (`_schedule_monitor`, `_idle_monitor`, and their helpers — currently in `lifecycle.py`)
+  - Captain standing orders (`_load_order_template`, `_format_captain_mail`, `_skim_all_mailboxes`, check-in job helpers — currently in `captain.py`, 601 lines and growing with new templates)
 - **Dead code removal**:
   - `_inject_git_identity` in `lifecycle.py` is a documented no-op; remove the function body and its call site in `_finish_crew_setup`
   - `KIROCREW_ALLOW_UNSANDBOXED` env var in `server.py` is redundant with `sandbox: off` config (FINDING-3 from the 0.3.0 review); remove the env injection
