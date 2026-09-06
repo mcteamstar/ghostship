@@ -26,9 +26,9 @@
 
 ## 5. Schedule/Idle Monitor Documentation
 
-- [ ] 5.1 Add section-header comments to `_schedule_monitor` in `transport/lifecycle.py` documenting the loop interval (`_SCHEDULE_MONITOR_INTERVAL`), the exit condition (daemon thread — exits with the process), and the three actions it may take per cycle
-- [ ] 5.2 Add equivalent section-header comments to `_idle_monitor` documenting its interval, exit condition, and the idle-stop threshold
-- [ ] 5.3 No behaviour change — verify by running the test suite
+- [x] 5.1 Add section-header comments to `_schedule_monitor` in `transport/lifecycle.py` documenting the loop interval (`_SCHEDULE_MONITOR_INTERVAL`), the exit condition (daemon thread — exits with the process), and the three actions it may take per cycle
+- [x] 5.2 Add equivalent section-header comments to `_idle_monitor` documenting its interval, exit condition, and the idle-stop threshold
+- [x] 5.3 No behaviour change — verify by running the test suite
 
 ## 6. Extract `transport/auth.py`
 

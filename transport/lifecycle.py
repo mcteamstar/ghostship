@@ -1582,10 +1582,19 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
 def _schedule_monitor() -> None:
     """Background thread: poll for due scheduled jobs and fire them.
 
-    Checks every 30s. For each due job (next_fire_at <= now), ensures the
-    crew is running and fires the tick via POST /api/spawn.
+    Runs as a daemon thread — exits automatically when the process exits.
+    Loop interval: _SCHEDULE_MONITOR_INTERVAL (30 s).
+
+    Per cycle, for each crew in the registry the monitor may take one of
+    three actions:
+      1. Skip disabled or not-yet-due jobs (next_fire_at > now).
+      2. Wake the crew via _ensure_crew_running and fire a tick via POST
+         /api/spawn (advancing next_fire_at on success, logging on failure).
+      3. Advance next_fire_at and persist to the registry even when the crew
+         cannot be woken (error path), so a broken crew never blocks others.
     """
     while True:
+        # ── Interval sleep ───────────────────────────────────────────────────
         time.sleep(_SCHEDULE_MONITOR_INTERVAL)
         try:
             with _registry_lock:
@@ -1780,13 +1789,23 @@ def _cron_has_enabled_job(payload: Any) -> bool:
 def _idle_monitor() -> None:
     """Background thread: stop crew containers that have been idle too long.
 
-    Checks every GA_IDLE_TIMEOUT_SECS seconds. A crew is considered idle when:
-    - It has no running tasks (done=false), AND
-    - It hasn't been used in GA_IDLE_TIMEOUT_SECS seconds
+    Runs as a daemon thread — exits automatically when the process exits.
+    Loop interval: max(GA_IDLE_TIMEOUT_SECS, 10) seconds between cycles.
+    Idle-stop threshold: GA_IDLE_TIMEOUT_SECS seconds since last_used.
 
-    Stopped containers are restarted transparently on next use by _ensure_crew_running.
+    A crew is considered idle and eligible for stop when ALL hold:
+      - Container is running (stopped crews are already handled).
+      - No active dispatched tasks (checked via GET /api/spawn).
+      - No in-flight or recently-completed cron jobs (checked via GET /api/crons).
+      - No enabled cron jobs that have not yet fired (a standing commitment).
+      - last_used is at least GA_IDLE_TIMEOUT_SECS seconds in the past.
+
+    Stopped containers are restarted transparently on next use by
+    _ensure_crew_running.  The monitor fails open on any check error — if
+    activity cannot be verified, the crew is left running.
     """
     while True:
+        # ── Interval sleep ───────────────────────────────────────────────────
         time.sleep(max(GA_IDLE_TIMEOUT_SECS, 10))
         try:
             podman = _get_podman()
