@@ -156,12 +156,20 @@ def _resolve_order_template(
         raise ValueError("Unknown Captain order template: None")
     _description, body = _load_order_template(template)
     body = _substitute_placeholders(body)
-    if change_name is not None:
-        _validate_captain_change_name(change_name)
+    if "<change>" in body and "<changes>" in body:
+        raise ValueError("Template body must not contain both <change> and <changes>")
     if "<change>" in body:
         if change_name is None:
             raise ValueError(f"Template {template!r} requires change_name")
+        _validate_captain_change_name(change_name)
         body = body.replace("<change>", change_name)
+    if "<changes>" in body:
+        if not change_name:
+            raise ValueError(f"Template {template!r} requires change_name (comma-separated list)")
+        names = [n.strip() for n in change_name.split(",")]
+        for name in names:
+            _validate_captain_change_name(name)
+        body = body.replace("<changes>", change_name)
     return body
 
 
