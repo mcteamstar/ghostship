@@ -32,10 +32,10 @@
 
 ## 6. Extract `transport/auth.py`
 
-- [ ] 6.1 Create `transport/auth.py` containing `TransportSecretMiddleware`, `RateLimitMiddleware`, `BearerAuthMiddleware`, `SecurityHeadersMiddleware`, `_parse_bearer_token`, and their private helpers (`_parse_rate_limit_var`, `_build_rate_limiters`, `_request_source`)
-- [ ] 6.2 Update `transport/server.py` to import the middleware classes from `auth` (flat) or `transport.auth` (package) using the dual-path `try/except` pattern
-- [ ] 6.3 Update `tests/unit/test_server.py` mock paths for any middleware internals that moved
-- [ ] 6.4 Run the full test suite and confirm all tests pass
+- [x] 6.1 Create `transport/auth.py` containing `TransportSecretMiddleware`, `RateLimitMiddleware`, `BearerAuthMiddleware`, `SecurityHeadersMiddleware`, `_parse_bearer_token`, and their private helpers (`_parse_rate_limit_var`, `_build_rate_limiters`, `_request_source`)
+- [x] 6.2 Update `transport/server.py` to import the middleware classes from `auth` (flat) or `transport.auth` (package) using the dual-path `try/except` pattern
+- [x] 6.3 Update `tests/unit/test_server.py` mock paths for any middleware internals that moved
+- [x] 6.4 Run the full test suite and confirm all tests pass
 
 ## 7. Extract `transport/caddy.py`
 

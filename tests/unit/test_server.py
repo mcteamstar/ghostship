@@ -4503,10 +4503,10 @@ class ProxyHandlerTests(unittest.TestCase):
             "path": "/crews/demo/ui",
             "headers": [(b"authorization", b"Bearer testkey")],
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey",
+            routes={("GET", "/crews/*/ui"): fake_ui_proxy})
 
-        with patch.object(server, "_handle_crew_ui_proxy", side_effect=fake_ui_proxy):
-            status, _, body = _run_asgi(mw, scope)
+        status, _, body = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("ui", handled)
@@ -4525,10 +4525,10 @@ class ProxyHandlerTests(unittest.TestCase):
             "path": "/crews/demo/api/spawn",
             "headers": [(b"authorization", b"Bearer testkey")],
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey",
+            routes={("GET", "/crews/*/api"): fake_api_proxy})
 
-        with patch.object(server, "_handle_crew_api_proxy", side_effect=fake_api_proxy):
-            status, _, body = _run_asgi(mw, scope)
+        status, _, body = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("api", handled)
@@ -4571,10 +4571,10 @@ class ProxyHandlerTests(unittest.TestCase):
             "path": "/crews/demo/ui",
             "headers": [],  # No auth header
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="")  # No key
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="",
+            routes={("GET", "/crews/*/ui"): fake_ui_proxy})
 
-        with patch.object(server, "_handle_crew_ui_proxy", side_effect=fake_ui_proxy):
-            status, _, body = _run_asgi(mw, scope)
+        status, _, body = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("ui", handled)
@@ -5954,10 +5954,10 @@ class DashboardRestEndpointTests(unittest.TestCase):
             "path": "/crews/demo/dashboard",
             "headers": [(b"authorization", b"Bearer testkey")],
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey",
+            routes={("POST", "/crews/*/dashboard"): fake_post_handler})
 
-        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
-            status, _, _ = _run_asgi(mw, scope)
+        status, _, _ = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("post-dashboard", handled)
@@ -5976,10 +5976,10 @@ class DashboardRestEndpointTests(unittest.TestCase):
             "path": "/crews/demo/dashboard",
             "headers": [(b"authorization", b"Bearer testkey")],
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey",
+            routes={("DELETE", "/crews/*/dashboard"): fake_delete_handler})
 
-        with patch.object(server, "_handle_crew_dashboard_delete", side_effect=fake_delete_handler):
-            status, _, _ = _run_asgi(mw, scope)
+        status, _, _ = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("delete-dashboard", handled)
@@ -6010,10 +6010,10 @@ class DashboardRestEndpointTests(unittest.TestCase):
             "path": "/crews/demo/dashboard",
             "headers": [],  # No auth header
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="")  # No key
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="",
+            routes={("POST", "/crews/*/dashboard"): fake_post_handler})
 
-        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
-            status, _, body = _run_asgi(mw, scope)
+        status, _, body = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("post-dashboard-no-auth", handled)

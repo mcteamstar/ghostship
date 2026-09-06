@@ -64,8 +64,17 @@ class TestVersionEndpoint(unittest.TestCase):
         self.assertIsNotNone(result)
 
     def test_version_endpoint_in_public_routes(self) -> None:
-        """The /version route is registered as a public (unauthenticated) route."""
-        middleware = server.BearerAuthMiddleware(None, api_key="test-key")
+        """The /version route is registered as a public (unauthenticated) route.
+
+        TRN-116: BearerAuthMiddleware moved to transport/auth.py and no longer
+        hard-codes its public routes; server.py injects them at app-build time
+        (see create/serve). Construct the middleware the way server wires it.
+        """
+        middleware = server.BearerAuthMiddleware(
+            None,
+            api_key="test-key",
+            public_routes={("GET", "/version"): server._handle_version_get},
+        )
         self.assertIn(("GET", "/version"), middleware._public_routes)
 
     def test_version_endpoint_handler_exists(self) -> None:
