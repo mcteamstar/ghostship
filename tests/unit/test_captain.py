@@ -667,24 +667,100 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
         self.assertIn("Could not resume Captain check-in", result["error"])
 
-    def test_standing_stop_reports_failed_toggle(self) -> None:
+    def test_standing_stop_gateway_not_found_still_returns_stopped(self) -> None:
+        # TRN-104: gateway returns {"ok": False} (job not found) — stop should
+        # still succeed and the registry should be updated.
         existing = {
             "id": "job-existing",
             "name": server._CAPTAIN_CHECKIN_JOB_NAME,
             "agent": "raven",
             "enabled": True,
         }
+        registry = {"crews": {"demo": {"schedules": [{"job_id": "job-existing", "enabled": True}]}}}
+        podman = Mock()
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_load_registry", return_value={"crews": {"demo": {}}}),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry") as save_reg,
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_get_podman", return_value=Mock()),
+            patch.object(server, "_get_podman", return_value=podman),
             patch.object(captain_mod, "_mail_count", return_value=1),
  patch.object(lifecycle, "_crew_api", side_effect=[{"jobs": [existing]}, {"ok": False}],),
         ):
             result = server.captain("demo", "stop")
 
-        self.assertIn("Could not stop Captain check-in", result["error"])
+        self.assertNotIn("error", result)
+        self.assertEqual(result["status"], "stopped")
+        self.assertFalse(result["enabled"])
+        save_reg.assert_called_once()
+
+    def test_stop_when_already_disabled_in_gateway_still_updates_registry(self) -> None:
+        # TRN-104 (task 2.1): gateway already shows enabled=False (e.g. Raven
+        # paused it externally) — registry must still be updated to enabled=False.
+        existing = {
+            "id": "job-existing",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": False,  # already disabled in gateway
+            "last_status": "ok",
+        }
+        registry = {"crews": {"demo": {"schedules": [{"job_id": "job-existing", "enabled": True}]}}}
+        podman = Mock()
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry") as save_reg,
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(captain_mod, "_mail_count", return_value=1),
+            patch.object(lifecycle, "_crew_api", return_value={"jobs": [existing]}) as api,
+        ):
+            result = server.captain("demo", "stop")
+
+        # Since gateway already showed enabled=False, the enable toggle must NOT
+        # have been called (only the GET /api/crons listing call should have run).
+        self.assertEqual(api.call_count, 1)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["status"], "stopped")
+        self.assertFalse(result["enabled"])
+        # Registry was still saved with enabled=False.
+        save_reg.assert_called_once()
+        sched = registry["crews"]["demo"]["schedules"][0]
+        self.assertFalse(sched["enabled"])
+
+    def test_stop_when_gateway_api_raises_exception_still_updates_registry(self) -> None:
+        # TRN-104 (task 2.2): gateway API call raises an exception — stop must
+        # still return success and update the registry to enabled=False.
+        existing = {
+            "id": "job-existing",
+            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
+            "agent": "raven",
+            "enabled": True,
+        }
+        registry = {"crews": {"demo": {"schedules": [{"job_id": "job-existing", "enabled": True}]}}}
+        podman = Mock()
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_load_registry", return_value=registry),
+            patch.object(server, "_save_registry") as save_reg,
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(captain_mod, "_mail_count", return_value=1),
+            patch.object(
+                lifecycle,
+                "_crew_api",
+                side_effect=[{"jobs": [existing]}, ConnectionError("gateway unreachable")],
+            ),
+        ):
+            result = server.captain("demo", "stop")
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["status"], "stopped")
+        self.assertFalse(result["enabled"])
+        # Registry was still saved with enabled=False despite the gateway error.
+        save_reg.assert_called_once()
+        sched = registry["crews"]["demo"]["schedules"][0]
+        self.assertFalse(sched["enabled"])
 
     def test_standing_stop_uses_refreshed_crew_after_restart(self) -> None:
         existing = {

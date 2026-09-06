@@ -11,15 +11,15 @@ Enable the KiroCrew gateway SPA to load and navigate correctly when accessed via
 The transport SHALL allocate a unique port from the configured range (`GA_DASHBOARD_PORT_RANGE_START` to `GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1`) when a crew is launched with `dashboard=true` and start a transport listener on that port. All requests arriving on that port SHALL be reverse-proxied to `http://gs-{crew_id}:5476/{path}`. WebSocket upgrade requests SHALL be bidirectionally proxied to the upstream crew gateway via `httpx-ws`. The allocated port SHALL be stored in the crew registry and returned in the `launch` response as `dashboard_url`.
 
 #### Scenario: SPA loads at root of origin
-- **WHEN** a browser opens `http://academy.penguin-piano.ts.net:64058/`
+- **WHEN** a browser opens `http://ghostship-host.example.ts.net:64058/`
 - **THEN** the transport proxies to `http://gs-my-crew:5476/` and the SPA loads correctly
 
 #### Scenario: Client-side navigation and hard reload both work
 - **WHEN** the SPA navigates to `/chat` and the user hard-reloads
-- **THEN** `http://academy.penguin-piano.ts.net:64058/chat` is handled by the transport, proxied to `http://gs-my-crew:5476/chat`, and the SPA renders correctly
+- **THEN** `http://ghostship-host.example.ts.net:64058/chat` is handled by the transport, proxied to `http://gs-my-crew:5476/chat`, and the SPA renders correctly
 
 #### Scenario: WebSocket connection proxied to upstream
-- **WHEN** the SPA opens a WebSocket connection to `ws://academy.penguin-piano.ts.net:64058/api/ws`
+- **WHEN** the SPA opens a WebSocket connection to `ws://ghostship-host.example.ts.net:64058/api/ws`
 - **THEN** the transport upgrades the connection and bidirectionally proxies messages to `ws://gs-my-crew:5476/api/ws`
 
 #### Scenario: GA_API_KEY auth applies to UI port traffic

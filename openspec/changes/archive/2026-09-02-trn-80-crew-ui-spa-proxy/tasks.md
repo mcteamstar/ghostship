@@ -44,7 +44,7 @@
 
 ## 8. ohnomer/servers firewall ✓
 
-- [x] 8.1 `ufw allow 64058:64107/tcp` in `ohnomer/servers/hyperv/academy/install.sh`
+- [x] 8.1 `ufw allow 64058:64107/tcp` in `my-servers/install.sh`
 
 ## 9. Tests ✓
 

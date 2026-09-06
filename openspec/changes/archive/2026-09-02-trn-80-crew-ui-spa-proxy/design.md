@@ -86,7 +86,7 @@ The 403 on `/api/instances` is expected behaviour from the KiroCrew gateway. The
 
 ## Migration Plan
 
-1. Add `ufw allow 64058:64107/tcp` in `ohnomer/servers/hyperv/academy/install.sh` (done).
+1. Add `ufw allow 64058:64107/tcp` in `my-servers/install.sh` (done).
 2. Deploy updated transport.
 3. Existing live crews without a `dashboard_port` can retrofit via `POST /crews/{id}/dashboard` — no nuke required.
 4. Rollback: set `GA_DASHBOARD_PORT_ENABLED=false` — skips port allocation entirely, no UI ports opened.

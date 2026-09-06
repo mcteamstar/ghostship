@@ -15,7 +15,9 @@ import httpx
 from tests.e2e.helpers import (
     GHOSTSHIP_E2E_URL,
     GHOSTSHIP_API_KEY,
+    GHOSTSHIP_PODMAN_SOCKET,
     _SKIP_REASON,
+    _TRANSPORT_REACHABLE,
     mcp_call as _mcp_call,
     is_error as _is_error,
     container_stop as _container_stop,
@@ -23,18 +25,57 @@ from tests.e2e.helpers import (
     wait_until_stopped as _wait_until_stopped,
 )
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-# _mcp_call and _is_error imported from helpers.py
+# ── Module-level shared crew ──────────────────────────────────────────────────
+# TestErrorPaths (stateless tests), TestScheduleTool, and TestResponseSchemas
+# all share this crew. It is launched once per file (setUpModule) and torn
+# down once (tearDownModule). TestSteerTool keeps its own crew for isolation.
+# TestCaptainStatusStoppedCrew keeps its own crew because it stops it via Podman.
+
+SHARED_CREW_ID = "e2e-shared-ext"
+
+# Module-level launch result — stored so TestResponseSchemas.test_launch_response_shape
+# can assert on launch shape without triggering a second launch.
+_SHARED_LAUNCH_RESULT: dict = {}
+
+
+def setUpModule():  # noqa: N802
+    if not _TRANSPORT_REACHABLE:
+        return  # all classes skip via @skipUnless anyway
+    # Stagger: when running in parallel with test_transport_e2e.py, delay this
+    # file's shared-crew launch so both setUpModule calls don't fire at the same
+    # time and saturate the host's max-active-crews limit.
+    time.sleep(35)
+    try:
+        _mcp_call("nuke", crew_id=SHARED_CREW_ID, confirm=True)
+    except Exception:
+        pass
+    result = _mcp_call("launch", crew_id=SHARED_CREW_ID)
+    _SHARED_LAUNCH_RESULT.update(result)
+    if result.get("status") != "ready":
+        raise RuntimeError(f"setUpModule: failed to launch {SHARED_CREW_ID}: {result}")
+
+
+def tearDownModule():  # noqa: N802
+    try:
+        _mcp_call("nuke", crew_id=SHARED_CREW_ID, confirm=True)
+    except Exception:
+        pass
 
 
 # ── 1. Error paths ────────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestErrorPaths(unittest.TestCase):
     """Non-happy-path calls should return structured errors, never 500."""
 
+    # Retained constant for the three non-existent-crew tests below, which need
+    # no live crew: test_nuke_nonexistent_crew, test_dispatch_nonexistent_crew,
+    # test_evac_nonexistent_crew.
     GHOST_CREW = "e2e-does-not-exist"
+
+    # Stateless tests use the module-level shared crew.
+    CREW_ID = SHARED_CREW_ID
 
     def test_nuke_nonexistent_crew(self):
         result = _mcp_call("nuke", crew_id=self.GHOST_CREW, confirm=True)
@@ -108,25 +149,9 @@ class TestErrorPaths(unittest.TestCase):
 # ── 2. Schedule tool ──────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestScheduleTool(unittest.TestCase):
-    CREW_ID = "e2e-schedule"
-
-    def setUp(self):
-        try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
-        except Exception:
-            pass
-        print(f"\n[e2e] setUp: launching {self.CREW_ID}...", flush=True)
-        result = _mcp_call("launch", crew_id=self.CREW_ID)
-        self.assertEqual(result.get("status"), "ready")
-        print(f"[e2e] {self.CREW_ID} ready", flush=True)
-
-    def tearDown(self):
-        try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
-        except Exception:
-            pass
+    CREW_ID = SHARED_CREW_ID
 
     def test_create_list_cancel(self):
         # Create a job
@@ -170,23 +195,28 @@ class TestScheduleTool(unittest.TestCase):
 # ── 3. Steer tool ─────────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestSteerTool(unittest.TestCase):
+    # Dedicated crew — steers a long-running task; sharing would make
+    # task-list assertions ambiguous.
     CREW_ID = "e2e-steer"
 
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
-        print(f"\n[e2e] setUp: launching {self.CREW_ID}...", flush=True)
-        result = _mcp_call("launch", crew_id=self.CREW_ID)
-        self.assertEqual(result.get("status"), "ready")
-        print(f"[e2e] {self.CREW_ID} ready", flush=True)
+        print(f"\n[e2e] setUpClass: launching {cls.CREW_ID}...", flush=True)
+        result = _mcp_call("launch", crew_id=cls.CREW_ID)
+        if result.get("status") != "ready":
+            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
+        print(f"[e2e] {cls.CREW_ID} ready", flush=True)
 
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
         try:
-            _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
         except Exception:
             pass
 
@@ -198,7 +228,7 @@ class TestSteerTool(unittest.TestCase):
             "dispatch",
             crew_id=self.CREW_ID,
             agent="ghost",
-            task="Wait 60 seconds before doing anything, then say DONE.",
+            task="Wait 25 seconds before doing anything, then say DONE.",
         )
         task_id = dispatch.get("task_id")
         self.assertIsNotNone(task_id)
@@ -240,55 +270,24 @@ class TestSteerTool(unittest.TestCase):
 # ── 4. Response schemas ───────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
 class TestResponseSchemas(unittest.TestCase):
-    """Verify all expected fields are present on tool responses.
+    """Verify all expected fields are present on tool responses."""
 
-    Uses setUpClass/tearDownClass so the crew is launched once for all
-    five schema tests rather than once per test (~4 min saving).
-    """
-
-    CREW_ID = "e2e-schema"
+    CREW_ID = SHARED_CREW_ID
     _CREW_FIELDS = {
         "crew_id", "container", "status", "composition",
         "created_at", "gateway_healthy", "crew_image_version",
         "agents", "policy_version",
     }
 
-    @classmethod
-    def setUpClass(cls):
-        try:
-            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
-        except Exception:
-            pass
-        print(f"\n[e2e] setUpClass: launching {cls.CREW_ID}...", flush=True)
-        result = _mcp_call("launch", crew_id=cls.CREW_ID)
-        if result.get("status") != "ready":
-            raise RuntimeError(f"Failed to launch {cls.CREW_ID}: {result}")
-        print(f"[e2e] {cls.CREW_ID} ready", flush=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            _mcp_call("nuke", crew_id=cls.CREW_ID, confirm=True)
-        except Exception:
-            pass
-
     def test_launch_response_shape(self):
-        # Already launched in setUp — launch a second named crew for a clean shape check
-        crew_id = "e2e-schema-shape"
-        try:
-            _mcp_call("nuke", crew_id=crew_id, confirm=True)
-        except Exception:
-            pass
-        result = _mcp_call("launch", crew_id=crew_id)
-        try:
-            self.assertEqual(result.get("crew_id"), crew_id)
-            self.assertEqual(result.get("status"), "ready")
-            self.assertIn("container", result)
-            self.assertIn("gateway_url", result)
-        finally:
-            _mcp_call("nuke", crew_id=crew_id, confirm=True)
+        # Assert on the module-level launch result — no second crew launch needed.
+        result = _SHARED_LAUNCH_RESULT
+        self.assertEqual(result.get("crew_id"), SHARED_CREW_ID)
+        self.assertEqual(result.get("status"), "ready")
+        self.assertIn("container", result)
+        self.assertIn("gateway_url", result)
 
     def test_crews_response_shape(self):
         result = _mcp_call("crews")
@@ -371,7 +370,12 @@ class TestAuthExtended(unittest.TestCase):
 # ── 6. TRN-51: Captain status on stopped crew ─────────────────────────────────
 
 
-@unittest.skipUnless(GHOSTSHIP_E2E_URL, _SKIP_REASON)
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
+@unittest.skipUnless(
+    os.path.exists(GHOSTSHIP_PODMAN_SOCKET),
+    f"GHOSTSHIP_PODMAN_SOCKET not reachable at {GHOSTSHIP_PODMAN_SOCKET} — "
+    "set GHOSTSHIP_PODMAN_SOCKET to the transport's Podman socket path or run on the transport host",
+)
 class TestCaptainStatusStoppedCrew(unittest.TestCase):
     """TRN-51 smoke test: captain status works on stopped crews without waking them.
 

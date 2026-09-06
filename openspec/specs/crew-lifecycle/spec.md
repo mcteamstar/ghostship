@@ -142,7 +142,7 @@ The setup steps SHALL execute in dependency order:
 10. Wait for KiroCrew to seed built-in agent files (gateway-dependent)
 11. Patch model overrides — write `agents` directory files **before** calling
     any gateway endpoint, because the agents directory is write-protected at
-    runtime in KiroCrew 0.4.0
+    runtime in KiroCrew 0.5.0
 12. Mint session cookie
 13. Read version label, write registry entry
 
@@ -158,7 +158,7 @@ field SHALL be sourced from the `GA_CREW_AGENT` transport environment variable
 The `_copy_agents` call (step 7) — and any other setup step that writes agent
 JSON files into `KIRO_AGENTS_DIR` — SHALL occur **after** the post-restart
 gateway is ready and SHALL NOT be called after the gateway is already serving
-requests, because KiroCrew 0.4.0 makes the agents directory write-protected at
+requests, because KiroCrew 0.5.0 makes the agents directory write-protected at
 runtime.
 
 #### Scenario: Successful setup
@@ -192,7 +192,7 @@ runtime.
 #### Scenario: Agent files written before runtime write-protection
 - **WHEN** `_copy_agents` is called during crew setup
 - **THEN** the agent JSON files are written to `KIRO_AGENTS_DIR` during the
-  post-restart gateway startup window, before KiroCrew 0.4.0 makes that
+  post-restart gateway startup window, before KiroCrew 0.5.0 makes that
   directory write-protected at runtime
 
 ### Requirement: Crew and resource naming convention
@@ -391,7 +391,7 @@ The `_patch_crew_config` function SHALL write `GA_SPAWN_MIN_MEMORY_GB` (default
 hardcoded value `0`.
 
 The `spawn_min_memory_gb` field SHALL be written as a native config file entry
-(not via a runtime workaround) because KiroCrew 0.4.0 fixes the loader that
+(not via a runtime workaround) because KiroCrew 0.5.0 fixes the loader that
 previously ignored this field in config files.
 
 #### Scenario: Default spawn threshold
@@ -411,7 +411,7 @@ previously ignored this field in config files.
 - **WHEN** a stopped crew container is restarted via `_ensure_crew_running`
 - **THEN** the stop/start/patch/stop/start workaround sequence is NOT executed;
   instead a single `_patch_crew_config` + restart sequence is used, because
-  KiroCrew 0.4.0 reads `spawn_min_memory_gb` from the config file correctly
+  KiroCrew 0.5.0 reads `spawn_min_memory_gb` from the config file correctly
 
 ### Requirement: Configurable resource pressure thresholds
 
@@ -555,6 +555,20 @@ The effective model for any given agent is resolved in this precedence order (hi
 #### Scenario: KC_MODEL_OVERRIDE beats KC_MODEL_DEFAULT
 - **WHEN** both `KC_MODEL_OVERRIDE` and `KC_MODEL_DEFAULT` are set
 - **THEN** `_patch_models` writes `KC_MODEL_OVERRIDE` into every agent JSON's `"model"` field, making `KC_MODEL_DEFAULT` irrelevant in practice (the per-agent field is now set, so the default is never reached)
+
+### Requirement: Crew config patches sandbox=off for Podman rootless compatibility
+
+The `_patch_crew_config` function SHALL write `"sandbox": "off"` into the `agent` block of `config.local.json`. This disables the KiroCrew inner namespace sandbox, which since 0.5.0 performs a `MS_REMOUNT|MS_BIND|MS_RDONLY` bind-mount to seal credential directories read-only and exits rc=1 (fail-closed) if that mount fails. Under Podman rootless the kernel denies this remount with EPERM because user namespaces inside rootless containers do not have the required mount permission; without this override every agent spawn fails immediately with `AcpRuntimeDead`. The `"sandbox": "off"` value is a pre-existing KiroCrew config option — it short-circuits `detect_backend()` to return `"none"` before the mount is attempted. The Podman container itself remains the OS-level isolation boundary.
+
+#### Scenario: Crew spawns succeed on Podman rootless
+- **WHEN** a crew is launched on a Podman rootless host (the standard ghostship deployment)
+- **THEN** `config.local.json` contains `"sandbox": "off"` inside the `agent` block
+- **AND** agent dispatches complete without `AcpRuntimeDead: process exited (rc=1)`
+
+#### Scenario: sandbox=off does not affect authentication or governance
+- **WHEN** `"sandbox": "off"` is patched into the crew config
+- **THEN** kiro-cli authentication, model selection, and all governance policy checks remain fully enforced
+- **AND** only the inner Linux user-namespace bind-mount step is bypassed
 
 ### Requirement: Active crew limit enforced before restart
 

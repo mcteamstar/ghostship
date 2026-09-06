@@ -11,12 +11,12 @@ Enable the KiroCrew gateway SPA to load and navigate correctly when accessed via
 The transport SHALL allocate a unique port from the configured range (`GA_DASHBOARD_PORT_RANGE_START` to `GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1`) when a crew is launched and start a transport listener on that port. All requests arriving on that port SHALL be reverse-proxied to `http://gs-{crew_id}:5476/{path}`. The allocated port SHALL be stored in the crew registry and returned in the `launch` response as `dashboard_url`.
 
 #### Scenario: SPA loads at root of origin
-- **WHEN** a browser opens `http://academy.penguin-piano.ts.net:64058/`
+- **WHEN** a browser opens `http://ghostship-host.example.ts.net:64058/`
 - **THEN** the transport proxies to `http://gs-my-crew:5476/` and the SPA loads correctly
 
 #### Scenario: Client-side navigation and hard reload both work
 - **WHEN** the SPA navigates to `/chat` and the user hard-reloads
-- **THEN** `http://academy.penguin-piano.ts.net:64058/chat` is handled by the transport, proxied to `http://gs-my-crew:5476/chat`, and the SPA renders correctly
+- **THEN** `http://ghostship-host.example.ts.net:64058/chat` is handled by the transport, proxied to `http://gs-my-crew:5476/chat`, and the SPA renders correctly
 
 #### Scenario: GA_API_KEY auth applies to UI port traffic
 - **WHEN** `GA_API_KEY` is set and a request to the crew UI port omits or supplies an incorrect `Authorization: Bearer` header

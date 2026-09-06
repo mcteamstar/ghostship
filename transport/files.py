@@ -69,9 +69,35 @@ cfg = Config.from_env()
 
 PORT = cfg.port
 DATA_DIR = Path(cfg.transport_data_dir)
-GA_FILE_TTL_SECS = cfg.ga_file_ttl_secs  # 5 min default
 SCRIPTS_DIR = "/scripts"
 CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
+
+# SEC-01 — ref parameter validation
+_REF_RE = re.compile(r"^[a-zA-Z0-9_./:@^~\-]+$")
+
+
+def _validate_ref(ref: str) -> str:
+    """Validate a git ref parameter. Raises ValueError on invalid input."""
+    if not ref:
+        return ref
+    if ref.startswith("-"):
+        raise ValueError(f"ref must not start with '-': {ref!r}")
+    if not _REF_RE.match(ref):
+        raise ValueError(f"Invalid ref: {ref!r}")
+    return ref
+
+
+# SEC-02 — path traversal boundary enforcement
+def _safe_workspace_path(workspace_root: str, raw_path: str) -> Path:
+    """Resolve raw_path relative to workspace_root and verify it stays inside.
+    Raises ValueError if the resolved path escapes the workspace root.
+    """
+    root = Path(workspace_root).resolve()
+    clean = raw_path.lstrip("/")
+    resolved = (root / clean).resolve()
+    if not str(resolved).startswith(str(root)):
+        raise ValueError(f"Path escapes workspace root: {raw_path!r}")
+    return resolved
 
 
 # ── File-URL signing secret ───────────────────────────────────────────────────
@@ -152,7 +178,7 @@ def _sign_file_url(
     bundle: bool = False,
 ) -> str:
     """Return a short-lived presigned URL for a crew workspace file or bundle."""
-    expires = int(time.time()) + GA_FILE_TTL_SECS
+    expires = int(time.time()) + 300
     flags = ":".join(sorted(f for f in ["bundle"] if bundle))
     payload = f"{crew_id}:{path}:{expires}:GET:{ref or ''}:{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -208,7 +234,7 @@ def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool
     The mode (unpack/bundle) is included in the signed HMAC payload so a token
     signed for a plain write cannot be replayed as an unpack or bundle clone.
     """
-    expires = int(time.time()) + GA_FILE_TTL_SECS
+    expires = int(time.time()) + 300
     flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and bundle) or (f == "unpack" and unpack)))
     payload = f"{crew_id}:{path}:{expires}:POST::{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -289,13 +315,24 @@ def _transfer_upload(
                 )
             except RuntimeError:
                 # HEAD unresolvable — check out the first available remote branch.
-                podman.container_exec_checked(
-                    container,
-                    ["bash", "-c",
-                     f"cd {destination} && "
-                     "branch=$(git branch -r | grep -v HEAD | head -1 | sed 's|origin/||' | tr -d ' ') && "
-                     "git checkout -b \"$branch\" \"origin/$branch\""],
+                # Use list-form exec calls (no shell, no interpolation) to avoid
+                # shell injection via the destination path.
+                branches_output = podman.container_exec_checked(
+                    container, ["git", "-C", destination, "branch", "-r"]
                 )
+                # Parse remote branches in Python; skip the HEAD pointer line.
+                branch = ""
+                for line in branches_output.splitlines():
+                    stripped = line.strip()
+                    if stripped and "HEAD" not in stripped:
+                        # Strip "origin/" prefix to get the local branch name.
+                        branch = stripped.removeprefix("origin/").strip()
+                        break
+                if branch:
+                    podman.container_exec_checked(
+                        container,
+                        ["git", "-C", destination, "checkout", "-b", branch, f"origin/{branch}"],
+                    )
             return result
         finally:
             _cleanup_transfer_stage(podman, container, stage_dir)
@@ -352,6 +389,8 @@ def worker_git_bundle(
     bundle_ref = ref if ref else "--all"
     # `git bundle create -` writes the bundle to stdout, so no temp file / no
     # writable mount is needed — the volume can stay read-only.
+    # Note: `git bundle create` does not support `--` to end option processing;
+    # injection is prevented by _validate_ref validating `ref` before this call.
     return podman.worker_run(
         volume,
         ["git", "-C", repo_dir, "bundle", "create", "-", bundle_ref],
@@ -482,7 +521,7 @@ async def _handle_file_get(request: Request) -> Response:
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac> — stream file
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&ref=HEAD — diff
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&bundle=1 — git bundle
-    Token is short-lived (GA_FILE_TTL_SECS, default 5 min).
+    Token is short-lived (300, default 5 min).
     """
     crew_id = request.path_params.get("crew_id", "")
     path = request.path_params.get("path", "")
@@ -497,11 +536,21 @@ async def _handle_file_get(request: Request) -> Response:
     if not _verify_file_token(crew_id, path, expires, sig, ref, bundle):
         return PlainTextResponse("Forbidden", status_code=403)
 
+    # SEC-01: validate ref before any git invocation
+    try:
+        ref = _validate_ref(ref) if ref else ref
+    except ValueError as e:
+        return PlainTextResponse(str(e), status_code=400)
+
+    # SEC-02: resolve path and enforce workspace boundary
+    try:
+        _safe_workspace_path(KIRO_WORKSPACE_ROOT, path)
+    except ValueError as e:
+        return PlainTextResponse(str(e), status_code=400)
+
     # Sanitise path — no traversal outside workspace
     clean = path.lstrip("/")
     if not clean:
-        return PlainTextResponse("Invalid path", status_code=400)
-    if ".." in clean.split("/"):
         return PlainTextResponse("Invalid path", status_code=400)
 
     _ensure_crew_running, _require_crew = _crew_helpers()
@@ -579,6 +628,9 @@ async def _handle_file_get(request: Request) -> Response:
             bundle_path = f"{ws}/.kirocrew-bundle-{secrets.token_hex(16)}.bundle"
             try:
                 bundle_ref = ref if ref else "--all"
+                # Note: `git bundle create` does not support `--` to end option
+                # processing; injection is prevented by _validate_ref validating
+                # `ref` before any git invocation.
                 podman.container_exec_checked(
                     crew["container"],
                     ["git", "-C", repo_root, "bundle", "create", bundle_path, bundle_ref],
@@ -673,7 +725,7 @@ async def _handle_file_put(request: Request) -> Response:
     POST /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&bundle=1
       Body: git bundle bytes — cloned into {path} in the workspace.
 
-    Token is short-lived (GA_FILE_TTL_SECS, default 5 min).
+    Token is short-lived (300, default 5 min).
     Intermediate directories are created automatically.
     """
     crew_id = request.path_params.get("crew_id", "")
@@ -693,10 +745,14 @@ async def _handle_file_put(request: Request) -> Response:
     if not _verify_file_token(crew_id, path, expires, sig, mode=mode):
         return PlainTextResponse("Forbidden", status_code=403)
 
+    # SEC-02: resolve path and enforce workspace boundary
+    try:
+        _safe_workspace_path(KIRO_WORKSPACE_ROOT, path)
+    except ValueError as e:
+        return PlainTextResponse(str(e), status_code=400)
+
     # Sanitise path — no traversal outside workspace
     clean = path.lstrip("/")
-    if ".." in clean.split("/"):
-        return PlainTextResponse("Invalid path", status_code=400)
 
     _ensure_crew_running, _require_crew = _crew_helpers()
     try:

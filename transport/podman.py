@@ -146,6 +146,18 @@ class ContainerRuntime(ABC):
     def network_create(self, name: str) -> None: ...
 
     @abstractmethod
+    def network_connect(self, container: str, network: str) -> None: ...
+
+    @abstractmethod
+    def network_disconnect(self, container: str, network: str) -> None: ...
+
+    @abstractmethod
+    def network_rm(self, name: str) -> None: ...
+
+    @abstractmethod
+    def container_networks(self, container: str) -> list[str]: ...
+
+    @abstractmethod
     def system_info(self) -> dict: ...
 
 
@@ -679,6 +691,60 @@ class PodmanClient(ContainerRuntime):
                       json={"name": name, "dns_enabled": True})
         except Exception:
             pass  # already exists
+
+    def network_connect(self, container: str, network: str) -> None:
+        """Connect a container to a network (idempotent — ignores 'already connected' errors).
+
+        Wraps ``POST /libpod/networks/{network}/connect``.
+        Raises on non-409 HTTP errors or connection failures so callers such as
+        _migrate_crew_network can detect and log migration failures rather than
+        silently continuing with a broken network state.
+        """
+        r = self._c.post(
+            f"/libpod/networks/{network}/connect",
+            json={"Container": container},
+        )
+        if r.status_code not in (200, 204):
+            # 409 means already connected — treat as success (idempotent).
+            if r.status_code != 409:
+                r.raise_for_status()
+
+    def network_disconnect(self, container: str, network: str) -> None:
+        """Disconnect a container from a network (best-effort).
+
+        Wraps ``POST /libpod/networks/{network}/disconnect``.
+        """
+        try:
+            r = self._c.post(
+                f"/libpod/networks/{network}/disconnect",
+                json={"Container": container, "Force": True},
+            )
+            if r.status_code not in (200, 204):
+                r.raise_for_status()
+        except Exception:
+            pass  # best-effort; callers log on failure
+
+    def network_rm(self, name: str) -> None:
+        """Remove a network (best-effort — used for ga-net cleanup after migration)."""
+        try:
+            r = self._c.delete(f"/libpod/networks/{name}")
+            if r.status_code not in (200, 204):
+                r.raise_for_status()
+        except Exception:
+            pass  # best-effort
+
+    def container_networks(self, container: str) -> list[str]:
+        """Return the list of network names the container is currently connected to.
+
+        Parses ``NetworkSettings.Networks`` from ``container_inspect``.
+        Returns an empty list if the container does not exist or has no network info.
+        """
+        try:
+            info = self.container_inspect(container)
+            networks = info.get("NetworkSettings", {}).get("Networks", {})
+            return list(networks.keys())
+        except Exception:
+            return []
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────

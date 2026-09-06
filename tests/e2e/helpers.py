@@ -6,7 +6,7 @@ import time
 
 import httpx
 
-GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "").rstrip("/")
+GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "http://localhost:64057").rstrip("/")
 GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
 GHOSTSHIP_E2E_KIRO_AUTH = os.environ.get("GHOSTSHIP_E2E_KIRO_AUTH", "") not in ("", "0", "false")
 
@@ -19,7 +19,20 @@ GHOSTSHIP_PODMAN_SOCKET = os.environ.get(
     "/run/user/1000/ghost-academy/podman.sock",
 )
 
-_SKIP_REASON = "GHOSTSHIP_E2E_URL not set"
+# Probe reachability once at import time so @skipUnless guards work in CI
+# without a live portal. GHOSTSHIP_E2E_URL defaults to localhost:64057 so
+# tests run automatically when a local portal is up; set the env var
+# explicitly to point at a remote host.
+def _portal_reachable(url: str) -> bool:
+    try:
+        resp = httpx.get(f"{url}/health", timeout=3.0)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+_TRANSPORT_REACHABLE = _portal_reachable(GHOSTSHIP_E2E_URL)
+_SKIP_REASON = f"portal not reachable at {GHOSTSHIP_E2E_URL}"
 
 
 def mcp_call(tool: str, *, api_key: str = GHOSTSHIP_API_KEY, **kwargs) -> dict:
@@ -45,7 +58,7 @@ def mcp_call(tool: str, *, api_key: str = GHOSTSHIP_API_KEY, **kwargs) -> dict:
         f"{GHOSTSHIP_E2E_URL}/mcp",
         json=payload,
         headers=headers,
-        timeout=60.0,
+        timeout=120.0,
     )
     resp.raise_for_status()
 

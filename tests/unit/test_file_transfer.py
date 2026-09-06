@@ -56,6 +56,15 @@ def _install_import_stubs() -> None:
         def __init__(self, status_code: int = 200, **kwargs: Any) -> None:
             self.status_code = status_code
 
+    # Module-level function stubs — these are placeholder targets that tests
+    # can patch with patch.object(server.httpx, "put", ...) etc.  Without them
+    # patch.object raises AttributeError before the test even runs.
+    def _httpx_put(*args: Any, **kwargs: Any) -> Response:  # pragma: no cover
+        raise NotImplementedError("httpx.put stub — patch in tests")
+
+    def _httpx_delete(*args: Any, **kwargs: Any) -> Response:  # pragma: no cover
+        raise NotImplementedError("httpx.delete stub — patch in tests")
+
     httpx.Client = Client  # type: ignore[attr-defined]
     httpx.AsyncClient = AsyncClient  # type: ignore[attr-defined]
     httpx.HTTPTransport = HTTPTransport  # type: ignore[attr-defined]
@@ -63,6 +72,8 @@ def _install_import_stubs() -> None:
     httpx.ConnectError = ConnectError  # type: ignore[attr-defined]
     httpx.ConnectTimeout = ConnectTimeout  # type: ignore[attr-defined]
     httpx.Response = Response  # type: ignore[attr-defined]
+    httpx.put = _httpx_put  # type: ignore[attr-defined]
+    httpx.delete = _httpx_delete  # type: ignore[attr-defined]
     sys.modules["httpx"] = httpx
 
     mcp = types.ModuleType("mcp")

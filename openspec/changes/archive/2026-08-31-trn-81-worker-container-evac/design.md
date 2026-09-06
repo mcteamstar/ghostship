@@ -15,7 +15,7 @@ The current evac path (`container_archive_get` / `container_exec`) requires the 
 container to be running and goes through a double start cycle + gateway wait on restart,
 costing 2–3s minimum and failing entirely if the container won't start.
 
-Empirical results from the academy VM (`academy.penguin-piano.ts.net`):
+Empirical results from the academy VM (`ghostship-host.example.ts.net`):
 - `docker.io/library/python:3.12.10-slim` is already cached in the ghost-academy image store (it is the transport's base image)
 - `podman run --rm -v gs-vol-{crew_id}:/workspace:ro python:3.12.10-slim ls /workspace` completes in **~200ms**
 - Memory footprint of a running worker container: **~614KB**
