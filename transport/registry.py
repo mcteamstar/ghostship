@@ -178,3 +178,120 @@ def _delete_crew_secret(crew_id: str) -> None:
         secret_path.unlink()
     except FileNotFoundError:
         pass
+
+
+# ── Batch registry helpers (TRN-105) ─────────────────────────────────────────
+# Batch dispatch records live under crews[crew_id]["batches"], co-located with
+# schedule and crew metadata. Each entry records the batch_id, its constituent
+# task_ids, an ISO-8601 UTC created_at, and a status (pending | partial |
+# complete). All CRUD goes through _registry_lock so a batch write is atomic
+# with respect to every other registry mutation.
+
+
+def _write_batch(
+    crew_id: str,
+    batch_id: str,
+    task_ids: list[str],
+    status: str,
+    created_at: str | None = None,
+) -> dict | None:
+    """Write (upsert) a batch entry under crews[crew_id]["batches"].
+
+    Returns the stored batch dict, or None if the crew does not exist. The
+    write is atomic within _registry_lock. If a batch with the same batch_id
+    already exists it is replaced in place; otherwise the new entry is
+    appended. ``created_at`` defaults to now (ISO-8601 UTC) when omitted.
+    """
+    if created_at is None:
+        created_at = (
+            time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "+00:00"
+        )
+    entry = {
+        "batch_id": batch_id,
+        "task_ids": list(task_ids),
+        "created_at": created_at,
+        "status": status,
+    }
+    with _registry_lock:
+        reg = _load_registry()
+        crew_entry = reg.get("crews", {}).get(crew_id)
+        if crew_entry is None:
+            return None
+        batches = crew_entry.setdefault("batches", [])
+        for i, existing in enumerate(batches):
+            if existing.get("batch_id") == batch_id:
+                batches[i] = entry
+                break
+        else:
+            batches.append(entry)
+        _save_registry(reg)
+    return entry
+
+
+def _get_batch(crew_id: str, batch_id: str) -> dict | None:
+    """Return the batch entry dict for *batch_id*, or None if not found."""
+    with _registry_lock:
+        reg = _load_registry()
+    crew_entry = reg.get("crews", {}).get(crew_id, {})
+    for entry in crew_entry.get("batches", []):
+        if entry.get("batch_id") == batch_id:
+            return entry
+    return None
+
+
+def _update_batch_status(crew_id: str, batch_id: str, status: str) -> dict | None:
+    """Update the ``status`` field of a batch entry atomically.
+
+    Status transitions through pending -> partial -> complete. Returns the
+    updated entry, or None if the crew or batch is not found.
+    """
+    with _registry_lock:
+        reg = _load_registry()
+        crew_entry = reg.get("crews", {}).get(crew_id)
+        if crew_entry is None:
+            return None
+        for entry in crew_entry.get("batches", []):
+            if entry.get("batch_id") == batch_id:
+                entry["status"] = status
+                _save_registry(reg)
+                return entry
+    return None
+
+
+def _delete_batch(crew_id: str, batch_id: str) -> bool:
+    """Remove a single batch entry by batch_id. Returns True if removed."""
+    with _registry_lock:
+        reg = _load_registry()
+        crew_entry = reg.get("crews", {}).get(crew_id)
+        if crew_entry is None:
+            return False
+        batches = crew_entry.get("batches", [])
+        new_batches = [b for b in batches if b.get("batch_id") != batch_id]
+        if len(new_batches) == len(batches):
+            return False
+        crew_entry["batches"] = new_batches
+        _save_registry(reg)
+    return True
+
+
+def _find_batch_by_task_ids(crew_id: str, task_ids: list[str]) -> dict | None:
+    """Return the first batch entry whose task_ids set matches *task_ids*, or None.
+
+    Used by ``pickup(task_ids=[...])`` to discover the ``batch_id`` so that
+    ``_update_batch_status`` can mark the batch ``complete`` when all members
+    are done — satisfying the spec requirement without adding a ``batch_id``
+    parameter to the ``pickup`` MCP tool surface.
+
+    The match is an exact set equality check (order-independent) so it is safe
+    as long as task IDs are UUIDs (collision probability negligible). Returns
+    the first match found; the registry should not have two batches with
+    identical task_id sets under normal operation.
+    """
+    wanted = set(task_ids)
+    with _registry_lock:
+        reg = _load_registry()
+    crew_entry = reg.get("crews", {}).get(crew_id, {})
+    for entry in crew_entry.get("batches", []):
+        if set(entry.get("task_ids", [])) == wanted:
+            return entry
+    return None

@@ -4,7 +4,7 @@
 
 Define the contract for atomic multi-task dispatch and blocking multi-task pickup in the ghostship MCP transport. A caller can hand off N independent tasks in a single tool call and block until all results are collected, without managing N round-trips themselves.
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Batch dispatch returns a batch_id and per-task IDs
 
