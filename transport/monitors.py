@@ -11,14 +11,18 @@ daemon-thread loops that run for the life of the transport process:
 plus their cron-activity helpers ``_cron_activity_since`` and
 ``_cron_has_enabled_job``.
 
-Dependency direction (design.md D-1 exception): monitors imports from
-``lifecycle`` (``_ensure_crew_running``, ``_crew_api``,
+Dependency direction (design.md D-1 exception): monitors needs a few runtime
+functions from ``lifecycle`` (``_ensure_crew_running``, ``_crew_api``,
 ``_crew_api_with_recovery``, ``_mint_cookie`` and the loop constants) and is
-imported only by ``server`` and re-exported by ``lifecycle`` — it is never
-imported *by* the leaf modules, so the graph stays acyclic.  The leaf-module
-helpers it needs (``_http``/``_get_podman`` from podman, the registry helpers)
-are imported directly from those leaf modules so a patch on ``monitors.*`` in
-tests targets the same call-site name the loop actually resolves.
+imported only by ``server`` and re-exported by ``lifecycle``.  To keep the
+import graph genuinely acyclic — so ``import transport.monitors`` and
+``import transport.lifecycle`` both work as the FIRST transport module a fresh
+interpreter loads — monitors does NOT import lifecycle at module load.  Instead
+``lifecycle`` injects those objects via ``bind_lifecycle()`` at the end of its
+own module body (see below).  The leaf-module helpers monitors needs
+(``_http``/``_get_podman`` from podman, the registry helpers) are imported
+directly from those leaf modules so a patch on ``monitors.*`` in tests targets
+the same call-site name the loop actually resolves.
 
 Dual-path import pattern (container flat layout vs. local dev package):
     try:
@@ -59,26 +63,59 @@ except ModuleNotFoundError:
         _touch_crew,
     )
 
-try:
-    from lifecycle import (  # container: flat /app/
-        CREW_GATEWAY_PORT,
-        GA_IDLE_TIMEOUT_SECS,
-        _SCHEDULE_MONITOR_INTERVAL,
-        _ensure_crew_running,
-        _crew_api,
-        _crew_api_with_recovery,
-        _mint_cookie,
-    )
-except ModuleNotFoundError:
-    from transport.lifecycle import (  # local dev
-        CREW_GATEWAY_PORT,
-        GA_IDLE_TIMEOUT_SECS,
-        _SCHEDULE_MONITOR_INTERVAL,
-        _ensure_crew_running,
-        _crew_api,
-        _crew_api_with_recovery,
-        _mint_cookie,
-    )
+# ── lifecycle bindings (injected, NOT imported — see below) ───────────────────
+# monitors needs a handful of runtime functions and constants from lifecycle
+# (_ensure_crew_running, _crew_api, _crew_api_with_recovery, _mint_cookie and
+# the loop constants). We deliberately do NOT import them at module load: doing
+# so creates a load-time cycle, because lifecycle re-exports this module's loop
+# functions (from monitors import _schedule_monitor …) so that server and the
+# test suite can reach them via lifecycle.*. Importing lifecycle here while
+# lifecycle is still mid-import (whenever monitors or lifecycle is the first
+# transport module a fresh interpreter loads) raises
+# "cannot import name … (most likely due to a circular import)".
+#
+# Instead lifecycle calls bind_lifecycle() at the end of its own module body —
+# after every referenced name is defined — to inject the real objects into this
+# module's globals. The loop functions reference these as bare module globals,
+# so (a) after injection they resolve to lifecycle's live functions, and (b)
+# tests can still patch them via patch.object(monitors, "_crew_api", …), the
+# call-site-patching principle the suite relies on. The placeholders below make
+# the names exist as module attributes before injection so tooling that imports
+# monitors standalone does not see an AttributeError.
+CREW_GATEWAY_PORT: int = 5476
+GA_IDLE_TIMEOUT_SECS: float = 0.0
+_SCHEDULE_MONITOR_INTERVAL: int = 30
+_ensure_crew_running: Any = None
+_crew_api: Any = None
+_crew_api_with_recovery: Any = None
+_mint_cookie: Any = None
+
+
+def bind_lifecycle(
+    *,
+    crew_gateway_port: int,
+    ga_idle_timeout_secs: float,
+    schedule_monitor_interval: int,
+    ensure_crew_running: Any,
+    crew_api: Any,
+    crew_api_with_recovery: Any,
+    mint_cookie: Any,
+) -> None:
+    """Inject lifecycle's runtime functions/constants into this module.
+
+    Called once by ``lifecycle`` at the end of its module body. Breaks the
+    monitors↔lifecycle load-time import cycle while keeping every name a
+    real, patchable module attribute of ``monitors``.
+    """
+    global CREW_GATEWAY_PORT, GA_IDLE_TIMEOUT_SECS, _SCHEDULE_MONITOR_INTERVAL
+    global _ensure_crew_running, _crew_api, _crew_api_with_recovery, _mint_cookie
+    CREW_GATEWAY_PORT = crew_gateway_port
+    GA_IDLE_TIMEOUT_SECS = ga_idle_timeout_secs
+    _SCHEDULE_MONITOR_INTERVAL = schedule_monitor_interval
+    _ensure_crew_running = ensure_crew_running
+    _crew_api = crew_api
+    _crew_api_with_recovery = crew_api_with_recovery
+    _mint_cookie = mint_cookie
 
 
 logger = logging.getLogger("transport.lifecycle")

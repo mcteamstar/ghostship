@@ -1582,19 +1582,30 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
 # were extracted to transport/monitors.py and are imported below so existing
 # call-sites (server starts the threads; tests patch lifecycle.*) keep resolving.
 try:
-    from monitors import (  # container: flat /app/
-        _schedule_monitor,
-        _idle_monitor,
-        _cron_activity_since,
-        _cron_has_enabled_job,
-    )
+    import monitors as _monitors  # container: flat /app/
 except ModuleNotFoundError:
-    from transport.monitors import (  # local dev
-        _schedule_monitor,
-        _idle_monitor,
-        _cron_activity_since,
-        _cron_has_enabled_job,
-    )
+    from transport import monitors as _monitors  # local dev
+
+_schedule_monitor = _monitors._schedule_monitor
+_idle_monitor = _monitors._idle_monitor
+_cron_activity_since = _monitors._cron_activity_since
+_cron_has_enabled_job = _monitors._cron_has_enabled_job
+
+# Inject the runtime functions/constants monitors needs. monitors deliberately
+# does not import lifecycle at load time (that would re-create the cycle broken
+# here); it declares placeholders and relies on this call. Runs at lifecycle
+# import time — before server starts the monitor threads and before any test
+# touches monitors.* — so the loops resolve lifecycle's live functions and the
+# suite can still patch them via patch.object(monitors, "…").
+_monitors.bind_lifecycle(
+    crew_gateway_port=CREW_GATEWAY_PORT,
+    ga_idle_timeout_secs=GA_IDLE_TIMEOUT_SECS,
+    schedule_monitor_interval=_SCHEDULE_MONITOR_INTERVAL,
+    ensure_crew_running=_ensure_crew_running,
+    crew_api=_crew_api,
+    crew_api_with_recovery=_crew_api_with_recovery,
+    mint_cookie=_mint_cookie,
+)
 
 
 # ── Academy validation ────────────────────────────────────────────────────────
