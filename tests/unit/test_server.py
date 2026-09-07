@@ -3616,3 +3616,192 @@ class GetEnsureRunningLockTests(unittest.IsolatedAsyncioTestCase):
             acquired = lock.locked()
             self.assertTrue(acquired, "Lock should be held inside async with block")
         self.assertFalse(lock.locked(), "Lock should be released after async with block")
+
+
+# ── TRN-138: auth/session hardening ───────────────────────────────────────────
+
+
+class _ClientTuple:
+    """Stand-in for the ASGI ``request.client`` object (has a ``.host``)."""
+
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+
+class _FormRequest:
+    """Request stub for the dashboard login/logout handlers.
+
+    Carries the small surface those handlers actually touch: an awaitable
+    ``form()``, a ``cookies`` dict, ``headers``, ``query_params`` and a
+    ``client`` object exposing ``.host`` (the ASGI connection IP).
+    """
+
+    def __init__(
+        self,
+        *,
+        form: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        query_params: dict[str, str] | None = None,
+        client_host: str | None = None,
+    ) -> None:
+        self._form = form or {}
+        self.cookies = cookies or {}
+        self.headers = headers or {}
+        self.query_params = query_params or {}
+        self.client = _ClientTuple(client_host) if client_host is not None else None
+
+    async def form(self) -> dict[str, str]:
+        return dict(self._form)
+
+
+class Trn138LogoutCsrfTests(unittest.IsolatedAsyncioTestCase):
+    """Task 1.2 — CSRF token required on POST /dashboard/logout."""
+
+    async def test_logout_missing_csrf_returns_403(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        token = sessions.issue()
+        with patch.object(server, "_gs_sessions", sessions):
+            req = _FormRequest(form={}, cookies={"gs_session": token})
+            resp = await server._handle_dashboard_logout_post(req)
+        self.assertEqual(resp.status_code, 403)
+        # Session must NOT have been revoked on a rejected (403) request.
+        self.assertTrue(sessions.validate(token))
+
+    async def test_logout_wrong_csrf_returns_403(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        token = sessions.issue()
+        with patch.object(server, "_gs_sessions", sessions):
+            req = _FormRequest(
+                form={"csrf_token": "deadbeef"}, cookies={"gs_session": token}
+            )
+            resp = await server._handle_dashboard_logout_post(req)
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(sessions.validate(token))
+
+    async def test_logout_correct_csrf_and_valid_session_returns_200(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        token = sessions.issue()
+        with patch.object(server, "_gs_sessions", sessions):
+            req = _FormRequest(
+                form={"csrf_token": server._dashboard_csrf_token},
+                cookies={"gs_session": token},
+            )
+            resp = await server._handle_dashboard_logout_post(req)
+        self.assertEqual(resp.status_code, 200)
+        # Session revoked and cookie cleared on the success path.
+        self.assertFalse(sessions.validate(token))
+        self.assertIn("gs_session=;", resp.headers.get("Set-Cookie", ""))
+
+
+class Trn138LoginRedirectTests(unittest.IsolatedAsyncioTestCase):
+    """Task 2.3 — login JSON response returns the server-sanitised next URL."""
+
+    async def test_crafted_next_is_sanitised_in_json_response(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        throttle = server._security.Throttle(max_failures=5, window_secs=900)
+        with (
+            patch.object(server, "GA_API_KEY", "secret-key"),
+            patch.object(server, "_gs_sessions", sessions),
+            patch.object(server, "_dashboard_throttle", throttle),
+        ):
+            req = _FormRequest(
+                form={
+                    "ga_api_key": "secret-key",
+                    "csrf_token": server._dashboard_csrf_token,
+                    "next": "//evil.com",
+                },
+                client_host="10.0.0.5",
+            )
+            resp = await server._handle_dashboard_login_post(req)
+        self.assertEqual(resp.status_code, 200)
+        body = json.loads(bytes(resp.body).decode())
+        self.assertEqual(body["next"], "/")
+        self.assertNotEqual(body["next"], "//evil.com")
+        self.assertTrue(body["ok"])
+
+    async def test_safe_relative_next_is_preserved(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        throttle = server._security.Throttle(max_failures=5, window_secs=900)
+        with (
+            patch.object(server, "GA_API_KEY", "secret-key"),
+            patch.object(server, "_gs_sessions", sessions),
+            patch.object(server, "_dashboard_throttle", throttle),
+        ):
+            req = _FormRequest(
+                form={
+                    "ga_api_key": "secret-key",
+                    "csrf_token": server._dashboard_csrf_token,
+                    "next": "/dashboard/crews",
+                },
+                client_host="10.0.0.5",
+            )
+            resp = await server._handle_dashboard_login_post(req)
+        body = json.loads(bytes(resp.body).decode())
+        self.assertEqual(body["next"], "/dashboard/crews")
+
+
+class Trn138LoginThrottleSourceTests(unittest.IsolatedAsyncioTestCase):
+    """Task 4.2 — login throttle keys on ASGI client IP, not X-Forwarded-For."""
+
+    async def test_xff_header_does_not_affect_throttle_source(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        throttle = server._security.Throttle(max_failures=5, window_secs=900)
+
+        recorded: list[str | None] = []
+        real_record_failure = throttle.record_failure
+
+        def _spy_failure(*, account: str, source):
+            recorded.append(source)
+            return real_record_failure(account=account, source=source)
+
+        with (
+            patch.object(server, "GA_API_KEY", "secret-key"),
+            patch.object(server, "_gs_sessions", sessions),
+            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(throttle, "record_failure", side_effect=_spy_failure),
+        ):
+            # Wrong key so we hit record_failure; XFF claims a different IP than
+            # the real ASGI connection (client_host).
+            req = _FormRequest(
+                form={
+                    "ga_api_key": "WRONG",
+                    "csrf_token": server._dashboard_csrf_token,
+                },
+                headers={"x-forwarded-for": "1.2.3.4"},
+                client_host="10.0.0.5",
+            )
+            resp = await server._handle_dashboard_login_post(req)
+
+        self.assertEqual(resp.status_code, 401)
+        # The throttle source must be the ASGI client IP, never the spoofable
+        # X-Forwarded-For value.
+        self.assertEqual(recorded, ["10.0.0.5"])
+        self.assertNotIn("1.2.3.4", recorded)
+
+
+class Trn138RegistryCorruptGuardTests(unittest.TestCase):
+    """Task 5.3 — corrupt registry surfaces a structured error at the MCP tool
+    boundary rather than raising."""
+
+    def test_crews_returns_structured_error_on_corrupt_registry(self) -> None:
+        from transport.registry import RegistryCorruptError
+
+        def _raise_corrupt():
+            raise RegistryCorruptError(
+                "registry corrupt — crews.json.corrupt preserved for inspection"
+            )
+
+        with patch.object(server, "_load_registry", side_effect=_raise_corrupt):
+            # crews() acquires _registry_lock then calls _load_registry — the
+            # guard must catch and convert, not propagate.
+            result = server.crews()
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("error", result)
+        self.assertIn("registry corrupt", result["error"])
+
+    def test_registry_corrupt_error_is_runtimeerror_subclass(self) -> None:
+        from transport.registry import RegistryCorruptError
+
+        self.assertTrue(issubclass(RegistryCorruptError, RuntimeError))

@@ -33,6 +33,16 @@ _NEVER_FIRE_AT: float = 9_999_999_999.0
 _registry_lock = threading.Lock()
 
 
+class RegistryCorruptError(RuntimeError):
+    """Raised when the registry file exists but cannot be parsed as JSON.
+
+    Gives callers (notably the MCP tool handlers in transport/server.py) a
+    single named exception to catch at the tool boundary, rather than leaking
+    the internal ``json.JSONDecodeError`` parsing detail. The corrupt file is
+    quarantined as ``crews.json.corrupt`` before this is raised.
+    """
+
+
 def _load_registry() -> dict:
     try:
         if REGISTRY_PATH.exists():
@@ -44,7 +54,11 @@ def _load_registry() -> dict:
         # quarantine file be named "crews.json.corrupt".
         corrupt = REGISTRY_PATH.with_name(REGISTRY_PATH.name + ".corrupt")
         os.replace(REGISTRY_PATH, corrupt)
-        raise
+        # TRN-138: raise a named exception rather than re-raising the internal
+        # json.JSONDecodeError, so MCP tool handlers catch one thing.
+        raise RegistryCorruptError(
+            "registry corrupt — crews.json.corrupt preserved for inspection"
+        ) from e
     except Exception as e:
         logger.warning("Failed to load registry: %s", e)
     return {"crews": {}}

@@ -51,6 +51,7 @@ import base64
 import hashlib
 import hmac
 import io
+import functools
 import posixpath
 import select
 import socket
@@ -193,6 +194,19 @@ except ModuleNotFoundError:
         _delete_batch,
         _find_batch_by_task_ids,
     )
+
+# TRN-138: named exception raised by _load_registry() on a corrupt registry.
+# Imported separately so both import branches above stay byte-identical to
+# their prior form; the fallback keeps the module importable if an older
+# registry.py without the class is somehow on the path.
+try:
+    from registry import RegistryCorruptError  # container: flat /app/
+except (ModuleNotFoundError, ImportError):
+    try:
+        from transport.registry import RegistryCorruptError  # local dev
+    except (ModuleNotFoundError, ImportError):
+        class RegistryCorruptError(RuntimeError):  # pragma: no cover - fallback
+            pass
 
 try:
     from podman import (  # container: flat /app/
@@ -780,9 +794,15 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
         return Response(status_code=401)
 
     source = _request_source(request)
+    # TRN-138: the login throttle key must come from the actual ASGI
+    # connection IP (request.client.host), NOT X-Forwarded-For, which a
+    # client can spoof to evade or poison the brute-force lock (design D3).
+    # _request_source() prefers XFF and is retained only for audit context.
+    client = getattr(request, "client", None)
+    throttle_source = getattr(client, "host", None) if client is not None else None
     # Throttle brute-force attempts before touching the credential (avoids a
     # timing oracle on the reject path — see design D3).
-    if _dashboard_throttle.is_locked(account="dashboard", source=source):
+    if _dashboard_throttle.is_locked(account="dashboard", source=throttle_source):
         return Response(status_code=429)
 
     try:
@@ -791,6 +811,9 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
         # TRN-122: read and validate CSRF token before touching the API-key path.
         # Fail-fast on forged submissions (design.md D4).
         provided_csrf = str(form.get("csrf_token", ""))
+        # TRN-138: capture the submitted next URL so the server — not the
+        # client — is the source of truth for the post-login redirect target.
+        next_url = _validate_next_url(str(form.get("next", "/")))
     except Exception:
         return Response(status_code=400)
 
@@ -798,10 +821,10 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
         return Response(status_code=403)
 
     if not hmac.compare_digest(provided, GA_API_KEY):
-        _dashboard_throttle.record_failure(account="dashboard", source=source)
+        _dashboard_throttle.record_failure(account="dashboard", source=throttle_source)
         return Response(status_code=401)
 
-    _dashboard_throttle.record_success(account="dashboard", source=source)
+    _dashboard_throttle.record_success(account="dashboard", source=throttle_source)
 
     token = _gs_sessions.issue()
     # Build Set-Cookie header manually — avoids starlette version differences
@@ -812,9 +835,12 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
     cookie_value = (
         f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"
     )
-    return Response(
+    # TRN-138: return the server-sanitised next URL in the JSON body so the
+    # login-form JS redirects from _validate_next_url() output rather than
+    # from the raw submitted FormData field (open-redirect fix).
+    return JSONResponse(
+        {"ok": True, "next": next_url},
         status_code=200,
-        content="OK",
         headers={"Set-Cookie": cookie_value},
     )
 
@@ -886,6 +912,18 @@ async def _handle_dashboard_logout_post(request: Request) -> Response:
     responds with a ``Set-Cookie`` header that clears the cookie in the
     browser (TRN-121).
     """
+    # TRN-138: logout is a state-changing POST — validate the CSRF token
+    # before any session check, matching the login POST pattern. Reject a
+    # missing or mismatched token with 403.
+    try:
+        form = await request.form()
+        provided_csrf = str(form.get("csrf_token", ""))
+    except Exception:
+        return Response(status_code=400)
+
+    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
+        return Response(status_code=403)
+
     token = request.cookies.get("gs_session", "")
     if not _gs_sessions.validate(token):
         return Response(status_code=401)
@@ -979,7 +1017,12 @@ async def _handle_login_ui(request: Request) -> Response:
     const fd = new FormData(f);
     const r = await fetch('/dashboard/login', {{method:'POST', body: fd}});
     if (r.ok) {{
-      window.location.href = fd.get('next') || '/';
+      // TRN-138: redirect to the server-sanitised next URL from the JSON
+      // response body, not the raw submitted FormData field, so the open-
+      // redirect guard in _validate_next_url() is always authoritative.
+      let dest = '/';
+      try {{ const data = await r.json(); dest = data.next || '/'; }} catch (_e) {{}}
+      window.location.href = dest;
     }} else {{
       document.getElementById('err').style.display = 'block';
     }}
@@ -1988,7 +2031,30 @@ async def _handle_logout_post(request: Request) -> Response:
 
 # ── MCP tools: workspace ─────────────────────────────────────────────────────
 
+
+def _registry_guard(fn):
+    """TRN-138: wrap an MCP tool so a corrupt registry becomes a structured
+    error response instead of an unhandled exception crashing the in-flight
+    request. Any ``RegistryCorruptError`` raised out of ``_load_registry()``
+    (directly or via a registry helper) is caught at the tool boundary and
+    turned into ``{"error": "..."}``. ``functools.wraps`` preserves the
+    original signature and docstring so MCP tool introspection is unchanged.
+    """
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except RegistryCorruptError:
+            return {
+                "error": "registry corrupt — crews.json.corrupt preserved for inspection"
+            }
+
+    return _wrapped
+
+
 @mcp.tool()
+@_registry_guard
 def crews() -> dict:
     """List all live crews in the registry.
 
@@ -2121,6 +2187,7 @@ def resource_compositions() -> str:
 
 
 @mcp.tool()
+@_registry_guard
 def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False) -> dict:
     """Summon a new crew container into existence, with its own workspace volume.
 
@@ -2344,6 +2411,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
 
 
 @mcp.tool()
+@_registry_guard
 def supply(
     path: str,
     crew_id: str | None = None,
@@ -2441,6 +2509,7 @@ def supply(
 
 
 @mcp.tool()
+@_registry_guard
 def evac(
     path: str,
     ref: str | None = None,
@@ -2488,6 +2557,7 @@ def evac(
 
 
 @mcp.tool()
+@_registry_guard
 def nuke(crew_id: str, confirm: bool = False) -> dict:
     """Destroy a crew completely — tear down its container and both volumes.
 
@@ -2977,6 +3047,7 @@ def captain(
 
 
 @mcp.tool()
+@_registry_guard
 def schedule(
     name: str = "",
     message: str = "",
@@ -3300,6 +3371,7 @@ def _schedule_list(crew_id: str | None) -> dict:
 
 
 @mcp.tool()
+@_registry_guard
 def dispatch(
     task: str | None = None,
     agent: str = "ghost",
@@ -3503,6 +3575,7 @@ def _dispatch_batch(
 
 
 @mcp.tool()
+@_registry_guard
 def steer(
     task_id: str,
     message: str,
@@ -3558,6 +3631,7 @@ def steer(
 
 
 @mcp.tool()
+@_registry_guard
 def pickup(
     task_id: str | None = None,
     crew_id: str | None = None,
