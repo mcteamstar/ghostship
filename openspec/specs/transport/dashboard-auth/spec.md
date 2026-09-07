@@ -7,7 +7,7 @@ Provides a cookie-gated login flow that Caddy enforces via `forward_auth` before
 ## Requirements
 
 ### Requirement: forward_auth is the default dashboard auth mechanism
-When `GA_PORTAL_ENABLED=true`, each per-crew Caddy dashboard server SHALL run a `forward_auth` handler that calls `GET /dashboard/auth` on the transport (main port) before proxying to the crew gateway. On a 200 response the request SHALL be proxied; on 401 the browser SHALL be redirected to `/dashboard/login-ui`. This mechanism SHALL require no Caddy plugin. `basicauth` and the `caddy-security` OIDC/OAuth2 plugin SHALL be documented as supported alternatives that are activated by a Caddy-config change, not a transport code change.
+When `GA_PORTAL_ENABLED=true`, each per-crew Caddy dashboard server SHALL run a `forward_auth` handler that calls `GET /dashboard/auth` on the transport (main port) before proxying to the crew gateway. On a 200 response the request SHALL be proxied; on 401 the browser SHALL be redirected to `/dashboard/login`. This mechanism SHALL require no Caddy plugin. `basicauth` and the `caddy-security` OIDC/OAuth2 plugin SHALL be documented as supported alternatives that are activated by a Caddy-config change, not a transport code change.
 
 #### Scenario: forward_auth gates every dashboard request
 - **WHEN** a browser requests a crew dashboard port and Caddy is enabled
@@ -37,14 +37,14 @@ The transport SHALL expose `GET /dashboard/auth` that reads the `gs_session` coo
 #### Scenario: Missing or expired session cookie is denied
 - **WHEN** a browser sends a request without a valid `gs_session` cookie
 - **THEN** `GET /dashboard/auth` returns 401
-- **THEN** Caddy redirects the browser to `/dashboard/login-ui`
+- **THEN** Caddy redirects the browser to `/dashboard/login`
 
 ### Requirement: Login UI served by transport
-The transport SHALL serve a minimal HTML login page at `GET /dashboard/login-ui` (no authentication required) that submits `ga_api_key` to `POST /dashboard/login`. After a successful login the browser SHALL be redirected to the originally requested URL, preserved in a `next` query parameter.
+The transport SHALL serve a minimal HTML login page at `GET /dashboard/login` (no authentication required) that submits `ga_api_key` to `POST /dashboard/login`. After a successful login the browser SHALL be redirected to the originally requested URL, preserved in a `next` query parameter.
 
 #### Scenario: Unauthenticated browser is shown login page
 - **WHEN** a browser hits a crew dashboard port with no session cookie
-- **THEN** it lands on `/dashboard/login-ui?next=<original-url>`
+- **THEN** it lands on `/dashboard/login?next=<original-url>`
 - **THEN** the response is a valid HTML page with a password form
 
 ### Requirement: MCP/API auth posture with and without Caddy

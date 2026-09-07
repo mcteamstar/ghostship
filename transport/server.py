@@ -761,7 +761,7 @@ _gs_sessions = _security.SessionStore(lifetime_secs=cfg.ga_portal_session_ttl_se
 
 # ── Dashboard CSRF token (TRN-122) ────────────────────────────────────────────
 # Single random token generated at process startup and held for the process
-# lifetime.  Embedded in the GET /dashboard/login-ui form and validated on every
+# lifetime.  Embedded in the GET /dashboard/login form and validated on every
 # POST /dashboard/login before the API-key check.  See design.md D1.
 _dashboard_csrf_token: str = secrets.token_hex(32)
 
@@ -904,7 +904,7 @@ async def _handle_dashboard_logout_post(request: Request) -> Response:
     )
 
 
-# SEC-09 — open redirect guard for /dashboard/login-ui ?next=
+# SEC-09 — open redirect guard for /dashboard/login ?next=
 def _validate_next_url(url: str) -> str:
     """Validate next_url is a safe same-origin relative path.
 
@@ -924,7 +924,7 @@ def _validate_next_url(url: str) -> str:
 
 
 async def _handle_login_ui(request: Request) -> Response:
-    """GET /dashboard/login-ui — serve the minimal HTML login form.
+    """GET /dashboard/login — serve the minimal HTML login form.
 
     Accepts an optional ``?next=<url>`` query parameter for post-login
     redirect.
@@ -4093,7 +4093,7 @@ if __name__ == "__main__":
             ("POST", "/dashboard/login"): _handle_dashboard_login_post,
             ("POST", "/dashboard/logout"): _handle_dashboard_logout_post,
             ("GET",  "/dashboard/auth"): _handle_dashboard_auth,
-            ("GET",  "/dashboard/login-ui"): _handle_login_ui,
+            ("GET",  "/dashboard/login"): _handle_login_ui,
         },
     )
     # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all

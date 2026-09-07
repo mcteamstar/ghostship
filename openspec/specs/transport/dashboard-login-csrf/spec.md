@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Protects the dashboard login form (`GET /dashboard/login-ui` → `POST /dashboard/login`) against cross-site request forgery by embedding a server-generated token in the form and validating it on submission.
+Protects the dashboard login form (`GET /dashboard/login` → `POST /dashboard/login`) against cross-site request forgery by embedding a server-generated token in the form and validating it on submission.
 
 ## Requirements
 
@@ -14,10 +14,10 @@ The transport SHALL generate a single cryptographically random CSRF token at pro
 - **THEN** `_dashboard_csrf_token` is set to a non-empty random hex string generated via `secrets.token_hex`
 
 ### Requirement: CSRF token embedded in dashboard login form
-The transport SHALL embed the CSRF token as a hidden form field named `csrf_token` in the HTML returned by `GET /dashboard/login-ui`.
+The transport SHALL embed the CSRF token as a hidden form field named `csrf_token` in the HTML returned by `GET /dashboard/login`.
 
 #### Scenario: Token present in rendered form
-- **WHEN** a client requests `GET /dashboard/login-ui`
+- **WHEN** a client requests `GET /dashboard/login`
 - **THEN** the response body contains `<input type="hidden" name="csrf_token"` with the current `_dashboard_csrf_token` value
 
 ### Requirement: CSRF token validated on POST /dashboard/login
