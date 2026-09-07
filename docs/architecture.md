@@ -112,7 +112,7 @@ launch(crew_id)
       (see [Operator governance](#operator-governance)). Failure is logged but
       never aborts launch
   16. Patch agent model files to the model pinned in each agent's JSON
-  17. Mint a session token with `KC_GATEWAY_TOKEN_TTL` (24h default), exchange for cookie
+  17. Mint a session token (TTL fixed at 24h), exchange for cookie
   18. Register in /data/crews.json with `last_used` set to setup completion time
   └── returns { status: "ready" } (~30s)
 

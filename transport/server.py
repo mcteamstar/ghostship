@@ -20,7 +20,9 @@ Tools:
 
 Resources:
   transport://agents — available agents and their roles (read before dispatching)
+  transport://compositions — available crew compositions for launch
   transport://orders — built-in standing-order templates (read before ordering)
+  transport://version — transport version and per-crew image versions
   transport://jobs — scheduled jobs across all running crews
 
 Auth flow:

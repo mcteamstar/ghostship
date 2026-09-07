@@ -47,12 +47,11 @@ Crew base image bumped from `0.4.0` to `0.5.0`. The `sandbox: "off"` override is
 
 ### Config cleanup ⚠️
 
-Removed 7 env vars that are now hardcoded internally. No operator action needed — defaults are unchanged.
+Removed 6 env vars that are now hardcoded internally. No operator action needed — defaults are unchanged.
 
 | Removed variable | Hardcoded to |
 |:----------------|:-------------|
 | `GA_FILE_TTL_SECS` | `300` |
-| `GA_PICKUP_MAX_POLL_SECS` | `30` |
 | `GA_MEMORY_WAIT_SECS` | `60` |
 | `KC_GATEWAY_TOKEN_TTL` | `"24h"` |
 | `GA_ENFORCE_HTTPS_REDIRECT` | `False` (Caddy owns redirects) |

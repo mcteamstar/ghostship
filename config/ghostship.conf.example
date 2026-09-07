@@ -209,7 +209,7 @@
 # Domain for ACME (Let's Encrypt). Required when GA_PORTAL_TLS_MODE=acme.
 # GA_PORTAL_DOMAIN=""
 
-# TTL (seconds) for gs_session cookies issued by /dashboard-login.
+# TTL (seconds) for gs_session cookies issued by /dashboard/login.
 # Default 86400 (24 h). Sessions are in-memory only and reset on transport restart.
 # GA_PORTAL_SESSION_TTL_SECS=86400
 

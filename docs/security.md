@@ -45,7 +45,7 @@ rotation is a re-create + restart — no rebuild, no code edit:
 # Rotate the transport API key.
 podman secret rm ga-api-key
 printf '%s' "$NEW_KEY" | podman secret create ga-api-key -
-podman restart ghost-academy   # container re-reads /run/secrets/ga-api-key
+podman restart ga-transport   # container re-reads /run/secrets/ga-api-key
 ```
 
 The file-URL signing secret (`ga-file-secret`) is persisted under the data
