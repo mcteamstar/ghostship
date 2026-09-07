@@ -1,6 +1,6 @@
 ## Why
 
-The crew UI proxy works for the initial page load but breaks for SPA navigation: the KiroCrew gateway UI uses root-absolute paths for both static assets and client-side routing (e.g. navigates to `/chat`). Any approach that serves the SPA under a path prefix (`/crews/{id}/ui/`) cannot fix `window.history.pushState` navigation. The correct fix is to give each crew's UI its own origin. Found during review of PR #3.
+The crew UI proxy works for the initial page load but breaks for SPA navigation: the KiroCrew gateway UI uses root-absolute paths for both static assets and client-side routing (e.g. navigates to `/chat`). Any approach that serves the SPA under a path prefix (`/crews/{id}/ui/`) cannot fix `window.history.pushState` navigation. The correct fix is to give each crew's UI its own origin. Found by Steve Mactaggart (stevemac007) in PR #3.
 
 ## What Changes
 

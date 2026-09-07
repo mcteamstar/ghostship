@@ -1,6 +1,6 @@
 ## Why
 
-Three production bugs found during migration assessment work cause auth false-positives, silent crew idle-stop failures, and broken API proxy calls. All three affect core flows and are straightforward to fix.
+Three production bugs found by stevemac007 during migration assessment work cause auth false-positives, silent crew idle-stop failures, and broken API proxy calls. All three affect core flows and are straightforward to fix.
 
 ## What Changes
 
