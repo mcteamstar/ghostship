@@ -181,7 +181,7 @@ def _sign_file_url(
     expires = int(time.time()) + 300
     flags = ":".join(sorted(f for f in ["bundle"] if bundle))
     payload = f"{crew_id}:{path}:{expires}:GET:{ref or ''}:{flags}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), digestmod=hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     url = f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
     if ref:
@@ -221,7 +221,7 @@ def _verify_file_token(
         # Download (GET) path
         flags = ":".join(sorted(f for f in ["bundle"] if bundle))
         payload = f"{crew_id}:{path}:{exp}:GET:{ref or ''}:{flags}"
-    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), digestmod=hashlib.sha256).hexdigest()
     if hmac.compare_digest(expected, sig):
         _security.audit_auth_event(action="verify_file_token", outcome="valid", source=None)
         return True
@@ -239,7 +239,7 @@ def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool
     expires = int(time.time()) + 300
     flags = ":".join(sorted(f for f in ["bundle", "force", "unpack"] if (f == "bundle" and bundle) or (f == "force" and force) or (f == "unpack" and unpack)))
     payload = f"{crew_id}:{path}:{expires}:POST::{flags}"
-    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), digestmod=hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
     return f"{base}/files/{crew_id}/{path}?expires={expires}&sig={sig}"
 

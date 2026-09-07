@@ -227,7 +227,7 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
         sig = hmac.new(
             signing_secret.encode(),
             f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8"),
-            hashlib.sha256,
+            digestmod=hashlib.sha256,
         ).hexdigest()
         headers.append(f"X-Admiral-Sig: {sig}")
 
