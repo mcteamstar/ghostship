@@ -1279,6 +1279,12 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     #   resource_critical_gb: >= 0, and <= resource_pressure_gb.
     #   subagent_timeout_secs: > 0. subagent_max_turns: >= 1 (UI cap 200).
     #
+    # Memory thresholds default to 0 (disabled). Inside a container, memory is
+    # dynamically allocated by the host (balloon on Linux, Podman VM on macOS).
+    # The container sees only allocated memory, not the full host headroom, so
+    # any non-zero threshold causes premature throttling under real concurrent
+    # workloads. Setting to 0 lets the OS manage memory pressure. See TRN-117.
+    #
     # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
     # permission guard for the agent running inside this crew container. This is
     # intentional and safe: (a) the crew container is an isolated Podman sandbox
