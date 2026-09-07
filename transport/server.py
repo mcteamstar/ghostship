@@ -761,15 +761,15 @@ _gs_sessions = _security.SessionStore(lifetime_secs=cfg.ga_portal_session_ttl_se
 
 # ── Dashboard CSRF token (TRN-122) ────────────────────────────────────────────
 # Single random token generated at process startup and held for the process
-# lifetime.  Embedded in the GET /login-ui form and validated on every
-# POST /dashboard-login before the API-key check.  See design.md D1.
+# lifetime.  Embedded in the GET /dashboard/login-ui form and validated on every
+# POST /dashboard/login before the API-key check.  See design.md D1.
 _dashboard_csrf_token: str = secrets.token_hex(32)
 
 
 # ── Dashboard auth HTTP handlers (TRN-92) ─────────────────────────────────────
 
 async def _handle_dashboard_login_post(request: Request) -> Response:
-    """POST /dashboard-login — validate ga_api_key, issue gs_session cookie.
+    """POST /dashboard/login — validate ga_api_key, issue gs_session cookie.
 
     Reads ``ga_api_key`` from the form body, constant-time compares against
     ``GA_API_KEY``. On success returns 200 + ``Set-Cookie: gs_session=...``.
@@ -820,7 +820,7 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
 
 
 async def _handle_dashboard_auth(request: Request) -> Response:
-    """GET /dashboard-auth — Caddy forward_auth endpoint.
+    """GET /dashboard/auth — Caddy forward_auth endpoint.
 
     Validates the ``gs_session`` cookie. On 200 returns
     ``X-Crew-Cookie: mc_token_5476=<crew_cookie>`` so Caddy's ``copy_headers``
@@ -846,7 +846,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     # to reading the original dashboard-port from a custom header that the
     # Caddy server config can inject.
     # The simplest Caddy-compatible approach: encode the crew's port in the
-    # forward_auth URI, e.g. /dashboard-auth?port=64058. Caddy's forward_auth
+    # forward_auth URI, e.g. /dashboard/auth?port=64058. Caddy's forward_auth
     # directive supports arbitrary URIs. We derive the crew from the port.
     port_str = request.query_params.get("port", "")
     crew_id: str | None = None
@@ -879,7 +879,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
 
 
 async def _handle_dashboard_logout_post(request: Request) -> Response:
-    """POST /dashboard-logout — revoke the gs_session and clear the cookie.
+    """POST /dashboard/logout — revoke the gs_session and clear the cookie.
 
     Validates the current ``gs_session`` cookie; returns 401 when it is
     missing/invalid. On a valid token, revokes it in the session store and
@@ -904,7 +904,7 @@ async def _handle_dashboard_logout_post(request: Request) -> Response:
     )
 
 
-# SEC-09 — open redirect guard for /login-ui ?next=
+# SEC-09 — open redirect guard for /dashboard/login-ui ?next=
 def _validate_next_url(url: str) -> str:
     """Validate next_url is a safe same-origin relative path.
 
@@ -924,14 +924,14 @@ def _validate_next_url(url: str) -> str:
 
 
 async def _handle_login_ui(request: Request) -> Response:
-    """GET /login-ui — serve the minimal HTML login form.
+    """GET /dashboard/login-ui — serve the minimal HTML login form.
 
     Accepts an optional ``?next=<url>`` query parameter for post-login
     redirect.
     """
     next_url = _validate_next_url(request.query_params.get("next", "/"))
     next_url_escaped = _security.encode_html_attr(next_url)
-    # TRN-122: embed the startup CSRF token in the form so POST /dashboard-login
+    # TRN-122: embed the startup CSRF token in the form so POST /dashboard/login
     # can validate it.  encode_html_attr applied for defence-in-depth (hex output
     # is already safe, but the pattern matches next_url_escaped usage above).
     csrf_token_escaped = _security.encode_html_attr(_dashboard_csrf_token)
@@ -963,7 +963,7 @@ async def _handle_login_ui(request: Request) -> Response:
 <body>
 <div class="card">
   <h1>👻 Ghost Academy</h1>
-  <form id="f" method="post" action="/dashboard-login">
+  <form id="f" method="post" action="/dashboard/login">
     <input type="hidden" name="next" value="{next_url_escaped}">
     <input type="hidden" name="csrf_token" value="{csrf_token_escaped}">
     <label for="k">API Key</label>
@@ -977,7 +977,7 @@ async def _handle_login_ui(request: Request) -> Response:
   f.addEventListener('submit', async e => {{
     e.preventDefault();
     const fd = new FormData(f);
-    const r = await fetch('/dashboard-login', {{method:'POST', body: fd}});
+    const r = await fetch('/dashboard/login', {{method:'POST', body: fd}});
     if (r.ok) {{
       window.location.href = fd.get('next') || '/';
     }} else {{
@@ -4090,10 +4090,10 @@ if __name__ == "__main__":
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,
-            ("POST", "/dashboard-login"): _handle_dashboard_login_post,
-            ("POST", "/dashboard-logout"): _handle_dashboard_logout_post,
-            ("GET",  "/dashboard-auth"): _handle_dashboard_auth,
-            ("GET",  "/login-ui"): _handle_login_ui,
+            ("POST", "/dashboard/login"): _handle_dashboard_login_post,
+            ("POST", "/dashboard/logout"): _handle_dashboard_logout_post,
+            ("GET",  "/dashboard/auth"): _handle_dashboard_auth,
+            ("GET",  "/dashboard/login-ui"): _handle_login_ui,
         },
     )
     # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all

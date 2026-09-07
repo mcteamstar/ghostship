@@ -137,7 +137,7 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(len(handles), 2)
         fwd_auth = handles[0]
         self.assertEqual(fwd_auth["handler"], "reverse_proxy")
-        self.assertIn("dashboard-auth", fwd_auth["rewrite"]["uri"])
+        self.assertIn("dashboard/auth", fwd_auth["rewrite"]["uri"])
         self.assertIn("handle_response", fwd_auth)
         # TRN-107: forward_auth also carries the portal secret header.
         self.assertEqual(

@@ -71,8 +71,8 @@ _RATE_LIMIT_DEFAULTS: dict[str, tuple[str, int, int]] = {
     "files": ("GA_RATE_LIMIT_FILES", 60, 60),
     "crew_api": ("GA_RATE_LIMIT_CREW_API", 120, 60),
     # TRN-92: dashboard login endpoint rate limit (default 60 req / 60 s).
-    # /dashboard-auth (forward_auth) is called by Caddy per-request; keep it
-    # generous. /dashboard-login (the key check) is more sensitive.
+    # /dashboard/auth (forward_auth) is called by Caddy per-request; keep it
+    # generous. /dashboard/login (the key check) is more sensitive.
     "dashboard_auth": ("GA_RATE_LIMIT_DASHBOARD_AUTH", 600, 60),
 }
 
@@ -253,7 +253,7 @@ class RateLimitMiddleware:
         if len(parts) >= 3 and parts[0] == "crews" and parts[2] == "api":
             return "crew_api"
         # TRN-92: dashboard auth/login endpoints
-        if path in ("/dashboard-login", "/dashboard-auth"):
+        if path in ("/dashboard/login", "/dashboard/auth"):
             return "dashboard_auth"
         if path.startswith("/mcp"):
             return "mcp"

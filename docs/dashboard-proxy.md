@@ -14,7 +14,7 @@ When a dashboard is requested, the transport allocates a dedicated port from the
 
 ```
 Browser → host:64058 (HTTPS, via ga-portal)
-        → forward_auth check at ga-transport:{PORT}/dashboard-auth
+        → forward_auth check at ga-transport:{PORT}/dashboard/auth
         → (on valid gs_session cookie) reverse_proxy → ga-transport:{PORT}
               rewrite → /crews/{crew_id}/ui/{original_path}
         → transport injects Cookie: mc_token_5476=<crew_token>
@@ -38,7 +38,7 @@ Key properties:
 - **WebSocket connections are proxied.** Real-time chat/task streaming over WebSocket is upgraded and bidirectionally relayed through the same `/crews/{crew_id}/ui/` endpoint.
 - **Crew containers are untouched.** They only expose port 5476 on the internal Podman network.
 - **TLS on every port.** Caddy terminates HTTPS on the main port (443) and on every per-crew dashboard port. See [caddy.md — TLS modes](caddy.md#tls-modes).
-- **`gs_session` cookie gate.** When `GA_API_KEY` is set, every dashboard port requires a valid `gs_session` cookie issued by `/dashboard-login`. Unauthenticated requests redirect to the login page (`/login-ui`).
+- **`gs_session` cookie gate.** When `GA_API_KEY` is set, every dashboard port requires a valid `gs_session` cookie issued by `/dashboard/login`. Unauthenticated requests redirect to the login page (`/dashboard/login-ui`).
 - **Dashboard URLs are HTTPS.** `launch(dashboard=True)` returns `https://host:PORT/` (or `http://host:PORT/` when `GA_PORTAL_TLS_MODE=off`). The `dashboard_url` shape is unchanged by TRN-102.
 - **CORS is pre-configured.** The UI port origin (`{scheme}://{host}:{dashboard_port}`) is added to `KIROCREW_CORS_ORIGINS` at container create time. This is the origin the browser uses, so the SPA's API calls are accepted; the transport's internal port (8000) is never a browser-facing origin and needs no CORS entry.
 - **SPA navigation works correctly.** Because the SPA owns a full origin, `history.pushState` navigation, hard reloads, and link sharing all work as expected.

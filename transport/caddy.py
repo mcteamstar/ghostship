@@ -113,7 +113,7 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
     from ga-transport's own IP, satisfying the gateway's IP binding — Caddy no
     longer talks to crew gateways (``gs-*``) directly and no longer injects the
     cookie itself. When ``GA_API_KEY`` is set, a ``forward_auth`` check against
-    ``/dashboard-auth`` (also on ga-transport) gates the proxy.
+    ``/dashboard/auth`` (also on ga-transport) gates the proxy.
 
     Retries up to 3 times with exponential backoff (~7 s total). Logs a
     warning on failure — does not raise, so a Caddy startup race does not
@@ -134,7 +134,7 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
     # secret, read from the mounted Podman secret file — same placeholder
     # install.sh uses for the static routes. Without this, TransportSecretMiddleware
     # rejects the request with 401 before it ever reaches the UI-proxy or
-    # dashboard-auth handlers.
+    # /dashboard/auth handlers.
     _transport_token_header = {
         "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"],
     }
@@ -151,7 +151,7 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
     forward_auth_handler = {
         "handler": "reverse_proxy",
         "upstreams": [{"dial": _transport_addr}],
-        "rewrite": {"method": "GET", "uri": f"/dashboard-auth?port={port}"},
+        "rewrite": {"method": "GET", "uri": f"/dashboard/auth?port={port}"},
         "headers": {
             "request": {
                 "set": {
