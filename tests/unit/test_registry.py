@@ -159,6 +159,37 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
         self.assertEqual(result, {"crews": {}})
 
 
+class SaveRegistryFdSentinelTests(unittest.TestCase):
+    """Regression test for the fd-sentinel fix in _save_registry() (TRN-139).
+
+    Before TRN-139, ``fd = -1`` was set inside the ``with os.fdopen()`` block
+    body.  The fix moves the sentinel to immediately after the ``os.fdopen()``
+    call so the ``finally`` guard cannot double-close an already-owned fd.
+    """
+
+    def test_fd_sentinel_placement_in_source(self) -> None:
+        """Structural guard: fd = -1 must appear on the line immediately after os.fdopen()."""
+        import inspect
+
+        src = inspect.getsource(registry._save_registry)
+        lines = [l.strip() for l in src.splitlines()]
+        fdopen_idx = next(
+            (i for i, l in enumerate(lines) if "os.fdopen" in l and not l.startswith("with ")),
+            None,
+        )
+        self.assertIsNotNone(fdopen_idx, "Expected bare os.fdopen() call in _save_registry")
+        next_nonempty = next(
+            (i for i in range(fdopen_idx + 1, len(lines)) if lines[i]),
+            None,
+        )
+        self.assertIsNotNone(next_nonempty, "No line found after os.fdopen()")
+        self.assertEqual(
+            lines[next_nonempty],
+            "fd = -1",
+            f"Expected 'fd = -1' immediately after os.fdopen, got: {lines[next_nonempty]!r}",
+        )
+
+
 class WriteCrewSecretDurabilityTests(unittest.TestCase):
     """Tests for _write_crew_secret durability guarantees (TRN-139)."""
 
