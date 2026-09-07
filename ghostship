@@ -11,7 +11,7 @@ Subcommands:
     upgrade    [flags]   Rebuild and restart the transport (runs scripts/install.sh)
     uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
     status               Show transport status (container running, port, uptime)
-    init       [flags]   Register the MCP server and install skill symlinks for agent clients
+    setup      [flags]   Register the MCP server and install skill symlinks for agent clients
     version              Print the ghostship version
 
 Run 'ghostship <subcommand> --help' for subcommand-specific flags.

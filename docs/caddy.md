@@ -17,15 +17,15 @@ Caddy sits in front of all traffic:
                   │    /files/*      ── Bearer check ──▶ ga-transport     │
                   │    /health       ──────────────────▶ ga-transport     │
                   │    /dashboard/auth ────────────────▶ ga-transport     │
-                  │    /dashboard/login      ────────────────▶ ga-transport     │
                   │    /dashboard/login ───────────────▶ ga-transport     │
+                  │    /dashboard/logout ──────────────▶ ga-transport     │
                   │                                                       │
                   │  PER-CREW DASHBOARD SERVERS (dynamic, one per port):  │
                   │    :64058 (TLS)  forward_auth ──▶ ga-transport        │
-                  │                 then proxy    ──▶ ga-transport:8000   │
+                  │                 then proxy    ──▶ ga-transport:64057  │
                   │                             /crews/alpha/ui/{path}    │
                   │    :64059 (TLS)  forward_auth ──▶ ga-transport        │
-                  │                 then proxy    ──▶ ga-transport:8000   │
+                  │                 then proxy    ──▶ ga-transport:64057  │
                   │                             /crews/beta/ui/{path}     │
                   └────────────────────┬─────────────────────────────────┘
                                        │ admin API :2019 (ga-portside only)

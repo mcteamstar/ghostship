@@ -159,7 +159,7 @@ available host memory and waits up to 60 seconds for sufficient headroom
 
 ### Workarounds
 
-1. **Reduce concurrent crews:** Lower `GA_MAX_CREWS` to limit how many
+1. **Reduce concurrent crews:** Lower `GA_MAX_ACTIVE_CREWS` to limit how many
    containers run simultaneously.
 2. **Disable the gate (not recommended):** Set `GA_MIN_FREE_MEM_GB=0` to
    skip the pre-launch check entirely. This allows launches to proceed

@@ -153,8 +153,8 @@ nor the flag sets them, the built-in default applies.
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
 `GA_DASHBOARD_PORT_RANGE_START`,
-`GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_PORTAL_TLS_MODE`,
-`GA_PORTAL_DOMAIN`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
+`GA_DASHBOARD_PORT_RANGE_SIZE`,
+`GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
 have no CLI flag and no ambient-environment-variable input.
 
 ### Error handling
@@ -214,8 +214,8 @@ These flags are one-shot wiring options and are **not** config-file variables.
 
 ## Git repository transfer
 
-See the [Seed or extract a Git repository](../README.md#seed-or-extract-a-git-repository)
-section in the README for full bundle instructions (supply, evac, incremental bundles).
+See the [Repository transfer](architecture.md#repository-transfer)
+section in architecture.md for full bundle instructions (supply, evac, incremental bundles).
 
 ## Deployment security boundary
 

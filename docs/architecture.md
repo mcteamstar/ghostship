@@ -122,8 +122,8 @@ nuke(crew_id, confirm=True)
 
 ### Repository transfer
 
-See [Seed or extract a Git repository](../README.md#seed-or-extract-a-git-repository)
-in the README for full bundle instructions. In short: create a bundle locally,
+See the [configuration.md git repository transfer](../docs/configuration.md#git-repository-transfer)
+section for bundle instructions. In short: create a bundle locally,
 call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle
 bytes to the returned URL. For extraction, call `evac(path="repo", ...,
 bundle=True)` and clone or fetch the downloaded bundle.
@@ -149,6 +149,14 @@ Ghost while tasks remain unchecked, Banshee for an independent review, and
 Reaper to sync specs and archive after a clean review. One unresolved review
 cycle may be fixed and re-reviewed; unresolved findings after that cycle are
 escalated to the Admiral, and archival is confirmed from OpenSpec state.
+
+For an independent multi-angle review of the codebase (security, quality,
+test coverage, and docs), use the built-in `independent-review` template:
+`captain(crew_id, action="order", template="independent-review", interval=<n>)`.
+On each tick, Raven dispatches four concurrent reviewers (Banshee × 3 for
+security/quality/test-coverage and Wraith for docs), collects their reports,
+and mails a consolidated summary to the Admiral. This template has no planning
+or implementation phase — it is review-only.
 
 `captain(..., action="status")` reports whether the Raven job is enabled, its
 last-run summary, and both Captain and Admiral mailbox counts. `action="stop"` pauses the job
@@ -215,8 +223,7 @@ Recurring jobs created by `schedule` use the KiroCrew gateway's retained
 use the direct `/api/spawn` `keep` field.
 
 `pickup(task_id=None, crew_id=None, timeout_secs=0)` is the unified status and
-polling tool. `bridge` is removed — use `pickup(timeout_secs=N)` directly
-(also aliased as: bridge, patrol, poll, watch, wait, monitor, hold).
+polling tool (also aliased as: bridge, patrol, poll, watch, wait, monitor, hold).
 
 - **timeout_secs=0 (default):** check once and return immediately.
 - **timeout_secs > 0:** poll every 3s until the task completes or the timeout

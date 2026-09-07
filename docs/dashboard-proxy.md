@@ -33,7 +33,7 @@ before that.
 Key properties:
 
 - **Portal (`ga-portal`) owns all dashboard port bindings.** The transport no longer binds these ports directly.
-- **Caddy talks only to `ga-transport:8000`.** Both the MCP/file routes and the per-crew dashboard routes upstream to `ga-transport:8000`. Caddy has no network path to crew containers (`gs-*`) — see [Network topology](#network-topology).
+- **Caddy talks only to `ga-transport:${PORT}`.** Both the MCP/file routes and the per-crew dashboard routes upstream to `ga-transport:${PORT}` (default `64057`). Caddy has no network path to crew containers (`gs-*`) — see [Network topology](#network-topology).
 - **The transport injects the session cookie.** The `mc_token_5476` cookie is added by the transport's UI-proxy endpoint (not by the Caddy config), from `ga-transport`'s own IP. The cookie is transparently re-minted when it is within 20% of its TTL of expiring, so sessions never see a "Session expired" prompt.
 - **WebSocket connections are proxied.** Real-time chat/task streaming over WebSocket is upgraded and bidirectionally relayed through the same `/crews/{crew_id}/ui/` endpoint.
 - **Crew containers are untouched.** They only expose port 5476 on the internal Podman network.
