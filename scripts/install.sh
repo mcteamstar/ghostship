@@ -67,6 +67,8 @@ GA_MAX_ACTIVE_CREWS=3
 GA_IDLE_TIMEOUT_SECS=300
 GA_SUBAGENT_TIMEOUT_SECS=3600
 GA_SUBAGENT_MAX_TURNS=200
+GA_BATCH_MAX_TASKS=20
+GA_PICKUP_MAX_POLL_SECS=30
 GA_CREW_AGENT=kiro
 GA_MIN_FREE_MEM_GB=2.0
 GA_SPAWN_MIN_MEMORY_GB=1.5
@@ -76,6 +78,14 @@ GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_PORT_RANGE_SIZE=50
+# ── Client-only install (TRN-115) ────────────────────────────────────────────
+# --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
+# transport WITHOUT running any container-infrastructure steps. --url selects
+# which transport the client connects to (default matches the full-install
+# port); --api-key sets the MCP bearer token. Flag-only — not config-file vars.
+CLIENT_ONLY=false
+CLIENT_ONLY_URL="http://localhost:64057/mcp"
+CLIENT_ONLY_API_KEY=""
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is always installed; there is no opt-out.
 # Caddy listens on PORT (same port as the transport, resolved above).
@@ -150,9 +160,38 @@ while [[ $# -gt 0 ]]; do
     --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
     --caddy-domain) GA_PORTAL_DOMAIN="$2"; shift 2 ;;
     --caddy-tls-mode) GA_PORTAL_TLS_MODE="$2"; shift 2 ;;
+    --client-only) CLIENT_ONLY=true; shift ;;
+    --url) CLIENT_ONLY_URL="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+# ── Client-only early-exit (TRN-115) ─────────────────────────────────────────
+# When --client-only is set, wire the ghostship CLI + agent harnesses to a
+# (usually remote) transport and skip ALL container-infrastructure steps:
+# Podman prerequisites, machine/network setup, image builds, compose up.
+# The --api-key flag reuses the existing GA_API_KEY parser case above.
+if [[ "$CLIENT_ONLY" == "true" ]]; then
+  CLIENT_ONLY_API_KEY="${GA_API_KEY:-}"
+
+  # Install the ghostship CLI symlink (same logic as the full install path).
+  _LOCAL_BIN="${HOME}/.local/bin"
+  mkdir -p "${_LOCAL_BIN}"
+  ln -sf "${GHOSTSHIP_DIR}/ghostship" "${_LOCAL_BIN}/ghostship"
+  echo "✓ ghostship CLI linked to ${_LOCAL_BIN}/ghostship"
+
+  # Wire all detected agent harnesses via ghostship setup. Call the repo-local
+  # binary directly (not through PATH) so this works before ~/.local/bin is on
+  # PATH. Forward --api-key only when a key was provided.
+  "$GHOSTSHIP_DIR/ghostship" setup --url "$CLIENT_ONLY_URL" ${CLIENT_ONLY_API_KEY:+--api-key "$CLIENT_ONLY_API_KEY"}
+
+  # PATH warning (same one-liner as the full install path).
+  if [[ ":${PATH}:" != *":${_LOCAL_BIN}:"* ]]; then
+    echo "  Add ~/.local/bin to your PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
+
+  exit 0
+fi
 
 if [[ -z "${KIRO_IDENTITY_PROVIDER:-}" && -t 0 ]]; then
   read -rp "kiro-cli identity provider URL (blank = default Builder ID login): " KIRO_IDENTITY_PROVIDER
@@ -183,13 +222,17 @@ fi
 # podman and podman-compose must be installed before running install.sh.
 # See README.md and docs/manual-install.md for install commands.
 
-# ── Verify podman compose is available ───────────────────────────────────────
-# `podman compose` delegates to an external provider (podman-compose or
-# docker-compose). Install it before running install.sh.
-if ! command -v podman-compose >/dev/null 2>&1 && \
-   ! (command -v docker-compose >/dev/null 2>&1) && \
-   ! (command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1); then
+# ── Verify podman-compose is available ───────────────────────────────────────
+# Ghostship's compose.yml uses an external Podman secret (ga-transport-secret).
+# docker-compose does NOT support external Podman secrets, so podman-compose is
+# the only accepted provider. When both are installed, Podman's provider
+# precedence may silently select docker-compose — setting PODMAN_COMPOSE_PROVIDER
+# below prevents that.
+if ! command -v podman-compose >/dev/null 2>&1; then
   echo "✗ podman-compose not found." >&2
+  echo "" >&2
+  echo "Ghostship requires podman-compose specifically — docker-compose is not" >&2
+  echo "supported because the generated compose.yml uses external Podman secrets." >&2
   echo "" >&2
   echo "Install podman-compose before running install.sh:" >&2
   case "$OS" in
@@ -503,14 +546,19 @@ VERSION="$(cat "$GHOSTSHIP_DIR/VERSION")"
 # Some build backends (observed with podman) do not reliably invalidate a
 # cached layer when only a --build-arg value changes, silently baking a
 # stale VERSION into an image whose tag/creation time otherwise look fresh.
-# Detect that here and force --no-cache ONLY when the currently-tagged
-# image's baked version actually differs from VERSION -- an ordinary
-# reinstall with no version bump still gets the normal cache speed-up.
+# Also detect mid-release source changes within the same VERSION by hashing
+# the transport source tree and comparing against the baked label.
+# Force --no-cache when either the version or the source hash has changed.
+_TRANSPORT_SOURCE_HASH="$(find "$GHOSTSHIP_DIR/transport" -type f | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')"
 _TRANSPORT_BUILD_FLAGS=()
 if ${_PODMAN_CMD} image exists localhost/transport:latest 2>/dev/null; then
   _baked_transport_version="$(${_PODMAN_CMD} run --rm localhost/transport:latest sh -c 'echo $TRANSPORT_VERSION' 2>/dev/null || true)"
+  _baked_transport_hash="$(${_PODMAN_CMD} inspect localhost/transport:latest --format '{{ index .Labels "org.ghostship.source-hash" }}' 2>/dev/null || true)"
   if [[ "$_baked_transport_version" != "$VERSION" ]]; then
     echo "  Detected stale localhost/transport:latest version ('$_baked_transport_version' != '$VERSION') -- forcing a clean rebuild."
+    _TRANSPORT_BUILD_FLAGS=(--no-cache)
+  elif [[ -n "$_baked_transport_hash" && "$_baked_transport_hash" != "$_TRANSPORT_SOURCE_HASH" ]]; then
+    echo "  Detected stale localhost/transport:latest source (hash mismatch) -- forcing a clean rebuild."
     _TRANSPORT_BUILD_FLAGS=(--no-cache)
   fi
 fi
@@ -562,6 +610,7 @@ echo "Building localhost/transport:latest ..."
 ${_PODMAN_CMD} build -t localhost/transport:latest \
   "${_TRANSPORT_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}" \
+  --build-arg SOURCE_HASH="${_TRANSPORT_SOURCE_HASH}" \
   "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
@@ -647,13 +696,15 @@ services:
     environment:
       PODMAN_SOCKET: ${PODMAN_SOCK}
       HOST: ${HOST:-0.0.0.0}
-      PORT: "${PORT}"
+      PORT: "64057"
       GA_HOST_URL: "${GA_HOST_URL:-http://localhost:${PORT}}"
       GA_MAX_CREWS: "${GA_MAX_CREWS:-20}"
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
       GA_IDLE_TIMEOUT_SECS: "${GA_IDLE_TIMEOUT_SECS:-300}"
       GA_SUBAGENT_TIMEOUT_SECS: "${GA_SUBAGENT_TIMEOUT_SECS:-3600}"
       GA_SUBAGENT_MAX_TURNS: "${GA_SUBAGENT_MAX_TURNS:-200}"
+      GA_BATCH_MAX_TASKS: "${GA_BATCH_MAX_TASKS:-20}"
+      GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
@@ -681,6 +732,7 @@ services:
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-50}"
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
+      GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
@@ -693,10 +745,9 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
       - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
     networks:
       - ga-portside
-    environment:
-      GA_API_KEY: "${GA_API_KEY:-}"
     secrets:
       - ga-transport-secret
+$(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
     volumes:
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
       - ga-portal-data:/data
@@ -756,13 +807,13 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   _AUTH_ROUTES=$(cat <<AUTH_EOF
             {
               "@id": "ga-transport-mcp",
-              "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {file./run/secrets/ga-api-key}"]}}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-transport-files",
-              "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {env.GA_API_KEY}"]}}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {file./run/secrets/ga-api-key}"]}}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-mcp-files-reject",
@@ -777,12 +828,12 @@ else
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-transport-files",
               "match": [{"path": ["/files/*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
 AUTH_EOF
 )
@@ -802,8 +853,8 @@ cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
 ${_AUTH_ROUTES}
             {
               "@id": "ga-transport-misc",
-              "match": [{"path": ["/health", "/version", "/dashboard-auth", "/dashboard-auth*", "/login-ui", "/dashboard-login", "/login", "/login*", "/logout"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "match": [{"path": ["/health", "/version", "/dashboard/*", "/login", "/login*", "/logout"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             }
           ]
         }
@@ -867,6 +918,9 @@ elif [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Darwin" ]]; then
 else
   _COMPOSE_ENV=""
 fi
+# Pin the compose provider to podman-compose so Podman cannot select docker-compose
+# when both are installed (Podman's default precedence prefers docker-compose).
+_COMPOSE_ENV="${_COMPOSE_ENV:+${_COMPOSE_ENV} }PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose)"
 eval "${_COMPOSE_ENV} podman rm -f ga-transport" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman rm -f ga-portal" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${DATA_DIR}/compose.yml\" up -d --force-recreate --remove-orphans"

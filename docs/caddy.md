@@ -16,16 +16,16 @@ Caddy sits in front of all traffic:
                   │    /mcp*         ── Bearer check ──▶ ga-transport     │
                   │    /files/*      ── Bearer check ──▶ ga-transport     │
                   │    /health       ──────────────────▶ ga-transport     │
-                  │    /dashboard-auth ────────────────▶ ga-transport     │
-                  │    /login-ui      ────────────────▶ ga-transport     │
-                  │    /dashboard-login ───────────────▶ ga-transport     │
+                  │    /dashboard/auth ────────────────▶ ga-transport     │
+                  │    /dashboard/login ───────────────▶ ga-transport     │
+                  │    /dashboard/logout ──────────────▶ ga-transport     │
                   │                                                       │
                   │  PER-CREW DASHBOARD SERVERS (dynamic, one per port):  │
                   │    :64058 (TLS)  forward_auth ──▶ ga-transport        │
-                  │                 then proxy    ──▶ ga-transport:8000   │
+                  │                 then proxy    ──▶ ga-transport:64057  │
                   │                             /crews/alpha/ui/{path}    │
                   │    :64059 (TLS)  forward_auth ──▶ ga-transport        │
-                  │                 then proxy    ──▶ ga-transport:8000   │
+                  │                 then proxy    ──▶ ga-transport:64057  │
                   │                             /crews/beta/ui/{path}     │
                   └────────────────────┬─────────────────────────────────┘
                                        │ admin API :2019 (ga-portside only)
@@ -83,21 +83,21 @@ The default auth mechanism for dashboard ports uses Caddy's `forward_auth` handl
 ```
 Browser ──GET :64058/──▶ ga-portal
                             │
-                            ├─ forward_auth ──GET /dashboard-auth──▶ ga-transport
+                            ├─ forward_auth ──GET /dashboard/auth──▶ ga-transport
                             │                    │ valid gs_session cookie?
                             │                    ├─ YES → 200 + X-Crew-Cookie
-                            │                    └─ NO  → 401 → Caddy redirects to /login-ui
+                            │                    └─ NO  → 401 → Caddy redirects to /dashboard/login
                             │
-                            └─ (on 200) reverse_proxy ──▶ ga-transport:8000
+                            └─ (on 200) reverse_proxy ──▶ ga-transport:64057
                                         rewrite /crews/alpha/ui/{path}
                                         passes X-Crew-Cookie as cookie header
 ```
 
 1. Every request to a dashboard port hits Caddy's `forward_auth` check first.
-2. Caddy calls `GET /dashboard-auth` on the transport, passing the request's cookies.
-3. The transport validates the `gs_session` cookie (issued at `/dashboard-login`) and returns 200 or 401.
+2. Caddy calls `GET /dashboard/auth` on the transport, passing the request's cookies.
+3. The transport validates the `gs_session` cookie (issued at `/dashboard/login`) and returns 200 or 401.
 4. On 200, the transport also returns `X-Crew-Cookie: mc_token_5476=<value>`. Caddy's `copy_headers` carries this into the upstream request to the crew gateway, injecting the session cookie.
-5. On 401, Caddy redirects the browser to `/login-ui`, which serves an HTML login form. Submitting the form POSTs to `/dashboard-login` with the operator API key (`GA_API_KEY`). A valid key issues a `gs_session` cookie and the browser retries.
+5. On 401, Caddy redirects the browser to `/dashboard/login`, which serves an HTML login form. Submitting the form POSTs to `/dashboard/login` with the operator API key (`GA_API_KEY`). A valid key issues a `gs_session` cookie and the browser retries.
 
 `gs_session` cookies have a configurable TTL (`GA_PORTAL_SESSION_TTL_SECS`, default 24 h). Sessions are held in-memory and reset on transport restart.
 

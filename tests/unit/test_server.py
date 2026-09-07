@@ -55,7 +55,7 @@ from unittest.mock import ANY, Mock, MagicMock, patch
 import httpx
 import transport.registry as _registry_mod  # noqa: F401
 
-from tests.unit.helpers import Request, server, lifecycle, academy  # noqa: F401
+from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -88,7 +88,101 @@ def _decode_overrides(cmd: list[str]) -> dict:
     import base64 as _b64
     import json as _json
     return _json.loads(_b64.b64decode(cmd[-1]).decode())
+class CookieHeaders:
+    def multi_items(self):
+        return [("set-cookie", "mc_token_5476=session-cookie; Path=/")]
+class CookieResponse:
+    status_code = 200
+    headers = CookieHeaders()
+class CookieHTTP:
+    def get(self, *args: object, **kwargs: object) -> CookieResponse:
+        return CookieResponse()
+class _FakeStreamRequest:
+    """Minimal async-compatible request stub for proxy handler tests."""
 
+    def __init__(
+        self,
+        method: str = "GET",
+        path: str = "/crews/demo/ui",
+        headers: dict[str, str] | None = None,
+        body: bytes = b"",
+        query_string: bytes = b"",
+    ) -> None:
+        self.method = method
+        self.scope = {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "query_string": query_string,
+        }
+        self.headers = headers or {}
+        self._body = body
+
+    async def body(self) -> bytes:
+        return self._body
+class _FakeUpstreamResponse:
+    """httpx.Response-like stub returned by _async_http.stream() context manager."""
+
+    def __init__(
+        self,
+        status_code: int = 200,
+        content: bytes = b"",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.content = content
+        self.headers = dict(headers or {})
+
+    async def aread(self) -> bytes:
+        return self.content
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+class _FakeDownstream:
+    """Minimal ASGI app that records whether it was called."""
+
+    def __init__(self) -> None:
+        self.called = False
+        self.scope = None
+
+    async def __call__(self, scope, receive, send) -> None:
+        self.called = True
+        self.scope = scope
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"OK"})
+
+
+def _http_scope(headers: list[tuple[bytes, bytes]] | None = None) -> dict:
+    return {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": headers or [],
+    }
+
+
+def _run_asgi(app, scope, body: bytes = b"") -> tuple[int, list, bytes]:
+    """Run an ASGI app synchronously and return (status, headers, body)."""
+    status = None
+    resp_headers = []
+    resp_body = b""
+
+    async def receive():
+        return {"type": "http.request", "body": body}
+
+    async def send(msg):
+        nonlocal status, resp_headers, resp_body
+        if msg["type"] == "http.response.start":
+            status = msg["status"]
+            resp_headers = msg.get("headers", [])
+        elif msg["type"] == "http.response.body":
+            resp_body += msg.get("body", b"")
+
+    asyncio.run(app(scope, receive, send))
+    return status, resp_headers, resp_body
 
 
 class PersonaValidationTests(unittest.TestCase):
@@ -141,8 +235,6 @@ class PersonaValidationTests(unittest.TestCase):
                 require.assert_not_called()
                 ensure.assert_not_called()
                 api.assert_not_called()
-
-
 class ModelOverrideTests(unittest.TestCase):
     """Tests for per-dispatch and per-job model overrides (TRN-87)."""
 
@@ -346,8 +438,6 @@ class ModelOverrideTests(unittest.TestCase):
         require.assert_not_called()
         ensure.assert_not_called()
         gateway.assert_not_called()
-
-
 class TaskOrchestrationTests(unittest.TestCase):
     CREW = {"container": "gs-demo"}
 
@@ -457,8 +547,6 @@ class TaskOrchestrationTests(unittest.TestCase):
             api.call_args_list[1].args[1:], ("POST", "/api/spawn/task/continue")
         )
         self.assertEqual(api.call_args_list[1].kwargs, {"json": {"task": "follow up"}})
-
-
 class PickupTimeoutTests(unittest.TestCase):
     """Tests for the unified pickup with timeout_secs, mail state, and early-return."""
 
@@ -590,7 +678,7 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
             patch.object(server.time, "sleep", side_effect=advance),
         ):
-            # caller requests 60s, but the internal cap is 30s
+            # caller requests 60s, but the internal cap is 30s (pickup timeout, unrelated to gateway)
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
 
         # Must be a normal dict — no exception raised
@@ -682,8 +770,6 @@ class PickupTimeoutTests(unittest.TestCase):
         # admiral_mail is now surfaced in pickup via archive API
         self.assertIn("admiral_mail", result)
         self.assertIn("admiral_subjects", result)
-
-
 class ResourceJobsTests(unittest.TestCase):
     """Tests for resource_jobs()."""
 
@@ -756,460 +842,6 @@ class ResourceJobsTests(unittest.TestCase):
 
         self.assertIn("## empty", result)
         self.assertIn("No scheduled jobs", result)
-
-
-class SetupPodman:
-    def __init__(self) -> None:
-        self.stops = 0
-        self.starts = 0
-
-    def container_stop(self, container: str) -> None:
-        self.stops += 1
-
-    def container_start(self, container: str) -> None:
-        self.starts += 1
-
-    def container_exec(
-        self,
-        container: str,
-        cmd: list[str],
-        env: dict[str, str] | None = None,
-    ) -> str:
-        return "ready"
-
-class CookieHeaders:
-    def multi_items(self):
-        return [("set-cookie", "mc_token_5476=session-cookie; Path=/")]
-
-class CookieResponse:
-    status_code = 200
-    headers = CookieHeaders()
-
-class CookieHTTP:
-    def get(self, *args: object, **kwargs: object) -> CookieResponse:
-        return CookieResponse()
-
-class NukeScheduleTests(unittest.TestCase):
-    """Tests for TRN-59 nuke schedule reporting and clearing."""
-
-    CREW = {
-        "container": "gs-demo",
-        "volume": "gs-vol-demo",
-        "home_volume": "gs-home-demo",
-    }
-
-    def _reg_with_schedules(self, schedules: list) -> dict:
-        return {"crews": {"demo": {**self.CREW, "schedules": schedules}}}
-
-    # ── 3.1: dry-run with two schedule entries ─────────────────────────────
-
-    def test_dry_run_reports_two_scheduled_jobs(self) -> None:
-        """3.1 — dry-run returns scheduled_jobs:2 and both names."""
-        schedules = [
-            {"job_id": "j1", "name": "daily-check", "interval_secs": 86400,
-             "cron_expr": None, "agent": "ghost", "enabled": True},
-            {"job_id": "j2", "name": "weekly-report", "interval_secs": None,
-             "cron_expr": "0 9 * * 1", "agent": "wraith", "enabled": True},
-        ]
-        reg = self._reg_with_schedules(schedules)
-        with (
-            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
-            patch.object(server, "_get_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api", return_value={"agents": []}),
-            patch.object(server, "_crew_api", return_value={"agents": []}),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-        ):
-            result = server.nuke("demo", confirm=False)
-
-        self.assertEqual(result["scheduled_jobs"], 2)
-        self.assertIn("daily-check", result["scheduled_job_names"])
-        self.assertIn("weekly-report", result["scheduled_job_names"])
-        self.assertIn("warning", result)
-
-    # ── 3.2: dry-run with no schedule entries ─────────────────────────────
-
-    def test_dry_run_reports_zero_scheduled_jobs(self) -> None:
-        """3.2 — dry-run returns scheduled_jobs:0 and empty list when no schedules."""
-        reg = self._reg_with_schedules([])
-        with (
-            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
-            patch.object(server, "_get_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api", return_value={"agents": []}),
-            patch.object(server, "_crew_api", return_value={"agents": []}),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-        ):
-            result = server.nuke("demo", confirm=False)
-
-        self.assertEqual(result["scheduled_jobs"], 0)
-        self.assertEqual(result["scheduled_job_names"], [])
-        self.assertIn("warning", result)
-
-    # ── 3.3: confirmed nuke issues DELETE for each schedule entry ──────────
-
-    def test_confirmed_nuke_cancels_each_schedule_before_cleanup(self) -> None:
-        """3.3 — confirmed nuke calls DELETE /api/crons/<id> for each entry before _cleanup_crew."""
-        schedules = [
-            {"job_id": "j1", "name": "check", "interval_secs": 300,
-             "cron_expr": None, "agent": "ghost", "enabled": True},
-            {"job_id": "j2", "name": "report", "interval_secs": None,
-             "cron_expr": "0 9 * * 1", "agent": "wraith", "enabled": True},
-        ]
-        reg = self._reg_with_schedules(schedules)
-        api_calls: list[tuple[str, str]] = []
-        cleanup_called_after: list[str] = []
-
-        def fake_crew_api(crew, method, path, **kwargs):
-            api_calls.append((method, path))
-            return {}
-
-        def fake_cleanup(*args, **kwargs):
-            # Record which DELETE calls have been made by the time cleanup is called
-            cleanup_called_after.extend([p for m, p in api_calls if m == "DELETE"])
-
-        with (
-            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
-            patch.object(server, "_get_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_get_podman", return_value=Mock()),
-            patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(lifecycle, "_crew_api", side_effect=fake_crew_api),
-            patch.object(server, "_crew_api", side_effect=fake_crew_api),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry"),
-            patch.object(server, "_save_registry"),
-            patch.object(lifecycle, "_cleanup_crew", side_effect=fake_cleanup),
-            patch.object(server, "_cleanup_crew", side_effect=fake_cleanup),
-        ):
-            result = server.nuke("demo", confirm=True)
-
-        self.assertEqual(result["status"], "nuked")
-        delete_paths = [p for m, p in api_calls if m == "DELETE"]
-        self.assertIn("/api/crons/j1", delete_paths)
-        self.assertIn("/api/crons/j2", delete_paths)
-        # Both DELETEs must have been issued before _cleanup_crew was invoked
-        self.assertIn("/api/crons/j1", cleanup_called_after)
-        self.assertIn("/api/crons/j2", cleanup_called_after)
-
-    # ── 3.4: DELETE failure does not block teardown ────────────────────────
-
-    def test_confirmed_nuke_delete_failure_does_not_block_teardown(self) -> None:
-        """3.4 — DELETE failure is caught, WARNING logged, and _cleanup_crew still called."""
-        schedules = [
-            {"job_id": "j1", "name": "check", "interval_secs": 300,
-             "cron_expr": None, "agent": "ghost", "enabled": True},
-        ]
-        reg = self._reg_with_schedules(schedules)
-
-        def failing_crew_api(crew, method, path, **kwargs):
-            if method == "DELETE":
-                raise RuntimeError("gateway unreachable")
-            return {}
-
-        with (
-            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
-            patch.object(server, "_get_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_get_podman", return_value=Mock()),
-            patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(lifecycle, "_crew_api", side_effect=failing_crew_api),
-            patch.object(server, "_crew_api", side_effect=failing_crew_api),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry"),
-            patch.object(server, "_save_registry"),
-            patch.object(lifecycle, "_cleanup_crew") as cleanup,
-            patch.object(server, "_cleanup_crew") as cleanup,
-            self.assertLogs("transport", level="WARNING") as log_ctx,
-        ):
-            result = server.nuke("demo", confirm=True)
-
-        self.assertEqual(result["status"], "nuked")
-        cleanup.assert_called_once()
-        self.assertTrue(any("nuke: failed to cancel cron" in msg for msg in log_ctx.output))
-        self.assertTrue(any("j1" in msg for msg in log_ctx.output))
-
-    # ── 3.5: confirmed nuke with no schedules issues no DELETE calls ───────
-
-    def test_confirmed_nuke_no_schedules_no_delete_calls(self) -> None:
-        """3.5 — confirmed nuke with no schedules issues no DELETE calls and teardown proceeds."""
-        reg = self._reg_with_schedules([])
-        api_calls: list[tuple[str, str]] = []
-
-        def fake_crew_api(crew, method, path, **kwargs):
-            api_calls.append((method, path))
-            return {}
-
-        with (
-            patch.object(lifecycle, "_get_crew", return_value=self.CREW),
-            patch.object(server, "_get_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_get_podman", return_value=Mock()),
-            patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(lifecycle, "_crew_api", side_effect=fake_crew_api),
-            patch.object(server, "_crew_api", side_effect=fake_crew_api),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry"),
-            patch.object(server, "_save_registry"),
-            patch.object(lifecycle, "_cleanup_crew") as cleanup,
-            patch.object(server, "_cleanup_crew") as cleanup,
-        ):
-            result = server.nuke("demo", confirm=True)
-
-        self.assertEqual(result["status"], "nuked")
-        cleanup.assert_called_once()
-        delete_calls = [(m, p) for m, p in api_calls if m == "DELETE"]
-        self.assertEqual(delete_calls, [])
-
-class IdleMonitorActivityTests(unittest.TestCase):
-    def test_cron_activity_counts_running_and_recent_completed_runs(self) -> None:
-        self.assertTrue(
-            server._cron_activity_since(
-                {"jobs": [{"is_running": True, "running_since": 90}]}, 100
-            )
-        )
-        self.assertTrue(
-            server._cron_activity_since(
-                {"jobs": [{"is_running": False, "last_run_ts": 101}]}, 100
-            )
-        )
-        self.assertFalse(
-            server._cron_activity_since(
-                {"jobs": [{"is_running": False, "last_run_ts": 100}]}, 100
-            )
-        )
-
-    def test_enabled_job_with_no_activity_history_still_counts(self) -> None:
-        # A freshly-created job with interval longer than GA_IDLE_TIMEOUT_SECS
-        # has no is_running/running_since/last_run_ts yet — _cron_activity_since
-        # alone would report no activity, and the crew would idle-stop before
-        # the job's very first fire. _cron_has_enabled_job is the separate
-        # signal that catches this: an enabled job is a standing commitment to
-        # run, regardless of whether it has run yet.
-        fresh_job_payload = {"jobs": [{"name": "captain", "agent": "raven", "enabled": True}]}
-        self.assertFalse(server._cron_activity_since(fresh_job_payload, 100))
-        self.assertTrue(server._cron_has_enabled_job(fresh_job_payload))
-
-    def test_disabled_job_does_not_count_as_enabled(self) -> None:
-        self.assertFalse(
-            server._cron_has_enabled_job({"jobs": [{"name": "captain", "enabled": False}]})
-        )
-        self.assertFalse(server._cron_has_enabled_job({"jobs": []}))
-        self.assertFalse(server._cron_has_enabled_job({}))
-
-class FireImmediatelyTests(unittest.TestCase):
-    """Tests for fire_immediately behavior in schedule() and captain()."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    # ── schedule() tests ──────────────────────────────────────────────────────
-
-    def test_schedule_interval_no_fire_immediately_defaults_true(self) -> None:
-        """3.2 — schedule() with interval and no fire_immediately → immediate dispatch."""
-        dispatch_calls: list[dict] = []
-
-        def api(_crew, method, path, **kwargs):
-            if method == "POST" and path == "/api/spawn":
-                dispatch_calls.append(kwargs.get("json", {}))
-            return {"id": "job-1"}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.schedule(
-                "task", "do work", crew_id="demo", interval=120,
-                model="claude-sonnet-5",
-            )
-
-        self.assertEqual(result["status"], "scheduled")
-        self.assertEqual(len(dispatch_calls), 1)
-        self.assertEqual(dispatch_calls[0]["task"], "do work")
-        self.assertEqual(dispatch_calls[0]["model"], "claude-sonnet-5")
-
-    def test_schedule_cron_no_fire_immediately_defaults_false(self) -> None:
-        """3.3 — schedule() with cron and no fire_immediately → no immediate dispatch."""
-        api_paths: list[str] = []
-
-        def api(_crew, method, path, **kwargs):
-            api_paths.append(f"{method} {path}")
-            return {"id": "job-1"}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.schedule(
-                "task", "do work", crew_id="demo", cron="0 9 * * 1"
-            )
-
-        self.assertEqual(result["status"], "scheduled")
-        # Only the cron creation POST, no /api/spawn dispatch
-        self.assertNotIn("POST /api/spawn", api_paths)
-        self.assertIn("POST /api/crons", api_paths)
-
-    def test_schedule_fire_immediately_true_with_cron(self) -> None:
-        """3.4 — schedule() with fire_immediately=True and cron → immediate dispatch occurs."""
-        dispatch_calls: list[dict] = []
-
-        def api(_crew, method, path, **kwargs):
-            if method == "POST" and path == "/api/spawn":
-                dispatch_calls.append(kwargs.get("json", {}))
-            return {"id": "job-1"}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.schedule(
-                "task", "do work", crew_id="demo",
-                cron="0 9 * * 1", fire_immediately=True
-            )
-
-        self.assertEqual(result["status"], "scheduled")
-        self.assertEqual(len(dispatch_calls), 1)
-        self.assertEqual(dispatch_calls[0]["task"], "do work")
-
-    def test_schedule_fire_immediately_false_with_interval(self) -> None:
-        """3.5 — schedule() with fire_immediately=False and interval → no immediate dispatch."""
-        api_paths: list[str] = []
-
-        def api(_crew, method, path, **kwargs):
-            api_paths.append(f"{method} {path}")
-            return {"id": "job-1"}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.schedule(
-                "task", "do work", crew_id="demo",
-                interval=120, fire_immediately=False
-            )
-
-        self.assertEqual(result["status"], "scheduled")
-        self.assertNotIn("POST /api/spawn", api_paths)
-
-
-
-    def test_schedule_immediate_dispatch_failure_does_not_prevent_job_creation(self) -> None:
-        """3.10 — immediate dispatch failure does not prevent job creation."""
-        call_count = [0]
-
-        def api(_crew, method, path, **kwargs):
-            call_count[0] += 1
-            if method == "POST" and path == "/api/crons":
-                return {"id": "job-1"}
-            if method == "POST" and path == "/api/spawn":
-                raise RuntimeError("dispatch failed")
-            return {}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.schedule("task", "do work", crew_id="demo", interval=120)
-
-        # Job was still created
-        self.assertEqual(result["job_id"], "job-1")
-        self.assertEqual(result["status"], "scheduled")
-        # Error is reported in the result, not raised
-        self.assertIn("immediate_dispatch_error", result)
-        self.assertIn("dispatch failed", result["immediate_dispatch_error"])
-
-    # ── captain() tests ───────────────────────────────────────────────────────
-
-    def test_captain_order_interval_new_job_immediate_dispatch(self) -> None:
-        """3.7 — captain(action="order") with interval and new check-in → immediate Raven dispatch."""
-        podman = Mock()
-        spawn_calls: list[dict] = []
-
-        def api(_crew, method, path, **kwargs):
-            if method == "GET":
-                return {"jobs": []}
-            if method == "POST" and path == "/api/crons":
-                return {"id": "job-1", "enabled": True}
-            if method == "POST" and path == "/api/spawn":
-                spawn_calls.append(kwargs.get("json", {}))
-                return {"id": "immediate-task"}
-            return {}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_append_captain_mail"),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.captain(
-                "demo", "order", message="hold", interval=120,
-                model="claude-opus-5",
-            )
-
-        self.assertEqual(result["status"], "ordered")
-        # Exactly one immediate dispatch to Raven
-        self.assertEqual(len(spawn_calls), 1)
-        self.assertEqual(spawn_calls[0]["agent"], "raven")
-        self.assertEqual(spawn_calls[0]["model"], "claude-opus-5")
-
-    def test_captain_order_resume_no_immediate_dispatch(self) -> None:
-        """3.8 — captain(action="order") resume of paused job → no immediate dispatch."""
-        existing = {
-            "id": "job-paused",
-            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
-            "agent": "raven",
-            "enabled": False,
-        }
-        podman = Mock()
-        api_paths: list[str] = []
-
-        def api(_crew, method, path, **kwargs):
-            api_paths.append(f"{method} {path}")
-            if method == "GET":
-                return {"jobs": [existing]}
-            return {"ok": True}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_append_captain_mail"),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-        ):
-            result = server.captain("demo", "order", message="resume this")
-
-        self.assertEqual(result["job_id"], "job-paused")
-        # No immediate dispatch for a resume
-        self.assertNotIn("POST /api/spawn", api_paths)
-
 class GatewayTokenAndProjectionTests(unittest.TestCase):
     def test_gateway_token_uses_hardcoded_ttl(self) -> None:
         """KC_GATEWAY_TOKEN_TTL is now hardcoded to '24h'; verify it is passed to kirocrew token."""
@@ -1440,149 +1072,86 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         installer = (repo_root / "scripts" / "install.sh").read_text()
         self.assertIn('KIRO_API_KEY: "${KIRO_API_KEY:-}"', installer)
 
-class _FakeDownstream:
-    """Minimal ASGI app that records whether it was called."""
 
-    def __init__(self) -> None:
-        self.called = False
-        self.scope = None
+class WriteAuthFileFdSentinelTests(unittest.TestCase):
+    """Regression tests for the fd-sentinel fix in _write_auth_file() (TRN-139).
 
-    async def __call__(self, scope, receive, send) -> None:
-        self.called = True
-        self.scope = scope
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"OK"})
+    Before TRN-139, ``fd = -1`` was set inside the ``with os.fdopen()`` block
+    body.  If ``os.fdopen()`` itself raised, the ``finally`` guard saw ``fd !=
+    -1`` and called ``os.close(fd)`` on a descriptor that ``os.fdopen`` had
+    already internally closed — a double-close.  The fix moves ``fd = -1`` to
+    immediately after the ``os.fdopen()`` call returns successfully.
+    """
 
-def _http_scope(headers: list[tuple[bytes, bytes]] | None = None) -> dict:
-    return {
-        "type": "http",
-        "method": "POST",
-        "path": "/mcp",
-        "headers": headers or [],
-    }
+    def test_fd_sentinel_placement_in_source(self) -> None:
+        """Structural guard: fd = -1 must appear on the line immediately after os.fdopen().
 
-def _run_asgi(app, scope, body: bytes = b"") -> tuple[int, list, bytes]:
-    """Run an ASGI app synchronously and return (status, headers, body)."""
-    status = None
-    resp_headers = []
-    resp_body = b""
-
-    async def receive():
-        return {"type": "http.request", "body": body}
-
-    async def send(msg):
-        nonlocal status, resp_headers, resp_body
-        if msg["type"] == "http.response.start":
-            status = msg["status"]
-            resp_headers = msg.get("headers", [])
-        elif msg["type"] == "http.response.body":
-            resp_body += msg.get("body", b"")
-
-    asyncio.run(app(scope, receive, send))
-    return status, resp_headers, resp_body
-
-class BearerAuthMiddlewareTests(unittest.TestCase):
-    """Tests for the BearerAuthMiddleware pure ASGI wrapper."""
-
-    def test_disabled_mode_passes_all_requests(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="")
-        scope = _http_scope()
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 200)
-        self.assertTrue(downstream.called)
-
-    def test_valid_bearer_forwards_to_downstream(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="secret-key-123")
-        scope = _http_scope([(b"authorization", b"Bearer secret-key-123")])
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 200)
-        self.assertTrue(downstream.called)
-
-    def test_valid_bearer_case_insensitive_scheme(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="mykey")
-        scope = _http_scope([(b"authorization", b"BEARER mykey")])
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 200)
-        self.assertTrue(downstream.called)
-
-    def test_missing_header_returns_401(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="secret")
-        scope = _http_scope([])
-        status, headers, body = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
-        self.assertFalse(downstream.called)
-        self.assertIn([b"www-authenticate", b"Bearer"], headers)
-        self.assertEqual(body, b"Unauthorized")
-
-    def test_wrong_key_returns_401(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="correct")
-        scope = _http_scope([(b"authorization", b"Bearer wrong")])
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
-        self.assertFalse(downstream.called)
-
-    def test_malformed_no_bearer_prefix_returns_401(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="secret")
-        scope = _http_scope([(b"authorization", b"Basic c2VjcmV0")])
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
-        self.assertFalse(downstream.called)
-
-    def test_duplicate_authorization_headers_returns_401(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="secret")
-        scope = _http_scope([
-            (b"authorization", b"Bearer secret"),
-            (b"authorization", b"Bearer secret"),
-        ])
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
-        self.assertFalse(downstream.called)
-
-    def test_empty_token_after_bearer_returns_401(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="secret")
-        scope = _http_scope([(b"authorization", b"Bearer ")])
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
-        self.assertFalse(downstream.called)
-
-    def test_non_http_scope_passes_through(self) -> None:
-        downstream = _FakeDownstream()
-        mw = server.BearerAuthMiddleware(downstream, api_key="secret")
-        scope = {"type": "lifespan"}
-        _run_asgi(mw, scope)
-        self.assertTrue(downstream.called)
-
-    def test_constant_time_comparison_used(self) -> None:
-        """Verify hmac.compare_digest is used (not == operator)."""
+        This test pins the invariant so a future refactor cannot accidentally
+        revert to the old pattern (fd = -1 inside the with body).
+        """
         import inspect
-        source = inspect.getsource(server.BearerAuthMiddleware.__call__)
-        self.assertIn("hmac.compare_digest", source)
-        self.assertNotIn("== self._key", source)
 
-    def test_rejected_requests_never_reach_downstream(self) -> None:
-        """Ensure all rejection paths never invoke the downstream app."""
-        key = "correct-key"
-        bad_cases = [
-            [],  # missing
-            [(b"authorization", b"Bearer wrong")],  # wrong
-            [(b"authorization", b"Token correct-key")],  # bad scheme
-            [(b"authorization", b"Bearer correct-key"), (b"authorization", b"Bearer correct-key")],  # dup
-            [(b"authorization", b"Bearer ")],  # empty token
-        ]
-        for headers in bad_cases:
-            downstream = _FakeDownstream()
-            mw = server.BearerAuthMiddleware(downstream, api_key=key)
-            status, _, _ = _run_asgi(mw, _http_scope(headers))
-            self.assertEqual(status, 401, f"Expected 401 for headers={headers}")
-            self.assertFalse(downstream.called, f"Downstream called for headers={headers}")
+        src = inspect.getsource(server._write_auth_file)
+        lines = [l.strip() for l in src.splitlines()]
+        # Find the bare os.fdopen call (not 'with os.fdopen')
+        fdopen_idx = next(
+            (i for i, l in enumerate(lines) if "os.fdopen" in l and not l.startswith("with ")),
+            None,
+        )
+        self.assertIsNotNone(fdopen_idx, "Expected bare os.fdopen() call in _write_auth_file")
+        # The very next non-empty line must be the sentinel assignment.
+        next_nonempty = next(
+            (i for i in range(fdopen_idx + 1, len(lines)) if lines[i]),
+            None,
+        )
+        self.assertIsNotNone(next_nonempty, "No line found after os.fdopen()")
+        self.assertEqual(
+            lines[next_nonempty],
+            "fd = -1",
+            f"Expected 'fd = -1' immediately after os.fdopen, got: {lines[next_nonempty]!r}",
+        )
+
+    def test_write_auth_file_does_not_double_close_fd(self) -> None:
+        """The raw fd must not be explicitly closed after fdopen takes ownership.
+
+        After os.fdopen() succeeds the file object owns the fd; the sentinel
+        fd = -1 ensures the finally guard skips the explicit os.close.  Assert
+        the raw fd integer is NOT passed to os.close during a normal write.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            test_path = Path(td) / "auth"
+            raw_fd: list[int] = []
+            close_calls: list[int] = []
+            real_os_open = os.open
+            real_os_close = os.close
+
+            def capturing_open(path: str, flags: int, mode: int = 0o777) -> int:
+                fd = real_os_open(path, flags, mode)
+                raw_fd.append(fd)
+                return fd
+
+            def capturing_close(fd: int) -> None:
+                close_calls.append(fd)
+                real_os_close(fd)
+
+            with (
+                patch("os.open", side_effect=capturing_open),
+                patch("os.close", side_effect=capturing_close),
+                patch("os.fchmod"),
+                patch("os.fsync"),
+                patch("os.chmod"),
+            ):
+                server._write_auth_file("testvalue", _path=test_path)
+
+            if raw_fd:
+                self.assertNotIn(
+                    raw_fd[0],
+                    close_calls,
+                    "fd must not be explicitly os.close'd after fdopen — double-close hazard (TRN-139)",
+                )
+
 
 class StartupWiringTests(unittest.TestCase):
     """Verify the MCP app factory uses /mcp path and stateless setting."""
@@ -1614,7 +1183,6 @@ class StartupWiringTests(unittest.TestCase):
         self.assertNotIn("GA_API_KEY", file_put_src)
         self.assertIn("_verify_file_token", file_get_src)
         self.assertIn("_verify_file_token", file_put_src)
-
 class ReadAuthFromCrewTests(unittest.TestCase):
     """Unit tests for _read_auth_from_crew (trn-78 bug fixes)."""
 
@@ -1677,281 +1245,6 @@ class ReadAuthFromCrewTests(unittest.TestCase):
         self.assertNotIn("read_auth.py", " ".join(command))
         self.assertIn("sqlite3", command[2])
         self.assertIn("auth_kv", command[2])
-
-class ScheduleCancelTests(unittest.TestCase):
-    """Tests for schedule(action='cancel', ...)."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_cancel_success(self) -> None:
-        """4.1 — cancel removes the registry entry after gateway DELETE."""
-        # Seed a registry with a matching job_id entry
-        reg = {
-            "crews": {"demo": {
-                "container": "gs-demo", "cookie": "cookie",
-                "schedules": [
-                    {"job_id": "job-abc", "name": "my-job", "interval_secs": 60,
-                     "cron_expr": None, "agent": "ghost", "enabled": True},
-                ],
-            }}
-        }
-        save_calls = []
-
-        def fake_save(r):
-            save_calls.append(json.loads(json.dumps(r)))
-
-        jobs_listing = {"jobs": [
-            {"id": "job-abc", "name": "my-job", "agent": "ghost", "enabled": True},
-        ]}
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "DELETE" and path == "/api/crons/job-abc":
-                return {}
-            raise AssertionError((method, path, kwargs))
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            result = server.schedule(action="cancel", job_id="job-abc", crew_id="demo")
-
-        self.assertEqual(result, {"status": "cancelled", "job_id": "job-abc"})
-        # Verify the registry entry was removed
-        self.assertTrue(len(save_calls) > 0, "Expected _save_registry to be called")
-        last_reg = save_calls[-1]
-        remaining_ids = [s.get("job_id") for s in last_reg["crews"]["demo"]["schedules"]]
-        self.assertNotIn("job-abc", remaining_ids, "job-abc should have been removed from registry")
-
-    def test_cancel_not_found_is_idempotent(self) -> None:
-        """4.1 — cancel a non-existent job is idempotent (TRN-29: no error)."""
-        jobs_listing = {"jobs": []}
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "DELETE":
-                resp = Mock(status_code=404)
-                raise httpx.HTTPStatusError(
-                    "Not Found",
-                    request=None,
-                    response=resp,
-                )
-            raise AssertionError((method, path, kwargs))
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-            patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
-            patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
-            patch.object(lifecycle, "_save_registry"),
-            patch.object(server, "_save_registry"),
-        ):
-            result = server.schedule(action="cancel", job_id="nonexistent", crew_id="demo")
-
-        self.assertEqual(result, {"status": "cancelled", "job_id": "nonexistent"})
-
-    def test_cancel_refuses_captain_checkin_job(self) -> None:
-        """4.2 — cancel refuses to cancel the captain check-in job."""
-        captain_job = {
-            "id": "captain-job-id",
-            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
-            "agent": "raven",
-            "enabled": True,
-        }
-        jobs_listing = {"jobs": [captain_job]}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", return_value=jobs_listing),
-            patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
-        ):
-            result = server.schedule(action="cancel", job_id="captain-job-id", crew_id="demo")
-
-        self.assertIn("Cannot cancel the Captain check-in job", result["error"])
-
-    def test_cancel_requires_job_id(self) -> None:
-        """cancel without job_id returns error."""
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-        ):
-            result = server.schedule(action="cancel", crew_id="demo")
-
-        self.assertIn("job_id is required", result["error"])
-
-class ScheduleCreateValidationTests(unittest.TestCase):
-    """Tests for schedule(action='create') input validation."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_create_requires_name(self) -> None:
-        """create without name returns error."""
-        result = server.schedule(action="create", message="do stuff", crew_id="demo", interval=60)
-        self.assertIn("name is required", result["error"])
-
-    def test_create_requires_message(self) -> None:
-        """create without message returns error."""
-        result = server.schedule(action="create", name="my-job", crew_id="demo", interval=60)
-        self.assertIn("message is required", result["error"])
-
-class ScheduleListTests(unittest.TestCase):
-    """Tests for schedule(action='list', ...)."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_list_with_jobs(self) -> None:
-        """4.3 — list returns jobs with expected fields."""
-        jobs_listing = {"jobs": [
-            {"id": "j1", "name": "daily-check", "schedule": "0 9 * * *", "agent": "ghost", "enabled": True, "last_run_ts": "2026-01-01T09:00:00"},
-            {"id": "j2", "name": "weekly-report", "schedule": "0 0 * * 1", "agent": "wraith", "enabled": False, "last_run_ts": None},
-        ]}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", return_value=jobs_listing),
-            patch.object(server, "_crew_api_with_recovery", return_value=jobs_listing),
-        ):
-            result = server.schedule(action="list", crew_id="demo")
-
-        self.assertEqual(len(result["jobs"]), 2)
-        self.assertEqual(result["jobs"][0]["job_id"], "j1")
-        self.assertEqual(result["jobs"][0]["name"], "daily-check")
-        self.assertEqual(result["jobs"][0]["agent"], "ghost")
-        self.assertTrue(result["jobs"][0]["enabled"])
-        self.assertEqual(result["jobs"][1]["job_id"], "j2")
-        self.assertFalse(result["jobs"][1]["enabled"])
-
-    def test_list_empty(self) -> None:
-        """4.3 — list returns empty jobs list when no jobs exist."""
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", return_value={"jobs": []}),
-            patch.object(server, "_crew_api_with_recovery", return_value={"jobs": []}),
-        ):
-            result = server.schedule(action="list", crew_id="demo")
-
-        self.assertEqual(result, {"jobs": []})
-
-    def test_list_falls_back_to_gateway_when_registry_empty(self) -> None:
-        """4.1b — schedule(list) falls back to gateway /api/crons when registry is empty."""
-        # Registry has no schedules for this crew
-        reg_empty = {"crews": {"demo": {"container": "gs-demo", "cookie": "cookie", "schedules": []}}}
-        gateway_jobs = {"jobs": [
-            {"id": "gw-j1", "name": "gateway-job", "schedule": "every 60s",
-             "agent": "ghost", "enabled": True, "last_run_ts": None},
-        ]}
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=reg_empty),
-            patch.object(server, "_load_registry", return_value=reg_empty),
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", return_value=gateway_jobs) as api_mock,
-            patch.object(server, "_crew_api_with_recovery", return_value=gateway_jobs) as api_mock,
-        ):
-            result = server.schedule(action="list", crew_id="demo")
-
-        # The gateway /api/crons GET must have been called as fallback
-        api_mock.assert_called_once()
-        call_args = api_mock.call_args
-        self.assertEqual(call_args.args[2], "GET")
-        self.assertEqual(call_args.args[3], "/api/crons")
-        # The gateway's job should appear in the result
-        self.assertEqual(len(result["jobs"]), 1)
-        self.assertEqual(result["jobs"][0]["job_id"], "gw-j1")
-        self.assertEqual(result["jobs"][0]["name"], "gateway-job")
-
-class DispatchFireAfterTests(unittest.TestCase):
-    """Tests for schedule(delay=...) — TRN-29 moved delay from dispatch to schedule."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def test_delay_creates_one_shot_via_schedule(self) -> None:
-        """6.3 — schedule(delay=N) creates a one-shot cron job."""
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", return_value={"id": "delayed-job-1"}) as api,
-            patch.object(server, "_crew_api_with_recovery", return_value={"id": "delayed-job-1"}) as api,
-            patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
-            patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
-            patch.object(lifecycle, "_save_registry"),
-            patch.object(server, "_save_registry"),
-        ):
-            result = server.schedule(
-                name="cleanup", message="run cleanup", agent="ghost", crew_id="demo", delay=300
-            )
-
-        self.assertEqual(result["job_id"], "delayed-job-1")
-        self.assertEqual(result["status"], "scheduled")
-        self.assertEqual(result["delay"], 300)
-
-        # Verify it called POST /api/crons with a cron expression
-        api.assert_called_once()
-        call_kwargs = api.call_args.kwargs
-        cron_expr = call_kwargs["json"].get("cron", "")
-        self.assertEqual(len(cron_expr.split()), 5, f"Expected 5-field cron expr, got: {cron_expr!r}")
-        self.assertNotIn("delay", call_kwargs["json"])
-        self.assertEqual(call_kwargs["json"]["agent"], "ghost")
-        self.assertEqual(call_kwargs["json"]["message"], "run cleanup")
-
-    def test_delay_zero_rejected(self) -> None:
-        """6.3 — schedule(delay=0) returns validation error."""
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-        ):
-            result = server.schedule(
-                name="cleanup", message="run cleanup", crew_id="demo", delay=0
-            )
-
-        self.assertEqual(result, {"error": "delay must be >= 1"})
-
-    def test_delay_negative_rejected(self) -> None:
-        """6.3 — schedule(delay=-5) returns validation error."""
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-        ):
-            result = server.schedule(
-                name="cleanup", message="run cleanup", crew_id="demo", delay=-5
-            )
-
-        self.assertEqual(result, {"error": "delay must be >= 1"})
-
 class TestPolicyInjection(unittest.TestCase):
     """Tests for the _inject_policy() function and its integration."""
 
@@ -2419,8 +1712,6 @@ class TestPolicyInjection(unittest.TestCase):
         entry = result["crews"][0]
         self.assertIn("uptime_secs", entry)
         self.assertIsNone(entry["uptime_secs"])
-
-
 class TestPatchCrewConfig(unittest.TestCase):
     """Tests for _patch_crew_config memory threshold patching."""
 
@@ -2443,7 +1734,9 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            overrides = full_overrides["agent"]
             self.assertEqual(overrides["spawn_min_memory_gb"], 2.5)
             self.assertEqual(overrides["resource_pressure_gb"], 3.0)
             self.assertEqual(overrides["resource_critical_gb"], 1.5)
@@ -2474,7 +1767,9 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            overrides = full_overrides["agent"]
             self.assertEqual(overrides["subagent_timeout_secs"], 7200)
         finally:
             server.GA_SUBAGENT_TIMEOUT_SECS = original
@@ -2495,14 +1790,20 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            overrides = full_overrides["agent"]
             self.assertEqual(overrides["subagent_max_turns"], 300)
         finally:
             server.GA_SUBAGENT_MAX_TURNS = original
             lifecycle.GA_SUBAGENT_MAX_TURNS = original
 
     def test_agent_field_default_kiro(self) -> None:
-        """GA_CREW_AGENT unset → config.local.json gets agent: "kiro" (0.4.0 required field)."""
+        """GA_CREW_AGENT unset → config.local.json gets agent.agent: "kiro" (0.4.0 required field).
+
+        After TRN-127 the top-level ``agent`` key in full_overrides is a dict of
+        agent-scoped config; the KiroCrew "agent name" is nested as
+        ``full_overrides["agent"]["agent"]``."""
         original = server.GA_CREW_AGENT
         try:
             server.GA_CREW_AGENT = "kiro"
@@ -2516,8 +1817,13 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
-            self.assertEqual(overrides["agent"], "kiro")
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # full_overrides["agent"] is the agent section dict; "agent" within
+            # it is the KiroCrew agent-name field.
+            agent_section = full_overrides["agent"]
+            self.assertIsInstance(agent_section, dict,
+                                  "full_overrides['agent'] must be a dict after TRN-127")
+            self.assertEqual(agent_section["agent"], "kiro")
         finally:
             server.GA_CREW_AGENT = original
             lifecycle.GA_CREW_AGENT = original
@@ -2537,8 +1843,12 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
-            self.assertEqual(overrides["agent"], "custom-agent")
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # full_overrides["agent"] is the agent section dict after TRN-127
+            agent_section = full_overrides["agent"]
+            self.assertIsInstance(agent_section, dict,
+                                  "full_overrides['agent'] must be a dict after TRN-127")
+            self.assertEqual(agent_section["agent"], "custom-agent")
         finally:
             server.GA_CREW_AGENT = original
             lifecycle.GA_CREW_AGENT = original
@@ -2546,7 +1856,7 @@ class TestPatchCrewConfig(unittest.TestCase):
     def test_config_script_has_no_unexpanded_shell_vars(self) -> None:
         """KiroCrew 0.4.0 rejects literal $VAR in config values — the decoded
         overrides must contain no unexpanded shell variable reference in any
-        written value."""
+        written value (including nested dicts after TRN-127)."""
         import re
         exec_calls: list[tuple[str, list[str]]] = []
 
@@ -2556,13 +1866,24 @@ class TestPatchCrewConfig(unittest.TestCase):
                 return "patched config.local.json"
 
         server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
-        overrides = _decode_overrides(exec_calls[0][1])
-        for value in overrides.values():
-            if isinstance(value, str):
-                self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", value))
+        full_overrides = _decode_overrides(exec_calls[0][1])
+
+        def _check_no_shell_vars(obj: object, path: str = "") -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    _check_no_shell_vars(v, f"{path}.{k}")
+            elif isinstance(obj, str):
+                self.assertIsNone(
+                    re.search(r"\$\{?[A-Za-z_]", obj),
+                    f"Unexpanded shell variable in {path}: {obj!r}",
+                )
+
+        _check_no_shell_vars(full_overrides)
 
     def test_kc_model_default_set_writes_default_model(self) -> None:
-        """KC_MODEL_DEFAULT set → default_model written to config.local.json."""
+        """KC_MODEL_DEFAULT set → default_model written to config.local.json.
+
+        After TRN-127 default_model lives under full_overrides["agent"]."""
         original = server.KC_MODEL_DEFAULT
         try:
             server.KC_MODEL_DEFAULT = "anthropic/claude-sonnet-4-20250514"
@@ -2576,9 +1897,11 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # default_model is agent-scoped — lives under full_overrides["agent"]
+            agent_section = full_overrides["agent"]
             self.assertEqual(
-                overrides["default_model"], "anthropic/claude-sonnet-4-20250514"
+                agent_section["default_model"], "anthropic/claude-sonnet-4-20250514"
             )
         finally:
             server.KC_MODEL_DEFAULT = original
@@ -2599,335 +1922,13 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
-            self.assertNotIn("default_model", overrides)
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # default_model is agent-scoped — check it's absent from agent section
+            agent_section = full_overrides.get("agent", {})
+            self.assertNotIn("default_model", agent_section)
         finally:
             server.KC_MODEL_DEFAULT = original
             lifecycle.KC_MODEL_DEFAULT = original
-
-class IdleMonitorPodman:
-    """Mock PodmanClient for _idle_monitor tests."""
-
-    def __init__(
-        self,
-        containers_running: dict[str, bool] | None = None,
-    ) -> None:
-        self.containers_running = containers_running or {}
-        self.stops: list[str] = []
-
-    def container_is_running(self, name: str) -> bool:
-        return self.containers_running.get(name, True)
-
-    def container_stop(self, name: str) -> None:
-        self.stops.append(name)
-
-class MockHTTPResponse:
-    """Mock HTTP response factory for idle_monitor API calls."""
-
-    def __init__(self, status_code: int = 200, json_data: Any = None) -> None:
-        self.status_code = status_code
-        self._json = json_data or {}
-
-    def json(self) -> Any:
-        return self._json
-
-class IdleMonitorTests(unittest.TestCase):
-    """Tests for _idle_monitor logic (trn-17 tasks 4.x and 5.x)."""
-
-    def _run_one_iteration(
-        self,
-        crew_items: list[tuple[str, dict]],
-        podman: IdleMonitorPodman,
-        http_responses: list[MockHTTPResponse | BaseException] | None = None,
-        mint_cookie_return: str | None = None,
-    ) -> dict[str, Any]:
-        """Run a single iteration of the idle monitor and return state."""
-        http_calls = []
-        response_iter = iter(http_responses or [])
-
-        class FakeHTTP:
-            def get(self, url: str, **kwargs: Any) -> MockHTTPResponse:
-                http_calls.append(url)
-                response = next(response_iter, MockHTTPResponse(500))
-                if isinstance(response, BaseException):
-                    raise response
-                return response
-
-        touched: list[str] = []
-        saved_regs: list[dict] = []
-
-        def touch(crew_id: str) -> None:
-            touched.append(crew_id)
-
-        def save_reg(reg: dict) -> None:
-            saved_regs.append(dict(reg))
-
-        # Patch the while loop to run once via StopIteration on sleep
-        sleep_called = [False]
-
-        def fake_sleep(secs: float) -> None:
-            if sleep_called[0]:
-                raise StopIteration()
-            sleep_called[0] = True
-
-        with (
-            patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_http", FakeHTTP()),
-            patch.object(server, "_http", FakeHTTP()),
-            patch.object(lifecycle, "_touch_crew", side_effect=touch),
-            patch.object(server, "_touch_crew", side_effect=touch),
-            patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crew_items)}),
-            patch.object(server, "_load_registry", return_value={"crews": dict(crew_items)}),
-            patch.object(lifecycle, "_save_registry", side_effect=save_reg),
-            patch.object(server, "_save_registry", side_effect=save_reg),
-            patch.object(lifecycle, "_mint_cookie", return_value=mint_cookie_return),
-            patch.object(server, "_mint_cookie", return_value=mint_cookie_return),
-            patch.object(server.time, "sleep", side_effect=fake_sleep),
-            patch.object(server.time, "time", return_value=1000.0),
-        ):
-            try:
-                server._idle_monitor()
-            except StopIteration:
-                pass
-
-        return {
-            "stops": podman.stops,
-            "touched": touched,
-            "http_calls": http_calls,
-            "saved_regs": saved_regs,
-        }
-
-    def test_crew_with_active_task_not_stopped(self) -> None:
-        """4.1: crew with active dispatch task is not stopped, last_used updated."""
-        podman = IdleMonitorPodman(containers_running={"gs-active": True})
-        spawn_resp = MockHTTPResponse(200, {"agents": [{"done": False}]})
-        crew_items = [("active", {"container": "gs-active", "status": "running", "cookie": "c", "last_used": 0})]
-        result = self._run_one_iteration(crew_items, podman, [spawn_resp])
-
-        self.assertEqual(result["stops"], [])
-        self.assertIn("active", result["touched"])
-
-    def test_crew_with_enabled_cron_not_stopped(self) -> None:
-        """4.2: crew with enabled cron job is not stopped, last_used updated."""
-        podman = IdleMonitorPodman(containers_running={"gs-cron": True})
-        spawn_resp = MockHTTPResponse(200, {"agents": []})
-        cron_resp = MockHTTPResponse(200, {"jobs": [{"name": "check", "enabled": True}]})
-        crew_items = [("cron-crew", {"container": "gs-cron", "status": "running", "cookie": "c", "last_used": 0})]
-        result = self._run_one_iteration(crew_items, podman, [spawn_resp, cron_resp])
-
-        self.assertEqual(result["stops"], [])
-        self.assertIn("cron-crew", result["touched"])
-
-    def test_genuinely_idle_crew_is_stopped(self) -> None:
-        """4.3: genuinely idle crew is stopped, registry marked 'stopped'."""
-        podman = IdleMonitorPodman(containers_running={"gs-idle": True})
-        spawn_resp = MockHTTPResponse(200, {"agents": []})
-        cron_resp = MockHTTPResponse(200, {"jobs": []})
-        crew_items = [("idle-crew", {"container": "gs-idle", "status": "running", "cookie": "c", "last_used": 0})]
-        result = self._run_one_iteration(crew_items, podman, [spawn_resp, cron_resp])
-
-        self.assertIn("gs-idle", result["stops"])
-        self.assertTrue(result["saved_regs"])
-        self.assertEqual(result["saved_regs"][-1]["crews"]["idle-crew"]["status"], "stopped")
-
-    def test_recently_used_crew_skipped(self) -> None:
-        """4.4: recently used crew (within timeout) is skipped."""
-        podman = IdleMonitorPodman(containers_running={"gs-recent": True})
-        # last_used is recent enough (within GA_IDLE_TIMEOUT_SECS of now=1000)
-        crew_items = [("recent", {"container": "gs-recent", "status": "running", "cookie": "c", "last_used": 999.0})]
-        result = self._run_one_iteration(crew_items, podman, [])
-
-        self.assertEqual(result["stops"], [])
-        self.assertEqual(result["touched"], [])
-        self.assertEqual(result["http_calls"], [])
-
-    def test_already_stopped_container_skipped(self) -> None:
-        """4.5: already-stopped container is skipped (no double-stop)."""
-        podman = IdleMonitorPodman(containers_running={"gs-stopped": False})
-        crew_items = [("stopped", {"container": "gs-stopped", "status": "running", "cookie": "c", "last_used": 0})]
-        result = self._run_one_iteration(crew_items, podman, [])
-
-        self.assertEqual(result["stops"], [])
-
-    def test_401_triggers_cookie_refresh_and_retry(self) -> None:
-        """5.2: 401 response triggers cookie refresh and successful retry."""
-        podman = IdleMonitorPodman(containers_running={"gs-auth": True})
-        # First spawn call returns 401, retry returns 200 with active task
-        spawn_401 = MockHTTPResponse(401)
-        spawn_ok = MockHTTPResponse(200, {"agents": [{"done": False}]})
-        crew_items = [("auth-crew", {"container": "gs-auth", "status": "running", "cookie": "old", "last_used": 0})]
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_401, spawn_ok],
-            mint_cookie_return="new-cookie",
-        )
-
-        self.assertEqual(result["stops"], [])
-        self.assertIn("auth-crew", result["touched"])
-
-    def test_401_with_failed_cookie_refresh_skips_crew(self) -> None:
-        """5.3: 401 with failed cookie refresh skips crew (does not stop it)."""
-        podman = IdleMonitorPodman(containers_running={"gs-nauth": True})
-        spawn_401 = MockHTTPResponse(401)
-        crew_items = [("nauth-crew", {"container": "gs-nauth", "status": "running", "cookie": "dead", "last_used": 0})]
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_401],
-            mint_cookie_return=None,  # cookie refresh fails
-        )
-
-        # Should NOT stop the crew (fail-open)
-        self.assertEqual(result["stops"], [])
-        # Should NOT touch (we can't verify activity)
-        self.assertEqual(result["touched"], [])
-
-    def test_spawn_activity_check_exception_skips_crew(self) -> None:
-        """An /api/spawn error leaves the crew running for this cycle."""
-        podman = IdleMonitorPodman(containers_running={"gs-spawn-error": True})
-        crew_items = [(
-            "spawn-error",
-            {"container": "gs-spawn-error", "status": "running", "cookie": "c", "last_used": 0},
-        )]
-
-        result = self._run_one_iteration(
-            crew_items, podman, [RuntimeError("spawn unavailable")]
-        )
-
-        self.assertEqual(result["stops"], [])
-
-    def test_spawn_activity_check_unexpected_response_skips_crew(self) -> None:
-        """A non-success /api/spawn response leaves the crew running."""
-        podman = IdleMonitorPodman(containers_running={"gs-spawn-status-error": True})
-        crew_items = [(
-            "spawn-status-error",
-            {"container": "gs-spawn-status-error", "status": "running", "cookie": "c", "last_used": 0},
-        )]
-
-        result = self._run_one_iteration(
-            crew_items, podman, [MockHTTPResponse(503)]
-        )
-
-        self.assertEqual(result["stops"], [])
-
-    def test_spawn_activity_check_malformed_response_skips_crew(self) -> None:
-        """A malformed successful /api/spawn payload leaves the crew running."""
-        podman = IdleMonitorPodman(containers_running={"gs-spawn-malformed": True})
-        crew_items = [(
-            "spawn-malformed",
-            {"container": "gs-spawn-malformed", "status": "running", "cookie": "c", "last_used": 0},
-        )]
-
-        result = self._run_one_iteration(
-            crew_items, podman, [MockHTTPResponse(200, [])]
-        )
-
-        self.assertEqual(result["stops"], [])
-
-    def test_cron_activity_check_exception_skips_crew(self) -> None:
-        """An /api/crons error leaves the crew running for this cycle."""
-        podman = IdleMonitorPodman(containers_running={"gs-cron-error": True})
-        spawn_resp = MockHTTPResponse(200, {"agents": []})
-        crew_items = [(
-            "cron-error",
-            {"container": "gs-cron-error", "status": "running", "cookie": "c", "last_used": 0},
-        )]
-
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_resp, RuntimeError("crons unavailable")]
-        )
-
-        self.assertEqual(result["stops"], [])
-
-    def test_cron_activity_check_unexpected_response_skips_crew(self) -> None:
-        """A non-success /api/crons response leaves the crew running."""
-        podman = IdleMonitorPodman(containers_running={"gs-cron-status-error": True})
-        spawn_resp = MockHTTPResponse(200, {"agents": []})
-        crew_items = [(
-            "cron-status-error",
-            {"container": "gs-cron-status-error", "status": "running", "cookie": "c", "last_used": 0},
-        )]
-
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_resp, MockHTTPResponse(503)]
-        )
-
-        self.assertEqual(result["stops"], [])
-
-    def test_cron_activity_check_malformed_response_skips_crew(self) -> None:
-        """A malformed successful /api/crons payload leaves the crew running."""
-        podman = IdleMonitorPodman(containers_running={"gs-cron-malformed": True})
-        spawn_resp = MockHTTPResponse(200, {"agents": []})
-        crew_items = [(
-            "cron-malformed",
-            {"container": "gs-cron-malformed", "status": "running", "cookie": "c", "last_used": 0},
-        )]
-
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_resp, MockHTTPResponse(200, [])]
-        )
-
-        self.assertEqual(result["stops"], [])
-
-    def test_idle_monitor_cron_401_retries_with_fresh_cookie(self) -> None:
-        """D9 — cron endpoint 401 triggers cookie refresh and retry (TRN-39 4.4)."""
-        podman = IdleMonitorPodman(containers_running={"gs-cron401": True})
-        # spawn returns empty (no tasks), cron first returns 401, then (after cookie refresh)
-        # returns a listing with an enabled cron job (keeps crew alive).
-        spawn_resp = MockHTTPResponse(200, {"agents": []})
-        cron_401 = MockHTTPResponse(401)
-        cron_ok = MockHTTPResponse(200, {"jobs": [{"name": "check", "enabled": True}]})
-        crew_items = [(
-            "cron401-crew",
-            {"container": "gs-cron401", "status": "running", "cookie": "old", "last_used": 0},
-        )]
-
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_resp, cron_401, cron_ok],
-            mint_cookie_return="new-cookie",
-        )
-
-        # Cookie refresh happened, cron retried — crew should NOT be stopped
-        self.assertEqual(result["stops"], [], "crew should not be stopped after cron 401 retry")
-        self.assertIn("cron401-crew", result["touched"])
-
-    def test_403_triggers_cookie_refresh_and_retry_on_spawn(self) -> None:
-        """2.2 (trn-78): 403 response on spawn triggers cookie refresh and retry."""
-        podman = IdleMonitorPodman(containers_running={"gs-403spawn": True})
-        # First spawn call returns 403 (CSRF mismatch), retry returns 200 with active task
-        spawn_403 = MockHTTPResponse(403)
-        spawn_ok = MockHTTPResponse(200, {"agents": [{"done": False}]})
-        crew_items = [("spawn-403-crew", {
-            "container": "gs-403spawn", "status": "running", "cookie": "old", "last_used": 0,
-        })]
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_403, spawn_ok],
-            mint_cookie_return="new-cookie",
-        )
-
-        # Crew has active task after retry — must not be stopped
-        self.assertEqual(result["stops"], [])
-        self.assertIn("spawn-403-crew", result["touched"])
-
-    def test_403_with_successful_cookie_refresh_stops_idle_crew(self) -> None:
-        """2.3 (trn-78): idle monitor stops crew after successful cookie refresh following 403."""
-        podman = IdleMonitorPodman(containers_running={"gs-403idle": True})
-        # spawn: first 403, then (after cookie refresh) 200 with empty agents
-        # crons: 200 with empty jobs list → crew is genuinely idle → gets stopped
-        spawn_403 = MockHTTPResponse(403)
-        spawn_ok = MockHTTPResponse(200, {"agents": []})
-        cron_ok = MockHTTPResponse(200, {"jobs": []})
-        crew_items = [("idle-403-crew", {
-            "container": "gs-403idle", "status": "running", "cookie": "old", "last_used": 0,
-        })]
-        result = self._run_one_iteration(
-            crew_items, podman, [spawn_403, spawn_ok, cron_ok],
-            mint_cookie_return="new-cookie",
-        )
-
-        # Cookie refresh succeeded, no active tasks — crew should be stopped
-        self.assertIn("gs-403idle", result["stops"])
-        self.assertTrue(result["saved_regs"])
-        self.assertEqual(result["saved_regs"][-1]["crews"]["idle-403-crew"]["status"], "stopped")
-
 class FinishCrewSetupOrderingTests(unittest.TestCase):
     """Tests for _finish_crew_setup step ordering (trn-17 tasks 6.x)."""
 
@@ -3226,7 +2227,6 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("did not recover", result["error"])
         self.assertTrue(cleanup_called[0])
-
 class LoginGuardClearTests(unittest.TestCase):
     """Tests for _handle_login_get guard-clear ordering (trn-17 tasks 8.x)."""
 
@@ -3308,847 +2308,6 @@ class LoginGuardClearTests(unittest.TestCase):
         finally:
             with server._login_pending_lock:
                 server._login_pending = None
-
-class SchedulePersistenceTests(unittest.TestCase):
-    """Tests for TRN-29 transport schedule persistence."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie"}
-
-    def _make_registry(self, crew_id: str = "demo", schedules: list | None = None) -> dict:
-        return {"crews": {crew_id: {"container": "gs-demo", "cookie": "cookie", "schedules": schedules or []}}}
-
-    def test_captain_order_writes_schedule_entry(self) -> None:
-        """7.1 — captain(action='order') writes schedule entry to registry."""
-        reg = self._make_registry()
-        save_calls = []
-
-        def fake_save(r):
-            save_calls.append(json.loads(json.dumps(r)))
-
-        jobs_listing = {"jobs": []}
-        created_job = {"id": "cap-job-1", "name": "captain", "schedule": "every 300s"}
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "POST" and path == "/api/crons":
-                return created_job
-            if method == "POST" and "/api/spawn" in path:
-                return {"id": "spawn-1"}
-            return {}
-
-        fake_podman = SetupPodman()
-        fake_podman.container_exec = lambda *a, **kw: ""
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-            patch.object(lifecycle, "_get_podman", return_value=fake_podman),
-            patch.object(server, "_get_podman", return_value=fake_podman),
-            patch.object(server, "_append_captain_mail"),
-        ):
-            result = server.captain(
-                crew_id="demo", action="order", message="do stuff", interval=300,
-                model="claude-opus-5",
-            )
-
-        self.assertEqual(result["status"], "ordered")
-        self.assertEqual(result["job_id"], "cap-job-1")
-        # Verify registry was written with schedule entry
-        self.assertTrue(len(save_calls) > 0)
-        last_reg = save_calls[-1]
-        schedules = last_reg["crews"]["demo"]["schedules"]
-        self.assertEqual(len(schedules), 1)
-        self.assertEqual(schedules[0]["job_id"], "cap-job-1")
-        self.assertEqual(schedules[0]["name"], "captain")
-        self.assertEqual(schedules[0]["agent"], "raven")
-        self.assertEqual(schedules[0]["model"], "claude-opus-5")
-        self.assertTrue(schedules[0]["enabled"])
-
-    def test_schedule_list_returns_registry_entries_when_stopped(self) -> None:
-        """7.2 — schedule(action='list') returns registry entries when crew stopped."""
-        reg = self._make_registry(schedules=[
-            {"job_id": "j1", "name": "daily-check", "interval_secs": 3600, "cron_expr": None,
-             "agent": "ghost", "enabled": True, "next_fire_at": 9999999999.0},
-        ])
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-        ):
-            result = server._schedule_list("demo")
-
-        self.assertEqual(len(result["jobs"]), 1)
-        self.assertEqual(result["jobs"][0]["job_id"], "j1")
-        self.assertEqual(result["jobs"][0]["name"], "daily-check")
-        self.assertEqual(result["jobs"][0]["agent"], "ghost")
-        self.assertTrue(result["jobs"][0]["enabled"])
-
-    def test_schedule_cancel_removes_from_registry(self) -> None:
-        """7.3 — schedule(action='cancel') removes from registry."""
-        reg = self._make_registry(schedules=[
-            {"job_id": "j1", "name": "my-job", "interval_secs": 60, "cron_expr": None,
-             "agent": "ghost", "enabled": True},
-        ])
-        save_calls = []
-
-        def fake_save(r):
-            save_calls.append(json.loads(json.dumps(r)))
-
-        jobs_listing = {"jobs": [
-            {"id": "j1", "name": "my-job", "agent": "ghost", "enabled": True},
-        ]}
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "DELETE":
-                return {}
-            return {}
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            result = server._schedule_cancel("j1", "demo")
-
-        self.assertEqual(result, {"status": "cancelled", "job_id": "j1"})
-        # Verify registry no longer has the job
-        self.assertTrue(len(save_calls) > 0)
-        last_reg = save_calls[-1]
-        schedules = last_reg["crews"]["demo"]["schedules"]
-        self.assertEqual(len(schedules), 0)
-
-    def test_schedule_delay_creates_one_shot_registry_entry(self) -> None:
-        """7.7 — schedule(delay=N) creates one-shot entry in registry."""
-        reg = self._make_registry()
-        save_calls = []
-
-        def fake_save(r):
-            save_calls.append(json.loads(json.dumps(r)))
-
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", return_value={"id": "delay-job-1"}),
-            patch.object(server, "_crew_api_with_recovery", return_value={"id": "delay-job-1"}),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            result = server.schedule(
-                name="cleanup", message="run cleanup", agent="ghost",
-                crew_id="demo", delay=300, model="claude-sonnet-5",
-            )
-
-        self.assertEqual(result["job_id"], "delay-job-1")
-        self.assertEqual(result["status"], "scheduled")
-        self.assertEqual(result["delay"], 300)
-        # Verify registry was written with one-shot entry
-        self.assertTrue(len(save_calls) > 0)
-        last_reg = save_calls[-1]
-        schedules = last_reg["crews"]["demo"]["schedules"]
-        self.assertEqual(len(schedules), 1)
-        self.assertEqual(schedules[0]["job_id"], "delay-job-1")
-        self.assertEqual(schedules[0]["model"], "claude-sonnet-5")
-        self.assertTrue(schedules[0].get("one_shot"))
-
-    def test_dispatch_no_longer_accepts_delay(self) -> None:
-        """7.8 — dispatch no longer accepts delay parameter."""
-        import inspect
-        sig = inspect.signature(server.dispatch)
-        self.assertNotIn("delay", sig.parameters)
-
-    def test_registry_rejects_inf_in_next_fire_at(self) -> None:
-        """One-shot job with float('inf') must not be JSON-serialisable.  # requires TRN-37
-
-        TRN-37 replaces float('inf') with _NEVER_FIRE_AT (9_999_999_999.0) to
-        ensure the registry can always be serialised with allow_nan=False.
-        This test confirms the guard is the correct fix: float('inf') DOES raise.
-        """
-        reg = self._make_registry(schedules=[{
-            "job_id": "j-inf", "name": "one-shot", "interval_secs": None,
-            "cron_expr": None, "agent": "ghost", "enabled": True,
-            "next_fire_at": float("inf"),
-        }])
-        with self.assertRaises(ValueError):
-            json.dumps(reg, allow_nan=False)
-
-    def test_captain_resume_sets_next_fire_at(self) -> None:
-        """7.x — captain resume sets next_fire_at ≈ now + interval in registry."""
-        interval = 300
-        reg = self._make_registry(schedules=[
-            # Existing disabled entry — the resume path will re-enable it
-            {"job_id": "cap-job-1", "name": "captain", "interval_secs": interval,
-             "cron_expr": None, "agent": "raven", "enabled": False,
-             "next_fire_at": 0.0},
-        ])
-        save_calls = []
-
-        def fake_save(r):
-            save_calls.append(json.loads(json.dumps(r)))
-
-        # Gateway has the job disabled (resume path: existing_job != None, enabled_job == None)
-        existing_job = {"id": "cap-job-1", "name": "captain", "schedule": f"every {interval}s",
-                        "enabled": False, "agent": "raven"}
-        jobs_listing = {"jobs": [existing_job]}
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "POST" and path == f"/api/crons/{existing_job['id']}/enable":
-                return {"ok": True}
-            if method == "POST" and path == "/api/crons":
-                return {"id": "cap-job-1", "schedule": f"every {interval}s"}
-            if method == "POST" and "/api/spawn" in path:
-                return {"id": "spawn-1"}
-            return {}
-
-        fake_podman = SetupPodman()
-        fake_podman.container_exec = lambda *a, **kw: ""
-
-        before = time.time()
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-            patch.object(lifecycle, "_get_podman", return_value=fake_podman),
-            patch.object(server, "_get_podman", return_value=fake_podman),
-            patch.object(server, "_append_captain_mail"),
-        ):
-            result = server.captain(
-                crew_id="demo", action="order", message="check in", interval=interval,
-            )
-
-        self.assertEqual(result.get("status"), "ordered")
-        self.assertTrue(len(save_calls) > 0)
-        last_reg = save_calls[-1]
-        schedules = last_reg["crews"]["demo"]["schedules"]
-        self.assertEqual(len(schedules), 1)
-        entry = schedules[0]
-        self.assertGreaterEqual(
-            entry["next_fire_at"], before + interval - 1,
-            f"next_fire_at {entry['next_fire_at']!r} should be ≈ now+{interval}",
-        )
-
-class ScheduleMonitorTests(unittest.TestCase):
-    """Tests for TRN-29 _schedule_monitor."""
-
-    CREW = {"container": "gs-demo", "cookie": "cookie", "status": "running"}
-
-    def test_monitor_wakes_crew_and_fires_tick(self) -> None:
-        """7.4 — _schedule_monitor calls the real function; tick is fired after one loop."""
-        now = time.time()
-        reg = {"crews": {"demo": {
-            "container": "gs-demo", "cookie": "cookie", "status": "stopped",
-            "schedules": [{
-                "job_id": "j1", "name": "check", "interval_secs": 300, "cron_expr": None,
-                "next_fire_at": now - 10,  # due
-                "agent": "ghost", "message": "do check", "model": "claude-sonnet-5",
-                "enabled": True,
-            }],
-        }}}
-        api_calls = []
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            api_calls.append((method, path, kwargs))
-            return {"id": "spawn-1"}
-
-        save_calls = []
-
-        def fake_save(r):
-            save_calls.append(json.loads(json.dumps(r)))
-
-        # Use StopIteration on the second time.sleep call to exit the while True loop
-        # after exactly one iteration.  The monitor sleeps FIRST, then does work, then
-        # loops back to sleep — raising on the second sleep gives the work one full pass.
-        sleep_count = [0]
-
-        def fake_sleep(secs: float) -> None:
-            sleep_count[0] += 1
-            if sleep_count[0] >= 2:
-                raise StopIteration("break after one iteration")
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-            patch.object(lifecycle, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
-            patch.object(server, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
-            patch.object(server.time, "sleep", side_effect=fake_sleep),
-        ):
-            try:
-                server._schedule_monitor()
-            except StopIteration:
-                pass  # expected — one iteration complete
-
-        # Verify the spawn POST was fired
-        self.assertTrue(
-            any(m == "POST" and "/api/spawn" in p for m, p, _ in api_calls),
-            f"Expected a POST /api/spawn call; got: {api_calls}",
-        )
-        # Verify registry was saved after the tick
-        self.assertTrue(len(save_calls) > 0, "Expected _save_registry to have been called")
-        spawn_calls = [
-            kwargs for method, path, kwargs in api_calls
-            if method == "POST" and path == "/api/spawn"
-        ]
-        self.assertEqual(spawn_calls[0]["json"]["model"], "claude-sonnet-5")
-
-    def test_monitor_skips_and_advances_on_crew_failure(self) -> None:
-        """7.5 — _schedule_monitor skips tick and advances when crew won't start."""
-        now = time.time()
-        sched = {
-            "job_id": "j1", "name": "check", "interval_secs": 300, "cron_expr": None,
-            "next_fire_at": now - 10, "agent": "ghost", "message": "do check", "enabled": True,
-        }
-
-        # Simulate: _ensure_crew_running raises, so we advance
-        server._advance_next_fire_at(sched)
-        self.assertGreater(sched["next_fire_at"], now)
-
-    def test_reseed_crew_schedules_reregisters_missing_jobs(self) -> None:
-        """7.6 — _reseed_crew_schedules re-registers missing jobs in gateway."""
-        reg = {"crews": {"demo": {
-            "container": "gs-demo", "cookie": "cookie",
-            "schedules": [{
-                "job_id": "j1", "name": "daily-report", "interval_secs": 86400,
-                "cron_expr": None, "agent": "ghost", "message": "report",
-                "enabled": True, "next_fire_at": time.time() + 1000,
-            }],
-        }}}
-        api_calls = []
-
-        def api(_crew, method, path, **kwargs):
-            api_calls.append((method, path, kwargs))
-            if method == "GET" and path == "/api/crons":
-                return {"jobs": []}  # No jobs in gateway
-            if method == "POST" and path == "/api/crons":
-                return {"id": "new-j1"}
-            return {}
-
-        crew = {"container": "gs-demo", "cookie": "cookie"}
-        save_calls = []
-
-        def fake_save(r):
-            save_calls.append(json.loads(json.dumps(r)))
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            server._reseed_crew_schedules(crew, "demo", reg["crews"]["demo"])
-
-        # Verify POST to /api/crons was called to re-register
-        post_calls = [(m, p) for m, p, _ in api_calls if m == "POST" and p == "/api/crons"]
-        self.assertEqual(len(post_calls), 1)
-
-class ReseedCronReconcileTests(unittest.TestCase):
-    """Tests for the gateway→registry reconcile pass in _reseed_crew_schedules (TRN-82)."""
-
-    def _make_reg(self, schedules):
-        return {"crews": {"demo": {
-            "container": "gs-demo", "cookie": "cookie",
-            "schedules": schedules,
-        }}}
-
-    def test_reconcile_paused_job_updates_registry(self) -> None:
-        """2.1 — gateway reports job enabled=false → registry updated, job not re-registered."""
-        reg = self._make_reg([{
-            "job_id": "j1", "name": "captain", "interval_secs": 300,
-            "cron_expr": None, "agent": "raven", "message": "check-in",
-            "model": "old-model", "enabled": True,  # stale: registry says enabled
-        }])
-        api_calls = []
-
-        def api(_crew, method, path, **kwargs):
-            api_calls.append((method, path))
-            if method == "GET" and path == "/api/crons":
-                return {
-                    "jobs": [{
-                        "id": "j1", "enabled": False, "every_secs": 300,
-                        "model": "new-model",
-                    }]
-                }
-            return {}
-
-        saved = []
-
-        def fake_save(r):
-            saved.append(json.loads(json.dumps(r)))
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            server._reseed_crew_schedules(
-                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
-            )
-
-        # Registry should have been saved with enabled=False
-        self.assertTrue(saved, "Registry should have been saved after reconcile")
-        sched = saved[-1]["crews"]["demo"]["schedules"][0]
-        self.assertFalse(sched["enabled"], "Registry entry should be updated to enabled=False")
-        self.assertEqual(sched["model"], "new-model")
-
-        # No POST to re-register the paused job
-        post_calls = [p for m, p in api_calls if m == "POST"]
-        self.assertEqual(post_calls, [], "Paused job should not be re-registered")
-
-    def test_reconcile_absent_job_left_for_reseed(self) -> None:
-        """2.2 — gateway does not include job → entry kept in registry, reseeded as bootstrap."""
-        reg = self._make_reg([{
-            "job_id": "j1", "name": "captain", "interval_secs": 300,
-            "cron_expr": None, "agent": "raven", "message": "check-in",
-            "enabled": True,
-        }])
-        api_calls = []
-
-        def api(_crew, method, path, **kwargs):
-            api_calls.append((method, path))
-            if method == "GET" and path == "/api/crons":
-                return {"jobs": []}  # Job absent — bootstrap case
-            if method == "POST" and path == "/api/crons":
-                return {"id": "j1"}
-            return {}
-
-        saved = []
-
-        def fake_save(r):
-            saved.append(json.loads(json.dumps(r)))
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            server._reseed_crew_schedules(
-                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
-            )
-
-        # Job should be reseeded (POST) — absent from gateway is the bootstrap case
-        post_calls = [p for m, p in api_calls if m == "POST" and p == "/api/crons"]
-        self.assertEqual(len(post_calls), 1, "Absent enabled job should be reseeded")
-
-    def test_reseed_missing_job_registered_in_gateway(self) -> None:
-        """2.3 — registry has enabled job absent from gateway → job registered (bootstrap)."""
-        reg = self._make_reg([{
-            "job_id": "j1", "name": "captain", "interval_secs": 300,
-            "cron_expr": None, "agent": "raven", "message": "check-in",
-            "enabled": True,
-        }])
-        api_calls = []
-
-        def api(_crew, method, path, **kwargs):
-            api_calls.append((method, path))
-            if method == "GET" and path == "/api/crons":
-                return {"jobs": []}  # Missing from gateway — bootstrap case
-            if method == "POST" and path == "/api/crons":
-                return {"id": "j1-new"}
-            return {}
-
-        saved = []
-
-        def fake_save(r):
-            saved.append(json.loads(json.dumps(r)))
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            server._reseed_crew_schedules(
-                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
-            )
-
-        # POST should have been made to register the missing job
-        post_calls = [p for m, p in api_calls if m == "POST" and p == "/api/crons"]
-        self.assertEqual(len(post_calls), 1, "Missing enabled job should be re-registered")
-
-    def test_reconcile_gateway_error_skips_both_passes(self) -> None:
-        """2.4 — gateway /api/crons returns error → both passes skipped, registry unchanged."""
-        reg = self._make_reg([{
-            "job_id": "j1", "name": "captain", "interval_secs": 300,
-            "cron_expr": None, "agent": "raven", "message": "check-in",
-            "enabled": True,
-        }])
-
-        def api(_crew, method, path, **kwargs):
-            raise RuntimeError("gateway unavailable")
-
-        saved = []
-
-        def fake_save(r):
-            saved.append(r)
-
-        with (
-            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
-            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
-        ):
-            server._reseed_crew_schedules(
-                {"container": "gs-demo", "cookie": "cookie"}, "demo", reg["crews"]["demo"]
-            )
-
-        # Registry should not have been touched
-        self.assertEqual(saved, [], "Registry should not be saved when gateway errors")
-
-class TestTrn38SecurityHardening(unittest.TestCase):
-    """Tests for TRN-38 security hardening changes."""
-
-    # ── 9.1 HMAC token length is now 32 hex chars (128-bit) ──────────────────
-
-    def test_sign_file_url_hmac_is_32_hex_chars(self) -> None:
-        """_sign_file_url produces a 64-char hex sig (not 32)."""
-        url = server._sign_file_url("demo", "repo/file.txt")
-        query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertEqual(len(query["sig"]), 64, f"sig length {len(query['sig'])} != 32: {query['sig']}")
-
-    def test_sign_upload_url_hmac_is_32_hex_chars(self) -> None:
-        """_sign_upload_url produces a 64-char hex sig (not 32)."""
-        url = server._sign_upload_url("demo", "repo")
-        query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertEqual(len(query["sig"]), 64, f"sig length {len(query['sig'])} != 32: {query['sig']}")
-
-    def test_16_char_sig_rejected_by_verify_file_token(self) -> None:
-        """A legacy 16-char sig is rejected by _verify_file_token (length mismatch)."""
-        import hmac as _hmac, hashlib as _hashlib
-        expires = str(int(time.time()) + 300)
-        payload = f"demo:repo/file.txt:::{expires}"
-        short_sig = _hmac.new(
-            server._FILE_SECRET.encode(), payload.encode(), _hashlib.sha256
-        ).hexdigest()[:16]
-        self.assertFalse(
-            server._verify_file_token("demo", "repo/file.txt", expires, short_sig)
-        )
-
-    # ── 9.2 Upload mode signing ───────────────────────────────────────────────
-
-    def test_plain_token_rejected_when_unpack_mode_presented(self) -> None:
-        """Token signed with mode='' fails when mode='unpack' is verified."""
-        url = server._sign_upload_url("demo", "repo")  # mode=""
-        query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertFalse(
-            server._verify_file_token(
-                "demo", "repo", query["expires"], query["sig"], mode="unpack"
-            ),
-            "Plain token should fail verification when mode='unpack' is presented",
-        )
-
-    def test_unpack_token_rejected_when_plain_mode_presented(self) -> None:
-        """Token signed with mode='unpack' fails when mode='' is verified."""
-        url = server._sign_upload_url("demo", "repo", unpack=True)
-        query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertFalse(
-            server._verify_file_token(
-                "demo", "repo", query["expires"], query["sig"], mode=""
-            ),
-            "Unpack token should fail verification when mode='' is presented",
-        )
-
-    def test_bundle_token_rejected_when_plain_mode_presented(self) -> None:
-        """Token signed with mode='bundle' fails when mode='' is verified."""
-        url = server._sign_upload_url("demo", "repo", bundle=True)
-        query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        self.assertFalse(
-            server._verify_file_token(
-                "demo", "repo", query["expires"], query["sig"], mode=""
-            ),
-            "Bundle token should fail verification when mode='' is presented",
-        )
-
-    def test_upload_mode_round_trips_correctly(self) -> None:
-        """Tokens round-trip: plain/unpack/bundle each verify with matching mode."""
-        for unpack, bundle, expected_mode in [
-            (False, False, ""),
-            (True, False, "unpack"),
-            (False, True, "bundle"),
-        ]:
-            with self.subTest(mode=expected_mode):
-                url = server._sign_upload_url("demo", "repo", unpack=unpack, bundle=bundle)
-                query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-                self.assertTrue(
-                    server._verify_file_token(
-                        "demo", "repo", query["expires"], query["sig"], mode=expected_mode
-                    ),
-                    f"Mode '{expected_mode}' token failed round-trip verification",
-                )
-
-    # ── 9.3 _handle_file_put rejects mode mismatch with 403 ──────────────────
-
-    def test_handle_file_put_rejects_bundle_flag_on_plain_token(self) -> None:
-        """PUT with bundle=1 query param on a plain-mode token returns 403."""
-        # Sign a plain (mode="") token
-        url = server._sign_upload_url("crewone", "repo/file.txt")
-        query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-
-        # Craft request: add bundle=1 to query params (mode mismatch)
-        tampered_query = dict(query)
-        tampered_query["bundle"] = "1"
-        request = Request("crewone", "repo/file.txt", b"data", tampered_query)
-
-        crew = {"container": "gs-crewone"}
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=crew),
-            patch.object(server, "_require_crew", return_value=crew),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_ensure_crew_running", return_value=crew),
-        ):
-            response = asyncio.run(server._handle_file_put(request))
-
-        self.assertEqual(response.status_code, 403)
-
-    # ── 9.4 evac empty path returns error ────────────────────────────────────
-
-    def test_evac_empty_path_returns_error(self) -> None:
-        """evac(path='') returns {'error': 'path must not be empty'}."""
-        crew = {"container": "gs-demo"}
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=crew),
-            patch.object(server, "_require_crew", return_value=crew),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_ensure_crew_running", return_value=crew),
-        ):
-            result = server.evac("", crew_id="demo")
-
-        self.assertIn("error", result)
-        self.assertIn("empty", result["error"].lower())
-
-    def test_evac_slash_only_path_returns_error(self) -> None:
-        """evac(path='/') strips to '' and returns error."""
-        crew = {"container": "gs-demo"}
-        with (
-            patch.object(lifecycle, "_require_crew", return_value=crew),
-            patch.object(server, "_require_crew", return_value=crew),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
-            patch.object(server, "_ensure_crew_running", return_value=crew),
-        ):
-            result = server.evac("/", crew_id="demo")
-
-        self.assertIn("error", result)
-
-    # ── 9.5 / 9.6 crew_id format validation in file handlers ─────────────────
-
-    def _make_get_request(self, crew_id: str, path: str) -> "Request":
-        """Return a signed GET request for the given crew_id (bypassing real signing)."""
-        expires = str(int(time.time()) + 300)
-        # Use a patched _verify_file_token — we test the crew_id guard, not the sig
-        return Request(crew_id, path, b"", {"expires": expires, "sig": "x" * 32})
-
-    def _make_put_request(self, crew_id: str, path: str) -> "Request":
-        return Request(crew_id, path, b"data", {"expires": str(int(time.time()) + 300), "sig": "x" * 32})
-
-    def test_handle_file_get_rejects_crew_id_with_slash(self) -> None:
-        """GET returns 400 for crew_id containing '/'."""
-        request = self._make_get_request("crew/bad", "file.txt")
-        response = asyncio.run(server._handle_file_get(request))
-        self.assertEqual(response.status_code, 400)
-
-    def test_handle_file_get_rejects_crew_id_with_dotdot(self) -> None:
-        """GET returns 400 for crew_id containing '..'."""
-        request = self._make_get_request("crew..bad", "file.txt")
-        response = asyncio.run(server._handle_file_get(request))
-        self.assertEqual(response.status_code, 400)
-
-    def test_handle_file_get_rejects_crew_id_with_percent(self) -> None:
-        """GET returns 400 for crew_id containing '%'."""
-        request = self._make_get_request("crew%20bad", "file.txt")
-        response = asyncio.run(server._handle_file_get(request))
-        self.assertEqual(response.status_code, 400)
-
-    def test_handle_file_get_rejects_crew_id_with_uppercase(self) -> None:
-        """GET returns 400 for crew_id containing uppercase letters."""
-        request = self._make_get_request("CrewBad", "file.txt")
-        response = asyncio.run(server._handle_file_get(request))
-        self.assertEqual(response.status_code, 400)
-
-    def test_handle_file_put_rejects_crew_id_with_slash(self) -> None:
-        """PUT returns 400 for crew_id containing '/'."""
-        request = self._make_put_request("crew/bad", "file.txt")
-        response = asyncio.run(server._handle_file_put(request))
-        self.assertEqual(response.status_code, 400)
-
-    def test_handle_file_put_rejects_crew_id_with_dotdot(self) -> None:
-        """PUT returns 400 for crew_id containing '..'."""
-        request = self._make_put_request("crew..bad", "file.txt")
-        response = asyncio.run(server._handle_file_put(request))
-        self.assertEqual(response.status_code, 400)
-
-    def test_handle_file_put_rejects_crew_id_with_percent(self) -> None:
-        """PUT returns 400 for crew_id containing '%'."""
-        request = self._make_put_request("crew%20bad", "file.txt")
-        response = asyncio.run(server._handle_file_put(request))
-        self.assertEqual(response.status_code, 400)
-
-    def test_handle_file_put_rejects_crew_id_with_uppercase(self) -> None:
-        """PUT returns 400 for crew_id containing uppercase letters."""
-        request = self._make_put_request("CrewBad", "file.txt")
-        response = asyncio.run(server._handle_file_put(request))
-        self.assertEqual(response.status_code, 400)
-
-    # ── 9.7 _save_registry produces 0o600 mode ───────────────────────────────
-
-    def test_save_registry_produces_0o600_permissions(self) -> None:
-        """_save_registry writes crews.json with mode 0o600."""
-        with tempfile.TemporaryDirectory() as tmp:
-            registry_path = Path(tmp) / "crews.json"
-            reg = {"crews": {}}
-            with (
-                patch.object(server, "DATA_DIR", Path(tmp)),
-                patch.object(server, "REGISTRY_PATH", registry_path),
-                patch.object(_registry_mod, "DATA_DIR", Path(tmp)),
-                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
-            ):
-                server._save_registry(reg)
-
-            self.assertTrue(registry_path.exists())
-            mode = stat.S_IMODE(os.stat(registry_path).st_mode)
-            self.assertEqual(
-                mode, 0o600,
-                f"Expected 0o600, got 0o{mode:03o}",
-            )
-
-    # ── 9.8 _inject_policy output does not contain admiral_secret ────────────
-
-    def test_inject_policy_output_does_not_contain_admiral_secret(self) -> None:
-        """_inject_policy does not write admiral_secret into admission_policy.json."""
-        captured_scripts: list[str] = []
-
-        def capture_exec(container: str, cmd: list[str]) -> str:
-            if cmd[0] == "python3":
-                captured_scripts.append(cmd[2])
-            return "policy injected version=1"
-
-        mock_podman = Mock()
-        mock_podman.container_exec_checked.side_effect = capture_exec
-
-        policy_content = json.dumps({
-            "version": "1",
-            "commands": {"deny": []},
-        })
-
-        with patch("transport.lifecycle.Path") as MockPath:
-            composition_path = Mock()
-            composition_path.exists.return_value = False
-            default_path = Mock()
-            default_path.exists.return_value = True
-            default_path.read_text.return_value = policy_content
-
-            def path_side(arg):
-                if "default.json" in str(arg):
-                    return default_path
-                return composition_path
-
-            MockPath.side_effect = path_side
-
-            server._inject_policy(mock_podman, "gs-test", "spec-ops", "MY_SECRET_VALUE")
-
-        # Verify none of the exec scripts embed the literal secret
-        # trust_keys IS required in admission_policy.json — KiroCrew governance
-        # uses it to verify the security policy signature. The threat model
-        # (single-operator, isolated containers) accepts this. See docs/auth.md.
-        for script in captured_scripts:
-            if "admission_body" in script:
-                self.assertIn(
-                    "'trust_keys'",
-                    script,
-                    "admission_policy.json must contain trust_keys for KiroCrew governance",
-                )
-
-class _FakeStreamRequest:
-    """Minimal async-compatible request stub for proxy handler tests."""
-
-    def __init__(
-        self,
-        method: str = "GET",
-        path: str = "/crews/demo/ui",
-        headers: dict[str, str] | None = None,
-        body: bytes = b"",
-        query_string: bytes = b"",
-    ) -> None:
-        self.method = method
-        self.scope = {
-            "type": "http",
-            "method": method,
-            "path": path,
-            "query_string": query_string,
-        }
-        self.headers = headers or {}
-        self._body = body
-
-    async def body(self) -> bytes:
-        return self._body
-
-class _FakeUpstreamResponse:
-    """httpx.Response-like stub returned by _async_http.stream() context manager."""
-
-    def __init__(
-        self,
-        status_code: int = 200,
-        content: bytes = b"",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        self.status_code = status_code
-        self.content = content
-        self.headers = dict(headers or {})
-
-    async def aread(self) -> bytes:
-        return self.content
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
 class ProxyHandlerTests(unittest.TestCase):
     """Tests for _handle_crew_ui_proxy and _handle_crew_api_proxy (TRN-31)."""
 
@@ -4503,10 +2662,10 @@ class ProxyHandlerTests(unittest.TestCase):
             "path": "/crews/demo/ui",
             "headers": [(b"authorization", b"Bearer testkey")],
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey",
+            routes={("GET", "/crews/*/ui"): fake_ui_proxy})
 
-        with patch.object(server, "_handle_crew_ui_proxy", side_effect=fake_ui_proxy):
-            status, _, body = _run_asgi(mw, scope)
+        status, _, body = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("ui", handled)
@@ -4525,10 +2684,10 @@ class ProxyHandlerTests(unittest.TestCase):
             "path": "/crews/demo/api/spawn",
             "headers": [(b"authorization", b"Bearer testkey")],
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey",
+            routes={("GET", "/crews/*/api"): fake_api_proxy})
 
-        with patch.object(server, "_handle_crew_api_proxy", side_effect=fake_api_proxy):
-            status, _, body = _run_asgi(mw, scope)
+        status, _, body = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("api", handled)
@@ -4571,10 +2730,10 @@ class ProxyHandlerTests(unittest.TestCase):
             "path": "/crews/demo/ui",
             "headers": [],  # No auth header
         }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="")  # No key
+        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="",
+            routes={("GET", "/crews/*/ui"): fake_ui_proxy})
 
-        with patch.object(server, "_handle_crew_ui_proxy", side_effect=fake_ui_proxy):
-            status, _, body = _run_asgi(mw, scope)
+        status, _, body = _run_asgi(mw, scope)
 
         self.assertEqual(status, 200)
         self.assertIn("ui", handled)
@@ -4679,109 +2838,41 @@ class ProxyHandlerTests(unittest.TestCase):
         # The stale inbound cookie must NOT be present
         self.assertNotIn("stale-val", cookie_val)
 
-class TestProxyQuerySanitisation(unittest.TestCase):
-    """Verify raw query controls are removed by both proxy handlers."""
+    # ── 9.1 (TRN-116): non-2xx upstream is surfaced with its status code ─────
 
-    CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
+    def _run_ui_proxy_with_upstream(self, status_code: int, body: bytes):
+        """Drive _handle_crew_ui_proxy against an upstream that returns the given
+        status_code, returning the handler's Response."""
+        request = _FakeStreamRequest(path="/crews/demo/ui")
 
-    def _capture_dashboard_url(self, query_string: bytes) -> str:
-        captured: list[str] = []
-        mock_response = _FakeUpstreamResponse(200, b"ok")
-
-        async def run() -> None:
+        async def run():
             with (
-                patch.object(server, "_require_crew", return_value=self.CREW),
-                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-                patch.object(server, "_async_http") as fake_http,
+                patch.object(lifecycle, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(server, "_require_crew", return_value=dict(self.CREW)),
+                patch.object(lifecycle, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(server, "_ensure_crew_running", return_value=dict(self.CREW)),
+                patch.object(server, "_cookie_near_expiry", return_value=False),
             ):
-                request = _FakeStreamRequest(
-                    path="/crews/demo/ui/search",
-                    query_string=query_string,
+                mock_ctx = _FakeUpstreamResponse(
+                    status_code, body, {"content-type": "text/plain"}
                 )
+                with patch.object(server._async_http, "stream", return_value=mock_ctx):
+                    return await server._handle_crew_ui_proxy(request)
 
-                class StreamCapture:
-                    def __call__(self_inner, method, url, **kwargs):
-                        captured.append(url)
-                        return mock_response
+        return asyncio.run(run())
 
-                fake_http.stream = StreamCapture()
-                await server._handle_crew_ui_proxy(request)
+    def test_ui_proxy_surfaces_502_from_upstream(self) -> None:
+        """9.1a: a 502 from the crew gateway is passed through unchanged, not
+        rewritten to 200 or masked as a generic proxy error."""
+        response = self._run_ui_proxy_with_upstream(502, b"bad gateway")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.body, b"bad gateway")
 
-        asyncio.run(run())
-        self.assertEqual(len(captured), 1)
-        return captured[0]
-
-    def _capture_api_url(self, query_string: bytes) -> str:
-        captured: list[str] = []
-
-        async def run() -> None:
-            with (
-                patch.object(server, "_require_crew", return_value=self.CREW),
-                patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-                patch.object(server, "_async_http") as fake_http,
-            ):
-                request = _FakeStreamRequest(
-                    path="/crews/demo/api/search",
-                    query_string=query_string,
-                )
-
-                class HTTPRequestCapture:
-                    async def request(self_inner, method, url, **kwargs):
-                        captured.append(url)
-                        response = Mock()
-                        response.status_code = 200
-                        response.content = b"ok"
-                        response.headers = {}
-                        return response
-
-                fake_http.request = HTTPRequestCapture().request
-                await server._handle_crew_api_proxy(request)
-
-        asyncio.run(run())
-        self.assertEqual(len(captured), 1)
-        return captured[0]
-
-    def test_ui_proxy_strips_cr_lf_and_null(self) -> None:
-        query = b"q=hello\r\nworld\x00&limit=10"
-        self.assertEqual(
-            self._capture_dashboard_url(query),
-            "http://gs-demo:5476/search?q=helloworld&limit=10",
-        )
-
-    def test_api_proxy_strips_cr_lf_and_null(self) -> None:
-        query = b"q=hello\r\nworld\x00&limit=10"
-        self.assertEqual(
-            self._capture_api_url(query),
-            "http://gs-demo:5476/api/search?q=helloworld&limit=10",
-        )
-
-    def test_ui_proxy_preserves_ordinary_and_percent_encoded_queries(self) -> None:
-        for query in (b"q=hello&limit=10", b"q=hello%0Aworld&limit=10"):
-            with self.subTest(query=query):
-                self.assertEqual(
-                    self._capture_dashboard_url(query),
-                    f"http://gs-demo:5476/search?{query.decode('ascii')}",
-                )
-
-    def test_api_proxy_preserves_ordinary_and_percent_encoded_queries(self) -> None:
-        for query in (b"q=hello&limit=10", b"q=hello%0Aworld&limit=10"):
-            with self.subTest(query=query):
-                self.assertEqual(
-                    self._capture_api_url(query),
-                    f"http://gs-demo:5476/api/search?{query.decode('ascii')}",
-                )
-
-    def test_helper_strips_full_ascii_control_range_and_preserves_latin1(self) -> None:
-        controls = bytes(range(0x20)) + bytes((0x7F,))
-        high_bytes = bytes((0x80, 0xFF))
-        raw = b"before" + controls + high_bytes + b"after%0A"
-
-        self.assertEqual(
-            server._sanitise_query_string(raw),
-            "before" + high_bytes.decode("latin-1") + "after%0A",
-        )
-
-
+    def test_ui_proxy_surfaces_503_from_upstream(self) -> None:
+        """9.1b: a 503 from the crew gateway is surfaced with its own status code."""
+        response = self._run_ui_proxy_with_upstream(503, b"unavailable")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.body, b"unavailable")
 class InstallEnvVarSyncTests(unittest.TestCase):
     """Verify that every GA_* / KC_* env var read by server.py is also
     passed to the transport container via a -e flag in install.sh.
@@ -4839,7 +2930,6 @@ class InstallEnvVarSyncTests(unittest.TestCase):
             f"Env vars read by server.py but missing from install.sh -e flags: {sorted(missing)}\n"
             "Add the missing -e lines to the podman run block in install.sh.",
         )
-
 class GitIdentityInjectionTests(unittest.TestCase):
     """Unit tests for git author identity passthrough (TRN-77 tasks 4.1 and 4.2).
 
@@ -4901,24 +2991,25 @@ class GitIdentityInjectionTests(unittest.TestCase):
     def test_both_vars_set_includes_all_four_git_vars_in_create_env(self) -> None:
         """4.1 — when GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are set,
         container_create receives all four GIT_* identity vars in its env dict."""
-        create_calls = self._capture_create_calls("Ada Lovelace", "ada@example.com")
+        create_calls = self._capture_create_calls("Example Operator", "operator@example.com")
 
         self.assertEqual(len(create_calls), 1)
         env = create_calls[0]["env"]
 
-        self.assertEqual(env["GIT_AUTHOR_NAME"], "Ada Lovelace")
-        self.assertEqual(env["GIT_AUTHOR_EMAIL"], "ada@example.com")
-        self.assertEqual(env["GIT_COMMITTER_NAME"], "Ada Lovelace")
-        self.assertEqual(env["GIT_COMMITTER_EMAIL"], "ada@example.com")
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "Example Operator")
+        self.assertEqual(env["GIT_AUTHOR_EMAIL"], "operator@example.com")
+        self.assertEqual(env["GIT_COMMITTER_NAME"], "Example Operator")
+        self.assertEqual(env["GIT_COMMITTER_EMAIL"], "operator@example.com")
 
     def test_both_vars_set_preserves_existing_env_keys(self) -> None:
-        """4.1 — git identity vars are additive; KIROCREW_CORS_ORIGINS and
-        KIROCREW_ALLOW_UNSANDBOXED are still present alongside them."""
+        """4.1 — git identity vars are additive; KIROCREW_CORS_ORIGINS is still present
+        alongside them.  KIROCREW_ALLOW_UNSANDBOXED was removed (replaced by
+        sandbox: off config) so it is no longer expected in the env dict."""
         create_calls = self._capture_create_calls("Test User", "test@example.com")
         env = create_calls[0]["env"]
 
         self.assertIn("KIROCREW_CORS_ORIGINS", env)
-        self.assertIn("KIROCREW_ALLOW_UNSANDBOXED", env)
+        self.assertNotIn("KIROCREW_ALLOW_UNSANDBOXED", env)
 
     # ── 4.2: GA_GIT_AUTHOR_NAME unset → git vars absent from create env ──────
 
@@ -4953,34 +3044,28 @@ class GitIdentityInjectionTests(unittest.TestCase):
 
     def test_inject_git_identity_is_noop_does_not_exec(self) -> None:
         """_inject_git_identity must never call container_exec_checked.
-        The /etc/environment approach is removed; identity is in process env."""
+        The /etc/environment approach is removed; identity is in process env.
+        The function body is a single-line no-op; only the signature is kept."""
         podman = Mock()
         podman.container_exec_checked = Mock()
 
-        with (
-            patch.object(server, "GA_GIT_AUTHOR_NAME", "Ada Lovelace"),
-            patch.object(server, "GA_GIT_AUTHOR_EMAIL", "ada@example.com"),
-        ):
-            server._inject_git_identity(podman, "gs-test")
+        # Call via lifecycle (where the function lives)
+        lifecycle._inject_git_identity(podman, "gs-test")
 
         podman.container_exec_checked.assert_not_called()
 
     # ── Integration: _finish_crew_setup still calls _inject_git_identity ─────
 
-    def test_finish_crew_setup_calls_inject_git_identity(self) -> None:
-        """_inject_git_identity is called during _finish_crew_setup (no-op, but
-        the call must remain so the call-site comment stays accurate)."""
-        inject_called: list[bool] = []
-
+    def test_finish_crew_setup_completes_successfully_without_inject_git_identity(self) -> None:
+        """_inject_git_identity is no longer called during _finish_crew_setup.
+        The call site was replaced with a comment; the function signature is
+        kept in lifecycle for backward-compat but is never invoked from setup."""
         podman = Mock()
         podman.container_stop = Mock()
         podman.container_start = Mock()
         podman.container_exec = Mock(return_value="ready")
         podman.container_exec_checked = Mock(return_value="ok")
         podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
-
-        def fake_inject_git_identity(p: Any, container: str) -> None:
-            inject_called.append(True)
 
         with tempfile.TemporaryDirectory() as tmp:
             import contextlib
@@ -5003,8 +3088,6 @@ class GitIdentityInjectionTests(unittest.TestCase):
                 _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
                 _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
                 _stack.enter_context(patch.object(server, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(lifecycle, "_inject_git_identity", side_effect=fake_inject_git_identity))
-                _stack.enter_context(patch.object(server, "_inject_git_identity", side_effect=fake_inject_git_identity))
                 _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
                 _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
                 _stack.enter_context(patch.object(lifecycle, "_patch_models"))
@@ -5016,10 +3099,6 @@ class GitIdentityInjectionTests(unittest.TestCase):
                 )
 
         self.assertEqual(result["status"], "ready")
-        self.assertEqual(inject_called, [True], "_inject_git_identity must be called once")
-
-
-
 class Trn89TaskTimestampTests(unittest.TestCase):
     """TRN-89 Task 1 — task lifecycle timestamps in dispatch and pickup."""
 
@@ -5135,8 +3214,6 @@ class Trn89TaskTimestampTests(unittest.TestCase):
         self.assertIsNone(unknown["created_at"])
         self.assertIsNone(unknown["started_at"])
         self.assertIsNone(unknown["completed_at"])
-
-
 class Trn89CrewTimestampTests(unittest.TestCase):
     """TRN-89 Task 3 — last_task_at in crews list."""
 
@@ -5201,832 +3278,6 @@ class Trn89CrewTimestampTests(unittest.TestCase):
         crew_map = {e["crew_id"]: e for e in result["crews"]}
         self.assertEqual(crew_map["demo-with-task"]["last_task_at"], "2026-09-02T00:00:00+00:00")
         self.assertIsNone(crew_map["demo-no-task"]["last_task_at"])
-
-
-# ── TRN-80: UI port allocation, CORS injection, launch/crews/nuke wiring ─────
-
-class UiPortAllocationTests(unittest.TestCase):
-    """Tests for _allocate_dashboard_port / _release_dashboard_port (TRN-80 task 3)."""
-
-    def setUp(self) -> None:
-        # Isolate module-level port state for each test
-        server._dashboard_ports_in_use.clear()
-
-    def tearDown(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def test_allocate_returns_range_start_when_empty(self) -> None:
-        with (
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-        ):
-            port = server._allocate_dashboard_port()
-        self.assertEqual(port, 9000)
-        self.assertIn(9000, server._dashboard_ports_in_use)
-
-    def test_allocate_returns_next_free_port(self) -> None:
-        server._dashboard_ports_in_use.add(9000)
-        server._dashboard_ports_in_use.add(9001)
-        with (
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-        ):
-            port = server._allocate_dashboard_port()
-        self.assertEqual(port, 9002)
-        self.assertIn(9002, server._dashboard_ports_in_use)
-
-    def test_allocate_raises_when_exhausted(self) -> None:
-        with (
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 3),
-        ):
-            server._dashboard_ports_in_use.update({9000, 9001, 9002})
-            with self.assertRaises(RuntimeError) as ctx:
-                server._allocate_dashboard_port()
-        self.assertIn("exhausted", str(ctx.exception).lower())
-
-    def test_release_frees_port(self) -> None:
-        server._dashboard_ports_in_use.add(9005)
-        server._release_dashboard_port(9005)
-        self.assertNotIn(9005, server._dashboard_ports_in_use)
-
-    def test_release_is_noop_for_unallocated_port(self) -> None:
-        # Must not raise
-        server._release_dashboard_port(9999)
-
-
-class UiPortLaunchTests(unittest.TestCase):
-    """Tests for launch() UI port wiring (TRN-80 task 4.1)."""
-
-    def setUp(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def tearDown(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def _run_launch(self, ga_host_url: str = "") -> dict:
-        """Run server.launch() with a minimal set of mocks and return the result."""
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-
-        finish_result = {
-            "crew_id": "demo",
-            "container": "gs-demo",
-            "gateway_url": "http://gs-demo:5476",
-            "status": "ready",
-        }
-
-        def save_registry(reg: dict) -> None:
-            # Simulate what _finish_crew_setup writes
-            if "demo" in reg["crews"] and reg["crews"]["demo"].get("status") != "launching":
-                pass
-
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry", side_effect=lambda r: None),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ga_host_url
-            mock_cfg.ga_portal_tls_mode = "internal"
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            result = server.launch("demo", dashboard=True)
-        return result
-
-    def test_launch_includes_dashboard_url_when_portal_enabled(self) -> None:
-        """TRN-103: launch(dashboard=True) returns dashboard_url (Portal is always on)."""
-        result = self._run_launch(ga_host_url="")
-        self.assertIn("dashboard_url", result)
-        self.assertIsNotNone(result["dashboard_url"])
-        # Portal internal TLS → https://
-        self.assertTrue(result["dashboard_url"].startswith("https://"))
-        self.assertIn("9000", result["dashboard_url"])
-
-    def test_launch_dashboard_url_uses_ga_host_url_host(self) -> None:
-        result = self._run_launch(ga_host_url="http://vm23.example.com:64057")
-        self.assertIn("dashboard_url", result)
-        self.assertIn("vm23.example.com", result["dashboard_url"])
-        self.assertIn("9000", result["dashboard_url"])
-
-    def test_launch_dashboard_url_is_none_when_dashboard_false(self) -> None:
-        """TRN-103: dashboard=False always gives dashboard_url=None."""
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-        finish_result = {"crew_id": "demo", "container": "gs-demo", "status": "ready"}
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ""
-            mock_cfg.ga_portal_tls_mode = "internal"
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            result = server.launch("demo", dashboard=False)
-        self.assertIn("dashboard_url", result)
-        self.assertIsNone(result["dashboard_url"])
-
-    def test_launch_passes_ports_to_container_create(self) -> None:
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
-
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ""
-            mock_cfg.ga_portal_tls_mode = "internal"
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            server.launch("demo", dashboard=True)
-
-        call_kwargs = podman.container_create.call_args.kwargs
-        self.assertNotIn("ports", call_kwargs, "crew containers must not bind host ports")
-
-    def test_launch_no_ports_passed_when_dashboard_false(self) -> None:
-        """TRN-101: dashboard=False → no port allocation, container_create has no ports kwarg."""
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
-
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ""
-            mock_cfg.ga_portal_tls_mode = "internal"
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            server.launch("demo")  # dashboard=False by default
-
-        call_kwargs = podman.container_create.call_args.kwargs
-        self.assertIsNone(call_kwargs.get("ports"))
-
-
-class TRN101LaunchPortalTests(unittest.TestCase):
-    """TRN-103: Portal is always present; launch(dashboard=True) allocates a dashboard."""
-
-    def setUp(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def tearDown(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def _run_launch_portal(self, dashboard: bool = True) -> dict:
-        """Run launch() and return result (Portal is always enabled)."""
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-        podman.container_stop = Mock()
-        podman.container_remove = Mock()
-        podman.volume_remove = Mock()
-        finish_result = {
-            "crew_id": "demo",
-            "container": "gs-demo",
-            "gateway_url": "http://gs-demo:5476",
-            "status": "ready",
-        }
-
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry", side_effect=lambda r: None),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ""
-            mock_cfg.ga_portal_tls_mode = "internal"
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            result = server.launch("demo", dashboard=dashboard)
-        return result
-
-    def test_launch_dashboard_false_succeeds(self) -> None:
-        """dashboard=False launches a headless crew — no error, no port allocated."""
-        result = self._run_launch_portal(dashboard=False)
-        self.assertNotIn("error", result)
-        self.assertEqual(len(server._dashboard_ports_in_use), 0,
-                         "No port should be allocated for a headless crew")
-
-    def test_launch_dashboard_true_succeeds(self) -> None:
-        """TRN-103: dashboard=True returns a dashboard_url (Portal is always on)."""
-        result = self._run_launch_portal(dashboard=True)
-        self.assertNotIn("error", result)
-        self.assertIsNotNone(result.get("dashboard_url"))
-
-
-class UiPortNukeTests(unittest.TestCase):
-    """Tests for nuke() UI port release (TRN-80 task 4.2)."""
-
-    def setUp(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def tearDown(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def test_nuke_releases_dashboard_port(self) -> None:
-        server._dashboard_ports_in_use.add(9000)
-        crew = {
-            "container": "gs-demo",
-            "volume": "gs-vol-demo",
-            "home_volume": "gs-home-demo",
-            "dashboard_port": 9000,
-        }
-        registry = {"crews": {"demo": dict(crew)}}
-        podman = Mock()
-        podman.container_stop = Mock()
-        podman.container_remove = Mock()
-        podman.volume_remove = Mock()
-
-        with (
-            patch.object(server, "_get_crew", return_value=crew),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_crew_api", return_value={"agents": []}),
-            patch.object(server, "_get_crew_schedules", return_value=[]),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_cleanup_crew"),
-            patch.object(server, "_captain_order_locks_lock", threading.Lock()),
-            patch.object(server, "_captain_order_locks", {}),
-        ):
-            result = server.nuke("demo", confirm=True)
-
-        self.assertEqual(result["status"], "nuked")
-        self.assertNotIn(9000, server._dashboard_ports_in_use)
-
-
-class CrewsListUiUrlTests(unittest.TestCase):
-    """Tests for dashboard_url in crews() list (TRN-80 task 5)."""
-
-    def _run_crews(self, crews_data: dict, ga_host_url: str = "") -> list:
-        registry = {"crews": crews_data}
-        with (
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_probe_gateway", return_value=True),
-            patch.object(server, "_crew_api", return_value=[]),
-            patch.object(server, "_get_podman", return_value=Mock(
-                system_info=lambda: {"host": {"memAvailable": 4 * 1024**3}}
-            )),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ga_host_url
-            mock_cfg.ga_portal_tls_mode = "internal"
-            result = server.crews()
-        return result["crews"]
-
-    def test_crews_includes_dashboard_url_when_port_assigned(self) -> None:
-        crews_data = {
-            "demo": {
-                "container": "gs-demo",
-                "status": "running",
-                "composition": "spec-ops",
-                "created_at": None,
-                "dashboard_port": 9005,
-                "cookie": "c",
-            }
-        }
-        entries = self._run_crews(crews_data, ga_host_url="")
-        self.assertEqual(len(entries), 1)
-        # TRN-103: Portal is always on; internal TLS mode → https://
-        self.assertEqual(entries[0]["dashboard_url"], "https://localhost:9005/")
-
-    def test_crews_dashboard_url_uses_ga_host_url_host(self) -> None:
-        crews_data = {
-            "demo": {
-                "container": "gs-demo",
-                "status": "running",
-                "composition": "spec-ops",
-                "created_at": None,
-                "dashboard_port": 9010,
-                "cookie": "c",
-            }
-        }
-        entries = self._run_crews(crews_data, ga_host_url="http://vm23.example.com:64057")
-        self.assertIn("vm23.example.com:9010", entries[0]["dashboard_url"])
-
-    def test_crews_dashboard_url_is_none_when_no_port(self) -> None:
-        crews_data = {
-            "demo": {
-                "container": "gs-demo",
-                "status": "running",
-                "composition": "spec-ops",
-                "created_at": None,
-                "cookie": "c",
-            }
-        }
-        entries = self._run_crews(crews_data)
-        self.assertIsNone(entries[0]["dashboard_url"])
-
-
-class CorsOriginInjectionTests(unittest.TestCase):
-    """Tests for CORS origin injection at container_create time (TRN-80 task 6)."""
-
-    def setUp(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def tearDown(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def _run_launch_capture_env(self, ga_host_url: str = "") -> dict:
-        """Run server.launch() and return the env dict passed to container_create."""
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-        finish_result = {"crew_id": "demo", "container": "gs-demo", "gateway_url": "http://gs-demo:5476", "status": "ready"}
-
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ga_host_url
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            server.launch("demo")
-
-        call_kwargs = podman.container_create.call_args.kwargs
-        return call_kwargs["env"]
-
-    def test_cors_includes_transport_origin_when_ga_host_url_set(self) -> None:
-        env = self._run_launch_capture_env(ga_host_url="http://vm23.example.com:64057")
-        origins = env.get("KIROCREW_CORS_ORIGINS", "")
-        self.assertIn("http://vm23.example.com:64057", origins)
-
-    def test_cors_falls_back_to_localhost_when_ga_host_url_unset(self) -> None:
-        env = self._run_launch_capture_env(ga_host_url="")
-        origins = env.get("KIROCREW_CORS_ORIGINS", "")
-        self.assertIn("http://localhost:", origins)
-
-    def test_cors_preserves_crew_internal_origin(self) -> None:
-        env = self._run_launch_capture_env(ga_host_url="http://vm23.example.com:64057")
-        origins = env.get("KIROCREW_CORS_ORIGINS", "")
-        # Internal origin (container:5476) must still be present
-        self.assertIn("gs-demo", origins)
-        self.assertIn(str(server.CREW_GATEWAY_PORT), origins)
-
-    def test_cors_includes_both_origins_when_existing_value_present(self) -> None:
-        """Both crew-internal and transport origins appear in the comma-separated list."""
-        env = self._run_launch_capture_env(ga_host_url="http://host.example.com:64057")
-        origins = env.get("KIROCREW_CORS_ORIGINS", "")
-        parts = [p.strip() for p in origins.split(",")]
-        self.assertGreaterEqual(len(parts), 2)
-
-
-class LaunchDashboardParamTests(unittest.TestCase):
-    """TRN-80 task 5.3 / 9.1 / TRN-101 — launch(dashboard=True/False) port allocation gate."""
-
-    def setUp(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def tearDown(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def _run_launch(self, dashboard: bool) -> dict:
-        """Run server.launch() and return the result. Portal is always present."""
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-        finish_result = {
-            "crew_id": "demo",
-            "container": "gs-demo",
-            "gateway_url": "http://gs-demo:5476",
-            "status": "ready",
-        }
-
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry", side_effect=lambda r: None),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "_caddy_register_crew"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ""
-            mock_cfg.ga_portal_tls_mode = "internal"
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            result = server.launch("demo", dashboard=dashboard)
-        return result
-
-    def test_launch_dashboard_true_allocates_port_and_returns_dashboard_url(self) -> None:
-        """9.1a — launch(dashboard=True) allocates port and returns dashboard_url."""
-        result = self._run_launch(dashboard=True)
-        self.assertIn("dashboard_url", result)
-        self.assertIsNotNone(result["dashboard_url"])
-        # TRN-103: Portal internal mode → https://
-        self.assertTrue(result["dashboard_url"].startswith("https://"))
-        self.assertIn("9000", result["dashboard_url"])
-        # Port should be marked as in-use
-        self.assertIn(9000, server._dashboard_ports_in_use)
-
-    def test_launch_dashboard_false_does_not_allocate_port(self) -> None:
-        """9.1b — launch(dashboard=False) does NOT allocate port, dashboard_url is null."""
-        result = self._run_launch(dashboard=False)
-        self.assertIn("dashboard_url", result)
-        self.assertIsNone(result["dashboard_url"])
-        # No port should have been allocated
-        self.assertEqual(len(server._dashboard_ports_in_use), 0)
-
-    def test_launch_dashboard_default_is_false(self) -> None:
-        """9.1c — launch() default is dashboard=False (no port allocated)."""
-        registry = {"crews": {}}
-        podman = Mock()
-        podman.network_create = Mock()
-        podman.volume_create = Mock()
-        podman.container_create = Mock(return_value={})
-        podman.container_start = Mock()
-        finish_result = {"crew_id": "demo", "container": "gs-demo", "status": "ready"}
-
-        with (
-            patch.object(server, "_read_auth_file", return_value="auth-b64"),
-            patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry"),
-            patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_wait_gateway", return_value=True),
-            patch.object(server, "_finish_crew_setup", return_value=finish_result),
-            patch.object(server, "_resolve_composition", return_value={"name": "spec-ops", "description": ""}),
-            patch.object(server, "_resolve_image", return_value="localhost/spec-ops:latest"),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-            patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-            patch.object(server, "cfg") as mock_cfg,
-        ):
-            mock_cfg.ga_host_url = ""
-            mock_cfg.ga_portal_tls_mode = "internal"
-            mock_cfg.ga_dashboard_port_range_start = 9000
-            mock_cfg.ga_dashboard_port_range_size = 50
-            result = server.launch("demo")  # no dashboard=... passed
-
-        self.assertIsNone(result.get("dashboard_url"))
-        self.assertEqual(len(server._dashboard_ports_in_use), 0)
-
-
-class DashboardRestEndpointTests(unittest.TestCase):
-    """TRN-80 task 7.1-7.4 — POST/DELETE /crews/{id}/dashboard REST endpoints."""
-
-    def setUp(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    def tearDown(self) -> None:
-        server._dashboard_ports_in_use.clear()
-
-    # ── POST /crews/{id}/dashboard ────────────────────────────────────────────
-
-    def test_post_dashboard_allocates_port_and_returns_dashboard_url(self) -> None:
-        """7.1a — POST on crew without dashboard allocates port and returns dashboard_url."""
-        crew = {"container": "gs-demo", "cookie": "c"}
-        registry = {"crews": {"demo": dict(crew)}}
-
-        async def run():
-            with (
-                patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-                patch.object(server, "_load_registry", return_value=registry),
-                patch.object(server, "_save_registry"),
-                patch.object(server, "_caddy_register_crew") as mock_caddy,
-                patch.object(server, "cfg") as mock_cfg,
-            ):
-                mock_cfg.ga_host_url = ""
-                mock_cfg.ga_portal_tls_mode = "internal"
-                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                resp = await server._handle_crew_dashboard_post(request)
-                return resp, mock_caddy
-
-        response, mock_caddy = asyncio.run(run())
-        self.assertEqual(response.status_code, 200)
-        body = json.loads(response.body)
-        self.assertIn("dashboard_url", body)
-        self.assertIsNotNone(body["dashboard_url"])
-        self.assertIn("9000", body["dashboard_url"])
-        mock_caddy.assert_called_once_with("demo", 9000, crew_cookie="c")
-
-    def test_post_dashboard_noop_when_already_active(self) -> None:
-        """7.1b — POST on crew that already has a dashboard returns existing dashboard_url (no-op)."""
-        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9003}
-        registry = {"crews": {"demo": dict(crew)}}
-
-        async def run():
-            with (
-                patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "_load_registry", return_value=registry),
-                patch.object(server, "_caddy_register_crew") as mock_caddy,
-                patch.object(server, "cfg") as mock_cfg,
-            ):
-                mock_cfg.ga_host_url = ""
-                mock_cfg.ga_portal_tls_mode = "internal"
-                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                resp = await server._handle_crew_dashboard_post(request)
-                return resp, mock_caddy
-
-        response, mock_caddy = asyncio.run(run())
-        self.assertEqual(response.status_code, 200)
-        body = json.loads(response.body)
-        # TRN-103: Portal internal mode → https://
-        self.assertIn("9003", body["dashboard_url"])
-        # No new port should have been allocated
-        self.assertNotIn(9003, server._dashboard_ports_in_use)
-        # Caddy should NOT be called on no-op
-        mock_caddy.assert_not_called()
-
-    def test_post_dashboard_404_for_unknown_crew(self) -> None:
-        """7.1c — POST returns 404 for unknown crew."""
-        async def run():
-            with (
-                patch.object(server, "_require_crew", side_effect=KeyError("no such crew")),
-            ):
-                request = _FakeStreamRequest(method="POST", path="/crews/unknown/dashboard")
-                return await server._handle_crew_dashboard_post(request)
-
-        response = asyncio.run(run())
-        self.assertEqual(response.status_code, 404)
-
-    def test_post_dashboard_409_when_port_pool_exhausted(self) -> None:
-        """7.1d — POST returns 409 when port pool is exhausted."""
-        crew = {"container": "gs-demo", "cookie": "c"}
-        registry = {"crews": {"demo": dict(crew)}}
-
-        async def run():
-            with (
-                patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 2),
-                patch.object(server, "_load_registry", return_value=registry),
-                patch.object(server, "_caddy_register_crew"),
-                patch.object(server, "cfg") as mock_cfg,
-            ):
-                mock_cfg.ga_host_url = ""
-                mock_cfg.ga_portal_tls_mode = "internal"
-                # Fill the pool
-                server._dashboard_ports_in_use.update({9000, 9001})
-                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                return await server._handle_crew_dashboard_post(request)
-
-        response = asyncio.run(run())
-        self.assertEqual(response.status_code, 409)
-        body = json.loads(response.body)
-        self.assertIn("error", body)
-
-    def test_post_dashboard_uses_ga_host_url_for_dashboard_url(self) -> None:
-        """7.1e — POST uses GA_HOST_URL hostname in dashboard_url when set."""
-        crew = {"container": "gs-demo", "cookie": "c"}
-        registry = {"crews": {"demo": dict(crew)}}
-
-        async def run():
-            with (
-                patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_START", 9000),
-                patch.object(server, "GA_DASHBOARD_PORT_RANGE_SIZE", 50),
-                patch.object(server, "_load_registry", return_value=registry),
-                patch.object(server, "_save_registry"),
-                patch.object(server, "_caddy_register_crew") as mock_caddy,
-                patch.object(server, "cfg") as mock_cfg,
-            ):
-                mock_cfg.ga_host_url = "http://vm23.example.com:64057"
-                mock_cfg.ga_portal_tls_mode = "internal"
-                request = _FakeStreamRequest(method="POST", path="/crews/demo/dashboard")
-                resp = await server._handle_crew_dashboard_post(request)
-                return resp, mock_caddy
-
-        response, mock_caddy = asyncio.run(run())
-        self.assertEqual(response.status_code, 200)
-        body = json.loads(response.body)
-        self.assertIn("vm23.example.com", body["dashboard_url"])
-        self.assertIn("9000", body["dashboard_url"])
-        mock_caddy.assert_called_once_with("demo", 9000, crew_cookie="c")
-
-    # ── DELETE /crews/{id}/dashboard ──────────────────────────────────────────
-
-    def test_delete_dashboard_deregisters_and_releases_port(self) -> None:
-        """TRN-101 2.5 — DELETE deregisters from Caddy, releases port, returns dashboard_url: null."""
-        server._dashboard_ports_in_use.add(9004)
-        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9004}
-        registry = {"crews": {"demo": {**crew}}}
-
-        async def run():
-            with (
-                patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "_caddy_deregister_crew") as mock_deregister,
-                patch.object(server, "_load_registry", return_value=registry),
-                patch.object(server, "_save_registry"),
-            ):
-                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
-                resp = await server._handle_crew_dashboard_delete(request)
-                return resp, mock_deregister
-
-        response, mock_deregister = asyncio.run(run())
-        self.assertEqual(response.status_code, 200)
-        body = json.loads(response.body)
-        self.assertIsNone(body["dashboard_url"])
-        mock_deregister.assert_called_once_with("demo")
-        # Port should be released
-        self.assertNotIn(9004, server._dashboard_ports_in_use)
-
-    def test_delete_dashboard_noop_when_no_dashboard_active(self) -> None:
-        """7.2b — DELETE on crew with no dashboard returns dashboard_url: null (no-op)."""
-        crew = {"container": "gs-demo", "cookie": "c"}  # no dashboard_port
-
-        async def run():
-            with patch.object(server, "_require_crew", return_value=crew):
-                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
-                return await server._handle_crew_dashboard_delete(request)
-
-        response = asyncio.run(run())
-        self.assertEqual(response.status_code, 200)
-        body = json.loads(response.body)
-        self.assertIsNone(body["dashboard_url"])
-
-    def test_delete_dashboard_404_for_unknown_crew(self) -> None:
-        """7.2c — DELETE returns 404 for unknown crew."""
-        async def run():
-            with patch.object(server, "_require_crew", side_effect=KeyError("no such crew")):
-                request = _FakeStreamRequest(method="DELETE", path="/crews/unknown/dashboard")
-                return await server._handle_crew_dashboard_delete(request)
-
-        response = asyncio.run(run())
-        self.assertEqual(response.status_code, 404)
-
-    def test_delete_dashboard_removes_dashboard_port_from_registry(self) -> None:
-        """7.2d — DELETE clears dashboard_port field from registry."""
-        server._dashboard_ports_in_use.add(9007)
-        crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9007}
-        registry = {"crews": {"demo": {**crew}}}
-        save_calls = []
-
-        async def run():
-            with (
-                patch.object(server, "_require_crew", return_value=crew),
-                patch.object(server, "_caddy_deregister_crew"),
-                patch.object(server, "_load_registry", return_value=registry),
-                patch.object(server, "_save_registry", side_effect=lambda r: save_calls.append(
-                    json.loads(json.dumps(r))
-                )),
-            ):
-                request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
-                return await server._handle_crew_dashboard_delete(request)
-
-        asyncio.run(run())
-        self.assertTrue(save_calls, "Expected _save_registry to be called")
-        saved_crew = save_calls[-1]["crews"]["demo"]
-        self.assertNotIn("dashboard_port", saved_crew)
-
-    # ── BearerAuthMiddleware routing for /dashboard ───────────────────────────
-
-    def test_middleware_dispatches_post_dashboard_when_auth_passes(self) -> None:
-        """7.4a — POST /crews/demo/dashboard reaches handler after auth passes."""
-        handled = []
-
-        async def fake_post_handler(req):
-            handled.append("post-dashboard")
-            return server.JSONResponse({"dashboard_url": "http://localhost:9000/"})
-
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/crews/demo/dashboard",
-            "headers": [(b"authorization", b"Bearer testkey")],
-        }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
-
-        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
-            status, _, _ = _run_asgi(mw, scope)
-
-        self.assertEqual(status, 200)
-        self.assertIn("post-dashboard", handled)
-
-    def test_middleware_dispatches_delete_dashboard_when_auth_passes(self) -> None:
-        """7.4b — DELETE /crews/demo/dashboard reaches handler after auth passes."""
-        handled = []
-
-        async def fake_delete_handler(req):
-            handled.append("delete-dashboard")
-            return server.JSONResponse({"dashboard_url": None})
-
-        scope = {
-            "type": "http",
-            "method": "DELETE",
-            "path": "/crews/demo/dashboard",
-            "headers": [(b"authorization", b"Bearer testkey")],
-        }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="testkey")
-
-        with patch.object(server, "_handle_crew_dashboard_delete", side_effect=fake_delete_handler):
-            status, _, _ = _run_asgi(mw, scope)
-
-        self.assertEqual(status, 200)
-        self.assertIn("delete-dashboard", handled)
-
-    def test_middleware_returns_401_for_dashboard_when_key_wrong(self) -> None:
-        """7.4c — /crews/demo/dashboard returns 401 when bearer token is wrong."""
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/crews/demo/dashboard",
-            "headers": [(b"authorization", b"Bearer wrongkey")],
-        }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="correctkey")
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
-
-    def test_middleware_dispatches_dashboard_without_auth_when_no_key(self) -> None:
-        """7.4d — /crews/demo/dashboard is dispatched without auth when GA_API_KEY unset."""
-        handled = []
-
-        async def fake_post_handler(req):
-            handled.append("post-dashboard-no-auth")
-            return server.JSONResponse({"dashboard_url": "http://localhost:9000/"})
-
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/crews/demo/dashboard",
-            "headers": [],  # No auth header
-        }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="")  # No key
-
-        with patch.object(server, "_handle_crew_dashboard_post", side_effect=fake_post_handler):
-            status, _, body = _run_asgi(mw, scope)
-
-        self.assertEqual(status, 200)
-        self.assertIn("post-dashboard-no-auth", handled)
-
-
 class PickupAgentSubjectsTests(unittest.TestCase):
     """TRN-94 tasks 3.3 + 4.4 — agent_subjects and agent filter in pickup."""
 
@@ -6150,5 +3401,511 @@ class PickupAgentSubjectsTests(unittest.TestCase):
         self.assertNotIn("subjects", result)  # not the single-inbox format
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ── TRN-123: _task_timestamps lock (tasks 4.1 / 4.2) ─────────────────────────
+
+
+class TaskTimestampsLockTests(unittest.TestCase):
+    """Concurrency tests for the _task_timestamps threading.Lock (TRN-123).
+
+    These exercise the locked read-modify-write access pattern directly (the
+    "dispatch-style" write and the "_pickup_single-style" read-modify-write)
+    rather than the full MCP handlers, which require heavy podman/gateway
+    mocking irrelevant to the data-race under test.
+    """
+
+    def setUp(self) -> None:
+        # Isolate each test from leftover state / other tests.
+        server._task_timestamps.clear()
+
+    def tearDown(self) -> None:
+        server._task_timestamps.clear()
+
+    def test_concurrent_dispatch_writes_no_lost_entries(self) -> None:
+        """4.1: many threads writing distinct task_ids all land, none lost."""
+        import concurrent.futures
+
+        n = 500
+
+        def _dispatch_style_write(i: int) -> None:
+            task_id = f"task-{i}"
+            created_at = datetime.now(timezone.utc).isoformat()
+            # Mirror the locked write in server.dispatch / _dispatch_batch.
+            with server._task_timestamps_lock:
+                server._task_timestamps[task_id] = {
+                    "created_at": created_at,
+                    "started_at": None,
+                    "completed_at": None,
+                }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            list(ex.map(_dispatch_style_write, range(n)))
+
+        self.assertEqual(len(server._task_timestamps), n)
+        for i in range(n):
+            entry = server._task_timestamps.get(f"task-{i}")
+            self.assertIsNotNone(entry, f"task-{i} missing")
+            # No partially-overwritten record: every key present.
+            self.assertEqual(
+                set(entry.keys()), {"created_at", "started_at", "completed_at"}
+            )
+            self.assertIsNotNone(entry["created_at"])
+
+    def test_interleaved_write_and_read_modify_write_no_corruption(self) -> None:
+        """4.2: a dispatch-style write racing a pickup-style RMW for the same
+        task_id never corrupts started_at / completed_at."""
+        import concurrent.futures
+
+        task_id = "task-shared"
+
+        def _dispatch_write() -> None:
+            created_at = datetime.now(timezone.utc).isoformat()
+            with server._task_timestamps_lock:
+                server._task_timestamps[task_id] = {
+                    "created_at": created_at,
+                    "started_at": None,
+                    "completed_at": None,
+                }
+
+        def _pickup_rmw(done: bool) -> None:
+            now = datetime.now(timezone.utc)
+            # Mirror the locked RMW in server._pickup_single.
+            with server._task_timestamps_lock:
+                ts = server._task_timestamps.get(task_id, {})
+                if ts and ts.get("started_at") is None:
+                    ts["started_at"] = now.isoformat()
+                if ts and done and ts.get("completed_at") is None:
+                    ts["completed_at"] = now.isoformat()
+
+        # Seed the entry first so the RMW threads have something to update.
+        _dispatch_write()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            futs = []
+            for i in range(200):
+                # Interleave repeated writes and read-modify-writes.
+                futs.append(ex.submit(_dispatch_write))
+                futs.append(ex.submit(_pickup_rmw, i % 2 == 0))
+            for f in futs:
+                f.result()
+
+        entry = server._task_timestamps[task_id]
+        # The record must always have exactly the three canonical keys — never a
+        # partial dict produced by an interrupted read-modify-write.
+        self.assertEqual(
+            set(entry.keys()), {"created_at", "started_at", "completed_at"}
+        )
+        # started_at / completed_at are either None or a valid ISO string; never
+        # a torn / non-string value.
+        for k in ("created_at", "started_at", "completed_at"):
+            v = entry[k]
+            self.assertTrue(v is None or isinstance(v, str))
+
+
+# ── TRN-123: _dashboard_port_crew lock (tasks 5.1 / 5.2) ─────────────────────
+
+
+class _StubRequest:
+    """Minimal request stub carrying the attributes the dashboard handlers read."""
+
+    def __init__(
+        self,
+        *,
+        path: str = "",
+        query_params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ) -> None:
+        self.scope = {"path": path}
+        self.query_params = query_params or {}
+        self.headers = headers or {}
+        self.cookies = cookies or {}
+
+
+class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
+    """Concurrency tests for the _dashboard_port_crew threading.Lock (TRN-123)."""
+
+    def setUp(self) -> None:
+        with server._dashboard_port_crew_lock:
+            server._dashboard_port_crew.clear()
+
+    def tearDown(self) -> None:
+        with server._dashboard_port_crew_lock:
+            server._dashboard_port_crew.clear()
+
+    async def test_concurrent_dashboard_post_consistent_mapping(self) -> None:
+        """5.1: concurrent _handle_crew_dashboard_post calls for the same crew
+        leave a consistent port→crew mapping (no duplicate ports, no lost
+        entries)."""
+        crew_id = "demo"
+
+        # Each POST allocates a fresh port and registers it. We simulate a
+        # registry that has no dashboard yet so every call proceeds to the
+        # allocate + register + map path.
+        port_counter = {"n": 40000}
+        alloc_lock = threading.Lock()
+
+        def _fake_load_registry() -> dict:
+            # A fresh (no dashboard_port) crew entry every call so the handler
+            # walks the allocation path rather than the no-op branch.
+            return {"crews": {crew_id: {"cookie": "c"}}}
+
+        def _fake_allocate_port() -> int:
+            with alloc_lock:
+                port_counter["n"] += 1
+                return port_counter["n"]
+
+        with (
+            patch.object(server, "_require_crew", return_value=None),
+            patch.object(server, "_extract_crew_proxy_parts", return_value=(crew_id, "dashboard", "")),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_allocate_dashboard_port", side_effect=_fake_allocate_port),
+            patch.object(server, "_caddy_register_crew"),
+        ):
+            reqs = [_StubRequest(path=f"/crews/{crew_id}/dashboard") for _ in range(50)]
+            results = await asyncio.gather(
+                *(server._handle_crew_dashboard_post(r) for r in reqs)
+            )
+
+        self.assertEqual(len(results), 50)
+        # Every allocated port maps back to the crew — no lost / partial entries.
+        with server._dashboard_port_crew_lock:
+            snapshot = dict(server._dashboard_port_crew)
+        self.assertEqual(len(snapshot), 50, "expected 50 distinct port mappings")
+        # No duplicate ports (dict keys are unique by construction) and every
+        # value is the crew_id.
+        self.assertTrue(all(v == crew_id for v in snapshot.values()))
+
+    async def test_auth_read_races_delete_never_partial(self) -> None:
+        """5.2: _handle_dashboard_auth reading while an entry is being deleted
+        sees the entry present or absent — never a partial/torn value."""
+        crew_id = "demo"
+        port = 41000
+        with server._dashboard_port_crew_lock:
+            server._dashboard_port_crew[port] = crew_id
+
+        # A "delete-style" writer removing the mapping under the lock, mirroring
+        # the locked pop in _handle_crew_dashboard_delete / nuke.
+        def _delete_writer() -> None:
+            for _ in range(200):
+                with server._dashboard_port_crew_lock:
+                    server._dashboard_port_crew.pop(port, None)
+                with server._dashboard_port_crew_lock:
+                    server._dashboard_port_crew[port] = crew_id
+
+        stop = threading.Event()
+
+        def _delete_loop() -> None:
+            while not stop.is_set():
+                _delete_writer()
+
+        writer = threading.Thread(target=_delete_loop)
+        writer.start()
+        try:
+            # TRN-121 removed _gs_session_valid; session validation now goes
+            # through _gs_sessions.validate — patch the SessionStore instance.
+            mock_sessions = server._security.SessionStore(lifetime_secs=3600)
+            mock_sessions._issued["tok"] = float("inf")  # never expires
+            with (
+                patch.object(server, "GA_API_KEY", "k"),
+                patch.object(server, "_gs_sessions", mock_sessions),
+            ):
+                for _ in range(200):
+                    req = _StubRequest(
+                        query_params={"port": str(port)},
+                        cookies={"gs_session": "tok"},
+                    )
+                    resp = await server._handle_dashboard_auth(req)
+                    # The handler returns a Response with an int status_code —
+                    # a torn read would raise or produce something non-200.
+                    self.assertEqual(resp.status_code, 200)
+        finally:
+            stop.set()
+            writer.join(timeout=5)
+
+
+# ── TRN-123: _get_ensure_running_lock helper (asyncio lock registry) ──────────
+
+
+class GetEnsureRunningLockTests(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for the _get_ensure_running_lock helper (TRN-123).
+
+    Verifies that the helper:
+    - Returns an asyncio.Lock for a given crew_id.
+    - Returns the *same* lock object on repeated calls for the same crew_id
+      (identity, not a new lock each time).
+    - Returns *different* lock objects for different crew_ids.
+    - Is safe to call concurrently from multiple threads (no lost writes or
+      duplicate lock objects due to a race on the registry dict).
+    """
+
+    def setUp(self) -> None:
+        # Isolate each test: clear the registry so tests don't share lock state.
+        with server._ensure_running_locks_lock:
+            server._ensure_running_locks.clear()
+
+    def tearDown(self) -> None:
+        with server._ensure_running_locks_lock:
+            server._ensure_running_locks.clear()
+
+    async def test_returns_asyncio_lock(self) -> None:
+        """_get_ensure_running_lock returns an asyncio.Lock."""
+        lock = server._get_ensure_running_lock("crew-a")
+        self.assertIsInstance(lock, asyncio.Lock)
+
+    async def test_same_crew_same_lock_identity(self) -> None:
+        """Repeated calls for the same crew_id return the identical object."""
+        lock1 = server._get_ensure_running_lock("crew-a")
+        lock2 = server._get_ensure_running_lock("crew-a")
+        self.assertIs(lock1, lock2)
+
+    async def test_different_crews_different_locks(self) -> None:
+        """Different crew_ids get distinct lock objects."""
+        lock_a = server._get_ensure_running_lock("crew-a")
+        lock_b = server._get_ensure_running_lock("crew-b")
+        self.assertIsNot(lock_a, lock_b)
+
+    async def test_concurrent_first_access_same_crew_same_lock(self) -> None:
+        """Concurrent first-time calls for the same crew_id from multiple
+        threads must all receive the identical lock object (no duplicate creation
+        due to a race on the registry dict)."""
+        import concurrent.futures
+
+        results = []
+
+        def _fetch() -> asyncio.Lock:
+            return server._get_ensure_running_lock("crew-concurrent")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            results = list(ex.map(lambda _: _fetch(), range(50)))
+
+        # All 50 calls must have received the same lock object.
+        first = results[0]
+        self.assertIsInstance(first, asyncio.Lock)
+        self.assertTrue(
+            all(r is first for r in results),
+            "Concurrent first-time callers received different lock objects — "
+            "registry dict is not properly protected.",
+        )
+
+    async def test_lock_is_functional_as_asyncio_mutex(self) -> None:
+        """The returned lock can actually be acquired and released as an
+        asyncio mutex — verifying it is bound to the running event loop."""
+        lock = server._get_ensure_running_lock("crew-functional")
+        async with lock:
+            # While held, a non-blocking acquire attempt should fail.
+            acquired = lock.locked()
+            self.assertTrue(acquired, "Lock should be held inside async with block")
+        self.assertFalse(lock.locked(), "Lock should be released after async with block")
+
+
+class ValidateNextUrlTests(unittest.TestCase):
+    """TRN-137: direct coverage for ``server._validate_next_url`` open-redirect guard."""
+
+    def test_protocol_relative_url_rejected(self) -> None:
+        self.assertEqual(server._validate_next_url("//evil.com"), "/")
+
+    def test_javascript_scheme_rejected(self) -> None:
+        self.assertEqual(server._validate_next_url("javascript:alert(1)"), "/")
+
+    def test_empty_string_falls_back_to_root(self) -> None:
+        self.assertEqual(server._validate_next_url(""), "/")
+
+    def test_valid_relative_path_accepted(self) -> None:
+        self.assertEqual(server._validate_next_url("/dashboard/"), "/dashboard/")
+
+    def test_path_with_query_string_accepted(self) -> None:
+        # A same-origin relative path carrying a query string is a legitimate
+        # post-login redirect target and must pass through unchanged.
+        self.assertEqual(server._validate_next_url("/foo?bar=1"), "/foo?bar=1")
+
+
+
+# ── TRN-138: auth/session hardening ───────────────────────────────────────────
+
+
+class _ClientTuple:
+    """Stand-in for the ASGI ``request.client`` object (has a ``.host``)."""
+
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+
+class _FormRequest:
+    """Request stub for the dashboard login/logout handlers.
+
+    Carries the small surface those handlers actually touch: an awaitable
+    ``form()``, a ``cookies`` dict, ``headers``, ``query_params`` and a
+    ``client`` object exposing ``.host`` (the ASGI connection IP).
+    """
+
+    def __init__(
+        self,
+        *,
+        form: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        query_params: dict[str, str] | None = None,
+        client_host: str | None = None,
+    ) -> None:
+        self._form = form or {}
+        self.cookies = cookies or {}
+        self.headers = headers or {}
+        self.query_params = query_params or {}
+        self.client = _ClientTuple(client_host) if client_host is not None else None
+
+    async def form(self) -> dict[str, str]:
+        return dict(self._form)
+
+
+class Trn138LogoutCsrfTests(unittest.IsolatedAsyncioTestCase):
+    """Task 1.2 — CSRF token required on POST /dashboard/logout."""
+
+    async def test_logout_missing_csrf_returns_403(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        token = sessions.issue()
+        with patch.object(server, "_gs_sessions", sessions):
+            req = _FormRequest(form={}, cookies={"gs_session": token})
+            resp = await server._handle_dashboard_logout_post(req)
+        self.assertEqual(resp.status_code, 403)
+        # Session must NOT have been revoked on a rejected (403) request.
+        self.assertTrue(sessions.validate(token))
+
+    async def test_logout_wrong_csrf_returns_403(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        token = sessions.issue()
+        with patch.object(server, "_gs_sessions", sessions):
+            req = _FormRequest(
+                form={"csrf_token": "deadbeef"}, cookies={"gs_session": token}
+            )
+            resp = await server._handle_dashboard_logout_post(req)
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(sessions.validate(token))
+
+    async def test_logout_correct_csrf_and_valid_session_returns_200(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        token = sessions.issue()
+        with patch.object(server, "_gs_sessions", sessions):
+            req = _FormRequest(
+                form={"csrf_token": server._dashboard_csrf_token},
+                cookies={"gs_session": token},
+            )
+            resp = await server._handle_dashboard_logout_post(req)
+        self.assertEqual(resp.status_code, 200)
+        # Session revoked and cookie cleared on the success path.
+        self.assertFalse(sessions.validate(token))
+        self.assertIn("gs_session=;", resp.headers.get("Set-Cookie", ""))
+
+
+class Trn138LoginRedirectTests(unittest.IsolatedAsyncioTestCase):
+    """Task 2.3 — login JSON response returns the server-sanitised next URL."""
+
+    async def test_crafted_next_is_sanitised_in_json_response(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        throttle = server._security.Throttle(max_failures=5, window_secs=900)
+        with (
+            patch.object(server, "GA_API_KEY", "secret-key"),
+            patch.object(server, "_gs_sessions", sessions),
+            patch.object(server, "_dashboard_throttle", throttle),
+        ):
+            req = _FormRequest(
+                form={
+                    "ga_api_key": "secret-key",
+                    "csrf_token": server._dashboard_csrf_token,
+                    "next": "//evil.com",
+                },
+                client_host="10.0.0.5",
+            )
+            resp = await server._handle_dashboard_login_post(req)
+        self.assertEqual(resp.status_code, 200)
+        body = json.loads(bytes(resp.body).decode())
+        self.assertEqual(body["next"], "/")
+        self.assertNotEqual(body["next"], "//evil.com")
+        self.assertTrue(body["ok"])
+
+    async def test_safe_relative_next_is_preserved(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        throttle = server._security.Throttle(max_failures=5, window_secs=900)
+        with (
+            patch.object(server, "GA_API_KEY", "secret-key"),
+            patch.object(server, "_gs_sessions", sessions),
+            patch.object(server, "_dashboard_throttle", throttle),
+        ):
+            req = _FormRequest(
+                form={
+                    "ga_api_key": "secret-key",
+                    "csrf_token": server._dashboard_csrf_token,
+                    "next": "/dashboard/crews",
+                },
+                client_host="10.0.0.5",
+            )
+            resp = await server._handle_dashboard_login_post(req)
+        body = json.loads(bytes(resp.body).decode())
+        self.assertEqual(body["next"], "/dashboard/crews")
+
+
+class Trn138LoginThrottleSourceTests(unittest.IsolatedAsyncioTestCase):
+    """Task 4.2 — login throttle keys on ASGI client IP, not X-Forwarded-For."""
+
+    async def test_xff_header_does_not_affect_throttle_source(self) -> None:
+        sessions = server._security.SessionStore(lifetime_secs=3600)
+        throttle = server._security.Throttle(max_failures=5, window_secs=900)
+
+        recorded: list[str | None] = []
+        real_record_failure = throttle.record_failure
+
+        def _spy_failure(*, account: str, source):
+            recorded.append(source)
+            return real_record_failure(account=account, source=source)
+
+        with (
+            patch.object(server, "GA_API_KEY", "secret-key"),
+            patch.object(server, "_gs_sessions", sessions),
+            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(throttle, "record_failure", side_effect=_spy_failure),
+        ):
+            # Wrong key so we hit record_failure; XFF claims a different IP than
+            # the real ASGI connection (client_host).
+            req = _FormRequest(
+                form={
+                    "ga_api_key": "WRONG",
+                    "csrf_token": server._dashboard_csrf_token,
+                },
+                headers={"x-forwarded-for": "1.2.3.4"},
+                client_host="10.0.0.5",
+            )
+            resp = await server._handle_dashboard_login_post(req)
+
+        self.assertEqual(resp.status_code, 401)
+        # The throttle source must be the ASGI client IP, never the spoofable
+        # X-Forwarded-For value.
+        self.assertEqual(recorded, ["10.0.0.5"])
+        self.assertNotIn("1.2.3.4", recorded)
+
+
+class Trn138RegistryCorruptGuardTests(unittest.TestCase):
+    """Task 5.3 — corrupt registry surfaces a structured error at the MCP tool
+    boundary rather than raising."""
+
+    def test_crews_returns_structured_error_on_corrupt_registry(self) -> None:
+        from transport.registry import RegistryCorruptError
+
+        def _raise_corrupt():
+            raise RegistryCorruptError(
+                "registry corrupt — crews.json.corrupt preserved for inspection"
+            )
+
+        with patch.object(server, "_load_registry", side_effect=_raise_corrupt):
+            # crews() acquires _registry_lock then calls _load_registry — the
+            # guard must catch and convert, not propagate.
+            result = server.crews()
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("error", result)
+        self.assertIn("registry corrupt", result["error"])
+
+    def test_registry_corrupt_error_is_runtimeerror_subclass(self) -> None:
+        from transport.registry import RegistryCorruptError
+
+        self.assertTrue(issubclass(RegistryCorruptError, RuntimeError))

@@ -21,7 +21,7 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 - **THEN** the `ga-transport` service does not bind the dashboard port range
 
 ### Requirement: Initial Caddy JSON configuration
-`install.sh` SHALL write an `initial-config.json` under `DATA_DIR` that bootstraps Caddy with a main HTTP server (default port 443) carrying: MCP routes (`/mcp*`), file-transfer routes (`/files/*`), health (`/health`), the login/logout endpoints (`/login`, `/login*`, `/logout`), and the dashboard-auth endpoints (`/dashboard-auth`, `/login-ui`, `/dashboard-login`). The initial config SHALL contain no per-crew dashboard servers — those are added at runtime. The config SHALL be loaded via `caddy run --config /config/initial-config.json --resume`.
+`install.sh` SHALL write an `initial-config.json` under `DATA_DIR` that bootstraps Caddy with a main HTTP server (default port 443) carrying: MCP routes (`/mcp*`), file-transfer routes (`/files/*`), health (`/health`), the login/logout endpoints (`/login`, `/login*`, `/logout`), and the dashboard-auth endpoints (`/dashboard/auth`, `/dashboard/login`). The initial config SHALL contain no per-crew dashboard servers — those are added at runtime. The config SHALL be loaded via `caddy run --config /config/initial-config.json --resume`.
 
 #### Scenario: Caddy starts with initial config
 - **WHEN** the `ga-portal` container starts for the first time
@@ -41,7 +41,7 @@ When `GA_API_KEY` is set, the main-server `/mcp*` and `/files/*` routes SHALL re
 - **THEN** the request does not reach the transport process
 
 ### Requirement: Per-crew dashboard server registration
-When a crew is successfully launched, the transport SHALL call the Caddy admin API to add an HTTP server bound to the crew's allocated dashboard port that reverse-proxies to `ga-transport:8000` with a URI rewrite to `/crews/{crew_id}/ui/{path}`, gated by a `forward_auth` handler (see the dashboard-auth capability). The server object SHALL carry `"@id": "crew-{crew_id}"` so it can be addressed directly for removal. `launch(dashboard=True)` SHALL allocate a port and register with `ga-portal` without checking a `GA_PORTAL_ENABLED` flag. The dashboard is always available on deployments where `ga-portal` is healthy.
+When a crew is successfully launched, the transport SHALL call the Caddy admin API to add an HTTP server bound to the crew's allocated dashboard port that reverse-proxies to `ga-transport:64057` with a URI rewrite to `/crews/{crew_id}/ui/{path}`, gated by a `forward_auth` handler (see the dashboard-auth capability). The server object SHALL carry `"@id": "crew-{crew_id}"` so it can be addressed directly for removal. `launch(dashboard=True)` SHALL allocate a port and register with `ga-portal` without checking a `GA_PORTAL_ENABLED` flag. The dashboard is always available on deployments where `ga-portal` is healthy.
 
 #### Scenario: Crew launch registers Caddy dashboard server
 - **WHEN** `launch(crew_id="alpha", dashboard=True)` completes successfully

@@ -49,7 +49,7 @@ def sign_policy(policy: dict, secret: str) -> dict:
     if rest:
         body["identity"] = rest
     payload = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    sig = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    sig = hmac.new(secret.encode("utf-8"), payload, digestmod=hashlib.sha256).hexdigest()
     signed = {**policy}
     signed["identity"] = {**signed.get("identity", {}), "signature": sig}
     return signed

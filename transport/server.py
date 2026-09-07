@@ -20,7 +20,9 @@ Tools:
 
 Resources:
   transport://agents — available agents and their roles (read before dispatching)
+  transport://compositions — available crew compositions for launch
   transport://orders — built-in standing-order templates (read before ordering)
+  transport://version — transport version and per-crew image versions
   transport://jobs — scheduled jobs across all running crews
 
 Auth flow:
@@ -51,6 +53,7 @@ import base64
 import hashlib
 import hmac
 import io
+import functools
 import posixpath
 import select
 import socket
@@ -62,6 +65,7 @@ import re
 import secrets
 import time
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -97,6 +101,54 @@ except ModuleNotFoundError:
     from transport import security as _security  # local dev: transport/ is a package dir
 
 try:
+    import auth as _auth  # container: both files flat in /app
+    from auth import (  # noqa: F401  re-exported for existing call-sites
+        TransportSecretMiddleware,
+        RateLimitMiddleware,
+        BearerAuthMiddleware,
+        SecurityHeadersMiddleware,
+        _parse_bearer_token,
+        _request_source,
+        _parse_rate_limit_var,
+        _build_rate_limiters,
+        _RATE_LIMIT_DEFAULTS,
+    )
+except ModuleNotFoundError:
+    from transport import auth as _auth  # local dev
+    from transport.auth import (  # noqa: F401  re-exported for existing call-sites
+        TransportSecretMiddleware,
+        RateLimitMiddleware,
+        BearerAuthMiddleware,
+        SecurityHeadersMiddleware,
+        _parse_bearer_token,
+        _request_source,
+        _parse_rate_limit_var,
+        _build_rate_limiters,
+        _RATE_LIMIT_DEFAULTS,
+    )
+
+try:
+    import caddy as _caddy  # container: both files flat in /app
+    from caddy import (  # noqa: F401  re-exported for existing call-sites
+        _dashboard_ports_in_use,
+        _allocate_dashboard_port,
+        _release_dashboard_port,
+        _caddy_admin_url,
+        _caddy_register_crew,
+        _caddy_deregister_crew,
+    )
+except ModuleNotFoundError:
+    from transport import caddy as _caddy  # local dev
+    from transport.caddy import (  # noqa: F401  re-exported for existing call-sites
+        _dashboard_ports_in_use,
+        _allocate_dashboard_port,
+        _release_dashboard_port,
+        _caddy_admin_url,
+        _caddy_register_crew,
+        _caddy_deregister_crew,
+    )
+
+try:
     from config import Config  # container: both files flat in /app
 except ImportError:
     # Local dev: transport/ is a package dir, and a bare `import config` can
@@ -118,6 +170,11 @@ try:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_batch,
+        _get_batch,
+        _update_batch_status,
+        _delete_batch,
+        _find_batch_by_task_ids,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -133,7 +190,25 @@ except ModuleNotFoundError:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_batch,
+        _get_batch,
+        _update_batch_status,
+        _delete_batch,
+        _find_batch_by_task_ids,
     )
+
+# TRN-138: named exception raised by _load_registry() on a corrupt registry.
+# Imported separately so both import branches above stay byte-identical to
+# their prior form; the fallback keeps the module importable if an older
+# registry.py without the class is somehow on the path.
+try:
+    from registry import RegistryCorruptError  # container: flat /app/
+except (ModuleNotFoundError, ImportError):
+    try:
+        from transport.registry import RegistryCorruptError  # local dev
+    except (ModuleNotFoundError, ImportError):
+        class RegistryCorruptError(RuntimeError):  # pragma: no cover - fallback
+            pass
 
 try:
     from podman import (  # container: flat /app/
@@ -410,6 +485,16 @@ def _load_api_key() -> str:
 
 GA_API_KEY = _load_api_key()
 
+# TRN-116: caddy.py resolves PORT/port-range from cfg at its own import, but
+# GA_API_KEY is loaded from a mounted Podman secret here (a server concern), so
+# push the resolved runtime values into the caddy module. Its register/deregister
+# helpers read these from their own module globals at call time. PORT and the
+# port-range are re-synced too so a single source of truth stays in server.py.
+_caddy.PORT = PORT
+_caddy.GA_API_KEY = GA_API_KEY
+_caddy.GA_DASHBOARD_PORT_RANGE_START = GA_DASHBOARD_PORT_RANGE_START
+_caddy.GA_DASHBOARD_PORT_RANGE_SIZE = GA_DASHBOARD_PORT_RANGE_SIZE
+
 
 def _load_transport_secret() -> str:
     """Load GA_TRANSPORT_SECRET from Podman secret file (TRN-107).
@@ -469,8 +554,9 @@ def _write_auth_file(value: str, _path: Path | None = None) -> None:
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as f:
-            fd = -1
+        f = os.fdopen(fd, "w")
+        fd = -1
+        with f:
             f.write(value)
             f.flush()
             os.fsync(f.fileno())
@@ -538,12 +624,12 @@ try:
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
-        _inject_git_identity,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
         _patch_crew_config,
         _patch_models,
+        _pickup_batch,
         _probe_gateway,
         _read_auth_from_crew,
         _reconcile_registry,
@@ -594,12 +680,12 @@ except ModuleNotFoundError:
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
-        _inject_git_identity,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
         _patch_crew_config,
         _patch_models,
+        _pickup_batch,
         _probe_gateway,
         _read_auth_from_crew,
         _reconcile_registry,
@@ -670,212 +756,37 @@ mcp = MCPServer(
 # In-memory store for task lifecycle timestamps. Keyed by task_id.
 # Lost on transport restart — acceptable per design decision D1.
 _task_timestamps: dict[str, dict] = {}
+# TRN-123: guards all read-modify-write access to _task_timestamps. The dict is
+# written by dispatch (worker thread) and read-modified-written by pickup
+# handlers (worker threads); without this lock those accesses race.
+_task_timestamps_lock = threading.Lock()
 
-# ── UI port pool (TRN-80) ─────────────────────────────────────────────────────
-# Tracks which host ports in the UI port range are currently allocated to a
-# crew. Populated from crews.json at startup (see _startup_events) and mutated
-# only inside _allocate_dashboard_port / _release_dashboard_port. Protected by the global
-# _registry_lock (same lock used for crews.json writes) so allocation and
-# registry persistence are atomic.
-_dashboard_ports_in_use: set[int] = set()
+# ── UI port pool + Caddy admin API (TRN-80 / TRN-92) ─────────────────────────
+# _dashboard_ports_in_use, _allocate_dashboard_port, _release_dashboard_port,
+# _caddy_admin_url, _caddy_register_crew, and _caddy_deregister_crew now live in
+# transport/caddy.py (TRN-116) and are imported at the top of this file. The
+# port-pool helpers must still be called while holding _registry_lock.
 
+# ── Dashboard session store (TRN-92 / TRN-121) ───────────────────────────────
+# Dashboard login is guarded by security.Throttle (brute-force protection) and
+# gs_session cookies are backed by security.SessionStore (bounded, revocable).
+# Both carry their own internal lock and hold state in memory — lost on
+# transport restart (acceptable — users re-login; an active attacker only
+# regains the throttle window).
+_dashboard_throttle = _security.Throttle(max_failures=5, window_secs=900)
+_gs_sessions = _security.SessionStore(lifetime_secs=cfg.ga_portal_session_ttl_secs)
 
-def _allocate_dashboard_port() -> int:
-    """Scan the UI port range and allocate the first free port.
-
-    Must be called while holding ``_registry_lock`` so the allocation and
-    the subsequent registry write are atomic.
-
-    Returns the allocated port. Raises RuntimeError if the range is full.
-    """
-    for port in range(
-        GA_DASHBOARD_PORT_RANGE_START,
-        GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE,
-    ):
-        if port not in _dashboard_ports_in_use:
-            _dashboard_ports_in_use.add(port)
-            return port
-    raise RuntimeError("UI port pool exhausted")
-
-
-def _release_dashboard_port(port: int) -> None:
-    """Remove ``port`` from the in-use set (no-op if not present)."""
-    _dashboard_ports_in_use.discard(port)
-
-
-# ── Caddy admin API helpers (TRN-92) ─────────────────────────────────────────
-
-def _caddy_admin_url() -> str:
-    """Return the Caddy admin API base URL."""
-    return "http://ga-portal:2019"
-
-
-def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None:
-    """Register a per-crew Caddy dashboard server via the admin API.
-
-    Builds an HTTP server object bound to *port* with ``@id: crew-{crew_id}``.
-    The crew ``reverse_proxy`` dials ``ga-transport:{PORT}`` and rewrites the
-    incoming path to ``/crews/{crew_id}/ui/{original_path}`` (TRN-102). The
-    transport's UI-proxy endpoint injects the ``mc_token_5476`` session cookie
-    from ga-transport's own IP, satisfying the gateway's IP binding — Caddy no
-    longer talks to crew gateways (``gs-*``) directly and no longer injects the
-    cookie itself. When ``GA_API_KEY`` is set, a ``forward_auth`` check against
-    ``/dashboard-auth`` (also on ga-transport) gates the proxy.
-
-    Retries up to 3 times with exponential backoff (~7 s total). Logs a
-    warning on failure — does not raise, so a Caddy startup race does not
-    cause ``launch`` to fail.
-
-    Must be called while holding ``_registry_lock``.
-
-    ``crew_cookie`` is accepted for backward-compatible call sites but is no
-    longer used — the transport owns cookie injection (TRN-102).
-    """
-    _transport_addr = f"ga-transport:{PORT}"
-
-    # TRN-102: Caddy routes dashboard traffic to the transport's UI proxy, which
-    # injects the session cookie. Rewrite the incoming path so it is prefixed
-    # with /crews/{crew_id}/ui — {http.request.uri.path} preserves the original
-    # path (and Caddy re-appends the query string automatically).
-    # TRN-107: every upstream request to ga-transport must carry the portal
-    # secret, read from the mounted Podman secret file — same placeholder
-    # install.sh uses for the static routes. Without this, TransportSecretMiddleware
-    # rejects the request with 401 before it ever reaches the UI-proxy or
-    # dashboard-auth handlers.
-    _transport_token_header = {
-        "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"],
-    }
-
-    crew_proxy_handler: dict = {
-        "handler": "reverse_proxy",
-        "upstreams": [{"dial": _transport_addr}],
-        "rewrite": {"uri": f"/crews/{crew_id}/ui{{http.request.uri.path}}"},
-        "headers": {"request": {"set": dict(_transport_token_header)}},
-    }
-
-    # forward_auth equivalent using only standard Caddy modules (no caddy-security).
-    # Only used when GA_API_KEY is set — gates access with a gs_session cookie check.
-    forward_auth_handler = {
-        "handler": "reverse_proxy",
-        "upstreams": [{"dial": _transport_addr}],
-        "rewrite": {"method": "GET", "uri": f"/dashboard-auth?port={port}"},
-        "headers": {
-            "request": {
-                "set": {
-                    "X-Forwarded-Method": ["{http.request.method}"],
-                    "X-Forwarded-Uri": ["{http.request.uri}"],
-                    **_transport_token_header,
-                }
-            },
-        },
-        "handle_response": [
-            {
-                "match": {"status_code": [2]},
-                "routes": [
-                    {"handle": [{"handler": "vars"}]},
-                ],
-            }
-        ],
-    }
-
-    handles = [forward_auth_handler, crew_proxy_handler] if GA_API_KEY else [crew_proxy_handler]
-
-    server_obj = {
-        "@id": f"crew-{crew_id}",
-        "listen": [f":{port}"],
-        "routes": [
-            {
-                "handle": handles,
-            }
-        ],
-    }
-
-    url = f"{_caddy_admin_url()}/config/apps/http/servers/crew-{crew_id}"
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            resp = httpx.put(url, json=server_obj, timeout=5.0)
-            if resp.status_code in (200, 201):
-                logger.info(
-                    "TRN-92: registered Caddy server crew-%s on port %d", crew_id, port
-                )
-                return
-            # 409 Conflict means the @id already exists — treat as idempotent success
-            if resp.status_code == 409:
-                logger.info(
-                    "TRN-92: Caddy server crew-%s already exists (409) — idempotent", crew_id
-                )
-                return
-            logger.warning(
-                "TRN-92: Caddy register crew-%s returned %d (attempt %d/%d): %s",
-                crew_id, resp.status_code, attempt + 1, max_retries, resp.text[:200],
-            )
-        except Exception as exc:
-            logger.warning(
-                "TRN-92: Caddy register crew-%s failed (attempt %d/%d): %s",
-                crew_id, attempt + 1, max_retries, exc,
-            )
-        if attempt < max_retries - 1:
-            time.sleep(2 ** attempt)  # 0s, 1s, 2s → ~3s total
-
-
-def _caddy_deregister_crew(crew_id: str) -> None:
-    """Remove a per-crew Caddy dashboard server via the admin API.
-
-    Calls ``DELETE /config/id/crew-{crew_id}`` on the Caddy admin API.
-    Handles 404 gracefully (server already removed). Logs a warning on other
-    failures; does not raise so ``nuke`` is never blocked by Caddy errors.
-    """
-    url = f"{_caddy_admin_url()}/id/crew-{crew_id}"
-    try:
-        resp = httpx.delete(url, timeout=5.0)
-        if resp.status_code in (200, 204):
-            logger.info("TRN-92: deregistered Caddy server crew-%s", crew_id)
-        elif resp.status_code == 404:
-            logger.debug(
-                "TRN-92: Caddy server crew-%s not found on deregister (404) — OK", crew_id
-            )
-        else:
-            logger.warning(
-                "TRN-92: Caddy deregister crew-%s returned %d: %s",
-                crew_id, resp.status_code, resp.text[:200],
-            )
-    except Exception as exc:
-        logger.warning("TRN-92: Caddy deregister crew-%s failed: %s", crew_id, exc)
-
-
-# ── Dashboard session store (TRN-92) ─────────────────────────────────────────
-# In-memory token → expiry mapping for gs_session cookies.
-# Lost on transport restart (acceptable — users re-login).
-_gs_session_store: dict[str, float] = {}
-_gs_session_store_lock = threading.Lock()
-
-
-def _gs_session_issue() -> str:
-    """Mint a new gs_session token and record it with its expiry."""
-    token = secrets.token_hex(32)
-    expiry = time.time() + cfg.ga_portal_session_ttl_secs
-    with _gs_session_store_lock:
-        _gs_session_store[token] = expiry
-    return token
-
-
-def _gs_session_valid(token: str) -> bool:
-    """Return True if *token* exists and has not expired."""
-    with _gs_session_store_lock:
-        expiry = _gs_session_store.get(token)
-        if expiry is None:
-            return False
-        if time.time() > expiry:
-            _gs_session_store.pop(token, None)
-            return False
-        return True
+# ── Dashboard CSRF token (TRN-122) ────────────────────────────────────────────
+# Single random token generated at process startup and held for the process
+# lifetime.  Embedded in the GET /dashboard/login form and validated on every
+# POST /dashboard/login before the API-key check.  See design.md D1.
+_dashboard_csrf_token: str = secrets.token_hex(32)
 
 
 # ── Dashboard auth HTTP handlers (TRN-92) ─────────────────────────────────────
 
 async def _handle_dashboard_login_post(request: Request) -> Response:
-    """POST /dashboard-login — validate ga_api_key, issue gs_session cookie.
+    """POST /dashboard/login — validate ga_api_key, issue gs_session cookie.
 
     Reads ``ga_api_key`` from the form body, constant-time compares against
     ``GA_API_KEY``. On success returns 200 + ``Set-Cookie: gs_session=...``.
@@ -884,30 +795,61 @@ async def _handle_dashboard_login_post(request: Request) -> Response:
     if not GA_API_KEY:
         # No API key configured — dashboard login is only meaningful with one.
         return Response(status_code=401)
+
+    source = _request_source(request)
+    # TRN-138: the login throttle key must come from the actual ASGI
+    # connection IP (request.client.host), NOT X-Forwarded-For, which a
+    # client can spoof to evade or poison the brute-force lock (design D3).
+    # _request_source() prefers XFF and is retained only for audit context.
+    client = getattr(request, "client", None)
+    throttle_source = getattr(client, "host", None) if client is not None else None
+    # Throttle brute-force attempts before touching the credential (avoids a
+    # timing oracle on the reject path — see design D3).
+    if _dashboard_throttle.is_locked(account="dashboard", source=throttle_source):
+        return Response(status_code=429)
+
     try:
         form = await request.form()
         provided = str(form.get("ga_api_key", ""))
+        # TRN-122: read and validate CSRF token before touching the API-key path.
+        # Fail-fast on forged submissions (design.md D4).
+        provided_csrf = str(form.get("csrf_token", ""))
+        # TRN-138: capture the submitted next URL so the server — not the
+        # client — is the source of truth for the post-login redirect target.
+        next_url = _validate_next_url(str(form.get("next", "/")))
     except Exception:
         return Response(status_code=400)
 
+    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
+        return Response(status_code=403)
+
     if not hmac.compare_digest(provided, GA_API_KEY):
+        _dashboard_throttle.record_failure(account="dashboard", source=throttle_source)
         return Response(status_code=401)
 
-    token = _gs_session_issue()
+    _dashboard_throttle.record_success(account="dashboard", source=throttle_source)
+
+    token = _gs_sessions.issue()
     # Build Set-Cookie header manually — avoids starlette version differences
-    # and is more explicit about the exact cookie attributes.
+    # and is more explicit about the exact cookie attributes. The Secure flag
+    # is only set when the portal runs behind TLS (TRN-121); a plain-HTTP
+    # portal must not set Secure or the browser drops the cookie.
+    secure_attr = "; Secure" if cfg.ga_portal_tls_mode != "off" else ""
     cookie_value = (
-        f"gs_session={token}; HttpOnly; SameSite=Lax; Secure; Path=/"
+        f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"
     )
-    return Response(
+    # TRN-138: return the server-sanitised next URL in the JSON body so the
+    # login-form JS redirects from _validate_next_url() output rather than
+    # from the raw submitted FormData field (open-redirect fix).
+    return JSONResponse(
+        {"ok": True, "next": next_url},
         status_code=200,
-        content="OK",
         headers={"Set-Cookie": cookie_value},
     )
 
 
 async def _handle_dashboard_auth(request: Request) -> Response:
-    """GET /dashboard-auth — Caddy forward_auth endpoint.
+    """GET /dashboard/auth — Caddy forward_auth endpoint.
 
     Validates the ``gs_session`` cookie. On 200 returns
     ``X-Crew-Cookie: mc_token_5476=<crew_cookie>`` so Caddy's ``copy_headers``
@@ -924,7 +866,7 @@ async def _handle_dashboard_auth(request: Request) -> Response:
 
     # Extract gs_session cookie
     token = request.cookies.get("gs_session", "")
-    if not token or not _gs_session_valid(token):
+    if not token or not _gs_sessions.validate(token):
         return Response(status_code=401)
 
     # Determine which crew this request is for by looking up the incoming port.
@@ -933,14 +875,15 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     # to reading the original dashboard-port from a custom header that the
     # Caddy server config can inject.
     # The simplest Caddy-compatible approach: encode the crew's port in the
-    # forward_auth URI, e.g. /dashboard-auth?port=64058. Caddy's forward_auth
+    # forward_auth URI, e.g. /dashboard/auth?port=64058. Caddy's forward_auth
     # directive supports arbitrary URIs. We derive the crew from the port.
     port_str = request.query_params.get("port", "")
     crew_id: str | None = None
     if port_str:
         try:
             port_int = int(port_str)
-            crew_id = _dashboard_port_crew.get(port_int)
+            with _dashboard_port_crew_lock:
+                crew_id = _dashboard_port_crew.get(port_int)
         except ValueError:
             pass
 
@@ -949,7 +892,8 @@ async def _handle_dashboard_auth(request: Request) -> Response:
         fwd_port = request.headers.get("x-dashboard-port", "")
         if fwd_port:
             try:
-                crew_id = _dashboard_port_crew.get(int(fwd_port))
+                with _dashboard_port_crew_lock:
+                    crew_id = _dashboard_port_crew.get(int(fwd_port))
             except ValueError:
                 pass
 
@@ -963,7 +907,45 @@ async def _handle_dashboard_auth(request: Request) -> Response:
     return Response(status_code=200)
 
 
-# SEC-09 — open redirect guard for /login-ui ?next=
+async def _handle_dashboard_logout_post(request: Request) -> Response:
+    """POST /dashboard/logout — revoke the gs_session and clear the cookie.
+
+    Validates the current ``gs_session`` cookie; returns 401 when it is
+    missing/invalid. On a valid token, revokes it in the session store and
+    responds with a ``Set-Cookie`` header that clears the cookie in the
+    browser (TRN-121).
+    """
+    # TRN-138: logout is a state-changing POST — validate the CSRF token
+    # before any session check, matching the login POST pattern. Reject a
+    # missing or mismatched token with 403.
+    try:
+        form = await request.form()
+        provided_csrf = str(form.get("csrf_token", ""))
+    except Exception:
+        return Response(status_code=400)
+
+    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
+        return Response(status_code=403)
+
+    token = request.cookies.get("gs_session", "")
+    if not _gs_sessions.validate(token):
+        return Response(status_code=401)
+
+    _gs_sessions.revoke(token)
+    return Response(
+        status_code=200,
+        content="OK",
+        headers={
+            "Set-Cookie": (
+                "gs_session=; Max-Age=0; "
+                "Expires=Thu, 01 Jan 1970 00:00:00 GMT; "
+                "HttpOnly; SameSite=Lax; Path=/"
+            )
+        },
+    )
+
+
+# SEC-09 — open redirect guard for /dashboard/login ?next=
 def _validate_next_url(url: str) -> str:
     """Validate next_url is a safe same-origin relative path.
 
@@ -973,23 +955,25 @@ def _validate_next_url(url: str) -> str:
     """
     if not url:
         return "/"
-    # Must be a relative path starting with / but not // (protocol-relative)
-    # and must not contain a colon before the first slash (no javascript: etc.)
+    # Must be a relative path starting with / but not // (protocol-relative).
+    # The leading-slash guard already blocks javascript: and //evil.com inputs.
     if not url.startswith("/") or url.startswith("//"):
-        return "/"
-    if ":" in url.split("/")[0]:
         return "/"
     return url
 
 
 async def _handle_login_ui(request: Request) -> Response:
-    """GET /login-ui — serve the minimal HTML login form.
+    """GET /dashboard/login — serve the minimal HTML login form.
 
     Accepts an optional ``?next=<url>`` query parameter for post-login
     redirect.
     """
     next_url = _validate_next_url(request.query_params.get("next", "/"))
     next_url_escaped = _security.encode_html_attr(next_url)
+    # TRN-122: embed the startup CSRF token in the form so POST /dashboard/login
+    # can validate it.  encode_html_attr applied for defence-in-depth (hex output
+    # is already safe, but the pattern matches next_url_escaped usage above).
+    csrf_token_escaped = _security.encode_html_attr(_dashboard_csrf_token)
     # Simple HTML login page — no external dependencies.
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1018,8 +1002,9 @@ async def _handle_login_ui(request: Request) -> Response:
 <body>
 <div class="card">
   <h1>👻 Ghost Academy</h1>
-  <form id="f" method="post" action="/dashboard-login">
+  <form id="f" method="post" action="/dashboard/login">
     <input type="hidden" name="next" value="{next_url_escaped}">
+    <input type="hidden" name="csrf_token" value="{csrf_token_escaped}">
     <label for="k">API Key</label>
     <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
     <button type="submit">Sign in</button>
@@ -1031,9 +1016,14 @@ async def _handle_login_ui(request: Request) -> Response:
   f.addEventListener('submit', async e => {{
     e.preventDefault();
     const fd = new FormData(f);
-    const r = await fetch('/dashboard-login', {{method:'POST', body: fd}});
+    const r = await fetch('/dashboard/login', {{method:'POST', body: fd}});
     if (r.ok) {{
-      window.location.href = fd.get('next') || '/';
+      // TRN-138: redirect to the server-sanitised next URL from the JSON
+      // response body, not the raw submitted FormData field, so the open-
+      // redirect guard in _validate_next_url() is always authoritative.
+      let dest = '/';
+      try {{ const data = await r.json(); dest = data.next || '/'; }} catch (_e) {{}}
+      window.location.href = dest;
     }} else {{
       document.getElementById('err').style.display = 'block';
     }}
@@ -1049,6 +1039,32 @@ async def _handle_login_ui(request: Request) -> Response:
 # is the sole dashboard proxy. Port→crew mapping is retained for forward_auth
 # lookups by _handle_dashboard_auth.
 _dashboard_port_crew: dict[int, str] = {}  # port → crew_id
+# TRN-123: guards all read-modify-write access to _dashboard_port_crew. Written
+# from _handle_crew_dashboard_post/_delete, launch, nuke and _main, and read in
+# _handle_dashboard_auth — a mix of asyncio and startup contexts.
+_dashboard_port_crew_lock = threading.Lock()
+
+# TRN-123: per-crew asyncio lock registry serialising concurrent
+# _ensure_crew_running call sites in the async proxy handlers, so that
+# concurrent coroutines for the same crew do not each dispatch a redundant
+# probe-then-start thread. The registry dict itself is populated lazily under a
+# threading.Lock because it is also touched from non-async startup paths.
+_ensure_running_locks: dict[str, asyncio.Lock] = {}
+_ensure_running_locks_lock = threading.Lock()
+
+
+def _get_ensure_running_lock(crew_id: str) -> asyncio.Lock:
+    """Return the per-crew asyncio.Lock for crew_id, creating it lazily.
+
+    Guarded by _ensure_running_locks_lock so concurrent first-time callers do
+    not each create a separate lock object for the same crew.
+    """
+    with _ensure_running_locks_lock:
+        lock = _ensure_running_locks.get(crew_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _ensure_running_locks[crew_id] = lock
+        return lock
 
 
 # _http and _async_http are imported from transport.podman (they are owned by
@@ -1199,7 +1215,8 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
 
     # Auto-wake if stopped
     try:
-        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
+        async with _get_ensure_running_lock(crew_id):
+            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError as e:
         return PlainTextResponse(str(e), status_code=502)
 
@@ -1313,7 +1330,8 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
         await ws.close(code=1008)
         return
     try:
-        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
+        async with _get_ensure_running_lock(crew_id):
+            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError:
         await ws.close(code=1011)
         return
@@ -1428,7 +1446,8 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
     # Auto-wake if stopped
     try:
-        crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
+        async with _get_ensure_running_lock(crew_id):
+            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
     except RuntimeError as e:
         return PlainTextResponse(str(e), status_code=502)
 
@@ -1559,7 +1578,8 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
 
     _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
     # Store port→crew mapping for forward_auth lookups.
-    _dashboard_port_crew[dashboard_port] = crew_id
+    with _dashboard_port_crew_lock:
+        _dashboard_port_crew[dashboard_port] = crew_id
 
     logger.info(
         "TRN-101: POST /crews/%s/dashboard — UI port %d, dashboard_url=%s",
@@ -1601,7 +1621,8 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         # C-1: Extract all needed values and mutate registry under the lock,
         # then call _caddy_deregister_crew AFTER releasing it to avoid holding
         # the lock across blocking I/O.
-        _dashboard_port_crew.pop(int(existing_port), None)
+        with _dashboard_port_crew_lock:
+            _dashboard_port_crew.pop(int(existing_port), None)
         _release_dashboard_port(int(existing_port))
         reg["crews"][crew_id].pop("dashboard_port", None)
         reg["crews"][crew_id]["dashboard_url"] = None
@@ -1621,572 +1642,16 @@ async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
-
-class TransportSecretMiddleware:
-    """ASGI middleware enforcing the GA_TRANSPORT_SECRET X-Transport-Token gate (TRN-107).
-
-    When ``transport_secret`` is non-empty, every incoming HTTP request must carry
-    an ``X-Transport-Token`` header whose value matches ``transport_secret`` exactly
-    (constant-time comparison). Requests missing the header or presenting a
-    wrong value receive HTTP 401 immediately, before any other middleware.
-
-    This middleware is the outermost gate — it runs before ``BearerAuthMiddleware``
-    and ``SecurityHeadersMiddleware``. Crew containers on ``ga-starboard`` can dial
-    ``ga-transport``, but they never receive ``GA_TRANSPORT_SECRET`` and therefore
-    cannot forge the header.
-
-    When ``transport_secret`` is empty (e.g. dev/test environment without the
-    Podman secret) the middleware is a transparent pass-through.
-
-    Non-HTTP ASGI scopes (WebSocket, lifespan) pass through unchanged.
-    """
-
-    def __init__(self, app, transport_secret: str = "") -> None:
-        self.app = app
-        self._secret = transport_secret
-
-    async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http" or not self._secret:
-            await self.app(scope, receive, send)
-            return
-
-        # Extract X-Transport-Token from request headers.
-        headers = dict(scope.get("headers", []))
-        token = headers.get(b"x-transport-token", b"").decode("latin-1")
-
-        if not hmac.compare_digest(token, self._secret):
-            response = Response(
-                content="Unauthorized",
-                status_code=401,
-                headers={"WWW-Authenticate": "Transport-Token"},
-            )
-            await response(scope, receive, send)
-            return
-
-        await self.app(scope, receive, send)
-
-
-class RateLimitMiddleware:
-    """ASGI middleware enforcing per-endpoint sliding-window rate limits.
-
-    Applied outside ``BearerAuthMiddleware`` so all callers are subject to
-    limits, including unauthenticated ``/login`` requests. ``/health`` and
-    ``/version`` are unconditionally exempt and never return 429. Non-HTTP ASGI
-    scopes (WebSocket, lifespan) pass through unchanged. Paths not covered by
-    any registered limiter pass through without a rate check.
-
-    Caller identity is a composite key: the source IP alone when no bearer
-    token is presented, or ``SHA-256(token)[:8]:<ip>`` when one is — the raw
-    token value is never stored in limiter state.
-    """
-
-    _EXEMPT: frozenset[str] = frozenset({"/health", "/version"})
-
-    def __init__(self, app, limiters: dict[str, "_security.RateLimiter"], api_key: str = "") -> None:
-        self.app = app
-        self._limiters = limiters
-        self._api_key = api_key
-
-    def _caller_key(self, scope: dict, bearer_token: str | None) -> str:
-        # Source IP: X-Forwarded-For first hop, else ASGI client.
-        source_ip = None
-        for k, v in scope.get("headers", []):
-            if k == b"x-forwarded-for":
-                source_ip = v.decode("latin-1").split(",")[0].strip()
-                break
-        if source_ip is None:
-            client = scope.get("client")
-            source_ip = client[0] if client else "unknown"
-
-        if not bearer_token:
-            return source_ip
-        # Hash the token so its raw value is never held in limiter state.
-        key_prefix = hashlib.sha256(bearer_token.encode()).hexdigest()[:8]
-        return f"{key_prefix}:{source_ip}"
-
-    @staticmethod
-    def _match_endpoint(method: str, path: str) -> str | None:
-        """Return the limiter key for a request, or None if unmatched.
-
-        Priority order: login_post, login_get, files, crew_api, mcp.
-        """
-        if method == "POST" and path == "/login":
-            return "login_post"
-        if method == "GET" and path == "/login":
-            return "login_get"
-        if path.startswith("/files/"):
-            return "files"
-        # /crews/<id>/api and /crews/<id>/api/<sub>
-        parts = path.lstrip("/").split("/")
-        if len(parts) >= 3 and parts[0] == "crews" and parts[2] == "api":
-            return "crew_api"
-        # TRN-92: dashboard auth/login endpoints
-        if path in ("/dashboard-login", "/dashboard-auth"):
-            return "dashboard_auth"
-        if path.startswith("/mcp"):
-            return "mcp"
-        return None
-
-    async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        path = scope.get("path", "")
-        if path in self._EXEMPT:
-            await self.app(scope, receive, send)
-            return
-        method = scope.get("method", "")
-        endpoint_key = self._match_endpoint(method, path)
-        limiter = self._limiters.get(endpoint_key) if endpoint_key else None
-        if limiter is None:
-            await self.app(scope, receive, send)
-            return
-
-        # Extract bearer token (best-effort — may be absent or invalid).
-        bearer: str | None = None
-        for k, v in scope.get("headers", []):
-            if k == b"authorization":
-                val = v.decode("latin-1")
-                if val[:7].lower() == "bearer ":
-                    bearer = val[7:].strip()
-                break
-        caller = self._caller_key(scope, bearer)
-
-        if not limiter.record(caller):
-            retry_after = str(int(limiter.window_secs)).encode("latin-1")
-            await send({
-                "type": "http.response.start",
-                "status": 429,
-                "headers": [
-                    [b"content-type", b"text/plain; charset=utf-8"],
-                    [b"retry-after", retry_after],
-                ],
-            })
-            await send({
-                "type": "http.response.body",
-                "body": b"Rate limit exceeded. Retry after " + retry_after + b" seconds.",
-            })
-            return
-
-        await self.app(scope, receive, send)
-
-
-class BearerAuthMiddleware:
-    """Pure ASGI middleware enforcing a static bearer API key.
-
-    When ``api_key`` is empty the middleware is a transparent pass-through.
-    Otherwise every HTTP request must carry exactly one ``Authorization: Bearer <key>``
-    header matching the configured value (constant-time comparison). Rejected
-    requests receive 401 with ``WWW-Authenticate: Bearer`` and never reach the
-    downstream app. Non-HTTP ASGI scopes pass through unchanged.
-
-    Login/logout routes are also handled here so the inner app (mcp_app) is
-    never wrapped in a Starlette router — that would break the MCP lifespan.
-    """
-
-    def __init__(self, app, api_key: str = "", file_app=None) -> None:
-        self.app = app
-        self._key = api_key
-        self._file_app = file_app
-        # Map (method, path) → handler for routes that live outside the MCP app
-        self._routes: dict[tuple[str, str], Any] = {
-            ("POST", "/login"): _handle_login_post,
-            ("GET",  "/login"): _handle_login_get,
-            ("POST", "/logout"): _handle_logout_post,
-            ("GET",  "/health"): _handle_health,
-        }
-        # Routes exempt from authentication (served before auth check).
-        # TRN-92: dashboard auth/login routes are public — they are the auth
-        # mechanism itself, so they must be reachable without a Bearer token.
-        self._public_routes: dict[tuple[str, str], Any] = {
-            ("GET",  "/version"): _handle_version_get,
-            ("POST", "/dashboard-login"): _handle_dashboard_login_post,
-            ("GET",  "/dashboard-auth"): _handle_dashboard_auth,
-            ("GET",  "/login-ui"): _handle_login_ui,
-        }
-
-    # Paths that bypass API-key auth (readiness probes, etc.)
-    _PUBLIC_PATHS: set[str] = {"/health"}
-
-    async def __call__(self, scope, receive, send) -> None:
-        # TRN-102: WebSocket upgrades for /crews/<id>/ui/<path> are proxied to
-        # the crew gateway with the session cookie injected. Access is gated by
-        # Caddy's forward_auth upstream (keyed deployments); the transport's
-        # bearer check applies to HTTP scopes only, so WS is dispatched here.
-        if scope["type"] == "websocket":
-            _ws_parts = scope.get("path", "").lstrip("/").split("/")
-            if (
-                len(_ws_parts) >= 3
-                and _ws_parts[0] == "crews"
-                and _ws_parts[2] == "ui"
-            ):
-                await _handle_crew_ui_ws_proxy(scope, receive, send)
-                return
-            await self.app(scope, receive, send)
-            return
-
-        # Public routes — served without any authentication check
-        if scope["type"] == "http":
-            public_handler = self._public_routes.get(
-                (scope["method"], scope["path"])
-            )
-            if public_handler is not None:
-                request = Request(scope, receive)
-                response = await public_handler(request)
-                await response(scope, receive, send)
-                return
-
-            # File routes — use presigned-URL auth, bypass API key
-            if self._file_app and scope["path"].startswith("/files/"):
-                await self._file_app(scope, receive, send)
-                return
-
-        if not self._key or scope["type"] != "http":
-            # No API key — still need to check login/logout routes
-            if scope["type"] == "http":
-                handler = self._routes.get(
-                    (scope["method"], scope["path"])
-                )
-                if handler is not None:
-                    request = Request(scope, receive)
-                    response = await handler(request)
-                    await response(scope, receive, send)
-                    return
-                # TRN-80: per-port UI proxy — requests arriving on a crew UI
-                # port are proxied to that crew's gateway. Auth is skipped here
-                # only when GA_API_KEY is unset; the keyed path checks auth first.
-                # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
-                # dashboard port bindings. This block is intentionally gone.
-                # Crew proxy routes (no auth required when GA_API_KEY unset)
-                _path = scope["path"]
-                _parts = _path.lstrip("/").split("/")
-                if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":
-                    request = Request(scope, receive)
-                    response = await _handle_crew_ui_proxy(request)
-                    await response(scope, receive, send)
-                    return
-                if len(_parts) >= 4 and _parts[0] == "crews" and _parts[2] == "api":
-                    request = Request(scope, receive)
-                    response = await _handle_crew_api_proxy(request)
-                    await response(scope, receive, send)
-                    return
-                # TRN-80: POST/DELETE /crews/{id}/dashboard
-                if (
-                    len(_parts) == 3
-                    and _parts[0] == "crews"
-                    and _parts[2] == "dashboard"
-                ):
-                    request = Request(scope, receive)
-                    if scope["method"] == "POST":
-                        response = await _handle_crew_dashboard_post(request)
-                    elif scope["method"] == "DELETE":
-                        response = await _handle_crew_dashboard_delete(request)
-                    else:
-                        response = PlainTextResponse("Method Not Allowed", status_code=405)
-                    await response(scope, receive, send)
-                    return
-            await self.app(scope, receive, send)
-            return
-
-        # Allow public paths through without auth (health probes, etc.)
-        if scope["path"] in self._PUBLIC_PATHS:
-            handler = self._routes.get((scope["method"], scope["path"]))
-            if handler is not None:
-                request = Request(scope, receive)
-                response = await handler(request)
-                await response(scope, receive, send)
-                return
-
-        # Extract Authorization headers from the ASGI scope
-        auth_values = [
-            v.decode("latin-1")
-            for k, v in scope.get("headers", [])
-            if k == b"authorization"
-        ]
-
-        # Reject: missing, duplicated, or malformed
-        if len(auth_values) != 1:
-            await self._reject(send, scope)
-            return
-
-        value = auth_values[0]
-        # Must be "Bearer <token>" (case-insensitive scheme)
-        if not value[:7].lower() == "bearer " or " " in value[7:].strip():
-            await self._reject(send, scope)
-            return
-
-        token = value[7:].strip()
-        if not token or not hmac.compare_digest(token, self._key):
-            await self._reject(send, scope)
-            return
-
-        # Auth passed — check login/logout routes before falling through to MCP
-        handler = self._routes.get((scope["method"], scope["path"]))
-        if handler is not None:
-            request = Request(scope, receive)
-            response = await handler(request)
-            await response(scope, receive, send)
-            return
-
-        # TRN-80: per-port UI proxy (auth enforced above)
-        # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
-        # dashboard port bindings. This block is intentionally gone.
-
-        # Crew UI proxy — /crews/<id>/ui and /crews/<id>/ui/<path>
-        # Dispatch after auth passes so GA_API_KEY enforcement applies.
-        path = scope["path"]
-        path_parts = path.lstrip("/").split("/")
-        if (
-            len(path_parts) >= 3
-            and path_parts[0] == "crews"
-            and path_parts[2] == "ui"
-        ):
-            request = Request(scope, receive)
-            response = await _handle_crew_ui_proxy(request)
-            await response(scope, receive, send)
-            return
-
-        # Crew API proxy — /crews/<id>/api/<path>
-        if (
-            len(path_parts) >= 4
-            and path_parts[0] == "crews"
-            and path_parts[2] == "api"
-        ):
-            request = Request(scope, receive)
-            response = await _handle_crew_api_proxy(request)
-            await response(scope, receive, send)
-            return
-
-        # TRN-80: POST/DELETE /crews/{id}/dashboard (keyed path — auth already passed above)
-        if (
-            len(path_parts) == 3
-            and path_parts[0] == "crews"
-            and path_parts[2] == "dashboard"
-        ):
-            request = Request(scope, receive)
-            if scope["method"] == "POST":
-                response = await _handle_crew_dashboard_post(request)
-            elif scope["method"] == "DELETE":
-                response = await _handle_crew_dashboard_delete(request)
-            else:
-                response = PlainTextResponse("Method Not Allowed", status_code=405)
-            await response(scope, receive, send)
-            return
-
-        await self.app(scope, receive, send)
-
-    @staticmethod
-    async def _reject(send, scope=None) -> None:
-        # Audit the authorization denial (TRN-70 audit logging). No token value
-        # is ever included — only outcome, source, and timestamp.
-        try:
-            source = None
-            if scope is not None:
-                for k, v in scope.get("headers", []):
-                    if k == b"x-forwarded-for":
-                        source = v.decode("latin-1").split(",")[0].strip()
-                        break
-                if source is None:
-                    client = scope.get("client")
-                    if client:
-                        source = client[0]
-            _security.audit_auth_event(
-                action="api_request", outcome="denied", account=None,
-                source=source, emit=logger.info,
-            )
-        except Exception:
-            pass
-        await send({
-            "type": "http.response.start",
-            "status": 401,
-            "headers": [
-                [b"www-authenticate", b"Bearer"],
-                [b"content-type", b"text/plain; charset=utf-8"],
-            ],
-        })
-        await send({
-            "type": "http.response.body",
-            "body": b"Unauthorized",
-        })
-
-
-# ── Transport security middleware (TRN-70) ────────────────────────────────────
-
-class SecurityHeadersMiddleware:
-    """ASGI middleware enforcing transport-security guarantees.
-
-    - Redirects plaintext HTTP to HTTPS with a 301 when the redirect is enabled
-      (staged rollout: off until the monitored plaintext window + client notice
-      is complete).
-    - Emits the baseline security headers on every response
-      (``X-Content-Type-Options: nosniff``, clickjacking protection, and a
-      Content-Security-Policy) and, on HTTPS responses, an HSTS header with a
-      non-zero max-age.
-
-    HTTPS is detected from the ASGI scheme or the ``x-forwarded-proto`` header,
-    since TLS is terminated at the edge and the app sees forwarded requests.
-    """
-
-    def __init__(
-        self,
-        app,
-        *,
-        enable_headers: bool = True,
-        enforce_redirect: bool = False,
-        csp_enforce: bool = False,
-    ) -> None:
-        self.app = app
-        self._enable_headers = enable_headers
-        self._enforce_redirect = enforce_redirect
-        self._csp_enforce = csp_enforce
-
-    @staticmethod
-    def _is_https(scope) -> bool:
-        if scope.get("scheme") == "https":
-            return True
-        for k, v in scope.get("headers", []):
-            if k == b"x-forwarded-proto" and v.split(b",")[0].strip().lower() == b"https":
-                return True
-        return False
-
-    @staticmethod
-    def _host(scope) -> str:
-        for k, v in scope.get("headers", []):
-            if k == b"host":
-                return v.decode("latin-1")
-        server = scope.get("server") or ("localhost", None)
-        return server[0]
-
-    async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        https = self._is_https(scope)
-
-        # Log plaintext HTTP traffic (TRN-70 task 3.4).
-        # HTTPS redirect is disabled (Caddy owns redirects); log plaintext hits
-        # for visibility.
-        if not https and scope.get("path") != "/health":
-            source = None
-            for k, v in scope.get("headers", []):
-                if k == b"x-forwarded-for":
-                    source = v.decode("latin-1").split(",")[0].strip()
-                    break
-            if source is None:
-                client = scope.get("client")
-                if client:
-                    source = client[0]
-            logger.info(
-                "plaintext HTTP hit: method=%s path=%s source=%s",
-                scope.get("method", "?"),
-                scope.get("path", "/"),
-                source or "-",
-            )
-
-        # Plaintext → HTTPS 301 redirect (staged; skip health probes).
-        if self._enforce_redirect and not https and scope.get("path") != "/health":
-            host = self._host(scope)
-            path = scope.get("path", "/")
-            qs = scope.get("query_string", b"")
-            target = f"https://{host}{path}"
-            if qs:
-                target += "?" + _sanitise_query_string(qs)
-            await send({
-                "type": "http.response.start",
-                "status": 301,
-                "headers": [
-                    (b"location", target.encode("latin-1")),
-                    (b"content-length", b"0"),
-                ],
-            })
-            await send({"type": "http.response.body", "body": b""})
-            return
-
-        if not self._enable_headers:
-            await self.app(scope, receive, send)
-            return
-
-        extra = _security.security_headers(
-            https=https,
-            csp_report_only=not self._csp_enforce,
-        )
-
-        async def send_wrapper(message):
-            if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                present = {k.lower() for k, _ in headers}
-                for name, value in extra:
-                    if name not in present:
-                        headers.append((name, value))
-                message = {**message, "headers": headers}
-            await send(message)
-
-        await self.app(scope, receive, send_wrapper)
-
-
-# ── Rate-limit configuration (TRN-52) ─────────────────────────────────────────
-# Per-endpoint sliding-window limits, each overridable via a GA_RATE_LIMIT_*
-# env var in "<count>:<window_secs>" format. GA_RATE_LIMIT_ENABLED is the master
-# switch (default "true"); state is in-memory and resets on process restart.
-# Defaults, keyed by the endpoint name RateLimitMiddleware matches on:
-_RATE_LIMIT_DEFAULTS: dict[str, tuple[str, int, int]] = {
-    # endpoint_key: (env_var_name, default_count, default_window_secs)
-    "login_get": ("GA_RATE_LIMIT_LOGIN_GET", 30, 60),
-    "login_post": ("GA_RATE_LIMIT_LOGIN_POST", 5, 300),
-    "mcp": ("GA_RATE_LIMIT_MCP", 300, 60),
-    "files": ("GA_RATE_LIMIT_FILES", 60, 60),
-    "crew_api": ("GA_RATE_LIMIT_CREW_API", 120, 60),
-    # TRN-92: dashboard login endpoint rate limit (default 60 req / 60 s).
-    # /dashboard-auth (forward_auth) is called by Caddy per-request; keep it
-    # generous. /dashboard-login (the key check) is more sensitive.
-    "dashboard_auth": ("GA_RATE_LIMIT_DASHBOARD_AUTH", 600, 60),
-}
-
-
-def _parse_rate_limit_var(
-    name: str, default_count: int, default_window: int
-) -> tuple[int, int]:
-    """Parse a GA_RATE_LIMIT_* env var of the form "<count>:<window_secs>".
-
-    Both fields must be positive integers. On any parse failure the default
-    (count, window) is returned and a WARNING naming the variable is logged.
-    """
-    raw = os.environ.get(name)
-    if not raw:
-        return default_count, default_window
-    try:
-        count_str, window_str = raw.split(":", 1)
-        count = int(count_str)
-        window = int(window_str)
-        if count <= 0 or window <= 0:
-            raise ValueError("count and window must be positive integers")
-        return count, window
-    except (ValueError, AttributeError) as e:
-        logger.warning(
-            "Could not parse %s=%r (expected \"<count>:<window_secs>\", positive "
-            "integers): %s. Using default %d:%d.",
-            name, raw, e, default_count, default_window,
-        )
-        return default_count, default_window
-
-
-def _build_rate_limiters() -> dict[str, "_security.RateLimiter"] | None:
-    """Build the per-endpoint RateLimiter map from GA_RATE_LIMIT_* env vars.
-
-    Returns None when GA_RATE_LIMIT_ENABLED is "false" (master switch), so the
-    caller can skip wrapping RateLimitMiddleware entirely.
-    """
-    enabled = os.environ.get("GA_RATE_LIMIT_ENABLED", "true").strip().lower()
-    if enabled == "false":
-        return None
-    limiters: dict[str, "_security.RateLimiter"] = {}
-    for endpoint_key, (env_var, dc, dw) in _RATE_LIMIT_DEFAULTS.items():
-        count, window = _parse_rate_limit_var(env_var, dc, dw)
-        limiters[endpoint_key] = _security.RateLimiter(
-            max_requests=count, window_secs=float(window)
-        )
-    return limiters
+# ── Auth / security middleware (TRN-116) ──────────────────────────────────────
+# TransportSecretMiddleware, RateLimitMiddleware, BearerAuthMiddleware,
+# SecurityHeadersMiddleware, _parse_bearer_token, _request_source,
+# _parse_rate_limit_var, _build_rate_limiters, and _RATE_LIMIT_DEFAULTS now live
+# in transport/auth.py and are imported at the top of this file.
+
+
+# ── Rate-limit configuration ──────────────────────────────────────────────────
+# _RATE_LIMIT_DEFAULTS, _parse_rate_limit_var, _build_rate_limiters now live in
+# transport/auth.py (TRN-116) and are imported at the top of this file.
 
 
 # ── Podman client + memory helpers ───────────────────────────────────────────
@@ -2226,6 +1691,10 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     Callers must NOT hold _login_pending_lock when calling this.
     """
     global _login_pending
+    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
+    # _login_pending_lock serialises concurrent callers: the first one through
+    # sets the sentinel immediately before releasing the lock, so any race
+    # between "is flow pending?" and "start a flow" is eliminated.
     with _login_pending_lock:
         if _login_pending is not None:
             return {"login_pending": True}
@@ -2236,7 +1705,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             "state": "starting",
         }
 
-    # ── Start ephemeral container ─────────────────────────────────────────────
+    # ── Phase: start login container ──────────────────────────────────────────
     try:
         container = _start_login_container(podman)
     except Exception as e:
@@ -2253,7 +1722,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             "state": "started",
         }
 
-    # ── Wait for kiro-cli to be available in the container ────────────────────
+    # ── Phase: wait for kiro-cli ───────────────────────────────────────────────
     for _ in range(10):
         try:
             check = podman.container_exec(container, ["which", "kiro-cli"])
@@ -2263,14 +1732,25 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             pass
         time.sleep(0.5)
 
-    # ── Start PTY+stdin exec ──────────────────────────────────────────────────
+    # ── Phase: PTY exec + prompt loop ─────────────────────────────────────────
     # kiro-cli ignores --identity-provider / --region flags in interactive/PTY
     # mode (upstream bug kiro#6120). Use a raw-socket exec so we can write
     # stdin answers to the interactive prompts automatically.
     # With --license pro the provider-selection menu is skipped; kiro-cli goes
     # straight to Start URL → Region, then makes a network round-trip to AWS
     # to register the device (which takes a few seconds) before printing the
-    # URL. Deadline is 45s to accommodate that round-trip.
+    # URL.
+    #
+    # Deadline is 45 seconds to accommodate the AWS IAM Identity Center
+    # round-trip that happens after the user answers the Region prompt.  The
+    # device-registration call can take several seconds on a warm network; 45s
+    # gives comfortable headroom without leaving users waiting indefinitely on
+    # a failed flow.
+    #
+    # The read loop uses select() rather than a blocking recv() so it can poll
+    # for the URL without blocking the event loop thread.  PTY sockets are set
+    # non-blocking; select() with a 0.1s timeout yields control between chunks
+    # so the outer deadline check and prompt-matching logic run frequently.
     cmd = ["kiro-cli", "login", "--use-device-flow"] + (
         ["--license", KIRO_LICENSE] if KIRO_LICENSE else []
     )
@@ -2284,7 +1764,8 @@ def _initiate_login(podman: "PodmanClient") -> dict:
 
     pty_sock.setblocking(False)
 
-    # ── Read output, answer prompts, wait for device URL (max 45s) ───────────
+    # ── Phase: PTY read loop ───────────────────────────────────────────────────
+    # Read output, answer prompts, wait for device URL (max 45s).
     # After answering the Start URL and Region prompts, kiro-cli makes a
     # network round-trip to AWS IAM Identity Center to register the device
     # before printing the verification URL. This takes a few seconds on a
@@ -2367,7 +1848,10 @@ def _initiate_login(podman: "PodmanClient") -> dict:
             _login_pending = None
         return {"error": f"kiro-cli did not produce a login URL within 45s.\nOutput:\n{raw_output}"}
 
-    # ── Hand off remaining stream to background thread ────────────────────────
+    # ── Phase: drain thread + finalise ────────────────────────────────────────
+    # Hand off remaining PTY stream to a background daemon thread so the
+    # socket is drained to EOF (avoiding a broken-pipe in the container) without
+    # blocking the event loop.  The thread exits when kiro-cli closes the pty.
     pty_sock.setblocking(True)
 
     def _drain_pty() -> None:
@@ -2395,15 +1879,8 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     return {"login_url": login_url, "code": login_code}
 
 
-def _request_source(request: Request) -> str | None:
-    """Best-effort client source (IP) for audit events; None if unavailable."""
-    try:
-        client = getattr(request, "client", None)
-        if client is not None:
-            return getattr(client, "host", None) or (client[0] if isinstance(client, (tuple, list)) else None)
-    except Exception:
-        pass
-    return None
+# _request_source now lives in transport/auth.py (TRN-116) and is imported at
+# the top of this file.
 
 
 async def _handle_login_post(request: Request) -> Response:
@@ -2555,7 +2032,30 @@ async def _handle_logout_post(request: Request) -> Response:
 
 # ── MCP tools: workspace ─────────────────────────────────────────────────────
 
+
+def _registry_guard(fn):
+    """TRN-138: wrap an MCP tool so a corrupt registry becomes a structured
+    error response instead of an unhandled exception crashing the in-flight
+    request. Any ``RegistryCorruptError`` raised out of ``_load_registry()``
+    (directly or via a registry helper) is caught at the tool boundary and
+    turned into ``{"error": "..."}``. ``functools.wraps`` preserves the
+    original signature and docstring so MCP tool introspection is unchanged.
+    """
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except RegistryCorruptError:
+            return {
+                "error": "registry corrupt — crews.json.corrupt preserved for inspection"
+            }
+
+    return _wrapped
+
+
 @mcp.tool()
+@_registry_guard
 def crews() -> dict:
     """List all live crews in the registry.
 
@@ -2688,6 +2188,7 @@ def resource_compositions() -> str:
 
 
 @mcp.tool()
+@_registry_guard
 def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False) -> dict:
     """Summon a new crew container into existence, with its own workspace volume.
 
@@ -2712,7 +2213,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                    Default is False — crews are headless unless a dashboard is
                    explicitly requested.
 
-    Returns crew_id and status once the gateway is ready (~30s).
+    Returns crew_id and status once the gateway is ready (~60s).
     """
     if not re.match(r'^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$', crew_id):
         return {"error": "crew_id must be lowercase alphanumeric/hyphens, 1-50 chars"}
@@ -2799,7 +2300,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
 
         container_env: dict[str, str] = {
             "KIROCREW_CORS_ORIGINS": _cors_origins,
-            "KIROCREW_ALLOW_UNSANDBOXED": "1",
+            # Sandbox mode is controlled via the crew's sandbox: config key;
+            # KIROCREW_ALLOW_UNSANDBOXED was removed (replaced by sandbox: off).
         }
         # TRN-62: when an API key is configured, pass it to the crew container so
         # kiro-cli inside authenticates via the env var (no device-code / SQLite
@@ -2857,7 +2359,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         logger.info("Started %s", container)
 
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             if dashboard_port is not None:
                 _release_dashboard_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
@@ -2865,7 +2367,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 reg = _load_registry()
                 reg["crews"].pop(crew_id, None)
                 _save_registry(reg)
-            return {"error": f"Gateway not ready within 30s for crew {crew_id}"}
+            return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
@@ -2883,7 +2385,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             # avoid holding the lock across up to 7 s of blocking I/O.
             _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
             # Record port→crew mapping for forward_auth lookups.
-            _dashboard_port_crew[dashboard_port] = crew_id
+            with _dashboard_port_crew_lock:
+                _dashboard_port_crew[dashboard_port] = crew_id
             result["dashboard_url"] = dashboard_url
         elif "error" not in result:
             result["dashboard_url"] = None
@@ -2909,11 +2412,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
 
 
 @mcp.tool()
+@_registry_guard
 def supply(
     path: str,
     crew_id: str | None = None,
     unpack: bool = False,
     bundle: bool = False,
+    force: bool = False,
 ) -> dict:
     """Deliver a file, archive, or git bundle into a crew's workspace via a presigned upload URL.
 
@@ -2925,6 +2430,10 @@ def supply(
     it will be extracted at the given path in the workspace. For a real
     git checkout, set bundle=True and POST the output of ``git bundle create``;
     the bundle is cloned into the destination inside the crew.
+
+    When bundle=True and force=True, any existing directory at the destination
+    is removed before the bundle is cloned. Default force=False preserves the
+    existing "reject occupied destination" behaviour.
 
     Pairs with evac, which extracts files, diffs, or git bundles out. Together
     they are the complete file exchange protocol for crew workspaces.
@@ -2945,12 +2454,19 @@ def supply(
         git bundle create /tmp/<crew_id>.bundle --all
         curl -X POST "<url>&bundle=1" --data-binary @/tmp/<crew_id>.bundle
 
+        # Re-seed (force=True removes existing destination first)
+        git bundle create /tmp/<crew_id>.bundle --all
+        curl -X POST "<url>&bundle=1&force=1" --data-binary @/tmp/<crew_id>.bundle
+
     Args:
         path: Destination path in the workspace (e.g. "repo/config.json",
               "repo" when unpacking a tar, or "repo" for a bundle clone).
         crew_id: Which crew workspace to deliver into. Required.
         unpack: If True, the upload URL will unpack a tar/tar.gz at path.
         bundle: If True, the upload URL will clone a git bundle into path.
+        force: When True with bundle=True, removes an existing destination
+               before cloning. Default False preserves the existing "reject
+               occupied destination" behaviour.
     """
     if unpack and bundle:
         return {"error": "unpack and bundle cannot both be True"}
@@ -2964,11 +2480,13 @@ def supply(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    url = _sign_upload_url(crew_id, clean, unpack=unpack, bundle=bundle)
+    url = _sign_upload_url(crew_id, clean, unpack=unpack, bundle=bundle, force=force)
     if unpack:
         url += "&unpack=1"
     if bundle:
         url += "&bundle=1"
+    if force:
+        url += "&force=1"
 
     if bundle:
         curl_example = f'curl -X POST "{url}" --data-binary @./your-repo.bundle'
@@ -2985,12 +2503,14 @@ def supply(
         "method": "POST",
         "unpack": unpack,
         "bundle": bundle,
+        "force": force,
         "expires_secs": 300,
         "example": curl_example,
     }
 
 
 @mcp.tool()
+@_registry_guard
 def evac(
     path: str,
     ref: str | None = None,
@@ -3038,6 +2558,7 @@ def evac(
 
 
 @mcp.tool()
+@_registry_guard
 def nuke(crew_id: str, confirm: bool = False) -> dict:
     """Destroy a crew completely — tear down its container and both volumes.
 
@@ -3117,8 +2638,16 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
             _caddy_deregister_crew(crew_id)
-            _dashboard_port_crew.pop(int(_ui_p), None)
+            with _dashboard_port_crew_lock:
+                _dashboard_port_crew.pop(int(_ui_p), None)
             _release_dashboard_port(int(_ui_p))
+        # TRN-105: explicitly drop any batch records so no orphan batch entry
+        # survives a nuke. Popping the crew entry below already removes them,
+        # but clearing here keeps the intent explicit and in the same atomic
+        # write that removes the crew.
+        _crew_entry = reg["crews"].get(crew_id)
+        if _crew_entry is not None:
+            _crew_entry.pop("batches", None)
         reg["crews"].pop(crew_id, None)
         _save_registry(reg)
 
@@ -3151,7 +2680,11 @@ def captain(
     ``order`` requires exactly one of ``message`` or ``template``. A named
     template is resolved before it is written to ``captain@localhost``;
     ``sdd`` is the built-in template and uses ``change_name`` to name the
-    OpenSpec change it should drive. The resolved order shares the same
+    OpenSpec change it should drive — pass a comma-separated list for
+    parallel multi-change execution with automatic worktree isolation.
+    ``independent-review`` is the built-in review template; ``change_name``
+    is optional — when provided it scopes the review to that change; when
+    omitted it reviews the entire codebase. The resolved order shares the same
     recurring Raven check-in as a hand-written message. ``stop`` pauses that
     check-in without deleting it, and ``status`` reports its durable state.
 
@@ -3166,10 +2699,13 @@ def captain(
         crew_id: Which crew's Captain to manage. Required.
         action: One of ``order``, ``stop``, or ``status``.
         message: Free-form standing order text.
-        template: Name of a built-in standing-order template, currently
-            ``sdd``.
-        change_name: Substitution value for a template that names an OpenSpec
-            change.
+        template: Name of a built-in standing-order template. Available
+            templates: ``sdd`` (single or multi-change lifecycle),
+            ``independent-review`` (scoped or whole-codebase review).
+        change_name: Substitution value for a template. For ``sdd``, accepts
+            a single change name or a comma-separated list for multi-change
+            mode. For ``independent-review``, optional — omit to review the
+            entire codebase.
         cron: Cron expression for a new standing-orders check-in.
         interval: Fixed interval in seconds for a new standing-orders check-in.
         timezone: IANA timezone for cron interpretation, matching schedule().
@@ -3198,8 +2734,6 @@ def captain(
         if cron is not None and interval is not None:
             return {"error": "Provide cron or interval, not both"}
         if has_template:
-            if change_name is None and template == "sdd":
-                return {"error": "template 'sdd' requires change_name"}
             try:
                 order_message = _resolve_order_template(template, change_name)
             except ValueError as exc:
@@ -3514,6 +3048,7 @@ def captain(
 
 
 @mcp.tool()
+@_registry_guard
 def schedule(
     name: str = "",
     message: str = "",
@@ -3837,13 +3372,15 @@ def _schedule_list(crew_id: str | None) -> dict:
 
 
 @mcp.tool()
+@_registry_guard
 def dispatch(
-    task: str,
+    task: str | None = None,
     agent: str = "ghost",
     crew_id: str | None = None,
     model: str | None = None,
+    tasks: list[str] | None = None,
 ) -> dict:
-    """Spawn a task on a KiroCrew agent, dispatched for autonomous execution.
+    """Spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
     research, coding, shell commands, file edits, anything that can run
@@ -3851,16 +3388,46 @@ def dispatch(
     use schedule(delay=N) instead.
     Also: dropoff, send, assign.
 
-    Returns a task_id to use with status/pickup/update.
+    Single task: pass ``task=`` and get back one ``task_id``.
+
+    Batch: pass ``tasks=[...]`` (a list of task strings) to dispatch N tasks
+    atomically against the same crew. All tasks in a batch share the same
+    ``agent``, ``model``, and ``crew_id``. The batch is dispatched sequentially
+    against ``/api/spawn`` and recorded in the transport registry under a single
+    ``batch_id``; the response includes ``batch_id`` and per-task ``task_ids``.
+    The batch size must be between 2 and ``GA_BATCH_MAX_TASKS`` (default 20, read
+    from the ``GA_BATCH_MAX_TASKS`` env var). Collect batch results in one call
+    with ``pickup(task_ids=[...], timeout_secs=N)``.
+
+    ``task`` and ``tasks`` are mutually exclusive — supply exactly one. Existing
+    single-task callers are unaffected.
+
+    Returns:
+        Single: ``{"task_id", "crew_id", "status": "dispatched", "task",
+        "agent", "created_at"}``.
+        Batch (all started): ``{"batch_id", "task_ids", "crew_id",
+        "status": "dispatched", "agent", "created_at"}``.
+        Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
+        the ``task_ids`` assigned so far, and an ``error`` field naming the
+        failure. Tasks that never received a ``task_id`` are the lost members.
 
     Args:
-        task: What to do. Be specific — the agent has no other context.
+        task: What to do (single dispatch). Be specific — the agent has no
+            other context. Mutually exclusive with ``tasks``.
         agent: Which agent to use. Default is 'ghost' (general-purpose).
         crew_id: Which crew to dispatch to. Required — use launch first.
-        model: Optional model override for this task only. It outranks
-            KC_MODEL_OVERRIDE and per-agent config for this call. It has no
-            effect on later steer/continue operations.
+        model: Optional model override for this call only. It outranks
+            KC_MODEL_OVERRIDE and per-agent config. It has no effect on later
+            steer/continue operations.
+        tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
+            dispatch. Mutually exclusive with ``task``.
     """
+    # Mutual-exclusion + presence guard (task 2.2).
+    if task is not None and tasks is not None:
+        return {"error": "Provide either task or tasks, not both"}
+    if task is None and tasks is None:
+        return {"error": "Provide task or tasks"}
+
     try:
         model = _validate_model(model)
     except ValueError as e:
@@ -3869,6 +3436,10 @@ def dispatch(
         _validate_agent(agent)
     except ValueError as e:
         return {"error": str(e)}
+
+    if tasks is not None:
+        return _dispatch_batch(tasks, agent, crew_id, model)
+
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
@@ -3891,21 +3462,15 @@ def dispatch(
 
     # TRN-89 task 1: record task timestamps in-memory
     if task_id:
-        _task_timestamps[task_id] = {
-            "created_at": created_at,
-            "started_at": None,
-            "completed_at": None,
-        }
+        with _task_timestamps_lock:
+            _task_timestamps[task_id] = {
+                "created_at": created_at,
+                "started_at": None,
+                "completed_at": None,
+            }
 
     # TRN-89 task 3: write last_task_at to crew's registry entry
-    try:
-        with _registry_lock:
-            reg = _load_registry()
-            if crew_id in reg["crews"]:
-                reg["crews"][crew_id]["last_task_at"] = created_at
-                _save_registry(reg)
-    except Exception as exc:
-        logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
+    _record_last_task_at(crew_id, created_at)
 
     return {
         "task_id": task_id,
@@ -3917,7 +3482,101 @@ def dispatch(
     }
 
 
+def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
+    """Write last_task_at to the crew's registry entry (best-effort)."""
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            if crew_id in reg["crews"]:
+                reg["crews"][crew_id]["last_task_at"] = created_at
+                _save_registry(reg)
+    except Exception as exc:
+        logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
+
+
+def _dispatch_batch(
+    tasks: list[str],
+    agent: str,
+    crew_id: str | None,
+    model: str | None,
+) -> dict:
+    """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
+
+    Validation (size, agent, model) has already run in ``dispatch``. On the
+    first CrewUnresponsiveError or unexpected failure the loop breaks and a
+    ``partial`` batch is recorded with the task_ids assigned so far.
+    """
+    # Size validation (task 2.3).
+    max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
+    if len(tasks) == 0 or len(tasks) == 1:
+        return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
+    if len(tasks) > max_tasks:
+        return {"error": f"tasks exceeds maximum batch size of {max_tasks}"}
+
+    try:
+        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+    except (ValueError, KeyError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    batch_id = str(uuid.uuid4())
+    task_ids: list[str] = []
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    dispatch_error: str | None = None
+
+    for t in tasks:
+        body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
+        if model is not None:
+            body["model"] = model
+        try:
+            result = _crew_api_with_recovery(
+                crew, crew_id, "POST", "/api/spawn", json=body,
+            )
+        except (CrewUnresponsiveError, RuntimeError, ValueError) as e:
+            dispatch_error = str(e)
+            break
+        tid = result.get("id")
+        if not tid:
+            dispatch_error = "spawn returned no task id"
+            break
+        task_ids.append(tid)
+        # Per-task timestamp + last_task_at, using this task's response time.
+        task_created = datetime.now(timezone.utc).isoformat()
+        with _task_timestamps_lock:
+            _task_timestamps[tid] = {
+                "created_at": task_created,
+                "started_at": None,
+                "completed_at": None,
+            }
+        _record_last_task_at(crew_id, task_created)
+
+    if dispatch_error is None:
+        # Task 2.5: full success.
+        _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
+        return {
+            "batch_id": batch_id,
+            "task_ids": task_ids,
+            "crew_id": crew_id,
+            "status": "dispatched",
+            "agent": agent,
+            "created_at": created_at,
+        }
+
+    # Task 2.6: partial failure. Record what was started; surface the error.
+    _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
+    return {
+        "batch_id": batch_id,
+        "task_ids": task_ids,
+        "crew_id": crew_id,
+        "status": "partial",
+        "agent": agent,
+        "created_at": created_at,
+        "error": dispatch_error,
+    }
+
+
 @mcp.tool()
+@_registry_guard
 def steer(
     task_id: str,
     message: str,
@@ -3973,17 +3632,33 @@ def steer(
 
 
 @mcp.tool()
+@_registry_guard
 def pickup(
     task_id: str | None = None,
     crew_id: str | None = None,
     timeout_secs: int = 0,
     agent: str | None = None,
+    task_ids: list[str] | None = None,
 ) -> dict | list:
     """Check a task's progress, retrieve its completed result, or list all tasks.
 
     With a task_id: returns current state including mail counts. Sessions are
     preserved after completion — use steer to continue the session, or nuke to
     destroy it. Also: collect, get result, check progress.
+
+    With a task_ids list (batch pickup): polls every listed task and returns a
+    dict keyed by task_id, each value the full single-task pickup shape, plus
+    top-level ``done`` (True only when every member is done), ``completed_tasks``,
+    and ``total_tasks``. When ``timeout_secs > 0`` the call blocks until all
+    tasks are done, the timeout fires, or new Admiral mail arrives; each polling
+    round is capped at ``GA_PICKUP_MAX_POLL_SECS`` (default 30 s), and a capped
+    return carries ``"reason": "timeout"`` — re-call to keep waiting. With
+    ``timeout_secs == 0`` it returns a one-shot snapshot of each task. Admiral
+    mail arriving mid-poll returns early with ``"reason": "admiral_mail"``. A
+    task the gateway does not know about (404) is reported as
+    ``{"task_id", "done": false, "lost": true, "error": "task not found in gateway"}``
+    rather than failing the whole batch; the batch ``done`` is then ``false``.
+    ``task_id`` and ``task_ids`` are mutually exclusive.
 
     Without a task_id: returns all tasks currently running or recently finished
     in the crew, plus a per-agent mail summary. Also: list, overview,
@@ -4008,7 +3683,15 @@ def pickup(
         agent: Optional persona name filter (ghost, spectre, banshee, wraith,
             reaper, raven). When set and task_id is None, returns only that
             agent's mailbox subjects and count. Ignored when task_id is set.
+        task_ids: A list of task IDs for blocking batch pickup. Mutually
+            exclusive with task_id. Must be non-empty.
     """
+    # Batch mutual-exclusion + empty guards (tasks 4.2, 4.3).
+    if task_id is not None and task_ids is not None:
+        return {"error": "Provide either task_id or task_ids, not both"}
+    if task_ids is not None and len(task_ids) == 0:
+        return {"error": "task_ids must not be empty"}
+
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
@@ -4021,6 +3704,24 @@ def pickup(
 
     container = crew["container"]
     effective_timeout = min(max(0, timeout_secs), 30) if timeout_secs > 0 else 0
+
+    if task_ids is not None:
+        # Route to the batch pickup orchestrator in lifecycle.py, injecting the
+        # single-task pickup and mail-count helpers to avoid a lifecycle->server
+        # import cycle. effective_timeout already applies the standard cap.
+        # Look up the batch_id so _pickup_batch can mark the batch complete
+        # when all members finish (spec: "batch status SHALL be updated to
+        # complete when all tasks complete"). Best-effort — if the batch record
+        # is not found (e.g. caller assembled task_ids manually, or registry was
+        # reset) pickup still works; the status just won't be updated.
+        batch_record = _find_batch_by_task_ids(crew_id, task_ids)
+        found_batch_id = batch_record["batch_id"] if batch_record else None
+        return _pickup_batch(
+            crew, crew_id, task_ids, podman, container, effective_timeout,
+            _pickup_single, _read_all_mail_counts,
+            batch_id=found_batch_id,
+            update_batch_status=_update_batch_status,
+        )
 
     if task_id:
         return _pickup_single(crew, crew_id, task_id, podman, container, effective_timeout)
@@ -4078,12 +3779,17 @@ def _pickup_single(
 
         # TRN-89 task 1: populate task timestamps
         now = datetime.now(timezone.utc)
-        ts = _task_timestamps.get(task_id, {})
-        elapsed = r.get("elapsed", 0)
-        if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
-            ts["started_at"] = now.isoformat()
-        if ts and done and ts.get("completed_at") is None:
-            ts["completed_at"] = now.isoformat()
+        with _task_timestamps_lock:
+            ts = _task_timestamps.get(task_id, {})
+            elapsed = r.get("elapsed", 0)
+            if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
+                ts["started_at"] = now.isoformat()
+            if ts and done and ts.get("completed_at") is None:
+                ts["completed_at"] = now.isoformat()
+            # TRN-123: snapshot ts under the lock so the post-lock reads below
+            # see a stable copy rather than a live reference that a concurrent
+            # _pickup_single or _dispatch_batch could mutate after release.
+            ts = dict(ts)
 
         out: dict[str, Any] = {
             "task_id": r.get("id"),
@@ -4176,6 +3882,15 @@ def _pickup_list(
         }
         admiral_mail = mail_counts.get("admiral", 0)
 
+        # TRN-123: snapshot the timestamp entries for the listed agents under
+        # the lock, then build the response list from the snapshot so the
+        # comprehension does not read _task_timestamps concurrently with writes.
+        with _task_timestamps_lock:
+            _ts_snapshot = {
+                a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
+                for a in agents
+            }
+
         task_list = [
             {
                 "task_id": a.get("id"),
@@ -4188,9 +3903,9 @@ def _pickup_list(
                 "outcome": a.get("outcome", ""),
                 "error": a.get("error", ""),
                 # TRN-89 task 1: include per-task timestamps (null if missing)
-                "created_at": _task_timestamps.get(a.get("id", ""), {}).get("created_at"),
-                "started_at": _task_timestamps.get(a.get("id", ""), {}).get("started_at"),
-                "completed_at": _task_timestamps.get(a.get("id", ""), {}).get("completed_at"),
+                "created_at": _ts_snapshot.get(a.get("id", ""), {}).get("created_at"),
+                "started_at": _ts_snapshot.get(a.get("id", ""), {}).get("started_at"),
+                "completed_at": _ts_snapshot.get(a.get("id", ""), {}).get("completed_at"),
             }
             for a in agents
         ]
@@ -4433,7 +4148,29 @@ if __name__ == "__main__":
         host=HOST,
     )
     _file_starlette = Starlette(routes=file_routes)
-    app = BearerAuthMiddleware(mcp_app, api_key=GA_API_KEY, file_app=_file_starlette)
+    app = BearerAuthMiddleware(mcp_app,
+        api_key=GA_API_KEY,
+        file_app=_file_starlette,
+        routes={
+            ("POST", "/login"): _handle_login_post,
+            ("GET",  "/login"): _handle_login_get,
+            ("POST", "/logout"): _handle_logout_post,
+            ("GET",  "/health"): _handle_health,
+            # Crew proxy routes — pattern keys used by BearerAuthMiddleware dispatch
+            ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
+            ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
+            ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
+            ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+            ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+        },
+        public_routes={
+            ("GET",  "/version"): _handle_version_get,
+            ("POST", "/dashboard/login"): _handle_dashboard_login_post,
+            ("POST", "/dashboard/logout"): _handle_dashboard_logout_post,
+            ("GET",  "/dashboard/auth"): _handle_dashboard_auth,
+            ("GET",  "/dashboard/login"): _handle_login_ui,
+        },
+    )
     # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all
     # callers — including unauthenticated /login — are subject to limits, and
     # INSIDE SecurityHeadersMiddleware. Skipped entirely when the master switch
@@ -4521,7 +4258,8 @@ if __name__ == "__main__":
         for _cid, _info in _restored_reg["crews"].items():
             _p = _info.get("dashboard_port")
             if _p is not None:
-                _dashboard_port_crew[int(_p)] = _cid
+                with _dashboard_port_crew_lock:
+                    _dashboard_port_crew[int(_p)] = _cid
                 with _registry_lock:
                     _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
                     _caddy_register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)

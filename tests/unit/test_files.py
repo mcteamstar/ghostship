@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -245,7 +246,7 @@ class BundleUploadToolTests(unittest.TestCase):
 
         self.assertIn("&bundle=1", result["delivery_url"])
         self.assertTrue(result["bundle"])
-        sign.assert_called_once_with("demo", "repo", unpack=False, bundle=True)
+        sign.assert_called_once_with("demo", "repo", unpack=False, bundle=True, force=False)
 
 
 class BundleGetRegressionTests(unittest.TestCase):
@@ -827,6 +828,271 @@ class FileSecretPersistenceTests(unittest.TestCase):
             (tmp_path / "ga-file-secret").exists(),
             "ga-file-secret must not be created when GA_FILE_SECRET is set",
         )
+
+
+class BundleReseedForceTests(unittest.TestCase):
+    """TRN-109: supply force flag — pre-clone rm -rf and HMAC coverage."""
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    class _BundleUploadPodman:
+        """Podman stub that records exec calls and simulates a bundle clone."""
+
+        def __init__(self) -> None:
+            self.exec_calls: list[tuple[str, list[str]]] = []
+            self.archive_put_calls: list[tuple[str, str, bytes]] = []
+
+        def container_archive_put(
+            self, container: str, workspace: str, data: bytes
+        ) -> None:
+            self.archive_put_calls.append((container, workspace, data))
+
+        def container_exec_checked(
+            self,
+            container: str,
+            cmd: list[str],
+            env: dict | None = None,
+        ) -> str:
+            self.exec_calls.append((container, cmd))
+            if cmd[:2] == ["git", "clone"]:
+                return "Cloning into ..."
+            if cmd[:2] == ["git", "-C"] and cmd[3:4] == ["rev-parse"]:
+                return "abc1234"
+            return ""
+
+    def _run_transfer_upload(
+        self,
+        podman: Any,
+        destination: str,
+        bundle: bool,
+        force: bool,
+    ) -> str:
+        import tempfile
+
+        body = b"PACK..."
+        with tempfile.TemporaryDirectory() as tmp:
+            return files_mod._transfer_upload(
+                podman,
+                "gs-demo",
+                tmp,
+                destination,
+                body,
+                False,  # unpack
+                bundle,
+                force,
+            )
+
+    # ── 5.1 ──────────────────────────────────────────────────────────────────
+
+    def test_force_reseed_removes_destination_before_clone(self) -> None:
+        """When force=True and bundle=True, rm -rf <destination> is called before git clone."""
+        podman = self._BundleUploadPodman()
+        destination = "/workspace/repo"
+        self._run_transfer_upload(podman, destination, bundle=True, force=True)
+
+        cmds = [call[1] for call in podman.exec_calls]
+        rm_indices = [i for i, c in enumerate(cmds) if c[:2] == ["rm", "-rf"]]
+        clone_indices = [i for i, c in enumerate(cmds) if c[:2] == ["git", "clone"]]
+
+        self.assertTrue(rm_indices, "Expected an rm -rf call but found none")
+        self.assertTrue(clone_indices, "Expected a git clone call but found none")
+        self.assertLess(
+            rm_indices[0],
+            clone_indices[0],
+            "rm -rf must come before git clone",
+        )
+        # The rm -rf target must be the destination, not the stage
+        self.assertEqual(cmds[rm_indices[0]], ["rm", "-rf", destination])
+
+    # ── 5.2 ──────────────────────────────────────────────────────────────────
+
+    def test_force_false_does_not_rm_destination(self) -> None:
+        """When force=False, no rm -rf call appears before the clone."""
+        podman = self._BundleUploadPodman()
+        destination = "/workspace/repo"
+        self._run_transfer_upload(podman, destination, bundle=True, force=False)
+
+        cmds = [call[1] for call in podman.exec_calls]
+        rm_calls = [c for c in cmds if c[:2] == ["rm", "-rf"] and destination in c]
+        self.assertFalse(
+            rm_calls,
+            f"rm -rf should not be called when force=False; found: {rm_calls}",
+        )
+
+    # ── 5.3 ──────────────────────────────────────────────────────────────────
+
+    def test_sign_upload_url_includes_force_in_payload(self) -> None:
+        """force=True produces a different sig; reconstructing the payload with
+        force in flags matches the HMAC, while the force=False sig does not."""
+        import hashlib
+        import hmac as _hmac
+        from urllib.parse import parse_qs, urlsplit
+
+        url_force = files_mod._sign_upload_url("demo", "repo", bundle=True, force=True)
+        url_no_force = files_mod._sign_upload_url("demo", "repo", bundle=True, force=False)
+
+        q_force = {k: v[0] for k, v in parse_qs(urlsplit(url_force).query).items()}
+        q_no_force = {k: v[0] for k, v in parse_qs(urlsplit(url_no_force).query).items()}
+
+        # The two signatures must differ
+        self.assertNotEqual(
+            q_force["sig"],
+            q_no_force["sig"],
+            "force=True and force=False should produce distinct HMAC signatures",
+        )
+
+        # Reconstruct and verify the force=True payload manually
+        exp = q_force["expires"]
+        flags_force = ":".join(sorted(["bundle", "force"]))
+        payload_force = f"demo:repo:{exp}:POST::{flags_force}"
+        expected_sig = _hmac.new(
+            files_mod._FILE_SECRET.encode(), payload_force.encode(), hashlib.sha256
+        ).hexdigest()
+        self.assertEqual(q_force["sig"], expected_sig, "Reconstructed force payload HMAC must match")
+
+    # ── 5.4 ──────────────────────────────────────────────────────────────────
+
+    def test_verify_file_token_rejects_force_mismatch(self) -> None:
+        """A token signed with force=True must not verify with force=False and vice versa."""
+        from urllib.parse import parse_qs, urlsplit
+
+        url_force = files_mod._sign_upload_url("demo", "repo", bundle=True, force=True)
+        url_no_force = files_mod._sign_upload_url("demo", "repo", bundle=True, force=False)
+
+        q_force = {k: v[0] for k, v in parse_qs(urlsplit(url_force).query).items()}
+        q_no_force = {k: v[0] for k, v in parse_qs(urlsplit(url_no_force).query).items()}
+
+        # signed with force=True, verify with force=False → should reject
+        self.assertFalse(
+            files_mod._verify_file_token(
+                "demo", "repo", q_force["expires"], q_force["sig"],
+                mode="bundle", force=False,
+            ),
+            "Token signed with force=True must not verify with force=False",
+        )
+
+        # signed with force=False, verify with force=True → should reject
+        self.assertFalse(
+            files_mod._verify_file_token(
+                "demo", "repo", q_no_force["expires"], q_no_force["sig"],
+                mode="bundle", force=True,
+            ),
+            "Token signed with force=False must not verify with force=True",
+        )
+
+        # Sanity: each token verifies correctly with its own force value
+        self.assertTrue(
+            files_mod._verify_file_token(
+                "demo", "repo", q_force["expires"], q_force["sig"],
+                mode="bundle", force=True,
+            ),
+            "Token signed with force=True should verify with force=True",
+        )
+        self.assertTrue(
+            files_mod._verify_file_token(
+                "demo", "repo", q_no_force["expires"], q_no_force["sig"],
+                mode="bundle", force=False,
+            ),
+            "Token signed with force=False should verify with force=False",
+        )
+
+    # ── 5.5 ──────────────────────────────────────────────────────────────────
+
+    def test_supply_returns_force_flag_in_result(self) -> None:
+        """supply(..., force=True) returns a result dict with force=True."""
+        fake_crew = {"container": "gs-demo"}
+        with (
+            patch.object(server, "_require_crew", return_value=fake_crew),
+            patch.object(server, "_ensure_crew_running", return_value=fake_crew),
+            patch.object(
+                server,
+                "_sign_upload_url",
+                return_value="http://localhost/files/demo/repo?expires=1&sig=sig",
+            ),
+        ):
+            result = server.supply("repo", crew_id="demo", bundle=True, force=True)
+
+        self.assertNotIn("error", result, f"Unexpected error: {result.get('error')}")
+        self.assertIs(result["force"], True, "supply() must return force=True in the result dict")
+
+
+class SafeWorkspacePathTests(unittest.TestCase):
+    """TRN-137: direct coverage for ``files._safe_workspace_path`` boundary logic."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        # Resolve so symlinked temp roots (e.g. /var -> /private/var on macOS)
+        # match the resolve() the function performs internally.
+        self.root = Path(self._tmp.name).resolve()
+        (self.root / "workspace").mkdir()
+        self.workspace = str(self.root / "workspace")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_dotdot_traversal_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            files_mod._safe_workspace_path(self.workspace, "../../etc/passwd")
+
+    def test_adjacent_directory_rejected(self) -> None:
+        # A sibling whose name shares the root's prefix must not pass the check:
+        # root=".../workspace", path resolving to ".../workspace-evil/secret".
+        (self.root / "workspace-evil").mkdir()
+        with self.assertRaises(ValueError):
+            files_mod._safe_workspace_path(self.workspace, "../workspace-evil/secret")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlink support")
+    def test_symlink_escape_rejected(self) -> None:
+        # A symlink inside the workspace pointing outside it must be rejected
+        # once resolved.
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret").write_text("s")
+        link = Path(self.workspace) / "link"
+        os.symlink(str(outside), str(link))
+        with self.assertRaises(ValueError):
+            files_mod._safe_workspace_path(self.workspace, "link/secret")
+
+    def test_valid_path_inside_workspace_accepted(self) -> None:
+        resolved = files_mod._safe_workspace_path(self.workspace, "repo/src/main.py")
+        self.assertEqual(resolved, Path(self.workspace).resolve() / "repo/src/main.py")
+
+    def test_path_equal_to_root_accepted(self) -> None:
+        # Empty / "." must resolve to the root itself and pass.
+        self.assertEqual(
+            files_mod._safe_workspace_path(self.workspace, ""),
+            Path(self.workspace).resolve(),
+        )
+        self.assertEqual(
+            files_mod._safe_workspace_path(self.workspace, "."),
+            Path(self.workspace).resolve(),
+        )
+
+
+class ValidateRefTests(unittest.TestCase):
+    """TRN-137: direct coverage for ``files._validate_ref``."""
+
+    def test_leading_dash_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            files_mod._validate_ref("--output=/tmp/pwned")
+
+    def test_shell_metacharacters_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            files_mod._validate_ref("main; rm -rf /")
+
+    def test_empty_string_returns_unchanged(self) -> None:
+        # An empty ref is treated as "no ref" and returned as-is (falsy).
+        self.assertEqual(files_mod._validate_ref(""), "")
+
+    def test_valid_simple_ref_accepted(self) -> None:
+        self.assertEqual(files_mod._validate_ref("main"), "main")
+
+    def test_valid_branch_with_slash_accepted(self) -> None:
+        self.assertEqual(files_mod._validate_ref("release/0.3.1"), "release/0.3.1")
+
+    def test_valid_commit_hash_accepted(self) -> None:
+        sha = "a" * 40
+        self.assertEqual(files_mod._validate_ref(sha), sha)
 
 
 if __name__ == "__main__":

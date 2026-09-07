@@ -482,10 +482,10 @@ When the Caddy reverse proxy is enabled, dashboard ports are protected by a sess
 ```
 Browser ──GET :64058/──▶ ga-portal
                             │
-                            ├─ forward_auth ──GET /dashboard-auth──▶ ga-transport
+                            ├─ forward_auth ──GET /dashboard/auth──▶ ga-transport
                             │                 valid gs_session?
                             │                 ├─ YES → 200 + X-Crew-Cookie header
-                            │                 └─ NO  → 401 → Caddy → redirect to /login-ui
+                            │                 └─ NO  → 401 → Caddy → redirect to /dashboard/login
                             │
                             └─ (on 200) reverse_proxy ──▶ gs-{crew_id}:5476
                                          X-Crew-Cookie injected as cookie
@@ -495,11 +495,11 @@ Browser ──GET :64058/──▶ ga-portal
 
 Three new HTTP routes on the main transport port (64057):
 
-**`GET /login-ui`** — Serves the HTML login form. Accepts an optional `?next=<url>` query parameter for post-login redirect. Publicly accessible (no auth).
+**`GET /dashboard/login`** — Serves the HTML login form. Accepts an optional `?next=<url>` query parameter for post-login redirect. Publicly accessible (no auth).
 
-**`POST /dashboard-login`** — Accepts a `ga_api_key` form field. If it matches `GA_API_KEY` (constant-time comparison), issues a `gs_session` cookie and returns 200. Returns 401 on mismatch or when `GA_API_KEY` is not set. Cookie attributes: `HttpOnly; SameSite=Lax; Secure; Path=/`.
+**`POST /dashboard/login`** — Accepts a `ga_api_key` form field. If it matches `GA_API_KEY` (constant-time comparison), issues a `gs_session` cookie and returns 200. Returns 401 on mismatch or when `GA_API_KEY` is not set. Cookie attributes: `HttpOnly; SameSite=Lax; Secure; Path=/`.
 
-**`GET /dashboard-auth`** — Caddy's `forward_auth` target. Validates the `gs_session` cookie from the incoming request. On a valid session:
+**`GET /dashboard/auth`** — Caddy's `forward_auth` target. Validates the `gs_session` cookie from the incoming request. On a valid session:
 - Returns 200.
 - If the request includes a `?port=<N>` parameter (as configured in the Caddy `forward_auth` URI), looks up the crew mapped to that port and returns `X-Crew-Cookie: mc_token_5476=<crew_token>`. Caddy's `copy_headers` directive carries this into the upstream request, authenticating the browser to the crew gateway.
 - Returns 200 without the `X-Crew-Cookie` header if the port is unknown (session still valid; crew cookie injection is best-effort).
@@ -510,12 +510,12 @@ Returns 401 if the session is missing, invalid, or expired.
 
 | Step | Event |
 |:-----|:------|
-| Issued | Operator submits valid `GA_API_KEY` to `POST /dashboard-login` |
+| Issued | Operator submits valid `GA_API_KEY` to `POST /dashboard/login` |
 | Stored | In-memory `dict[token → expiry]` in the transport process |
 | TTL | `GA_PORTAL_SESSION_TTL_SECS` (default 86400 = 24 h) |
-| Validated | On every request to a Caddy-gated dashboard port, via `forward_auth` call to `/dashboard-auth` |
+| Validated | On every request to a Caddy-gated dashboard port, via `forward_auth` call to `/dashboard/auth` |
 | Purged | On expiry check, or on transport restart (in-memory only) |
-| Rotated | Log out and log back in via `/login-ui` |
+| Rotated | Log out and log back in via `/dashboard/login` |
 
 Sessions are single-process, in-memory. A transport restart clears all sessions — users must log in again. The session store has no persistence, database, or shared state.
 
@@ -525,7 +525,7 @@ When `GA_API_KEY` is set (Portal is always active):
 
 - `/mcp*` and `/files/*` routes on Caddy's main port (443) require `Authorization: Bearer <GA_API_KEY>`. Caddy rejects bad or missing tokens before the request reaches the transport.
 - The transport's own `BearerAuthMiddleware` remains active as a defence-in-depth layer.
-- `/dashboard-auth`, `/login-ui`, and `/dashboard-login` are public routes — they are exempt from the Bearer check (auth is the point of those endpoints).
+- `/dashboard/auth`, `/dashboard/login`, and `/dashboard/logout` are public routes — they are exempt from the Bearer check (auth is the point of those endpoints).
 
 ### Auth posture summary
 

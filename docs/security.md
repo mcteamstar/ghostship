@@ -30,9 +30,11 @@ so a rollback needs no code change.
   `policy_signing_key` are injected into the crew container, `crews.json`
   retains only a non-reversible identifier for each secret
   (`"admiral_secret_id": "sha256:<hex[:16]>"`, `"policy_signing_key_id": "sha256:<hex[:16]>"`).
-  The plaintext values exist in memory only for the duration of the injection
-  call and are never written to disk. This closes the residual exposure noted
-  as TRN-16 in earlier versions.
+  The `policy_signing_key` plaintext exists in memory only for the duration of
+  the injection call and is not written to disk on the host. The `admiral_secret`
+  plaintext is additionally persisted (mode `0600`) to `DATA_DIR/secrets/<crew_id>`
+  so the transport can sign Captain standing orders after launch — it is never
+  stored in `crews.json` itself. See [auth.md](auth.md#storage) for details.
 
 ### Rotating a secret (no code change)
 
@@ -43,7 +45,7 @@ rotation is a re-create + restart — no rebuild, no code edit:
 # Rotate the transport API key.
 podman secret rm ga-api-key
 printf '%s' "$NEW_KEY" | podman secret create ga-api-key -
-podman restart ghost-academy   # container re-reads /run/secrets/ga-api-key
+podman restart ga-transport   # container re-reads /run/secrets/ga-api-key
 ```
 
 The file-URL signing secret (`ga-file-secret`) is persisted under the data

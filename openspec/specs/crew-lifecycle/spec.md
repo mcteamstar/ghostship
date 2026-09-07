@@ -195,6 +195,54 @@ runtime.
   post-restart gateway startup window, before KiroCrew 0.5.0 makes that
   directory write-protected at runtime
 
+### Requirement: Headless crew config overrides
+
+The `_patch_crew_config` function SHALL write a full set of headless-optimised
+overrides into each crew's `config.local.json` at launch, covering not just the
+`agent` section but also `stt`, `session`, `telemetry`, and top-level keys.
+
+The fixed overrides for all spec-ops crews are:
+
+| Config path | Value | Rationale |
+|---|---|---|
+| `stt.enabled` | `false` | No microphone in a headless server crew |
+| `session.eager_spawn` | `false` | No interactive user; spawn on first dispatch only |
+| `session.timeout_secs` | `300` | Reclaim session memory within 5 min of task completion |
+| `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session; recycle if exceeded (above ~1.9 GB active task peak) |
+| `telemetry.beacon_enabled` | `false` | No outbound beacon on server deployment |
+| `auto_update` | `false` | Prevent version drift on a pinned container image |
+
+The `patch_crew_config.py` container script SHALL accept a full config override
+dict (not just agent-scoped keys) and deep-merge all top-level sections into
+`config.local.json`.
+
+#### Scenario: Fresh crew launch has headless overrides applied
+
+- **GIVEN** a crew is being launched for the first time
+- **WHEN** `_patch_crew_config` is called on the new container
+- **THEN** `config.local.json` contains `stt.enabled = false`, `session.eager_spawn = false`, `session.timeout_secs = 300`, `session.watchdog_rss_max_mb = 2000`, `telemetry.beacon_enabled = false`, and `auto_update = false`
+
+#### Scenario: Idle crew RSS is below 200 MB after headless overrides
+
+- **GIVEN** a crew has been launched with headless overrides applied
+- **WHEN** no task has been dispatched for more than 60 seconds
+- **THEN** the crew container RSS is below 200 MB (gateway process only; no pre-spawned session process)
+
+#### Scenario: Session process spawns on first dispatch and is reaped after timeout
+
+- **GIVEN** a crew is idle with `session.eager_spawn = false` and `session.timeout_secs = 300`
+- **WHEN** a task is dispatched via `dispatch`
+- **THEN** a `kiro-cli-chat` session process is spawned within 5 seconds of task start
+- **AND WHEN** the task completes and 300 seconds elapse with no further dispatch
+- **THEN** the session process is reaped and the crew RSS returns to below 200 MB
+
+#### Scenario: patch_crew_config.py deep-merges non-agent sections
+
+- **GIVEN** a full config override dict including `stt`, `session`, and `telemetry` sections is passed to `patch_crew_config.py`
+- **WHEN** the script runs inside the container
+- **THEN** `config.local.json` contains each section at the correct top-level key, deep-merged with any existing content
+- **AND** the existing `agent` section overrides are preserved unchanged
+
 ### Requirement: Crew and resource naming convention
 The system SHALL name every crew-scoped Podman resource with a `gs-` prefix derived from the crew_id, kept entirely separate from the `ga-` prefix used for fixed Ghost Academy infrastructure (`ga-transport`, `ga-net`) — so a `crew_id` can never collide with a fixed infra name, regardless of what the caller picks.
 
@@ -617,3 +665,18 @@ The system SHALL check for a valid auth file at the very start of `launch`, befo
 #### Scenario: launch called after completing auth
 - **WHEN** `launch` is called and a valid auth file exists
 - **THEN** the auth gate passes, the registry placeholder is written, and launch proceeds normally
+
+### Requirement: Crew auto-start serialised per crew
+The `_ensure_crew_running` function SHALL serialise the probe-then-start sequence on a per-crew asyncio lock so that at most one caller at a time executes the "is container running?" → `container_start` critical section for a given `crew_id`. Concurrent callers for the same crew SHALL wait on the lock and, once unblocked, verify the container is now running before returning; they SHALL NOT each independently issue a `container_start`. Concurrent callers for **different** crew IDs SHALL NOT be serialised against each other.
+
+#### Scenario: Concurrent auto-start calls for the same crew
+- **WHEN** two or more callers invoke `_ensure_crew_running` concurrently for the same `crew_id` while the crew container is stopped
+- **THEN** `container_start` is called exactly once for that crew, and all callers receive an updated crew dict reflecting the running state
+
+#### Scenario: Concurrent auto-start calls for different crews
+- **WHEN** two callers invoke `_ensure_crew_running` concurrently for different `crew_id` values
+- **THEN** both start sequences proceed concurrently without being serialised against each other
+
+#### Scenario: Second caller sees already-running container
+- **WHEN** a second caller acquires the per-crew lock after the first has already completed the start
+- **THEN** the second caller finds the container already running and returns immediately without issuing another `container_start`

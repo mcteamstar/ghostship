@@ -29,6 +29,7 @@ process sees and what each default means:
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins — see [auth.md](auth.md) |
 | `KIRO_REGION` | unset | AWS region for that identity provider |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
+| `KIRO_API_KEY` | _(unset)_ | API key for headless kiro-cli authentication in crew containers — bypasses the interactive device auth flow. See [auth.md](auth.md) for the headless auth setup |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) required before starting a crew container. Compared against `MemAvailable` from `/proc/meminfo` (which includes reclaimable page cache and buffers), with a fallback to `MemFree` on kernels that do not expose `MemAvailable`. The transport polls in 5-second intervals up to 60 seconds for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) exclusively for Ghost Academy. Crew containers are fully isolated from the host's default Podman runtime. Set to `false` to use the default socket instead |
 | `GA_MACHINE_CPUS` | `8` | vCPUs allocated to the dedicated Podman machine VM (macOS only) — a cap on concurrent vCPU threads, not a reservation; the host scheduler time-shares real cores across them like any other process. Ignored on Linux |
@@ -40,6 +41,7 @@ process sees and what each default means:
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
+| `GA_BATCH_MAX_TASKS` | `20` | Maximum number of tasks allowed in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned |
 | `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.5.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
 | `GA_TLS_MIN_VERSION` | `1.2` | Minimum TLS version enforced when the transport terminates TLS directly (passed as `ssl_version` to uvicorn). Values: `1.2` or `1.3`. Only takes effect when `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` are set |
 | `GA_TLS_CERTFILE` | _(unset)_ | Path to a TLS certificate file. Setting both this and `GA_TLS_KEYFILE` enables direct TLS termination in the transport rather than relying on an edge terminator |
@@ -51,6 +53,7 @@ process sees and what each default means:
 | `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` (and sub-paths) limit in `<count>:<window_secs>` format |
 | `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` limit in `<count>:<window_secs>` format |
 | `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/*/api/*` limit in `<count>:<window_secs>` format |
+| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard/auth` limit — the Caddy `forward_auth` endpoint polled on every dashboard request |
 | `GA_GIT_AUTHOR_NAME` | _(unset)_ | Operator name injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup time. When set together with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. When unset, per-persona git identity is used (e.g. `Ghost <ghost@localhost>`). Config-file-only — no CLI flag |
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Operator email injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` into every crew container at setup time. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only — no CLI flag |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only |
@@ -58,7 +61,7 @@ process sees and what each default means:
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for all Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step — path printed by `install.sh` and `ghostship status`), `tailscale` (browser-trusted `.ts.net` certs via Tailscale ACME; no trust step), `acme` (public Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). An unrecognised value logs a WARNING and falls back to `internal` |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name used for ACME (Let's Encrypt) certificate requests. Required when `GA_PORTAL_TLS_MODE=acme` |
 | `PORT` / ~~`GA_PORTAL_PORT`~~ | `64057` | Port Caddy listens on. TLS mode is independent — HTTP or HTTPS on any port. `GA_PORTAL_PORT` is the deprecated alias for `PORT`; install.sh auto-migrates config files that still use the old name. |
-| `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard-login`. Sessions are held in-memory and reset on transport restart |
+| `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard/login`. Sessions are held in-memory and reset on transport restart |
 | `GA_TRANSPORT_SECRET` | _(auto-generated by `install.sh`)_ | **Not user-settable directly.** Shared secret between `ga-portal` (Caddy) and `ga-transport`. `install.sh` generates it with `openssl rand -hex 32` and stores it as Podman secret `ga-transport-secret`. Caddy injects it as `X-Transport-Token` on every upstream request; transport rejects requests missing or presenting a wrong token with HTTP 401 (TRN-107). The secret is idempotent — preserved across reinstalls so the portal and transport stay in sync. To rotate it, delete the `ga-transport-secret` Podman secret and re-run `install.sh`. |
 
 > **Network topology (TRN-107):** Two static Podman networks replace the retired `ga-net`:
@@ -153,8 +156,8 @@ nor the flag sets them, the built-in default applies.
 Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
 `GA_DASHBOARD_PORT_RANGE_START`,
-`GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_PORTAL_TLS_MODE`,
-`GA_PORTAL_DOMAIN`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
+`GA_DASHBOARD_PORT_RANGE_SIZE`,
+`GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
 have no CLI flag and no ambient-environment-variable input.
 
 ### Error handling
@@ -184,10 +187,38 @@ Then override any single value at the command line:
 # PORT=8080 (flag wins), all other values from config file
 ```
 
+## Client-only install
+
+`scripts/install.sh --client-only` wires the `ghostship` CLI and the agent
+harnesses (kiro-cli, Claude Code, opencode) to an already-running transport
+— usually a shared remote academy — without executing any container
+infrastructure. In this mode the script skips the Podman prerequisites check,
+dedicated machine/network setup, image builds, and `compose up`; it installs
+the `~/.local/bin/ghostship` symlink and then calls `ghostship setup` to
+register the MCP entry and skill symlinks for every detected agent client.
+
+```bash
+./install.sh --client-only --url https://academy.example.com/mcp
+```
+
+Flags accepted in `--client-only` mode:
+
+- `--url <transport-url>` — the MCP endpoint the client connects to. Default:
+  `http://localhost:64057/mcp` (matches the full-install port). Forwarded to
+  `ghostship setup --url`.
+- `--api-key <key>` — optional bearer token for the transport. When supplied,
+  `ghostship setup` registers the MCP entry with an `Authorization: Bearer`
+  header. Omit it for an unauthenticated (e.g. Tailscale-gated or local)
+  transport.
+
+`--client-only` is idempotent: re-running it with the same arguments produces
+the same end state and does not accumulate duplicate MCP entries or symlinks.
+These flags are one-shot wiring options and are **not** config-file variables.
+
 ## Git repository transfer
 
-See the [Seed or extract a Git repository](../README.md#seed-or-extract-a-git-repository)
-section in the README for full bundle instructions (supply, evac, incremental bundles).
+See the [Repository transfer](architecture.md#repository-transfer)
+section in architecture.md for full bundle instructions (supply, evac, incremental bundles).
 
 ## Deployment security boundary
 
@@ -246,7 +277,7 @@ built-in default is used and a `WARNING` naming the variable is logged.
 | `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` and sub-paths — headroom for multi-tool orchestration |
 | `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` — protects git subprocess execution |
 | `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/{id}/api/*` — the proxied crew REST API |
-| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard-auth` — the Caddy `forward_auth` endpoint polled on every dashboard request |
+| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard/auth` — the Caddy `forward_auth` endpoint polled on every dashboard request |
 
 **State is in-memory only and is not persisted.** Restarting the transport
 process resets all counters to zero — no caller is pre-limited based on
@@ -396,3 +427,44 @@ composition-level `mcp.json`, so a name declared in both is served from the
 agent's entry (the `mcp.json` entry is shadowed — no error). An agent may set
 `includeMcpJson: false` to opt out of the composition-level `mcp.json`
 entirely.
+
+## Fixed headless overrides
+
+Every crew launched by the transport receives a set of fixed, headless-optimised
+values written into `config.local.json` at startup by `_patch_crew_config`. These
+are not operator-tunable env vars — they are always applied because a headless
+server crew has no microphone, no interactive user, and no reason to pre-fork
+session processes. The values below complement the env-var-configurable settings
+in the table above.
+
+| Config path | Value | Rationale |
+|:------------|:------|:----------|
+| `stt.enabled` | `false` | No microphone in a headless server crew. Disables Whisper STT, which loads a base model (~148 MB) even when no speech input is possible. |
+| `session.eager_spawn` | `false` | Stop pre-forking `kiro-cli-chat` at container startup. Without this, KiroCrew forks a session process (~340 MB) immediately on gateway start, regardless of whether any task is running. With it disabled, the session process is spawned on the first dispatch and adds 2–5 s of first-dispatch latency (acceptable for dispatch-based use). |
+| `session.timeout_secs` | `300` | Reclaim session memory 5 minutes after task completion instead of the default 1 hour. The session process is reaped once it has been idle for this many seconds, returning the crew to its ~160 MB gateway-only baseline. |
+| `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session process (KiroCrew 0.5.0+). If a session process exceeds 2000 MB, KiroCrew recycles it automatically. The ceiling is intentionally set above the ~1.9 GB measured active-task peak so healthy sessions are not recycled mid-task; its purpose is to catch runaway RSS accumulation across many sequential tasks on a long-lived crew. |
+| `telemetry.beacon_enabled` | `false` | Suppress outbound telemetry beacon pings. Network hygiene for server deployments where outbound beacons are unwanted. |
+| `auto_update` | `false` | Prevent KiroCrew from self-updating inside a container pinned to a specific image version. Version management is handled at the image level, not inside the running container. |
+
+### Memory profile
+
+With these overrides applied, the expected RSS profile for a spec-ops crew is:
+
+| State | RSS |
+|:------|:----|
+| Idle (no active task) | ~160 MB (gateway process only) |
+| Active task peak | ~1.5–1.9 GB (session + subagents) |
+| Post-task (after `session.timeout_secs`) | ~160 MB (session reaped) |
+
+Without these overrides (KiroCrew 0.5.0 defaults), idle RSS is ~470 MB due to
+the eagerly pre-spawned `kiro-cli-chat` process (~340 MB) that exists
+regardless of whether any task is running.
+
+### `session.watchdog_rss_max_mb` guidance
+
+The 2000 MB ceiling is not meant to enforce a tight budget — it is a safety net
+for accumulation. If you observe session processes being recycled on legitimate
+large tasks (e.g. intensive Banshee reviews of very large codebases), raise the
+limit by editing `_patch_crew_config` in `transport/lifecycle.py`. The value is
+hardcoded rather than env-var-configurable because a headless spec-ops crew has
+no operational reason for an operator to tune it.

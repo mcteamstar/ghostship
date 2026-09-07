@@ -32,6 +32,7 @@ import transport.files as files_mod  # noqa: F401  (re-exported)
 import transport.captain as captain_mod  # noqa: F401  (re-exported)
 import transport.academy as academy  # noqa: F401  (re-exported)
 import transport.lifecycle as lifecycle  # noqa: F401  (re-exported)
+import transport.monitors as monitors  # noqa: F401  (re-exported, TRN-116 §8)
 
 
 class Request:

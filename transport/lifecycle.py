@@ -281,6 +281,144 @@ class CrewUnresponsiveError(RuntimeError):
     pass
 
 
+def _phase0_transient_503(
+    crew: dict,
+    method: str,
+    path: str,
+    **kw: Any,
+) -> Any:
+    """Phase 0: task still spawning — short bounded retry on 503.
+
+    On 503 from a per-task /api/spawn/* route, KiroCrew's own task record
+    already reports elapsed > 0 before the agent process has finished
+    forking/registering enough to serve the route.  Short bounded retry —
+    this is transient and self-resolving within a couple of seconds.
+
+    Re-raises the last 503 error if all retries are exhausted.
+    Raises any non-503 HTTPStatusError immediately without retrying.
+    """
+    for _attempt in range(4):
+        time.sleep(1.0)
+        try:
+            return _crew_api(crew, method, path, **kw)
+        except httpx.HTTPStatusError as retry_exc:
+            if retry_exc.response.status_code != 503:
+                raise
+            last_exc = retry_exc
+    raise last_exc
+
+
+def _phase1_stale_cookie(
+    crew: dict,
+    crew_id: str,
+    method: str,
+    path: str,
+    **kw: Any,
+) -> Any:
+    """Phase 1: stale cookie — attempt cookie refresh then retry once.
+
+    On 400/401/403 from a running container, refreshes the session cookie
+    and retries the request.  If the refresh fails or the retry fails,
+    escalates to Phase 2 (full gateway restart).
+
+    Returns the API result on success.
+    Raises CrewUnresponsiveError if Phase 2 restart also fails.
+    """
+    logger.info(
+        "Crew %s stale-cookie phase — attempting cookie refresh",
+        crew_id,
+    )
+    if _refresh_cookie(crew, crew_id):
+        try:
+            return _crew_api(crew, method, path, **kw)
+        except Exception as _retry_exc:
+            logger.warning(
+                "Crew %s phase-1 retry failed after cookie refresh: %s — "
+                "escalating to full restart",
+                crew_id, _retry_exc,
+            )
+
+    # Phase 1 failed — escalate to full restart
+    logger.info(
+        "Crew %s cookie refresh failed or retry failed — "
+        "escalating to full restart",
+        crew_id,
+    )
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"cookie refresh and container restart but the gateway "
+            f"did not recover. Suggestion: check crew status with "
+            f"crews() or try again in a moment."
+        )
+    try:
+        return _crew_api(crew, method, path, **kw)
+    except Exception:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"cookie refresh and container restart but the gateway "
+            f"did not recover. Suggestion: check crew status with "
+            f"crews() or try again in a moment."
+        )
+
+
+def _phase2_dead_gateway(
+    crew: dict,
+    crew_id: str,
+    method: str,
+    path: str,
+    **kw: Any,
+) -> Any:
+    """Phase 2: connection error — probe then restart only if dead.
+
+    On a connection error from a running container, first probes liveness.
+    If the gateway is alive (transient error), retries directly.
+    If the gateway is dead, restarts via _ensure_crew_running and retries.
+
+    Returns the API result on success.
+    Raises CrewUnresponsiveError if the gateway cannot be recovered.
+    """
+    logger.info(
+        "Crew %s connection-error phase — probing gateway liveness",
+        crew_id,
+    )
+    crew_url = _crew_url(crew)
+    if _probe_gateway(crew_url):
+        # Gateway is actually alive — transient error, retry directly
+        try:
+            return _crew_api(crew, method, path, **kw)
+        except Exception:
+            raise CrewUnresponsiveError(
+                f"crew {crew_id} is unresponsive — gateway responded to "
+                f"liveness probe but API call failed twice. Suggestion: "
+                f"check crew status with crews() or try again in a moment."
+            )
+    logger.info(
+        "Crew %s gateway confirmed dead — restarting",
+        crew_id,
+    )
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"container restart but the gateway did not recover. "
+            f"Suggestion: check crew status with crews() or try "
+            f"again in a moment."
+        )
+    try:
+        return _crew_api(crew, method, path, **kw)
+    except Exception:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} is unresponsive — transport attempted "
+            f"container restart but the gateway did not recover. "
+            f"Suggestion: check crew status with crews() or try "
+            f"again in a moment."
+        )
+
+
 def _crew_api_with_recovery(
     crew: dict,
     crew_id: str,
@@ -288,7 +426,7 @@ def _crew_api_with_recovery(
     path: str,
     **kw: Any,
 ) -> Any:
-    """Wrap _crew_api with two-phase recovery logic.
+    """Wrap _crew_api with three-phase recovery logic.
 
     Phase 0 (task still spawning): On 503 from a per-task /api/spawn/*
     route, KiroCrew's own task record already reports elapsed > 0 before
@@ -314,104 +452,16 @@ def _crew_api_with_recovery(
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status == 503:
-                # Phase 0: task record exists but the agent process isn't
-                # steerable yet — retry a few times with a short delay
-                # rather than escalating to cookie refresh or restart.
-                for _attempt in range(4):
-                    time.sleep(1.0)
-                    try:
-                        return _crew_api(crew, method, path, **kw)
-                    except httpx.HTTPStatusError as retry_exc:
-                        if retry_exc.response.status_code != 503:
-                            raise
-                        e = retry_exc
-                raise e
+                # ── Phase 0: transient 503 while task process is still starting ──
+                return _phase0_transient_503(crew, method, path, **kw)
             if status not in (400, 401, 403):
                 raise
-            # Phase 1: stale cookie — try refresh
-            logger.info(
-                "Crew %s returned %d — attempting cookie refresh",
-                crew_id, status,
-            )
-            if _refresh_cookie(crew, crew_id):
-                # Retry with refreshed cookie
-                try:
-                    return _crew_api(crew, method, path, **kw)
-                except Exception as _retry_exc:
-                    logger.warning(
-                        "Crew %s phase-1 retry failed after cookie refresh: %s — "
-                        "escalating to full restart",
-                        crew_id, _retry_exc,
-                    )
-
-            # Phase 1 failed — escalate to full restart
-            logger.info(
-                "Crew %s cookie refresh failed or retry failed — "
-                "escalating to full restart",
-                crew_id,
-            )
-            try:
-                crew = _ensure_crew_running(crew, crew_id)
-            except RuntimeError:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"cookie refresh and container restart but the gateway "
-                    f"did not recover. Suggestion: check crew status with "
-                    f"crews() or try again in a moment."
-                )
-
-            # Final retry after restart
-            try:
-                return _crew_api(crew, method, path, **kw)
-            except Exception:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"cookie refresh and container restart but the gateway "
-                    f"did not recover. Suggestion: check crew status with "
-                    f"crews() or try again in a moment."
-                )
+            # ── Phase 1: stale cookie ─────────────────────────────────────────
+            return _phase1_stale_cookie(crew, crew_id, method, path, **kw)
 
         except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
-            # Phase 2: connection error — probe then restart only if dead
-            logger.info(
-                "Crew %s connection error — probing gateway liveness",
-                crew_id,
-            )
-            crew_url = _crew_url(crew)
-            if _probe_gateway(crew_url):
-                # Gateway is actually alive — transient error, retry directly
-                try:
-                    return _crew_api(crew, method, path, **kw)
-                except Exception:
-                    raise CrewUnresponsiveError(
-                        f"crew {crew_id} is unresponsive — gateway responded to "
-                        f"liveness probe but API call failed twice. Suggestion: "
-                        f"check crew status with crews() or try again in a moment."
-                    )
-            logger.info(
-                "Crew %s gateway confirmed dead — restarting",
-                crew_id,
-            )
-            try:
-                crew = _ensure_crew_running(crew, crew_id)
-            except RuntimeError:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"container restart but the gateway did not recover. "
-                    f"Suggestion: check crew status with crews() or try "
-                    f"again in a moment."
-                )
-
-            # Retry after restart
-            try:
-                return _crew_api(crew, method, path, **kw)
-            except Exception:
-                raise CrewUnresponsiveError(
-                    f"crew {crew_id} is unresponsive — transport attempted "
-                    f"container restart but the gateway did not recover. "
-                    f"Suggestion: check crew status with crews() or try "
-                    f"again in a moment."
-                )
+            # ── Phase 2: connection error / dead gateway ──────────────────────
+            return _phase2_dead_gateway(crew, crew_id, method, path, **kw)
 
 
 def _require_crew(crew_id: str | None) -> dict:
@@ -542,7 +592,7 @@ def _ensure_crew_running(
         _patch_crew_config(podman, crew["container"])
         podman.container_stop(crew["container"])
         podman.container_start(crew["container"])
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             raise RuntimeError(f"Gateway did not recover after config re-patch for crew {crew_id}")
 
         # Refresh cookie (old one may have expired)
@@ -1056,7 +1106,7 @@ def _migrate_crew_network(podman: "PodmanClient", crew_id: str, container: str) 
         # Step e: start and wait for gateway.
         podman.container_start(container)
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             logger.warning("Crew %s gateway not ready after migration", crew_id)
             return False
 
@@ -1151,7 +1201,7 @@ def _reconcile_registry() -> None:
                     _patch_crew_config(podman, container)
                     podman.container_stop(container)
                     podman.container_start(container)
-                    if _wait_gateway(crew_url, timeout=30):
+                    if _wait_gateway(crew_url, timeout=60):
                         new_cookie = _mint_cookie(podman, container, crew_url)
                         updates[cid] = {
                             "status": "running",
@@ -1229,6 +1279,12 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     #   resource_critical_gb: >= 0, and <= resource_pressure_gb.
     #   subagent_timeout_secs: > 0. subagent_max_turns: >= 1 (UI cap 200).
     #
+    # Memory thresholds default to 0 (disabled). Inside a container, memory is
+    # dynamically allocated by the host (balloon on Linux, Podman VM on macOS).
+    # The container sees only allocated memory, not the full host headroom, so
+    # any non-zero threshold causes premature throttling under real concurrent
+    # workloads. Setting to 0 lets the OS manage memory pressure. See TRN-117.
+    #
     # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
     # permission guard for the agent running inside this crew container. This is
     # intentional and safe: (a) the crew container is an isolated Podman sandbox
@@ -1268,7 +1324,36 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     if KC_MODEL_DEFAULT:
         agent_overrides["default_model"] = KC_MODEL_DEFAULT
 
-    overrides_b64 = base64.b64encode(json.dumps(agent_overrides).encode()).decode()
+    # Build the full config override structure passed to patch_crew_config.py.
+    # The script deep-merges every top-level key into config.local.json, so
+    # non-agent sections are written directly at the right path.
+    #
+    # Headless-optimised overrides applied to every spec-ops crew (fixed values,
+    # not operator-configurable — see design.md D1):
+    #   stt.enabled = false        — no microphone in a headless server crew
+    #   session.eager_spawn = false  — spawn session on first dispatch, not at
+    #                                  startup; eliminates the ~340 MB pre-fork
+    #   session.timeout_secs = 300   — reclaim session memory within 5 min of
+    #                                  task completion (was 3600 s / 1 hour)
+    #   session.watchdog_rss_max_mb = 2000 — hard RSS ceiling per session process;
+    #                                  recycles session if exceeded (set above
+    #                                  ~1.9 GB active task peak to avoid cycling
+    #                                  healthy sessions)
+    #   telemetry.beacon_enabled = false — suppress outbound beacon on server
+    #   auto_update = false        — prevent version drift in a pinned container
+    full_overrides: dict[str, Any] = {
+        "agent": agent_overrides,
+        "stt": {"enabled": False},
+        "session": {
+            "eager_spawn": False,
+            "timeout_secs": 300,
+            "watchdog_rss_max_mb": 2000,
+        },
+        "telemetry": {"beacon_enabled": False},
+        "auto_update": False,
+    }
+
+    overrides_b64 = base64.b64encode(json.dumps(full_overrides).encode()).decode()
     config_path = f"{KIRO_CREW_DIR}/config.local.json"
     try:
         result = podman.container_exec(
@@ -1281,22 +1366,7 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
 
 
 def _inject_git_identity(podman: PodmanClient, container: str) -> None:
-    """No-op. Git identity is now injected at container_create time.
-
-    The original implementation wrote GIT_AUTHOR_NAME/EMAIL/GIT_COMMITTER_NAME/
-    GIT_COMMITTER_EMAIL to /etc/environment inside the container.  That approach
-    does not work: /etc/environment is only read by PAM login sessions (pam_env),
-    not by the non-login gateway process or the kiro-cli subprocesses it spawns.
-    The gateway builds its child environment from ``{**os.environ}`` which was
-    fixed at container-create time — writes to /etc/environment after that are
-    invisible to any running or future subprocess.
-
-    The vars are now passed in the container_create env= dict (see launch()),
-    so they are in the gateway's process env from startup and inherited by every
-    kiro-cli child through the ``{**os.environ}`` chain in AcpRuntime.spawn().
-    Container stop/start cycles preserve the create-time env, so idle-stop
-    recovery via _ensure_crew_running also works correctly.
-    """
+    """No-op — kept as signature only; see call site for explanation."""
 
 
 def _inject_policy(
@@ -1360,7 +1430,7 @@ def _finish_crew_setup(
     if not _wait_gateway(crew_url, timeout=10):
         podman.container_stop(container)
         podman.container_start(container)
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             _cleanup_crew(podman, container, volume, home_volume)
             return {"error": f"Gateway did not recover for crew {crew_id}"}
 
@@ -1401,7 +1471,7 @@ def _finish_crew_setup(
     # depends on: auth + admiral_secret + config all committed before workers start
     podman.container_stop(container)
     podman.container_start(container)
-    if not _wait_gateway(crew_url, timeout=30):
+    if not _wait_gateway(crew_url, timeout=60):
         _cleanup_crew(podman, container, volume, home_volume)
         return {"error": f"Gateway did not recover after auth restart for crew {crew_id}"}
 
@@ -1414,10 +1484,12 @@ def _finish_crew_setup(
     # depends on: gateway (post-restart)
     _seed_openspec_store(podman, container)
 
-    # Git identity vars (GA_GIT_AUTHOR_NAME/EMAIL) are injected at container_create
-    # time so they are part of the process env from startup.  _inject_git_identity
-    # is a no-op kept for call-site symmetry; the real work is done in launch().
-    _inject_git_identity(podman, container)
+    # Git identity vars (GIT_AUTHOR_NAME/EMAIL/GIT_COMMITTER_NAME/EMAIL) are
+    # injected at container_create time via the env= dict in launch(), so they
+    # are in the gateway's process env from startup and inherited by every
+    # kiro-cli child.  Container stop/start cycles preserve the create-time
+    # env, so idle-stop recovery also works correctly.  _inject_git_identity
+    # was a no-op stub kept for call-site symmetry; it has been removed.
 
     # depends on: policy_signing_key (already generated above), filesystem
     policy_version = None
@@ -1540,343 +1612,156 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
     logger.info("Nuked login container %s", name)
 
 
-# ── Schedule monitor ──────────────────────────────────────────────────────────
+# ── Schedule / idle monitors (TRN-116) ───────────────────────────────────────
+# _schedule_monitor, _idle_monitor, _cron_activity_since and _cron_has_enabled_job
+# were extracted to transport/monitors.py and are imported below so existing
+# call-sites (server starts the threads; tests patch lifecycle.*) keep resolving.
+try:
+    import monitors as _monitors  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import monitors as _monitors  # local dev
 
-def _schedule_monitor() -> None:
-    """Background thread: poll for due scheduled jobs and fire them.
+_schedule_monitor = _monitors._schedule_monitor
+_idle_monitor = _monitors._idle_monitor
+# ── Batch pickup (TRN-105) ────────────────────────────────────────────────────
+# GA_PICKUP_MAX_POLL_SECS caps the wall time of one _pickup_batch call, mirroring
+# the single-task pickup internal cap (default 30 s). Read from env so operators
+# can tune it without a config-dataclass change.
+GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
 
-    Checks every 30s. For each due job (next_fire_at <= now), ensures the
-    crew is running and fires the tick via POST /api/spawn.
+_BATCH_POLL_INTERVAL_SECS = 3
+
+
+def _pickup_batch(
+    crew: dict,
+    crew_id: str,
+    task_ids: list[str],
+    podman: "PodmanClient",
+    container: str,
+    timeout_secs: int,
+    pickup_single,
+    read_all_mail_counts,
+    batch_id: str | None = None,
+    update_batch_status=None,
+) -> dict:
+    """Blocking multi-task pickup: collect results for every id in *task_ids*.
+
+    Orchestrates per-round sequential calls to ``pickup_single(timeout_secs=0)``
+    for each task id, aggregating into a dict keyed by task_id. The whole call
+    is capped at ``GA_PICKUP_MAX_POLL_SECS`` of wall time (each round polls all
+    members once, then sleeps 3 s). A task the gateway does not know about (404
+    / missing) is marked ``{"done": false, "lost": true, ...}`` rather than
+    raising, so the other members' results survive.
+
+    ``pickup_single`` and ``read_all_mail_counts`` are injected by the caller
+    (server.py) to avoid a lifecycle->server import cycle. ``update_batch_status``
+    (optional) is called with (crew_id, batch_id, "complete") when every task is
+    done and a ``batch_id`` is known.
+
+    Response shape::
+
+        {
+          "<task_id>": {<single-task pickup shape> | lost-marker},
+          ...,
+          "done": bool,          # True only when every member is done
+          "completed_tasks": int,
+          "total_tasks": int,
+          "reason": "timeout" | "admiral_mail",   # only when it applies
+        }
     """
+    total = len(task_ids)
+
+    # Cap the batch wall time at GA_PICKUP_MAX_POLL_SECS regardless of the
+    # requested timeout — identical to the single-task internal cap contract.
+    capped_timeout = min(max(0, timeout_secs), GA_PICKUP_MAX_POLL_SECS)
+
+    # Admiral-mail early-return baseline read before the first round.
+    if capped_timeout > 0:
+        initial_counts = read_all_mail_counts(podman, container)
+        initial_admiral_mail = initial_counts.get("admiral", 0)
+    else:
+        initial_admiral_mail = 0
+
+    deadline = time.monotonic() + capped_timeout
+
+    def _poll_round() -> tuple[dict, int]:
+        """Poll every task once; return (results, done_count)."""
+        results: dict[str, Any] = {}
+        done_count = 0
+        for tid in task_ids:
+            res = pickup_single(crew, crew_id, tid, podman, container, 0)
+            # Lost member: gateway returns 404 for an unknown task id. The
+            # single-task path surfaces that as an error string; normalise it
+            # to an explicit lost marker so the batch survives.
+            err = res.get("error", "") if isinstance(res, dict) else ""
+            if err and ("404" in str(err) or "not found" in str(err).lower()):
+                res = {
+                    "task_id": tid,
+                    "done": False,
+                    "lost": True,
+                    "error": "task not found in gateway",
+                }
+            results[tid] = res
+            if res.get("done"):
+                done_count += 1
+        return results, done_count
+
     while True:
-        time.sleep(_SCHEDULE_MONITOR_INTERVAL)
-        try:
-            with _registry_lock:
-                reg = _load_registry()
-                crew_items = list(reg["crews"].items())
+        results, done_count = _poll_round()
+        all_done = done_count == total and total > 0
 
-            now = time.time()
-            for crew_id, info in crew_items:
-                schedules = info.get("schedules", [])
-                for sched in schedules:
-                    if not sched.get("enabled", True):
-                        continue
-                    next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
-                    if next_fire > now:
-                        continue
+        out: dict[str, Any] = dict(results)
+        out["done"] = all_done
+        out["completed_tasks"] = done_count
+        out["total_tasks"] = total
 
-                    # Job is due — wake the crew and fire
-                    try:
-                        crew = _ensure_crew_running(info, crew_id)
-                    except Exception as e:
-                        logger.warning(
-                            "Schedule monitor: crew %s won't start for job %s: %s",
-                            crew_id, sched.get("job_id"), e,
-                        )
-                        # Advance next_fire_at and persist
-                        _advance_next_fire_at(sched)
-                        with _registry_lock:
-                            reg = _load_registry()
-                            crew_scheds = _get_crew_schedules(reg, crew_id)
-                            for s in crew_scheds:
-                                if s.get("job_id") == sched.get("job_id"):
-                                    s["next_fire_at"] = sched["next_fire_at"]
-                                    break
-                            _save_registry(reg)
-                        continue
+        if all_done:
+            if batch_id is not None and update_batch_status is not None:
+                try:
+                    update_batch_status(crew_id, batch_id, "complete")
+                except Exception as exc:  # best-effort; do not fail the pickup
+                    logger.warning(
+                        "TRN-105: could not mark batch %s complete: %s",
+                        batch_id, exc,
+                    )
+            return out
 
-                    # TRN-108: check gateway enabled state — gateway is source of truth.
-                    # After waking the crew, fetch /api/crons and check whether this
-                    # specific job is still enabled. The registry may lag behind a
-                    # `kirocrew cron pause` issued inside the container (TRN-82 only
-                    # syncs on restart). Fail-open: if the fetch raises, proceed.
-                    job_id = sched.get("job_id")
-                    try:
-                        cron_payload = _crew_api(crew, "GET", "/api/crons")
-                        gateway_jobs = (
-                            cron_payload.get("jobs", [])
-                            if isinstance(cron_payload, dict)
-                            else []
-                        )
-                        gateway_job = next(
-                            (
-                                j
-                                for j in gateway_jobs
-                                if isinstance(j, dict) and j.get("id") == job_id
-                            ),
-                            None,
-                        )
-                        if gateway_job is not None and not gateway_job.get("enabled", True):
-                            logger.info(
-                                "Schedule monitor: job %s on crew %s is disabled in"
-                                " gateway — skipping and syncing registry",
-                                job_id,
-                                crew_id,
-                            )
-                            with _registry_lock:
-                                reg = _load_registry()
-                                crew_scheds = _get_crew_schedules(reg, crew_id)
-                                for s in crew_scheds:
-                                    if s.get("job_id") == job_id:
-                                        s["enabled"] = False
-                                        break
-                                _save_registry(reg)
-                            continue
-                    except Exception as e:
-                        logger.warning(
-                            "Schedule monitor: could not fetch gateway cron state"
-                            " for job %s on crew %s: %s — proceeding",
-                            job_id,
-                            crew_id,
-                            e,
-                        )
-                        # Fail-open: proceed to fire if gateway unreachable after wake.
+        # Snapshot mode (timeout_secs == 0): one query per task, no blocking.
+        if capped_timeout == 0:
+            return out
 
-                    # Fire the tick
-                    fired = False
-                    try:
-                        tick_body: dict[str, Any] = {
-                            "task": sched.get("message", ""),
-                            "agent": sched.get("agent", "ghost"),
-                            "keep": True,
-                        }
-                        if sched.get("model"):
-                            tick_body["model"] = sched["model"]
-                        _crew_api_with_recovery(
-                            crew, crew_id, "POST", "/api/spawn", json=tick_body,
-                        )
-                        fired = True
-                    except Exception as e:
-                        logger.error(
-                            "Schedule monitor: tick dropped — failed to fire job %s on crew %s: %s",
-                            sched.get("job_id"), crew_id, e,
-                        )
+        # Admiral-mail early-return: re-read the count and bail if it grew.
+        admiral_mail = read_all_mail_counts(podman, container).get("admiral", 0)
+        if admiral_mail > initial_admiral_mail:
+            out["reason"] = "admiral_mail"
+            return out
 
-                    if fired:
-                        # Advance next_fire_at in registry only on success
-                        # TRN-89 task 4: write last_checkin_at for captain check-ins
-                        _advance_next_fire_at(sched)
-                        with _registry_lock:
-                            reg = _load_registry()
-                            crew_scheds = _get_crew_schedules(reg, crew_id)
-                            for s in crew_scheds:
-                                if s.get("job_id") == sched.get("job_id"):
-                                    s["next_fire_at"] = sched["next_fire_at"]
-                                    if (
-                                        sched.get("name") == "captain"
-                                        and sched.get("agent") == "raven"
-                                    ):
-                                        from datetime import datetime as _datetime, timezone as _tz
-                                        s["last_checkin_at"] = _datetime.now(_tz.utc).isoformat()
-                                    break
-                            _save_registry(reg)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            out["reason"] = "timeout"
+            return out
 
-                    # H-2: For one-shot (delay) jobs, delete the cron from the
-                    # gateway so its annual cron expression never fires again.
-                    if sched.get("one_shot"):
-                        job_id = sched.get("job_id")
-                        if job_id:
-                            try:
-                                _crew_api_with_recovery(
-                                    crew, crew_id, "DELETE", f"/api/crons/{job_id}"
-                                )
-                                logger.info(
-                                    "Schedule monitor: deleted one-shot cron %s from gateway after fire",
-                                    job_id,
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "Schedule monitor: could not delete one-shot cron %s from gateway: %s",
-                                    job_id, e,
-                                )
-
-        except Exception as e:
-            logger.warning("Schedule monitor error: %s", e)
+        time.sleep(min(_BATCH_POLL_INTERVAL_SECS, remaining))
 
 
-# ── Idle monitor ─────────────────────────────────────────────────────────────
+_cron_activity_since = _monitors._cron_activity_since
+_cron_has_enabled_job = _monitors._cron_has_enabled_job
 
-def _cron_activity_since(payload: Any, last_used: float) -> bool:
-    """Return whether a cron is running or completed since the last touch.
-
-    Cron executions are tracked by the crew gateway's cron service rather than
-    its dispatched-task list.  Treating both in-flight work and a recently
-    completed run as activity keeps the idle monitor independent of any one
-    caller such as Captain.
-    """
-    jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
-    if not isinstance(jobs, list):
-        return False
-    for job in jobs:
-        if not isinstance(job, dict):
-            continue
-        if job.get("is_running"):
-            return True
-        for field in ("running_since", "last_run_ts"):
-            stamp = job.get(field)
-            if (
-                isinstance(stamp, (int, float))
-                and not isinstance(stamp, bool)
-                and stamp > last_used
-            ):
-                return True
-    return False
-
-
-def _cron_has_enabled_job(payload: Any) -> bool:
-    """Return whether any cron job for this crew is currently enabled.
-
-    An enabled job may not have fired yet — its interval can exceed
-    GA_IDLE_TIMEOUT_SECS, which is common for anything coarser than a
-    minute — so "activity since last touch" alone cannot detect it: there
-    is no activity to detect until the first fire. An enabled job is
-    itself a standing commitment to run; stopping the crew before that
-    commitment is ever honoured would silently orphan it before its first
-    check-in.
-    """
-    jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
-    if not isinstance(jobs, list):
-        return False
-    return any(isinstance(job, dict) and job.get("enabled") for job in jobs)
-
-
-def _idle_monitor() -> None:
-    """Background thread: stop crew containers that have been idle too long.
-
-    Checks every GA_IDLE_TIMEOUT_SECS seconds. A crew is considered idle when:
-    - It has no running tasks (done=false), AND
-    - It hasn't been used in GA_IDLE_TIMEOUT_SECS seconds
-
-    Stopped containers are restarted transparently on next use by _ensure_crew_running.
-    """
-    while True:
-        time.sleep(max(GA_IDLE_TIMEOUT_SECS, 10))
-        try:
-            podman = _get_podman()
-        except Exception:
-            continue
-
-        with _registry_lock:
-            reg = _load_registry()
-            crew_items = list(reg["crews"].items())
-
-        now = time.time()
-        for crew_id, info in crew_items:
-            if info.get("status") == "auth_required":
-                continue
-            if not podman.container_is_running(info["container"]):
-                continue
-
-            last_used = info.get("last_used", 0)
-            idle_secs = now - last_used
-            if idle_secs < GA_IDLE_TIMEOUT_SECS:
-                continue
-
-            crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
-            cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
-
-            # Check for active dispatched tasks before stopping.
-            try:
-                r = _http.get(
-                    f"{crew_url}/api/spawn",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code in (401, 403):
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/spawn",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                payload = r.json()
-                if not isinstance(payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                agents = payload.get("agents")
-                if not isinstance(agents, list):
-                    continue
-                active = [
-                    agent for agent in agents
-                    if isinstance(agent, dict) and not agent.get("done")
-                ]
-                if active:
-                    # Tasks still running — update last_used and skip.
-                    _touch_crew(crew_id)
-                    continue
-            except Exception:
-                continue
-
-            # Cron executions do not appear in /api/spawn.  The gateway exposes
-            # their running and last-completed timestamps through /api/crons —
-            # and an enabled job that hasn't fired yet (its interval can
-            # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
-            # just one that already has.
-            try:
-                r = _http.get(
-                    f"{crew_url}/api/crons",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code in (401, 403):
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/crons",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                cron_payload = r.json()
-                if not isinstance(cron_payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                if not isinstance(cron_payload.get("jobs"), list):
-                    continue
-                if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
-                    cron_payload
-                ):
-                    _touch_crew(crew_id)
-                    continue
-            except Exception:
-                continue
-
-            logger.info(
-                "Crew %s idle for %.0fs — stopping container",
-                crew_id, idle_secs,
-            )
-            podman.container_stop(info["container"])
-            with _registry_lock:
-                reg = _load_registry()
-                if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["status"] = "stopped"
-                    _save_registry(reg)
+# Inject the runtime functions/constants monitors needs. monitors deliberately
+# does not import lifecycle at load time (that would re-create the cycle broken
+# here); it declares placeholders and relies on this call. Runs at lifecycle
+# import time — before server starts the monitor threads and before any test
+# touches monitors.* — so the loops resolve lifecycle's live functions and the
+# suite can still patch them via patch.object(monitors, "…").
+_monitors.bind_lifecycle(
+    crew_gateway_port=CREW_GATEWAY_PORT,
+    ga_idle_timeout_secs=GA_IDLE_TIMEOUT_SECS,
+    schedule_monitor_interval=_SCHEDULE_MONITOR_INTERVAL,
+    ensure_crew_running=_ensure_crew_running,
+    crew_api=_crew_api,
+    crew_api_with_recovery=_crew_api_with_recovery,
+    mint_cookie=_mint_cookie,
+)
 
 
 # ── Academy validation ────────────────────────────────────────────────────────

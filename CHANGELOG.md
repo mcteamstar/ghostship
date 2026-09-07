@@ -1,6 +1,21 @@
 # Changelog
 
-## v0.3.0 (unreleased)
+## v0.3.1 (unreleased)
+
+### Captain templates
+
+- **`independent-review`** — dispatches four concurrent independent reviewers (Wraith for docs, three Banshees for security/quality/test-coverage); `change_name` is optional — when provided, scopes the review to that change; when omitted, reviews the entire codebase. Consolidates findings by severity. (`independent-review-all` is merged into this template and deleted.)
+- **`sdd`** — drives one or more named OpenSpec changes through the standard Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a single name or a comma-separated list for parallel multi-change execution with automatic worktree isolation and merge reconciliation. (`sdd-parallel` is merged into this template and deleted.)
+- **`<change?>`** token in `transport/captain.py` — optional change-name token: substitutes the provided name when `change_name` is given, or `"entire codebase"` when omitted. Raises if mixed with required `<change>` or `<changes>` in the same template body.
+
+### Install
+
+- **`--client-only`** flag — skips all container infrastructure (no Podman check, no image builds, no `compose up`) and wires up just the `ghostship` CLI and agent harness integrations. Designed for machines connecting to an already-running remote transport. Use with `--url` and optionally `--api-key`.
+- **Transport source hash detection** — `install.sh` now hashes the transport source tree and embeds it as a label on the built image. On subsequent installs, if the version matches but the source has changed (mid-release commits), a clean rebuild is forced automatically.
+
+---
+
+## v0.3.0
 
 ### Breaking changes
 
@@ -15,7 +30,7 @@
 Crew dashboards are now proxied through `ga-portal` (Caddy) rather than per-port uvicorn threads in the transport. This is the only dashboard mode — the per-port proxy is removed.
 
 - `launch(dashboard=True)` registers a per-crew Caddy server via the admin API and returns a `dashboard_url`. `nuke` removes it. Transport startup re-registers from `crews.json` (idempotent, no Caddy restarts).
-- Every dashboard port is gated by a `gs_session` cookie. Unauthenticated requests go to `/login-ui`; `POST /dashboard-login` issues the cookie when `GA_API_KEY` is correct (open-access when `GA_API_KEY` is unset).
+- Every dashboard port is gated by a `gs_session` cookie. Unauthenticated requests go to `/dashboard/login`; `POST /dashboard/login` issues the cookie when `GA_API_KEY` is correct (open-access when `GA_API_KEY` is unset).
 - The transport injects the `mc_token_5476` crew session cookie before forwarding to the crew gateway, resolving a 403 IP-mismatch that occurred when Caddy proxied directly.
 - **TLS modes:** `off` (plain HTTP, default), `internal` (Caddy built-in CA), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt). Configured via `GA_PORTAL_TLS_MODE`. See [docs/caddy.md](docs/caddy.md).
 - When `GA_API_KEY` is set, Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` at the edge before requests reach the transport.
@@ -32,12 +47,11 @@ Crew base image bumped from `0.4.0` to `0.5.0`. The `sandbox: "off"` override is
 
 ### Config cleanup ⚠️
 
-Removed 7 env vars that are now hardcoded internally. No operator action needed — defaults are unchanged.
+Removed 6 env vars that are now hardcoded internally. No operator action needed — defaults are unchanged.
 
 | Removed variable | Hardcoded to |
 |:----------------|:-------------|
 | `GA_FILE_TTL_SECS` | `300` |
-| `GA_PICKUP_MAX_POLL_SECS` | `30` |
 | `GA_MEMORY_WAIT_SECS` | `60` |
 | `KC_GATEWAY_TOKEN_TTL` | `"24h"` |
 | `GA_ENFORCE_HTTPS_REDIRECT` | `False` (Caddy owns redirects) |

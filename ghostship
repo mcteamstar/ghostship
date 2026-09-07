@@ -11,7 +11,7 @@ Subcommands:
     upgrade    [flags]   Rebuild and restart the transport (runs scripts/install.sh)
     uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
     status               Show transport status (container running, port, uptime)
-    init       [flags]   Register the MCP server and install skill symlinks for agent clients
+    setup      [flags]   Register the MCP server and install skill symlinks for agent clients
     version              Print the ghostship version
 
 Run 'ghostship <subcommand> --help' for subcommand-specific flags.
@@ -71,6 +71,8 @@ def cmd_install(args: list) -> int:
               "Delegates to scripts/install.sh — run 'ghostship install --help' "
               "after removing this flag to see all install.sh flags.")
         return 0
+    # Forward ALL extra args unchanged to scripts/install.sh, including
+    # --client-only / --url / --api-key (TRN-115) — no per-flag handling here.
     _exec_script("scripts/install.sh", args)
 
 

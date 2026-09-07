@@ -52,6 +52,8 @@ Quick reference for operators and developers. For full docs see the linked files
 | `transport://agents` | Available agent personas and their roles |
 | `transport://compositions` | Available crew compositions for `launch` |
 | `transport://orders` | Built-in Captain standing-order templates |
+| `transport://version` | Transport version and per-crew image versions |
+| `transport://jobs` | Scheduled jobs across all running crews |
 
 ---
 

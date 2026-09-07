@@ -97,6 +97,18 @@
 
 # ── KiroCrew memory thresholds ────────────────────────────────────────────────
 # Written to config.local.json inside each crew at launch.
+# KiroCrew memory gate thresholds. These are written into each crew's
+# config.local.json and control when the gateway throttles or blocks
+# new subagent spawns based on host free memory.
+#
+# IMPORTANT: Inside a container, memory is dynamically allocated by the host
+# (Podman balloon on Linux, Podman machine VM on macOS). The container sees
+# only what has been allocated so far, not the full potential ceiling. Setting
+# any non-zero threshold will trigger throttling almost immediately under real
+# workloads, causing AcpProcessDied failures rather than preventing them.
+# Leave unset (or set to 0) to disable memory gating and let the OS manage
+# pressure. Only set non-zero values on truly memory-constrained hosts with no
+# dynamic allocation (e.g. a fixed-memory VM with no balloon).
 # GA_SPAWN_MIN_MEMORY_GB=1.5
 # GA_RESOURCE_PRESSURE_GB=2.0
 # GA_RESOURCE_CRITICAL_GB=1.0
@@ -197,7 +209,7 @@
 # Domain for ACME (Let's Encrypt). Required when GA_PORTAL_TLS_MODE=acme.
 # GA_PORTAL_DOMAIN=""
 
-# TTL (seconds) for gs_session cookies issued by /dashboard-login.
+# TTL (seconds) for gs_session cookies issued by /dashboard/login.
 # Default 86400 (24 h). Sessions are in-memory only and reset on transport restart.
 # GA_PORTAL_SESSION_TTL_SECS=86400
 

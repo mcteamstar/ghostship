@@ -3,9 +3,7 @@
 ## Purpose
 
 Install and run Ghost Academy locally on either macOS or Linux with a single script, handling the platform differences (podman-machine VM vs native Podman) transparently so the rest of the system never needs to know which OS it's on.
-
 ## Requirements
-
 ### Requirement: Cross-platform Podman provisioning
 The system SHALL detect the host OS via `uname -s` and verify that `podman` and `podman-compose` are installed before proceeding. If either is missing, `install.sh` SHALL exit with a clear error and print the install command for the detected OS. Podman and podman-compose are prerequisites that must be installed before running `install.sh` — the script does not install them itself.
 
@@ -329,7 +327,7 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 - **THEN** `podman compose down` stops and removes the container cleanly
 
 ### Requirement: Shell scripts reorganised under scripts/
-`start.sh` and `uninstall.sh` SHALL be located at `scripts/start.sh` and `scripts/uninstall.sh` respectively. `install.sh` at the repo root SHALL remain as a shim that delegates to `scripts/install.sh` with all arguments forwarded, preserving backward compatibility for existing workflows.
+`start.sh` and `uninstall.sh` SHALL be located at `scripts/start.sh` and `scripts/uninstall.sh` respectively. `install.sh` at the repo root SHALL remain as a shim that delegates to `scripts/install.sh` with all arguments forwarded, preserving backward compatibility for existing workflows. The shim SHALL forward `--client-only` and all other flags unchanged.
 
 #### Scenario: start.sh and uninstall.sh in scripts/
 - **WHEN** a user clones the repository
@@ -338,6 +336,10 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 #### Scenario: install.sh shim at root
 - **WHEN** `./install.sh [flags]` is invoked
 - **THEN** `scripts/install.sh [flags]` runs with all arguments forwarded and the exit code is preserved
+
+#### Scenario: install.sh shim forwards --client-only
+- **WHEN** `./install.sh --client-only [flags]` is invoked
+- **THEN** `scripts/install.sh --client-only [flags]` runs with all arguments forwarded and the exit code is preserved
 
 ### Requirement: ghostship CLI available on PATH after install
 `scripts/install.sh` SHALL make the `ghostship` CLI script available on `PATH` after a successful run.
@@ -351,15 +353,35 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 - **THEN** `scripts/install.sh` prints a clear one-line message instructing the user to add `~/.local/bin` to their `PATH`
 
 ### Requirement: podman-compose required as a prerequisite
-The system SHALL require a Compose provider (`podman-compose`, `docker-compose`, or `docker compose`) to be installed before `install.sh` runs. `install.sh` SHALL check for a compose provider and exit with a clear error and install instructions if none is found.
+The system SHALL require `podman-compose` to be installed before `install.sh` runs. `install.sh` SHALL check for `podman-compose` specifically and exit with a clear error and install instructions if it is not found. `docker-compose` and `docker compose` are NOT acceptable alternatives because Ghostship's generated `compose.yml` uses external Podman secrets that Docker Compose does not support.
+
+`install.sh`, `start.sh`, and `uninstall.sh` SHALL set `PODMAN_COMPOSE_PROVIDER` to the resolved path of `podman-compose` before every `podman compose` invocation, so that Podman's provider-selection logic cannot pick Docker Compose when both are installed.
+
+`install.sh` SHALL inject `GA_PORTAL_SESSION_TTL_SECS` into the generated `compose.yml` transport environment block, so that the session TTL configured in `ghostship.conf` takes effect at runtime.
 
 #### Scenario: compose provider present
-- **WHEN** `install.sh` runs and `podman-compose` (or equivalent) is on `PATH`
+- **WHEN** `install.sh` runs and `podman-compose` is on `PATH`
 - **THEN** installation proceeds normally
 
 #### Scenario: no compose provider found
-- **WHEN** `install.sh` runs and no compose provider is found
+- **WHEN** `install.sh` runs and `podman-compose` is not found
 - **THEN** the script exits with an error and prints the install command for `podman-compose` on the detected OS
+
+#### Scenario: Docker Compose present but podman-compose absent — still fails
+- **WHEN** `install.sh` runs and `docker-compose` is installed but `podman-compose` is not
+- **THEN** the script exits with an error (it does NOT proceed using Docker Compose)
+
+#### Scenario: Both providers installed — podman-compose is used
+- **WHEN** both `podman-compose` and `docker-compose` are installed
+- **THEN** all `podman compose` invocations in `install.sh`, `start.sh`, and `uninstall.sh` use `podman-compose` as the provider, not Docker Compose
+
+#### Scenario: uninstall.sh with podman-compose absent
+- **WHEN** `uninstall.sh` runs and `podman-compose` has already been removed from the system
+- **THEN** the script falls back to direct `podman rm` calls to remove `ga-transport` and `ga-portal`, rather than failing or using Docker Compose
+
+#### Scenario: GA_PORTAL_SESSION_TTL_SECS is injected into compose.yml
+- **WHEN** `GA_PORTAL_SESSION_TTL_SECS` is set in `ghostship.conf` and `install.sh` runs
+- **THEN** the generated `compose.yml` contains `GA_PORTAL_SESSION_TTL_SECS=<value>` in the transport container environment
 
 ### Requirement: Documentation states that academy/ and crews/ changes require reinstall
 `docs/configuration.md` and `README.md` SHALL include a note that `academy/` and `crews/` contents are snapshotted into the data volume at install time, and that changes to those directories require re-running `./install.sh` to take effect in a running transport.
@@ -392,3 +414,4 @@ format (or `true`/`false` for the master switch). Comments SHALL explain the for
   installation
 - **THEN** the `GA_RATE_LIMIT_*` entries are present, commented out, and show the
   correct default values
+

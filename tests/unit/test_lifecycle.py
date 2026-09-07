@@ -46,6 +46,7 @@ from tests.unit.helpers import (  # noqa: F401
     FakePodmanClient,
     academy,
     lifecycle,
+    monitors,
     server,
 )
 import transport.registry as _registry_mod
@@ -762,7 +763,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(podman.starts, 2)
             self.assertEqual(steps, ["start", "patch", "stop", "start", "wait"])
-            wait_gateway.assert_called_once_with("http://gs-target:5476", timeout=30)
+            wait_gateway.assert_called_once_with("http://gs-target:5476", timeout=60)
         finally:
             lifecycle.GA_MAX_ACTIVE_CREWS = original
 
@@ -1796,11 +1797,11 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
 
 
 class PatchCrewConfigTests(unittest.TestCase):
-    """Tests for _patch_crew_config (TRN-113 / F-2)."""
+    """Tests for _patch_crew_config (TRN-113 / F-2, TRN-127)."""
 
     def _call_patch_crew_config(self) -> dict:
         """Call lifecycle._patch_crew_config with a stub podman that captures
-        the container_exec call, then decode and return the agent_overrides dict."""
+        the container_exec call, then decode and return the full_overrides dict."""
         import base64
         import json as _json
 
@@ -1824,23 +1825,107 @@ class PatchCrewConfigTests(unittest.TestCase):
     def test_patch_crew_config_sets_sandbox_off(self) -> None:
         """sandbox must be 'off' -- without it every agent spawn fails under
         rootless Podman because kiro-cli 0.5.0+ is fail-closed on the
-        MS_REMOUNT inside a user namespace (TRN-113)."""
+        MS_REMOUNT inside a user namespace (TRN-113).
+
+        After TRN-127 the full_overrides dict nests agent keys under
+        ``full_overrides["agent"]`` rather than at the top level."""
         overrides = self._call_patch_crew_config()
+        agent = overrides.get("agent", {})
         self.assertEqual(
-            overrides.get("sandbox"),
+            agent.get("sandbox"),
             "off",
-            f"Expected sandbox='off' but got: {overrides.get('sandbox')!r}",
+            f"Expected agent.sandbox='off' but got: {agent.get('sandbox')!r}",
         )
 
     def test_patch_crew_config_sets_dangerously_skip_permissions(self) -> None:
         """dangerously_skip_permissions must be True so the transport (different
-        UID) can write config.local.json inside the crew container."""
+        UID) can write config.local.json inside the crew container.
+
+        After TRN-127 the full_overrides dict nests agent keys under
+        ``full_overrides["agent"]`` rather than at the top level."""
+        overrides = self._call_patch_crew_config()
+        agent = overrides.get("agent", {})
+        self.assertIs(
+            agent.get("dangerously_skip_permissions"),
+            True,
+            f"Expected agent.dangerously_skip_permissions=True but got: "
+            f"{agent.get('dangerously_skip_permissions')!r}",
+        )
+
+    # ── TRN-127: headless-crew memory baseline overrides ─────────────────────
+
+    def test_patch_crew_config_disables_stt(self) -> None:
+        """stt.enabled must be False — no microphone in a headless server crew
+        (TRN-127).  Absence of the field is also a failure: the Whisper model
+        loads by default and wastes ~148 MB of RSS."""
+        overrides = self._call_patch_crew_config()
+        stt = overrides.get("stt")
+        self.assertIsNotNone(stt, "Expected 'stt' section in full_overrides but it was absent")
+        self.assertIs(
+            stt.get("enabled"),
+            False,
+            f"Expected stt.enabled=False but got: {stt.get('enabled')!r}",
+        )
+
+    def test_patch_crew_config_disables_eager_spawn(self) -> None:
+        """session.eager_spawn must be False — prevents the ~340 MB kiro-cli-chat
+        pre-fork that happens at startup even when no task is running (TRN-127)."""
+        overrides = self._call_patch_crew_config()
+        session = overrides.get("session")
+        self.assertIsNotNone(session, "Expected 'session' section in full_overrides but it was absent")
+        self.assertIs(
+            session.get("eager_spawn"),
+            False,
+            f"Expected session.eager_spawn=False but got: {session.get('eager_spawn')!r}",
+        )
+
+    def test_patch_crew_config_sets_session_timeout(self) -> None:
+        """session.timeout_secs must be 300 — reclaims session memory within
+        5 minutes of task completion instead of the default 3600 s (TRN-127)."""
+        overrides = self._call_patch_crew_config()
+        session = overrides.get("session", {})
+        self.assertEqual(
+            session.get("timeout_secs"),
+            300,
+            f"Expected session.timeout_secs=300 but got: {session.get('timeout_secs')!r}",
+        )
+
+    def test_patch_crew_config_sets_watchdog_rss_max_mb(self) -> None:
+        """session.watchdog_rss_max_mb must be 2000 — hard RSS ceiling above
+        the ~1.9 GB active task peak; recycles runaway sessions without killing
+        healthy ones (TRN-127 D3)."""
+        overrides = self._call_patch_crew_config()
+        session = overrides.get("session", {})
+        self.assertEqual(
+            session.get("watchdog_rss_max_mb"),
+            2000,
+            f"Expected session.watchdog_rss_max_mb=2000 but got: "
+            f"{session.get('watchdog_rss_max_mb')!r}",
+        )
+
+    def test_patch_crew_config_disables_telemetry_beacon(self) -> None:
+        """telemetry.beacon_enabled must be False — suppresses outbound beacon
+        pings on server deployments (TRN-127)."""
+        overrides = self._call_patch_crew_config()
+        telemetry = overrides.get("telemetry")
+        self.assertIsNotNone(
+            telemetry, "Expected 'telemetry' section in full_overrides but it was absent"
+        )
+        self.assertIs(
+            telemetry.get("beacon_enabled"),
+            False,
+            f"Expected telemetry.beacon_enabled=False but got: "
+            f"{telemetry.get('beacon_enabled')!r}",
+        )
+
+    def test_patch_crew_config_disables_auto_update(self) -> None:
+        """auto_update must be False at the top level — prevents version drift
+        in a container pinned to a specific image version (TRN-127)."""
         overrides = self._call_patch_crew_config()
         self.assertIs(
-            overrides.get("dangerously_skip_permissions"),
-            True,
-            f"Expected dangerously_skip_permissions=True but got: "
-            f"{overrides.get('dangerously_skip_permissions')!r}",
+            overrides.get("auto_update"),
+            False,
+            f"Expected auto_update=False but got: {overrides.get('auto_update')!r}",
         )
 
 
@@ -1855,8 +1940,9 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
     ``time.sleep`` (to avoid the infinite outer loop) and patching out the
     parts we don't want to exercise per test.  The function under test
     resolves _crew_api, _crew_api_with_recovery, _load_registry, _save_registry,
-    _get_crew_schedules, _ensure_crew_running etc. from lifecycle's namespace,
-    so all patches are on ``lifecycle.*`` (call-site principle, design.md §2).
+    _get_crew_schedules, _ensure_crew_running etc. from the ``monitors`` module
+    namespace (TRN-116 §8 moved the loops there), so all patches are on
+    ``monitors.*`` (call-site principle, design.md §2).
     """
 
     # Shared fixture helpers ──────────────────────────────────────────────────
@@ -1930,14 +2016,14 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
         save_mock = Mock()
 
         with (
-            patch.object(lifecycle, "time") as time_mock,
-            patch.object(lifecycle, "_load_registry", side_effect=_fake_load_registry),
-            patch.object(lifecycle, "_save_registry", save_mock),
-            patch.object(lifecycle, "_get_crew_schedules", return_value=[sched]),
-            patch.object(lifecycle, "_ensure_crew_running", ensure_mock),
-            patch.object(lifecycle, "_crew_api", crew_api_mock),
-            patch.object(lifecycle, "_crew_api_with_recovery", spawn_mock),
-            patch.object(lifecycle, "_advance_next_fire_at"),
+            patch.object(monitors, "time") as time_mock,
+            patch.object(monitors, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(monitors, "_save_registry", save_mock),
+            patch.object(monitors, "_get_crew_schedules", return_value=[sched]),
+            patch.object(monitors, "_ensure_crew_running", ensure_mock),
+            patch.object(monitors, "_crew_api", crew_api_mock),
+            patch.object(monitors, "_crew_api_with_recovery", spawn_mock),
+            patch.object(monitors, "_advance_next_fire_at"),
         ):
             time_mock.sleep.side_effect = _fake_sleep
             time_mock.time.return_value = 9999.0  # always past next_fire_at=0
@@ -2013,6 +2099,135 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
             crew_api_side_effect=RuntimeError("network timeout"),
         )
         spawn_mock.assert_called_once()
+
+
+# ── TRN-123: per-crew serialisation of _ensure_crew_running (tasks 6.1 / 6.2) ─
+
+
+class _CountingPodman:
+    """Podman stand-in that counts container_start calls per container and
+    blocks briefly in the leader path so the second concurrent caller is
+    guaranteed to arrive while the first is still restarting."""
+
+    def __init__(self) -> None:
+        self.start_calls: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._first_start = threading.Event()
+
+    def container_is_running(self, name: str) -> bool:
+        return False
+
+    def container_start(self, name: str) -> None:
+        with self._lock:
+            self.start_calls[name] = self.start_calls.get(name, 0) + 1
+        # Hold the leader inside the critical section long enough for the
+        # second caller to reach the leader-election gate.
+        if not self._first_start.is_set():
+            self._first_start.set()
+            time.sleep(0.15)
+
+    def container_stop(self, name: str) -> None:
+        pass
+
+    def system_info(self) -> dict:
+        return {"host": {"memAvailable": 8 * 1024**3}}
+
+
+class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    """TRN-123: concurrent _ensure_crew_running callers must not double-start."""
+
+    def setUp(self) -> None:
+        # Clear any leftover leader-election state between tests.
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events.clear()
+
+    def tearDown(self) -> None:
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events.clear()
+
+    async def test_same_crew_starts_container_exactly_once(self) -> None:
+        """6.1: two coroutines calling _ensure_crew_running for the same stopped
+        crew result in exactly one container_start."""
+        podman = _CountingPodman()
+        crew = {"container": "gs-demo", "status": "stopped", "cookie": "old"}
+        original = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
+            mint = Mock(return_value="new-cookie")
+            with (
+                patch.object(lifecycle, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_mint_cookie", mint),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_touch_crew"),
+                patch.object(lifecycle, "_probe_gateway", return_value=True),
+                patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": crew}}),
+                patch.object(lifecycle, "_save_registry"),
+                patch.object(
+                    lifecycle,
+                    "_get_crew",
+                    return_value={"container": "gs-demo", "status": "running", "cookie": "new-cookie"},
+                ),
+            ):
+                results = await asyncio.gather(
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew, "demo", touch=False),
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew, "demo", touch=False),
+                )
+        finally:
+            lifecycle.GA_MIN_FREE_MEM_GB = original
+
+        self.assertEqual(len(results), 2)
+        # The leader-election guard must ensure only ONE caller runs the restart
+        # body. _mint_cookie is invoked exactly once inside that body, so a
+        # second leader (a double-start race) would call it twice.
+        self.assertEqual(
+            mint.call_count,
+            1,
+            f"expected exactly one leader restart, got {mint.call_count}",
+        )
+
+    async def test_different_crews_start_independently(self) -> None:
+        """6.2: two coroutines for different crew_ids each start their own
+        container without serialising against each other."""
+        podman = _CountingPodman()
+        crew_a = {"container": "gs-a", "status": "stopped", "cookie": "a"}
+        crew_b = {"container": "gs-b", "status": "stopped", "cookie": "b"}
+        original = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
+            with (
+                patch.object(lifecycle, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_touch_crew"),
+                patch.object(lifecycle, "_probe_gateway", return_value=True),
+                patch.object(
+                    lifecycle,
+                    "_load_registry",
+                    return_value={"crews": {"a": crew_a, "b": crew_b}},
+                ),
+                patch.object(lifecycle, "_save_registry"),
+                patch.object(
+                    lifecycle,
+                    "_get_crew",
+                    return_value={"status": "running", "cookie": "new-cookie", "container": "gs-x"},
+                ),
+            ):
+                results = await asyncio.gather(
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew_a, "a", touch=False),
+                    asyncio.to_thread(lifecycle._ensure_crew_running, crew_b, "b", touch=False),
+                )
+        finally:
+            lifecycle.GA_MIN_FREE_MEM_GB = original
+
+        self.assertEqual(len(results), 2)
+        # Each distinct crew ran its own leader restart body — the leader path
+        # issues two container_start calls (initial start + restart after the
+        # config re-patch). Different crew_ids do not serialise against one
+        # another, so BOTH crews complete their restart.
+        self.assertEqual(podman.start_calls.get("gs-a", 0), 2)
+        self.assertEqual(podman.start_calls.get("gs-b", 0), 2)
 
 
 if __name__ == "__main__":

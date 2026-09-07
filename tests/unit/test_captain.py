@@ -212,7 +212,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         resolved_body = server._resolve_order_template("sdd", "test-change")
 
         self.assertIn("## sdd", resource)
-        self.assertIn("Drive a named OpenSpec change through the standard", resource)
+        self.assertIn("Drive one or more named OpenSpec changes through the standard", resource)
         self.assertIn("openspec store list --json", resolved_body)
         self.assertIn("openspec store register", resolved_body)
         self.assertIn("`--store <id>`", resolved_body)
@@ -801,6 +801,107 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         payload = api.call_args.kwargs["json"]
         self.assertEqual(payload["cron"], "0 9 * * 1")
         self.assertNotIn("cron_expr", payload)
+
+    # ── TRN-110 task 6.3 / TRN-120 task 3 — sdd multi-change via comma-separated <change> ──
+
+    def test_resolve_sdd_multi_change_substitutes_value(self) -> None:
+        """sdd: comma-separated change_name is substituted and no bare <change> token remains."""
+        resolved = server._resolve_order_template("sdd", "trn-110,trn-115")
+        self.assertNotIn("<change>", resolved)
+        # The raw comma-separated value should appear as-is in the body
+        self.assertIn("trn-110,trn-115", resolved)
+
+    def test_resolve_sdd_multi_change_validates_each_name(self) -> None:
+        """sdd: an invalid individual change name in a comma-separated list raises ValueError."""
+        with self.assertRaises(ValueError):
+            server._resolve_order_template("sdd", "trn-110,bad name!")
+
+    def test_resolve_sdd_requires_change_name(self) -> None:
+        """sdd: change_name=None raises ValueError."""
+        with self.assertRaises(ValueError):
+            server._resolve_order_template("sdd", None)
+
+    # ── TRN-110 tasks 3.1–3.3 — independent-review template resolution ────────
+
+    def test_resolve_independent_review_scopes_to_change(self) -> None:
+        """Task 3.1: independent-review with change_name substitutes Scope line, no residual {{...}}."""
+        resolved = server._resolve_order_template("independent-review", "trn-107")
+        self.assertIn("Scope: trn-107", resolved)
+        self.assertNotIn("<change?>", resolved)
+        self.assertNotIn("<change>", resolved)
+        import re as _re
+        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
+
+    def test_resolve_independent_review_accepts_none_change_name(self) -> None:
+        """TRN-120 task 2.5: independent-review with change_name=None resolves to 'entire codebase'."""
+        resolved = server._resolve_order_template("independent-review", None)
+        self.assertIn("Scope: entire codebase", resolved)
+        self.assertNotIn("<change?>", resolved)
+        self.assertNotIn("<change>", resolved)
+        import re as _re
+        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
+
+    def test_resolve_independent_review_whole_codebase(self) -> None:
+        """TRN-120 task 2.5: independent-review with change_name=None yields Scope: entire codebase, no residual tokens."""
+        resolved = server._resolve_order_template("independent-review", None)
+        self.assertIn("Scope: entire codebase", resolved)
+        self.assertNotIn("<change>", resolved)
+        self.assertNotIn("<changes>", resolved)
+        import re as _re
+        self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
+
+    def test_resolve_template_rejects_both_tokens(self) -> None:
+        """A template body containing both <change> and <changes> raises ValueError."""
+        import tempfile, os
+        orders_dir = server._resolve_orders_dir()
+        test_template = orders_dir / "_test_both_tokens.md"
+        try:
+            test_template.write_text(
+                "Body with both <change> and <changes> tokens.\n"
+            )
+            with self.assertRaises(ValueError) as ctx:
+                server._resolve_order_template("_test_both_tokens", "trn-110")
+            self.assertIn("both", str(ctx.exception))
+        finally:
+            test_template.unlink(missing_ok=True)
+
+    # ── TRN-120 task 1.2 — <change?> optional token tests ────────────────────
+
+    def test_optional_change_token_with_name(self) -> None:
+        """<change?> with a provided change_name substitutes the name."""
+        orders_dir = server._resolve_orders_dir()
+        test_template = orders_dir / "_test_change_optional_name.md"
+        try:
+            test_template.write_text("Scope: <change?>\n")
+            resolved = server._resolve_order_template("_test_change_optional_name", "trn-120")
+            self.assertEqual(resolved, "Scope: trn-120")
+            self.assertNotIn("<change?>", resolved)
+        finally:
+            test_template.unlink(missing_ok=True)
+
+    def test_optional_change_token_without_name(self) -> None:
+        """<change?> with change_name=None substitutes 'entire codebase'."""
+        orders_dir = server._resolve_orders_dir()
+        test_template = orders_dir / "_test_change_optional_none.md"
+        try:
+            test_template.write_text("Scope: <change?>\n")
+            resolved = server._resolve_order_template("_test_change_optional_none", None)
+            self.assertEqual(resolved, "Scope: entire codebase")
+            self.assertNotIn("<change?>", resolved)
+        finally:
+            test_template.unlink(missing_ok=True)
+
+    def test_optional_change_token_conflict_with_required(self) -> None:
+        """Template body with both <change?> and <change> raises ValueError."""
+        orders_dir = server._resolve_orders_dir()
+        test_template = orders_dir / "_test_change_optional_conflict.md"
+        try:
+            test_template.write_text("Scope: <change?> and <change>\n")
+            with self.assertRaises(ValueError) as ctx:
+                server._resolve_order_template("_test_change_optional_conflict", "trn-120")
+            self.assertIn("mix", str(ctx.exception))
+        finally:
+            test_template.unlink(missing_ok=True)
 
 
 class MaildirSubjectReaderTests(unittest.TestCase):
