@@ -48,7 +48,9 @@ SECRET_PATTERNS = [
 ]
 
 # f"...{var}..." or "..." + var inside a SQL keyword context.
-SQL_KEYWORDS = r"(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WHERE|VALUES)"
+# Word-bounded so identifiers like `auto_update` don't match the bare
+# UPDATE keyword (TRN-134 review false positive on test_lifecycle.py).
+SQL_KEYWORDS = r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WHERE|VALUES)\b"
 UNSAFE_QUERY_PATTERNS = [
     (
         "f-string interpolation into SQL",
