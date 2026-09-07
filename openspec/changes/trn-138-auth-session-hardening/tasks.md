@@ -21,8 +21,9 @@
 
 ## 5. Corrupt registry — structured error at MCP boundary
 
-- [ ] 5.1 In `transport/registry.py`, review what `_load_registry()` raises on corrupt JSON — it currently re-raises `json.JSONDecodeError` after quarantining. Wrap callers at the MCP tool entry points (`crews()`, `dispatch()`, `nuke()`, `launch()`, `pickup()`, `steer()`, `schedule()`, `supply()`, `evac()`) to catch `json.JSONDecodeError` and return a structured error dict rather than propagating an unhandled exception
-- [ ] 5.2 Add unit test: mock `_load_registry` to raise `json.JSONDecodeError`; call the `crews` MCP tool; verify it returns a structured error response rather than raising
+- [ ] 5.1 In `transport/registry.py`, add a `RegistryCorruptError(RuntimeError)` exception class. Change `_load_registry()` to raise `RegistryCorruptError` instead of re-raising `json.JSONDecodeError` — this gives callers a single named exception to catch rather than an internal JSON parsing detail
+- [ ] 5.2 In `transport/server.py`, add a top-level `try/except RegistryCorruptError` in each MCP tool handler that calls into the registry (`crews`, `launch`, `dispatch`, `pickup`, `steer`, `nuke`, `schedule`, `supply`, `evac`). Return a structured `{"error": "registry corrupt — crews.json.corrupt preserved for inspection"}` response rather than propagating the exception
+- [ ] 5.3 Add unit test: mock `_load_registry` to raise `RegistryCorruptError`; call the `crews` MCP tool; verify it returns a structured error response rather than raising
 
 ## 6. Validation
 
