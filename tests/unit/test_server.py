@@ -1071,6 +1071,88 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         installer = (repo_root / "scripts" / "install.sh").read_text()
         self.assertIn('KIRO_API_KEY: "${KIRO_API_KEY:-}"', installer)
+
+
+class WriteAuthFileFdSentinelTests(unittest.TestCase):
+    """Regression tests for the fd-sentinel fix in _write_auth_file() (TRN-139).
+
+    Before TRN-139, ``fd = -1`` was set inside the ``with os.fdopen()`` block
+    body.  If ``os.fdopen()`` itself raised, the ``finally`` guard saw ``fd !=
+    -1`` and called ``os.close(fd)`` on a descriptor that ``os.fdopen`` had
+    already internally closed — a double-close.  The fix moves ``fd = -1`` to
+    immediately after the ``os.fdopen()`` call returns successfully.
+    """
+
+    def test_fd_sentinel_placement_in_source(self) -> None:
+        """Structural guard: fd = -1 must appear on the line immediately after os.fdopen().
+
+        This test pins the invariant so a future refactor cannot accidentally
+        revert to the old pattern (fd = -1 inside the with body).
+        """
+        import inspect
+
+        src = inspect.getsource(server._write_auth_file)
+        lines = [l.strip() for l in src.splitlines()]
+        # Find the bare os.fdopen call (not 'with os.fdopen')
+        fdopen_idx = next(
+            (i for i, l in enumerate(lines) if "os.fdopen" in l and not l.startswith("with ")),
+            None,
+        )
+        self.assertIsNotNone(fdopen_idx, "Expected bare os.fdopen() call in _write_auth_file")
+        # The very next non-empty line must be the sentinel assignment.
+        next_nonempty = next(
+            (i for i in range(fdopen_idx + 1, len(lines)) if lines[i]),
+            None,
+        )
+        self.assertIsNotNone(next_nonempty, "No line found after os.fdopen()")
+        self.assertEqual(
+            lines[next_nonempty],
+            "fd = -1",
+            f"Expected 'fd = -1' immediately after os.fdopen, got: {lines[next_nonempty]!r}",
+        )
+
+    def test_write_auth_file_does_not_double_close_fd(self) -> None:
+        """The raw fd must not be explicitly closed after fdopen takes ownership.
+
+        After os.fdopen() succeeds the file object owns the fd; the sentinel
+        fd = -1 ensures the finally guard skips the explicit os.close.  Assert
+        the raw fd integer is NOT passed to os.close during a normal write.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            test_path = Path(td) / "auth"
+            raw_fd: list[int] = []
+            close_calls: list[int] = []
+            real_os_open = os.open
+            real_os_close = os.close
+
+            def capturing_open(path: str, flags: int, mode: int = 0o777) -> int:
+                fd = real_os_open(path, flags, mode)
+                raw_fd.append(fd)
+                return fd
+
+            def capturing_close(fd: int) -> None:
+                close_calls.append(fd)
+                real_os_close(fd)
+
+            with (
+                patch("os.open", side_effect=capturing_open),
+                patch("os.close", side_effect=capturing_close),
+                patch("os.fchmod"),
+                patch("os.fsync"),
+                patch("os.chmod"),
+            ):
+                server._write_auth_file("testvalue", _path=test_path)
+
+            if raw_fd:
+                self.assertNotIn(
+                    raw_fd[0],
+                    close_calls,
+                    "fd must not be explicitly os.close'd after fdopen — double-close hazard (TRN-139)",
+                )
+
+
 class StartupWiringTests(unittest.TestCase):
     """Verify the MCP app factory uses /mcp path and stateless setting."""
 
