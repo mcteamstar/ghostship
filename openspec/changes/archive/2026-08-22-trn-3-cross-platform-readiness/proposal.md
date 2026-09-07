@@ -1,13 +1,13 @@
 ## Why
 
-Tony intends to open source this repo. `install.sh` already branches on `uname -s`
+The Admiral intends to open source this repo. `install.sh` already branches on `uname -s`
 for the genuinely different bits (podman machine VM vs. native socket, `Application
 Support` vs. XDG data dir), but the whole Linux path has only ever been exercised by
 code review on a Mac — nobody has actually run `./install.sh` on a Linux box during
-development. For a project that will suddenly have Linux users who aren't Tony, that
+development. For a project that will suddenly have Linux users who aren't the Admiral, that
 gap matters more than it does today.
 
-This is a stub only — capturing a direction Tony wants kept alive for a future
+This is a stub only — capturing a direction the Admiral wants kept alive for a future
 planning pass, not a worked-out design. No implementation should start from this
 proposal as written.
 

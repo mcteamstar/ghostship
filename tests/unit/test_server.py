@@ -2909,15 +2909,15 @@ class GitIdentityInjectionTests(unittest.TestCase):
     def test_both_vars_set_includes_all_four_git_vars_in_create_env(self) -> None:
         """4.1 — when GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL are set,
         container_create receives all four GIT_* identity vars in its env dict."""
-        create_calls = self._capture_create_calls("Ada Lovelace", "ada@example.com")
+        create_calls = self._capture_create_calls("Example Operator", "operator@example.com")
 
         self.assertEqual(len(create_calls), 1)
         env = create_calls[0]["env"]
 
-        self.assertEqual(env["GIT_AUTHOR_NAME"], "Ada Lovelace")
-        self.assertEqual(env["GIT_AUTHOR_EMAIL"], "ada@example.com")
-        self.assertEqual(env["GIT_COMMITTER_NAME"], "Ada Lovelace")
-        self.assertEqual(env["GIT_COMMITTER_EMAIL"], "ada@example.com")
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "Example Operator")
+        self.assertEqual(env["GIT_AUTHOR_EMAIL"], "operator@example.com")
+        self.assertEqual(env["GIT_COMMITTER_NAME"], "Example Operator")
+        self.assertEqual(env["GIT_COMMITTER_EMAIL"], "operator@example.com")
 
     def test_both_vars_set_preserves_existing_env_keys(self) -> None:
         """4.1 — git identity vars are additive; KIROCREW_CORS_ORIGINS is still present

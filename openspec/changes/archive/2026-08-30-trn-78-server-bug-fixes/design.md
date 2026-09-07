@@ -1,6 +1,6 @@
 ## Context
 
-Three targeted bug fixes in `transport/server.py`. All three were found by stevemac007 during migration assessment work. See proposal.md for motivation.
+Three targeted bug fixes in `transport/server.py`. All three were found during migration assessment work. See proposal.md for motivation.
 
 Relevant functions:
 - `_read_auth_from_crew` (line ~2663) — reads `auth_kv` rows from a crew's kiro-cli SQLite DB
