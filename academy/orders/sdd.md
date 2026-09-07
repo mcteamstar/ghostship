@@ -90,7 +90,7 @@ Ghost should:
 3. On success: remove each worktree (`git worktree remove ../repo-<change-name> --force`), mail `admiral@localhost` with subject `sdd complete — all changes merged, tests green` listing each change merged
 4. On conflict or test failure: mail `admiral@localhost` with subject `sdd merge failed — manual intervention needed` including the full error output
 
-Raven dispatches Ghost for this task using the same intent-UUID idempotency pattern as other persona dispatches, then self-cancels after confirming Ghost is in flight.
+Raven dispatches Ghost for this task using the same intent-UUID idempotency pattern as other persona dispatches. On subsequent check-ins, Raven polls the Ghost task's completion state via `kirocrew spawn list` or the gateway API — hold and do nothing else while Ghost is still in flight. Once Ghost is done (outcome `completed` or `stopped`), self-cancel. Do not self-cancel before Ghost has finished.
 
 Note: exit code 2 from `verify-admiral-sig` indicates a transient race condition — the signing secret file was not found after retries (typically during container startup). Raven should hold the current cycle and not escalate to Admiral; the secret will be available on the next scheduled check-in.
 
