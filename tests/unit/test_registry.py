@@ -116,7 +116,8 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
         self.assertEqual(mode, 0o600, f"Expected mode 0o600, got 0o{mode:o}")
 
     def test_corrupt_json_raises_and_renames_to_corrupt(self) -> None:
-        """Corrupt crews.json raises, creates .corrupt, removes original (task 3.3)."""
+        """Corrupt crews.json raises RegistryCorruptError, creates .corrupt,
+        removes original (task 3.3; TRN-138 changed the raised type)."""
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             test_dir = Path(td)
@@ -129,8 +130,13 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
                 patch.object(registry, "REGISTRY_PATH", reg_path),
                 self.assertLogs("transport.registry", level="ERROR") as log_ctx,
             ):
-                with self.assertRaises(json.JSONDecodeError):
+                # TRN-138: _load_registry now raises the named
+                # RegistryCorruptError instead of re-raising json.JSONDecodeError,
+                # giving MCP tool handlers a single exception to catch. The
+                # original decode error is preserved as the chained cause.
+                with self.assertRaises(registry.RegistryCorruptError) as ctx:
                     registry._load_registry()
+                self.assertIsInstance(ctx.exception.__cause__, json.JSONDecodeError)
                 # Assertions must be inside the tempfile context so the dir exists
                 self.assertTrue(corrupt_path.exists(), "crews.json.corrupt should exist")
                 self.assertEqual(
