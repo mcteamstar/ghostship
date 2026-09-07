@@ -914,11 +914,9 @@ def _validate_next_url(url: str) -> str:
     """
     if not url:
         return "/"
-    # Must be a relative path starting with / but not // (protocol-relative)
-    # and must not contain a colon before the first slash (no javascript: etc.)
+    # Must be a relative path starting with / but not // (protocol-relative).
+    # The leading-slash guard already blocks javascript: and //evil.com inputs.
     if not url.startswith("/") or url.startswith("//"):
-        return "/"
-    if ":" in url.split("/")[0]:
         return "/"
     return url
 

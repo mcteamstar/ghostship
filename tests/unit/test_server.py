@@ -3616,3 +3616,24 @@ class GetEnsureRunningLockTests(unittest.IsolatedAsyncioTestCase):
             acquired = lock.locked()
             self.assertTrue(acquired, "Lock should be held inside async with block")
         self.assertFalse(lock.locked(), "Lock should be released after async with block")
+
+
+class ValidateNextUrlTests(unittest.TestCase):
+    """TRN-137: direct coverage for ``server._validate_next_url`` open-redirect guard."""
+
+    def test_protocol_relative_url_rejected(self) -> None:
+        self.assertEqual(server._validate_next_url("//evil.com"), "/")
+
+    def test_javascript_scheme_rejected(self) -> None:
+        self.assertEqual(server._validate_next_url("javascript:alert(1)"), "/")
+
+    def test_empty_string_falls_back_to_root(self) -> None:
+        self.assertEqual(server._validate_next_url(""), "/")
+
+    def test_valid_relative_path_accepted(self) -> None:
+        self.assertEqual(server._validate_next_url("/dashboard/"), "/dashboard/")
+
+    def test_path_with_query_string_accepted(self) -> None:
+        # A same-origin relative path carrying a query string is a legitimate
+        # post-login redirect target and must pass through unchanged.
+        self.assertEqual(server._validate_next_url("/foo?bar=1"), "/foo?bar=1")

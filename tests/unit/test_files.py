@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -1013,6 +1014,85 @@ class BundleReseedForceTests(unittest.TestCase):
 
         self.assertNotIn("error", result, f"Unexpected error: {result.get('error')}")
         self.assertIs(result["force"], True, "supply() must return force=True in the result dict")
+
+
+class SafeWorkspacePathTests(unittest.TestCase):
+    """TRN-137: direct coverage for ``files._safe_workspace_path`` boundary logic."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        # Resolve so symlinked temp roots (e.g. /var -> /private/var on macOS)
+        # match the resolve() the function performs internally.
+        self.root = Path(self._tmp.name).resolve()
+        (self.root / "workspace").mkdir()
+        self.workspace = str(self.root / "workspace")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_dotdot_traversal_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            files_mod._safe_workspace_path(self.workspace, "../../etc/passwd")
+
+    def test_adjacent_directory_rejected(self) -> None:
+        # A sibling whose name shares the root's prefix must not pass the check:
+        # root=".../workspace", path resolving to ".../workspace-evil/secret".
+        (self.root / "workspace-evil").mkdir()
+        with self.assertRaises(ValueError):
+            files_mod._safe_workspace_path(self.workspace, "../workspace-evil/secret")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlink support")
+    def test_symlink_escape_rejected(self) -> None:
+        # A symlink inside the workspace pointing outside it must be rejected
+        # once resolved.
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret").write_text("s")
+        link = Path(self.workspace) / "link"
+        os.symlink(str(outside), str(link))
+        with self.assertRaises(ValueError):
+            files_mod._safe_workspace_path(self.workspace, "link/secret")
+
+    def test_valid_path_inside_workspace_accepted(self) -> None:
+        resolved = files_mod._safe_workspace_path(self.workspace, "repo/src/main.py")
+        self.assertEqual(resolved, Path(self.workspace).resolve() / "repo/src/main.py")
+
+    def test_path_equal_to_root_accepted(self) -> None:
+        # Empty / "." must resolve to the root itself and pass.
+        self.assertEqual(
+            files_mod._safe_workspace_path(self.workspace, ""),
+            Path(self.workspace).resolve(),
+        )
+        self.assertEqual(
+            files_mod._safe_workspace_path(self.workspace, "."),
+            Path(self.workspace).resolve(),
+        )
+
+
+class ValidateRefTests(unittest.TestCase):
+    """TRN-137: direct coverage for ``files._validate_ref``."""
+
+    def test_leading_dash_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            files_mod._validate_ref("--output=/tmp/pwned")
+
+    def test_shell_metacharacters_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            files_mod._validate_ref("main; rm -rf /")
+
+    def test_empty_string_returns_unchanged(self) -> None:
+        # An empty ref is treated as "no ref" and returned as-is (falsy).
+        self.assertEqual(files_mod._validate_ref(""), "")
+
+    def test_valid_simple_ref_accepted(self) -> None:
+        self.assertEqual(files_mod._validate_ref("main"), "main")
+
+    def test_valid_branch_with_slash_accepted(self) -> None:
+        self.assertEqual(files_mod._validate_ref("release/0.3.1"), "release/0.3.1")
+
+    def test_valid_commit_hash_accepted(self) -> None:
+        sha = "a" * 40
+        self.assertEqual(files_mod._validate_ref(sha), sha)
 
 
 if __name__ == "__main__":

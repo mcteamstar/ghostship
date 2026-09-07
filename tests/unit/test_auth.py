@@ -30,6 +30,7 @@ from unittest.mock import ANY, Mock, MagicMock, patch
 
 import httpx
 import transport.registry as _registry_mod  # noqa: F401
+import transport.auth as _auth_mod  # noqa: F401  (TRN-137: _parse_bearer_token)
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
 
@@ -580,3 +581,29 @@ class TestProxyQuerySanitisation(unittest.TestCase):
             server._sanitise_query_string(raw),
             "before" + high_bytes.decode("latin-1") + "after%0A",
         )
+
+
+class ParseBearerTokenTests(unittest.TestCase):
+    """TRN-137: direct coverage for ``auth._parse_bearer_token``."""
+
+    def test_valid_bearer_token(self) -> None:
+        self.assertEqual(_auth_mod._parse_bearer_token("Bearer abc123"), "abc123")
+
+    def test_empty_string_returns_none(self) -> None:
+        self.assertIsNone(_auth_mod._parse_bearer_token(""))
+
+    def test_bearer_with_no_token_returns_none(self) -> None:
+        self.assertIsNone(_auth_mod._parse_bearer_token("Bearer "))
+
+    def test_embedded_space_in_token_returns_none(self) -> None:
+        # A token containing an interior space is malformed and rejected.
+        self.assertIsNone(_auth_mod._parse_bearer_token("Bearer tok en"))
+
+    def test_non_bearer_scheme_returns_none(self) -> None:
+        self.assertIsNone(_auth_mod._parse_bearer_token("Basic abc"))
+
+    def test_exactly_seven_chars_no_space_returns_none(self) -> None:
+        # "Bearer" is 6 chars; a 7-char input like "Bearer\t" or "Bearerx"
+        # lacks the required "bearer " (with trailing space) prefix.
+        self.assertIsNone(_auth_mod._parse_bearer_token("Bearer"))
+        self.assertIsNone(_auth_mod._parse_bearer_token("Bearerx"))

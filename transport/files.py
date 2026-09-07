@@ -95,7 +95,7 @@ def _safe_workspace_path(workspace_root: str, raw_path: str) -> Path:
     root = Path(workspace_root).resolve()
     clean = raw_path.lstrip("/")
     resolved = (root / clean).resolve()
-    if not str(resolved).startswith(str(root)):
+    if resolved != root and not str(resolved).startswith(str(root) + "/"):
         raise ValueError(f"Path escapes workspace root: {raw_path!r}")
     return resolved
 
