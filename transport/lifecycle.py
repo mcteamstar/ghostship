@@ -1318,7 +1318,36 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     if KC_MODEL_DEFAULT:
         agent_overrides["default_model"] = KC_MODEL_DEFAULT
 
-    overrides_b64 = base64.b64encode(json.dumps(agent_overrides).encode()).decode()
+    # Build the full config override structure passed to patch_crew_config.py.
+    # The script deep-merges every top-level key into config.local.json, so
+    # non-agent sections are written directly at the right path.
+    #
+    # Headless-optimised overrides applied to every spec-ops crew (fixed values,
+    # not operator-configurable — see design.md D1):
+    #   stt.enabled = false        — no microphone in a headless server crew
+    #   session.eager_spawn = false  — spawn session on first dispatch, not at
+    #                                  startup; eliminates the ~340 MB pre-fork
+    #   session.timeout_secs = 300   — reclaim session memory within 5 min of
+    #                                  task completion (was 3600 s / 1 hour)
+    #   session.watchdog_rss_max_mb = 2000 — hard RSS ceiling per session process;
+    #                                  recycles session if exceeded (set above
+    #                                  ~1.9 GB active task peak to avoid cycling
+    #                                  healthy sessions)
+    #   telemetry.beacon_enabled = false — suppress outbound beacon on server
+    #   auto_update = false        — prevent version drift in a pinned container
+    full_overrides: dict[str, Any] = {
+        "agent": agent_overrides,
+        "stt": {"enabled": False},
+        "session": {
+            "eager_spawn": False,
+            "timeout_secs": 300,
+            "watchdog_rss_max_mb": 2000,
+        },
+        "telemetry": {"beacon_enabled": False},
+        "auto_update": False,
+    }
+
+    overrides_b64 = base64.b64encode(json.dumps(full_overrides).encode()).decode()
     config_path = f"{KIRO_CREW_DIR}/config.local.json"
     try:
         result = podman.container_exec(

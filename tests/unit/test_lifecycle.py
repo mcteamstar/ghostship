@@ -1797,11 +1797,11 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
 
 
 class PatchCrewConfigTests(unittest.TestCase):
-    """Tests for _patch_crew_config (TRN-113 / F-2)."""
+    """Tests for _patch_crew_config (TRN-113 / F-2, TRN-127)."""
 
     def _call_patch_crew_config(self) -> dict:
         """Call lifecycle._patch_crew_config with a stub podman that captures
-        the container_exec call, then decode and return the agent_overrides dict."""
+        the container_exec call, then decode and return the full_overrides dict."""
         import base64
         import json as _json
 
@@ -1825,23 +1825,107 @@ class PatchCrewConfigTests(unittest.TestCase):
     def test_patch_crew_config_sets_sandbox_off(self) -> None:
         """sandbox must be 'off' -- without it every agent spawn fails under
         rootless Podman because kiro-cli 0.5.0+ is fail-closed on the
-        MS_REMOUNT inside a user namespace (TRN-113)."""
+        MS_REMOUNT inside a user namespace (TRN-113).
+
+        After TRN-127 the full_overrides dict nests agent keys under
+        ``full_overrides["agent"]`` rather than at the top level."""
         overrides = self._call_patch_crew_config()
+        agent = overrides.get("agent", {})
         self.assertEqual(
-            overrides.get("sandbox"),
+            agent.get("sandbox"),
             "off",
-            f"Expected sandbox='off' but got: {overrides.get('sandbox')!r}",
+            f"Expected agent.sandbox='off' but got: {agent.get('sandbox')!r}",
         )
 
     def test_patch_crew_config_sets_dangerously_skip_permissions(self) -> None:
         """dangerously_skip_permissions must be True so the transport (different
-        UID) can write config.local.json inside the crew container."""
+        UID) can write config.local.json inside the crew container.
+
+        After TRN-127 the full_overrides dict nests agent keys under
+        ``full_overrides["agent"]`` rather than at the top level."""
+        overrides = self._call_patch_crew_config()
+        agent = overrides.get("agent", {})
+        self.assertIs(
+            agent.get("dangerously_skip_permissions"),
+            True,
+            f"Expected agent.dangerously_skip_permissions=True but got: "
+            f"{agent.get('dangerously_skip_permissions')!r}",
+        )
+
+    # ── TRN-127: headless-crew memory baseline overrides ─────────────────────
+
+    def test_patch_crew_config_disables_stt(self) -> None:
+        """stt.enabled must be False — no microphone in a headless server crew
+        (TRN-127).  Absence of the field is also a failure: the Whisper model
+        loads by default and wastes ~148 MB of RSS."""
+        overrides = self._call_patch_crew_config()
+        stt = overrides.get("stt")
+        self.assertIsNotNone(stt, "Expected 'stt' section in full_overrides but it was absent")
+        self.assertIs(
+            stt.get("enabled"),
+            False,
+            f"Expected stt.enabled=False but got: {stt.get('enabled')!r}",
+        )
+
+    def test_patch_crew_config_disables_eager_spawn(self) -> None:
+        """session.eager_spawn must be False — prevents the ~340 MB kiro-cli-chat
+        pre-fork that happens at startup even when no task is running (TRN-127)."""
+        overrides = self._call_patch_crew_config()
+        session = overrides.get("session")
+        self.assertIsNotNone(session, "Expected 'session' section in full_overrides but it was absent")
+        self.assertIs(
+            session.get("eager_spawn"),
+            False,
+            f"Expected session.eager_spawn=False but got: {session.get('eager_spawn')!r}",
+        )
+
+    def test_patch_crew_config_sets_session_timeout(self) -> None:
+        """session.timeout_secs must be 300 — reclaims session memory within
+        5 minutes of task completion instead of the default 3600 s (TRN-127)."""
+        overrides = self._call_patch_crew_config()
+        session = overrides.get("session", {})
+        self.assertEqual(
+            session.get("timeout_secs"),
+            300,
+            f"Expected session.timeout_secs=300 but got: {session.get('timeout_secs')!r}",
+        )
+
+    def test_patch_crew_config_sets_watchdog_rss_max_mb(self) -> None:
+        """session.watchdog_rss_max_mb must be 2000 — hard RSS ceiling above
+        the ~1.9 GB active task peak; recycles runaway sessions without killing
+        healthy ones (TRN-127 D3)."""
+        overrides = self._call_patch_crew_config()
+        session = overrides.get("session", {})
+        self.assertEqual(
+            session.get("watchdog_rss_max_mb"),
+            2000,
+            f"Expected session.watchdog_rss_max_mb=2000 but got: "
+            f"{session.get('watchdog_rss_max_mb')!r}",
+        )
+
+    def test_patch_crew_config_disables_telemetry_beacon(self) -> None:
+        """telemetry.beacon_enabled must be False — suppresses outbound beacon
+        pings on server deployments (TRN-127)."""
+        overrides = self._call_patch_crew_config()
+        telemetry = overrides.get("telemetry")
+        self.assertIsNotNone(
+            telemetry, "Expected 'telemetry' section in full_overrides but it was absent"
+        )
+        self.assertIs(
+            telemetry.get("beacon_enabled"),
+            False,
+            f"Expected telemetry.beacon_enabled=False but got: "
+            f"{telemetry.get('beacon_enabled')!r}",
+        )
+
+    def test_patch_crew_config_disables_auto_update(self) -> None:
+        """auto_update must be False at the top level — prevents version drift
+        in a container pinned to a specific image version (TRN-127)."""
         overrides = self._call_patch_crew_config()
         self.assertIs(
-            overrides.get("dangerously_skip_permissions"),
-            True,
-            f"Expected dangerously_skip_permissions=True but got: "
-            f"{overrides.get('dangerously_skip_permissions')!r}",
+            overrides.get("auto_update"),
+            False,
+            f"Expected auto_update=False but got: {overrides.get('auto_update')!r}",
         )
 
 

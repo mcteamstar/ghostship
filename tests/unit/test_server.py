@@ -1652,7 +1652,9 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            overrides = full_overrides["agent"]
             self.assertEqual(overrides["spawn_min_memory_gb"], 2.5)
             self.assertEqual(overrides["resource_pressure_gb"], 3.0)
             self.assertEqual(overrides["resource_critical_gb"], 1.5)
@@ -1683,7 +1685,9 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            overrides = full_overrides["agent"]
             self.assertEqual(overrides["subagent_timeout_secs"], 7200)
         finally:
             server.GA_SUBAGENT_TIMEOUT_SECS = original
@@ -1704,14 +1708,20 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            overrides = full_overrides["agent"]
             self.assertEqual(overrides["subagent_max_turns"], 300)
         finally:
             server.GA_SUBAGENT_MAX_TURNS = original
             lifecycle.GA_SUBAGENT_MAX_TURNS = original
 
     def test_agent_field_default_kiro(self) -> None:
-        """GA_CREW_AGENT unset → config.local.json gets agent: "kiro" (0.4.0 required field)."""
+        """GA_CREW_AGENT unset → config.local.json gets agent.agent: "kiro" (0.4.0 required field).
+
+        After TRN-127 the top-level ``agent`` key in full_overrides is a dict of
+        agent-scoped config; the KiroCrew "agent name" is nested as
+        ``full_overrides["agent"]["agent"]``."""
         original = server.GA_CREW_AGENT
         try:
             server.GA_CREW_AGENT = "kiro"
@@ -1725,8 +1735,13 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
-            self.assertEqual(overrides["agent"], "kiro")
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # full_overrides["agent"] is the agent section dict; "agent" within
+            # it is the KiroCrew agent-name field.
+            agent_section = full_overrides["agent"]
+            self.assertIsInstance(agent_section, dict,
+                                  "full_overrides['agent'] must be a dict after TRN-127")
+            self.assertEqual(agent_section["agent"], "kiro")
         finally:
             server.GA_CREW_AGENT = original
             lifecycle.GA_CREW_AGENT = original
@@ -1746,8 +1761,12 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
-            self.assertEqual(overrides["agent"], "custom-agent")
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # full_overrides["agent"] is the agent section dict after TRN-127
+            agent_section = full_overrides["agent"]
+            self.assertIsInstance(agent_section, dict,
+                                  "full_overrides['agent'] must be a dict after TRN-127")
+            self.assertEqual(agent_section["agent"], "custom-agent")
         finally:
             server.GA_CREW_AGENT = original
             lifecycle.GA_CREW_AGENT = original
@@ -1755,7 +1774,7 @@ class TestPatchCrewConfig(unittest.TestCase):
     def test_config_script_has_no_unexpanded_shell_vars(self) -> None:
         """KiroCrew 0.4.0 rejects literal $VAR in config values — the decoded
         overrides must contain no unexpanded shell variable reference in any
-        written value."""
+        written value (including nested dicts after TRN-127)."""
         import re
         exec_calls: list[tuple[str, list[str]]] = []
 
@@ -1765,13 +1784,24 @@ class TestPatchCrewConfig(unittest.TestCase):
                 return "patched config.local.json"
 
         server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
-        overrides = _decode_overrides(exec_calls[0][1])
-        for value in overrides.values():
-            if isinstance(value, str):
-                self.assertIsNone(re.search(r"\$\{?[A-Za-z_]", value))
+        full_overrides = _decode_overrides(exec_calls[0][1])
+
+        def _check_no_shell_vars(obj: object, path: str = "") -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    _check_no_shell_vars(v, f"{path}.{k}")
+            elif isinstance(obj, str):
+                self.assertIsNone(
+                    re.search(r"\$\{?[A-Za-z_]", obj),
+                    f"Unexpanded shell variable in {path}: {obj!r}",
+                )
+
+        _check_no_shell_vars(full_overrides)
 
     def test_kc_model_default_set_writes_default_model(self) -> None:
-        """KC_MODEL_DEFAULT set → default_model written to config.local.json."""
+        """KC_MODEL_DEFAULT set → default_model written to config.local.json.
+
+        After TRN-127 default_model lives under full_overrides["agent"]."""
         original = server.KC_MODEL_DEFAULT
         try:
             server.KC_MODEL_DEFAULT = "anthropic/claude-sonnet-4-20250514"
@@ -1785,9 +1815,11 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # default_model is agent-scoped — lives under full_overrides["agent"]
+            agent_section = full_overrides["agent"]
             self.assertEqual(
-                overrides["default_model"], "anthropic/claude-sonnet-4-20250514"
+                agent_section["default_model"], "anthropic/claude-sonnet-4-20250514"
             )
         finally:
             server.KC_MODEL_DEFAULT = original
@@ -1808,8 +1840,10 @@ class TestPatchCrewConfig(unittest.TestCase):
 
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
-            overrides = _decode_overrides(exec_calls[0][1])
-            self.assertNotIn("default_model", overrides)
+            full_overrides = _decode_overrides(exec_calls[0][1])
+            # default_model is agent-scoped — check it's absent from agent section
+            agent_section = full_overrides.get("agent", {})
+            self.assertNotIn("default_model", agent_section)
         finally:
             server.KC_MODEL_DEFAULT = original
             lifecycle.KC_MODEL_DEFAULT = original

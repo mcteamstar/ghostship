@@ -424,3 +424,44 @@ composition-level `mcp.json`, so a name declared in both is served from the
 agent's entry (the `mcp.json` entry is shadowed — no error). An agent may set
 `includeMcpJson: false` to opt out of the composition-level `mcp.json`
 entirely.
+
+## Fixed headless overrides
+
+Every crew launched by the transport receives a set of fixed, headless-optimised
+values written into `config.local.json` at startup by `_patch_crew_config`. These
+are not operator-tunable env vars — they are always applied because a headless
+server crew has no microphone, no interactive user, and no reason to pre-fork
+session processes. The values below complement the env-var-configurable settings
+in the table above.
+
+| Config path | Value | Rationale |
+|:------------|:------|:----------|
+| `stt.enabled` | `false` | No microphone in a headless server crew. Disables Whisper STT, which loads a base model (~148 MB) even when no speech input is possible. |
+| `session.eager_spawn` | `false` | Stop pre-forking `kiro-cli-chat` at container startup. Without this, KiroCrew forks a session process (~340 MB) immediately on gateway start, regardless of whether any task is running. With it disabled, the session process is spawned on the first dispatch and adds 2–5 s of first-dispatch latency (acceptable for dispatch-based use). |
+| `session.timeout_secs` | `300` | Reclaim session memory 5 minutes after task completion instead of the default 1 hour. The session process is reaped once it has been idle for this many seconds, returning the crew to its ~160 MB gateway-only baseline. |
+| `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session process (KiroCrew 0.5.0+). If a session process exceeds 2000 MB, KiroCrew recycles it automatically. The ceiling is intentionally set above the ~1.9 GB measured active-task peak so healthy sessions are not recycled mid-task; its purpose is to catch runaway RSS accumulation across many sequential tasks on a long-lived crew. |
+| `telemetry.beacon_enabled` | `false` | Suppress outbound telemetry beacon pings. Network hygiene for server deployments where outbound beacons are unwanted. |
+| `auto_update` | `false` | Prevent KiroCrew from self-updating inside a container pinned to a specific image version. Version management is handled at the image level, not inside the running container. |
+
+### Memory profile
+
+With these overrides applied, the expected RSS profile for a spec-ops crew is:
+
+| State | RSS |
+|:------|:----|
+| Idle (no active task) | ~160 MB (gateway process only) |
+| Active task peak | ~1.5–1.9 GB (session + subagents) |
+| Post-task (after `session.timeout_secs`) | ~160 MB (session reaped) |
+
+Without these overrides (KiroCrew 0.5.0 defaults), idle RSS is ~470 MB due to
+the eagerly pre-spawned `kiro-cli-chat` process (~340 MB) that exists
+regardless of whether any task is running.
+
+### `session.watchdog_rss_max_mb` guidance
+
+The 2000 MB ceiling is not meant to enforce a tight budget — it is a safety net
+for accumulation. If you observe session processes being recycled on legitimate
+large tasks (e.g. intensive Banshee reviews of very large codebases), raise the
+limit by editing `_patch_crew_config` in `transport/lifecycle.py`. The value is
+hardcoded rather than env-var-configurable because a headless spec-ops crew has
+no operational reason for an operator to tune it.
