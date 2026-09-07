@@ -36,4 +36,4 @@
 - [x] 7.1 Run `openspec validate --change trn-128-dashboard-route-namespace` and confirm no errors
 - [x] 7.2 Run `bash tests/run.sh --unit` — all tests pass
 - [x] 7.3 Deploy to vm23 and run `bash tests/run.sh --e2e` — confirm e2e passes (21 pass, 8 skip)
-- [x] 7.4 Smoke-test live: `curl -s http://academy.example.ts.net/dashboard/login-ui` returns the login form HTML
+- [x] 7.4 Smoke-test live: `curl -s http://academy.example.com/dashboard/login-ui` returns the login form HTML

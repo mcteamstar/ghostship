@@ -41,8 +41,8 @@ After installing the CLI symlink, `scripts/install.sh --client-only` SHALL invok
 - **THEN** `ghostship setup` is called with `--url http://localhost:64057/mcp` and wires any detected agent clients
 
 #### Scenario: Agent wiring with custom URL
-- **WHEN** `scripts/install.sh --client-only --url https://academy.example.ts.net/mcp` is invoked
-- **THEN** `ghostship setup` is called with `--url https://academy.example.ts.net/mcp`
+- **WHEN** `scripts/install.sh --client-only --url https://academy.example.com/mcp` is invoked
+- **THEN** `ghostship setup` is called with `--url https://academy.example.com/mcp`
 
 #### Scenario: Agent wiring with API key
 - **WHEN** `scripts/install.sh --client-only --api-key <key>` is invoked
