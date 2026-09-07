@@ -525,7 +525,7 @@ When `GA_API_KEY` is set (Portal is always active):
 
 - `/mcp*` and `/files/*` routes on Caddy's main port (443) require `Authorization: Bearer <GA_API_KEY>`. Caddy rejects bad or missing tokens before the request reaches the transport.
 - The transport's own `BearerAuthMiddleware` remains active as a defence-in-depth layer.
-- `/dashboard/auth`, `/dashboard/login`, and `/dashboard/login` are public routes — they are exempt from the Bearer check (auth is the point of those endpoints).
+- `/dashboard/auth`, `/dashboard/login`, and `/dashboard/logout` are public routes — they are exempt from the Bearer check (auth is the point of those endpoints).
 
 ### Auth posture summary
 
