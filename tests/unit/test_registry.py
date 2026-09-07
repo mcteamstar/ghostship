@@ -159,5 +159,51 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
         self.assertEqual(result, {"crews": {}})
 
 
+class WriteCrewSecretDurabilityTests(unittest.TestCase):
+    """Tests for _write_crew_secret durability guarantees (TRN-139)."""
+
+    def test_parent_directory_is_fsynced(self) -> None:
+        """_write_crew_secret fsyncs the parent dir so the entry survives a crash.
+
+        After the secret file is closed, the containing directory is opened
+        O_RDONLY and fsynced. Without this the directory entry may be lost on a
+        crash immediately after write (trn-139).
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            secrets_dir = test_dir / registry._SECRETS_DIR_NAME
+
+            fsynced_dir_fds: list[int] = []
+            real_os_open = os.open
+            real_os_fsync = os.fsync
+            dir_fds: set[int] = set()
+
+            def tracking_open(path: str, flags: int, mode: int = 0o777) -> int:
+                fd = real_os_open(path, flags, mode)
+                if os.path.isdir(path):
+                    dir_fds.add(fd)
+                return fd
+
+            def tracking_fsync(fd: int) -> None:
+                if fd in dir_fds:
+                    fsynced_dir_fds.append(fd)
+                real_os_fsync(fd)
+
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch("os.open", side_effect=tracking_open),
+                patch("os.fsync", side_effect=tracking_fsync),
+            ):
+                registry._write_crew_secret("gs-demo", "s3cr3t")
+
+            self.assertTrue(
+                fsynced_dir_fds,
+                "Expected the parent directory to be fsynced after writing the secret",
+            )
+            written = (secrets_dir / "gs-demo.admiral_secret").read_text()
+            self.assertEqual(written, "s3cr3t")
+
+
 if __name__ == "__main__":
     unittest.main()
