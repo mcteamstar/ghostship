@@ -3487,9 +3487,13 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
         writer = threading.Thread(target=_delete_loop)
         writer.start()
         try:
+            # TRN-121 removed _gs_session_valid; session validation now goes
+            # through _gs_sessions.validate — patch the SessionStore instance.
+            mock_sessions = server._security.SessionStore(lifetime_secs=3600)
+            mock_sessions._issued["tok"] = float("inf")  # never expires
             with (
                 patch.object(server, "GA_API_KEY", "k"),
-                patch.object(server, "_gs_session_valid", return_value=True),
+                patch.object(server, "_gs_sessions", mock_sessions),
             ):
                 for _ in range(200):
                     req = _StubRequest(
