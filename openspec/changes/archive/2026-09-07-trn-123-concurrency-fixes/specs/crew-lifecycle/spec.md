@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Crew auto-start serialised per crew
 The `_ensure_crew_running` function SHALL serialise the probe-then-start sequence on a per-crew asyncio lock so that at most one caller at a time executes the "is container running?" → `container_start` critical section for a given `crew_id`. Concurrent callers for the same crew SHALL wait on the lock and, once unblocked, verify the container is now running before returning; they SHALL NOT each independently issue a `container_start`. Concurrent callers for **different** crew IDs SHALL NOT be serialised against each other.
