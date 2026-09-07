@@ -88,7 +88,7 @@ Browser ──GET :64058/──▶ ga-portal
                             │                    ├─ YES → 200 + X-Crew-Cookie
                             │                    └─ NO  → 401 → Caddy redirects to /dashboard/login
                             │
-                            └─ (on 200) reverse_proxy ──▶ ga-transport:${PORT}
+                            └─ (on 200) reverse_proxy ──▶ ga-transport:64057
                                         rewrite /crews/alpha/ui/{path}
                                         passes X-Crew-Cookie as cookie header
 ```

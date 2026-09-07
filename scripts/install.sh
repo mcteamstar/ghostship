@@ -696,7 +696,7 @@ services:
     environment:
       PODMAN_SOCKET: ${PODMAN_SOCK}
       HOST: ${HOST:-0.0.0.0}
-      PORT: "${PORT}"
+      PORT: "64057"
       GA_HOST_URL: "${GA_HOST_URL:-http://localhost:${PORT}}"
       GA_MAX_CREWS: "${GA_MAX_CREWS:-20}"
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
@@ -808,12 +808,12 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"], "header": {"Authorization": ["Bearer {file./run/secrets/ga-api-key}"]}}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-transport-files",
               "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {file./run/secrets/ga-api-key}"]}}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-mcp-files-reject",
@@ -828,12 +828,12 @@ else
             {
               "@id": "ga-transport-mcp",
               "match": [{"path": ["/mcp*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
               "@id": "ga-transport-files",
               "match": [{"path": ["/files/*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
 AUTH_EOF
 )
@@ -854,7 +854,7 @@ ${_AUTH_ROUTES}
             {
               "@id": "ga-transport-misc",
               "match": [{"path": ["/health", "/version", "/dashboard/*", "/login", "/login*", "/logout"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:${PORT}"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             }
           ]
         }
