@@ -2107,7 +2107,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                    Default is False — crews are headless unless a dashboard is
                    explicitly requested.
 
-    Returns crew_id and status once the gateway is ready (~30s).
+    Returns crew_id and status once the gateway is ready (~60s).
     """
     if not re.match(r'^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$', crew_id):
         return {"error": "crew_id must be lowercase alphanumeric/hyphens, 1-50 chars"}
@@ -2253,7 +2253,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         logger.info("Started %s", container)
 
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             if dashboard_port is not None:
                 _release_dashboard_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
@@ -2261,7 +2261,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 reg = _load_registry()
                 reg["crews"].pop(crew_id, None)
                 _save_registry(reg)
-            return {"error": f"Gateway not ready within 30s for crew {crew_id}"}
+            return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
         # TRN-101: persist dashboard_port in registry and register with Caddy.

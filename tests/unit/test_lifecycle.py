@@ -763,7 +763,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(podman.starts, 2)
             self.assertEqual(steps, ["start", "patch", "stop", "start", "wait"])
-            wait_gateway.assert_called_once_with("http://gs-target:5476", timeout=30)
+            wait_gateway.assert_called_once_with("http://gs-target:5476", timeout=60)
         finally:
             lifecycle.GA_MAX_ACTIVE_CREWS = original
 

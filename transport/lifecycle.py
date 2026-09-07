@@ -592,7 +592,7 @@ def _ensure_crew_running(
         _patch_crew_config(podman, crew["container"])
         podman.container_stop(crew["container"])
         podman.container_start(crew["container"])
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             raise RuntimeError(f"Gateway did not recover after config re-patch for crew {crew_id}")
 
         # Refresh cookie (old one may have expired)
@@ -1106,7 +1106,7 @@ def _migrate_crew_network(podman: "PodmanClient", crew_id: str, container: str) 
         # Step e: start and wait for gateway.
         podman.container_start(container)
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             logger.warning("Crew %s gateway not ready after migration", crew_id)
             return False
 
@@ -1201,7 +1201,7 @@ def _reconcile_registry() -> None:
                     _patch_crew_config(podman, container)
                     podman.container_stop(container)
                     podman.container_start(container)
-                    if _wait_gateway(crew_url, timeout=30):
+                    if _wait_gateway(crew_url, timeout=60):
                         new_cookie = _mint_cookie(podman, container, crew_url)
                         updates[cid] = {
                             "status": "running",
@@ -1395,7 +1395,7 @@ def _finish_crew_setup(
     if not _wait_gateway(crew_url, timeout=10):
         podman.container_stop(container)
         podman.container_start(container)
-        if not _wait_gateway(crew_url, timeout=30):
+        if not _wait_gateway(crew_url, timeout=60):
             _cleanup_crew(podman, container, volume, home_volume)
             return {"error": f"Gateway did not recover for crew {crew_id}"}
 
@@ -1436,7 +1436,7 @@ def _finish_crew_setup(
     # depends on: auth + admiral_secret + config all committed before workers start
     podman.container_stop(container)
     podman.container_start(container)
-    if not _wait_gateway(crew_url, timeout=30):
+    if not _wait_gateway(crew_url, timeout=60):
         _cleanup_crew(podman, container, volume, home_volume)
         return {"error": f"Gateway did not recover after auth restart for crew {crew_id}"}
 

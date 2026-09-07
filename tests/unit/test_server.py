@@ -678,7 +678,7 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
             patch.object(server.time, "sleep", side_effect=advance),
         ):
-            # caller requests 60s, but the internal cap is 30s
+            # caller requests 60s, but the internal cap is 30s (pickup timeout, unrelated to gateway)
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
 
         # Must be a normal dict — no exception raised
