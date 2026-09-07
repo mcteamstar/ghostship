@@ -72,22 +72,25 @@ Apply these rules to each change independently (in multi-change mode, one check-
 
 ## Reconciliation phase (multi-change mode only)
 
-When all changes in the list are archived, execute the reconciliation phase:
+When all changes in the list are archived, dispatch Ghost to execute the reconciliation:
 
 ```
-for each change in list:
-    git -C repo merge --no-ff <change-name> -m "merge: <change-name>"
-bash tests/run.sh --unit
+SDD reconcile <change-list> — cd /home/kirocrew/workplace/kirocrew-workspace/repo && for each change in list: git merge --no-ff <change-name> -m "merge: <change-name>"; bash tests/run.sh --unit
 ```
 
-On success (all merges applied, tests green):
-- Remove worktrees: `git -C repo worktree remove ../repo-<change-name> --force` for each change
-- Mail `admiral@localhost` with subject `sdd complete — all changes merged, tests green` and list each change merged
-- Self-cancel
+The Ghost task description must include:
+- The main repo path (the shared checkout, not a worktree)
+- The ordered list of change branch names to merge
+- The worktree paths to remove on success
+- Instructions to mail `admiral@localhost` on completion
 
-On conflict or test failure:
-- Mail `admiral@localhost` with subject `sdd merge failed — manual intervention needed` and include the full error output
-- Self-cancel
+Ghost should:
+1. Merge each change branch into the main checkout with `git merge --no-ff <change-name> -m "merge: <change-name>"`
+2. Run `bash tests/run.sh --unit`
+3. On success: remove each worktree (`git worktree remove ../repo-<change-name> --force`), mail `admiral@localhost` with subject `sdd complete — all changes merged, tests green` listing each change merged
+4. On conflict or test failure: mail `admiral@localhost` with subject `sdd merge failed — manual intervention needed` including the full error output
+
+Raven dispatches Ghost for this task using the same intent-UUID idempotency pattern as other persona dispatches, then self-cancels after confirming Ghost is in flight.
 
 Note: exit code 2 from `verify-admiral-sig` indicates a transient race condition — the signing secret file was not found after retries (typically during container startup). Raven should hold the current cycle and not escalate to Admiral; the secret will be available on the next scheduled check-in.
 
