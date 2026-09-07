@@ -222,13 +222,17 @@ fi
 # podman and podman-compose must be installed before running install.sh.
 # See README.md and docs/manual-install.md for install commands.
 
-# ── Verify podman compose is available ───────────────────────────────────────
-# `podman compose` delegates to an external provider (podman-compose or
-# docker-compose). Install it before running install.sh.
-if ! command -v podman-compose >/dev/null 2>&1 && \
-   ! (command -v docker-compose >/dev/null 2>&1) && \
-   ! (command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1); then
+# ── Verify podman-compose is available ───────────────────────────────────────
+# Ghostship's compose.yml uses an external Podman secret (ga-transport-secret).
+# docker-compose does NOT support external Podman secrets, so podman-compose is
+# the only accepted provider. When both are installed, Podman's provider
+# precedence may silently select docker-compose — setting PODMAN_COMPOSE_PROVIDER
+# below prevents that.
+if ! command -v podman-compose >/dev/null 2>&1; then
   echo "✗ podman-compose not found." >&2
+  echo "" >&2
+  echo "Ghostship requires podman-compose specifically — docker-compose is not" >&2
+  echo "supported because the generated compose.yml uses external Podman secrets." >&2
   echo "" >&2
   echo "Install podman-compose before running install.sh:" >&2
   case "$OS" in
@@ -913,6 +917,9 @@ elif [[ "${GA_DEDICATED_MACHINE}" == "true" && "$OS" == "Darwin" ]]; then
 else
   _COMPOSE_ENV=""
 fi
+# Pin the compose provider to podman-compose so Podman cannot select docker-compose
+# when both are installed (Podman's default precedence prefers docker-compose).
+_COMPOSE_ENV="${_COMPOSE_ENV:+${_COMPOSE_ENV} }PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose)"
 eval "${_COMPOSE_ENV} podman rm -f ga-transport" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman rm -f ga-portal" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${DATA_DIR}/compose.yml\" up -d --force-recreate --remove-orphans"

@@ -189,6 +189,9 @@ elif [[ "$OS" == "Darwin" && "${GA_DEDICATED_MACHINE}" == "true" ]]; then
 else
   _COMPOSE_ENV=""
 fi
+# Pin the compose provider to podman-compose so Podman cannot select docker-compose
+# when both are installed (Podman's default precedence prefers docker-compose).
+_COMPOSE_ENV="${_COMPOSE_ENV:+${_COMPOSE_ENV} }PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose 2>/dev/null || true)"
 eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${_COMPOSE_FILE}\" up -d"
 
 _ready=0

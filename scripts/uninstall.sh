@@ -138,6 +138,13 @@ else
   _PODMAN_CMD="podman"
   _COMPOSE_ENV=""
 fi
+# Pin the compose provider to podman-compose so Podman cannot select docker-compose
+# when both are installed. If podman-compose has already been removed, we fall
+# back to direct podman rm below rather than risking docker-compose being selected.
+_PODMAN_COMPOSE_BIN="$(command -v podman-compose 2>/dev/null || true)"
+if [[ -n "$_PODMAN_COMPOSE_BIN" ]]; then
+  _COMPOSE_ENV="${_COMPOSE_ENV:+${_COMPOSE_ENV} }PODMAN_COMPOSE_PROVIDER=${_PODMAN_COMPOSE_BIN}"
+fi
 
 echo ""
 echo "Removing crew containers + volumes..."
@@ -158,8 +165,15 @@ if [[ "$OS" == "Darwin" ]]; then
   _COMPOSE_FILE="${HOME}/Library/Application Support/${_MACHINE_NAME}/data/compose.yml"
 fi
 if [[ -f "$_COMPOSE_FILE" ]]; then
-  eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${_COMPOSE_FILE}\" down" 2>/dev/null \
-    && echo "✓ ga-transport stopped and removed via compose" || true
+  if [[ -n "$_PODMAN_COMPOSE_BIN" ]]; then
+    eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${_COMPOSE_FILE}\" down" 2>/dev/null \
+      && echo "✓ ga-transport stopped and removed via compose" || true
+  else
+    # podman-compose has been removed — fall back to direct container removal
+    # rather than risking docker-compose being selected as the provider.
+    ${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 && echo "✓ ga-transport container removed" || echo "  (ga-transport was not running)"
+    ${_PODMAN_CMD} rm -f ga-portal >/dev/null 2>&1 && echo "✓ ga-portal container removed" || echo "  (ga-portal was not running)"
+  fi
 else
   ${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 && echo "✓ ga-transport container removed" || echo "  (ga-transport was not running)"
 fi
