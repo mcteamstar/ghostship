@@ -55,8 +55,9 @@ def _save_registry(reg: dict) -> None:
     tmp = REGISTRY_PATH.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        with os.fdopen(fd, "w") as f:
-            fd = -1
+        f = os.fdopen(fd, "w")
+        fd = -1
+        with f:
             f.write(json.dumps(reg, indent=2))
             f.flush()
             os.fsync(f.fileno())
@@ -177,6 +178,11 @@ def _write_crew_secret(crew_id: str, secret: str) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+    dir_fd = os.open(str(secret_path.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _read_crew_secret(crew_id: str) -> str | None:
