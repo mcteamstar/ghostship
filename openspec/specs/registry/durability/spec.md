@@ -3,12 +3,12 @@
 ## Purpose
 
 Defines the durability and integrity guarantees for the crew registry file: atomic writes with kernel-level flush, restricted permissions on intermediate files, and loud failure on corrupt data rather than silent empty-state masking.
-
 ## Requirements
-
 ### Requirement: Registry save is durable
 
 The system SHALL write the registry `.tmp` file using `os.open` with mode `0o600` and SHALL call `flush()` followed by `os.fsync()` on the file descriptor before closing, ensuring that on a crash or power loss after `_save_registry` returns the data has been committed to stable storage.
+
+The `fd = -1` sentinel SHALL be assigned immediately after `os.fdopen()` succeeds and before the `with` body executes. This prevents a double-close on the underlying file descriptor if `os.fdopen()` itself raises (which would leave the `finally` block attempting to close an fd that `os.fdopen` has already taken ownership of). The same invariant SHALL apply to `_write_auth_file()` in `transport/server.py`.
 
 #### Scenario: Save survives process crash after write
 
@@ -19,6 +19,12 @@ The system SHALL write the registry `.tmp` file using `os.open` with mode `0o600
 
 - **WHEN** `_save_registry` creates the `.tmp` file
 - **THEN** the `.tmp` file SHALL have mode `0o600` (owner read/write only, no group or other access)
+
+#### Scenario: fd sentinel set before with-body to prevent double-close
+
+- **WHEN** `_save_registry` or `_write_auth_file` calls `os.fdopen(fd, ...)`
+- **THEN** `fd` is immediately set to `-1` after `os.fdopen` returns, before any code in the `with` block executes
+- **THEN** if any exception is raised inside the `with` block, the `finally` clause does not attempt to close the already-transferred fd
 
 ### Requirement: Registry load fails loudly on corrupt data
 
@@ -38,3 +44,4 @@ The system SHALL raise an exception when `_load_registry` encounters a file that
 
 - **WHEN** `crews.json` does not exist
 - **THEN** `_load_registry` SHALL return `{"crews": {}}` without error (no change to existing behavior)
+

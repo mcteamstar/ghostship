@@ -29,4 +29,4 @@
 
 - [x] 6.1 Run `openspec validate trn-138-auth-session-hardening`
 - [x] 6.2 Run `bash tests/run.sh --unit` — all tests pass
-- [ ] 6.3 Deploy to vm23 and run `bash tests/run.sh --e2e`
+- [x] 6.3 Deploy to vm23 and run `bash tests/run.sh --e2e`

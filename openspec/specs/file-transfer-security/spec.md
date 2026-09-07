@@ -5,9 +5,7 @@
 Security requirements for the file transfer subsystem (supply/evac MCP tools and their
 HTTP handlers). The subsystem issues and verifies HMAC-signed presigned URLs for uploading
 files into and extracting files from crew workspaces.
-
 ## Requirements
-
 ### Requirement: Full-length HMAC
 The HMAC-SHA256 digest used in presigned URLs MUST use the full 64-character hexdigest.
 Truncation to any shorter length is not permitted.
@@ -62,7 +60,9 @@ where `flags` is the sorted, colon-joined set of active boolean options from `{b
 ### Requirement: Path canonicalisation
 All user-supplied paths MUST be resolved with `Path.resolve()` relative to the crew workspace
 root before use. Any path that resolves outside the workspace root MUST be rejected with a 400
-error. Checking for `..` components alone is not sufficient.
+error. Checking for `..` components alone is not sufficient. The prefix check MUST append `/`
+to the root string (i.e. `startswith(str(root) + "/")`) to prevent adjacent-directory bypass
+where a path such as `/workspace-evil/secret` would incorrectly pass a check against root `/workspace`.
 
 #### Scenario: Path traversal via dot-dot is rejected
 - **WHEN** a caller supplies a path such as `../../etc/passwd`
@@ -70,6 +70,10 @@ error. Checking for `..` components alone is not sufficient.
 
 #### Scenario: Path traversal without dot-dot is rejected
 - **WHEN** a caller supplies a path such as `repo/./../../etc/shadow` that resolves outside the workspace
+- **THEN** the transport returns a 400 error
+
+#### Scenario: Adjacent-directory path is rejected
+- **WHEN** a caller supplies a path that resolves to a directory whose name starts with the workspace root name but is outside it (e.g. root is `/workspace`, path resolves to `/workspace-evil/secret`)
 - **THEN** the transport returns a 400 error
 
 #### Scenario: Valid workspace path is accepted
@@ -143,3 +147,4 @@ file-upload HTTP handlers) SHALL produce an audit event. The event SHALL record 
 #### Scenario: Expired token emits audit event with outcome=expired
 - **WHEN** a file-handler request presents a token whose `expires` timestamp is in the past
 - **THEN** an audit event with `action="verify_file_token"` and `outcome="expired"` is recorded
+

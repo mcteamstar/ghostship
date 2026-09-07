@@ -357,6 +357,8 @@ The system SHALL require `podman-compose` to be installed before `install.sh` ru
 
 `install.sh`, `start.sh`, and `uninstall.sh` SHALL set `PODMAN_COMPOSE_PROVIDER` to the resolved path of `podman-compose` before every `podman compose` invocation, so that Podman's provider-selection logic cannot pick Docker Compose when both are installed.
 
+`install.sh` SHALL inject `GA_PORTAL_SESSION_TTL_SECS` into the generated `compose.yml` transport environment block, so that the session TTL configured in `ghostship.conf` takes effect at runtime.
+
 #### Scenario: compose provider present
 - **WHEN** `install.sh` runs and `podman-compose` is on `PATH`
 - **THEN** installation proceeds normally
@@ -376,6 +378,10 @@ The system SHALL require `podman-compose` to be installed before `install.sh` ru
 #### Scenario: uninstall.sh with podman-compose absent
 - **WHEN** `uninstall.sh` runs and `podman-compose` has already been removed from the system
 - **THEN** the script falls back to direct `podman rm` calls to remove `ga-transport` and `ga-portal`, rather than failing or using Docker Compose
+
+#### Scenario: GA_PORTAL_SESSION_TTL_SECS is injected into compose.yml
+- **WHEN** `GA_PORTAL_SESSION_TTL_SECS` is set in `ghostship.conf` and `install.sh` runs
+- **THEN** the generated `compose.yml` contains `GA_PORTAL_SESSION_TTL_SECS=<value>` in the transport container environment
 
 ### Requirement: Documentation states that academy/ and crews/ changes require reinstall
 `docs/configuration.md` and `README.md` SHALL include a note that `academy/` and `crews/` contents are snapshotted into the data volume at install time, and that changes to those directories require re-running `./install.sh` to take effect in a running transport.

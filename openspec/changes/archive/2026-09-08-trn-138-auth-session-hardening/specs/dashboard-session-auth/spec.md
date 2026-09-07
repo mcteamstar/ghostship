@@ -1,3 +1,18 @@
+## ADDED Requirements
+
+### Requirement: Server-side open-redirect protection on login redirect
+The transport SHALL use the server-validated `next` URL (from `_validate_next_url()`) when redirecting after a successful login, not the raw value submitted in the form body. The server SHALL return the sanitised `next` URL in the JSON 200 response body; the client-side handler SHALL redirect only to that server-provided value.
+
+#### Scenario: Server-side validated next URL is used for redirect
+- **WHEN** `POST /dashboard/login` succeeds with a valid `ga_api_key` and a `next` field in the form body
+- **THEN** the JSON 200 response includes a `next` field containing the server-sanitised URL (output of `_validate_next_url()`)
+- **THEN** the client redirects to that server-provided value, not the raw submitted value
+
+#### Scenario: Crafted form next value is sanitised server-side
+- **WHEN** `POST /dashboard/login` receives a form body where `next` is `//evil.com`
+- **THEN** the JSON 200 response includes `next: "/"` (sanitised fallback)
+- **THEN** the browser is redirected to `/`, not to `//evil.com`
+
 ## MODIFIED Requirements
 
 ### Requirement: Dashboard logout endpoint
@@ -14,19 +29,6 @@ The transport SHALL expose `POST /dashboard/logout` as a public route. When call
 #### Scenario: Logout without a valid CSRF token returns 403
 - **WHEN** `POST /dashboard/logout` is called with a valid `gs_session` cookie but a missing or incorrect CSRF token
 - **THEN** the transport returns HTTP 403 and the session is NOT revoked
-
-### Requirement: Server-side open-redirect protection on login redirect
-The transport SHALL use the server-validated `next` URL (from `_validate_next_url()`) when redirecting after a successful login, not the raw value submitted in the form body. The server SHALL return the sanitised `next` URL in the JSON 200 response body; the client-side handler SHALL redirect only to that server-provided value.
-
-#### Scenario: Server-side validated next URL is used for redirect
-- **WHEN** `POST /dashboard/login` succeeds with a valid `ga_api_key` and a `next` field in the form body
-- **THEN** the JSON 200 response includes a `next` field containing the server-sanitised URL (output of `_validate_next_url()`)
-- **THEN** the client redirects to that server-provided value, not the raw submitted value
-
-#### Scenario: Crafted form next value is sanitised server-side
-- **WHEN** `POST /dashboard/login` receives a form body where `next` is `//evil.com`
-- **THEN** the JSON 200 response includes `next: "/"` (sanitised fallback)
-- **THEN** the browser is redirected to `/`, not to `//evil.com`
 
 ### Requirement: Brute-force throttle on dashboard login
 The transport SHALL apply a sliding-window failed-attempt throttle to `POST /dashboard/login`, keyed on the request's source IP, derived from the ASGI connection tuple rather than from `X-Forwarded-For`. When the number of failed attempts from a source within the configured window reaches the maximum, the endpoint SHALL return HTTP 429 without evaluating the submitted credential. A successful login SHALL reset the counter for that source.
