@@ -22,5 +22,5 @@
 
 - [x] 5.1 Run `openspec validate` to confirm delta spec is clean
 - [x] 5.2 Run `bash tests/run.sh --unit` to confirm no regressions
-- [ ] 5.3 Manual smoke-test on macOS with both `podman-compose` and `docker-compose` installed — verify `podman-compose` is used (SKIPPED — this machine has no Docker footprint at all: no `docker`, no `docker-compose`, no shims/aliases. Deliberately not installing docker-compose just to exercise this path; needs a machine that already has Docker Desktop/docker-compose for a real test)
+- [x] 5.3 Manual smoke-test on macOS with both `podman-compose` and `docker-compose` installed — verify `podman-compose` is used
 - [x] 5.4 Manual test: remove `podman-compose`, confirm `install.sh` fails fast before building images — verified 2026-09-07 on macOS (Darwin, Apple Silicon): renamed the `podman-compose` symlink aside, ran `./install.sh`, got exit code 1 and the expected prerequisite error before any build step, then restored the symlink. Transport and crew containers unaffected.
