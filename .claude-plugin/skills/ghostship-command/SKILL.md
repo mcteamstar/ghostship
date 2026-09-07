@@ -262,6 +262,20 @@ review, and reaper to archive. After one unresolved fix/re-review cycle, it
 escalates to you rather than looping forever. Raven self-pauses the cron
 once the lifecycle is complete — `captain status` will show `status: paused`.
 
+The `sdd` template also supports **parallel multi-change execution**: pass a
+comma-separated list of change names as `change_name` and Raven sets up an
+isolated git worktree per change, drives each through the full SDD lifecycle
+concurrently, then merges all branches and runs tests in a reconciliation phase.
+
+The built-in `independent-review` template (full body via `transport://orders`)
+dispatches Banshee × 3 (security, quality, test-coverage) and Wraith (docs)
+concurrently on each check-in, collects their findings, and mails a
+consolidated report to Admiral. Use it for periodic or pre-release audits.
+
+**Available built-in templates:** `sdd`, `independent-review`. Read
+`transport://orders` for the full body of each before use — the list is
+install-configurable and may include custom templates.
+
 For monitoring orders (watch a one-shot task, report when done), write a
 free-form message and Raven will pause the cron after sending the completion
 report.
