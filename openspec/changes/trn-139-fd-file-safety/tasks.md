@@ -1,6 +1,6 @@
 ## 1. Fix fd sentinel in _write_auth_file()
 
-- [ ] 1.1 In `transport/server.py`, refactor `_write_auth_file()` to set `fd = -1` immediately after `os.fdopen()` returns, before the `with` block body:
+- [x] 1.1 In `transport/server.py`, refactor `_write_auth_file()` to set `fd = -1` immediately after `os.fdopen()` returns, before the `with` block body:
   ```python
   f = os.fdopen(fd, "w")
   fd = -1
@@ -12,11 +12,11 @@
 
 ## 2. Fix fd sentinel in _save_registry()
 
-- [ ] 2.1 In `transport/registry.py`, apply the same fix to `_save_registry()` — set `fd = -1` immediately after `os.fdopen()` returns, before the `with` block body
+- [x] 2.1 In `transport/registry.py`, apply the same fix to `_save_registry()` — set `fd = -1` immediately after `os.fdopen()` returns, before the `with` block body
 
 ## 3. Add parent-directory fsync to _write_crew_secret()
 
-- [ ] 3.1 In `transport/server.py`, after `_write_crew_secret()` closes the file, add:
+- [x] 3.1 In `transport/server.py`, after `_write_crew_secret()` closes the file, add:
   ```python
   dir_fd = os.open(str(path.parent), os.O_RDONLY)
   try:
@@ -24,9 +24,9 @@
   finally:
       os.close(dir_fd)
   ```
-- [ ] 3.2 Verify this pattern matches `_save_registry()`'s existing approach (or adapt to the local style)
+- [x] 3.2 Verify this pattern matches `_save_registry()`'s existing approach (or adapt to the local style)
 
 ## 4. Validation
 
-- [ ] 4.1 Run `openspec validate trn-139-fd-file-safety`
-- [ ] 4.2 Run `bash tests/run.sh --unit` — all tests pass
+- [x] 4.1 Run `openspec validate trn-139-fd-file-safety`
+- [x] 4.2 Run `bash tests/run.sh --unit` — all tests pass

@@ -538,8 +538,9 @@ def _write_auth_file(value: str, _path: Path | None = None) -> None:
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as f:
-            fd = -1
+        f = os.fdopen(fd, "w")
+        fd = -1
+        with f:
             f.write(value)
             f.flush()
             os.fsync(f.fileno())
