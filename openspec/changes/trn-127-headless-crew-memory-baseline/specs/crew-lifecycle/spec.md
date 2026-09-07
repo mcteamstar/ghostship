@@ -25,7 +25,7 @@ dict (not just agent-scoped keys) and deep-merge all top-level sections into
 
 - **GIVEN** a crew is being launched for the first time
 - **WHEN** `_patch_crew_config` is called on the new container
-- **THEN** `config.local.json` contains `stt.enabled = false`, `session.eager_spawn = false`, `session.timeout_secs = 300`, `session.watchdog_rss_max_mb = 600`, `telemetry.beacon_enabled = false`, and `auto_update = false`
+- **THEN** `config.local.json` contains `stt.enabled = false`, `session.eager_spawn = false`, `session.timeout_secs = 300`, `session.watchdog_rss_max_mb = 2000`, `telemetry.beacon_enabled = false`, and `auto_update = false`
 
 #### Scenario: Idle crew RSS is below 200 MB after headless overrides
 
