@@ -66,6 +66,11 @@ def _save_registry(reg: dict) -> None:
             os.close(fd)
     os.replace(tmp, REGISTRY_PATH)
     os.chmod(REGISTRY_PATH, 0o600)
+    dir_fd = os.open(str(REGISTRY_PATH.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 # ── Schedule registry helpers (TRN-29) ───────────────────────────────────────

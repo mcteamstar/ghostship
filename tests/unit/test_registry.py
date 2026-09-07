@@ -85,7 +85,7 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
             ):
                 registry._save_registry(test_reg)
 
-            mock_fsync.assert_called_once()
+            mock_fsync.assert_called()  # called for both file and directory fds (TRN-139 dir-fsync)
             saved = json.loads(reg_path.read_text())
             self.assertEqual(saved, test_reg)
 
@@ -157,6 +157,55 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
                 result = registry._load_registry()
 
         self.assertEqual(result, {"crews": {}})
+
+
+class SaveRegistryDirFsyncTests(unittest.TestCase):
+    """Regression test: _save_registry() must fsync the parent directory after os.replace (TRN-139).
+
+    ``os.replace`` atomically replaces the destination, but the *directory entry*
+    that now points to the new inode may not be durable until the containing
+    directory is fsynced.  Without this, a crash immediately after os.replace
+    can leave the directory entry lost even though the file data was flushed.
+    """
+
+    def test_parent_directory_is_fsynced_after_replace(self) -> None:
+        """_save_registry fsyncs DATA_DIR after os.replace so the registry entry survives a crash."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            reg_path = test_dir / "crews.json"
+
+            fsynced_dir_fds: list[int] = []
+            real_os_open = os.open
+            real_os_fsync = os.fsync
+            dir_fds: set[int] = set()
+
+            def tracking_open(path: str, flags: int, mode: int = 0o777) -> int:
+                fd = real_os_open(path, flags, mode)
+                if os.path.isdir(path):
+                    dir_fds.add(fd)
+                return fd
+
+            def tracking_fsync(fd: int) -> None:
+                if fd in dir_fds:
+                    fsynced_dir_fds.append(fd)
+                real_os_fsync(fd)
+
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch("os.open", side_effect=tracking_open),
+                patch("os.fsync", side_effect=tracking_fsync),
+            ):
+                registry._save_registry({"crews": {}})
+
+            self.assertTrue(
+                fsynced_dir_fds,
+                "Expected the parent directory to be fsynced after os.replace in _save_registry",
+            )
+            written = reg_path.read_text()
+            self.assertIn("crews", written)
 
 
 class SaveRegistryFdSentinelTests(unittest.TestCase):
