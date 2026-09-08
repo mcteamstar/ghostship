@@ -87,8 +87,9 @@ The Ghost task description must include:
 Ghost should:
 1. Merge each change branch into the main checkout with `git merge --no-ff <change-name> -m "merge: <change-name>"`
 2. Run `bash tests/run.sh --unit`
-3. On success: remove each worktree (`git worktree remove ../repo-<change-name> --force`), mail `admiral@localhost` with subject `sdd complete — all changes merged, tests green` listing each change merged
-4. On conflict or test failure: mail `admiral@localhost` with subject `sdd merge failed — manual intervention needed` including the full error output
+3. On conflict: before escalating, read each conflicting change's `specs/` and `tasks.md` to understand intent. Resolve additively where both changes' intents can coexist (e.g. both add new code in the same file); choose one side only when changes are genuinely mutually exclusive (e.g. both rename the same function differently), using the specs to determine which is correct. After resolving all conflicts, re-run `bash tests/run.sh --unit`.
+4. On success (tests pass, with or without conflict resolution): remove each worktree (`git worktree remove ../repo-<change-name> --force`), then mail `admiral@localhost` with subject `sdd complete — all changes merged, tests green` listing each change merged. If any conflicts were resolved automatically, include a per-conflict summary: what conflicted, which side was chosen, and why.
+5. On test failure after conflict resolution (or unresolvable conflict): mail `admiral@localhost` with subject `sdd merge failed — manual intervention needed` including the full error output and a summary of every resolution decision attempted.
 
 Raven dispatches Ghost for this task using the same intent-UUID idempotency pattern as other persona dispatches. On subsequent check-ins, Raven polls the Ghost task's completion state via `kirocrew spawn list` or the gateway API — hold and do nothing else while Ghost is still in flight. Once Ghost is done (outcome `completed` or `stopped`), self-cancel. Do not self-cancel before Ghost has finished.
 
