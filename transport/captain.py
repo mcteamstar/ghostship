@@ -60,12 +60,83 @@ _ORDERS_DIR = Path(os.environ.get("ACADEMY_PATH", str(Path(__file__).resolve().p
 # /orders is the canonical mount point for academy/orders/.
 _ORDERS_CONTAINER_DIR = Path("/orders")
 
+# User-defined orders directory (TRN-135). When set, its .md files are merged
+# with the built-in templates; user-defined takes precedence on name collision.
+GA_ORDERS_DIR: str = os.environ.get("GA_ORDERS_DIR", "")
+
+# One-time warning flag: log at most once if GA_ORDERS_DIR is set but missing.
+_ga_orders_dir_warned: bool = False
+
 
 def _resolve_orders_dir() -> Path:
     """Return the orders directory, checking the container mount first."""
     if _ORDERS_CONTAINER_DIR.is_dir():
         return _ORDERS_CONTAINER_DIR
     return _ORDERS_DIR
+
+
+def _list_order_templates() -> list[tuple[str, str]]:
+    """Return the effective set of order templates as (name, description) pairs.
+
+    Enumerates built-in templates first, then merges user-defined templates from
+    GA_ORDERS_DIR (if set and exists). User-defined templates with the same stem
+    as a built-in template take precedence (override). Results are sorted by name.
+
+    Logs a one-time WARNING if GA_ORDERS_DIR is set but the path does not exist.
+    """
+    global _ga_orders_dir_warned
+
+    # Build dict keyed by stem; populate built-ins first.
+    templates: dict[str, str] = {}  # name -> description
+
+    builtin_dir = _resolve_orders_dir()
+    if builtin_dir.is_dir():
+        for path in sorted(builtin_dir.glob("*.md")):
+            if path.name.startswith("."):
+                continue
+            name = path.stem
+            try:
+                description, _body = _load_order_template(name)
+            except Exception:
+                description = ""
+            templates[name] = description
+
+    # Overlay with user-defined templates if GA_ORDERS_DIR is set.
+    if GA_ORDERS_DIR:
+        user_dir = Path(GA_ORDERS_DIR)
+        if user_dir.is_dir():
+            for path in sorted(user_dir.glob("*.md")):
+                if path.name.startswith("."):
+                    continue
+                name = path.stem
+                try:
+                    # Parse description from the user-defined file directly.
+                    content = path.read_text(encoding="utf-8")
+                    description = ""
+                    if content.startswith("---\n"):
+                        end = content.find("\n---\n", 4)
+                        if end != -1:
+                            front_matter = content[4:end]
+                            for line in front_matter.splitlines():
+                                if line.startswith("description:"):
+                                    desc_val = line[len("description:"):].strip()
+                                    if (desc_val.startswith('"') and desc_val.endswith('"')) or \
+                                       (desc_val.startswith("'") and desc_val.endswith("'")):
+                                        desc_val = desc_val[1:-1]
+                                    description = desc_val
+                                    break
+                    templates[name] = description
+                except Exception:
+                    templates[name] = ""
+        else:
+            if not _ga_orders_dir_warned:
+                _ga_orders_dir_warned = True
+                logger.warning(
+                    "GA_ORDERS_DIR=%r is set but does not exist — using built-in templates only",
+                    GA_ORDERS_DIR,
+                )
+
+    return sorted(templates.items())
 
 
 def _load_order_template(name: str) -> tuple[str, str]:

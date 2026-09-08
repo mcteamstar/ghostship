@@ -133,6 +133,13 @@
 # non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
 # GA_CREW_AGENT=kiro
 
+# ── User-defined standing-order templates (TRN-135) ──────────────────────────
+# Path to a directory of operator-managed standing-order template .md files.
+# When set and the directory exists, its templates are merged with the built-in
+# academy/orders/ templates (user-defined takes precedence on name collision).
+# Leave unset to use only the built-in templates.
+# GA_ORDERS_DIR=""
+
 # ── Transport TLS / security headers (TRN-70) ─────────────────────────────────
 # Minimum TLS version enforced when the app terminates TLS directly ("1.2"/"1.3").
 # GA_TLS_MIN_VERSION=1.2

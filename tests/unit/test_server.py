@@ -3909,3 +3909,64 @@ class Trn138RegistryCorruptGuardTests(unittest.TestCase):
         from transport.registry import RegistryCorruptError
 
         self.assertTrue(issubclass(RegistryCorruptError, RuntimeError))
+
+
+class ResourceOrdersIndexTests(unittest.TestCase):
+    """TRN-135 — resource_orders() returns summary index (name + description, no body)."""
+
+    def test_response_contains_only_name_and_description_no_body(self) -> None:
+        """(a) resource_orders() returns name: description lines, no body text."""
+        templates = [
+            ("independent-review", "Independent review of a change"),
+            ("sdd", "Software design document-driven implementation"),
+        ]
+        with patch.object(server, "_list_order_templates", return_value=templates):
+            result = server.resource_orders()
+
+        self.assertIn("independent-review: Independent review of a change", result)
+        self.assertIn("sdd: Software design document-driven implementation", result)
+        # Body keywords that would only appear in the full template should not be present
+        self.assertNotIn("{{", result)
+
+    def test_user_defined_templates_appear_in_index(self) -> None:
+        """(b) User-defined templates are included in the summary index."""
+        templates = [
+            ("my-workflow", "My custom workflow"),
+            ("sdd", "SDD description"),
+        ]
+        with patch.object(server, "_list_order_templates", return_value=templates):
+            result = server.resource_orders()
+
+        self.assertIn("my-workflow: My custom workflow", result)
+        self.assertIn("sdd: SDD description", result)
+
+    def test_no_templates_available(self) -> None:
+        """resource_orders() returns a clear message when no templates exist."""
+        with patch.object(server, "_list_order_templates", return_value=[]):
+            result = server.resource_orders()
+
+        self.assertIn("No standing-order templates", result)
+
+
+class ResourceOrdersByNameTests(unittest.TestCase):
+    """TRN-135 — resource_orders_by_name() returns full resolved body per template."""
+
+    def test_known_template_returns_resolved_body_without_front_matter(self) -> None:
+        """(a) Known template returns resolved body with placeholders substituted."""
+        with (
+            patch.object(server, "_load_order_template", return_value=("desc", "body content {{RAVEN_GATEWAY_ORIENTATION}}")) as mock_load,
+            patch.object(server, "_substitute_placeholders", return_value="body content resolved") as mock_sub,
+        ):
+            result = server.resource_orders_by_name("sdd")
+
+        self.assertEqual(result, "body content resolved")
+        mock_load.assert_called_once_with("sdd")
+        mock_sub.assert_called_once()
+
+    def test_unknown_template_returns_not_found_message(self) -> None:
+        """(b) Unknown template name returns a clear not-found message."""
+        with patch.object(server, "_load_order_template", side_effect=ValueError("Unknown Captain order template: 'nonexistent'")):
+            result = server.resource_orders_by_name("nonexistent")
+
+        self.assertIn("Not found", result)
+        self.assertIn("nonexistent", result)

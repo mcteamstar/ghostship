@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 import threading
 import time
 import unittest
@@ -211,8 +212,14 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         resource = server.resource_orders()
         resolved_body = server._resolve_order_template("sdd", "test-change")
 
-        self.assertIn("## sdd", resource)
+        # TRN-135: resource_orders() now returns a summary index (name: description),
+        # not full template bodies. Verify the new format.
+        self.assertIn("sdd:", resource)
         self.assertIn("Drive one or more named OpenSpec changes through the standard", resource)
+        # Full body is NOT in the index
+        self.assertNotIn("openspec store list --json", resource)
+        self.assertNotIn("openspec store register", resource)
+        # The resolved body from _resolve_order_template is unaffected
         self.assertIn("openspec store list --json", resolved_body)
         self.assertIn("openspec store register", resolved_body)
         self.assertIn("`--store <id>`", resolved_body)
@@ -342,15 +349,17 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("nonexistent-template", str(ctx.exception))
 
     def test_resource_orders_returns_dynamic_listing_from_academy_orders(self) -> None:
-        """resource_orders() returns dynamic listing from academy/orders/."""
+        """resource_orders() returns summary index (name: description) from academy/orders/."""
         resource = server.resource_orders()
-        # Should contain the sdd template section
-        self.assertIn("## sdd", resource)
-        # Should contain resolved content (no raw placeholders)
+        # TRN-135: new format is "name: description" per line, not "## name\n...body"
+        self.assertIn("sdd:", resource)
+        # Summary should contain the description (starts with "Drive one or more…")
+        self.assertIn("Drive one or more named OpenSpec changes", resource)
+        # Full body text must NOT appear in the summary
         import re as _re
+        self.assertNotIn("Drive OpenSpec change '<change>'", resource)
+        # No raw placeholders in the index
         self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resource))
-        # Should contain parts of the resolved body
-        self.assertIn("Drive OpenSpec change", resource)
 
     def test_placeholder_residual_warning(self) -> None:
         """A warning is logged when an unknown {{…}} placeholder remains after substitution."""
@@ -1483,6 +1492,112 @@ class CaptainStatusAgentMailTests(unittest.TestCase):
         mock_archive.assert_not_called()
         self.assertEqual(result["captain_subjects"], captain_subs)
         self.assertEqual(result["admiral_subjects"], admiral_subs)
+
+
+class ListOrderTemplatesTests(unittest.TestCase):
+    """TRN-135 — _list_order_templates() merges built-ins and GA_ORDERS_DIR."""
+
+    def _make_builtin_dir(self, tmp: Path, templates: dict[str, str]) -> Path:
+        """Write .md template files into a directory, return the path."""
+        for stem, content in templates.items():
+            (tmp / f"{stem}.md").write_text(content, encoding="utf-8")
+        return tmp
+
+    def test_builtin_only_when_ga_orders_dir_unset(self) -> None:
+        """(a) Only built-in templates returned when GA_ORDERS_DIR is empty."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "alpha.md").write_text("---\ndescription: Alpha desc\n---\nbody", encoding="utf-8")
+            (builtin / "beta.md").write_text("---\ndescription: Beta desc\n---\nbody", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", ""),
+            ):
+                result = captain_mod._list_order_templates()
+
+        names = [n for n, _ in result]
+        self.assertIn("alpha", names)
+        self.assertIn("beta", names)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(dict(result)["alpha"], "Alpha desc")
+
+    def test_user_defined_templates_added_when_ga_orders_dir_set(self) -> None:
+        """(b) User-defined templates appear alongside built-ins when GA_ORDERS_DIR set."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: SDD desc\n---\nbody", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "custom.md").write_text("---\ndescription: Custom desc\n---\ncustom body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                result = captain_mod._list_order_templates()
+
+        result_dict = dict(result)
+        self.assertIn("sdd", result_dict)
+        self.assertIn("custom", result_dict)
+        self.assertEqual(result_dict["custom"], "Custom desc")
+
+    def test_user_defined_overrides_builtin_on_name_collision(self) -> None:
+        """(c) User-defined template with same stem takes precedence over built-in."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: Built-in SDD\n---\nbody", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "sdd.md").write_text("---\ndescription: User SDD override\n---\noverridden body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                result = captain_mod._list_order_templates()
+
+        result_dict = dict(result)
+        self.assertEqual(result_dict["sdd"], "User SDD override")
+        # Only one entry for sdd, not two
+        self.assertEqual(len([n for n, _ in result if n == "sdd"]), 1)
+
+    def test_non_existent_ga_orders_dir_logs_warning_and_falls_back(self) -> None:
+        """(d) Non-existent GA_ORDERS_DIR logs warning once and returns only built-ins."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: SDD desc\n---\nbody", encoding="utf-8")
+
+            non_existent = str(Path(td) / "does_not_exist")
+
+            # Reset the warning flag before each test
+            captain_mod._ga_orders_dir_warned = False
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", non_existent),
+            ):
+                with self.assertLogs("transport.captain", level="WARNING") as log_ctx:
+                    result = captain_mod._list_order_templates()
+                # Warning should have been logged
+                self.assertTrue(any("GA_ORDERS_DIR" in msg for msg in log_ctx.output))
+                # Falls back to built-ins only
+                result_dict = dict(result)
+                self.assertIn("sdd", result_dict)
+                self.assertEqual(len(result), 1)
+
+                # Second call: no additional warning (one-time flag)
+                with self.assertNoLogs("transport.captain", level="WARNING"):
+                    result2 = captain_mod._list_order_templates()
+                self.assertEqual(len(result2), 1)
+
+            # Reset flag for other tests
+            captain_mod._ga_orders_dir_warned = False
 
 
 if __name__ == "__main__":
