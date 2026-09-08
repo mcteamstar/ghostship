@@ -1,11 +1,4 @@
-"""Unit tests for TRN-93 security hardening.
-
-Covers:
-  - TestStdinSecretDelivery:  inject_admiral_secret.py reads secret from stdin
-  - TestCrewsJsonHygiene:     crews.json stores identifiers, not plaintext secrets
-  - TestContainerHardeningFlags: no_new_privileges + cap_drop in container specs
-  - TestFileTransferAudit:    audit_auth_event called for presign and verify paths
-"""
+"""Unit tests for container hardening -- stdin secret delivery, crews.json hygiene, container flags, file transfer audit, and admiral signing secret."""
 from __future__ import annotations
 
 import hashlib
@@ -54,7 +47,7 @@ def _make_podman_mock(**kwargs):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6.1 — Stdin secret delivery
+# Stdin secret delivery
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestStdinSecretDelivery(unittest.TestCase):
@@ -163,7 +156,7 @@ class TestStdinSecretDelivery(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6.2 — crews.json credential hygiene
+# crews.json credential hygiene
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestCrewsJsonHygiene(unittest.TestCase):
@@ -232,7 +225,7 @@ class TestCrewsJsonHygiene(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6.3 — Container hardening flags
+# Container hardening flags
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestContainerHardeningFlags(unittest.TestCase):
@@ -404,7 +397,7 @@ class TestContainerHardeningFlags(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6.5 — File transfer audit events
+# File transfer audit events
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestFileTransferAudit(unittest.TestCase):
@@ -560,12 +553,11 @@ class TestFileTransferAudit(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2.fix — Admiral signing-secret file (TRN-93 Banshee fix)
+# Admiral signing-secret file (TRN-93 Banshee fix)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAdmiralSigningSecretFile(unittest.TestCase):
-    """_finish_crew_setup writes the admiral secret to a separate file; captain
-    reads it back so standing orders are signed for TRN-93+ crews."""
+    """_finish_crew_setup writes the admiral secret to a separate file; captain reads it back so standing orders are signed correctly."""
 
     def test_finish_crew_setup_writes_crew_secret_file(self) -> None:
         """_finish_crew_setup calls _write_crew_secret with the admiral_secret value."""
@@ -664,6 +656,217 @@ class TestAdmiralSigningSecretFile(unittest.TestCase):
             with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
                 # Should not raise
                 _registry_mod._delete_crew_secret("nonexistent-crew")
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API key loading
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestApiKeyLoading(unittest.TestCase):
+    """Transport reads /run/secrets/ga-api-key when file exists."""
+
+    def test_reads_from_secrets_file(self):
+        """Transport reads /run/secrets/ga-api-key when file exists."""
+        original_is_file = Path.is_file
+        original_read_text = Path.read_text
+
+        def mock_is_file(self):
+            if str(self) == "/run/secrets/ga-api-key":
+                return True
+            return original_is_file(self)
+
+        def mock_read_text(self, *args, **kwargs):
+            if str(self) == "/run/secrets/ga-api-key":
+                return "  test-secret-key-123  \n"
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.object(Path, "is_file", mock_is_file), \
+             patch.object(Path, "read_text", mock_read_text):
+            result = server._load_api_key()
+            self.assertEqual(result, "test-secret-key-123")
+
+    def test_no_key_returns_empty(self):
+        """Neither secret file nor env var → empty string, auth disabled."""
+        import os
+        original_is_file = Path.is_file
+
+        def mock_is_file(self):
+            if str(self) == "/run/secrets/ga-api-key":
+                return False
+            return original_is_file(self)
+
+        env_backup = os.environ.pop("GA_API_KEY", None)
+        try:
+            with patch.object(Path, "is_file", mock_is_file), \
+                 patch("logging.getLogger") as mock_get_logger:
+                mock_logger = MagicMock()
+                mock_get_logger.return_value = mock_logger
+                result = server._load_api_key()
+                self.assertEqual(result, "")
+                mock_logger.warning.assert_called_once()
+        finally:
+            if env_backup is not None:
+                os.environ["GA_API_KEY"] = env_backup
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Login concurrency
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LoginConcurrencyTests(unittest.TestCase):
+    """Concurrent POST /login and guarded GET /login clear."""
+
+    def test_concurrent_post_login_one_wins(self):
+        """Two threads call POST /login simultaneously; exactly one gets 200, other 409."""
+        import asyncio
+        import threading
+        import time
+
+        # Reset module state
+        server._login_pending = None
+
+        results = [None, None]
+        barrier = threading.Barrier(2, timeout=5)
+
+        # Mock dependencies
+        mock_podman = MagicMock()
+        mock_podman.container_exec.return_value = "kiro-cli"
+
+        container_counter = [0]
+        counter_lock = threading.Lock()
+
+        def slow_start(podman):
+            with counter_lock:
+                container_counter[0] += 1
+                n = container_counter[0]
+            time.sleep(0.05)
+            return f"ga-login-test-{n}"
+
+        def mock_read_auth():
+            return ""  # Not authenticated
+
+        def mock_get_podman():
+            return mock_podman
+
+        # Mock the pty exec to return a fake URL
+        mock_sock = MagicMock()
+        mock_sock.recv.return_value = b"Open this URL: https://example.com/device?user_code=TEST-1234"
+        mock_sock.setblocking = MagicMock()
+        mock_podman.container_exec_pty_stdin.return_value = ("exec-123", mock_sock)
+
+        def run_login(idx):
+            barrier.wait()
+            loop = asyncio.new_event_loop()
+            try:
+                with patch.object(server, "_read_auth_file", mock_read_auth), \
+                     patch.object(server, "_get_podman", mock_get_podman), \
+                     patch.object(server, "_start_login_container", slow_start), \
+                     patch.object(server, "_nuke_login_container"):
+                    request = MagicMock()
+                    resp = loop.run_until_complete(server._handle_login_post(request))
+                    results[idx] = resp.status_code
+            except Exception as e:
+                results[idx] = f"error: {e}"
+            finally:
+                loop.close()
+
+        t1 = threading.Thread(target=run_login, args=(0,))
+        t2 = threading.Thread(target=run_login, args=(1,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Exactly one should be 409
+        status_codes = sorted([r for r in results if isinstance(r, int)])
+        self.assertIn(409, status_codes,
+                      f"Expected one 409 from concurrent POST /login, got: {results}")
+        # The other should succeed (200) or at least not also be 409
+        non_409 = [s for s in status_codes if s != 409]
+        self.assertTrue(len(non_409) >= 1,
+                        f"Expected at least one non-409 result, got: {results}")
+
+        # Clean up
+        server._login_pending = None
+
+    def test_does_not_clear_if_different_container(self):
+        """_login_pending with different container name is NOT cleared."""
+        import time
+
+        # The old container (the one that just completed)
+        old_pending = {
+            "container": "ga-login-OLD-xyz789",
+            "started_at": time.time() - 60,
+            "state": "started",
+            "exec_id": "exec-old",
+        }
+
+        # Simulate: the GET handler captured old_pending, then a new POST set a new sentinel
+        server._login_pending = {
+            "container": "ga-login-NEW-abc123",
+            "started_at": time.time(),
+            "state": "started",
+            "exec_id": "exec-new",
+        }
+
+        # Execute the guarded clear logic (as in _handle_login_get)
+        with server._login_pending_lock:
+            if server._login_pending is not None and \
+               server._login_pending.get("container") == old_pending["container"]:
+                server._login_pending = None
+
+        # _login_pending should NOT be cleared (different container)
+        self.assertIsNotNone(server._login_pending)
+        self.assertEqual(server._login_pending["container"], "ga-login-NEW-abc123")
+
+        # Clean up
+        server._login_pending = None
+
+    def test_clears_when_container_matches(self):
+        """GET /login clears _login_pending when container matches."""
+        import time
+
+        container_name = "ga-login-match-abc"
+        server._login_pending = {
+            "container": container_name,
+            "started_at": time.time(),
+            "state": "started",
+            "exec_id": "exec-match",
+        }
+
+        pending = server._login_pending.copy()
+
+        # Execute the guarded clear logic
+        with server._login_pending_lock:
+            if server._login_pending is not None and \
+               server._login_pending.get("container") == pending["container"]:
+                server._login_pending = None
+
+        self.assertIsNone(server._login_pending)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# install.sh Podman secret
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestInstallShPodmanSecret(unittest.TestCase):
+    """install.sh creates Podman secret, no GA_API_KEY in env."""
+
+    def test_install_script_has_secret_create(self):
+        """install.sh contains podman secret create and no env-var pass."""
+        install_path = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
+        if not install_path.exists():
+            self.skipTest("scripts/install.sh not found relative to test")
+
+        content = install_path.read_text()
+        self.assertIn("secret rm ga-api-key", content)
+        self.assertIn("secret create ga-api-key", content)
+        # Secret is referenced in the compose file's secrets section, not via --secret flag
+        self.assertIn("ga-api-key", content)
+        # Verify plain env var pass is gone
+        self.assertNotIn('-e "GA_API_KEY=${GA_API_KEY:-}"', content)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,4 @@
-"""Tests for trn-52-rate-limiting: the RateLimiter primitive, the
-RateLimitMiddleware ASGI layer, and the GA_RATE_LIMIT_* env-var wiring.
-
-Each test names the spec scenario it exercises. Uses the same dependency-free
-import stub harness as the other transport tests (stubs mcp/starlette/httpx).
-"""
+"""Unit tests for RateLimiter, RateLimitMiddleware, and GA_RATE_LIMIT_* env-var wiring."""
 from __future__ import annotations
 
 import asyncio

@@ -1,18 +1,4 @@
-"""Unit tests for TRN-107 — Portside/Starboard network split and GA_TRANSPORT_SECRET.
-
-Covers:
-  7.1  GA_PORTSIDE_NETWORK / GA_STARBOARD_NETWORK constant values
-  7.2  TransportSecretMiddleware: missing header → 401
-  7.3  TransportSecretMiddleware: correct header → pass-through
-  7.4  TransportSecretMiddleware: wrong header value → 401
-  7.5  TransportSecretMiddleware: pass-through when transport_secret is empty
-  7.6  _migrate_crew_network: already on ga-starboard → no-op
-  7.7  _migrate_crew_network: on ga-net → full migration sequence
-  7.8  _migrate_crew_network: gateway not ready after migration → returns False
-  7.9  _reconcile_registry: migration failure marks crew stopped, continues
-  7.10 _reconcile_registry: best-effort ga-net removal attempted after migration
-  7.11 network_connect / network_disconnect / container_networks on PodmanClient
-"""
+"""Unit tests for network split -- NetworkConstants, TransportSecretMiddleware, crew network migration, PodmanClient network helpers, and Caddy transport secret wiring."""
 
 from __future__ import annotations
 
@@ -67,7 +53,7 @@ def _run_asgi(app, scope, body: bytes = b"") -> tuple[int, list, bytes]:
     return status, resp_headers, resp_body
 
 
-# ── 7.1: Constants ────────────────────────────────────────────────────────────
+# ── : Constants ────────────────────────────────────────────────────────────
 
 class NetworkConstantTests(unittest.TestCase):
     """GA_PORTSIDE_NETWORK and GA_STARBOARD_NETWORK have the expected values."""
@@ -85,10 +71,10 @@ class NetworkConstantTests(unittest.TestCase):
         self.assertEqual(server.GA_STARBOARD_NETWORK, "ga-starboard")
 
 
-# ── 7.2–7.5: TransportSecretMiddleware ──────────────────────────────────────────
+# ── : TransportSecretMiddleware ──────────────────────────────────────────
 
 class TransportSecretMiddlewareTests(unittest.TestCase):
-    """Tests for TransportSecretMiddleware (TRN-107 outermost gate)."""
+    """Tests for TransportSecretMiddleware (outermost gate)."""
 
     def test_missing_header_returns_401(self) -> None:
         """Request with no X-Transport-Token header → 401."""
@@ -152,7 +138,7 @@ class TransportSecretMiddlewareTests(unittest.TestCase):
         self.assertEqual(body, b"Unauthorized")
 
 
-# ── 7.6–7.10: _migrate_crew_network + _reconcile_registry ────────────────────
+# ── : _migrate_crew_network + _reconcile_registry ────────────────────
 
 class MigrateCrewNetworkTests(unittest.TestCase):
     """Tests for _migrate_crew_network (D3 migration algorithm)."""
@@ -313,7 +299,7 @@ class ReconcileRegistryMigrationTests(unittest.TestCase):
         podman.network_rm.assert_not_called()
 
 
-# ── 7.11: PodmanClient network helpers ───────────────────────────────────────
+# ── : PodmanClient network helpers ───────────────────────────────────────
 
 class PodmanNetworkHelperTests(unittest.TestCase):
     """Tests for PodmanClient.network_connect, network_disconnect, container_networks."""
@@ -494,11 +480,11 @@ class MigrateCrewNetworkCookieTests(unittest.TestCase):
         self.assertFalse(result)
 
 
-# ── Regression: TRN-107 secret header must reach the per-crew dashboard route ──
+# ── Regression:  secret header must reach the per-crew dashboard route ──
 #
 # The TransportSecretMiddleware tests above (7.2-7.5) only prove the gate
 # itself works in isolation. They do NOT prove that _caddy_register_crew
-# (TRN-92/TRN-102, in transport/server.py) actually sends the header Caddy
+# (, in transport/server.py) actually sends the header Caddy
 # needs to get past that gate. This class closes that gap directly: it was
 # the missing link that let a real crew dashboard 401 in production while
 # every existing unit test still passed.
@@ -514,7 +500,7 @@ class CaddyRegisterCrewTransportSecretTests(unittest.TestCase):
 
     def test_crew_proxy_dials_configured_port_not_a_stale_literal(self) -> None:
         """The crew reverse_proxy must dial ga-transport:{PORT} (server.PORT),
-        not a hardcoded literal left over from before the TRN-111 port
+        not a hardcoded literal left over from before the  port
         consolidation (previously a stale ':8000' that no process listened on,
         causing every dashboard request to 502)."""
         mock_put = Mock(return_value=self._resp(200))

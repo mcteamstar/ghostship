@@ -1,18 +1,4 @@
-"""Unit tests for TRN-105 batch dispatch and pickup.
-
-Covers:
-* registry batch CRUD round-trip + nuke removing the ``batches`` key
-  (``_write_batch`` / ``_get_batch`` / ``_update_batch_status`` /
-  ``_delete_batch``);
-* the ``dispatch`` mutual-exclusion guard, size validation, and the
-  partial-failure path (second ``/api/spawn`` call raises);
-* ``_pickup_batch`` lost-member detection and the timeout path.
-
-Patching follows the call-site principle used across the suite: registry
-helpers run in ``registry.py``'s namespace, so ``REGISTRY_PATH`` / ``DATA_DIR``
-are patched on ``registry``; ``dispatch`` calls ``_crew_api_with_recovery`` /
-``_write_batch`` re-exported into ``server``, so those are patched on ``server``.
-"""
+"""Unit tests for batch dispatch and registry batch CRUD."""
 
 from __future__ import annotations
 
@@ -26,7 +12,7 @@ from tests.unit.helpers import lifecycle, registry, server  # noqa: F401
 
 
 class BatchRegistryCRUDTests(unittest.TestCase):
-    """Task 5.1 — round-trip _write_batch/_get_batch/_update_batch_status/_delete_batch."""
+    """Round-trip _write_batch/_get_batch/_update_batch_status/_delete_batch."""
 
     def _isolated(self) -> ExitStack:
         """Context manager stack: point registry persistence at a temp dir."""
@@ -128,7 +114,7 @@ class BatchRegistryCRUDTests(unittest.TestCase):
 
 
 class NukeRemovesBatchesTests(unittest.TestCase):
-    """Task 5.1 (cont.) — nuke drops the crew entry including its batches key."""
+    """Nuke drops the crew entry including its batches key."""
 
     def test_nuke_atomic_write_removes_batches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -160,7 +146,7 @@ class NukeRemovesBatchesTests(unittest.TestCase):
 
 
 class DispatchBatchGuardTests(unittest.TestCase):
-    """Task 5.2 — mutual exclusion, size validation, partial-failure path."""
+    """Mutual exclusion, size validation, and partial-failure path."""
 
     CREW = {"container": "gs-demo"}
 
@@ -252,7 +238,7 @@ class DispatchBatchGuardTests(unittest.TestCase):
 
 
 class PickupBatchTests(unittest.TestCase):
-    """Tasks 5.3 / 5.4 — lost-member detection and timeout path."""
+    """Lost-member detection and timeout path."""
 
     CREW = {"container": "gs-demo"}
 

@@ -1,10 +1,4 @@
-"""Tests for trn-70-security-hardening: spec-scenario coverage across the four
-capabilities (authentication-security, transport-security, secrets-management,
-input-validation) plus audit logging.
-
-Each test names the spec scenario it exercises so the mapping stays visible.
-Uses the same dependency-free import stub as the other transport tests.
-"""
+"""Unit tests for transport.security -- secrets management, credential storage, throttling, sessions, input validation, transport security headers, and audit logging."""
 from __future__ import annotations
 
 import logging

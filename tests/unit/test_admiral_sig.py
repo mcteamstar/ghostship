@@ -1,12 +1,4 @@
-"""Tests for crews/_base/admission/verify-admiral-sig exit codes (trn-44).
-
-Verifies:
-  - Exit 0 when the secret matches the X-Admiral-Sig header
-  - Exit 1 when the signature mismatches
-  - Exit 2 (after retries) when the secret file is absent
-
-Uses subprocess with a temp file to avoid modifying real crew state.
-"""
+"""Unit tests for the verify-admiral-sig admission script -- exit codes for valid signature, mismatch, missing header, and absent secret file."""
 from __future__ import annotations
 
 import hashlib

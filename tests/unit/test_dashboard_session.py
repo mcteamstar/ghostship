@@ -1,12 +1,4 @@
-"""Unit tests for TRN-102 — Portal dashboard session (transport-proxy routing).
-
-Coverage:
-  3.1 GET /crews/{id}/ui/ injects mc_token_5476 on the forwarded request
-  3.2 UI proxy returns 404 for unknown crew
-  3.3 _caddy_register_crew upstreams ga-transport (not gs-{id}:5476) with a
-      /crews/{id}/ui rewrite and no Cookie header
-  + helper unit tests for _parse_ttl_seconds / _jwt_exp / _cookie_near_expiry
-"""
+"""Unit tests for dashboard session cookie helpers (TTL, JWT expiry, near-expiry detection) and UI proxy cookie injection and routing."""
 
 from __future__ import annotations
 
@@ -104,7 +96,7 @@ class TtlAndJwtHelperTests(unittest.TestCase):
 # ── 3.1 — UI proxy injects mc_token_5476 ─────────────────────────────────────
 
 class UiProxyCookieInjectionTests(unittest.TestCase):
-    """3.1: GET /crews/{id}/ui/ injects the crew's session cookie."""
+    """GET /crews/{id}/ui/ injects the crew's session cookie."""
 
     def _run_proxy(self, crew: dict, path: str = "/crews/demo/ui/"):
         captured = {}

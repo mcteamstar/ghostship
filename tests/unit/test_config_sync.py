@@ -1,14 +1,4 @@
-"""TRN-75: CI sync check between the Config dataclass and ghostship.conf.example.
-
-Every runtime env var the transport reads is declared as a field on
-`transport.config.Config`. Field names mirror the env var name lowercased
-(e.g. GA_MAX_CREWS -> ga_max_crews), so the env var for a field is
-`field.name.upper()`.
-
-This test asserts every Config field has a corresponding commented-out entry
-in `config/ghostship.conf.example`, so a new config option can never be added
-to the code without also being documented in the example config file.
-"""
+"""Unit tests for Config/conf.example field sync -- every Config field must have a commented entry in ghostship.conf.example."""
 
 import dataclasses
 import re

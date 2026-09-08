@@ -1,8 +1,4 @@
-"""Tests for transport self-healing: liveness probe, cookie refresh, retry wrapper,
-error messages, call-site migration, crews() gateway_healthy, and integration scenarios.
-
-Covers tasks.md sections 1.3, 2.2, 3.4, 4.3, 5.3, 6.3, 7.1–7.3.
-"""
+"""Unit tests for transport self-healing -- liveness probe, cookie refresh, crew API recovery, error messages, and integration scenarios."""
 from __future__ import annotations
 
 import json
@@ -98,7 +94,7 @@ class FakeHTTP:
 
 
 class TestProbeGateway(unittest.TestCase):
-    """Task 1.3: success, non-2xx, connection refused, and timeout cases."""
+    """Liveness probe -- success, non-2xx, connection refused, and timeout cases."""
 
     def test_probe_success(self):
         """Probe returns True on 200."""
@@ -131,7 +127,7 @@ class TestProbeGateway(unittest.TestCase):
 
 
 class TestRefreshCookie(unittest.TestCase):
-    """Task 2.2: successful mint, failed mint, and registry update."""
+    """Cookie refresh -- successful mint, failed mint, and registry update."""
 
     def _make_crew(self, crew_id="test-crew"):
         return {
@@ -207,7 +203,7 @@ class TestRefreshCookie(unittest.TestCase):
 
 
 class TestCrewApiWithRecovery(unittest.TestCase):
-    """Task 3.4: stale-cookie path, connection-error path, double-failure."""
+    """Crew API recovery -- stale-cookie path, connection-error path, double-failure."""
 
     def _make_crew(self, crew_id="test-crew"):
         return {
@@ -351,7 +347,7 @@ class TestCrewApiWithRecovery(unittest.TestCase):
 
 
 class TestErrorMessages(unittest.TestCase):
-    """Task 4.3: error messages on both recovery-failure paths."""
+    """Error messages on both recovery-failure paths."""
 
     def _make_crew(self, crew_id="my-crew"):
         return {
@@ -438,7 +434,7 @@ class TestErrorMessages(unittest.TestCase):
 
 
 class TestCallSiteMigration(unittest.TestCase):
-    """Task 5.3: tool handlers use _crew_api_with_recovery, internals use raw."""
+    """Tool handlers use _crew_api_with_recovery, internals use raw."""
 
     def test_dispatch_uses_recovery(self):
         """dispatch() routes through _crew_api_with_recovery."""
@@ -485,7 +481,7 @@ class TestCallSiteMigration(unittest.TestCase):
 
 
 class TestCrewsGatewayHealthy(unittest.TestCase):
-    """Task 6.3: healthy, unhealthy, and stopped crew scenarios."""
+    """Gateway health -- healthy, unhealthy, and stopped crew scenarios."""
 
     def _make_registry(self, crews_dict):
         return {"crews": crews_dict}
@@ -569,7 +565,7 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
 
 
 class TestIntegrationGatewayCrash(unittest.TestCase):
-    """Task 7.1: Simulate gateway crash mid-request, verify transparent recovery."""
+    """Simulate gateway crash mid-request, verify transparent recovery."""
 
     def test_crash_mid_request_recovers(self):
         """Connection error mid-request → restart → transparent retry."""
@@ -602,7 +598,7 @@ class TestIntegrationGatewayCrash(unittest.TestCase):
 
 
 class TestIntegrationStaleCookie(unittest.TestCase):
-    """Task 7.2: Simulate stale cookie (400), verify silent refresh+retry."""
+    """Simulate stale cookie (400), verify silent refresh+retry."""
 
     def test_stale_cookie_silent_refresh(self):
         """400 → cookie refresh → retry succeeds silently."""
@@ -634,7 +630,7 @@ class TestIntegrationStaleCookie(unittest.TestCase):
 
 
 class TestIntegrationDoubleFailure(unittest.TestCase):
-    """Task 7.3: Double failure surfaces actionable error message."""
+    """Double failure surfaces actionable error message."""
 
     def test_double_failure_actionable_error(self):
         """Both recovery attempts fail → actionable error surfaced to caller."""
