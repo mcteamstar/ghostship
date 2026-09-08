@@ -125,6 +125,9 @@ def _install_import_stubs() -> None:
                 self.body = content
             self.status_code = status_code
             self.kwargs = kwargs
+            # Expose headers as a dict-like object so tests can call
+            # resp.headers.get("Set-Cookie", "") the same way as real Starlette.
+            self.headers = kwargs.get("headers", {})
 
         async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
             """Make Response callable as an ASGI app (for proxy handler tests)."""
