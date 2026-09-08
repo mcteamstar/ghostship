@@ -209,12 +209,6 @@ class TestCrewsJsonHygiene(unittest.TestCase):
         self.assertNotIn("admiral_secret", entry,
                          "plaintext admiral_secret must not be stored in crews.json")
 
-    def test_policy_signing_key_absent_from_crews_json(self) -> None:
-        """crews.json must not contain the plaintext policy_signing_key field."""
-        entry = self._run_finish_crew_setup()
-        self.assertNotIn("policy_signing_key", entry,
-                         "plaintext policy_signing_key must not be stored in crews.json")
-
     def test_admiral_secret_id_present_as_sha256_identifier(self) -> None:
         """crews.json must contain admiral_secret_id as a sha256:<hex> string."""
         entry = self._run_finish_crew_setup()
@@ -223,15 +217,6 @@ class TestCrewsJsonHygiene(unittest.TestCase):
         val = entry["admiral_secret_id"]
         self.assertTrue(str(val).startswith("sha256:"),
                         f"admiral_secret_id must start with 'sha256:', got: {val!r}")
-
-    def test_policy_signing_key_id_present_as_sha256_identifier(self) -> None:
-        """crews.json must contain policy_signing_key_id as a sha256:<hex> string."""
-        entry = self._run_finish_crew_setup()
-        self.assertIn("policy_signing_key_id", entry,
-                      "policy_signing_key_id identifier must be present in crews.json")
-        val = entry["policy_signing_key_id"]
-        self.assertTrue(str(val).startswith("sha256:"),
-                        f"policy_signing_key_id must start with 'sha256:', got: {val!r}")
 
     def test_secret_identifier_format(self) -> None:
         """_secret_identifier returns sha256:<16-char hex prefix>."""

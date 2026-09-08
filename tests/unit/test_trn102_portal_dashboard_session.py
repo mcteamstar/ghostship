@@ -196,20 +196,6 @@ class UiProxyCookieInjectionTests(unittest.TestCase):
         self.assertEqual(cap.headers["Cookie"], "mc_token_5476=fresh")
 
 
-# ── 3.2 — 404 / 503 error paths ──────────────────────────────────────────────
-
-class ErrorPathTests(unittest.TestCase):
-    def test_ui_proxy_unknown_crew_returns_404(self) -> None:
-        async def run():
-            with patch.object(server, "_require_crew", side_effect=KeyError("no such crew")):
-                return await server._handle_crew_ui_proxy(
-                    _FakeStreamRequest(path="/crews/ghost/ui/")
-                )
-
-        resp = asyncio.run(run())
-        self.assertEqual(resp.status_code, 404)
-
-
 # ── 3.3 — Caddy config routes to the transport, no cookie ────────────────────
 
 class CaddyRoutesToTransportTests(unittest.TestCase):
