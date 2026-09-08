@@ -696,12 +696,17 @@ class ActiveCrewLimitTests(unittest.TestCase):
             lifecycle.GA_MAX_ACTIVE_CREWS = 2
             reg = self._registry_with_running(2)  # 2 running, limit is 2
 
+            # TRN-132: the active-limit count now confirms each registry-running
+            # entry against Podman. The two running crews (gs-0, gs-1) must be
+            # reported as actually running so they count toward the limit; the
+            # stopped target (gs-target) is not in the running snapshot.
             class StoppedPodman:
                 def container_is_running(self, name: str) -> bool:
-                    return False
+                    return name in ("gs-0", "gs-1")
 
             with (
                 patch.object(lifecycle, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_save_registry"),
                 patch.object(lifecycle, "_get_podman", return_value=StoppedPodman()),
                 patch.object(lifecycle, "_startup_events", {}),
                 patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
@@ -878,11 +883,25 @@ class ActiveCrewLimitTests(unittest.TestCase):
                     "stopped-c": {"status": "stopped", "container": "gs-c", "cookie": "c3"},
                 }
             }
-            fake = FakePodmanClient([int(4 * 1024**3)])
+            # TRN-132: crews() now confirms each registry-running entry against
+            # Podman before counting it. Both running crews' containers must be
+            # reported as actually running to count toward active_crews.
+            class _RunningPodman:
+                def container_is_running(self, name: str) -> bool:
+                    return name in ("gs-a", "gs-b")
+
+                def container_inspect(self, name: str) -> dict:
+                    return {"State": {"StartedAt": "2020-01-01T00:00:00Z"}}
+
+                def system_info(self) -> dict:
+                    return {"host": {"memAvailable": int(4 * 1024**3)}}
+
+            fake = _RunningPodman()
             server._host_memory_cache = None
 
             with (
                 patch.object(server, "_load_registry", return_value=reg),
+                patch.object(server, "_save_registry"),
                 patch.object(server, "_get_podman", return_value=fake),
                 patch.object(server, "_probe_gateway", return_value=False),
                 patch.object(server, "_crew_api", side_effect=Exception("offline")),
@@ -897,6 +916,223 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertEqual(result["max_active_crews"], 3)
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
+
+
+class StaleActiveCrewTests(unittest.TestCase):
+    """TRN-132: active_crews / active-limit count must reflect actual Podman
+    container state, not stale registry status. A registry entry marked
+    "running" whose container is not actually running is excluded from the
+    count and corrected to "stopped" in the registry.
+    """
+
+    # ── _ensure_crew_running active-limit (tasks 1.1–1.3) ────────────────────
+
+    class _SelectivePodman:
+        """Podman stub: container_is_running returns True only for names in
+        ``running``. Records container_start / container_stop for the target.
+        """
+
+        def __init__(self, running: set[str]) -> None:
+            self.running = set(running)
+            self.starts = 0
+
+        def container_is_running(self, name: str) -> bool:
+            return name in self.running
+
+        def container_start(self, name: str) -> None:
+            self.starts += 1
+            self.running.add(name)
+
+        def container_stop(self, name: str) -> None:
+            self.running.discard(name)
+
+        def container_exec(self, name, cmd, env=None) -> str:
+            return "ok"
+
+    def _run_ensure(self, reg: dict, running: set[str], limit: int):
+        """Drive _ensure_crew_running for the 'target' crew, returning
+        (podman, save_mock, raised_exc_or_None)."""
+        original = lifecycle.GA_MAX_ACTIVE_CREWS
+        podman = self._SelectivePodman(running)
+        saved: dict = {}
+
+        def _save(r):
+            saved["reg"] = json.loads(json.dumps(r))
+
+        try:
+            lifecycle.GA_MAX_ACTIVE_CREWS = limit
+            with (
+                patch.object(lifecycle, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_save_registry", side_effect=_save),
+                patch.object(lifecycle, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_startup_events", {}),
+                patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
+                patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_mint_cookie", return_value="new-c"),
+            ):
+                crew = reg["crews"]["target"]
+                exc = None
+                try:
+                    server._ensure_crew_running(crew, "target")
+                except Exception as e:  # noqa: BLE001
+                    exc = e
+            return podman, saved, exc
+        finally:
+            lifecycle.GA_MAX_ACTIVE_CREWS = original
+
+    def test_stale_running_entry_excluded_from_limit(self) -> None:
+        """(a) A registry entry marked running whose container is stopped is
+        excluded from the active count, so a stopped target below the limit
+        restarts successfully."""
+        # limit=2; two entries marked running but only one actually running →
+        # active count is 1, target restart allowed.
+        reg = {
+            "crews": {
+                "real": {"status": "running", "container": "gs-real", "cookie": "c"},
+                "stale": {"status": "running", "container": "gs-stale", "cookie": "c"},
+                "target": {"status": "stopped", "container": "gs-target", "cookie": "c"},
+            }
+        }
+        podman, _saved, exc = self._run_ensure(
+            reg, running={"gs-real"}, limit=2
+        )
+        self.assertIsNone(exc, f"expected no limit error, got {exc!r}")
+        self.assertGreaterEqual(podman.starts, 1)  # target was started
+
+    def test_stale_entry_corrected_to_stopped(self) -> None:
+        """(b) The stale running entry is written back as stopped in the registry."""
+        reg = {
+            "crews": {
+                "stale": {"status": "running", "container": "gs-stale", "cookie": "c"},
+                "target": {"status": "stopped", "container": "gs-target", "cookie": "c"},
+            }
+        }
+        _podman, saved, _exc = self._run_ensure(
+            reg, running=set(), limit=3
+        )
+        self.assertIn("reg", saved)
+        self.assertEqual(saved["reg"]["crews"]["stale"]["status"], "stopped")
+
+    def test_limit_enforced_after_stale_excluded(self) -> None:
+        """(c) With enough genuinely-running crews at the limit, a stopped
+        target is still blocked — the check counts confirmed-running only."""
+        reg = {
+            "crews": {
+                "a": {"status": "running", "container": "gs-a", "cookie": "c"},
+                "b": {"status": "running", "container": "gs-b", "cookie": "c"},
+                "target": {"status": "stopped", "container": "gs-target", "cookie": "c"},
+            }
+        }
+        _podman, _saved, exc = self._run_ensure(
+            reg, running={"gs-a", "gs-b"}, limit=2
+        )
+        self.assertIsInstance(exc, RuntimeError)
+        self.assertIn("Active crew limit", str(exc))
+
+    # ── crews() active_crews (tasks 2.1–2.4) ─────────────────────────────────
+
+    class _CrewsPodman:
+        """Podman stub for crews(): container_is_running True only for names in
+        ``running``; container_inspect records calls and returns a StartedAt.
+        system_info supplies host memory.
+        """
+
+        def __init__(self, running: set[str]) -> None:
+            self.running = set(running)
+            self.inspect_calls: list[str] = []
+
+        def container_is_running(self, name: str) -> bool:
+            return name in self.running
+
+        def container_inspect(self, name: str) -> dict:
+            self.inspect_calls.append(name)
+            return {"State": {"StartedAt": "2020-01-01T00:00:00Z"}}
+
+        def system_info(self) -> dict:
+            return {"host": {"memAvailable": 4 * 1024**3}}
+
+    def _run_crews(self, reg: dict, running: set[str]):
+        """Drive server.crews(); returns (result, podman, probe_mock, save_mock)."""
+        original = server.GA_MAX_ACTIVE_CREWS
+        podman = self._CrewsPodman(running)
+        server._host_memory_cache = None
+        saved: dict = {}
+
+        def _save(r):
+            saved["reg"] = json.loads(json.dumps(r))
+
+        try:
+            server.GA_MAX_ACTIVE_CREWS = 5
+            with (
+                patch.object(server, "_load_registry", return_value=reg),
+                patch.object(server, "_save_registry", side_effect=_save),
+                patch.object(server, "_get_podman", return_value=podman),
+                patch.object(server, "_probe_gateway", return_value=True) as probe,
+                patch.object(server, "_crew_api", side_effect=Exception("offline")),
+            ):
+                result = server.crews()
+            return result, podman, probe, saved
+        finally:
+            server.GA_MAX_ACTIVE_CREWS = original
+
+    def _base_crews_registry(self) -> dict:
+        return {
+            "crews": {
+                "real": {"status": "running", "container": "gs-real", "cookie": "c1"},
+                "stale": {"status": "running", "container": "gs-stale", "cookie": "c2"},
+                "stopped": {"status": "stopped", "container": "gs-stopped", "cookie": "c3"},
+            }
+        }
+
+    def _entry(self, result: dict, cid: str) -> dict:
+        return next(e for e in result["crews"] if e["crew_id"] == cid)
+
+    def test_active_crews_excludes_stopped_container(self) -> None:
+        """(a) active_crews excludes a registered-running crew whose container
+        is actually stopped, and (e) equals the confirmed-running count."""
+        result, _podman, _probe, _saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        self.assertEqual(result["active_crews"], 1)  # only 'real' confirmed running
+
+    def test_stale_crew_status_reported_stopped(self) -> None:
+        """(b) The stale crew's per-crew status in the response is 'stopped'."""
+        result, _podman, _probe, _saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        self.assertEqual(self._entry(result, "stale")["status"], "stopped")
+        self.assertEqual(self._entry(result, "stale")["gateway_healthy"], False)
+        self.assertEqual(self._entry(result, "real")["status"], "running")
+
+    def test_probe_and_inspect_skipped_for_stale_crew(self) -> None:
+        """(c) _probe_gateway is NOT called for the stale crew, and neither is
+        container_inspect (uptime skipped)."""
+        result, podman, probe, _saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        # probe called once — only for the genuinely running 'real' crew.
+        probe.assert_called_once()
+        # inspect only for the running crew's uptime, never for the stale one.
+        self.assertEqual(podman.inspect_calls, ["gs-real"])
+        self.assertIsNone(self._entry(result, "stale")["uptime_secs"])
+
+    def test_registry_written_back_with_correction(self) -> None:
+        """(d) The registry is saved with the stale entry corrected to stopped."""
+        _result, _podman, _probe, saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        self.assertIn("reg", saved)
+        self.assertEqual(saved["reg"]["crews"]["stale"]["status"], "stopped")
+        self.assertEqual(saved["reg"]["crews"]["real"]["status"], "running")
+
+    def test_no_write_when_no_stale_entries(self) -> None:
+        """No registry write occurs when every running entry is confirmed."""
+        _result, _podman, _probe, saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real", "gs-stale"}
+        )
+        self.assertNotIn("reg", saved)  # _save_registry not called
 
 
 # ── CopyAgentsMcpTests (task 2.13) ───────────────────────────────────────────
