@@ -553,15 +553,51 @@ def _ensure_crew_running(
     try:
         logger.info("Crew %s is stopped — restarting", crew_id)
 
-        # Active crew limit: count running entries in the registry.
-        # A stopped crew requesting restart must not push the running count
-        # over GA_MAX_ACTIVE_CREWS.  GA_MAX_ACTIVE_CREWS=0 disables the check.
+        # Active crew limit: count crews whose container is actually running
+        # per Podman, not merely those the registry marks "running".  A stale
+        # "running" entry (container stopped externally) must not count toward
+        # the limit or block a legitimate restart.  GA_MAX_ACTIVE_CREWS=0
+        # disables the check.
+        #
+        # Pattern (mirrors _reconcile_registry): acquire lock → snapshot →
+        # release → probe Podman outside the lock → re-acquire → write back
+        # any stale "running"→"stopped" corrections → release, then decide.
         if GA_MAX_ACTIVE_CREWS > 0:
             with _registry_lock:
                 reg = _load_registry()
-                active = sum(
-                    1 for c in reg["crews"].values() if c.get("status") == "running"
+                running_snapshot = [
+                    (cid, c.get("container"))
+                    for cid, c in reg["crews"].items()
+                    if c.get("status") == "running"
+                ]
+
+            active = 0
+            corrections: list[str] = []
+            for cid, container in running_snapshot:
+                if container and podman.container_is_running(container):
+                    active += 1
+                else:
+                    # Registered running but not actually running — stale.
+                    corrections.append(cid)
+
+            if corrections:
+                with _registry_lock:
+                    reg = _load_registry()
+                    changed = False
+                    for cid in corrections:
+                        entry = reg["crews"].get(cid)
+                        if entry is not None and entry.get("status") == "running":
+                            entry["status"] = "stopped"
+                            changed = True
+                    if changed:
+                        _save_registry(reg)
+                logger.info(
+                    "Active-limit check corrected %d stale running entr%s to stopped: %s",
+                    len(corrections),
+                    "y" if len(corrections) == 1 else "ies",
+                    ", ".join(corrections),
                 )
+
             if active >= GA_MAX_ACTIVE_CREWS:
                 raise RuntimeError(
                     f"Active crew limit ({GA_MAX_ACTIVE_CREWS}) reached — "

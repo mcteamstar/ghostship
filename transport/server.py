@@ -2079,13 +2079,29 @@ def crews() -> dict:
         host_mem = None
 
     result = []
+    corrections: list[str] = []  # crew_ids registered running but not actually running
     for cid, info in reg["crews"].items():
         # Determine gateway health: stopped containers are unhealthy without
-        # probing; running containers get a liveness probe.
+        # probing; running containers get a liveness probe — but only after
+        # confirming with Podman that the container is actually running. A
+        # registry entry marked "running" whose container was stopped
+        # externally is corrected to "stopped" here (self-heal), and must not
+        # trigger a gateway probe or an uptime inspect.
         status = info.get("status", "unknown")
-        if status != "running":
+        if status == "running" and podman is not None:
+            if not podman.container_is_running(info["container"]):
+                # Stale running entry — container is not actually running.
+                status = "stopped"
+                gateway_healthy = False
+                corrections.append(cid)
+            else:
+                crew_url = _crew_url(info)
+                gateway_healthy = _probe_gateway(crew_url)
+        elif status != "running":
             gateway_healthy = False
         else:
+            # status == "running" but no Podman client — fall back to a probe
+            # (cannot confirm container state without Podman).
             crew_url = _crew_url(info)
             gateway_healthy = _probe_gateway(crew_url)
 
@@ -2160,6 +2176,27 @@ def crews() -> dict:
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
         result.append(entry)
+
+    # TRN-132: write back any stale running→stopped corrections discovered
+    # above, in a single save under the registry lock (second acquisition,
+    # following the established reconcile pattern). Only flip entries that are
+    # still marked "running" in the registry to avoid clobbering a concurrent
+    # legitimate state change.
+    if corrections:
+        with _registry_lock:
+            reg2 = _load_registry()
+            changed = False
+            for cid in corrections:
+                entry2 = reg2["crews"].get(cid)
+                if entry2 is not None and entry2.get("status") == "running":
+                    entry2["status"] = "stopped"
+                    changed = True
+            if changed:
+                _save_registry(reg2)
+
+    # active_crews reflects containers actually confirmed running by Podman:
+    # each result entry's status has already been corrected to "stopped" for
+    # stale registry-running entries above.
     active_crews = sum(1 for e in result if e.get("status") == "running")
     return {
         "crews": result,
