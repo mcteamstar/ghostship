@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.1 (unreleased)
+## v0.3.2 (unreleased)
 
 ### Captain templates
 
