@@ -2718,14 +2718,16 @@ def captain(
 
     ``order`` requires exactly one of ``message`` or ``template``. A named
     template is resolved before it is written to ``captain@localhost``;
-    ``sdd`` is the built-in template and uses ``change_name`` to name the
-    OpenSpec change it should drive — pass a comma-separated list for
-    parallel multi-change execution with automatic worktree isolation.
-    ``independent-review`` is the built-in review template; ``change_name``
-    is optional — when provided it scopes the review to that change; when
-    omitted it reviews the entire codebase. The resolved order shares the same
-    recurring Raven check-in as a hand-written message. ``stop`` pauses that
-    check-in without deleting it, and ``status`` reports its durable state.
+    ``spec-driven-development`` (aliases: ``sdd``, ``specky``) is the built-in
+    template and uses ``change_name`` to name the OpenSpec change it should
+    drive — pass a comma-separated list for parallel multi-change execution
+    with automatic worktree isolation.
+    ``independent-review`` (alias: ``indy``) is the built-in review template;
+    ``change_name`` is optional — when provided it scopes the review to that
+    change; when omitted it reviews the entire codebase. The resolved order
+    shares the same recurring Raven check-in as a hand-written message.
+    ``stop`` pauses that check-in without deleting it, and ``status`` reports
+    its durable state.
 
     When fire_immediately is True (the default for interval-based check-ins),
     Raven is dispatched once immediately after a newly created check-in job,
@@ -2739,8 +2741,9 @@ def captain(
         action: One of ``order``, ``stop``, or ``status``.
         message: Free-form standing order text.
         template: Name of a built-in standing-order template. Available
-            templates: ``sdd`` (single or multi-change lifecycle),
-            ``independent-review`` (scoped or whole-codebase review).
+            templates: ``spec-driven-development`` / ``sdd`` / ``specky``
+            (single or multi-change lifecycle), ``independent-review`` /
+            ``indy`` (scoped or whole-codebase review).
         change_name: Substitution value for a template. For ``sdd``, accepts
             a single change name or a comma-separated list for multi-change
             mode. For ``independent-review``, optional — omit to review the
