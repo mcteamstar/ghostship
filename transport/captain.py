@@ -60,6 +60,13 @@ _ORDERS_DIR = Path(os.environ.get("ACADEMY_PATH", str(Path(__file__).resolve().p
 # /orders is the canonical mount point for academy/orders/.
 _ORDERS_CONTAINER_DIR = Path("/orders")
 
+# User-defined orders directory (TRN-135). When set, its .md files are merged
+# with the built-in templates; user-defined takes precedence on name collision.
+GA_ORDERS_DIR: str = os.environ.get("GA_ORDERS_DIR", "")
+
+# One-time warning flag: log at most once if GA_ORDERS_DIR is set but missing.
+_ga_orders_dir_warned: bool = False
+
 
 def _resolve_orders_dir() -> Path:
     """Return the orders directory, checking the container mount first."""
@@ -68,19 +75,91 @@ def _resolve_orders_dir() -> Path:
     return _ORDERS_DIR
 
 
+def _list_order_templates() -> list[tuple[str, str]]:
+    """Return the effective set of order templates as (name, description) pairs.
+
+    Enumerates built-in templates first, then merges user-defined templates from
+    GA_ORDERS_DIR (if set and exists). User-defined templates with the same stem
+    as a built-in template take precedence (override). Results are sorted by name.
+
+    Logs a one-time WARNING if GA_ORDERS_DIR is set but the path does not exist.
+    """
+    global _ga_orders_dir_warned
+
+    # Build dict keyed by stem; populate built-ins first.
+    templates: dict[str, str] = {}  # name -> description
+
+    builtin_dir = _resolve_orders_dir()
+    if builtin_dir.is_dir():
+        for path in sorted(builtin_dir.glob("*.md")):
+            if path.name.startswith("."):
+                continue
+            name = path.stem
+            try:
+                description, _body = _load_order_template(name)
+            except Exception:
+                description = ""
+            templates[name] = description
+
+    # Overlay with user-defined templates if GA_ORDERS_DIR is set.
+    if GA_ORDERS_DIR:
+        user_dir = Path(GA_ORDERS_DIR)
+        if user_dir.is_dir():
+            for path in sorted(user_dir.glob("*.md")):
+                if path.name.startswith("."):
+                    continue
+                name = path.stem
+                try:
+                    content = path.read_text(encoding="utf-8")
+                    description, _body = _parse_order_front_matter(content)
+                    templates[name] = description
+                except Exception:
+                    templates[name] = ""
+        else:
+            if not _ga_orders_dir_warned:
+                _ga_orders_dir_warned = True
+                logger.warning(
+                    "GA_ORDERS_DIR=%r is set but does not exist — using built-in templates only",
+                    GA_ORDERS_DIR,
+                )
+
+    return sorted(templates.items())
+
+
 def _load_order_template(name: str) -> tuple[str, str]:
     """Load a template from academy/orders/<name>.md.
 
     Returns (description, body). Parses optional YAML front-matter for
     the ``description`` field; defaults to "" if absent.
     """
-    orders_dir = _resolve_orders_dir()
-    template_path = orders_dir / f"{name}.md"
-    if not template_path.is_file():
+    # TRN-135: honour GA_ORDERS_DIR with user-defined precedence, mirroring the
+    # merge in _list_order_templates(). A user-defined template with the same
+    # stem overrides the built-in; otherwise fall back to the built-in dir.
+    template_path: Path | None = None
+    if GA_ORDERS_DIR:
+        user_path = Path(GA_ORDERS_DIR) / f"{name}.md"
+        if user_path.is_file():
+            template_path = user_path
+    if template_path is None:
+        builtin_path = _resolve_orders_dir() / f"{name}.md"
+        if builtin_path.is_file():
+            template_path = builtin_path
+    if template_path is None:
         raise ValueError(f"Unknown Captain order template: {name!r}")
     content = template_path.read_text(encoding="utf-8")
+    description, body = _parse_order_front_matter(content)
+    return description, body.strip()
 
-    # Parse optional YAML front-matter
+
+def _parse_order_front_matter(content: str) -> tuple[str, str]:
+    """Split optional YAML front-matter from a template file.
+
+    Returns (description, body). The ``description`` field is read from the
+    front-matter block (surrounding quotes stripped); it defaults to "" when
+    the front-matter is absent or has no ``description`` key. ``body`` is the
+    content following the closing ``---`` (or the whole content when there is
+    no front-matter).
+    """
     description = ""
     body = content
     if content.startswith("---\n"):
@@ -97,8 +176,7 @@ def _load_order_template(name: str) -> tuple[str, str]:
                         desc_val = desc_val[1:-1]
                     description = desc_val
                     break
-
-    return description, body.strip()
+    return description, body
 
 
 def _substitute_placeholders(body: str) -> str:

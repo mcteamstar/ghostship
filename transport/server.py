@@ -282,6 +282,7 @@ try:
         _RAVEN_STORE_RESOLUTION,
         _RAVEN_SELF_CANCEL,
         _resolve_orders_dir,
+        _list_order_templates,
         _load_order_template,
         _substitute_placeholders,
         _format_captain_mail,
@@ -310,6 +311,7 @@ except ModuleNotFoundError:
         _RAVEN_STORE_RESOLUTION,
         _RAVEN_SELF_CANCEL,
         _resolve_orders_dir,
+        _list_order_templates,
         _load_order_template,
         _substitute_placeholders,
         _format_captain_mail,
@@ -4018,28 +4020,37 @@ def resource_agents() -> str:
 
 
 
+
 @mcp.resource(
     "transport://orders",
     name="orders",
     title="Standing-Order Templates",
-    description="Lists the built-in standing-order templates available to captain(order).",
+    description="Summary index of available standing-order templates — name and description only. Use transport://orders/{name} to fetch a template's full resolved body.",
     mime_type="text/plain",
 )
 def resource_orders() -> str:
-    """Return every standing-order template from academy/orders/ and its full body."""
-    orders_dir = _resolve_orders_dir()
-    if not orders_dir.is_dir():
-        return "No standing-order templates are available."
-    templates = sorted(p for p in orders_dir.glob("*.md") if not p.name.startswith("."))
+    """Return a summary index of available order templates (name + description only)."""
+    templates = _list_order_templates()
     if not templates:
         return "No standing-order templates are available."
-    sections = []
-    for template_path in templates:
-        name = template_path.stem
-        description, body = _load_order_template(name)
-        resolved_body = _substitute_placeholders(body)
-        sections.append(f"## {name}\n{description}\n\n{resolved_body}")
-    return "\n\n".join(sections)
+    lines = [f"{name}: {description}" for name, description in templates]
+    return "\n".join(lines)
+
+
+@mcp.resource(
+    "transport://orders/{name}",
+    name="orders_by_name",
+    title="Standing-Order Template",
+    description="Returns the full resolved body of the named standing-order template, with all placeholders substituted and front-matter stripped. Use transport://orders to list available templates.",
+    mime_type="text/plain",
+)
+def resource_orders_by_name(name: str) -> str:
+    """Return the full resolved body of a single order template by name."""
+    try:
+        _description, body = _load_order_template(name)
+    except ValueError:
+        return f"Not found: no standing-order template named {name!r}. Use transport://orders to list available templates."
+    return _substitute_placeholders(body)
 
 
 @mcp.resource(
