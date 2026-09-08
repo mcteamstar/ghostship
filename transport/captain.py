@@ -110,21 +110,8 @@ def _list_order_templates() -> list[tuple[str, str]]:
                     continue
                 name = path.stem
                 try:
-                    # Parse description from the user-defined file directly.
                     content = path.read_text(encoding="utf-8")
-                    description = ""
-                    if content.startswith("---\n"):
-                        end = content.find("\n---\n", 4)
-                        if end != -1:
-                            front_matter = content[4:end]
-                            for line in front_matter.splitlines():
-                                if line.startswith("description:"):
-                                    desc_val = line[len("description:"):].strip()
-                                    if (desc_val.startswith('"') and desc_val.endswith('"')) or \
-                                       (desc_val.startswith("'") and desc_val.endswith("'")):
-                                        desc_val = desc_val[1:-1]
-                                    description = desc_val
-                                    break
+                    description, _body = _parse_order_front_matter(content)
                     templates[name] = description
                 except Exception:
                     templates[name] = ""
@@ -145,13 +132,34 @@ def _load_order_template(name: str) -> tuple[str, str]:
     Returns (description, body). Parses optional YAML front-matter for
     the ``description`` field; defaults to "" if absent.
     """
-    orders_dir = _resolve_orders_dir()
-    template_path = orders_dir / f"{name}.md"
-    if not template_path.is_file():
+    # TRN-135: honour GA_ORDERS_DIR with user-defined precedence, mirroring the
+    # merge in _list_order_templates(). A user-defined template with the same
+    # stem overrides the built-in; otherwise fall back to the built-in dir.
+    template_path: Path | None = None
+    if GA_ORDERS_DIR:
+        user_path = Path(GA_ORDERS_DIR) / f"{name}.md"
+        if user_path.is_file():
+            template_path = user_path
+    if template_path is None:
+        builtin_path = _resolve_orders_dir() / f"{name}.md"
+        if builtin_path.is_file():
+            template_path = builtin_path
+    if template_path is None:
         raise ValueError(f"Unknown Captain order template: {name!r}")
     content = template_path.read_text(encoding="utf-8")
+    description, body = _parse_order_front_matter(content)
+    return description, body.strip()
 
-    # Parse optional YAML front-matter
+
+def _parse_order_front_matter(content: str) -> tuple[str, str]:
+    """Split optional YAML front-matter from a template file.
+
+    Returns (description, body). The ``description`` field is read from the
+    front-matter block (surrounding quotes stripped); it defaults to "" when
+    the front-matter is absent or has no ``description`` key. ``body`` is the
+    content following the closing ``---`` (or the whole content when there is
+    no front-matter).
+    """
     description = ""
     body = content
     if content.startswith("---\n"):
@@ -168,8 +176,7 @@ def _load_order_template(name: str) -> tuple[str, str]:
                         desc_val = desc_val[1:-1]
                     description = desc_val
                     break
-
-    return description, body.strip()
+    return description, body
 
 
 def _substitute_placeholders(body: str) -> str:

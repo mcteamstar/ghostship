@@ -1494,6 +1494,90 @@ class CaptainStatusAgentMailTests(unittest.TestCase):
         self.assertEqual(result["admiral_subjects"], admiral_subs)
 
 
+class LoadOrderTemplateGaDirTests(unittest.TestCase):
+    """TRN-135 — _load_order_template() resolves GA_ORDERS_DIR with precedence.
+
+    Guards the requirement that a user-defined template is both listable AND
+    resolvable — via the per-template resource and the captain order path,
+    both of which go through _load_order_template().
+    """
+
+    def test_user_defined_template_resolves_new_name(self) -> None:
+        """A template that exists only in GA_ORDERS_DIR resolves by name."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: Built-in SDD\n---\nbuiltin body", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "deploy.md").write_text("---\ndescription: Deploy\n---\ndeploy body here", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                description, body = captain_mod._load_order_template("deploy")
+
+        self.assertEqual(description, "Deploy")
+        self.assertEqual(body, "deploy body here")
+
+    def test_user_defined_template_overrides_builtin_on_load(self) -> None:
+        """A user-defined template with a built-in stem takes precedence on load."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: Built-in SDD\n---\nbuiltin body", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "sdd.md").write_text("---\ndescription: User SDD\n---\noverridden body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                description, body = captain_mod._load_order_template("sdd")
+
+        self.assertEqual(description, "User SDD")
+        self.assertEqual(body, "overridden body")
+
+    def test_builtin_still_resolves_when_ga_dir_lacks_it(self) -> None:
+        """A built-in with no user-defined counterpart still resolves when GA_ORDERS_DIR is set."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "independent-review.md").write_text("---\ndescription: IR\n---\nir body", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "deploy.md").write_text("---\ndescription: Deploy\n---\ndeploy body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                description, body = captain_mod._load_order_template("independent-review")
+
+        self.assertEqual(description, "IR")
+        self.assertEqual(body, "ir body")
+
+    def test_unknown_template_still_raises_with_ga_dir_set(self) -> None:
+        """An unknown name raises ValueError even when GA_ORDERS_DIR is set."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            user = Path(td) / "user"
+            user.mkdir()
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                with self.assertRaises(ValueError):
+                    captain_mod._load_order_template("nonexistent")
+
+
 class ListOrderTemplatesTests(unittest.TestCase):
     """TRN-135 — _list_order_templates() merges built-ins and GA_ORDERS_DIR."""
 
