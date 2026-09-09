@@ -63,6 +63,15 @@ except ModuleNotFoundError:
         _touch_crew,
     )
 
+# CREW_GATEWAY_PORT is a plain integer constant with no transport dependencies,
+# so it is imported directly from the zero-dependency constants leaf rather than
+# injected via bind_lifecycle() (TRN-142). It was never part of the
+# monitors↔lifecycle load-time cycle that bind_lifecycle() exists to break.
+try:
+    from constants import CREW_GATEWAY_PORT  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.constants import CREW_GATEWAY_PORT  # local dev
+
 # ── lifecycle bindings (injected, NOT imported — see below) ───────────────────
 # monitors needs a handful of runtime functions and constants from lifecycle
 # (_ensure_crew_running, _crew_api, _crew_api_with_recovery, _mint_cookie and
@@ -82,7 +91,9 @@ except ModuleNotFoundError:
 # call-site-patching principle the suite relies on. The placeholders below make
 # the names exist as module attributes before injection so tooling that imports
 # monitors standalone does not see an AttributeError.
-CREW_GATEWAY_PORT: int = 5476
+#
+# CREW_GATEWAY_PORT is NOT injected — it is imported directly from constants
+# (see above), because it is a plain constant, not part of the cycle (TRN-142).
 GA_IDLE_TIMEOUT_SECS: float = 0.0
 _SCHEDULE_MONITOR_INTERVAL: int = 30
 _ensure_crew_running: Any = None
@@ -93,7 +104,6 @@ _mint_cookie: Any = None
 
 def bind_lifecycle(
     *,
-    crew_gateway_port: int,
     ga_idle_timeout_secs: float,
     schedule_monitor_interval: int,
     ensure_crew_running: Any,
@@ -107,9 +117,8 @@ def bind_lifecycle(
     monitors↔lifecycle load-time import cycle while keeping every name a
     real, patchable module attribute of ``monitors``.
     """
-    global CREW_GATEWAY_PORT, GA_IDLE_TIMEOUT_SECS, _SCHEDULE_MONITOR_INTERVAL
+    global GA_IDLE_TIMEOUT_SECS, _SCHEDULE_MONITOR_INTERVAL
     global _ensure_crew_running, _crew_api, _crew_api_with_recovery, _mint_cookie
-    CREW_GATEWAY_PORT = crew_gateway_port
     GA_IDLE_TIMEOUT_SECS = ga_idle_timeout_secs
     _SCHEDULE_MONITOR_INTERVAL = schedule_monitor_interval
     _ensure_crew_running = ensure_crew_running

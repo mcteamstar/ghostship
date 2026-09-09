@@ -1,16 +1,15 @@
 """File transfer — presigned URL signing/verification, tar member streaming,
 staged uploads, and the /files GET/PUT handlers.
 
-Depends on: podman (PodmanClient, _get_podman), registry (indirectly via the
-crew lookup done through the lazily-imported orchestration helpers), config.
+Depends on: podman (PodmanClient, _get_podman), lifecycle (_ensure_crew_running,
+_require_crew), registry (indirectly via the crew lookup), config.
 
-Circular-import note: _handle_file_get / _handle_file_put need
-_ensure_crew_running and _require_crew, which live in the orchestration layer
-(server.py today, lifecycle.py after step 5 of TRN-71). Importing that layer at
-module load time would create a cycle (server imports files, files imports
-server). We resolve those two functions lazily at call time via
-_crew_helpers(), which tries lifecycle first and falls back to server, so this
-module keeps only the leaf-level static dependencies the design prescribes.
+Import-direction note: _handle_file_get / _handle_file_put need
+_ensure_crew_running and _require_crew from the orchestration layer
+(lifecycle.py, since TRN-71 step 5). lifecycle.py does not import files at
+module load time, so importing lifecycle here at module load is cycle-free
+(TRN-142 removed the former lazy _crew_helpers() resolver and its server.py
+fallback, which were dead code once step 5 completed).
 """
 
 from __future__ import annotations
@@ -63,13 +62,30 @@ except ModuleNotFoundError:
         _get_podman,
     )
 
+# Crew orchestration helpers live in lifecycle.py (since TRN-71 step 5).
+# lifecycle.py does not import files at module load, so this is cycle-free.
+# The lifecycle MODULE is imported (rather than the two names) so call sites
+# resolve _ensure_crew_running / _require_crew through the live module object —
+# preserving the call-site-patching contract the test suite relies on
+# (patch.object(lifecycle, "_require_crew", ...)).
+try:
+    import lifecycle as _lifecycle  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import lifecycle as _lifecycle  # local dev
+
+# SCRIPTS_DIR canonical home is transport/constants.py (TRN-142).
+# constants.py is a zero-dependency leaf, so importing it here is cycle-safe.
+try:
+    from constants import SCRIPTS_DIR  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.constants import SCRIPTS_DIR  # local dev
+
 logger = logging.getLogger(__name__)
 
 cfg = Config.from_env()
 
 PORT = cfg.port
 DATA_DIR = Path(cfg.transport_data_dir)
-SCRIPTS_DIR = "/scripts"
 CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
 # SEC-01 — ref parameter validation
@@ -129,33 +145,6 @@ def _load_or_create_file_secret() -> str:
 
 _FILE_SECRET = _load_or_create_file_secret()
 _security.register_secret(_FILE_SECRET)
-
-
-# ── Crew orchestration helpers (lazy — see circular-import note above) ─────────
-
-def _crew_helpers() -> tuple[Any, Any]:
-    """Resolve (_ensure_crew_running, _require_crew) from the orchestration layer.
-
-    Tries lifecycle.py first (post step-5 home), then falls back to server.py
-    (their home during step 3). Resolved lazily so this module has no static
-    dependency on either, avoiding the import cycle.
-    """
-    try:
-        from lifecycle import _ensure_crew_running, _require_crew  # container
-        return _ensure_crew_running, _require_crew
-    except ImportError:
-        pass
-    try:
-        from transport.lifecycle import _ensure_crew_running, _require_crew
-        return _ensure_crew_running, _require_crew
-    except ImportError:
-        pass
-    try:
-        from server import _ensure_crew_running, _require_crew  # container
-        return _ensure_crew_running, _require_crew
-    except ImportError:
-        from transport.server import _ensure_crew_running, _require_crew
-        return _ensure_crew_running, _require_crew
 
 
 # ── Presigned URLs ────────────────────────────────────────────────────────────
@@ -563,9 +552,8 @@ async def _handle_file_get(request: Request) -> Response:
     if not clean:
         return PlainTextResponse("Invalid path", status_code=400)
 
-    _ensure_crew_running, _require_crew = _crew_helpers()
     try:
-        crew = _require_crew(crew_id)
+        crew = _lifecycle._require_crew(crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return PlainTextResponse(str(e), status_code=404)
 
@@ -628,7 +616,7 @@ async def _handle_file_get(request: Request) -> Response:
 
     # ── Running-crew path (unchanged) ─────────────────────────────────────────
     try:
-        crew = _ensure_crew_running(crew, crew_id)
+        crew = _lifecycle._ensure_crew_running(crew, crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return PlainTextResponse(str(e), status_code=404)
 
@@ -765,9 +753,8 @@ async def _handle_file_put(request: Request) -> Response:
     # Sanitise path — no traversal outside workspace
     clean = path.lstrip("/")
 
-    _ensure_crew_running, _require_crew = _crew_helpers()
     try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+        crew = _lifecycle._ensure_crew_running(_lifecycle._require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return PlainTextResponse(str(e), status_code=404)
 

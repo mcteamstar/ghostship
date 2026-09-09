@@ -351,10 +351,27 @@ DATA_DIR = Path(cfg.transport_data_dir)
 
 
 # KiroCrew gateway port — fixed by upstream, not configurable from this transport.
-CREW_GATEWAY_PORT = 5476
-CREW_CONTAINER_PREFIX = "gs-"
-CREW_VOLUME_PREFIX = "gs-vol-"
-CREW_HOME_VOLUME_PREFIX = "gs-home-"
+# Canonical home is transport/constants.py (TRN-142).
+try:
+    from constants import (  # container: flat /app/
+        CREW_CONTAINER_PREFIX,
+        CREW_GATEWAY_PORT,
+        CREW_HOME_VOLUME_PREFIX,
+        CREW_VOLUME_PREFIX,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
+        PERSONA_NAMES,
+    )
+except ModuleNotFoundError:
+    from transport.constants import (  # local dev
+        CREW_CONTAINER_PREFIX,
+        CREW_GATEWAY_PORT,
+        CREW_HOME_VOLUME_PREFIX,
+        CREW_VOLUME_PREFIX,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
+        PERSONA_NAMES,
+    )
 
 PODMAN_SOCK = cfg.podman_socket
 
@@ -362,12 +379,9 @@ KC_IMAGE = cfg.kc_image
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
 KC_BASE_IMAGE = cfg.kc_base_image
-GA_PORTSIDE_NETWORK = "ga-portside"
-GA_STARBOARD_NETWORK = "ga-starboard"
 GA_MAX_CREWS = cfg.ga_max_crews
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"
-PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 _MODEL_MAX_LENGTH = 500
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
