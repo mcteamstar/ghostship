@@ -130,6 +130,7 @@ except ModuleNotFoundError:
 try:
     import caddy as _caddy  # container: both files flat in /app
     from caddy import (  # noqa: F401  re-exported for existing call-sites
+        CaddyPortal,
         _dashboard_ports_in_use,
         _allocate_dashboard_port,
         _release_dashboard_port,
@@ -140,6 +141,7 @@ try:
 except ModuleNotFoundError:
     from transport import caddy as _caddy  # local dev
     from transport.caddy import (  # noqa: F401  re-exported for existing call-sites
+        CaddyPortal,
         _dashboard_ports_in_use,
         _allocate_dashboard_port,
         _release_dashboard_port,
@@ -514,15 +516,17 @@ def _load_api_key() -> str:
 
 GA_API_KEY = _load_api_key()
 
-# TRN-116: caddy.py resolves PORT/port-range from cfg at its own import, but
-# GA_API_KEY is loaded from a mounted Podman secret here (a server concern), so
-# push the resolved runtime values into the caddy module. Its register/deregister
-# helpers read these from their own module globals at call time. PORT and the
-# port-range are re-synced too so a single source of truth stays in server.py.
-_caddy.PORT = PORT
-_caddy.GA_API_KEY = GA_API_KEY
-_caddy.GA_DASHBOARD_PORT_RANGE_START = GA_DASHBOARD_PORT_RANGE_START
-_caddy.GA_DASHBOARD_PORT_RANGE_SIZE = GA_DASHBOARD_PORT_RANGE_SIZE
+# TRN-141: construct the CaddyPortal after secrets load, replacing the former
+# `_caddy.PORT = PORT` / `_caddy.GA_API_KEY = ...` post-import mutation. PORT and
+# the port-range come from cfg; GA_API_KEY is loaded from a mounted Podman secret
+# here (a server concern). server.py's own call sites use this instance; the
+# caddy module keeps thin wrappers over a module-default portal for isolated use.
+_caddy_portal = CaddyPortal(
+    port=PORT,
+    api_key=GA_API_KEY,
+    port_range_start=GA_DASHBOARD_PORT_RANGE_START,
+    port_range_size=GA_DASHBOARD_PORT_RANGE_SIZE,
+)
 
 
 def _load_transport_secret() -> str:
@@ -1301,7 +1305,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         # write are atomic (prevents duplicate port allocation from concurrent
         # POSTs).
         try:
-            dashboard_port = _allocate_dashboard_port()
+            dashboard_port = _caddy_portal.allocate_port()
         except RuntimeError as e:
             return JSONResponse({"error": str(e)}, status_code=409)
 
@@ -1322,7 +1326,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     else:
         dashboard_url = f"{_caddy_scheme}://localhost:{dashboard_port}/"
 
-    _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
+    _caddy_portal.register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
     # Store port→crew mapping for forward_auth lookups.
     _dashboard_gate.register_port(crew_id, dashboard_port)
 
@@ -1367,13 +1371,13 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         # then call _caddy_deregister_crew AFTER releasing it to avoid holding
         # the lock across blocking I/O.
         _dashboard_gate.release_port(int(existing_port))
-        _release_dashboard_port(int(existing_port))
+        _caddy_portal.release_port(int(existing_port))
         reg["crews"][crew_id].pop("dashboard_port", None)
         reg["crews"][crew_id]["dashboard_url"] = None
         _save_registry(reg)
 
     # C-1: Deregister from Caddy after releasing _registry_lock.
-    _caddy_deregister_crew(crew_id)
+    _caddy_portal.deregister_crew(crew_id)
 
     logger.info(
         "TRN-101: DELETE /crews/%s/dashboard — released UI port %d",
@@ -1895,7 +1899,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         if dashboard:
             with _registry_lock:
                 try:
-                    dashboard_port = _allocate_dashboard_port()
+                    dashboard_port = _caddy_portal.allocate_port()
                 except RuntimeError as _err:
                     _cleanup_crew(podman, container, volume, home_volume)
                     reg = _load_registry()
@@ -1931,7 +1935,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
         if not _wait_gateway(crew_url, timeout=60):
             if dashboard_port is not None:
-                _release_dashboard_port(dashboard_port)
+                _caddy_portal.release_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
             with _registry_lock:
                 reg = _load_registry()
@@ -1953,7 +1957,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 _crew_cookie_for_caddy = reg["crews"].get(crew_id, {}).get("cookie", "")
             # C-1: Call _caddy_register_crew AFTER releasing _registry_lock to
             # avoid holding the lock across up to 7 s of blocking I/O.
-            _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
+            _caddy_portal.register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
             # Record port→crew mapping for forward_auth lookups.
             _dashboard_gate.register_port(crew_id, dashboard_port)
             result["dashboard_url"] = dashboard_url
@@ -1970,7 +1974,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # TRN-80: free any port allocated before the failure
         try:
             if dashboard_port is not None:
-                _release_dashboard_port(dashboard_port)
+                _caddy_portal.release_port(dashboard_port)
         except Exception:
             pass
         with _registry_lock:
@@ -2206,9 +2210,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         # the registry entry. Per-port uvicorn proxy removed; Portal is sole proxy.
         _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
-            _caddy_deregister_crew(crew_id)
+            _caddy_portal.deregister_crew(crew_id)
             _dashboard_gate.release_port(int(_ui_p))
-            _release_dashboard_port(int(_ui_p))
+            _caddy_portal.release_port(int(_ui_p))
         # TRN-105: explicitly drop any batch records so no orphan batch entry
         # survives a nuke. Popping the crew entry below already removes them,
         # but clearing here keeps the intent explicit and in the same atomic
@@ -3549,7 +3553,7 @@ if __name__ == "__main__":
                 _dashboard_gate.register_port(_cid, int(_p))
                 with _registry_lock:
                     _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
-                    _caddy_register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
+                    _caddy_portal.register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
         logger.info("TRN-103: Portal (Caddy) is the sole dashboard proxy")
         await server.serve()
 

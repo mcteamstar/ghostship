@@ -3521,8 +3521,8 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", side_effect=_fake_load_registry),
             patch.object(server, "_save_registry"),
-            patch.object(server, "_allocate_dashboard_port", side_effect=_fake_allocate_port),
-            patch.object(server, "_caddy_register_crew"),
+            patch.object(server._caddy_portal, "allocate_port", side_effect=_fake_allocate_port),
+            patch.object(server._caddy_portal, "register_crew"),
         ):
             reqs = [_StubRequest(path=f"/crews/{crew_id}/dashboard") for _ in range(50)]
             results = await asyncio.gather(

@@ -17,12 +17,12 @@
 
 ## 3. CaddyPortal
 
-- [ ] 3.1 Define `CaddyPortal` class in `transport/caddy.py` with `__init__(self, port, api_key, port_range_start, port_range_size)` absorbing the `PORT`, `GA_API_KEY`, `GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE` module globals
-- [ ] 3.2 Expose `allocate_port()`, `release_port(port)`, `register_crew(crew_id, port, crew_cookie)`, and `deregister_crew(crew_id)` as instance methods wrapping the existing module-level functions
-- [ ] 3.3 In `server.py`, remove the four `_caddy.X = Y` post-import mutation lines; construct `CaddyPortal(port=PORT, api_key=GA_API_KEY, ...)` after secrets load
-- [ ] 3.4 Update all `_caddy._allocate_dashboard_port()`, `_caddy._release_dashboard_port()`, `_caddy._caddy_register_crew()`, `_caddy._caddy_deregister_crew()` call sites in `server.py` and `lifecycle.py` to use the `CaddyPortal` instance methods
-- [ ] 3.5 Keep the module-level functions in `caddy.py` as thin wrappers or remove them once all call sites are updated; update the module docstring to describe the new pattern
-- [ ] 3.6 Run tests; confirm all launch, nuke, and dashboard proxy tests pass
+- [x] 3.1 Define `CaddyPortal` class in `transport/caddy.py` with `__init__(self, port, api_key, port_range_start, port_range_size)` absorbing the `PORT`, `GA_API_KEY`, `GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE` module globals
+- [x] 3.2 Expose `allocate_port()`, `release_port(port)`, `register_crew(crew_id, port, crew_cookie)`, and `deregister_crew(crew_id)` as instance methods wrapping the existing module-level functions
+- [x] 3.3 In `server.py`, remove the four `_caddy.X = Y` post-import mutation lines; construct `CaddyPortal(port=PORT, api_key=GA_API_KEY, ...)` after secrets load
+- [x] 3.4 Update all `_caddy._allocate_dashboard_port()`, `_caddy._release_dashboard_port()`, `_caddy._caddy_register_crew()`, `_caddy._caddy_deregister_crew()` call sites in `server.py` and `lifecycle.py` to use the `CaddyPortal` instance methods
+- [x] 3.5 Keep the module-level functions in `caddy.py` as thin wrappers or remove them once all call sites are updated; update the module docstring to describe the new pattern
+- [x] 3.6 Run tests; confirm all launch, nuke, and dashboard proxy tests pass
 
 ## 4. captain() Decomposition
 
