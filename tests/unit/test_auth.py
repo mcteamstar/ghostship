@@ -199,7 +199,8 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
     def test_constant_time_comparison_used(self) -> None:
         """Verify hmac.compare_digest is used (not == operator)."""
         import inspect
-        source = inspect.getsource(server.BearerAuthMiddleware.__call__)
+        source = inspect.getsource(server.BearerAuthMiddleware.handle_http)
+        source += inspect.getsource(server.BearerAuthMiddleware._dispatch_authenticated)
         self.assertIn("hmac.compare_digest", source)
         self.assertNotIn("== self._key", source)
 

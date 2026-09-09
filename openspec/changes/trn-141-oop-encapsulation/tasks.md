@@ -1,19 +1,19 @@
 ## 1. AsyncMiddlewareBase
 
-- [ ] 1.1 Add `AsyncMiddlewareBase` to `transport/auth.py` with `__init__(self, app)`, `__call__` (non-HTTP pass-through + `handle_http` dispatch), and abstract `handle_http`
-- [ ] 1.2 Refactor `TransportSecretMiddleware` to inherit from `AsyncMiddlewareBase`; move HTTP logic into `handle_http`
-- [ ] 1.3 Refactor `RateLimitMiddleware` to inherit from `AsyncMiddlewareBase`; move HTTP logic into `handle_http`
-- [ ] 1.4 Refactor `BearerAuthMiddleware` to inherit from `AsyncMiddlewareBase`; extract `_dispatch_public_route`, `_dispatch_file`, `_dispatch_authenticated` sub-methods from `__call__`; implement `handle_http` as the dispatcher (note: `_dispatch_websocket` is not needed — `AsyncMiddlewareBase.__call__` handles non-HTTP pass-through before `handle_http` is called)
-- [ ] 1.5 Run tests; confirm all middleware tests pass
+- [x] 1.1 Add `AsyncMiddlewareBase` to `transport/auth.py` with `__init__(self, app)`, `__call__` (non-HTTP pass-through + `handle_http` dispatch), and abstract `handle_http`
+- [x] 1.2 Refactor `TransportSecretMiddleware` to inherit from `AsyncMiddlewareBase`; move HTTP logic into `handle_http`
+- [x] 1.3 Refactor `RateLimitMiddleware` to inherit from `AsyncMiddlewareBase`; move HTTP logic into `handle_http`
+- [x] 1.4 Refactor `BearerAuthMiddleware` to inherit from `AsyncMiddlewareBase`; extract `_dispatch_public_route`, `_dispatch_file`, `_dispatch_authenticated` sub-methods from `__call__`; implement `handle_http` as the dispatcher (note: `_dispatch_websocket` is not needed — `AsyncMiddlewareBase.__call__` handles non-HTTP pass-through before `handle_http` is called)
+- [x] 1.5 Run tests; confirm all middleware tests pass
 
 ## 2. DashboardGate
 
-- [ ] 2.1 Create `transport/dashboard.py` and define `DashboardGate` class with `__init__(self, session_ttl_secs, api_key, tls_mode)` initialising `_throttle`, `_sessions`, `_csrf_token`, `_port_crew: dict[int, str]`, and `_port_crew_lock`; import `security` here (not in `caddy.py` — that module's acyclic constraint excludes security imports)
-- [ ] 2.2 Move `_handle_dashboard_login_post`, `_handle_dashboard_auth`, `_handle_dashboard_logout_post`, and `_handle_login_get` (login UI) into `DashboardGate` as instance methods (`handle_login_post`, `handle_auth`, `handle_logout_post`, `handle_login_get`)
-- [ ] 2.3 Add `register_port(crew_id, port)` and `release_port(port)` instance methods to `DashboardGate` for the `_dashboard_port_crew` mutations currently in `server.py` and `lifecycle.py`
-- [ ] 2.4 In `server.py`, remove the five dashboard module-level globals; construct one `DashboardGate` instance after config/secrets load; update `public_routes` and `routes` dicts to reference its bound methods
-- [ ] 2.5 Update `lifecycle.py` calls that mutate `_dashboard_port_crew` to use the `DashboardGate` instance (pass it as a parameter to the relevant lifecycle functions)
-- [ ] 2.6 Run tests; confirm all dashboard auth and session tests pass
+- [x] 2.1 Create `transport/dashboard.py` and define `DashboardGate` class with `__init__(self, session_ttl_secs, api_key, tls_mode)` initialising `_throttle`, `_sessions`, `_csrf_token`, `_port_crew: dict[int, str]`, and `_port_crew_lock`; import `security` here (not in `caddy.py` — that module's acyclic constraint excludes security imports)
+- [x] 2.2 Move `_handle_dashboard_login_post`, `_handle_dashboard_auth`, `_handle_dashboard_logout_post`, and `_handle_login_get` (login UI) into `DashboardGate` as instance methods (`handle_login_post`, `handle_auth`, `handle_logout_post`, `handle_login_get`)
+- [x] 2.3 Add `register_port(crew_id, port)` and `release_port(port)` instance methods to `DashboardGate` for the `_dashboard_port_crew` mutations currently in `server.py` and `lifecycle.py`
+- [x] 2.4 In `server.py`, remove the five dashboard module-level globals; construct one `DashboardGate` instance after config/secrets load; update `public_routes` and `routes` dicts to reference its bound methods
+- [x] 2.5 Update `lifecycle.py` calls that mutate `_dashboard_port_crew` to use the `DashboardGate` instance (pass it as a parameter to the relevant lifecycle functions)
+- [x] 2.6 Run tests; confirm all dashboard auth and session tests pass
 
 ## 3. CaddyPortal
 

@@ -149,9 +149,33 @@ def _build_rate_limiters() -> "dict[str, _security.RateLimiter] | None":
     return limiters
 
 
+# ── AsyncMiddlewareBase ────────────────────────────────────────────────────────
+
+class AsyncMiddlewareBase:
+    """Minimal ASGI middleware base (TRN-141).
+
+    Encapsulates the ``if scope["type"] != "http"`` non-HTTP pass-through that
+    every HTTP-only middleware repeats as its first line. Subclasses implement
+    ``handle_http`` and never see a non-HTTP scope there — WebSocket and
+    lifespan scopes are forwarded to ``self.app`` before ``handle_http`` runs.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        await self.handle_http(scope, receive, send)
+
+    async def handle_http(self, scope, receive, send) -> None:
+        raise NotImplementedError
+
+
 # ── TransportSecretMiddleware ──────────────────────────────────────────────────
 
-class TransportSecretMiddleware:
+class TransportSecretMiddleware(AsyncMiddlewareBase):
     """ASGI middleware enforcing the GA_TRANSPORT_SECRET X-Transport-Token gate (TRN-107).
 
     When ``transport_secret`` is non-empty, every incoming HTTP request must carry
@@ -171,11 +195,11 @@ class TransportSecretMiddleware:
     """
 
     def __init__(self, app, transport_secret: str = "") -> None:
-        self.app = app
+        super().__init__(app)
         self._secret = transport_secret
 
-    async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http" or not self._secret:
+    async def handle_http(self, scope, receive, send) -> None:
+        if not self._secret:
             await self.app(scope, receive, send)
             return
 
@@ -198,7 +222,7 @@ class TransportSecretMiddleware:
 
 # ── RateLimitMiddleware ────────────────────────────────────────────────────────
 
-class RateLimitMiddleware:
+class RateLimitMiddleware(AsyncMiddlewareBase):
     """ASGI middleware enforcing per-endpoint sliding-window rate limits.
 
     Applied outside ``BearerAuthMiddleware`` so all callers are subject to
@@ -215,7 +239,7 @@ class RateLimitMiddleware:
     _EXEMPT: frozenset[str] = frozenset({"/health", "/version"})
 
     def __init__(self, app, limiters: "dict[str, _security.RateLimiter]", api_key: str = "") -> None:
-        self.app = app
+        super().__init__(app)
         self._limiters = limiters
         self._api_key = api_key
 
@@ -259,10 +283,7 @@ class RateLimitMiddleware:
             return "mcp"
         return None
 
-    async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+    async def handle_http(self, scope, receive, send) -> None:
         path = scope.get("path", "")
         if path in self._EXEMPT:
             await self.app(scope, receive, send)
@@ -303,7 +324,7 @@ class RateLimitMiddleware:
 
 # ── BearerAuthMiddleware ───────────────────────────────────────────────────────
 
-class BearerAuthMiddleware:
+class BearerAuthMiddleware(AsyncMiddlewareBase):
     """Pure ASGI middleware enforcing a static bearer API key.
 
     When ``api_key`` is empty the middleware is a transparent pass-through.
@@ -329,7 +350,7 @@ class BearerAuthMiddleware:
         routes: "dict[tuple[str, str], Any] | None" = None,
         public_routes: "dict[tuple[str, str], Any] | None" = None,
     ) -> None:
-        self.app = app
+        super().__init__(app)
         self._key = api_key
         self._file_app = file_app
         self._routes: dict[tuple[str, str], Any] = routes if routes is not None else {}
@@ -339,12 +360,11 @@ class BearerAuthMiddleware:
     _PUBLIC_PATHS: set[str] = {"/health"}
 
     async def __call__(self, scope, receive, send) -> None:
-        from starlette.requests import Request
-
         # TRN-102: WebSocket upgrades for /crews/<id>/ui/<path> are proxied to
         # the crew gateway with the session cookie injected. Access is gated by
         # Caddy's forward_auth upstream (keyed deployments); the transport's
-        # bearer check applies to HTTP scopes only, so WS is dispatched here.
+        # bearer check applies to HTTP scopes only, so WS is dispatched here,
+        # before AsyncMiddlewareBase forwards other non-HTTP scopes downstream.
         if scope["type"] == "websocket":
             _ws_parts = scope.get("path", "").lstrip("/").split("/")
             if (
@@ -359,80 +379,110 @@ class BearerAuthMiddleware:
                     return
             await self.app(scope, receive, send)
             return
+        # HTTP scopes -> handle_http; other non-HTTP scopes pass through.
+        await super().__call__(scope, receive, send)
 
-        # Public routes — served without any authentication check
-        if scope["type"] == "http":
-            public_handler = self._public_routes.get(
-                (scope["method"], scope["path"])
-            )
-            if public_handler is not None:
+    async def handle_http(self, scope, receive, send) -> None:
+        """Dispatch an HTTP request through the auth pipeline.
+
+        Order: public routes (no auth) -> presigned file app -> authenticated
+        dispatch (bearer validation + downstream/route/proxy dispatch). Each
+        stage returns True once it has produced a response; the first match
+        wins.
+        """
+        if await self._dispatch_public_route(scope, receive, send):
+            return
+        if await self._dispatch_file(scope, receive, send):
+            return
+        await self._dispatch_authenticated(scope, receive, send)
+
+    async def _dispatch_public_route(self, scope, receive, send) -> bool:
+        """Serve a registered public route without any authentication check.
+
+        Returns True if a public route handled the request.
+        """
+        from starlette.requests import Request
+
+        public_handler = self._public_routes.get((scope["method"], scope["path"]))
+        if public_handler is not None:
+            request = Request(scope, receive)
+            response = await public_handler(request)
+            await response(scope, receive, send)
+            return True
+        return False
+
+    async def _dispatch_file(self, scope, receive, send) -> bool:
+        """Pass presigned-URL /files/ requests to the file app (bypasses API key).
+
+        Returns True if the file app handled the request.
+        """
+        if self._file_app and scope["path"].startswith("/files/"):
+            await self._file_app(scope, receive, send)
+            return True
+        return False
+
+    async def _dispatch_authenticated(self, scope, receive, send) -> None:
+        """Bearer-token validation followed by route / crew-proxy dispatch.
+
+        Handles both the disabled (empty ``api_key``) path and the enforced
+        path, mirroring the pre-refactor control flow exactly.
+        """
+        from starlette.requests import Request
+
+        if not self._key:
+            # No API key — still need to check login/logout routes
+            handler = self._routes.get((scope["method"], scope["path"]))
+            if handler is not None:
                 request = Request(scope, receive)
-                response = await public_handler(request)
+                response = await handler(request)
                 await response(scope, receive, send)
                 return
-
-            # File routes — use presigned-URL auth, bypass API key
-            if self._file_app and scope["path"].startswith("/files/"):
-                await self._file_app(scope, receive, send)
-                return
-
-        if not self._key or scope["type"] != "http":
-            # No API key — still need to check login/logout routes
-            if scope["type"] == "http":
-                handler = self._routes.get(
-                    (scope["method"], scope["path"])
-                )
-                if handler is not None:
+            # TRN-80: per-port UI proxy — requests arriving on a crew UI
+            # port are proxied to that crew's gateway. Auth is skipped here
+            # only when GA_API_KEY is unset; the keyed path checks auth first.
+            # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
+            # dashboard port bindings. This block is intentionally gone.
+            # Crew proxy routes (no auth required when GA_API_KEY unset)
+            _path = scope["path"]
+            _parts = _path.lstrip("/").split("/")
+            if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":
+                ui_proxy = self._routes.get(("GET", "/crews/*/ui"))
+                if ui_proxy is not None:
                     request = Request(scope, receive)
-                    response = await handler(request)
+                    response = await ui_proxy(request)
                     await response(scope, receive, send)
                     return
-                # TRN-80: per-port UI proxy — requests arriving on a crew UI
-                # port are proxied to that crew's gateway. Auth is skipped here
-                # only when GA_API_KEY is unset; the keyed path checks auth first.
-                # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
-                # dashboard port bindings. This block is intentionally gone.
-                # Crew proxy routes (no auth required when GA_API_KEY unset)
-                _path = scope["path"]
-                _parts = _path.lstrip("/").split("/")
-                if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":
-                    ui_proxy = self._routes.get(("GET", "/crews/*/ui"))
-                    if ui_proxy is not None:
-                        request = Request(scope, receive)
-                        response = await ui_proxy(request)
-                        await response(scope, receive, send)
-                        return
-                if len(_parts) >= 4 and _parts[0] == "crews" and _parts[2] == "api":
-                    api_proxy = self._routes.get(("GET", "/crews/*/api"))
-                    if api_proxy is not None:
-                        request = Request(scope, receive)
-                        response = await api_proxy(request)
-                        await response(scope, receive, send)
-                        return
-                # TRN-80: POST/DELETE /crews/{id}/dashboard
-                if (
-                    len(_parts) == 3
-                    and _parts[0] == "crews"
-                    and _parts[2] == "dashboard"
-                ):
+            if len(_parts) >= 4 and _parts[0] == "crews" and _parts[2] == "api":
+                api_proxy = self._routes.get(("GET", "/crews/*/api"))
+                if api_proxy is not None:
                     request = Request(scope, receive)
-                    if scope["method"] == "POST":
-                        dash_post = self._routes.get(("POST", "/crews/*/dashboard"))
-                        if dash_post is not None:
-                            response = await dash_post(request)
-                            await response(scope, receive, send)
-                            return
-                    elif scope["method"] == "DELETE":
-                        dash_delete = self._routes.get(("DELETE", "/crews/*/dashboard"))
-                        if dash_delete is not None:
-                            response = await dash_delete(request)
-                            await response(scope, receive, send)
-                            return
-                    else:
-                        from starlette.responses import PlainTextResponse
-                        response = PlainTextResponse("Method Not Allowed", status_code=405)
+                    response = await api_proxy(request)
+                    await response(scope, receive, send)
+                    return
+            # TRN-80: POST/DELETE /crews/{id}/dashboard
+            if (
+                len(_parts) == 3
+                and _parts[0] == "crews"
+                and _parts[2] == "dashboard"
+            ):
+                request = Request(scope, receive)
+                if scope["method"] == "POST":
+                    dash_post = self._routes.get(("POST", "/crews/*/dashboard"))
+                    if dash_post is not None:
+                        response = await dash_post(request)
                         await response(scope, receive, send)
                         return
+                elif scope["method"] == "DELETE":
+                    dash_delete = self._routes.get(("DELETE", "/crews/*/dashboard"))
+                    if dash_delete is not None:
+                        response = await dash_delete(request)
+                        await response(scope, receive, send)
+                        return
+                else:
+                    from starlette.responses import PlainTextResponse
+                    response = PlainTextResponse("Method Not Allowed", status_code=405)
+                    await response(scope, receive, send)
+                    return
             await self.app(scope, receive, send)
             return
 

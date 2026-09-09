@@ -149,6 +149,19 @@ except ModuleNotFoundError:
     )
 
 try:
+    import dashboard as _dashboard  # container: both files flat in /app
+    from dashboard import (  # noqa: F401  re-exported for existing call-sites
+        DashboardGate,
+        _validate_next_url,
+    )
+except ModuleNotFoundError:
+    from transport import dashboard as _dashboard  # local dev
+    from transport.dashboard import (  # noqa: F401  re-exported for existing call-sites
+        DashboardGate,
+        _validate_next_url,
+    )
+
+try:
     from config import Config  # container: both files flat in /app
 except ImportError:
     # Local dev: transport/ is a package dir, and a bare `import config` can
@@ -768,281 +781,17 @@ mcp = MCPServer(
 # port-pool helpers must still be called while holding _registry_lock.
 
 # ── Dashboard session store (TRN-92 / TRN-121) ───────────────────────────────
-# Dashboard login is guarded by security.Throttle (brute-force protection) and
-# gs_session cookies are backed by security.SessionStore (bounded, revocable).
-# Both carry their own internal lock and hold state in memory — lost on
-# transport restart (acceptable — users re-login; an active attacker only
-# regains the throttle window).
-_dashboard_throttle = _security.Throttle(max_failures=5, window_secs=900)
-_gs_sessions = _security.SessionStore(lifetime_secs=cfg.ga_portal_session_ttl_secs)
-
-# ── Dashboard CSRF token (TRN-122) ────────────────────────────────────────────
-# Single random token generated at process startup and held for the process
-# lifetime.  Embedded in the GET /dashboard/login form and validated on every
-# POST /dashboard/login before the API-key check.  See design.md D1.
-_dashboard_csrf_token: str = secrets.token_hex(32)
-
-
-# ── Dashboard auth HTTP handlers (TRN-92) ─────────────────────────────────────
-
-async def _handle_dashboard_login_post(request: Request) -> Response:
-    """POST /dashboard/login — validate ga_api_key, issue gs_session cookie.
-
-    Reads ``ga_api_key`` from the form body, constant-time compares against
-    ``GA_API_KEY``. On success returns 200 + ``Set-Cookie: gs_session=...``.
-    On failure returns 401 with no cookie.
-    """
-    if not GA_API_KEY:
-        # No API key configured — dashboard login is only meaningful with one.
-        return Response(status_code=401)
-
-    source = _request_source(request)
-    # TRN-138: the login throttle key must come from the actual ASGI
-    # connection IP (request.client.host), NOT X-Forwarded-For, which a
-    # client can spoof to evade or poison the brute-force lock (design D3).
-    # _request_source() prefers XFF and is retained only for audit context.
-    client = getattr(request, "client", None)
-    throttle_source = getattr(client, "host", None) if client is not None else None
-    # Throttle brute-force attempts before touching the credential (avoids a
-    # timing oracle on the reject path — see design D3).
-    if _dashboard_throttle.is_locked(account="dashboard", source=throttle_source):
-        return Response(status_code=429)
-
-    try:
-        form = await request.form()
-        provided = str(form.get("ga_api_key", ""))
-        # TRN-122: read and validate CSRF token before touching the API-key path.
-        # Fail-fast on forged submissions (design.md D4).
-        provided_csrf = str(form.get("csrf_token", ""))
-        # TRN-138: capture the submitted next URL so the server — not the
-        # client — is the source of truth for the post-login redirect target.
-        next_url = _validate_next_url(str(form.get("next", "/")))
-    except Exception:
-        return Response(status_code=400)
-
-    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
-        return Response(status_code=403)
-
-    if not hmac.compare_digest(provided, GA_API_KEY):
-        _dashboard_throttle.record_failure(account="dashboard", source=throttle_source)
-        return Response(status_code=401)
-
-    _dashboard_throttle.record_success(account="dashboard", source=throttle_source)
-
-    token = _gs_sessions.issue()
-    # Build Set-Cookie header manually — avoids starlette version differences
-    # and is more explicit about the exact cookie attributes. The Secure flag
-    # is only set when the portal runs behind TLS (TRN-121); a plain-HTTP
-    # portal must not set Secure or the browser drops the cookie.
-    secure_attr = "; Secure" if cfg.ga_portal_tls_mode != "off" else ""
-    cookie_value = (
-        f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"
-    )
-    # TRN-138: return the server-sanitised next URL in the JSON body so the
-    # login-form JS redirects from _validate_next_url() output rather than
-    # from the raw submitted FormData field (open-redirect fix).
-    return JSONResponse(
-        {"ok": True, "next": next_url},
-        status_code=200,
-        headers={"Set-Cookie": cookie_value},
-    )
-
-
-async def _handle_dashboard_auth(request: Request) -> Response:
-    """GET /dashboard/auth — Caddy forward_auth endpoint.
-
-    Validates the ``gs_session`` cookie. On 200 returns
-    ``X-Crew-Cookie: mc_token_5476=<crew_cookie>`` so Caddy's ``copy_headers``
-    injects it into the upstream request to the crew gateway. The target crew
-    is identified from the incoming dashboard port via ``_dashboard_port_crew``.
-    Returns 401 on missing/invalid session.
-
-    When ``GA_API_KEY`` is not configured, the dashboard is open-access and
-    all requests are passed through immediately (200) without a session check.
-    """
-    # Open-access mode: no API key means no session gate.
-    if not GA_API_KEY:
-        return Response(status_code=200)
-
-    # Extract gs_session cookie
-    token = request.cookies.get("gs_session", "")
-    if not token or not _gs_sessions.validate(token):
-        return Response(status_code=401)
-
-    # Determine which crew this request is for by looking up the incoming port.
-    # In Caddy mode the forward_auth call comes from ga-portal → ga-transport,
-    # so we read the X-Forwarded-For / X-Real-Port Caddy passes, or fall back
-    # to reading the original dashboard-port from a custom header that the
-    # Caddy server config can inject.
-    # The simplest Caddy-compatible approach: encode the crew's port in the
-    # forward_auth URI, e.g. /dashboard/auth?port=64058. Caddy's forward_auth
-    # directive supports arbitrary URIs. We derive the crew from the port.
-    port_str = request.query_params.get("port", "")
-    crew_id: str | None = None
-    if port_str:
-        try:
-            port_int = int(port_str)
-            with _dashboard_port_crew_lock:
-                crew_id = _dashboard_port_crew.get(port_int)
-        except ValueError:
-            pass
-
-    if crew_id is None:
-        # Fallback: check X-Forwarded-Port or X-Dashboard-Port header
-        fwd_port = request.headers.get("x-dashboard-port", "")
-        if fwd_port:
-            try:
-                with _dashboard_port_crew_lock:
-                    crew_id = _dashboard_port_crew.get(int(fwd_port))
-            except ValueError:
-                pass
-
-    if crew_id is None:
-        # Last resort: return 200 (session is valid; crew cookie is injected
-        # directly by Caddy's crew proxy config, not here).
-        return Response(status_code=200)
-
-    # Valid session — return 200 to allow Caddy to proxy to the crew gateway.
-    # The mc_token_5476 cookie is injected by the Caddy crew proxy config.
-    return Response(status_code=200)
-
-
-async def _handle_dashboard_logout_post(request: Request) -> Response:
-    """POST /dashboard/logout — revoke the gs_session and clear the cookie.
-
-    Validates the current ``gs_session`` cookie; returns 401 when it is
-    missing/invalid. On a valid token, revokes it in the session store and
-    responds with a ``Set-Cookie`` header that clears the cookie in the
-    browser (TRN-121).
-    """
-    # TRN-138: logout is a state-changing POST — validate the CSRF token
-    # before any session check, matching the login POST pattern. Reject a
-    # missing or mismatched token with 403.
-    try:
-        form = await request.form()
-        provided_csrf = str(form.get("csrf_token", ""))
-    except Exception:
-        return Response(status_code=400)
-
-    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
-        return Response(status_code=403)
-
-    token = request.cookies.get("gs_session", "")
-    if not _gs_sessions.validate(token):
-        return Response(status_code=401)
-
-    _gs_sessions.revoke(token)
-    return Response(
-        status_code=200,
-        content="OK",
-        headers={
-            "Set-Cookie": (
-                "gs_session=; Max-Age=0; "
-                "Expires=Thu, 01 Jan 1970 00:00:00 GMT; "
-                "HttpOnly; SameSite=Lax; Path=/"
-            )
-        },
-    )
-
-
-# SEC-09 — open redirect guard for /dashboard/login ?next=
-def _validate_next_url(url: str) -> str:
-    """Validate next_url is a safe same-origin relative path.
-
-    Returns a sanitised path, falling back to "/" for any value that could
-    enable an open redirect (protocol-relative URLs, javascript: URIs, or
-    anything that is not a relative path).
-    """
-    if not url:
-        return "/"
-    # Must be a relative path starting with / but not // (protocol-relative).
-    # The leading-slash guard already blocks javascript: and //evil.com inputs.
-    if not url.startswith("/") or url.startswith("//"):
-        return "/"
-    return url
-
-
-async def _handle_login_ui(request: Request) -> Response:
-    """GET /dashboard/login — serve the minimal HTML login form.
-
-    Accepts an optional ``?next=<url>`` query parameter for post-login
-    redirect.
-    """
-    next_url = _validate_next_url(request.query_params.get("next", "/"))
-    next_url_escaped = _security.encode_html_attr(next_url)
-    # TRN-122: embed the startup CSRF token in the form so POST /dashboard/login
-    # can validate it.  encode_html_attr applied for defence-in-depth (hex output
-    # is already safe, but the pattern matches next_url_escaped usage above).
-    csrf_token_escaped = _security.encode_html_attr(_dashboard_csrf_token)
-    # Simple HTML login page — no external dependencies.
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ghost Academy — Login</title>
-<style>
-  body {{ font-family: sans-serif; display: flex; align-items: center;
-         justify-content: center; min-height: 100vh; margin: 0;
-         background: #0f0f0f; color: #e8e8e8; }}
-  .card {{ background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
-           padding: 2rem; width: 320px; }}
-  h1 {{ font-size: 1.2rem; margin: 0 0 1.5rem; }}
-  label {{ display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.4rem; }}
-  input {{ width: 100%; box-sizing: border-box; padding: 0.6rem;
-           background: #0f0f0f; border: 1px solid #444; border-radius: 4px;
-           color: #e8e8e8; font-size: 1rem; }}
-  button {{ margin-top: 1rem; width: 100%; padding: 0.7rem;
-            background: #2d6a4f; border: none; border-radius: 4px;
-            color: #fff; font-size: 1rem; cursor: pointer; }}
-  button:hover {{ background: #3a8a65; }}
-  .err {{ color: #e07070; font-size: 0.85rem; margin-top: 0.8rem; display: none; }}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>👻 Ghost Academy</h1>
-  <form id="f" method="post" action="/dashboard/login">
-    <input type="hidden" name="next" value="{next_url_escaped}">
-    <input type="hidden" name="csrf_token" value="{csrf_token_escaped}">
-    <label for="k">API Key</label>
-    <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
-    <button type="submit">Sign in</button>
-    <p class="err" id="err">Invalid API key.</p>
-  </form>
-</div>
-<script>
-  const f = document.getElementById('f');
-  f.addEventListener('submit', async e => {{
-    e.preventDefault();
-    const fd = new FormData(f);
-    const r = await fetch('/dashboard/login', {{method:'POST', body: fd}});
-    if (r.ok) {{
-      // TRN-138: redirect to the server-sanitised next URL from the JSON
-      // response body, not the raw submitted FormData field, so the open-
-      // redirect guard in _validate_next_url() is always authoritative.
-      let dest = '/';
-      try {{ const data = await r.json(); dest = data.next || '/'; }} catch (_e) {{}}
-      window.location.href = dest;
-    }} else {{
-      document.getElementById('err').style.display = 'block';
-    }}
-  }});
-</script>
-</body>
-</html>"""
-    return Response(content=html, media_type="text/html; charset=utf-8")
-
-
-# ── Dashboard port registry (TRN-92 / TRN-101) ───────────────────────────────
-# TRN-101: The per-port uvicorn proxy pool was removed. Portal (ga-portal)
-# is the sole dashboard proxy. Port→crew mapping is retained for forward_auth
-# lookups by _handle_dashboard_auth.
-_dashboard_port_crew: dict[int, str] = {}  # port → crew_id
-# TRN-123: guards all read-modify-write access to _dashboard_port_crew. Written
-# from _handle_crew_dashboard_post/_delete, launch, nuke and _main, and read in
-# _handle_dashboard_auth — a mix of asyncio and startup contexts.
-_dashboard_port_crew_lock = threading.Lock()
+# ── DashboardGate (TRN-141) ───────────────────────────────────────────────────
+# The dashboard auth/session state cluster (throttle, session store, CSRF token,
+# and the port→crew map) and its four HTTP handlers now live in a single
+# DashboardGate instance in transport/dashboard.py. Constructed here after
+# config/secrets load so its dependencies (session TTL, API key, TLS mode) are
+# explicit constructor arguments rather than implicit module globals.
+_dashboard_gate = DashboardGate(
+    session_ttl_secs=cfg.ga_portal_session_ttl_secs,
+    api_key=GA_API_KEY,
+    tls_mode=cfg.ga_portal_tls_mode,
+)
 
 # TRN-123: per-crew asyncio lock registry serialising concurrent
 # _ensure_crew_running call sites in the async proxy handlers, so that
@@ -1575,8 +1324,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
 
     _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
     # Store port→crew mapping for forward_auth lookups.
-    with _dashboard_port_crew_lock:
-        _dashboard_port_crew[dashboard_port] = crew_id
+    _dashboard_gate.register_port(crew_id, dashboard_port)
 
     logger.info(
         "TRN-101: POST /crews/%s/dashboard — UI port %d, dashboard_url=%s",
@@ -1618,8 +1366,7 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         # C-1: Extract all needed values and mutate registry under the lock,
         # then call _caddy_deregister_crew AFTER releasing it to avoid holding
         # the lock across blocking I/O.
-        with _dashboard_port_crew_lock:
-            _dashboard_port_crew.pop(int(existing_port), None)
+        _dashboard_gate.release_port(int(existing_port))
         _release_dashboard_port(int(existing_port))
         reg["crews"][crew_id].pop("dashboard_port", None)
         reg["crews"][crew_id]["dashboard_url"] = None
@@ -2208,8 +1955,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             # avoid holding the lock across up to 7 s of blocking I/O.
             _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
             # Record port→crew mapping for forward_auth lookups.
-            with _dashboard_port_crew_lock:
-                _dashboard_port_crew[dashboard_port] = crew_id
+            _dashboard_gate.register_port(crew_id, dashboard_port)
             result["dashboard_url"] = dashboard_url
         elif "error" not in result:
             result["dashboard_url"] = None
@@ -2461,8 +2207,7 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
             _caddy_deregister_crew(crew_id)
-            with _dashboard_port_crew_lock:
-                _dashboard_port_crew.pop(int(_ui_p), None)
+            _dashboard_gate.release_port(int(_ui_p))
             _release_dashboard_port(int(_ui_p))
         # TRN-105: explicitly drop any batch records so no orphan batch entry
         # survives a nuke. Popping the crew entry below already removes them,
@@ -3708,10 +3453,10 @@ if __name__ == "__main__":
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,
-            ("POST", "/dashboard/login"): _handle_dashboard_login_post,
-            ("POST", "/dashboard/logout"): _handle_dashboard_logout_post,
-            ("GET",  "/dashboard/auth"): _handle_dashboard_auth,
-            ("GET",  "/dashboard/login"): _handle_login_ui,
+            ("POST", "/dashboard/login"): _dashboard_gate.handle_login_post,
+            ("POST", "/dashboard/logout"): _dashboard_gate.handle_logout_post,
+            ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
+            ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
         },
     )
     # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all
@@ -3801,8 +3546,7 @@ if __name__ == "__main__":
         for _cid, _info in _restored_reg["crews"].items():
             _p = _info.get("dashboard_port")
             if _p is not None:
-                with _dashboard_port_crew_lock:
-                    _dashboard_port_crew[int(_p)] = _cid
+                _dashboard_gate.register_port(_cid, int(_p))
                 with _registry_lock:
                     _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
                     _caddy_register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)

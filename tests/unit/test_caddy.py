@@ -243,27 +243,27 @@ class DashboardLoginPostTests(unittest.TestCase):
         # removed module-level symbols.
         self._sessions = server._security.SessionStore(lifetime_secs=3600)
         self._throttle = server._security.Throttle(max_failures=5, window_secs=900)
-        self._orig_api_key = server.GA_API_KEY
+        self._orig_api_key = server._dashboard_gate._api_key
         # Pin CSRF token so tests can include correct value in form data.
-        self._orig_csrf = server._dashboard_csrf_token
-        server._dashboard_csrf_token = self._KNOWN_CSRF
+        self._orig_csrf = server._dashboard_gate._csrf_token
+        server._dashboard_gate._csrf_token = self._KNOWN_CSRF
 
     def tearDown(self) -> None:
-        server.GA_API_KEY = self._orig_api_key
-        server._dashboard_csrf_token = self._orig_csrf
+        server._dashboard_gate._api_key = self._orig_api_key
+        server._dashboard_gate._csrf_token = self._orig_csrf
 
     def _run(self, form_data: dict[str, str] | None = None) -> "server.Response":
         data = {"csrf_token": self._KNOWN_CSRF, **(form_data or {})}
         with (
-            patch.object(server, "_gs_sessions", self._sessions),
-            patch.object(server, "_dashboard_throttle", self._throttle),
-            patch.object(server.cfg, "ga_portal_tls_mode", "auto"),
+            patch.object(server._dashboard_gate, "_sessions", self._sessions),
+            patch.object(server._dashboard_gate, "_throttle", self._throttle),
+            patch.object(server._dashboard_gate, "_tls_mode", "auto"),
         ):
             req = _FakeRequest(form_data=data)
-            return asyncio.run(server._handle_dashboard_login_post(req))
+            return asyncio.run(server._dashboard_gate.handle_login_post(req))
 
     def test_valid_key_returns_200_with_set_cookie(self) -> None:
-        server.GA_API_KEY = "secret-key"
+        server._dashboard_gate._api_key = "secret-key"
         resp = self._run({"ga_api_key": "secret-key"})
         self.assertEqual(resp.status_code, 200)
         # Check that a Set-Cookie header was included.
@@ -283,29 +283,29 @@ class DashboardLoginPostTests(unittest.TestCase):
 
     def test_valid_key_stores_token(self) -> None:
         """A successful login issues a token into the SessionStore."""
-        server.GA_API_KEY = "secret-key"
+        server._dashboard_gate._api_key = "secret-key"
         self._run({"ga_api_key": "secret-key"})
         # The SessionStore's internal _issued dict should have one entry.
         self.assertGreater(len(self._sessions._issued), 0)
 
     def test_invalid_key_returns_401(self) -> None:
-        server.GA_API_KEY = "secret-key"
+        server._dashboard_gate._api_key = "secret-key"
         resp = self._run({"ga_api_key": "wrong-key"})
         self.assertEqual(resp.status_code, 401)
 
     def test_invalid_key_does_not_issue_cookie(self) -> None:
         """A failed login must not populate the SessionStore."""
-        server.GA_API_KEY = "secret-key"
+        server._dashboard_gate._api_key = "secret-key"
         self._run({"ga_api_key": "wrong-key"})
         self.assertEqual(len(self._sessions._issued), 0)
 
     def test_no_api_key_configured_returns_401(self) -> None:
-        server.GA_API_KEY = ""
+        server._dashboard_gate._api_key = ""
         resp = self._run({"ga_api_key": "anything"})
         self.assertEqual(resp.status_code, 401)
 
     def test_empty_form_returns_401(self) -> None:
-        server.GA_API_KEY = "secret-key"
+        server._dashboard_gate._api_key = "secret-key"
         resp = self._run({})
         self.assertEqual(resp.status_code, 401)
 
@@ -325,16 +325,16 @@ class DashboardAuthTests(unittest.TestCase):
         # Fresh SessionStore per test — no leakage, no lock references.
         self._sessions = server._security.SessionStore(lifetime_secs=3600)
         # Pre-populate port→crew mapping
-        self._orig_port_crew = dict(server._dashboard_port_crew)
-        server._dashboard_port_crew.clear()
+        self._orig_port_crew = dict(server._dashboard_gate._port_crew)
+        server._dashboard_gate._port_crew.clear()
         # Set a non-empty API key so session validation is active by default.
-        self._orig_api_key = server.GA_API_KEY
-        server.GA_API_KEY = "test-key"
+        self._orig_api_key = server._dashboard_gate._api_key
+        server._dashboard_gate._api_key = "test-key"
 
     def tearDown(self) -> None:
-        server._dashboard_port_crew.clear()
-        server._dashboard_port_crew.update(self._orig_port_crew)
-        server.GA_API_KEY = self._orig_api_key
+        server._dashboard_gate._port_crew.clear()
+        server._dashboard_gate._port_crew.update(self._orig_port_crew)
+        server._dashboard_gate._api_key = self._orig_api_key
 
     def _issue_token(self) -> str:
         return self._sessions.issue()
@@ -344,9 +344,9 @@ class DashboardAuthTests(unittest.TestCase):
         cookies: dict[str, str] | None = None,
         query_params: dict[str, str] | None = None,
     ) -> "server.Response":
-        with patch.object(server, "_gs_sessions", self._sessions):
+        with patch.object(server._dashboard_gate, "_sessions", self._sessions):
             req = _FakeRequest(cookies=cookies or {}, query_params=query_params or {})
-            return asyncio.run(server._handle_dashboard_auth(req))
+            return asyncio.run(server._dashboard_gate.handle_auth(req))
 
     def test_valid_session_returns_200(self) -> None:
         token = self._issue_token()
@@ -357,9 +357,9 @@ class DashboardAuthTests(unittest.TestCase):
         # Issue a token into a store with zero lifetime so it is already expired.
         expired_store = server._security.SessionStore(lifetime_secs=0)
         token = expired_store.issue(now=time.time() - 1)
-        with patch.object(server, "_gs_sessions", expired_store):
+        with patch.object(server._dashboard_gate, "_sessions", expired_store):
             req = _FakeRequest(cookies={"gs_session": token})
-            resp = asyncio.run(server._handle_dashboard_auth(req))
+            resp = asyncio.run(server._dashboard_gate.handle_auth(req))
         self.assertEqual(resp.status_code, 401)
 
     def test_missing_session_cookie_returns_401(self) -> None:
@@ -372,14 +372,14 @@ class DashboardAuthTests(unittest.TestCase):
 
     def test_no_api_key_open_access_returns_200(self) -> None:
         """When GA_API_KEY is unset, all dashboard-auth requests return 200 (open access)."""
-        server.GA_API_KEY = ""
+        server._dashboard_gate._api_key = ""
         resp = self._run({})
         self.assertEqual(resp.status_code, 200)
 
     def test_valid_session_with_known_port_returns_200(self) -> None:
         """Valid gs_session returns 200. Cookie injection is handled by Caddy config, not dashboard-auth."""
         token = self._issue_token()
-        server._dashboard_port_crew[64058] = "alpha"
+        server._dashboard_gate._port_crew[64058] = "alpha"
         resp = self._run(
             {"gs_session": token},
             {"port": "64058"},
@@ -402,11 +402,11 @@ class CaddyLaunchNukeTests(unittest.TestCase):
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
-        server._dashboard_port_crew.clear()
+        server._dashboard_gate._port_crew.clear()
 
     def tearDown(self) -> None:
         server._dashboard_ports_in_use.clear()
-        server._dashboard_port_crew.clear()
+        server._dashboard_gate._port_crew.clear()
 
     def _run_launch(self) -> dict:
         registry_state = {"crews": {}}
@@ -505,7 +505,7 @@ class GsSessionStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         # Fresh store per test, patched onto the module symbol.
         self._store = server._security.SessionStore(lifetime_secs=3600)
-        self._patcher = patch.object(server, "_gs_sessions", self._store)
+        self._patcher = patch.object(server._dashboard_gate, "_sessions", self._store)
         self._patcher.start()
 
     def tearDown(self) -> None:

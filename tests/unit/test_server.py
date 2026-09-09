@@ -3486,12 +3486,12 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
     """Concurrency tests for the _dashboard_port_crew threading.Lock (TRN-123)."""
 
     def setUp(self) -> None:
-        with server._dashboard_port_crew_lock:
-            server._dashboard_port_crew.clear()
+        with server._dashboard_gate._port_crew_lock:
+            server._dashboard_gate._port_crew.clear()
 
     def tearDown(self) -> None:
-        with server._dashboard_port_crew_lock:
-            server._dashboard_port_crew.clear()
+        with server._dashboard_gate._port_crew_lock:
+            server._dashboard_gate._port_crew.clear()
 
     async def test_concurrent_dashboard_post_consistent_mapping(self) -> None:
         """5.1: concurrent _handle_crew_dashboard_post calls for the same crew
@@ -3531,8 +3531,8 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(results), 50)
         # Every allocated port maps back to the crew — no lost / partial entries.
-        with server._dashboard_port_crew_lock:
-            snapshot = dict(server._dashboard_port_crew)
+        with server._dashboard_gate._port_crew_lock:
+            snapshot = dict(server._dashboard_gate._port_crew)
         self.assertEqual(len(snapshot), 50, "expected 50 distinct port mappings")
         # No duplicate ports (dict keys are unique by construction) and every
         # value is the crew_id.
@@ -3543,17 +3543,17 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
         sees the entry present or absent — never a partial/torn value."""
         crew_id = "demo"
         port = 41000
-        with server._dashboard_port_crew_lock:
-            server._dashboard_port_crew[port] = crew_id
+        with server._dashboard_gate._port_crew_lock:
+            server._dashboard_gate._port_crew[port] = crew_id
 
         # A "delete-style" writer removing the mapping under the lock, mirroring
         # the locked pop in _handle_crew_dashboard_delete / nuke.
         def _delete_writer() -> None:
             for _ in range(200):
-                with server._dashboard_port_crew_lock:
-                    server._dashboard_port_crew.pop(port, None)
-                with server._dashboard_port_crew_lock:
-                    server._dashboard_port_crew[port] = crew_id
+                with server._dashboard_gate._port_crew_lock:
+                    server._dashboard_gate._port_crew.pop(port, None)
+                with server._dashboard_gate._port_crew_lock:
+                    server._dashboard_gate._port_crew[port] = crew_id
 
         stop = threading.Event()
 
@@ -3565,19 +3565,19 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
         writer.start()
         try:
             # TRN-121 removed _gs_session_valid; session validation now goes
-            # through _gs_sessions.validate — patch the SessionStore instance.
+            # through the DashboardGate's SessionStore — patch it on the gate.
             mock_sessions = server._security.SessionStore(lifetime_secs=3600)
             mock_sessions._issued["tok"] = float("inf")  # never expires
             with (
-                patch.object(server, "GA_API_KEY", "k"),
-                patch.object(server, "_gs_sessions", mock_sessions),
+                patch.object(server._dashboard_gate, "_api_key", "k"),
+                patch.object(server._dashboard_gate, "_sessions", mock_sessions),
             ):
                 for _ in range(200):
                     req = _StubRequest(
                         query_params={"port": str(port)},
                         cookies={"gs_session": "tok"},
                     )
-                    resp = await server._handle_dashboard_auth(req)
+                    resp = await server._dashboard_gate.handle_auth(req)
                     # The handler returns a Response with an int status_code —
                     # a torn read would raise or produce something non-200.
                     self.assertEqual(resp.status_code, 200)
@@ -3726,9 +3726,9 @@ class Trn138LogoutCsrfTests(unittest.IsolatedAsyncioTestCase):
     async def test_logout_missing_csrf_returns_403(self) -> None:
         sessions = server._security.SessionStore(lifetime_secs=3600)
         token = sessions.issue()
-        with patch.object(server, "_gs_sessions", sessions):
+        with patch.object(server._dashboard_gate, "_sessions", sessions):
             req = _FormRequest(form={}, cookies={"gs_session": token})
-            resp = await server._handle_dashboard_logout_post(req)
+            resp = await server._dashboard_gate.handle_logout_post(req)
         self.assertEqual(resp.status_code, 403)
         # Session must NOT have been revoked on a rejected (403) request.
         self.assertTrue(sessions.validate(token))
@@ -3736,23 +3736,23 @@ class Trn138LogoutCsrfTests(unittest.IsolatedAsyncioTestCase):
     async def test_logout_wrong_csrf_returns_403(self) -> None:
         sessions = server._security.SessionStore(lifetime_secs=3600)
         token = sessions.issue()
-        with patch.object(server, "_gs_sessions", sessions):
+        with patch.object(server._dashboard_gate, "_sessions", sessions):
             req = _FormRequest(
                 form={"csrf_token": "deadbeef"}, cookies={"gs_session": token}
             )
-            resp = await server._handle_dashboard_logout_post(req)
+            resp = await server._dashboard_gate.handle_logout_post(req)
         self.assertEqual(resp.status_code, 403)
         self.assertTrue(sessions.validate(token))
 
     async def test_logout_correct_csrf_and_valid_session_returns_200(self) -> None:
         sessions = server._security.SessionStore(lifetime_secs=3600)
         token = sessions.issue()
-        with patch.object(server, "_gs_sessions", sessions):
+        with patch.object(server._dashboard_gate, "_sessions", sessions):
             req = _FormRequest(
-                form={"csrf_token": server._dashboard_csrf_token},
+                form={"csrf_token": server._dashboard_gate._csrf_token},
                 cookies={"gs_session": token},
             )
-            resp = await server._handle_dashboard_logout_post(req)
+            resp = await server._dashboard_gate.handle_logout_post(req)
         self.assertEqual(resp.status_code, 200)
         # Session revoked and cookie cleared on the success path.
         self.assertFalse(sessions.validate(token))
@@ -3766,19 +3766,19 @@ class Trn138LoginRedirectTests(unittest.IsolatedAsyncioTestCase):
         sessions = server._security.SessionStore(lifetime_secs=3600)
         throttle = server._security.Throttle(max_failures=5, window_secs=900)
         with (
-            patch.object(server, "GA_API_KEY", "secret-key"),
-            patch.object(server, "_gs_sessions", sessions),
-            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(server._dashboard_gate, "_api_key", "secret-key"),
+            patch.object(server._dashboard_gate, "_sessions", sessions),
+            patch.object(server._dashboard_gate, "_throttle", throttle),
         ):
             req = _FormRequest(
                 form={
                     "ga_api_key": "secret-key",
-                    "csrf_token": server._dashboard_csrf_token,
+                    "csrf_token": server._dashboard_gate._csrf_token,
                     "next": "//evil.com",
                 },
                 client_host="10.0.0.5",
             )
-            resp = await server._handle_dashboard_login_post(req)
+            resp = await server._dashboard_gate.handle_login_post(req)
         self.assertEqual(resp.status_code, 200)
         body = json.loads(bytes(resp.body).decode())
         self.assertEqual(body["next"], "/")
@@ -3789,19 +3789,19 @@ class Trn138LoginRedirectTests(unittest.IsolatedAsyncioTestCase):
         sessions = server._security.SessionStore(lifetime_secs=3600)
         throttle = server._security.Throttle(max_failures=5, window_secs=900)
         with (
-            patch.object(server, "GA_API_KEY", "secret-key"),
-            patch.object(server, "_gs_sessions", sessions),
-            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(server._dashboard_gate, "_api_key", "secret-key"),
+            patch.object(server._dashboard_gate, "_sessions", sessions),
+            patch.object(server._dashboard_gate, "_throttle", throttle),
         ):
             req = _FormRequest(
                 form={
                     "ga_api_key": "secret-key",
-                    "csrf_token": server._dashboard_csrf_token,
+                    "csrf_token": server._dashboard_gate._csrf_token,
                     "next": "/dashboard/crews",
                 },
                 client_host="10.0.0.5",
             )
-            resp = await server._handle_dashboard_login_post(req)
+            resp = await server._dashboard_gate.handle_login_post(req)
         body = json.loads(bytes(resp.body).decode())
         self.assertEqual(body["next"], "/dashboard/crews")
 
@@ -3821,9 +3821,9 @@ class Trn138LoginThrottleSourceTests(unittest.IsolatedAsyncioTestCase):
             return real_record_failure(account=account, source=source)
 
         with (
-            patch.object(server, "GA_API_KEY", "secret-key"),
-            patch.object(server, "_gs_sessions", sessions),
-            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(server._dashboard_gate, "_api_key", "secret-key"),
+            patch.object(server._dashboard_gate, "_sessions", sessions),
+            patch.object(server._dashboard_gate, "_throttle", throttle),
             patch.object(throttle, "record_failure", side_effect=_spy_failure),
         ):
             # Wrong key so we hit record_failure; XFF claims a different IP than
@@ -3831,12 +3831,12 @@ class Trn138LoginThrottleSourceTests(unittest.IsolatedAsyncioTestCase):
             req = _FormRequest(
                 form={
                     "ga_api_key": "WRONG",
-                    "csrf_token": server._dashboard_csrf_token,
+                    "csrf_token": server._dashboard_gate._csrf_token,
                 },
                 headers={"x-forwarded-for": "1.2.3.4"},
                 client_host="10.0.0.5",
             )
-            resp = await server._handle_dashboard_login_post(req)
+            resp = await server._dashboard_gate.handle_login_post(req)
 
         self.assertEqual(resp.status_code, 401)
         # The throttle source must be the ASGI client IP, never the spoofable
