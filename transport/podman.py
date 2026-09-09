@@ -35,7 +35,13 @@ KIRO_WORKSPACE_ROOT = "/home/kirocrew/workplace/kirocrew-workspace"
 # mounted read-only at WORKER_MOUNT; worker commands operate under that path.
 WORKER_IMAGE = "localhost/gs-worker:latest"
 WORKER_MOUNT = "/workspace"
-CREW_VOLUME_PREFIX = "gs-vol-"
+
+# CREW_VOLUME_PREFIX canonical home is transport/constants.py (TRN-142).
+# constants.py is a zero-dependency leaf, so importing it here is cycle-safe.
+try:
+    from constants import CREW_VOLUME_PREFIX  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.constants import CREW_VOLUME_PREFIX  # local dev
 
 logger = logging.getLogger(__name__)
 

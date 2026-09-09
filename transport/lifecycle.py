@@ -140,19 +140,34 @@ KIRO_STEERING_DIR = "/home/kirocrew/.kiro/steering"
 KIRO_CREW_DIR = "/home/kirocrew/.kiro/crew"
 KIRO_MCP_JSON = "/home/kirocrew/.kiro/mcp.json"
 
-# Container-side helper scripts baked into the crew image at /scripts/ by the
-# Containerfile (see transport/container_scripts/, TRN-74). lifecycle.py
-# invokes them via `python3 <SCRIPTS_DIR>/<name>.py` inside crew containers.
-SCRIPTS_DIR = "/scripts"
-
 # ── Crew infrastructure constants ─────────────────────────────────────────────
-CREW_GATEWAY_PORT = 5476
-CREW_CONTAINER_PREFIX = "gs-"
-CREW_VOLUME_PREFIX = "gs-vol-"
-CREW_HOME_VOLUME_PREFIX = "gs-home-"
+# Canonical home is transport/constants.py (TRN-142). These are re-exported here
+# (as pass-through imports) so existing callers of lifecycle.* — server.py and
+# the test suite — remain unaffected. SCRIPTS_DIR is invoked via
+# `python3 <SCRIPTS_DIR>/<name>.py` inside crew containers.
+try:
+    from constants import (  # container: flat /app/
+        CREW_CONTAINER_PREFIX,
+        CREW_GATEWAY_PORT,
+        CREW_HOME_VOLUME_PREFIX,
+        CREW_VOLUME_PREFIX,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
+        PERSONA_NAMES,
+        SCRIPTS_DIR,
+    )
+except ModuleNotFoundError:
+    from transport.constants import (  # local dev
+        CREW_CONTAINER_PREFIX,
+        CREW_GATEWAY_PORT,
+        CREW_HOME_VOLUME_PREFIX,
+        CREW_VOLUME_PREFIX,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
+        PERSONA_NAMES,
+        SCRIPTS_DIR,
+    )
 
-GA_PORTSIDE_NETWORK = "ga-portside"
-GA_STARBOARD_NETWORK = "ga-starboard"
 GA_LOGIN_CONTAINER_PREFIX = "ga-login-"
 
 # ── Config-driven constants ───────────────────────────────────────────────────
@@ -170,7 +185,6 @@ GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 
-PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 
 # /mcp catalogue dir for mcpServers resolution
@@ -1790,7 +1804,6 @@ _cron_has_enabled_job = _monitors._cron_has_enabled_job
 # touches monitors.* — so the loops resolve lifecycle's live functions and the
 # suite can still patch them via patch.object(monitors, "…").
 _monitors.bind_lifecycle(
-    crew_gateway_port=CREW_GATEWAY_PORT,
     ga_idle_timeout_secs=GA_IDLE_TIMEOUT_SECS,
     schedule_monitor_interval=_SCHEDULE_MONITOR_INTERVAL,
     ensure_crew_running=_ensure_crew_running,

@@ -39,7 +39,12 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 
 # Container-side helper scripts baked into the crew image at /scripts/.
-SCRIPTS_DIR = "/scripts"
+# Canonical home is transport/constants.py (TRN-142). constants.py is a
+# zero-dependency leaf, so importing it here is cycle-safe.
+try:
+    from constants import SCRIPTS_DIR  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.constants import SCRIPTS_DIR  # local dev
 
 
 # ── Captain standing orders ──────────────────────────────────────────────────
