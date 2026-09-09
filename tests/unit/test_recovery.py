@@ -46,48 +46,11 @@ _ensure_httpx_exceptions()
 import httpx
 import transport.registry as _registry_mod
 
+# TRN-143 §4: FakeHTTP / FakeResponse are consolidated in tests.unit.helpers.
+from tests.unit.helpers import FakeHTTP, FakeResponse  # noqa: E402
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-class FakeResponse:
-    """Minimal httpx.Response stand-in for testing."""
-
-    def __init__(self, status_code: int = 200, json_body: Any = None):
-        self.status_code = status_code
-        self._json = json_body if json_body is not None else {}
-
-    def json(self):
-        return self._json
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                f"HTTP {self.status_code}",
-                request=MagicMock(),
-                response=self,
-            )
-
-
-class FakeHTTP:
-    """Fake httpx.Client replacement for controlling responses."""
-
-    def __init__(self, responses: list[FakeResponse] | None = None):
-        self._responses = list(responses or [])
-        self._call_idx = 0
-
-    def get(self, url, **kwargs):
-        return self._next()
-
-    def request(self, method, url, **kwargs):
-        return self._next()
-
-    def _next(self):
-        if self._call_idx < len(self._responses):
-            r = self._responses[self._call_idx]
-            self._call_idx += 1
-            return r
-        return FakeResponse(200, {})
 
 
 # ── 1.3 Unit tests for _probe_gateway ────────────────────────────────────────

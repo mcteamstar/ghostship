@@ -56,6 +56,8 @@ import httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
+# TRN-143 §4: async proxy HTTP mock consolidated in tests.unit.helpers.
+from tests.unit.helpers import FakeAsyncHTTP  # noqa: F401
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -573,9 +575,9 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "sleep") as sleep,
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "sleep") as sleep,
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
 
@@ -595,9 +597,9 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value={"agents": agents}) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "sleep") as sleep,
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "sleep") as sleep,
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
 
@@ -623,10 +625,10 @@ class PickupTimeoutTests(unittest.TestCase):
                 side_effect=[self._task_response(False), self._task_response(True)],
             ) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance) as sleep,
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance) as sleep,
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
 
@@ -647,10 +649,10 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=5)
 
@@ -673,10 +675,10 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance),
         ):
             # caller requests 60s, but the internal cap is 30s (pickup timeout, unrelated to gateway)
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
@@ -696,8 +698,8 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(True, agent="ghost")),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={"ghost": 3, "admiral": 1}),
-            patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["hello"], "admiral": ["order1"]}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={"ghost": 3, "admiral": 1}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={"ghost": ["hello"], "admiral": ["order1"]}),
             patch.object(server, "_read_mail_subjects_archive", mock_archive),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
@@ -720,8 +722,8 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={"ghost": 2, "admiral": 1}),
-            patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["done"], "admiral": ["check"]}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={"ghost": 2, "admiral": 1}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={"ghost": ["done"], "admiral": ["check"]}),
             patch.object(server, "_read_mail_subjects_archive", mock_archive),
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
@@ -757,11 +759,11 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", side_effect=mock_read_all_mail_counts),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_counts", side_effect=mock_read_all_mail_counts),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
             patch.object(server, "_read_mail_subjects_archive", Mock(return_value=[])),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
 
@@ -2231,15 +2233,15 @@ class LoginGuardClearTests(unittest.TestCase):
     """Tests for _handle_login_get guard-clear ordering (trn-17 tasks 8.x)."""
 
     def setUp(self) -> None:
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
     def test_guard_clear_ordering_verified(self) -> None:
         """8.1: _login_pending is cleared ONLY AFTER _nuke_login_container completes."""
         # Set up a pending login
         pending_container = "ga-login-test1234"
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": pending_container,
                 "exec_id": "exec-1",
                 "started_at": time.time(),
@@ -2250,8 +2252,8 @@ class LoginGuardClearTests(unittest.TestCase):
 
         def fake_nuke(podman, container):
             # At the point nuke is called, _login_pending must NOT yet be None
-            with server._login_pending_lock:
-                if server._login_pending is None:
+            with lifecycle._login_pending_lock:
+                if lifecycle._login_pending is None:
                     cleared_before_nuke["seen"] = True
             nuked_flag["done"] = True
 
@@ -2284,16 +2286,16 @@ class LoginGuardClearTests(unittest.TestCase):
             "_login_pending was cleared before _nuke_login_container returned",
         )
         # After the function returns, _login_pending should be None
-        with server._login_pending_lock:
-            self.assertIsNone(server._login_pending, "_login_pending should be None after cleanup")
+        with lifecycle._login_pending_lock:
+            self.assertIsNone(lifecycle._login_pending, "_login_pending should be None after cleanup")
 
     def test_concurrent_post_during_cleanup_window_returns_409(self) -> None:
         """8.2: concurrent POST /login during cleanup window receives 409."""
         # Simulate the scenario where _handle_login_get has detected auth and
         # is between nuke and guard-clear. If a POST /login arrives at this
         # moment, the _login_pending is still set so the POST should get 409.
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-completing",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -2306,8 +2308,8 @@ class LoginGuardClearTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 409)
         finally:
-            with server._login_pending_lock:
-                server._login_pending = None
+            with lifecycle._login_pending_lock:
+                lifecycle._login_pending = None
 class ProxyHandlerTests(unittest.TestCase):
     """Tests for _handle_crew_ui_proxy and _handle_crew_api_proxy (TRN-31)."""
 
@@ -2493,7 +2495,10 @@ class ProxyHandlerTests(unittest.TestCase):
 
     def test_api_proxy_injects_mc_token_cookie(self) -> None:
         """5.3a: API proxy injects mc_token_5476 cookie."""
-        captured_headers: list[dict] = []
+        fake_http = FakeAsyncHTTP(
+            content=b'{"agents":[]}',
+            headers={"content-type": "application/json"},
+        )
 
         async def run():
             with (
@@ -2504,28 +2509,19 @@ class ProxyHandlerTests(unittest.TestCase):
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/spawn")
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        captured_headers.append(dict(headers or {}))
-                        resp = Mock()
-                        resp.status_code = 200
-                        resp.content = b'{"agents":[]}'
-                        resp.headers = {"content-type": "application/json"}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(captured_headers)
-        cookie = captured_headers[0].get("Cookie", "")
+        self.assertTrue(fake_http.captured_headers)
+        cookie = fake_http.captured_headers[0].get("Cookie", "")
         self.assertIn("mc_token_5476", cookie)
         self.assertIn("test-cookie-val", cookie)
 
     def test_api_proxy_retries_on_401_after_cookie_refresh(self) -> None:
         """5.3b: API proxy retries once after 401 with refreshed cookie."""
-        call_count = [0]
+        fake_http = FakeAsyncHTTP(statuses=[401, 200], content=b"")
 
         async def run():
             with (
@@ -2538,27 +2534,17 @@ class ProxyHandlerTests(unittest.TestCase):
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/spawn")
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        call_count[0] += 1
-                        resp = Mock()
-                        # First call: 401, second call: 200
-                        resp.status_code = 401 if call_count[0] == 1 else 200
-                        resp.content = b""
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request), refresh
 
         response, refresh_mock = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(call_count[0], 2)
+        self.assertEqual(fake_http.call_count, 2)
         refresh_mock.assert_called_once()
 
     def test_api_proxy_retries_on_403_after_cookie_refresh(self) -> None:
         """5.3c: API proxy retries once after 403 with refreshed cookie."""
-        call_count = [0]
+        fake_http = FakeAsyncHTTP(statuses=[403, 200], content=b"")
 
         async def run():
             with (
@@ -2571,21 +2557,12 @@ class ProxyHandlerTests(unittest.TestCase):
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/crons")
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        call_count[0] += 1
-                        resp = Mock()
-                        resp.status_code = 403 if call_count[0] == 1 else 200
-                        resp.content = b""
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(call_count[0], 2)
+        self.assertEqual(fake_http.call_count, 2)
 
     # ── 5.4: Stopped crew is woken before proxying ───────────────────────────
 
@@ -2761,7 +2738,7 @@ class ProxyHandlerTests(unittest.TestCase):
 
     def test_api_proxy_strips_inbound_cookie_header_to_prevent_duplicates(self) -> None:
         """3.2 (trn-78): inbound lowercase 'cookie' header is stripped — no duplicate Cookie in forwarded request."""
-        captured_headers: list[dict] = []
+        fake_http = FakeAsyncHTTP(content=b"{}")
 
         async def run():
             with (
@@ -2776,21 +2753,12 @@ class ProxyHandlerTests(unittest.TestCase):
                     headers={"cookie": "session=browser-session-id; theme=dark"},
                 )
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        captured_headers.append(dict(headers or {}))
-                        resp = Mock()
-                        resp.status_code = 200
-                        resp.content = b"{}"
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         asyncio.run(run())
-        self.assertTrue(captured_headers)
-        fwd = captured_headers[0]
+        self.assertTrue(fake_http.captured_headers)
+        fwd = fake_http.captured_headers[0]
         # Count Cookie / cookie occurrences — must be exactly one
         cookie_keys = [k for k in fwd if k.lower() == "cookie"]
         self.assertEqual(len(cookie_keys), 1, "Exactly one Cookie header must be forwarded, not duplicated")
@@ -2800,7 +2768,7 @@ class ProxyHandlerTests(unittest.TestCase):
 
     def test_api_proxy_injected_session_cookie_present_when_inbound_had_cookie_header(self) -> None:
         """3.3 (trn-78): injected mc_token_5476 cookie is correct even when inbound request had a 'cookie' header."""
-        captured_headers: list[dict] = []
+        fake_http = FakeAsyncHTTP(content=b"{}")
 
         async def run():
             with (
@@ -2814,21 +2782,12 @@ class ProxyHandlerTests(unittest.TestCase):
                     headers={"cookie": "old=stale-val"},
                 )
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        captured_headers.append(dict(headers or {}))
-                        resp = Mock()
-                        resp.status_code = 200
-                        resp.content = b"{}"
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         asyncio.run(run())
-        self.assertTrue(captured_headers)
-        fwd = captured_headers[0]
+        self.assertTrue(fake_http.captured_headers)
+        fwd = fake_http.captured_headers[0]
         cookie_keys = [k for k in fwd if k.lower() == "cookie"]
         self.assertEqual(len(cookie_keys), 1)
         cookie_val = fwd[cookie_keys[0]]
@@ -3137,8 +3096,8 @@ class Trn89TaskTimestampTests(unittest.TestCase):
                     "elapsed": 10, "turns": 1, "last_tool": "", "result": "", "error": "", "outcome": "",
                 }),
                 patch.object(server, "_get_podman", return_value=Mock()),
-                patch.object(server, "_read_all_mail_counts", return_value={}),
-                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
                 patch.object(server, "_read_mail_subjects_archive", return_value=[]),
             ):
                 result = server.pickup(task_id="running-task", crew_id="demo", timeout_secs=0)
@@ -3165,8 +3124,8 @@ class Trn89TaskTimestampTests(unittest.TestCase):
                     "elapsed": 5, "turns": 2, "last_tool": "", "result": "ok", "error": "", "outcome": "success",
                 }),
                 patch.object(server, "_get_podman", return_value=Mock()),
-                patch.object(server, "_read_all_mail_counts", return_value={}),
-                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
                 patch.object(server, "_read_mail_subjects_archive", return_value=[]),
             ):
                 result = server.pickup(task_id="done-task", crew_id="demo", timeout_secs=0)
@@ -3194,8 +3153,8 @@ class Trn89TaskTimestampTests(unittest.TestCase):
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
                 patch.object(server, "_get_podman", return_value=Mock()),
-                patch.object(server, "_read_all_mail_counts", return_value={}),
-                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
                 patch.object(server, "_read_mail_subjects_archive", return_value=[]),
             ):
                 result = server.pickup(crew_id="demo", timeout_secs=0)
@@ -3234,6 +3193,8 @@ class Trn89CrewTimestampTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-ts"}),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
         ):
             server.dispatch("do work", agent="ghost", crew_id="demo")
 
@@ -3301,8 +3262,8 @@ class PickupAgentSubjectsTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value=skim),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value=skim),
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
         self.assertIn("agent_subjects", result)
@@ -3320,8 +3281,8 @@ class PickupAgentSubjectsTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=task_resp),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
         self.assertNotIn("agent_subjects", result)
@@ -3391,8 +3352,8 @@ class PickupAgentSubjectsTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=task_resp),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
         ):
             # agent is set but task_id takes priority
             result = server.pickup(task_id="task-1", crew_id="demo", agent="ghost", timeout_secs=0)
