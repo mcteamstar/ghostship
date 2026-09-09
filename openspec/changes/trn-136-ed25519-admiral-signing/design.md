@@ -8,7 +8,7 @@ Current state:
 - `captain.py` signs with `hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()`; the `X-Admiral-Sig` header carries the hex HMAC
 - `verify-admiral-sig` reads `.admiral_secret`, recomputes the HMAC, compares with `hmac.compare_digest`
 - The private key is stored at `DATA_DIR/secrets/<crew_id>.admiral_secret` (written by `registry._write_crew_secret`)
-- `cryptography` is already in `requirements.txt` via `pyjwt[crypto]`
+- `cryptography` is resolved transitively in the transport image via `PyJWT[crypto]` (`cryptography>=3.4.0`), which currently yields 50.0.1. It is *not* declared in `requirements.txt` (corrected 2026-09-09; the original note here claimed it was, which led the first pass to add a pin that downgrades it)
 
 Ed25519 in Python via `cryptography`:
 ```python
@@ -79,6 +79,38 @@ Podman secrets are a global-namespace object (not scoped to a container), so the
 
 **Alternative considered**: write `.admiral_public_key` as a regular file owned by `root`, mode `0644`, via an exec run as a specific non-default user. Rejected — this relies on `kirocrew` never gaining privilege escalation, which happens to be true today but is a weaker, more implicit guarantee than a mount the kernel refuses to let `kirocrew` write to regardless of capabilities the container might gain in the future. It would also still need a new parameter on `container_exec_stdin` to run as a specific user, so it isn't materially simpler to implement.
 
+### Decision: the secret target must live outside the home volume
+
+*Added 2026-09-09 after the first implementation pass failed to launch.*
+
+The target is `/run/secrets/admiral_public_key`, **not** `{KIRO_CREW_DIR}/.admiral_public_key`. Nesting the secret inside the home volume is what broke launch, and the mechanism is worth recording because it is not obvious.
+
+The crew image does not ship `/home/kirocrew/.kiro` at all; the entrypoint creates that tree at runtime as `kirocrew` (uid 1000). When the secret target is `/home/kirocrew/.kiro/crew/.admiral_public_key`, Podman must materialise the parent directories itself in order to place the bind mount, and it creates them `root:root 0755`. The entrypoint then cannot write into its own config directory:
+
+```
+kirocrew-entrypoint: 138: cannot create /home/kirocrew/.kiro/crew/config.json: Permission denied
+```
+
+The container exits 2, the gateway never binds, and `launch()` fails with "Gateway not ready within 60s". Reproduced directly against `localhost/spec-ops:latest`: with the nested secret, `.kiro/crew` in the volume is `root:root` and holds only a zero-byte bind-mount stub; without it, the same directory is `1000:1000` and holds `config.json`.
+
+The `uid`/`gid` fields on the secret do not help. They set ownership of the secret *file*, not of the directories Podman creates on the way to it; a run with `uid=1000,gid=1000` still produced a `root:root` parent and the same failure.
+
+Mounting at `/run/secrets/` was verified against the same image: the entrypoint seeds `config.json` normally, the gateway starts, the key reads back as `-r--r--r-- root root` 32 bytes as uid 1000, and it survives the stop/start cycle `_finish_crew_setup` performs. The immutability argument is untouched, since it is still a read-only bind mount with `CAP_SYS_ADMIN` dropped.
+
+Only the *directory* changes. The filename stays `.admiral_public_key`, giving `/run/secrets/.admiral_public_key`. A dotfile in a secrets directory is slightly unusual, but roughly a dozen references across the specs, `docs/auth.md` and the tests name the file without a path, and they all stay correct this way. In a security change, a smaller and more mechanical diff is worth more than the tidier name.
+
+**Generalisation worth holding on to:** any mount placed inside `/home/kirocrew` or the workspace volume leaves its parent directories root-owned, which breaks anything that later writes there as `kirocrew`. Prefer a path outside the volumes for injected, immutable material.
+
+### Decision: never trim raw key bytes
+
+*Added 2026-09-09 after the first implementation pass.*
+
+`verify-admiral-sig` read the key as `f.read().strip()`. The file holds a **raw 32-byte** Ed25519 public key, not text, so `.strip()` removes any leading or trailing byte that happens to be ASCII whitespace. Measured over 20,000 generated keys, 4.75% start or end with one of `0x09 0x0a 0x0b 0x0c 0x0d 0x20`, and each of those truncates to 31 bytes, raises `ValueError` from `from_public_bytes`, and exits 2 for the entire life of that crew.
+
+Read raw key material with no normalisation, and assert the length explicitly (`len(pubkey_bytes) != 32 → exit 2`) rather than letting a malformed length surface as a generic decode error.
+
+This also has a testing consequence recorded in tasks 6.6: because the existing tests generate random keypairs, they reproduce this only a few percent of the time. A single green suite run is not evidence. The regression test must craft a key with whitespace bytes at the boundaries.
+
 ### Decision: pin `cryptography` into `base-admission` now, not as a runtime check
 
 Rather than have task 1.1 discover at implementation time that `cryptography` may be missing and improvise a fallback, pin `cryptography` into `crews/_base/admission/Containerfile` (every composition inherits from it) as part of this change, since it's confirmed absent from every layer of the current crew image build.
@@ -95,7 +127,7 @@ This means: after this change ships, every crew created before the upgrade keeps
 
 **`cryptography` not available in crew container** → Mitigated by pinning it into `base-admission` up front (see Decision above) rather than discovering the gap during implementation.
 
-**Podman secret mount target must exist before container start** → the target `.kiro/crew/.admiral_public_key` needs its parent directory to be resolvable on `home_volume` at `container_create` time. Confirm during implementation whether Podman creates intermediate directories for a secret mount target, or whether `.kiro/crew/` needs to be pre-seeded another way.
+**Podman secret mount target must exist before container start** → **Resolved 2026-09-09, and this risk is what sank the first pass.** Podman does create intermediate directories for a secret mount target, but it creates them `root:root`, which makes the crew's own config directory unwritable and kills the entrypoint. The answer is not to pre-seed `.kiro/crew/` but to move the target out of the volume entirely. See "Decision: the secret target must live outside the home volume". The original instruction to confirm this during implementation was correct and was ticked (task 6.4) without being carried out.
 
 **Existing crews break on upgrade** → Documented above: this is not a short window, it's permanent until the operator nukes and relaunches. Acceptable for a security change, but must be called out explicitly rather than implied to resolve itself.
 

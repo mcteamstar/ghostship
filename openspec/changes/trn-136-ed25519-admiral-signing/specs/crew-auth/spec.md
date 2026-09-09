@@ -42,9 +42,11 @@ The transport SHALL generate an Ed25519 keypair at crew launch time, before the 
 container is created. The private key SHALL be stored in
 `DATA_DIR/secrets/<crew_id>.admiral_secret` (mode 0600) and SHALL never be injected into
 the crew container. The public key SHALL be delivered to the crew container as a Podman
-secret, mounted read-only at `.admiral_public_key` (owned by root, mode 0444) in the same
-directory as the former `.admiral_secret`. It SHALL NOT be written via a container-exec
-script.
+secret, mounted read-only at `/run/secrets/.admiral_public_key` (owned by root, mode 0444).
+The mount target SHALL NOT sit inside the home volume or the workspace volume, because
+Podman creates the intermediate directories for a secret mount target as `root:root`, which
+would leave the crew unable to write its own configuration. It SHALL NOT be written via a
+container-exec script.
 
 The `captain.py` signing path SHALL use the Ed25519 private key to produce a detached
 signature over the same payload as before (`Subject:<s>\nFrom:<f>\n\n<body>`). The

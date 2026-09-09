@@ -21,6 +21,7 @@ _(none)_
 ### Modified Capabilities
 - `crew-auth`: Admiral mail signing changes from HMAC shared secret to Ed25519 asymmetric keypair; crew containers hold only the public key, delivered as a read-only Podman secret so it cannot be overwritten from inside the container; the private key never leaves the transport.
 - `secret-delivery-hardening`: the admiral public key is carved out of the stdin-injection pattern entirely and delivered as a Podman secret instead; other secrets (the private key's host-side persistence, `policy_signing_key`) keep the existing stdin-delivery pattern unchanged.
+- `crew-lifecycle`: the Admiral keypair is established at `container_create` rather than as a setup step, so admiral-secret injection drops out of the ordered setup steps and the "secret present before the post-restart gateway" guarantee is replaced by "public key present from container start". The `os.fsync` durability requirement now applies to the host-side private seed, not to an in-container file.
 
 ## Impact
 
@@ -32,5 +33,7 @@ _(none)_
 - `crews/_base/admission/Containerfile` — pin `cryptography` (confirmed not currently installed in any crew image layer).
 - `crews/_base/admission/verify-admiral-sig` — verify with Ed25519 public key from `.admiral_public_key` instead of HMAC from `.admiral_secret`.
 - `transport/container_scripts/inject_admiral_secret.py` — deleted; no replacement needed.
-- `docs/auth.md` — threat model updated, including the corrected upgrade guidance (nuke + relaunch required; restart does not migrate a crew).
+- `transport/constants.py` — new `ADMIRAL_PUBKEY_PATH`, the single named home for the mount point (deliberately outside the home and workspace volumes).
+- `docs/auth.md` — threat model updated, including the corrected upgrade guidance (nuke + relaunch required; restart does not migrate a crew) and the mount path.
+- `docs/security.md`, `docs/architecture.md` — the stdin-delivery description and the `inject_admiral_secret.py` reference are removed, since that script no longer exists.
 - `tests/unit/` — update signing/verification tests; add coverage for `secret_create`/`secret_remove`.

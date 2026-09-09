@@ -11,9 +11,11 @@ setuid binaries.
 
 The admiral public key is the exception to the container-exec/stdin pattern: it SHALL be
 delivered as a Podman secret, created via `podman secret create` and attached to the
-container spec at `container_create` time (target `.admiral_public_key`, uid/gid 0, mode
-0444). It SHALL NOT be passed to any container-exec script, and the private key SHALL NOT
-enter the container in any form.
+container spec at `container_create` time (target `/run/secrets/.admiral_public_key`,
+uid/gid 0, mode 0444). The target SHALL lie outside every volume mount point, so that the
+directories Podman creates for it cannot render a volume-backed path unwritable to
+`kirocrew`. It SHALL NOT be passed to any container-exec script, and the private key SHALL
+NOT enter the container in any form.
 
 #### Scenario: Secret not present in exec command arguments
 
