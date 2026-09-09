@@ -38,10 +38,13 @@ registry for reference, but this is not required.
 
 ### Requirement: Admiral mail signed with Ed25519 asymmetric keypair
 
-The transport SHALL generate an Ed25519 keypair at crew launch time. The private key SHALL
-be stored in `DATA_DIR/secrets/<crew_id>.admiral_secret` (mode 0600) and SHALL never be
-injected into the crew container. The public key SHALL be injected into the crew container
-as `.admiral_public_key` (mode 0600) in the same directory as the former `.admiral_secret`.
+The transport SHALL generate an Ed25519 keypair at crew launch time, before the crew
+container is created. The private key SHALL be stored in
+`DATA_DIR/secrets/<crew_id>.admiral_secret` (mode 0600) and SHALL never be injected into
+the crew container. The public key SHALL be delivered to the crew container as a Podman
+secret, mounted read-only at `.admiral_public_key` (owned by root, mode 0444) in the same
+directory as the former `.admiral_secret`. It SHALL NOT be written via a container-exec
+script.
 
 The `captain.py` signing path SHALL use the Ed25519 private key to produce a detached
 signature over the same payload as before (`Subject:<s>\nFrom:<f>\n\n<body>`). The
@@ -55,9 +58,10 @@ code contract (0 = valid, 1 = mismatch, 2 = key not found) is unchanged.
 #### Scenario: Transport generates Ed25519 keypair at launch
 
 - **WHEN** a crew is launched
-- **THEN** an Ed25519 keypair is generated; the private key is stored in
-  `DATA_DIR/secrets/<crew_id>.admiral_secret`; the public key is injected into the container
-  as `.admiral_public_key`; the private key never enters the container
+- **THEN** an Ed25519 keypair is generated before the container is created; the private key
+  is stored in `DATA_DIR/secrets/<crew_id>.admiral_secret`; the public key is delivered to
+  the container as a read-only Podman secret mounted at `.admiral_public_key`; the private
+  key never enters the container
 
 #### Scenario: Admiral mail carries valid Ed25519 signature
 
@@ -81,8 +85,15 @@ code contract (0 = valid, 1 = mismatch, 2 = key not found) is unchanged.
 - **WHEN** `verify-admiral-sig` cannot find `.admiral_public_key` after retries
 - **THEN** it exits with code 2 (transient — same behaviour as before for missing secret)
 
-#### Scenario: Compromised agent cannot forge Admiral mail
+#### Scenario: Compromised agent cannot forge Admiral mail by reading the public key
 
 - **WHEN** an agent process running as `kirocrew` reads `.admiral_public_key`
 - **THEN** it cannot derive the private key from the public key and therefore cannot
   produce a valid `X-Admiral-Sig` for a forged message
+
+#### Scenario: Compromised agent cannot forge Admiral mail by substituting the public key
+
+- **WHEN** an agent process running as `kirocrew` attempts to overwrite `.admiral_public_key`
+  with a public key of its own choosing
+- **THEN** the write fails, because `.admiral_public_key` is a read-only Podman secret mount
+  and the container lacks `CAP_SYS_ADMIN` to remount it read-write
