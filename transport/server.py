@@ -3538,10 +3538,10 @@ if __name__ == "__main__":
     }
     _openapi_schema_public_routes = {
         ("GET",  "/version"): _handle_version_get,
-        ("POST", "/dashboard/login"): _handle_dashboard_login_post,
-        ("POST", "/dashboard/logout"): _handle_dashboard_logout_post,
-        ("GET",  "/dashboard/auth"): _handle_dashboard_auth,
-        ("GET",  "/dashboard/login"): _handle_login_ui,
+        ("POST", "/dashboard/login"): _dashboard_gate.handle_login_post,
+        ("POST", "/dashboard/logout"): _dashboard_gate.handle_logout_post,
+        ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
+        ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
         ("GET",  "/openapi.json"): _handle_openapi_get,
     }
     _openapi_schema = _openapi.generate_schema(
