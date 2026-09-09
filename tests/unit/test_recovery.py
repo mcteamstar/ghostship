@@ -10,33 +10,17 @@ from typing import Any
 from unittest.mock import Mock, patch, MagicMock
 
 def _ensure_httpx_exceptions() -> None:
-    """Add exception classes to the httpx stub module if missing."""
-    _httpx = sys.modules.get("httpx")
-    if _httpx is None:
-        return
-    if not hasattr(_httpx, "HTTPStatusError"):
+    """Ensure the shared stub httpx (with its exception classes) is installed.
 
-        class HTTPStatusError(Exception):
-            def __init__(self, message="", request=None, response=None):
-                super().__init__(message)
-                self.request = request
-                self.response = response
+    TRN-144: this must NEVER synthesize its own ``ConnectError`` /
+    ``ConnectTimeout`` / ``HTTPStatusError`` — doing so created a *second* class
+    that ``transport.lifecycle``'s ``except httpx.ConnectError`` never matched,
+    erroring all recovery tests under full-suite discovery. It now delegates to
+    the single idempotent installer so identity is preserved suite-wide.
+    """
+    from tests.unit._stubs import install_import_stubs
 
-        _httpx.HTTPStatusError = HTTPStatusError  # type: ignore[attr-defined]
-
-    if not hasattr(_httpx, "ConnectError"):
-
-        class ConnectError(Exception):
-            pass
-
-        _httpx.ConnectError = ConnectError  # type: ignore[attr-defined]
-
-    if not hasattr(_httpx, "ConnectTimeout"):
-
-        class ConnectTimeout(Exception):
-            pass
-
-        _httpx.ConnectTimeout = ConnectTimeout  # type: ignore[attr-defined]
+    install_import_stubs()
 
 
 from tests.unit.test_file_transfer import server
@@ -45,6 +29,14 @@ import transport.lifecycle as lifecycle
 _ensure_httpx_exceptions()
 import httpx
 import transport.registry as _registry_mod
+
+# TRN-144: identity invariant — lifecycle's bound exception classes and the
+# classes these tests raise must be one and the same object. If this fails, the
+# shared-stub reconciliation has regressed and recovery tests would error under
+# full-suite discovery.
+assert lifecycle.httpx.ConnectError is httpx.ConnectError
+assert lifecycle.httpx.ConnectTimeout is httpx.ConnectTimeout
+assert lifecycle.httpx.HTTPStatusError is httpx.HTTPStatusError
 
 # TRN-143 §4: FakeHTTP / FakeResponse are consolidated in tests.unit.helpers.
 from tests.unit.helpers import FakeHTTP, FakeResponse  # noqa: E402
