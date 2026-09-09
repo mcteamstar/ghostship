@@ -1009,6 +1009,10 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_initiate_login", initiate_login),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_finish_crew_setup", finish_setup),
+            # TRN-136: the launch flow now generates an Ed25519 keypair and
+            # persists the private seed via _write_crew_secret before start.
+            # Patch it so the test does not touch the real crew-secret path.
+            patch.object(server, "_write_crew_secret"),
         ):
             result = server.launch("api-crew")
 
@@ -1523,6 +1527,9 @@ class TestPolicyInjection(unittest.TestCase):
             _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
             _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
             _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
+            # TRN-136: launch() persists the Ed25519 private seed host-side; stub
+            # it so the test does not touch the real DATA_DIR.
+            _stack.enter_context(patch.object(server, "_write_crew_secret"))
 
             mock_podman = Mock()
             mock_get_podman.return_value = mock_podman
@@ -2041,8 +2048,9 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         self.assertLess(policy_idx, models_idx)
         self.assertLess(models_idx, cookie_idx)
 
-    def test_admiral_secret_injected_before_container_restart(self) -> None:
-        """6.3 (trn-36 2.1): admiral secret exec call occurs before container_stop/start."""
+    def test_admiral_key_not_exec_injected_in_finish_setup(self) -> None:
+        """TRN-136: _finish_crew_setup performs no admiral-key container-exec
+        injection (the key is a read-only Podman secret mounted at create time)."""
         stdin_calls: list[tuple[int, list[str]]] = []
         stop_calls: list[int] = []
         start_calls: list[int] = []
@@ -2053,7 +2061,7 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         def track_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
             call_counter[0] += 1
             stdin_calls.append((call_counter[0], cmd))
-            return "admiral secret injected"
+            return "ok"
 
         def track_stop(name: str) -> None:
             call_counter[0] += 1
@@ -2098,46 +2106,39 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
                 _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
                 result = server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
+                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
 
         self.assertEqual(result["status"], "ready")
-        # Find the admiral secret injection call (first exec_stdin call whose
-        # command contains inject_admiral_secret.py)
-        secret_call_order = None
-        for order, cmd in stdin_calls:
-            if any("admiral_secret" in part for part in cmd):
-                secret_call_order = order
-                break
-        self.assertIsNotNone(secret_call_order, "Admiral secret injection exec_stdin call not found")
-        # The container restart (first stop) must come after the secret injection
-        first_stop_order = stop_calls[0] if stop_calls else None
-        self.assertIsNotNone(first_stop_order, "Expected at least one container_stop call")
-        self.assertLess(
-            secret_call_order,
-            first_stop_order,
-            "Admiral secret injection must occur before first container_stop",
+        # No exec_stdin call may reference the (removed) admiral injection script.
+        admiral_exec = [
+            (order, cmd) for order, cmd in stdin_calls
+            if any("admiral_secret" in part for part in cmd)
+        ]
+        self.assertEqual(
+            admiral_exec, [],
+            "TRN-136: admiral key must not be injected via container_exec_stdin",
         )
 
-    def test_admiral_secret_injection_script_contains_fsync(self) -> None:
-        """6.4 (trn-36 2.2): the admiral secret injection script contains os.fsync."""
-        captured_cmds: list[list[str]] = []
+    def test_launch_creates_admiral_pubkey_secret_and_ro_mount(self) -> None:
+        """TRN-136: launch() creates the Podman secret and mounts it read-only
+        (mode 0444) at .admiral_public_key before starting the container."""
+        created_secrets: list[tuple[str, bytes]] = []
+        create_spec: dict = {}
 
         podman = Mock()
-
-        def capture_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
-            if len(cmd) >= 2 and cmd[0] == "python3" and cmd[1].endswith(
-                "/inject_admiral_secret.py"
-            ):
-                captured_cmds.append(cmd)
-            return "admiral secret injected"
-
-        podman.container_exec_stdin = Mock(side_effect=capture_exec_stdin)
-        podman.container_exec_checked = Mock(return_value="ok")
-        podman.container_stop = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
         podman.container_start = Mock()
-        podman.container_exec = Mock(return_value="ready")
-        podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
+        podman.secret_create = Mock(side_effect=lambda name, data: created_secrets.append((name, data)))
+        podman.secret_remove = Mock()
+
+        def fake_container_create(**kwargs):
+            create_spec.update(kwargs)
+            return {}
+
+        podman.container_create = Mock(side_effect=fake_container_create)
 
         with tempfile.TemporaryDirectory() as tmp:
             import contextlib
@@ -2146,48 +2147,29 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 _stack.enter_context(patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"))
                 _stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
                 _stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
-                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(lifecycle, "_inject_auth"))
-                _stack.enter_context(patch.object(server, "_inject_auth"))
-                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
-                _stack.enter_context(patch.object(server, "_patch_crew_config"))
-                _stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_agents", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_skills", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(server, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(lifecycle, "_patch_models"))
-                _stack.enter_context(patch.object(server, "_patch_models"))
-                _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
-                _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
-                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
-                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
-                server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
-                )
+                _stack.enter_context(patch.object(server, "_get_podman", return_value=podman))
+                # Auth passes via a present auth file; stop launch right after
+                # container start by failing the gateway wait so we do not have
+                # to mock the full finish flow.
+                _stack.enter_context(patch.object(server, "_read_auth_file", return_value="auth"))
+                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=False))
+                result = server.launch("demo")
 
-        self.assertEqual(
-            len(captured_cmds), 1, "Expected exactly one admiral secret injection call"
-        )
-        cmd = captured_cmds[0]
-        # The call passes the secret file path as argv; secret delivered via stdin.
-        # argv[1] is the destination path (e.g. /home/kirocrew/.kiro/crew/.admiral_secret)
-        self.assertTrue(cmd[2].endswith("/.admiral_secret"))
-        script_path = (
-            Path(server.__file__).resolve().parent
-            / "container_scripts"
-            / "inject_admiral_secret.py"
-        )
-        script_src = script_path.read_text()
-        self.assertIn(
-            "os.fsync",
-            script_src,
-            "Secret injection script must call os.fsync for durability",
-        )
+        # Secret created with the crew-scoped name and a raw 32-byte public key.
+        self.assertEqual(len(created_secrets), 1)
+        name, data = created_secrets[0]
+        self.assertEqual(name, "admiral-pubkey-demo")
+        self.assertEqual(len(data), 32, "Ed25519 raw public key is 32 bytes")
+
+        # container_create received a read-only 0444 mount at .admiral_public_key.
+        secrets_arg = create_spec.get("secrets")
+        self.assertTrue(secrets_arg, "container_create must receive a secrets mount")
+        entry = secrets_arg[0]
+        self.assertEqual(entry["source"], "admiral-pubkey-demo")
+        self.assertTrue(entry["target"].endswith("/.admiral_public_key"))
+        self.assertEqual(entry["mode"], 0o444)
+        self.assertEqual(entry["uid"], 0)
+        self.assertEqual(entry["gid"], 0)
 
     def test_gateway_failure_after_restart_triggers_cleanup(self) -> None:
         """6.2: gateway failure after auth restart triggers cleanup and returns error."""

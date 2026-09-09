@@ -170,5 +170,145 @@ class HostMemoryHelpersTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class PodmanSecretTests(unittest.TestCase):
+    """TRN-136: secret_create / secret_remove and the container_create secrets param.
+
+    A real ``PodmanClient`` is constructed, then its ``_c`` (httpx client) and
+    ``_req`` are replaced with fakes that record the HTTP calls so the tests
+    assert on the request shape without a live Podman socket.
+    """
+
+    def _client(self):
+        # __init__ opens a UDS httpx client against a socket path; pass a dummy
+        # path and immediately swap the client for a recorder.
+        client = podman.PodmanClient.__new__(podman.PodmanClient)
+        client._sock_path = "/nonexistent.sock"
+        return client
+
+    def test_secret_create_posts_raw_bytes_with_name(self) -> None:
+        client = self._client()
+        recorded = {}
+
+        class FakeResp:
+            status_code = 201
+            def raise_for_status(self):  # pragma: no cover - not reached on 201
+                pass
+
+        class FakeHTTP:
+            def post(self, path, params=None, content=None, headers=None):
+                recorded["path"] = path
+                recorded["params"] = params
+                recorded["content"] = content
+                recorded["headers"] = headers
+                return FakeResp()
+
+        client._c = FakeHTTP()
+        client.secret_create("admiral-pubkey-demo", b"\x01" * 32)
+
+        self.assertEqual(recorded["path"], "/libpod/secrets/create")
+        self.assertEqual(recorded["params"], {"name": "admiral-pubkey-demo"})
+        self.assertEqual(recorded["content"], b"\x01" * 32)
+
+    def test_secret_create_conflict_removes_then_recreates(self) -> None:
+        client = self._client()
+        calls = []
+
+        class Resp409:
+            status_code = 409
+            def raise_for_status(self):  # pragma: no cover
+                pass
+
+        class Resp201:
+            status_code = 201
+            def raise_for_status(self):
+                pass
+
+        class FakeHTTP:
+            def __init__(self):
+                self._post_count = 0
+            def post(self, path, params=None, content=None, headers=None):
+                self._post_count += 1
+                calls.append(("post", params["name"]))
+                # First create → 409 conflict; second create (after remove) → 201.
+                return Resp409() if self._post_count == 1 else Resp201()
+            def delete(self, path):
+                calls.append(("delete", path))
+                class D:
+                    def raise_for_status(self_inner):
+                        pass
+                return D()
+
+        client._c = FakeHTTP()
+        client.secret_create("admiral-pubkey-demo", b"\x02" * 32)
+
+        self.assertEqual(calls[0], ("post", "admiral-pubkey-demo"))
+        self.assertEqual(calls[1], ("delete", "/libpod/secrets/admiral-pubkey-demo"))
+        self.assertEqual(calls[2], ("post", "admiral-pubkey-demo"))
+
+    def test_secret_remove_deletes_by_name_and_swallows_errors(self) -> None:
+        client = self._client()
+        recorded = {}
+
+        class FakeHTTP:
+            def delete(self, path):
+                recorded["path"] = path
+                class D:
+                    def raise_for_status(self_inner):
+                        pass
+                return D()
+
+        client._c = FakeHTTP()
+        client.secret_remove("admiral-pubkey-demo")
+        self.assertEqual(recorded["path"], "/libpod/secrets/admiral-pubkey-demo")
+
+        # A raising delete must be swallowed (best-effort).
+        class RaisingHTTP:
+            def delete(self, path):
+                raise RuntimeError("boom")
+
+        client._c = RaisingHTTP()
+        client.secret_remove("admiral-pubkey-demo")  # must not raise
+
+    def test_container_create_includes_secrets_when_provided(self) -> None:
+        client = self._client()
+        captured = {}
+
+        def fake_req(method, path, json=None):
+            captured["method"] = method
+            captured["path"] = path
+            captured["json"] = json
+            return {}
+
+        client._req = fake_req
+        secrets_arg = [{
+            "source": "admiral-pubkey-demo",
+            "target": "/home/kirocrew/.kiro/crew/.admiral_public_key",
+            "uid": 0, "gid": 0, "mode": 0o444,
+        }]
+        client.container_create(
+            name="gs-demo", image="img", env={}, network="ga-starboard",
+            workspace_volume="vol", home_volume="home", secrets=secrets_arg,
+        )
+        self.assertEqual(captured["json"]["secrets"], secrets_arg)
+        # Hardening flags are preserved.
+        self.assertTrue(captured["json"]["no_new_privileges"])
+        self.assertIn("CAP_SYS_ADMIN", captured["json"]["cap_drop"])
+
+    def test_container_create_omits_secrets_key_when_none(self) -> None:
+        client = self._client()
+        captured = {}
+
+        def fake_req(method, path, json=None):
+            captured["json"] = json
+            return {}
+
+        client._req = fake_req
+        client.container_create(
+            name="gs-demo", image="img", env={}, network="ga-starboard",
+            workspace_volume="vol", home_volume="home",
+        )
+        self.assertNotIn("secrets", captured["json"])
+
+
 if __name__ == "__main__":
     unittest.main()

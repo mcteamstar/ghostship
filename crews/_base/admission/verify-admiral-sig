@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
 """Verify X-Admiral-Sig on a message read from stdin or a file argument.
 
-Exit codes:
+TRN-136: Admiral mail is signed with an Ed25519 keypair. The crew container
+holds only the public key, delivered as a read-only Podman secret mounted at
+``.admiral_public_key`` (root-owned, mode 0444). The private key never enters
+the container, so a compromised agent cannot forge Admiral mail: it can read
+the public key but cannot derive the private key, and it cannot overwrite the
+public key file because the mount is read-only.
+
+The X-Admiral-Sig header carries a base64url-encoded (unpadded) detached
+Ed25519 signature over ``Subject:<s>\nFrom:<f>\n\n<body>``.
+
+Exit codes (unchanged from the prior HMAC implementation):
   0 — valid signature (message is genuine Admiral mail)
   1 — signature mismatch (message is not genuine)
-  2 — signing secret not found after retries (cannot verify; transient)
+  2 — public key not found after retries (cannot verify; transient)
 
 Usage:
   cat /var/mail/captain/new/<msg> | verify-admiral-sig
   verify-admiral-sig /var/mail/captain/new/<msg>
 """
 import sys
-import hmac
-import hashlib
+import base64
+import binascii
 import email
 import time
 
-SECRET_PATH = '/home/kirocrew/.kiro/crew/.admiral_secret'
-SECRET_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_secret'
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.exceptions import InvalidSignature
+
+PUBKEY_PATH = '/home/kirocrew/.kiro/crew/.admiral_public_key'
+PUBKEY_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_public_key'
 
 MAX_RETRIES = 3
 RETRY_DELAY_SECS = 2
@@ -37,31 +50,41 @@ if not sig:
     # No signature header present — not Admiral mail
     sys.exit(1)
 
-secret = None
+pubkey_bytes = None
 for attempt in range(MAX_RETRIES):
-    for path in (SECRET_PATH, SECRET_PATH_FALLBACK):
+    for path in (PUBKEY_PATH, PUBKEY_PATH_FALLBACK):
         try:
-            with open(path) as f:
-                secret = f.read().strip().encode()
+            with open(path, 'rb') as f:
+                pubkey_bytes = f.read().strip()
             break
         except FileNotFoundError:
             continue
-    if secret is not None:
+    if pubkey_bytes:
         break
-    # Secret not found — wait and retry (transient race with container startup)
+    # Public key not found — wait and retry (transient race with container startup)
     if attempt < MAX_RETRIES - 1:
         time.sleep(RETRY_DELAY_SECS)
 
-if secret is None:
-    # All retries exhausted — secret file absent (transient condition)
+if not pubkey_bytes:
+    # All retries exhausted — public key file absent (transient condition)
     sys.exit(2)
 
-expected = hmac.new(
-    secret,
-    f'Subject:{subject}\nFrom:{sender}\n\n{body}'.encode('utf-8'),
-    hashlib.sha256,
-).hexdigest()
-if hmac.compare_digest(sig, expected):
+# Decode the base64url signature (tolerate missing '=' padding).
+try:
+    padding = '=' * (-len(sig) % 4)
+    sig_raw = base64.urlsafe_b64decode(sig + padding)
+except (binascii.Error, ValueError):
+    sys.exit(1)
+
+try:
+    public_key = Ed25519PublicKey.from_public_bytes(pubkey_bytes)
+except ValueError:
+    # Malformed public key material — cannot verify; treat as absent/transient.
+    sys.exit(2)
+
+payload = f'Subject:{subject}\nFrom:{sender}\n\n{body}'.encode('utf-8')
+try:
+    public_key.verify(sig_raw, payload)
     sys.exit(0)
-else:
+except InvalidSignature:
     sys.exit(1)

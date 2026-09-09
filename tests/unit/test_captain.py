@@ -506,27 +506,44 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertTrue(msg_id.startswith("<"))
         self.assertTrue(msg_id.endswith("@localhost>"))
 
-    def test_mail_helper_adds_supersedes_and_hmac_headers(self) -> None:
+    def test_mail_helper_adds_supersedes_and_ed25519_sig_headers(self) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, PrivateFormat, NoEncryption,
+        )
+
+        seed = Ed25519PrivateKey.generate().private_bytes(
+            Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+        ).hex()
         message, _ = server._format_captain_mail(
-            "updated order", signing_secret="deadbeef", supersedes_id="<prev@localhost>"
+            "updated order", signing_secret=seed, supersedes_id="<prev@localhost>"
         )
         self.assertIn("Supersedes: <prev@localhost>", message)
         self.assertIn("X-Admiral-Sig: ", message)
 
     def test_admiral_sig_round_trip_matches_verify_admiral_sig_logic(self) -> None:
-        """X-Admiral-Sig covers Subject, From, and body after parsing.
+        """X-Admiral-Sig is a valid Ed25519 signature over Subject, From, and body.
 
         Simulates the verify-admiral-sig logic: parse the message with
         email.message_from_string, extract the signed headers, strip the
-        trailing newline from the payload, re-derive the HMAC, and compare.
+        trailing newline from the payload, base64url-decode the signature, and
+        verify against the public key derived from the same seed.
         """
         import email as _email
-        import hmac as _hmac
-        import hashlib as _hashlib
+        import base64 as _base64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, PrivateFormat, PublicFormat, NoEncryption,
+        )
 
-        secret = "test-round-trip-secret"
+        private_key = Ed25519PrivateKey.generate()
+        seed = private_key.private_bytes(
+            Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+        ).hex()
+        public_key = private_key.public_key()
+
         body = "You are conducting a review.\n\nSection 1: Transport core."
-        message, _ = server._format_captain_mail(body, signing_secret=secret)
+        message, _ = server._format_captain_mail(body, signing_secret=seed)
 
         # Parse as email (what verify-admiral-sig does)
         msg = _email.message_from_string(message)
@@ -535,14 +552,16 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         sender = msg.get("From", "")
         parsed_body = (msg.get_payload() or "").rstrip("\n")
 
-        # Re-derive expected HMAC over the same headers and body as the verifier.
-        expected = _hmac.new(
-            secret.encode("utf-8"),
-            f"Subject:{subject}\nFrom:{sender}\n\n{parsed_body}".encode("utf-8"),
-            _hashlib.sha256,
-        ).hexdigest()
+        # base64url-decode (tolerating stripped padding) and verify — this must
+        # not raise InvalidSignature.
+        padding = "=" * (-len(sig_header) % 4)
+        sig_raw = _base64.urlsafe_b64decode(sig_header + padding)
+        payload = f"Subject:{subject}\nFrom:{sender}\n\n{parsed_body}".encode("utf-8")
+        public_key.verify(sig_raw, payload)  # raises on failure
 
-        self.assertEqual(sig_header, expected, "X-Admiral-Sig should verify after stripping trailing newline")
+        # A tampered body must fail verification.
+        with self.assertRaises(Exception):
+            public_key.verify(sig_raw, payload + b"tampered")
 
     def test_mail_append_delivers_via_maildeliver(self) -> None:
         podman = Mock()

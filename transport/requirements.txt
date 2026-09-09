@@ -7,3 +7,7 @@ croniter==3.0.3
 starlette>=1.0.1,<2.0.0
 uvicorn>=0.31.1,<1.0.0
 unittest-parallel==1.8.6
+# TRN-136: Ed25519 Admiral-mail signing (captain.py) and verification
+# (verify-admiral-sig) require cryptography. Pinned to match the version baked
+# into the crew image (crews/_base/admission/Containerfile).
+cryptography==43.0.1

@@ -68,7 +68,6 @@ try:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
-        _write_crew_secret,
         _write_batch,
     )
 except ModuleNotFoundError:
@@ -81,7 +80,6 @@ except ModuleNotFoundError:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
-        _write_crew_secret,
         _write_batch,
     )
 
@@ -1004,6 +1002,18 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
         podman.volume_remove(home_volume)
     except Exception:
         pass
+    # TRN-136: remove the Admiral public-key Podman secret. Podman secrets live
+    # in a global namespace and must be explicitly removed or they leak across
+    # crew lifecycles. Derive the crew_id from the container name (gs-<crew_id>)
+    # so every launch-failure path and the nuke path (both route through here)
+    # clean it up. Best-effort — a launch that failed before secret_create just
+    # no-ops.
+    try:
+        if container.startswith(CREW_CONTAINER_PREFIX):
+            crew_id = container[len(CREW_CONTAINER_PREFIX):]
+            podman.secret_remove(f"admiral-pubkey-{crew_id}")
+    except Exception:
+        pass
 
 
 def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
@@ -1493,6 +1503,7 @@ def _finish_crew_setup(
     auth_b64: str,
     composition: str = "spec-ops",
     composition_entry: dict | None = None,
+    admiral_secret: str = "",
 ) -> dict:
     """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
     crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
@@ -1514,27 +1525,14 @@ def _finish_crew_setup(
 
     # depends on: container running (pre-restart); must be written before restart
     # so the secret is on the home volume before the post-restart gateway starts
-    admiral_secret = secrets.token_hex(32)
+    #
+    # TRN-136: the Admiral keypair is now generated in server.py BEFORE
+    # container_create — the private seed (``admiral_secret``, hex-encoded) has
+    # already been persisted host-side via _write_crew_secret, and the public
+    # key is mounted read-only as a Podman secret at .admiral_public_key. There
+    # is no longer a container-exec injection step for the Admiral key; only the
+    # policy signing key is generated and injected here.
     policy_signing_key = secrets.token_hex(32)
-    try:
-        podman.container_exec_stdin(
-            container,
-            ["python3", f"{SCRIPTS_DIR}/inject_admiral_secret.py",
-             f"{KIRO_CREW_DIR}/.admiral_secret"],
-            admiral_secret.encode(),
-        )
-        logger.info("Injected admiral signing secret for %s", container)
-    except Exception as e:
-        logger.warning("Failed to inject admiral secret for %s: %s", container, e)
-
-    # TRN-93: persist the admiral secret in a separate file (DATA_DIR/secrets/)
-    # so captain.py can retrieve it for X-Admiral-Sig when sending standing orders.
-    # This is the only place the plaintext is written to disk; crews.json stores
-    # only the non-reversible identifier (admiral_secret_id).
-    try:
-        _write_crew_secret(crew_id, admiral_secret)
-    except Exception as e:
-        logger.warning("Failed to persist admiral secret for %s: %s", crew_id, e)
 
     # depends on: gateway (pre-restart); gateway seeds config on first start
     _patch_crew_config(podman, container)

@@ -1825,8 +1825,11 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         policy_injection_ok: bool = True,
     ) -> tuple[dict, dict]:
         """Run lifecycle._finish_crew_setup with enough mocking to reach the
-        registry write, capturing _inject_policy call args and the
-        inject_admiral_secret.py exec args.
+        registry write, capturing _inject_policy call args.
+
+        TRN-136: the admiral key is no longer injected via container-exec, so
+        ``admiral_secret_calls`` records any (unexpected) admiral exec calls —
+        it must stay empty. The admiral secret is passed in as a parameter.
 
         Returns (registry_data, result) so callers can inspect both.
         """
@@ -1850,9 +1853,9 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                 self, container: str, cmd: list, stdin_data: bytes
             ) -> str:
                 if "inject_admiral_secret.py" in " ".join(cmd):
-                    # Secret is delivered via stdin
+                    # TRN-136: must never happen — recorded so the test can assert.
                     admiral_secret_calls.append(stdin_data.decode())
-                return "admiral secret injected"
+                return "ok"
 
             def container_inspect(self, container: str) -> dict:
                 return {"Config": {"Labels": {}}}
@@ -1895,35 +1898,36 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                     "gs-vol-demo",
                     "gs-home-demo",
                     "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
 
             registry_data = json.loads(registry.read_text()) if registry.exists() else {}
         return registry_data, result
 
     def test_two_distinct_secrets_generated_and_policy_signing_key_forwarded(self) -> None:
-        """4.3: policy_signing_key (not admiral_secret) is passed to _inject_policy;
-        and the two secrets are distinct values."""
+        """4.3 (TRN-136): policy_signing_key (not the admiral secret) is passed to
+        _inject_policy; and the two secrets are distinct. The admiral key is NOT
+        injected via container-exec anymore."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
         self._run_finish_crew_setup(inject_policy_calls, admiral_secret_calls)
 
         self.assertEqual(len(inject_policy_calls), 1,
                          "Expected exactly one _inject_policy call")
-        self.assertEqual(len(admiral_secret_calls), 1,
-                         "Expected exactly one inject_admiral_secret.py exec call")
+        self.assertEqual(len(admiral_secret_calls), 0,
+                         "TRN-136: admiral key must not be injected via container-exec")
 
         forwarded_key = inject_policy_calls[0]["policy_signing_key"]
-        admiral_secret_value = admiral_secret_calls[0]
+        admiral_secret_value = "ab" * 32  # the param passed in
 
         # The two secrets must be distinct
         self.assertNotEqual(
             forwarded_key,
             admiral_secret_value,
-            "policy_signing_key and admiral_secret must be distinct secrets",
+            "policy_signing_key and the admiral secret must be distinct secrets",
         )
-        # Both must be non-empty
+        # policy_signing_key must be non-empty
         self.assertTrue(forwarded_key, "policy_signing_key must be non-empty")
-        self.assertTrue(admiral_secret_value, "admiral_secret must be non-empty")
 
     def test_policy_signing_key_stored_in_registry_when_injection_succeeds(self) -> None:
         """4.4 (TRN-93): crews.json entry contains policy_signing_key_id (identifier) when
