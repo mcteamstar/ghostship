@@ -31,8 +31,9 @@ RUN apt-get update -qq && \
 # `cryptography` package. It is NOT present in any layer of the upstream crew
 # image, so pin it here — every composition inherits from this base, so the
 # verifier can import cryptography.hazmat.primitives.asymmetric.ed25519 at
-# runtime. Pinned to a specific version for a deterministic, reproducible build.
-RUN pip3 install --no-cache-dir --break-system-packages 'cryptography==43.0.1'
+# runtime. Pinned exactly for a deterministic, reproducible image build; the
+# raw Ed25519 API is stable, so this need not track the transport's version.
+RUN pip3 install --no-cache-dir --break-system-packages 'cryptography==50.0.1'
 
 # Provision Maildir mailboxes for all 7 local addresses
 # (6 personas + captain; admiral is written by the transport only)

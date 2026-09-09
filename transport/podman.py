@@ -227,6 +227,10 @@ class PodmanClient(ContainerRuntime):
         # "mode"} — Podman mounts it as a read-only bind mount that the container
         # cannot overwrite (CAP_SYS_ADMIN, needed to remount rw, is dropped
         # above). Used to deliver the Admiral Ed25519 public key immutably.
+        #
+        # A target must not sit under any dest in "volumes" above. Podman creates
+        # the intermediate directories for a secret target as root:root, which
+        # makes a volume-backed path unwritable to the container's own user.
         if secrets:
             spec["secrets"] = secrets
         return self._req("POST", "/libpod/containers/create", json=spec)

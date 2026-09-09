@@ -388,7 +388,7 @@ seed) is persisted host-side only — read by `captain.py` to sign standing
 orders — and is never placed inside the crew container. The **public key** is
 delivered into the container as a **Podman secret** named
 `admiral-pubkey-<crew_id>`, mounted read-only, root-owned, mode `0444` at
-`/home/kirocrew/.kiro/crew/.admiral_public_key`. Every standing order the
+`/run/secrets/.admiral_public_key`. Every standing order the
 transport writes to `/var/mail/captain` includes an `X-Admiral-Sig:` header —
 a base64url-encoded Ed25519 signature of the message body produced with the
 host-side private seed. Raven can invoke `/usr/local/bin/verify-admiral-sig`
@@ -417,6 +417,13 @@ symmetric HMAC design (TRN-136):
    **immutable from inside the container** — an agent cannot overwrite it with
    a public key whose matching private key it controls. Verifying a signature
    requires only the public key, so no secret is exposed in-container at all.
+
+   The mount point is `/run/secrets/`, deliberately **outside** the home and
+   workspace volumes. Podman creates the intermediate directories for a secret
+   target itself, owned by `root:root`, so a target under `/home/kirocrew` makes
+   the crew's own config directory unwritable and the entrypoint dies before the
+   gateway binds. `transport.constants.ADMIRAL_PUBKEY_PATH` and the `PUBKEY_PATH`
+   constant in `verify-admiral-sig` hold this path and must change together.
 
 **Threat model:** With an asymmetric keypair, reading `.admiral_public_key`
 grants no forging capability — the public key verifies signatures but cannot

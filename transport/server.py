@@ -371,6 +371,7 @@ DATA_DIR = Path(cfg.transport_data_dir)
 # Canonical home is transport/constants.py (TRN-142).
 try:
     from constants import (  # container: flat /app/
+        ADMIRAL_PUBKEY_PATH,
         CREW_CONTAINER_PREFIX,
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
@@ -381,6 +382,7 @@ try:
     )
 except ModuleNotFoundError:
     from transport.constants import (  # local dev
+        ADMIRAL_PUBKEY_PATH,
         CREW_CONTAINER_PREFIX,
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
@@ -1985,9 +1987,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             workspace_volume=volume,
             home_volume=home_volume,
             # TRN-136: mount the Admiral public key read-only, root-owned, 0444.
+            # ADMIRAL_PUBKEY_PATH deliberately sits outside the home volume; see
+            # the constant's definition for why a volume-backed target breaks
+            # crew startup.
             secrets=[{
                 "source": _admiral_secret_name,
-                "target": f"{KIRO_CREW_DIR}/.admiral_public_key",
+                "target": ADMIRAL_PUBKEY_PATH,
                 "uid": 0,
                 "gid": 0,
                 "mode": 0o444,

@@ -282,7 +282,7 @@ class PodmanSecretTests(unittest.TestCase):
         client._req = fake_req
         secrets_arg = [{
             "source": "admiral-pubkey-demo",
-            "target": "/home/kirocrew/.kiro/crew/.admiral_public_key",
+            "target": server.ADMIRAL_PUBKEY_PATH,
             "uid": 0, "gid": 0, "mode": 0o444,
         }]
         client.container_create(
@@ -293,6 +293,21 @@ class PodmanSecretTests(unittest.TestCase):
         # Hardening flags are preserved.
         self.assertTrue(captured["json"]["no_new_privileges"])
         self.assertIn("CAP_SYS_ADMIN", captured["json"]["cap_drop"])
+
+    def test_admiral_pubkey_path_is_outside_every_volume_mount(self) -> None:
+        """TRN-136: the secret target must not nest inside a volume dest.
+
+        Podman creates a secret target's parent directories as root:root, so a
+        target under a volume mount point leaves that directory unwritable to
+        the container's own user. When the target was inside the home volume,
+        the crew entrypoint died on config.json and the gateway never bound.
+        """
+        volume_dests = (podman.KIRO_WORKSPACE_ROOT, "/home/kirocrew")
+        for dest in volume_dests:
+            self.assertFalse(
+                server.ADMIRAL_PUBKEY_PATH.startswith(dest.rstrip("/") + "/"),
+                f"{server.ADMIRAL_PUBKEY_PATH} must not sit under volume dest {dest}",
+            )
 
     def test_container_create_omits_secrets_key_when_none(self) -> None:
         client = self._client()

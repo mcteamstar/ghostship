@@ -292,6 +292,7 @@ class LifecycleRegressionTests(unittest.TestCase):
                         "gs-vol-demo",
                         "gs-home-demo",
                         "auth-b64",
+                        admiral_secret="ab" * 32,
                     )
 
             self.assertEqual(result["status"], "ready")
@@ -2013,6 +2014,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                     "gs-vol-demo",
                     "gs-home-demo",
                     None if api_key else "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
         return inject_auth
 

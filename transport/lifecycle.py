@@ -1503,7 +1503,8 @@ def _finish_crew_setup(
     auth_b64: str,
     composition: str = "spec-ops",
     composition_entry: dict | None = None,
-    admiral_secret: str = "",
+    *,
+    admiral_secret: str,
 ) -> dict:
     """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
     crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"

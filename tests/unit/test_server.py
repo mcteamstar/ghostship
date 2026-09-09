@@ -2015,7 +2015,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 _stack.enter_context(patch.object(lifecycle, "_inject_policy", side_effect=inject_policy))
                 _stack.enter_context(patch.object(server, "_inject_policy", side_effect=inject_policy))
                 result = server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
+                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
 
         self.assertEqual(result["status"], "ready")
@@ -2205,7 +2206,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             patch.object(server, "_cleanup_crew", side_effect=cleanup),
         ):
             result = server._finish_crew_setup(
-                podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
+                podman, "test", "gs-test", "vol-test", "home-test", "auth-b64",
+                admiral_secret="ab" * 32,
             )
 
         self.assertIn("error", result)
@@ -3036,7 +3038,8 @@ class GitIdentityInjectionTests(unittest.TestCase):
                 _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
                 _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
                 result = server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol", "home", "auth"
+                    podman, "test", "gs-test", "vol", "home", "auth",
+                    admiral_secret="ab" * 32,
                 )
 
         self.assertEqual(result["status"], "ready")

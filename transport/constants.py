@@ -36,3 +36,16 @@ PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 # Helper scripts baked into the crew image at /scripts/ by the Containerfile
 # (see transport/container_scripts/, TRN-74).
 SCRIPTS_DIR = "/scripts"
+
+# ── Admiral public key (TRN-136) ──────────────────────────────────────────────
+# Mount point for the Admiral Ed25519 public key, delivered as a read-only
+# Podman secret at container_create time.
+#
+# This MUST stay outside the home and workspace volumes. Podman creates the
+# intermediate directories for a secret mount target as root:root, so a target
+# under /home/kirocrew leaves the crew unable to write its own config.json and
+# the entrypoint dies before the gateway binds.
+#
+# crews/_base/admission/verify-admiral-sig hardcodes this same path; the two
+# must be changed together.
+ADMIRAL_PUBKEY_PATH = "/run/secrets/.admiral_public_key"

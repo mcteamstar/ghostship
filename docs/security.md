@@ -21,18 +21,24 @@ so a rollback needs no code change.
   log record, error, and audit line (replaced with `***REDACTED***`).
 - **CI secret scan.** `tests/security_scan.py` runs in the `security-scan` CI
   job and fails the build on a likely committed live secret.
-- **Admiral secret delivery via stdin.** The `admiral_secret` is delivered to
-  container scripts via stdin, not process arguments. `inject_admiral_secret.py`
-  reads the secret from `sys.stdin.read().strip()` so it never appears in
-  `podman exec` argument lists or `/proc/<pid>/cmdline` during the exec's
-  lifetime.
-- **crews.json stores identifiers only.** After `admiral_secret` and
-  `policy_signing_key` are injected into the crew container, `crews.json`
-  retains only a non-reversible identifier for each secret
+- **Admiral private key never enters the container.** Admiral mail is signed
+  with an Ed25519 keypair (TRN-136). The private seed stays host-side and is
+  read only by `captain.py`; the container receives just the public key, as a
+  read-only Podman secret attached at `container_create` and mounted at
+  `/run/secrets/.admiral_public_key`. There is no injection script and no exec,
+  so no Admiral key material passes through a `podman exec` argument list or
+  appears in `/proc/<pid>/cmdline`. Because the mount is read-only and crew
+  containers drop `CAP_SYS_ADMIN`, a compromised agent cannot substitute a
+  public key of its own to self-sign forged orders.
+- **Secrets still delivered via stdin.** `policy_signing_key` continues to reach
+  its container script through stdin rather than process arguments, so it never
+  appears in an exec argument list.
+- **crews.json stores identifiers only.** `crews.json` retains only a
+  non-reversible identifier for each secret
   (`"admiral_secret_id": "sha256:<hex[:16]>"`, `"policy_signing_key_id": "sha256:<hex[:16]>"`).
   The `policy_signing_key` plaintext exists in memory only for the duration of
-  the injection call and is not written to disk on the host. The `admiral_secret`
-  plaintext is additionally persisted (mode `0600`) to `DATA_DIR/secrets/<crew_id>`
+  the injection call and is not written to disk on the host. The Admiral private
+  seed is persisted (mode `0600`) to `DATA_DIR/secrets/<crew_id>.admiral_secret`
   so the transport can sign Captain standing orders after launch — it is never
   stored in `crews.json` itself. See [auth.md](auth.md#storage) for details.
 

@@ -2,9 +2,16 @@
 
 Exercises the Ed25519 verifier's exit codes: valid signature (0), signature
 mismatch (1), missing X-Admiral-Sig header (1), and absent public-key file (2).
-The script reads the raw 32-byte Ed25519 public key from .admiral_public_key;
-the tests monkey-patch PUBKEY_PATH / PUBKEY_PATH_FALLBACK to point at a temp
-file, mirroring how the earlier HMAC tests patched SECRET_PATH.
+The script reads the raw 32-byte Ed25519 public key from PUBKEY_PATH; the tests
+monkey-patch that constant to point at a temp file, mirroring how the earlier
+HMAC tests patched SECRET_PATH.
+
+WhitespaceBoundaryKeyTests covers the regression that made the first
+implementation pass unusable: the verifier trimmed the raw key bytes, so any
+key beginning or ending with an ASCII whitespace byte (~4.7% of them) was
+truncated to 31 bytes and rejected as absent. The other tests generate random
+keypairs, so they only caught it a few percent of the time — these two are
+deterministic.
 """
 from __future__ import annotations
 
@@ -27,6 +34,9 @@ from cryptography.hazmat.primitives.serialization import (
 # Resolve the script path relative to the repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "crews" / "_base" / "admission" / "verify-admiral-sig"
+
+# The bytes bytes.strip() would remove from either end of raw key material.
+ASCII_WHITESPACE = b" \t\n\r\x0b\x0c"
 
 
 def _make_message(body: str, sig: str | None = None) -> str:
@@ -53,17 +63,13 @@ def _sign(body: str, private_key: Ed25519PrivateKey) -> str:
     return base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
 
 
-def _run_with_pubkey(message: str, pubkey_path: str, fallback_path: str) -> subprocess.CompletedProcess:
+def _run_with_pubkey(message: str, pubkey_path: str) -> subprocess.CompletedProcess:
     """Run verify-admiral-sig with PUBKEY_PATH overridden to pubkey_path."""
     wrapper = textwrap.dedent(f"""\
         source = open({str(SCRIPT_PATH)!r}).read()
         source = source.replace(
-            "PUBKEY_PATH = '/home/kirocrew/.kiro/crew/.admiral_public_key'",
+            "PUBKEY_PATH = '/run/secrets/.admiral_public_key'",
             "PUBKEY_PATH = {pubkey_path!r}"
-        )
-        source = source.replace(
-            "PUBKEY_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_public_key'",
-            "PUBKEY_PATH_FALLBACK = {fallback_path!r}"
         )
         source = source.replace("RETRY_DELAY_SECS = 2", "RETRY_DELAY_SECS = 0")
         exec(compile(source, {str(SCRIPT_PATH)!r}, "exec"))
@@ -77,18 +83,24 @@ def _run_with_pubkey(message: str, pubkey_path: str, fallback_path: str) -> subp
     )
 
 
-class VerifyAdmiralSigTests(unittest.TestCase):
-    """Test exit codes for the Ed25519 verify-admiral-sig script."""
+class _PubkeyFileMixin(unittest.TestCase):
+    """Writes raw public-key bytes to a temp file that is cleaned up after."""
 
-    def _write_pubkey(self, private_key: Ed25519PrivateKey) -> str:
-        pub_bytes = private_key.public_key().public_bytes(
-            Encoding.Raw, PublicFormat.Raw
-        )
+    def _write_pubkey_bytes(self, pub_bytes: bytes) -> str:
         fd, path = tempfile.mkstemp(suffix=".pubkey")
         with os.fdopen(fd, "wb") as f:
             f.write(pub_bytes)
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
         return path
+
+    def _write_pubkey(self, private_key: Ed25519PrivateKey) -> str:
+        return self._write_pubkey_bytes(
+            private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        )
+
+
+class VerifyAdmiralSigTests(_PubkeyFileMixin):
+    """Test exit codes for the Ed25519 verify-admiral-sig script."""
 
     def test_exit_0_valid_signature(self) -> None:
         """Exit 0 when X-Admiral-Sig is a valid Ed25519 signature."""
@@ -98,7 +110,7 @@ class VerifyAdmiralSigTests(unittest.TestCase):
         message = _make_message(body, sig=sig)
         pubkey_path = self._write_pubkey(private_key)
 
-        result = _run_with_pubkey(message, pubkey_path, pubkey_path)
+        result = _run_with_pubkey(message, pubkey_path)
         self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
 
     def test_exit_1_signature_mismatch(self) -> None:
@@ -111,7 +123,7 @@ class VerifyAdmiralSigTests(unittest.TestCase):
         message = _make_message(body, sig=sig)
         pubkey_path = self._write_pubkey(other_key)
 
-        result = _run_with_pubkey(message, pubkey_path, pubkey_path)
+        result = _run_with_pubkey(message, pubkey_path)
         self.assertEqual(result.returncode, 1, f"stderr: {result.stderr}")
 
     def test_exit_1_tampered_body(self) -> None:
@@ -121,7 +133,7 @@ class VerifyAdmiralSigTests(unittest.TestCase):
         message = _make_message("TAMPERED order body", sig=sig)
         pubkey_path = self._write_pubkey(private_key)
 
-        result = _run_with_pubkey(message, pubkey_path, pubkey_path)
+        result = _run_with_pubkey(message, pubkey_path)
         self.assertEqual(result.returncode, 1, f"stderr: {result.stderr}")
 
     def test_exit_1_no_signature_header(self) -> None:
@@ -145,16 +157,93 @@ class VerifyAdmiralSigTests(unittest.TestCase):
         sig = base64.urlsafe_b64encode(b"\x00" * 64).rstrip(b"=").decode("ascii")
         message = _make_message(body, sig=sig)
 
-        nonexistent_a = "/tmp/verify_sig_test_nonexistent_a_" + str(os.getpid())
-        nonexistent_b = "/tmp/verify_sig_test_nonexistent_b_" + str(os.getpid())
+        nonexistent = "/tmp/verify_sig_test_nonexistent_" + str(os.getpid())
 
         start = time.time()
-        result = _run_with_pubkey(message, nonexistent_a, nonexistent_b)
+        result = _run_with_pubkey(message, nonexistent)
         elapsed = time.time() - start
 
         self.assertEqual(result.returncode, 2, f"stderr: {result.stderr}")
         # RETRY_DELAY_SECS is overridden to 0, so this must be fast.
         self.assertLess(elapsed, 5.0, "retry delay override may have failed")
+
+    def test_exit_2_pubkey_wrong_length(self) -> None:
+        """Exit 2 when the key file is present but is not 32 bytes."""
+        sig = base64.urlsafe_b64encode(b"\x00" * 64).rstrip(b"=").decode("ascii")
+        message = _make_message("Order from Admiral.", sig=sig)
+        pubkey_path = self._write_pubkey_bytes(b"\x01" * 31)
+
+        result = _run_with_pubkey(message, pubkey_path)
+        self.assertEqual(result.returncode, 2, f"stderr: {result.stderr}")
+
+
+class WhitespaceBoundaryKeyTests(_PubkeyFileMixin):
+    """The key file is raw bytes and must never be whitespace-trimmed.
+
+    A previous implementation read it as ``f.read().strip()``. Roughly 4.7% of
+    Ed25519 public keys start or end with an ASCII whitespace byte, and each of
+    those was silently truncated to 31 bytes, so the crew exited 2 on every
+    Admiral mail for its entire life.
+    """
+
+    @staticmethod
+    def _keypair_with_whitespace_boundary() -> tuple[Ed25519PrivateKey, bytes]:
+        """Find a keypair whose raw public key begins or ends with whitespace.
+
+        Each draw has a ~4.7% chance, so this converges in a few dozen
+        iterations; the bound only stops a pathological RNG from hanging tests.
+        """
+        for _ in range(5000):
+            private_key = Ed25519PrivateKey.generate()
+            pub = private_key.public_key().public_bytes(
+                Encoding.Raw, PublicFormat.Raw
+            )
+            if pub[:1] in ASCII_WHITESPACE or pub[-1:] in ASCII_WHITESPACE:
+                return private_key, pub
+        raise AssertionError("no whitespace-boundary key found in 5000 draws")
+
+    def test_valid_signature_accepted_for_whitespace_boundary_key(self) -> None:
+        """Exit 0 for a real key whose bytes would be damaged by .strip()."""
+        private_key, pub = self._keypair_with_whitespace_boundary()
+        self.assertNotEqual(
+            pub.strip(), pub, "fixture must be a key .strip() would alter"
+        )
+
+        body = "You are conducting a review."
+        message = _make_message(body, sig=_sign(body, private_key))
+        pubkey_path = self._write_pubkey_bytes(pub)
+
+        result = _run_with_pubkey(message, pubkey_path)
+        self.assertEqual(
+            result.returncode,
+            0,
+            "a whitespace-boundary key must verify normally; exit 2 means the "
+            f"key bytes were trimmed. stderr: {result.stderr}",
+        )
+
+    def test_leading_and_trailing_whitespace_keys_reach_verification(self) -> None:
+        """A 32-byte key with whitespace at either end is not treated as absent.
+
+        Fully deterministic: the key material is crafted rather than searched
+        for. The signature cannot verify against it, so the correct outcome is
+        exit 1 (verification ran and failed), never exit 2 (key unusable).
+        """
+        sig = base64.urlsafe_b64encode(b"\x00" * 64).rstrip(b"=").decode("ascii")
+        message = _make_message("Order from Admiral.", sig=sig)
+
+        for label, pub in (
+            ("leading space", b"\x20" + b"\x01" * 31),
+            ("trailing newline", b"\x01" * 31 + b"\x0a"),
+        ):
+            with self.subTest(boundary=label):
+                pubkey_path = self._write_pubkey_bytes(pub)
+                result = _run_with_pubkey(message, pubkey_path)
+                self.assertEqual(
+                    result.returncode,
+                    1,
+                    f"{label}: expected verification to run and fail (1), got "
+                    f"{result.returncode}. stderr: {result.stderr}",
+                )
 
 
 if __name__ == "__main__":
