@@ -126,19 +126,28 @@ The system SHALL only mark a crew "running" after all required setup steps have
 succeeded, and SHALL clean up the crew if any required step fails. Auth injection
 SHALL be verified by exit code, not by pattern-matching the output string.
 
+The Admiral Ed25519 keypair is established **before** crew setup begins, as part
+of container creation rather than as a setup step: the transport generates the
+keypair, persists the private seed host-side, registers the public key as a
+Podman secret, and attaches that secret to the `container_create` spec. The
+public key is therefore present in the container from the moment it first
+starts, and no setup step injects it. See the `crew-auth` capability for the
+keypair requirements.
+
 The setup steps SHALL execute in dependency order:
 
 1. Wait for gateway (pre-restart)
 2. Inject kiro-cli auth (`_inject_auth`)
-3. Generate and inject admiral signing secret — alongside auth, before restart,
-   so the secret is in place before Raven can ever run
+3. Generate the `policy_signing_key` — before restart, so it is in place before
+   the security policy is injected
 4. Patch crew config (`_patch_crew_config`) — including the required `agent`
    field sourced from `GA_CREW_AGENT` (default: `"kiro"`)
 5. Container restart (auth + config take effect)
 6. Wait for gateway (post-restart)
 7. Copy agents, skills, steering
 8. Seed OpenSpec store
-9. Inject security policy (depends only on admiral secret, not on the gateway)
+9. Inject security policy (depends only on `policy_signing_key`, not on the
+   gateway and not on the Admiral keypair)
 10. Wait for KiroCrew to seed built-in agent files (gateway-dependent)
 11. Patch model overrides — write `agents` directory files **before** calling
     any gateway endpoint, because the agents directory is write-protected at
@@ -146,9 +155,10 @@ The setup steps SHALL execute in dependency order:
 12. Mint session cookie
 13. Read version label, write registry entry
 
-The admiral signing secret write SHALL use `os.fsync` before closing the file
-descriptor to ensure the write is durable before any process inside the container
-can read the file.
+The host-side write of the Admiral private seed SHALL use `os.fsync` before
+closing the file descriptor, so the seed is durable before any standing order
+can be signed against it. Durability is no longer about in-container
+readability: the private seed never enters the container.
 
 The `_patch_crew_config` call in step 4 (pre-restart) SHALL write the `agent`
 field into `config.local.json` so the gateway picks it up on first start. The
@@ -164,16 +174,24 @@ runtime.
 #### Scenario: Successful setup
 
 - **WHEN** all setup steps succeed
-- **THEN** the crew is marked "running" and the admiral secret is present in the
-  container before the post-restart gateway ever becomes reachable
+- **THEN** the crew is marked "running", and the Admiral public key has been
+  present in the container since it first started
 
 #### Scenario: Admiral secret present before post-restart gateway
 
 - **WHEN** the transport has completed auth injection and the pre-restart gateway
   wait, and then restarts the container
-- **THEN** the admiral secret file exists at
-  `/home/kirocrew/.kiro/crew/.admiral_secret` before any post-restart gateway
-  call is made
+- **THEN** the Admiral key material the crew needs is already in place, because
+  the public key was attached to the `container_create` spec as a read-only
+  Podman secret and has been readable at `/run/secrets/.admiral_public_key`
+  since the container first started. No setup step writes it, and the guarantee
+  now holds from container creation rather than from just before the restart
+
+#### Scenario: No setup step writes the Admiral key into the container
+
+- **WHEN** crew setup runs to completion
+- **THEN** no `container_exec` call writes Admiral key material, and the private
+  seed exists only host-side
 
 #### Scenario: Cookie mint fails
 
