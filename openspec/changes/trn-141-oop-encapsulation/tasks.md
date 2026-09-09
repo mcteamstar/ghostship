@@ -26,14 +26,14 @@
 
 ## 4. captain() Decomposition
 
-- [ ] 4.1 Extract the `action == "order"` path (~150 lines) from `captain()` into a `_captain_do_order(crew_id, message, template, change_name, cron, interval, timezone, fire_immediately, model) -> dict` module-level function in `server.py`
-- [ ] 4.2 Extract the `action == "stop"` path into `_captain_do_stop(crew_id) -> dict`
-- [ ] 4.3 Extract the `action == "status"` path into `_captain_do_status(crew_id) -> dict`
-- [ ] 4.4 Rewrite `captain()` as a ~20-line dispatcher: validate inputs, select action, delegate to the appropriate helper
-- [ ] 4.5 Run tests; confirm all captain tests pass
+- [x] 4.1 Extract the `action == "order"` path (~150 lines) from `captain()` into a `_captain_do_order(crew_id, message, template, change_name, cron, interval, timezone, fire_immediately, model) -> dict` module-level function in `server.py`
+- [x] 4.2 Extract the `action == "stop"` path into `_captain_do_stop(crew_id) -> dict`
+- [x] 4.3 Extract the `action == "status"` path into `_captain_do_status(crew_id) -> dict`
+- [x] 4.4 Rewrite `captain()` as a ~20-line dispatcher: validate inputs, select action, delegate to the appropriate helper
+- [x] 4.5 Run tests; confirm all captain tests pass
 
 ## 5. Final Verification
 
-- [ ] 5.1 Run the full test suite; confirm zero regressions
-- [ ] 5.2 Verify `server.py` no longer contains `_dashboard_throttle`, `_gs_sessions`, `_dashboard_csrf_token`, `_dashboard_port_crew` module-level names or `_caddy.X = Y` post-import mutations
-- [ ] 5.3 Verify `BearerAuthMiddleware.__call__` (or `handle_http`) is no longer a monolith — each sub-method is independently readable
+- [x] 5.1 Run the full test suite; confirm zero regressions
+- [x] 5.2 Verify `server.py` no longer contains `_dashboard_throttle`, `_gs_sessions`, `_dashboard_csrf_token`, `_dashboard_port_crew` module-level names or `_caddy.X = Y` post-import mutations
+- [x] 5.3 Verify `BearerAuthMiddleware.__call__` (or `handle_http`) is no longer a monolith — each sub-method is independently readable

@@ -2234,6 +2234,356 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
 
 
+def _captain_do_order(
+    crew_id: str,
+    message: str | None,
+    template: str | None,
+    change_name: str | None,
+    cron: str | None,
+    interval: int | None,
+    timezone: str,
+    fire_immediately: bool | None,
+    model: str | None,
+) -> dict:
+    """Handle ``captain(action="order")`` (TRN-141 extraction).
+
+    Validates the order arguments, resolves a template when given, wakes the
+    crew, provisions/resumes the single Raven check-in job, persists the
+    schedule entry, and appends the standing order to ``captain@localhost``.
+    ``action`` and ``model`` are already validated by the ``captain()``
+    dispatcher.
+    """
+    has_message = message is not None
+    has_template = template is not None
+    if has_message == has_template:
+        return {"error": "order requires exactly one of message or template"}
+    if cron is not None and interval is not None:
+        return {"error": "Provide cron or interval, not both"}
+    if has_template:
+        try:
+            order_message = _resolve_order_template(template, change_name)
+        except ValueError as exc:
+            return {"error": str(exc)}
+    else:
+        if not message:
+            return {"error": "message is required for order"}
+        if change_name is not None:
+            return {"error": "change_name requires template"}
+        order_message = message
+
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
+
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except (ValueError, KeyError, RuntimeError) as exc:
+        return {"error": str(exc)}
+
+    with _captain_order_lock(crew_id):
+        try:
+            cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
+        except (ValueError, KeyError, RuntimeError, CrewUnresponsiveError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+
+        existing_job = _captain_checkin_job(cron_listing)
+        enabled_job = _captain_checkin_job(cron_listing, enabled_only=True)
+        if existing_job is None and not cron and not interval:
+            return {
+                "error": "A new Captain check-in requires either cron or interval",
+            }
+
+        job = existing_job
+        is_new_job = False
+        if job is None:
+            body: dict[str, Any] = {
+                "name": _CAPTAIN_CHECKIN_JOB_NAME,
+                "message": _CAPTAIN_CHECKIN_TASK,
+                "agent": "raven",
+            }
+            if cron:
+                body["cron"] = cron
+                body["timezone"] = timezone
+            else:
+                body["every"] = interval
+            if model is not None:
+                body["model"] = model
+            try:
+                job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
+            except Exception as exc:
+                return {"error": f"Could not create Captain check-in: {exc}"}
+            job = dict(job)
+            is_new_job = True
+        elif enabled_job is None:
+            try:
+                toggle = _crew_api_with_recovery(
+                    crew,
+                    crew_id,
+                    "POST",
+                    f"/api/crons/{job.get('id')}/enable",
+                    json={"enabled": True},
+                )
+                if isinstance(toggle, dict) and toggle.get("ok") is False:
+                    return {"error": "Could not resume Captain check-in: job not found"}
+            except Exception as exc:
+                return {"error": f"Could not resume Captain check-in: {exc}"}
+            job = dict(job)
+            job["enabled"] = True
+
+        # TRN-29: Write schedule entry to transport registry
+        schedule_entry = {
+            "job_id": job.get("id"),
+            "name": _CAPTAIN_CHECKIN_JOB_NAME,
+            "interval_secs": interval,
+            "cron_expr": cron,
+            "next_fire_at": time.time() + (interval or 60),
+            "agent": "raven",
+            "message": _CAPTAIN_CHECKIN_TASK,
+            "enabled": True,
+        }
+        if is_new_job:
+            schedule_entry["model"] = model
+        try:
+            with _registry_lock:
+                reg = _load_registry()
+                if not is_new_job:
+                    # Resume does not accept a new model.  Prefer the
+                    # gateway's value when present, but preserve the
+                    # registry pin for older gateway responses that omit it.
+                    if "model" in job:
+                        schedule_entry["model"] = job.get("model")
+                    else:
+                        prior_entry = next(
+                            (
+                                entry
+                                for entry in _get_crew_schedules(reg, crew_id)
+                                if entry.get("job_id") == schedule_entry["job_id"]
+                            ),
+                            None,
+                        )
+                        if prior_entry is not None and "model" in prior_entry:
+                            schedule_entry["model"] = prior_entry["model"]
+                _upsert_crew_schedule(reg, crew_id, schedule_entry)
+                _save_registry(reg)
+        except Exception as exc:
+            logger.warning("TRN-29: Could not persist schedule entry: %s", exc)
+
+        # Only append an order after the check-in exists and is enabled.  A
+        # failed provisioning call must not leave mail that no Raven can read.
+        try:
+            podman = _get_podman()
+            _append_captain_mail(podman, crew["container"], order_message, crew_id=crew_id)
+        except Exception as exc:
+            return {"error": f"Could not write Captain order: {exc}"}
+
+        result: dict[str, Any] = {
+            "crew_id": crew_id,
+            "action": "order",
+            "status": "ordered",
+            "mode": "standing-orders",
+            "job_id": job.get("id"),
+            "mailbox": "captain@localhost",
+            "schedule": job.get("schedule") or cron or (
+                f"every {interval}s" if interval else None
+            ),
+        }
+
+        # Immediate dispatch: only for newly created jobs (not resumes)
+        if is_new_job:
+            should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
+            if should_fire:
+                try:
+                    immediate_body: dict[str, Any] = {
+                        "task": _CAPTAIN_CHECKIN_TASK,
+                        "agent": "raven",
+                        "keep": True,
+                    }
+                    if model is not None:
+                        immediate_body["model"] = model
+                    _crew_api_with_recovery(
+                        crew, crew_id, "POST", "/api/spawn", json=immediate_body,
+                    )
+                except Exception as exc:
+                    result["immediate_dispatch_error"] = str(exc)
+
+        return result
+
+
+def _captain_do_status(crew_id: str) -> dict:
+    """Handle ``captain(action="status")`` (TRN-141 extraction).
+
+    Skims all mailboxes (works on running and stopped containers) and reports
+    the durable standing-orders state without waking a dormant crew.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
+
+    action = "status"
+    podman = _get_podman()
+    # Single call — covers all 8 mailboxes; falls back to archive API on
+    # stopped containers.
+    agent_mail = _skim_all_mailboxes(podman, crew["container"])
+    captain_subjects = agent_mail.get("captain", [])
+    admiral_subjects = agent_mail.get("admiral", [])
+    captain_mail = len(captain_subjects)
+    admiral_mail = len(admiral_subjects)
+
+    # If the container is already running, read the live cron job state
+    # without waking it. If stopped, return dormant/no-job without starting.
+    try:
+        is_running = podman.container_is_running(crew["container"])
+    except Exception:
+        is_running = False
+
+    if is_running:
+        standing_job: dict[str, Any] | None = None
+        try:
+            running_crew = _ensure_crew_running(crew, crew_id)
+            cron_listing = _crew_api_with_recovery(running_crew, crew_id, "GET", "/api/crons")
+            standing_job = _captain_checkin_job(cron_listing)
+        except Exception:
+            standing_job = None
+    else:
+        standing_job = None
+
+    if standing_job is None:
+        return {
+            "crew_id": crew_id,
+            "action": action,
+            "status": "dormant",
+            "mode": "standing-orders",
+            "job_id": None,
+            "enabled": False,
+            "unread_mail": captain_mail,
+            "mailbox": "captain@localhost",
+            "captain_subjects": captain_subjects,
+            "captain_mail": captain_mail,
+            "unread_admiral_mail": admiral_mail,
+            "admiral_mailbox": "admiral@localhost",
+            "admiral_subjects": admiral_subjects,
+            "admiral_mail": admiral_mail,
+            "agent_mail": agent_mail,
+        }
+
+    status_result = _captain_standing_view(
+        crew_id,
+        action,
+        standing_job,
+        podman,
+        crew["container"],
+    )
+    status_result["captain_subjects"] = captain_subjects
+    status_result["admiral_subjects"] = admiral_subjects
+    status_result["captain_mail"] = captain_mail
+    status_result["admiral_mail"] = admiral_mail
+    status_result["agent_mail"] = agent_mail
+    return status_result
+
+
+def _captain_do_stop(crew_id: str) -> dict:
+    """Handle ``captain(action="stop")`` (TRN-141 extraction).
+
+    Wakes the crew (the gateway cron API is needed to disable the job),
+    best-effort disables the gateway cron, and always marks the registry
+    schedule disabled so restart reconciliation and the idle monitor see the
+    correct state.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
+
+    action = "stop"
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+        podman = _get_podman()
+    except (ValueError, KeyError, RuntimeError) as exc:
+        return {"error": str(exc)}
+
+    try:
+        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
+        standing_job = _captain_checkin_job(cron_listing)
+    except Exception as exc:
+        return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+
+    if standing_job is None:
+        return {
+            "crew_id": crew_id,
+            "action": "stop",
+            "status": "dormant",
+            "mode": "standing-orders",
+            "job_id": None,
+            "enabled": False,
+            "mailbox": "captain@localhost",
+        }
+
+    # Best-effort: disable the gateway cron if it is currently enabled.
+    # A failure here is logged as a warning — it must not block the
+    # registry update below (TRN-104).
+    if standing_job.get("enabled", False):
+        try:
+            toggle = _crew_api_with_recovery(
+                crew,
+                crew_id,
+                "POST",
+                f"/api/crons/{standing_job.get('id')}/enable",
+                json={"enabled": False},
+            )
+            if isinstance(toggle, dict) and toggle.get("ok") is False:
+                logger.warning(
+                    "captain stop: gateway cron %s not found for crew %s",
+                    standing_job.get("id"),
+                    crew_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "captain stop: gateway cron disable failed for crew %s: %s",
+                crew_id,
+                exc,
+            )
+    standing_job = dict(standing_job)
+    standing_job["enabled"] = False
+
+    # TRN-104 / TRN-29: Always update the registry to disabled, regardless
+    # of the gateway API call result.  This ensures TRN-82's
+    # reconcile-on-restart sees the correct state and the idle monitor can
+    # eventually stop the crew.
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            schedules = _get_crew_schedules(reg, crew_id)
+            matched = False
+            for sched in schedules:
+                if sched.get("job_id") == standing_job.get("id"):
+                    sched["enabled"] = False
+                    matched = True
+                    break
+            if not matched:
+                logger.warning(
+                    "captain stop: no registry entry found for job %s in crew %s",
+                    standing_job.get("id"),
+                    crew_id,
+                )
+            _save_registry(reg)
+    except Exception as exc:
+        logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
+
+    result = _captain_standing_view(
+        crew_id,
+        action,
+        standing_job,
+        podman,
+        crew["container"],
+    )
+    result["status"] = "stopped"
+    return result
+
+
 @mcp.tool()
 def captain(
     crew_id: str,
@@ -2302,24 +2652,21 @@ def captain(
         return {"error": str(exc)}
 
     if action == "order":
-        has_message = message is not None
-        has_template = template is not None
-        if has_message == has_template:
-            return {"error": "order requires exactly one of message or template"}
-        if cron is not None and interval is not None:
-            return {"error": "Provide cron or interval, not both"}
-        if has_template:
-            try:
-                order_message = _resolve_order_template(template, change_name)
-            except ValueError as exc:
-                return {"error": str(exc)}
-        else:
-            if not message:
-                return {"error": "message is required for order"}
-            if change_name is not None:
-                return {"error": "change_name requires template"}
-            order_message = message
-    elif any(
+        return _captain_do_order(
+            crew_id,
+            message,
+            template,
+            change_name,
+            cron,
+            interval,
+            timezone,
+            fire_immediately,
+            model,
+        )
+
+    # Non-order actions accept only crew_id (and action). Reject any order-only
+    # argument, including a non-default timezone.
+    if any(
         value is not None
         for value in (message, template, change_name, cron, interval, fire_immediately, model)
     ) or timezone != "UTC":
@@ -2327,299 +2674,9 @@ def captain(
             "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, model, or timezone"
         }
 
-    try:
-        crew = _require_crew(crew_id)
-    except (ValueError, KeyError) as exc:
-        return {"error": str(exc)}
-
-    if action == "order":
-        try:
-            crew = _ensure_crew_running(crew, crew_id)
-        except (ValueError, KeyError, RuntimeError) as exc:
-            return {"error": str(exc)}
-
-        with _captain_order_lock(crew_id):
-            try:
-                cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-            except (ValueError, KeyError, RuntimeError, CrewUnresponsiveError) as exc:
-                return {"error": str(exc)}
-            except Exception as exc:
-                return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
-
-            existing_job = _captain_checkin_job(cron_listing)
-            enabled_job = _captain_checkin_job(cron_listing, enabled_only=True)
-            if existing_job is None and not cron and not interval:
-                return {
-                    "error": "A new Captain check-in requires either cron or interval",
-                }
-
-            job = existing_job
-            is_new_job = False
-            if job is None:
-                body: dict[str, Any] = {
-                    "name": _CAPTAIN_CHECKIN_JOB_NAME,
-                    "message": _CAPTAIN_CHECKIN_TASK,
-                    "agent": "raven",
-                }
-                if cron:
-                    body["cron"] = cron
-                    body["timezone"] = timezone
-                else:
-                    body["every"] = interval
-                if model is not None:
-                    body["model"] = model
-                try:
-                    job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
-                except Exception as exc:
-                    return {"error": f"Could not create Captain check-in: {exc}"}
-                job = dict(job)
-                is_new_job = True
-            elif enabled_job is None:
-                try:
-                    toggle = _crew_api_with_recovery(
-                        crew,
-                        crew_id,
-                        "POST",
-                        f"/api/crons/{job.get('id')}/enable",
-                        json={"enabled": True},
-                    )
-                    if isinstance(toggle, dict) and toggle.get("ok") is False:
-                        return {"error": "Could not resume Captain check-in: job not found"}
-                except Exception as exc:
-                    return {"error": f"Could not resume Captain check-in: {exc}"}
-                job = dict(job)
-                job["enabled"] = True
-
-            # TRN-29: Write schedule entry to transport registry
-            schedule_entry = {
-                "job_id": job.get("id"),
-                "name": _CAPTAIN_CHECKIN_JOB_NAME,
-                "interval_secs": interval,
-                "cron_expr": cron,
-                "next_fire_at": time.time() + (interval or 60),
-                "agent": "raven",
-                "message": _CAPTAIN_CHECKIN_TASK,
-                "enabled": True,
-            }
-            if is_new_job:
-                schedule_entry["model"] = model
-            try:
-                with _registry_lock:
-                    reg = _load_registry()
-                    if not is_new_job:
-                        # Resume does not accept a new model.  Prefer the
-                        # gateway's value when present, but preserve the
-                        # registry pin for older gateway responses that omit it.
-                        if "model" in job:
-                            schedule_entry["model"] = job.get("model")
-                        else:
-                            prior_entry = next(
-                                (
-                                    entry
-                                    for entry in _get_crew_schedules(reg, crew_id)
-                                    if entry.get("job_id") == schedule_entry["job_id"]
-                                ),
-                                None,
-                            )
-                            if prior_entry is not None and "model" in prior_entry:
-                                schedule_entry["model"] = prior_entry["model"]
-                    _upsert_crew_schedule(reg, crew_id, schedule_entry)
-                    _save_registry(reg)
-            except Exception as exc:
-                logger.warning("TRN-29: Could not persist schedule entry: %s", exc)
-
-            # Only append an order after the check-in exists and is enabled.  A
-            # failed provisioning call must not leave mail that no Raven can read.
-            try:
-                podman = _get_podman()
-                _append_captain_mail(podman, crew["container"], order_message, crew_id=crew_id)
-            except Exception as exc:
-                return {"error": f"Could not write Captain order: {exc}"}
-
-            result: dict[str, Any] = {
-                "crew_id": crew_id,
-                "action": "order",
-                "status": "ordered",
-                "mode": "standing-orders",
-                "job_id": job.get("id"),
-                "mailbox": "captain@localhost",
-                "schedule": job.get("schedule") or cron or (
-                    f"every {interval}s" if interval else None
-                ),
-            }
-
-            # Immediate dispatch: only for newly created jobs (not resumes)
-            if is_new_job:
-                should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
-                if should_fire:
-                    try:
-                        immediate_body: dict[str, Any] = {
-                            "task": _CAPTAIN_CHECKIN_TASK,
-                            "agent": "raven",
-                            "keep": True,
-                        }
-                        if model is not None:
-                            immediate_body["model"] = model
-                        _crew_api_with_recovery(
-                            crew, crew_id, "POST", "/api/spawn", json=immediate_body,
-                        )
-                    except Exception as exc:
-                        result["immediate_dispatch_error"] = str(exc)
-
-            return result
-
-    # ── Captain status — no container wake required ───────────────────────────
-    # For action == "status", skim all 8 mailboxes (works on both running and
-    # stopped containers via _skim_all_mailboxes) and return early without
-    # calling _ensure_crew_running. The stop action still needs a running
-    # container to reach the gateway's cron API to disable the job.
     if action == "status":
-        podman = _get_podman()
-        # Single call — covers all 8 mailboxes; falls back to archive API on
-        # stopped containers.
-        agent_mail = _skim_all_mailboxes(podman, crew["container"])
-        captain_subjects = agent_mail.get("captain", [])
-        admiral_subjects = agent_mail.get("admiral", [])
-        captain_mail = len(captain_subjects)
-        admiral_mail = len(admiral_subjects)
-
-        # If the container is already running, read the live cron job state
-        # without waking it. If stopped, return dormant/no-job without starting.
-        try:
-            is_running = podman.container_is_running(crew["container"])
-        except Exception:
-            is_running = False
-
-        if is_running:
-            standing_job: dict[str, Any] | None = None
-            try:
-                running_crew = _ensure_crew_running(crew, crew_id)
-                cron_listing = _crew_api_with_recovery(running_crew, crew_id, "GET", "/api/crons")
-                standing_job = _captain_checkin_job(cron_listing)
-            except Exception:
-                standing_job = None
-        else:
-            standing_job = None
-
-        if standing_job is None:
-            return {
-                "crew_id": crew_id,
-                "action": action,
-                "status": "dormant",
-                "mode": "standing-orders",
-                "job_id": None,
-                "enabled": False,
-                "unread_mail": captain_mail,
-                "mailbox": "captain@localhost",
-                "captain_subjects": captain_subjects,
-                "captain_mail": captain_mail,
-                "unread_admiral_mail": admiral_mail,
-                "admiral_mailbox": "admiral@localhost",
-                "admiral_subjects": admiral_subjects,
-                "admiral_mail": admiral_mail,
-                "agent_mail": agent_mail,
-            }
-
-        status_result = _captain_standing_view(
-            crew_id,
-            action,
-            standing_job,
-            podman,
-            crew["container"],
-        )
-        status_result["captain_subjects"] = captain_subjects
-        status_result["admiral_subjects"] = admiral_subjects
-        status_result["captain_mail"] = captain_mail
-        status_result["admiral_mail"] = admiral_mail
-        status_result["agent_mail"] = agent_mail
-        return status_result
-
-    # ── Stop — container must be running to reach cron API ───────────────────
-    try:
-        crew = _ensure_crew_running(crew, crew_id)
-        podman = _get_podman()
-    except (ValueError, KeyError, RuntimeError) as exc:
-        return {"error": str(exc)}
-
-    try:
-        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-        standing_job = _captain_checkin_job(cron_listing)
-    except Exception as exc:
-        return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
-
-    if standing_job is None:
-        return {
-            "crew_id": crew_id,
-            "action": "stop",
-            "status": "dormant",
-            "mode": "standing-orders",
-            "job_id": None,
-            "enabled": False,
-            "mailbox": "captain@localhost",
-        }
-
-    if action == "stop":
-        # Best-effort: disable the gateway cron if it is currently enabled.
-        # A failure here is logged as a warning — it must not block the
-        # registry update below (TRN-104).
-        if standing_job.get("enabled", False):
-            try:
-                toggle = _crew_api_with_recovery(
-                    crew,
-                    crew_id,
-                    "POST",
-                    f"/api/crons/{standing_job.get('id')}/enable",
-                    json={"enabled": False},
-                )
-                if isinstance(toggle, dict) and toggle.get("ok") is False:
-                    logger.warning(
-                        "captain stop: gateway cron %s not found for crew %s",
-                        standing_job.get("id"),
-                        crew_id,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "captain stop: gateway cron disable failed for crew %s: %s",
-                    crew_id,
-                    exc,
-                )
-        standing_job = dict(standing_job)
-        standing_job["enabled"] = False
-
-        # TRN-104 / TRN-29: Always update the registry to disabled, regardless
-        # of the gateway API call result.  This ensures TRN-82's
-        # reconcile-on-restart sees the correct state and the idle monitor can
-        # eventually stop the crew.
-        try:
-            with _registry_lock:
-                reg = _load_registry()
-                schedules = _get_crew_schedules(reg, crew_id)
-                matched = False
-                for sched in schedules:
-                    if sched.get("job_id") == standing_job.get("id"):
-                        sched["enabled"] = False
-                        matched = True
-                        break
-                if not matched:
-                    logger.warning(
-                        "captain stop: no registry entry found for job %s in crew %s",
-                        standing_job.get("id"),
-                        crew_id,
-                    )
-                _save_registry(reg)
-        except Exception as exc:
-            logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
-
-    result = _captain_standing_view(
-        crew_id,
-        action,
-        standing_job,
-        podman,
-        crew["container"],
-    )
-    if action == "stop":
-        result["status"] = "stopped"
-    return result
+        return _captain_do_status(crew_id)
+    return _captain_do_stop(crew_id)
 
 
 @mcp.tool()
