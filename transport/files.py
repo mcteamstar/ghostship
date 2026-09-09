@@ -73,13 +73,19 @@ try:
 except ModuleNotFoundError:
     from transport import lifecycle as _lifecycle  # local dev
 
+# SCRIPTS_DIR canonical home is transport/constants.py (TRN-142).
+# constants.py is a zero-dependency leaf, so importing it here is cycle-safe.
+try:
+    from constants import SCRIPTS_DIR  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.constants import SCRIPTS_DIR  # local dev
+
 logger = logging.getLogger(__name__)
 
 cfg = Config.from_env()
 
 PORT = cfg.port
 DATA_DIR = Path(cfg.transport_data_dir)
-SCRIPTS_DIR = "/scripts"
 CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
 # SEC-01 — ref parameter validation
