@@ -1383,20 +1383,21 @@ class CopyAgentsMcpTests(unittest.TestCase):
 # ── LoginLogoutTests (task 2.14) ─────────────────────────────────────────────
 #
 # ``_handle_login_post`` / ``_handle_login_get`` / ``_handle_logout_post`` are
-# defined in server.py and resolve _get_podman / _start_login_container /
-# _nuke_login_container / _read_auth_from_crew / _inject_auth / _read_auth_file
-# / _write_auth_file / select / time from server's namespace → patch server.X
-# exclusively. Task 2.14: _nuke_login_container lives in lifecycle but is called
-# from server's body, so the assertion patches server._nuke_login_container.
+# defined in server.py (the HTTP layer). The HANDLERS resolve _get_podman /
+# _read_auth_file / _write_auth_file / _read_auth_from_crew / _inject_auth from
+# server's namespace → patch server.X for those. TRN-143 moved the device-flow
+# ENGINE (_initiate_login) and its state (_login_pending / _login_pending_lock)
+# plus _start_login_container / _nuke_login_container / select into lifecycle,
+# so those are patched on lifecycle.X (the handler delegates into lifecycle,
+# which reads its own module globals).
 
 
 class LoginLogoutTests(unittest.TestCase):
     """Tests for POST /login, GET /login, and POST /logout routes."""
 
     def setUp(self) -> None:
-        import transport.server as srv
-        with srv._login_pending_lock:
-            srv._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
     def test_post_login_happy_path_sets_pending_and_returns_url(self) -> None:
         podman = Mock()
@@ -1424,8 +1425,8 @@ class LoginLogoutTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value=container_name),
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=(exec_id, fake_sock)),
         ):
@@ -1439,8 +1440,8 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertIn("https://device.auth.example.com", body["login_url"])
         self.assertEqual(body["code"], "ABCD-1234")
 
-        with server._login_pending_lock:
-            pending = server._login_pending
+        with lifecycle._login_pending_lock:
+            pending = lifecycle._login_pending
         self.assertIsNotNone(pending)
         self.assertEqual(pending["container"], container_name)
         self.assertEqual(pending["exec_id"], exec_id)
@@ -1483,11 +1484,11 @@ class LoginLogoutTests(unittest.TestCase):
         fake_sock.recv.side_effect = fake_recv
 
         with (
-            patch.object(server, "KIRO_IDENTITY_PROVIDER", ""),
+            patch.object(lifecycle, "KIRO_IDENTITY_PROVIDER", ""),
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value=container_name),
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(
                 podman,
@@ -1520,10 +1521,10 @@ class LoginLogoutTests(unittest.TestCase):
     def test_post_login_returns_409_when_login_already_in_progress(self) -> None:
         with (
             patch.object(server, "_read_auth_file", return_value=""),
-            patch.object(server, "_login_pending_lock"),
+            patch.object(lifecycle, "_login_pending_lock"),
         ):
-            with server._login_pending_lock:
-                server._login_pending = {
+            with lifecycle._login_pending_lock:
+                lifecycle._login_pending = {
                     "container": "ga-login-existing",
                     "exec_id": "x",
                     "started_at": 999.0,
@@ -1531,8 +1532,8 @@ class LoginLogoutTests(unittest.TestCase):
             request = Mock()
             response = asyncio.run(server._handle_login_post(request))
 
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("Login already in progress", response.body.decode())
@@ -1548,10 +1549,10 @@ class LoginLogoutTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value=container_name),
-            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
+            patch.object(lifecycle, "_nuke_login_container") as nuke,
             patch.object(server, "time") as mock_time,
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-fail", fake_sock)),
         ):
@@ -1562,8 +1563,8 @@ class LoginLogoutTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 500)
         nuke.assert_called_once_with(podman, container_name)
-        with server._login_pending_lock:
-            self.assertIsNone(server._login_pending)
+        with lifecycle._login_pending_lock:
+            self.assertIsNone(lifecycle._login_pending)
 
     def test_get_login_returns_404_when_no_pending_flow(self) -> None:
         request = Mock()
@@ -1572,8 +1573,8 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertIn("No login in progress", response.body.decode())
 
     def test_get_login_returns_pending_when_auth_not_complete(self) -> None:
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-abcd",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1587,8 +1588,8 @@ class LoginLogoutTests(unittest.TestCase):
             request = Mock()
             response = asyncio.run(server._handle_login_get(request))
 
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
@@ -1599,8 +1600,8 @@ class LoginLogoutTests(unittest.TestCase):
         running_crew = {"status": "running", "container": "gs-crew1"}
         registry = {"crews": {"crew1": running_crew}}
 
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-done",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1625,8 +1626,8 @@ class LoginLogoutTests(unittest.TestCase):
         inject.assert_called_once_with(podman, "gs-crew1", auth_b64)
         nuke.assert_called_once_with(podman, "ga-login-done")
 
-        with server._login_pending_lock:
-            self.assertIsNone(server._login_pending)
+        with lifecycle._login_pending_lock:
+            self.assertIsNone(lifecycle._login_pending)
 
     def test_post_logout_returns_404_when_not_authenticated(self) -> None:
         with patch.object(server, "_read_auth_file", return_value=""):
@@ -1681,8 +1682,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
     """Tests for login flow edge cases (trn-17 tasks 7.x)."""
 
     def setUp(self) -> None:
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
     def test_pty_exec_no_url_within_15s_returns_500_and_cleans_up(self) -> None:
         """7.1: PTY exec with no URL within 15s returns 500 and cleans up container."""
@@ -1694,10 +1695,10 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value="ga-login-timeout"),
-            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-timeout"),
+            patch.object(lifecycle, "_nuke_login_container") as nuke,
             patch.object(server, "time") as mock_time,
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-x", fake_sock)),
         ):
@@ -1728,9 +1729,9 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value="ga-login-region"),
-            patch.object(server, "select") as mock_select,
-            patch.object(server, "KIRO_REGION", "us-west-2"),
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-region"),
+            patch.object(lifecycle, "select") as mock_select,
+            patch.object(lifecycle, "KIRO_REGION", "us-west-2"),
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-r", fake_sock)),
         ):
@@ -1746,8 +1747,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
 
     def test_concurrent_post_login_while_pending_returns_409(self) -> None:
         """7.3: concurrent POST /login while _login_pending is set returns 409."""
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-existing",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1761,8 +1762,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
             self.assertEqual(response.status_code, 409)
             self.assertIn("Login already in progress", response.body.decode())
         finally:
-            with server._login_pending_lock:
-                server._login_pending = None
+            with lifecycle._login_pending_lock:
+                lifecycle._login_pending = None
 
     def test_login_pty_timeout_45s_returns_error_and_nukes_container(self) -> None:
         """F-4: when the 45s PTY deadline fires without a URL appearing,
@@ -1777,10 +1778,10 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value="ga-login-pty45"),
-            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-pty45"),
+            patch.object(lifecycle, "_nuke_login_container") as nuke,
             patch.object(server, "time") as mock_time,
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-pty45", fake_sock)),
         ):

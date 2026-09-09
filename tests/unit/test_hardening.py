@@ -725,7 +725,7 @@ class LoginConcurrencyTests(unittest.TestCase):
         import time
 
         # Reset module state
-        server._login_pending = None
+        lifecycle._login_pending = None
 
         results = [None, None]
         barrier = threading.Barrier(2, timeout=5)
@@ -762,8 +762,8 @@ class LoginConcurrencyTests(unittest.TestCase):
             try:
                 with patch.object(server, "_read_auth_file", mock_read_auth), \
                      patch.object(server, "_get_podman", mock_get_podman), \
-                     patch.object(server, "_start_login_container", slow_start), \
-                     patch.object(server, "_nuke_login_container"):
+                     patch.object(lifecycle, "_start_login_container", slow_start), \
+                     patch.object(lifecycle, "_nuke_login_container"):
                     request = MagicMock()
                     resp = loop.run_until_complete(server._handle_login_post(request))
                     results[idx] = resp.status_code
@@ -789,7 +789,7 @@ class LoginConcurrencyTests(unittest.TestCase):
                         f"Expected at least one non-409 result, got: {results}")
 
         # Clean up
-        server._login_pending = None
+        lifecycle._login_pending = None
 
     def test_does_not_clear_if_different_container(self):
         """_login_pending with different container name is NOT cleared."""
@@ -804,7 +804,7 @@ class LoginConcurrencyTests(unittest.TestCase):
         }
 
         # Simulate: the GET handler captured old_pending, then a new POST set a new sentinel
-        server._login_pending = {
+        lifecycle._login_pending = {
             "container": "ga-login-NEW-abc123",
             "started_at": time.time(),
             "state": "started",
@@ -812,39 +812,39 @@ class LoginConcurrencyTests(unittest.TestCase):
         }
 
         # Execute the guarded clear logic (as in _handle_login_get)
-        with server._login_pending_lock:
-            if server._login_pending is not None and \
-               server._login_pending.get("container") == old_pending["container"]:
-                server._login_pending = None
+        with lifecycle._login_pending_lock:
+            if lifecycle._login_pending is not None and \
+               lifecycle._login_pending.get("container") == old_pending["container"]:
+                lifecycle._login_pending = None
 
         # _login_pending should NOT be cleared (different container)
-        self.assertIsNotNone(server._login_pending)
-        self.assertEqual(server._login_pending["container"], "ga-login-NEW-abc123")
+        self.assertIsNotNone(lifecycle._login_pending)
+        self.assertEqual(lifecycle._login_pending["container"], "ga-login-NEW-abc123")
 
         # Clean up
-        server._login_pending = None
+        lifecycle._login_pending = None
 
     def test_clears_when_container_matches(self):
         """GET /login clears _login_pending when container matches."""
         import time
 
         container_name = "ga-login-match-abc"
-        server._login_pending = {
+        lifecycle._login_pending = {
             "container": container_name,
             "started_at": time.time(),
             "state": "started",
             "exec_id": "exec-match",
         }
 
-        pending = server._login_pending.copy()
+        pending = lifecycle._login_pending.copy()
 
         # Execute the guarded clear logic
-        with server._login_pending_lock:
-            if server._login_pending is not None and \
-               server._login_pending.get("container") == pending["container"]:
-                server._login_pending = None
+        with lifecycle._login_pending_lock:
+            if lifecycle._login_pending is not None and \
+               lifecycle._login_pending.get("container") == pending["container"]:
+                lifecycle._login_pending = None
 
-        self.assertIsNone(server._login_pending)
+        self.assertIsNone(lifecycle._login_pending)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -197,11 +197,11 @@ class DispatchBatchGuardTests(unittest.TestCase):
             return {"id": f"task-{len(calls)}"}
 
         with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=_api),
-            patch.object(server, "_write_batch") as write_batch,
-            patch.object(server, "_record_last_task_at"),
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=_api),
+            patch.object(lifecycle, "_write_batch") as write_batch,
+            patch.object(lifecycle, "_record_last_task_at"),
         ):
             result = server.dispatch(tasks=["a", "b", "c"], crew_id="demo")
 
@@ -222,11 +222,11 @@ class DispatchBatchGuardTests(unittest.TestCase):
             return {"id": f"task-{state['n']}"}
 
         with (
-            patch.object(server, "_require_crew", return_value=self.CREW),
-            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=_api),
-            patch.object(server, "_write_batch") as write_batch,
-            patch.object(server, "_record_last_task_at"),
+            patch.object(lifecycle, "_require_crew", return_value=self.CREW),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=_api),
+            patch.object(lifecycle, "_write_batch") as write_batch,
+            patch.object(lifecycle, "_record_last_task_at"),
         ):
             result = server.dispatch(tasks=["a", "b", "c"], crew_id="demo")
 

@@ -20,9 +20,11 @@ import logging
 import os
 import re
 import secrets
+import select
 import tarfile
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,6 +69,7 @@ try:
         _get_crew,
         _touch_crew,
         _write_crew_secret,
+        _write_batch,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -79,12 +82,21 @@ except ModuleNotFoundError:
         _get_crew,
         _touch_crew,
         _write_crew_secret,
+        _write_batch,
     )
 
 try:
-    from captain import _resolve_orders_dir  # container: flat /app/
+    from captain import (  # container: flat /app/
+        _resolve_orders_dir,
+        _read_all_mail_counts,
+        _read_all_mail_subjects,
+    )
 except ModuleNotFoundError:
-    from transport.captain import _resolve_orders_dir  # local dev
+    from transport.captain import (  # local dev
+        _resolve_orders_dir,
+        _read_all_mail_counts,
+        _read_all_mail_subjects,
+    )
 
 try:
     from academy import (  # container: flat /app/
@@ -129,6 +141,15 @@ cfg = Config.from_env()
 # as a container env var by server.launch) and the SQLite auth-row injection
 # (_inject_auth) is skipped. Unset (default) => device-code auth is injected.
 KIRO_API_KEY = cfg.kiro_api_key
+
+# TRN-143: login/auth machinery moved here from server.py. The reusable
+# kiro-cli auth blob lives under the transport data mount; the KIRO_* values
+# drive the interactive `kiro-cli login` device flow in _initiate_login.
+DATA_DIR = Path(cfg.transport_data_dir)
+GA_AUTH_FILE = "ga-kiro-auth"
+KIRO_LICENSE = cfg.kiro_license
+KIRO_IDENTITY_PROVIDER = cfg.kiro_identity_provider
+KIRO_REGION = cfg.kiro_region
 
 # ── Hardcoded container-side paths ────────────────────────────────────────────
 # These match the layout baked into the crew image by the Containerfile.
@@ -1662,6 +1683,264 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
     logger.info("Nuked login container %s", name)
 
 
+# ── kiro-cli auth file helpers (TRN-143) ──────────────────────────────────────
+
+def _auth_file_path() -> Path:
+    """Return the reusable kiro-cli auth file under the data mount."""
+    return DATA_DIR / GA_AUTH_FILE
+
+
+def _read_auth_file(_path: Path | None = None) -> str:
+    """Read the persisted auth value, or "" if it doesn't exist yet.
+
+    _path: override the default path (for testing only).
+    """
+    path = _path if _path is not None else _auth_file_path()
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text()
+    except Exception as e:
+        logger.warning("Failed to read %s: %s", path, e)
+        return ""
+
+
+def _write_auth_file(value: str, _path: Path | None = None) -> None:
+    """Persist the reusable auth value for future launches.
+
+    _path: override the default path (for testing only).
+    """
+    path = _path if _path is not None else _auth_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, "w")
+        fd = -1
+        with f:
+            f.write(value)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if fd != -1:
+            os.close(fd)
+    os.chmod(path, 0o600)
+
+
+# ── Login device-flow state (TRN-143) ─────────────────────────────────────────
+# _login_pending holds the in-progress login flow's state (or None when idle):
+#   container: str   — ephemeral ga-login-* container name
+#   state:     str   — "starting" | "started"
+#   exec_id:   str   — Podman exec session id (informational)
+#   started_at: float — time.time() when the flow started
+_login_pending: dict | None = None
+_login_pending_lock = threading.Lock()
+
+
+def _initiate_login(podman: "PodmanClient") -> dict:
+    """Start a device auth flow and return login URL and code.
+
+    Acquires _login_pending_lock, applies TOCTOU-safe guards, starts the
+    ephemeral login container, runs kiro-cli login via PTY, answers interactive
+    prompts, extracts the device URL and code, and hands the stream to a
+    background drain thread.
+
+    Returns one of:
+      {"login_url": str, "code": str | None}     — flow started successfully
+      {"login_pending": True}                     — a flow is already in progress
+      {"error": str}                              — hard failure (container / PTY)
+
+    Callers must NOT hold _login_pending_lock when calling this.
+    """
+    global _login_pending
+    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
+    # _login_pending_lock serialises concurrent callers: the first one through
+    # sets the sentinel immediately before releasing the lock, so any race
+    # between "is flow pending?" and "start a flow" is eliminated.
+    with _login_pending_lock:
+        if _login_pending is not None:
+            return {"login_pending": True}
+        # Set lightweight sentinel immediately to prevent concurrent starts
+        _login_pending = {
+            "container": None,
+            "started_at": time.time(),
+            "state": "starting",
+        }
+
+    # ── Phase: start login container ──────────────────────────────────────────
+    try:
+        container = _start_login_container(podman)
+    except Exception as e:
+        logger.error("Failed to start login container: %s", e)
+        with _login_pending_lock:
+            _login_pending = None
+        return {"error": f"Failed to start login container: {e}"}
+
+    # Update sentinel with real container name
+    with _login_pending_lock:
+        _login_pending = {
+            "container": container,
+            "started_at": _login_pending["started_at"] if _login_pending else time.time(),
+            "state": "started",
+        }
+
+    # ── Phase: wait for kiro-cli ───────────────────────────────────────────────
+    for _ in range(10):
+        try:
+            check = podman.container_exec(container, ["which", "kiro-cli"])
+            if "kiro-cli" in check:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    # ── Phase: PTY exec + prompt loop ─────────────────────────────────────────
+    # kiro-cli ignores --identity-provider / --region flags in interactive/PTY
+    # mode (upstream bug kiro#6120). Use a raw-socket exec so we can write
+    # stdin answers to the interactive prompts automatically.
+    # With --license pro the provider-selection menu is skipped; kiro-cli goes
+    # straight to Start URL → Region, then makes a network round-trip to AWS
+    # to register the device (which takes a few seconds) before printing the
+    # URL.
+    #
+    # Deadline is 45 seconds to accommodate the AWS IAM Identity Center
+    # round-trip that happens after the user answers the Region prompt.  The
+    # device-registration call can take several seconds on a warm network; 45s
+    # gives comfortable headroom without leaving users waiting indefinitely on
+    # a failed flow.
+    #
+    # The read loop uses select() rather than a blocking recv() so it can poll
+    # for the URL without blocking the event loop thread.  PTY sockets are set
+    # non-blocking; select() with a 0.1s timeout yields control between chunks
+    # so the outer deadline check and prompt-matching logic run frequently.
+    cmd = ["kiro-cli", "login", "--use-device-flow"] + (
+        ["--license", KIRO_LICENSE] if KIRO_LICENSE else []
+    )
+    try:
+        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
+    except Exception as e:
+        _nuke_login_container(podman, container)
+        with _login_pending_lock:
+            _login_pending = None
+        return {"error": f"Failed to start kiro-cli login: {e}"}
+
+    pty_sock.setblocking(False)
+
+    # ── Phase: PTY read loop ───────────────────────────────────────────────────
+    # Read output, answer prompts, wait for device URL (max 45s).
+    # After answering the Start URL and Region prompts, kiro-cli makes a
+    # network round-trip to AWS IAM Identity Center to register the device
+    # before printing the verification URL. This takes a few seconds on a
+    # warm network but can be slow. 45s (up from the original 15s) gives
+    # comfortable headroom for that call to complete.
+    deadline = time.time() + 45.0
+    collected = bytearray()
+    login_url: str | None = None
+    login_code: str | None = None
+    prompt_rules: list[tuple[str, bytes]] = [
+        ("Select login method", b"\n"),
+        ("Start URL", (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()),
+        ("Region", (KIRO_REGION + "\n").encode()),
+    ]
+    answered_prompts: set[str] = set()
+    answered_url = False
+    start_url_seen = False
+
+    try:
+        while time.time() < deadline:
+            ready, _, _ = select.select([pty_sock], [], [], 0.1)
+            if ready:
+                try:
+                    chunk = pty_sock.recv(4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                collected.extend(chunk)
+                text = collected.decode("utf-8", errors="replace")
+
+                for matcher, answer in prompt_rules:
+                    if matcher not in text or matcher in answered_prompts:
+                        continue
+                    if matcher == "Select login method":
+                        menu_position = text.find(matcher)
+                        start_url_position = text.find("Start URL")
+                        if start_url_seen or (
+                            start_url_position >= 0
+                            and start_url_position < menu_position
+                        ):
+                            continue
+                    elif matcher == "Region" and not answered_url:
+                        continue
+
+                    pty_sock.sendall(answer)
+                    answered_prompts.add(matcher)
+                    if matcher == "Select login method":
+                        logger.debug("Answered login method menu with Builder ID default")
+                    elif matcher == "Start URL":
+                        answered_url = True
+                        start_url_seen = True
+                        logger.debug("Answered Start URL prompt")
+                    else:
+                        logger.debug("Answered Region prompt")
+
+                url_match = re.search(r'Open this URL[:\s]+(https?://\S+)', text)
+                if not url_match:
+                    url_match = re.search(r'(https?://\S+user_code=\S+)', text)
+                code_match = re.search(r'[Cc]ode[:\s]+([A-Z0-9-]{4,})', text)
+                if url_match:
+                    login_url = url_match.group(1).rstrip(").,")
+                    uc_match = re.search(r'user_code=([A-Z0-9-]{4,})', login_url)
+                    if uc_match:
+                        login_code = uc_match.group(1)
+                    elif code_match:
+                        login_code = code_match.group(1)
+                    break
+    except Exception as e:
+        logger.warning("PTY read error during login: %s", e)
+
+    if not login_url:
+        raw_output = collected.decode("utf-8", errors="replace")
+        try:
+            pty_sock.close()
+        except Exception:
+            pass
+        _nuke_login_container(podman, container)
+        with _login_pending_lock:
+            _login_pending = None
+        return {"error": f"kiro-cli did not produce a login URL within 45s.\nOutput:\n{raw_output}"}
+
+    # ── Phase: drain thread + finalise ────────────────────────────────────────
+    # Hand off remaining PTY stream to a background daemon thread so the
+    # socket is drained to EOF (avoiding a broken-pipe in the container) without
+    # blocking the event loop.  The thread exits when kiro-cli closes the pty.
+    pty_sock.setblocking(True)
+
+    def _drain_pty() -> None:
+        try:
+            while True:
+                chunk = pty_sock.recv(4096)
+                if not chunk:
+                    break
+        except Exception:
+            pass
+        finally:
+            try:
+                pty_sock.close()
+            except Exception:
+                pass
+
+    drain_thread = threading.Thread(target=_drain_pty, daemon=True, name=f"pty-drain-{container}")
+    drain_thread.start()
+
+    with _login_pending_lock:
+        if _login_pending is not None:
+            _login_pending["exec_id"] = exec_id
+
+    logger.info("Login flow started in %s, URL extracted", container)
+    return {"login_url": login_url, "code": login_code}
+
+
 # ── Schedule / idle monitors (TRN-116) ───────────────────────────────────────
 # _schedule_monitor, _idle_monitor, _cron_activity_since and _cron_has_enabled_job
 # were extracted to transport/monitors.py and are imported below so existing
@@ -1792,6 +2071,315 @@ def _pickup_batch(
             return out
 
         time.sleep(min(_BATCH_POLL_INTERVAL_SECS, remaining))
+
+
+# ── Task timestamp tracking (TRN-89) ──────────────────────────────────────────
+# In-memory per-task created/started/completed timestamps. Written by the
+# dispatch tools (worker threads) and read-modified-written by the pickup
+# handlers (worker threads). Lives here alongside pickup/dispatch; server.py
+# imports these names so its dispatch tools share the same objects.
+_task_timestamps: dict[str, dict] = {}
+# TRN-123: guards all read-modify-write access to _task_timestamps. The dict is
+# written by dispatch (worker thread) and read-modified-written by pickup
+# handlers (worker threads); without this lock those accesses race.
+_task_timestamps_lock = threading.Lock()
+
+
+def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
+    """Write last_task_at to the crew's registry entry (best-effort)."""
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            if crew_id in reg["crews"]:
+                reg["crews"][crew_id]["last_task_at"] = created_at
+                _save_registry(reg)
+    except Exception as exc:
+        logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
+
+
+def _dispatch_batch(
+    tasks: list[str],
+    agent: str,
+    crew_id: str | None,
+    model: str | None,
+) -> dict:
+    """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
+
+    Validation (size, agent, model) has already run in ``dispatch``. On the
+    first CrewUnresponsiveError or unexpected failure the loop breaks and a
+    ``partial`` batch is recorded with the task_ids assigned so far.
+    """
+    # Size validation (task 2.3).
+    max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
+    if len(tasks) == 0 or len(tasks) == 1:
+        return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
+    if len(tasks) > max_tasks:
+        return {"error": f"tasks exceeds maximum batch size of {max_tasks}"}
+
+    try:
+        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
+    except (ValueError, KeyError, RuntimeError) as e:
+        return {"error": str(e)}
+
+    batch_id = str(uuid.uuid4())
+    task_ids: list[str] = []
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat()
+    dispatch_error: str | None = None
+
+    for t in tasks:
+        body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
+        if model is not None:
+            body["model"] = model
+        try:
+            result = _crew_api_with_recovery(
+                crew, crew_id, "POST", "/api/spawn", json=body,
+            )
+        except (CrewUnresponsiveError, RuntimeError, ValueError) as e:
+            dispatch_error = str(e)
+            break
+        tid = result.get("id")
+        if not tid:
+            dispatch_error = "spawn returned no task id"
+            break
+        task_ids.append(tid)
+        # Per-task timestamp + last_task_at, using this task's response time.
+        task_created = datetime.now(timezone.utc).isoformat()
+        with _task_timestamps_lock:
+            _task_timestamps[tid] = {
+                "created_at": task_created,
+                "started_at": None,
+                "completed_at": None,
+            }
+        _record_last_task_at(crew_id, task_created)
+
+    if dispatch_error is None:
+        # Task 2.5: full success.
+        _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
+        return {
+            "batch_id": batch_id,
+            "task_ids": task_ids,
+            "crew_id": crew_id,
+            "status": "dispatched",
+            "agent": agent,
+            "created_at": created_at,
+        }
+
+    # Task 2.6: partial failure. Record what was started; surface the error.
+    _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
+    return {
+        "batch_id": batch_id,
+        "task_ids": task_ids,
+        "crew_id": crew_id,
+        "status": "partial",
+        "agent": agent,
+        "created_at": created_at,
+        "error": dispatch_error,
+    }
+
+
+def _pickup_single(
+    crew: dict,
+    crew_id: str,
+    task_id: str,
+    podman: PodmanClient,
+    container: str,
+    timeout_secs: int,
+) -> dict:
+    """Single-task pickup with optional polling and mail state."""
+    # Capture initial admiral mail count for early-return detection using a
+    # single batched exec rather than a dedicated _mail_count call.
+    if timeout_secs > 0:
+        initial_counts = _read_all_mail_counts(podman, container)
+        initial_admiral_mail = initial_counts.get("admiral", 0)
+    else:
+        initial_admiral_mail = 0
+    deadline = time.monotonic() + timeout_secs
+
+    while True:
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
+        except CrewUnresponsiveError as e:
+            return {"error": str(e), "task_id": task_id, "crew_id": crew_id}
+        done = r.get("done", False)
+
+        # Single exec reads all mailboxes at once.
+        mail_counts = _read_all_mail_counts(podman, container)
+        mail_subjects = _read_all_mail_subjects(podman, container)
+        agent_persona = r.get("agent", "")
+        agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
+        admiral_mail = mail_counts.get("admiral", 0)
+
+        # TRN-89 task 1: populate task timestamps
+        now = datetime.now(timezone.utc)
+        with _task_timestamps_lock:
+            ts = _task_timestamps.get(task_id, {})
+            elapsed = r.get("elapsed", 0)
+            if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
+                ts["started_at"] = now.isoformat()
+            if ts and done and ts.get("completed_at") is None:
+                ts["completed_at"] = now.isoformat()
+            # TRN-123: snapshot ts under the lock so the post-lock reads below
+            # see a stable copy rather than a live reference that a concurrent
+            # _pickup_single or _dispatch_batch could mutate after release.
+            ts = dict(ts)
+
+        out: dict[str, Any] = {
+            "task_id": r.get("id"),
+            "crew_id": crew_id,
+            "done": done,
+            "turns": r.get("turns", 0),
+            "last_tool": r.get("last_tool", ""),
+            "elapsed_secs": int(r.get("elapsed", 0)),
+            "result": r.get("result", ""),
+            "error": r.get("error", ""),
+            "outcome": r.get("outcome", ""),
+            "agent_mail": agent_mail,
+            "created_at": ts.get("created_at") if ts else None,
+            "started_at": ts.get("started_at") if ts else None,
+            "completed_at": ts.get("completed_at") if ts else None,
+        }
+
+        # Include subject lines for the agent persona, raven, captain, and admiral.
+        # captain/admiral come from the single _read_all_mail_subjects exec above
+        # (same shape: [{subject, received_at}]). The admiral_mail count above is
+        # still used for the reason="admiral_mail" early-return signal.
+        if agent_persona:
+            out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
+        raven_subjects = mail_subjects.get("raven", [])
+        if raven_subjects:
+            out["raven_subjects"] = raven_subjects
+        captain_subjects = mail_subjects.get("captain", [])
+        admiral_subjects = mail_subjects.get("admiral", [])
+        out["captain_subjects"] = captain_subjects
+        out["captain_mail"] = len(captain_subjects)
+        out["admiral_subjects"] = admiral_subjects
+        out["admiral_mail"] = len(admiral_subjects)
+
+        if done or timeout_secs == 0:
+            return out
+
+        # Check for admiral mail early-return
+        if admiral_mail > initial_admiral_mail:
+            out["reason"] = "admiral_mail"
+            return out
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if not done:
+                out["reason"] = "timeout"
+            return out
+
+        # F-03 audit: @mcp.tool() handlers are dispatched via run_in_executor
+        # (confirmed: MCPServer.streamable_http_app wraps sync handlers in the
+        # default thread-pool executor). time.sleep blocks the worker thread,
+        # not the event loop — safe, no conversion to asyncio.sleep needed.
+        time.sleep(min(3, remaining))
+
+
+def _pickup_list(
+    crew: dict,
+    crew_id: str,
+    podman: PodmanClient,
+    container: str,
+    timeout_secs: int,
+) -> dict:
+    """List-all pickup with optional polling and mail state."""
+    # Capture initial admiral mail count for early-return detection using a
+    # single batched exec rather than a dedicated _mail_count call.
+    if timeout_secs > 0:
+        initial_counts = _read_all_mail_counts(podman, container)
+        initial_admiral_mail = initial_counts.get("admiral", 0)
+    else:
+        initial_admiral_mail = 0
+    deadline = time.monotonic() + timeout_secs
+
+    while True:
+        try:
+            r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
+        except CrewUnresponsiveError as e:
+            return {"error": str(e), "crew_id": crew_id}
+        agents = r.get("agents", [])
+
+        # Check if any task is done
+        any_done = any(a.get("done", False) for a in agents)
+
+        # Single exec reads all mailboxes at once; split into persona summary
+        # and admiral count for the response surface.
+        mail_counts = _read_all_mail_counts(podman, container)
+        mail_subjects = _read_all_mail_subjects(podman, container)
+        mail_summary: dict[str, int] = {
+            name: mail_counts[name]
+            for name in PERSONA_NAMES
+            if mail_counts.get(name, 0) > 0
+        }
+        admiral_mail = mail_counts.get("admiral", 0)
+
+        # TRN-123: snapshot the timestamp entries for the listed agents under
+        # the lock, then build the response list from the snapshot so the
+        # comprehension does not read _task_timestamps concurrently with writes.
+        with _task_timestamps_lock:
+            _ts_snapshot = {
+                a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
+                for a in agents
+            }
+
+        task_list = [
+            {
+                "task_id": a.get("id"),
+                "crew_id": crew_id,
+                "task": a.get("task", "")[:80],
+                "agent": a.get("agent", ""),
+                "done": a.get("done", False),
+                "elapsed_secs": int(a.get("elapsed", 0)),
+                "last_tool": a.get("last_tool", ""),
+                "outcome": a.get("outcome", ""),
+                "error": a.get("error", ""),
+                # TRN-89 task 1: include per-task timestamps (null if missing)
+                "created_at": _ts_snapshot.get(a.get("id", ""), {}).get("created_at"),
+                "started_at": _ts_snapshot.get(a.get("id", ""), {}).get("started_at"),
+                "completed_at": _ts_snapshot.get(a.get("id", ""), {}).get("completed_at"),
+            }
+            for a in agents
+        ]
+
+        # Build subject summaries for all persona mailboxes + captain + admiral.
+        # captain/admiral come from the single _read_all_mail_subjects exec above.
+        subjects_summary: dict[str, list[str]] = {}
+        for name in PERSONA_NAMES:
+            subs = mail_subjects.get(name, [])
+            if subs:
+                subjects_summary[f"{name}_subjects"] = subs
+        captain_subjects = mail_subjects.get("captain", [])
+        admiral_subjects = mail_subjects.get("admiral", [])
+        subjects_summary["captain_subjects"] = captain_subjects
+        subjects_summary["captain_mail"] = len(captain_subjects)
+        subjects_summary["admiral_subjects"] = admiral_subjects
+        subjects_summary["admiral_mail"] = len(admiral_subjects)
+
+        out: dict[str, Any] = {
+            "crew_id": crew_id,
+            "tasks": task_list,
+            "mail_summary": mail_summary,
+            "agent_subjects": mail_subjects,
+            **subjects_summary,
+        }
+
+        if any_done or timeout_secs == 0:
+            return out
+
+        # Check for admiral mail early-return
+        if admiral_mail > initial_admiral_mail:
+            out["reason"] = "admiral_mail"
+            return out
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            out["reason"] = "timeout"
+            return out
+
+        # F-03: same as _pickup_single — time.sleep is safe in executor thread.
+        time.sleep(min(3, remaining))
 
 
 _cron_activity_since = _monitors._cron_activity_since
