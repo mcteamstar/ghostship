@@ -204,6 +204,8 @@ cannot call them. They are plain HTTP routes that require the same
 `Authorization: Bearer <key>` header as all other routes when `GA_API_KEY`
 is set.
 
+> **Route reference:** For the authoritative list of all transport HTTP routes and their auth requirements, fetch `GET /openapi.json` (no auth required) from the running transport. The schema is generated at startup from the live route table.
+
 ### Academy auth state machine
 
 ```

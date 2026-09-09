@@ -763,6 +763,11 @@ try:
 except ModuleNotFoundError:
     from transport import lifecycle as _lifecycle  # local dev
 
+try:
+    import openapi as _openapi  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import openapi as _openapi  # local dev
+
 mcp = MCPServer(
     name="transport",
     description=(
@@ -1389,6 +1394,25 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
+
+
+# ── OpenAPI schema (TRN-129) ──────────────────────────────────────────────────
+# Generated once at startup (after all routes are defined) and cached here.
+# task 2.2: handler that returns the cached schema.
+
+_openapi_schema = None  # dict | None — populated by startup in __main__ block
+
+
+async def _handle_openapi_get(request: Request) -> Response:
+    """GET /openapi.json — return the cached OpenAPI 3.1.0 schema (public)."""
+    import json as _json
+    if _openapi_schema is None:
+        return Response("schema not yet generated", status_code=503)
+    return Response(
+        _json.dumps(_openapi_schema, indent=2),
+        media_type="application/json",
+    )
+
 
 # ── Auth / security middleware (TRN-116) ──────────────────────────────────────
 # TransportSecretMiddleware, RateLimitMiddleware, BearerAuthMiddleware,
@@ -3497,6 +3521,38 @@ if __name__ == "__main__":
         host=HOST,
     )
     _file_starlette = Starlette(routes=file_routes)
+
+    # TRN-129: generate the OpenAPI schema once, after all routes/tools are
+    # defined, before constructing BearerAuthMiddleware. Cached globally so
+    # _handle_openapi_get can serve it without re-generating on every request.
+    _openapi_schema_routes = {
+        ("POST", "/login"): _handle_login_post,
+        ("GET",  "/login"): _handle_login_get,
+        ("POST", "/logout"): _handle_logout_post,
+        ("GET",  "/health"): _handle_health,
+        ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
+        ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
+        ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
+        ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+        ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+    }
+    _openapi_schema_public_routes = {
+        ("GET",  "/version"): _handle_version_get,
+        ("POST", "/dashboard/login"): _handle_dashboard_login_post,
+        ("POST", "/dashboard/logout"): _handle_dashboard_logout_post,
+        ("GET",  "/dashboard/auth"): _handle_dashboard_auth,
+        ("GET",  "/dashboard/login"): _handle_login_ui,
+        ("GET",  "/openapi.json"): _handle_openapi_get,
+    }
+    _openapi_schema = _openapi.generate_schema(
+        routes=_openapi_schema_routes,
+        public_routes=_openapi_schema_public_routes,
+        file_routes=file_routes,
+        mcp_tools=_openapi.get_mcp_tools(mcp),
+        version=TRANSPORT_VERSION,
+    )
+    logger.info("TRN-129: OpenAPI schema generated (%d paths)", len(_openapi_schema.get("paths", {})))
+
     app = BearerAuthMiddleware(mcp_app,
         api_key=GA_API_KEY,
         file_app=_file_starlette,
@@ -3518,6 +3574,7 @@ if __name__ == "__main__":
             ("POST", "/dashboard/logout"): _dashboard_gate.handle_logout_post,
             ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
             ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
+            ("GET",  "/openapi.json"): _handle_openapi_get,  # TRN-129: public, no auth
         },
     )
     # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all

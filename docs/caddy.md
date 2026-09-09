@@ -208,6 +208,8 @@ There is no opt-out and no rollback to the pre-portal per-port uvicorn mode; tha
 
 See [configuration.md](configuration.md) for the full `GA_PORTAL_*` variable table.
 
+> **Route reference:** For the authoritative list of all transport HTTP routes, their auth requirements, and MCP tool definitions, fetch `GET /openapi.json` (no auth required) from the running transport. This is the machine-readable source of truth for the routes shown in the diagrams above.
+
 | Variable | Default | Description |
 |:---------|:--------|:------------|
 | `GA_PORTAL_TLS_MODE` | `off` | `internal` / `tailscale` / `acme` / `off` |
