@@ -285,6 +285,7 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}) as mock_setup,
             patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_write_crew_secret"),
         ):
             mock_podman = server._get_podman.return_value
             mock_podman.network_create = Mock()
@@ -329,6 +330,7 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}),
             patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_write_crew_secret"),
         ):
             mock_podman = Mock()
             mock_podman.container_is_running = Mock(return_value=False)
@@ -379,6 +381,7 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_write_crew_secret"),
             patch.object(
                 server, "_finish_crew_setup",
                 return_value={"crew_id": "test", "status": "ready"},
@@ -415,6 +418,7 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(server, "_wait_gateway", return_value=True),
+            patch.object(server, "_write_crew_secret"),
             patch.object(
                 server, "_finish_crew_setup",
                 return_value={"crew_id": "test", "status": "ready"},

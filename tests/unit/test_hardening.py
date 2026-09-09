@@ -15,15 +15,6 @@ from unittest.mock import MagicMock, call, patch
 
 # ── import helpers ────────────────────────────────────────────────────────────
 
-# Add container_scripts to sys.path so inject_admiral_secret imports directly.
-_SCRIPTS_DIR = (
-    Path(__file__).resolve().parents[2] / "transport" / "container_scripts"
-)
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-inject_admiral_secret_mod = importlib.import_module("inject_admiral_secret")
-
 # Bootstrap transport modules via the dependency-free stub installer.
 from tests.unit.test_file_transfer import server  # noqa: F401  (installs stubs)
 
@@ -47,59 +38,16 @@ def _make_podman_mock(**kwargs):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stdin secret delivery
+# TRN-136: Admiral public key is NOT injected via container-exec
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestStdinSecretDelivery(unittest.TestCase):
-    """inject_admiral_secret.py reads secret from stdin, not argv[2]."""
+class TestAdmiralKeyNotExecInjected(unittest.TestCase):
+    """TRN-136: the Admiral key is delivered as a read-only Podman secret at
+    container_create time, so _finish_crew_setup must NOT run any
+    container-exec injection script for it."""
 
-    def test_inject_admiral_secret_writes_correct_value(self) -> None:
-        """inject_admiral_secret(dest, stdin_secret) writes the secret to the file."""
-        with tempfile.TemporaryDirectory() as td:
-            dest = str(Path(td) / ".admiral_secret")
-            secret = "test_secret_value_abc123"
-            inject_admiral_secret_mod.inject_admiral_secret(dest, secret)
-            written = Path(dest).read_text()
-            self.assertEqual(written, secret)
-
-    def test_inject_admiral_secret_writes_with_mode_0600(self) -> None:
-        """inject_admiral_secret writes the file with mode 0600."""
-        with tempfile.TemporaryDirectory() as td:
-            dest = str(Path(td) / ".admiral_secret")
-            inject_admiral_secret_mod.inject_admiral_secret(dest, "s3cr3t")
-            mode = Path(dest).stat().st_mode & 0o777
-            self.assertEqual(mode, 0o600)
-
-    def test_main_reads_secret_from_stdin(self) -> None:
-        """main() reads secret from stdin and writes it to the destination."""
-        with tempfile.TemporaryDirectory() as td:
-            dest = str(Path(td) / ".admiral_secret")
-            secret = "stdin_delivered_secret"
-            original_stdin = sys.stdin
-            try:
-                sys.stdin = io.StringIO(secret)
-                rc = inject_admiral_secret_mod.main(["inject_admiral_secret.py", dest])
-            finally:
-                sys.stdin = original_stdin
-            self.assertEqual(rc, 0)
-            self.assertEqual(Path(dest).read_text(), secret)
-
-    def test_main_does_not_accept_argv2(self) -> None:
-        """main() with 3 args (script + dest + secret) returns error code 2."""
-        with tempfile.TemporaryDirectory() as td:
-            dest = str(Path(td) / ".admiral_secret")
-            rc = inject_admiral_secret_mod.main(
-                ["inject_admiral_secret.py", dest, "should_not_work"]
-            )
-            self.assertEqual(rc, 2, "Script must not accept secret as argv[2]")
-
-    def test_main_requires_exactly_two_args(self) -> None:
-        """main() without dest argument (1 arg total) returns error code 2."""
-        rc = inject_admiral_secret_mod.main(["inject_admiral_secret.py"])
-        self.assertEqual(rc, 2)
-
-    def test_lifecycle_uses_container_exec_stdin(self) -> None:
-        """_finish_crew_setup calls container_exec_stdin for admiral secret injection."""
+    def test_finish_crew_setup_does_not_exec_inject_admiral(self) -> None:
+        """_finish_crew_setup makes no container_exec_stdin call for the admiral key."""
         import transport.registry as _registry_mod
         stdin_calls: list[tuple[str, list, bytes]] = []
 
@@ -112,7 +60,7 @@ class TestStdinSecretDelivery(unittest.TestCase):
 
         def capture_exec_stdin(container, cmd, stdin_data):
             stdin_calls.append((container, cmd, stdin_data))
-            return "admiral secret injected"
+            return "ok"
 
         podman.container_exec_stdin = MagicMock(side_effect=capture_exec_stdin)
 
@@ -132,27 +80,17 @@ class TestStdinSecretDelivery(unittest.TestCase):
                 stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
                 stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
                 lifecycle._finish_crew_setup(
-                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth"
+                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth",
+                    admiral_secret="ab" * 32,
                 )
 
-        # The secret must have been delivered via container_exec_stdin
         admiral_inject_calls = [
             c for c in stdin_calls if any("inject_admiral_secret" in part for part in c[1])
         ]
-        self.assertEqual(len(admiral_inject_calls), 1,
-                         "Expected exactly one container_exec_stdin call for inject_admiral_secret.py")
-        # Secret must not appear in the command args — it goes through stdin
-        _, cmd, stdin_data = admiral_inject_calls[0]
-        # The command should only have: python3, script_path, dest_path (exactly 3 args)
-        self.assertEqual(len(cmd), 3,
-                         f"inject_admiral_secret.py must be called with exactly 3 args, got: {cmd}")
-        # The actual secret value (which is in stdin_data) must not appear in the args
-        secret_value = stdin_data.decode()
-        for arg in cmd:
-            self.assertNotIn(secret_value, arg,
-                             "Secret value must not appear in exec command args")
-        self.assertIsInstance(stdin_data, bytes, "stdin_data must be bytes")
-        self.assertGreater(len(stdin_data), 0, "stdin_data must be non-empty")
+        self.assertEqual(
+            len(admiral_inject_calls), 0,
+            "TRN-136: admiral key must not be delivered via container_exec_stdin",
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -191,7 +129,8 @@ class TestCrewsJsonHygiene(unittest.TestCase):
                 stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
                 stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
                 lifecycle._finish_crew_setup(
-                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth"
+                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth",
+                    admiral_secret="cd" * 32,
                 )
             registry_data = json.loads(registry_path.read_text())
         return registry_data.get("crews", {}).get("demo", {})
@@ -557,11 +496,14 @@ class TestFileTransferAudit(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAdmiralSigningSecretFile(unittest.TestCase):
-    """_finish_crew_setup writes the admiral secret to a separate file; captain reads it back so standing orders are signed correctly."""
+    """The admiral private seed is persisted to a separate host-side file at
+    launch time (TRN-136: before container_create); captain reads it back so
+    standing orders are signed correctly."""
 
-    def test_finish_crew_setup_writes_crew_secret_file(self) -> None:
-        """_finish_crew_setup calls _write_crew_secret with the admiral_secret value."""
+    def test_launch_writes_crew_secret_file(self) -> None:
+        """launch() calls _write_crew_secret with the hex-encoded Ed25519 seed."""
         import transport.registry as _registry_mod
+        import transport.server as server_mod
 
         written_secrets: list[tuple[str, str]] = []
 
@@ -569,42 +511,39 @@ class TestAdmiralSigningSecretFile(unittest.TestCase):
             written_secrets.append((crew_id, secret))
 
         podman = MagicMock()
-        podman.container_exec.return_value = "ready"
-        podman.container_exec_checked.return_value = "ok"
-        podman.container_exec_stdin.return_value = "admiral secret injected"
-        podman.container_inspect.return_value = {"Config": {"Labels": {}}}
-        podman.container_stop = MagicMock()
+        podman.network_create = MagicMock()
+        podman.volume_create = MagicMock()
+        podman.container_create = MagicMock(return_value={})
         podman.container_start = MagicMock()
+        podman.secret_create = MagicMock()
+        podman.secret_remove = MagicMock()
 
         with tempfile.TemporaryDirectory() as tmp:
             from contextlib import ExitStack
             with ExitStack() as stack:
                 stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
                 stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
-                stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
-                stack.enter_context(patch.object(lifecycle, "_inject_auth"))
-                stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
-                stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
-                stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
-                stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
-                stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
-                stack.enter_context(patch.object(lifecycle, "_patch_models"))
-                stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
-                stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
-                stack.enter_context(patch.object(lifecycle, "_write_crew_secret", side_effect=capture_write))
-                lifecycle._finish_crew_setup(
-                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth"
-                )
+                stack.enter_context(patch.object(server_mod, "DATA_DIR", Path(tmp)))
+                stack.enter_context(patch.object(server_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                stack.enter_context(patch.object(server_mod, "_get_podman", return_value=podman))
+                stack.enter_context(patch.object(server_mod, "_read_auth_file", return_value="auth"))
+                stack.enter_context(patch.object(server_mod, "_write_crew_secret", side_effect=capture_write))
+                # Fail the gateway wait right after start so we stop before the
+                # full finish flow; the secret write happens before create.
+                stack.enter_context(patch.object(server_mod, "_wait_gateway", return_value=False))
+                server_mod.launch("demo")
 
         self.assertEqual(len(written_secrets), 1,
-                         "_write_crew_secret must be called exactly once")
+                         "_write_crew_secret must be called exactly once at launch")
         crew_id, secret = written_secrets[0]
         self.assertEqual(crew_id, "demo")
         self.assertIsInstance(secret, str)
-        self.assertGreater(len(secret), 0, "secret must be non-empty")
-        # The secret must not be the identifier — it must be the raw hex token
+        # The seed is a 64-char hex string (32 raw bytes) — not the identifier.
+        self.assertEqual(len(secret), 64, "admiral seed must be 32-byte hex (64 chars)")
         self.assertFalse(secret.startswith("sha256:"),
-                         "_write_crew_secret must receive the raw secret, not the identifier")
+                         "_write_crew_secret must receive the raw seed, not the identifier")
+        # And it must be valid hex.
+        bytes.fromhex(secret)
 
     def test_write_and_read_crew_secret_roundtrip(self) -> None:
         """_write_crew_secret and _read_crew_secret roundtrip correctly."""

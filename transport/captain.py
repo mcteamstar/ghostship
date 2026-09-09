@@ -10,8 +10,6 @@ podman (PodmanClient), config. Must NOT import from lifecycle or server
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -329,11 +327,14 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
     of standing orders; persona messages in the captain mailbox are crew
     correspondence.
 
-    When signing_secret is provided, an X-Admiral-Sig HMAC-SHA256 header is
-    added over the Subject and From headers plus the message body. When
-    supersedes_id is provided, a Supersedes
-    header referencing the previous order's Message-ID is included.
+    When signing_secret is provided, an X-Admiral-Sig header carrying a
+    base64url-encoded Ed25519 signature over the Subject and From headers plus
+    the message body is added. ``signing_secret`` is the hex-encoded 32-byte
+    Ed25519 private seed (as persisted by lifecycle via _write_crew_secret).
+    When supersedes_id is provided, a Supersedes header referencing the
+    previous order's Message-ID is included.
     """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     import uuid as _uuid
 
     body = body.rstrip("\r\n")
@@ -361,12 +362,14 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
         headers.append(f"Supersedes: {supersedes_id}")
 
     if signing_secret:
-        sig = hmac.new(
-            signing_secret.encode(),
-            f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8"),
-            digestmod=hashlib.sha256,
-        ).hexdigest()
-        headers.append(f"X-Admiral-Sig: {sig}")
+        # TRN-136: sign with Ed25519. signing_secret is the hex-encoded 32-byte
+        # private seed; the detached 64-byte signature is base64url-encoded
+        # (no padding) into the X-Admiral-Sig header.
+        private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_secret))
+        payload = f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8")
+        sig = private_key.sign(payload)
+        sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
+        headers.append(f"X-Admiral-Sig: {sig_b64}")
 
     message = "\n".join(headers) + "\n\n" + body + "\n"
     return message, message_id

@@ -89,6 +89,7 @@ class ContainerRuntime(ABC):
         network: str,
         workspace_volume: str,
         home_volume: str,
+        secrets: list[dict] | None = None,
 
     ) -> dict: ...
 
@@ -139,6 +140,12 @@ class ContainerRuntime(ABC):
 
     @abstractmethod
     def volume_remove(self, name: str) -> None: ...
+
+    @abstractmethod
+    def secret_create(self, name: str, data: bytes) -> None: ...
+
+    @abstractmethod
+    def secret_remove(self, name: str) -> None: ...
 
     @abstractmethod
     def worker_run(
@@ -196,6 +203,7 @@ class PodmanClient(ContainerRuntime):
         network: str,
         workspace_volume: str,
         home_volume: str,
+        secrets: list[dict] | None = None,
 
     ) -> dict:
         spec: dict[str, Any] = {
@@ -214,6 +222,13 @@ class PodmanClient(ContainerRuntime):
             "no_new_privileges": True,
             "cap_drop": ["CAP_NET_RAW", "CAP_SYS_ADMIN"],
         }
+        # TRN-136: mount Podman secrets read-only into the container. Each entry
+        # is {"source": <secret name>, "target": <abs path>, "uid", "gid",
+        # "mode"} — Podman mounts it as a read-only bind mount that the container
+        # cannot overwrite (CAP_SYS_ADMIN, needed to remount rw, is dropped
+        # above). Used to deliver the Admiral Ed25519 public key immutably.
+        if secrets:
+            spec["secrets"] = secrets
         return self._req("POST", "/libpod/containers/create", json=spec)
 
     def container_start(self, name: str) -> None:
@@ -552,6 +567,49 @@ class PodmanClient(ContainerRuntime):
             self._c.delete(
                 f"/libpod/volumes/{name}", params={"force": "true"}
             ).raise_for_status()
+        except Exception:
+            pass
+
+    # ── secrets (TRN-136) ─────────────────────────────────────────────────────
+
+    def secret_create(self, name: str, data: bytes) -> None:
+        """Create a Podman secret named ``name`` holding raw ``data`` bytes.
+
+        POSTs the raw bytes to ``/libpod/secrets/create?name=<name>``. Podman
+        secrets live in a global namespace (not scoped to a container), so the
+        name must be unique per crew. Raises on any HTTP error other than a
+        pre-existing secret (409), which is treated as idempotent success — a
+        leftover secret from a prior launch of the same crew_id is overwritten
+        by removing then recreating in the caller when needed; here we surface
+        real failures so a launch does not proceed with a stale secret.
+        """
+        r = self._c.post(
+            "/libpod/secrets/create",
+            params={"name": name},
+            content=data,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if r.status_code in (200, 201):
+            return
+        # 409 = a secret with this name already exists. Remove and retry once so
+        # the crew always gets the freshly-generated public key, never a stale
+        # one left behind by a failed prior launch of the same crew_id.
+        if r.status_code == 409:
+            self.secret_remove(name)
+            r2 = self._c.post(
+                "/libpod/secrets/create",
+                params={"name": name},
+                content=data,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            r2.raise_for_status()
+            return
+        r.raise_for_status()
+
+    def secret_remove(self, name: str) -> None:
+        """Remove the Podman secret named ``name`` (best-effort, idempotent)."""
+        try:
+            self._c.delete(f"/libpod/secrets/{name}").raise_for_status()
         except Exception:
             pass
 

@@ -1,8 +1,14 @@
-"""Unit tests for the verify-admiral-sig admission script -- exit codes for valid signature, mismatch, missing header, and absent secret file."""
+"""Unit tests for the verify-admiral-sig admission script (TRN-136).
+
+Exercises the Ed25519 verifier's exit codes: valid signature (0), signature
+mismatch (1), missing X-Admiral-Sig header (1), and absent public-key file (2).
+The script reads the raw 32-byte Ed25519 public key from .admiral_public_key;
+the tests monkey-patch PUBKEY_PATH / PUBKEY_PATH_FALLBACK to point at a temp
+file, mirroring how the earlier HMAC tests patched SECRET_PATH.
+"""
 from __future__ import annotations
 
-import hashlib
-import hmac
+import base64
 import os
 import subprocess
 import tempfile
@@ -10,6 +16,12 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+)
 
 
 # Resolve the script path relative to the repo root
@@ -31,121 +43,91 @@ def _make_message(body: str, sig: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def _compute_sig(body: str, secret: str) -> str:
-    """Compute the expected HMAC-SHA256 signature for the message payload."""
+def _sign(body: str, private_key: Ed25519PrivateKey) -> str:
+    """Produce the base64url (unpadded) Ed25519 signature for the payload."""
     normalized_body = body.rstrip("\n")
-    payload = f"Subject:test order\nFrom:admiral@localhost\n\n{normalized_body}"
-    return hmac.new(
-        secret.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
+    payload = f"Subject:test order\nFrom:admiral@localhost\n\n{normalized_body}".encode(
+        "utf-8"
+    )
+    sig = private_key.sign(payload)
+    return base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
+
+
+def _run_with_pubkey(message: str, pubkey_path: str, fallback_path: str) -> subprocess.CompletedProcess:
+    """Run verify-admiral-sig with PUBKEY_PATH overridden to pubkey_path."""
+    wrapper = textwrap.dedent(f"""\
+        source = open({str(SCRIPT_PATH)!r}).read()
+        source = source.replace(
+            "PUBKEY_PATH = '/home/kirocrew/.kiro/crew/.admiral_public_key'",
+            "PUBKEY_PATH = {pubkey_path!r}"
+        )
+        source = source.replace(
+            "PUBKEY_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_public_key'",
+            "PUBKEY_PATH_FALLBACK = {fallback_path!r}"
+        )
+        source = source.replace("RETRY_DELAY_SECS = 2", "RETRY_DELAY_SECS = 0")
+        exec(compile(source, {str(SCRIPT_PATH)!r}, "exec"))
+    """)
+    return subprocess.run(
+        ["python3", "-c", wrapper],
+        input=message,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
 
 
 class VerifyAdmiralSigTests(unittest.TestCase):
-    """Test exit codes for verify-admiral-sig script."""
+    """Test exit codes for the Ed25519 verify-admiral-sig script."""
 
-    def _run_script(self, message: str, env_override: dict | None = None) -> int:
-        """Run verify-admiral-sig with the given message on stdin.
-
-        Returns the exit code.
-        """
-        env = dict(os.environ)
-        if env_override:
-            env.update(env_override)
-        result = subprocess.run(
-            ["python3", str(SCRIPT_PATH)],
-            input=message,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
+    def _write_pubkey(self, private_key: Ed25519PrivateKey) -> str:
+        pub_bytes = private_key.public_key().public_bytes(
+            Encoding.Raw, PublicFormat.Raw
         )
-        return result.returncode
+        fd, path = tempfile.mkstemp(suffix=".pubkey")
+        with os.fdopen(fd, "wb") as f:
+            f.write(pub_bytes)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
 
     def test_exit_0_valid_signature(self) -> None:
-        """Exit code 0 when X-Admiral-Sig matches the body HMAC."""
-        secret = "test-secret-for-exit-0"
+        """Exit 0 when X-Admiral-Sig is a valid Ed25519 signature."""
+        private_key = Ed25519PrivateKey.generate()
         body = "You are conducting a review."
-        sig = _compute_sig(body, secret)
+        sig = _sign(body, private_key)
         message = _make_message(body, sig=sig)
+        pubkey_path = self._write_pubkey(private_key)
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".secret", delete=False) as f:
-            f.write(secret)
-            secret_path = f.name
-
-        try:
-            # Patch the script's SECRET_PATH to use our temp file.
-            # We create a wrapper script that overrides the paths.
-            wrapper = textwrap.dedent(f"""\
-                import sys
-                sys.argv = sys.argv  # no-op
-                # Monkey-patch before exec
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("verify", "{SCRIPT_PATH}")
-                source = open("{SCRIPT_PATH}").read()
-                source = source.replace(
-                    "SECRET_PATH = '/home/kirocrew/.kiro/crew/.admiral_secret'",
-                    "SECRET_PATH = '{secret_path}'"
-                )
-                source = source.replace(
-                    "SECRET_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_secret'",
-                    "SECRET_PATH_FALLBACK = '{secret_path}'"
-                )
-                exec(compile(source, "{SCRIPT_PATH}", "exec"))
-            """)
-            result = subprocess.run(
-                ["python3", "-c", wrapper],
-                input=message,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
-        finally:
-            os.unlink(secret_path)
+        result = _run_with_pubkey(message, pubkey_path, pubkey_path)
+        self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
 
     def test_exit_1_signature_mismatch(self) -> None:
-        """Exit code 1 when X-Admiral-Sig does not match the body."""
-        secret = "test-secret-for-exit-1"
+        """Exit 1 when the signature was made by a different key."""
+        signing_key = Ed25519PrivateKey.generate()
+        other_key = Ed25519PrivateKey.generate()
         body = "You are conducting a review."
-        wrong_sig = "deadbeef" * 8  # 64 hex chars, wrong value
-        message = _make_message(body, sig=wrong_sig)
+        # Signed with signing_key, but the mounted public key is other_key's.
+        sig = _sign(body, signing_key)
+        message = _make_message(body, sig=sig)
+        pubkey_path = self._write_pubkey(other_key)
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".secret", delete=False) as f:
-            f.write(secret)
-            secret_path = f.name
+        result = _run_with_pubkey(message, pubkey_path, pubkey_path)
+        self.assertEqual(result.returncode, 1, f"stderr: {result.stderr}")
 
-        try:
-            wrapper = textwrap.dedent(f"""\
-                import sys
-                source = open("{SCRIPT_PATH}").read()
-                source = source.replace(
-                    "SECRET_PATH = '/home/kirocrew/.kiro/crew/.admiral_secret'",
-                    "SECRET_PATH = '{secret_path}'"
-                )
-                source = source.replace(
-                    "SECRET_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_secret'",
-                    "SECRET_PATH_FALLBACK = '{secret_path}'"
-                )
-                exec(compile(source, "{SCRIPT_PATH}", "exec"))
-            """)
-            result = subprocess.run(
-                ["python3", "-c", wrapper],
-                input=message,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            self.assertEqual(result.returncode, 1, f"stderr: {result.stderr}")
-        finally:
-            os.unlink(secret_path)
+    def test_exit_1_tampered_body(self) -> None:
+        """Exit 1 when the body is altered after signing (payload mismatch)."""
+        private_key = Ed25519PrivateKey.generate()
+        sig = _sign("original order body", private_key)
+        message = _make_message("TAMPERED order body", sig=sig)
+        pubkey_path = self._write_pubkey(private_key)
+
+        result = _run_with_pubkey(message, pubkey_path, pubkey_path)
+        self.assertEqual(result.returncode, 1, f"stderr: {result.stderr}")
 
     def test_exit_1_no_signature_header(self) -> None:
-        """Exit code 1 when no X-Admiral-Sig header is present."""
+        """Exit 1 when no X-Admiral-Sig header is present."""
         message = _make_message("Some body text", sig=None)
-
-        # No secret file needed — script exits 1 before reading it
+        # No public key file needed — script exits 1 before reading it.
         result = subprocess.run(
             ["python3", str(SCRIPT_PATH)],
             input=message,
@@ -155,52 +137,24 @@ class VerifyAdmiralSigTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1, f"stderr: {result.stderr}")
 
-    def test_exit_2_secret_file_absent(self) -> None:
-        """Exit code 2 when the secret file does not exist (after retries).
-
-        Uses non-existent paths and overrides RETRY_DELAY_SECS to 0 to avoid
-        waiting 4 seconds in the test.
-        """
+    def test_exit_2_pubkey_file_absent(self) -> None:
+        """Exit 2 when the public-key file does not exist (after retries)."""
         body = "Order from Admiral."
-        sig = "a" * 64  # Dummy sig — won't get to verification
+        # A syntactically valid base64url sig — verification never runs because
+        # the public key is missing.
+        sig = base64.urlsafe_b64encode(b"\x00" * 64).rstrip(b"=").decode("ascii")
         message = _make_message(body, sig=sig)
 
-        # Use paths that definitely don't exist
         nonexistent_a = "/tmp/verify_sig_test_nonexistent_a_" + str(os.getpid())
         nonexistent_b = "/tmp/verify_sig_test_nonexistent_b_" + str(os.getpid())
 
-        wrapper = textwrap.dedent(f"""\
-            import sys
-            source = open("{SCRIPT_PATH}").read()
-            source = source.replace(
-                "SECRET_PATH = '/home/kirocrew/.kiro/crew/.admiral_secret'",
-                "SECRET_PATH = '{nonexistent_a}'"
-            )
-            source = source.replace(
-                "SECRET_PATH_FALLBACK = '/home/kirocrew/workplace/.admiral_secret'",
-                "SECRET_PATH_FALLBACK = '{nonexistent_b}'"
-            )
-            # Speed up retries for test
-            source = source.replace(
-                "RETRY_DELAY_SECS = 2",
-                "RETRY_DELAY_SECS = 0"
-            )
-            exec(compile(source, "{SCRIPT_PATH}", "exec"))
-        """)
-
         start = time.time()
-        result = subprocess.run(
-            ["python3", "-c", wrapper],
-            input=message,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        result = _run_with_pubkey(message, nonexistent_a, nonexistent_b)
         elapsed = time.time() - start
 
         self.assertEqual(result.returncode, 2, f"stderr: {result.stderr}")
-        # Confirm it did NOT take the full 4 seconds (we set delay to 0)
-        self.assertLess(elapsed, 5.0, "Test took too long — retry delay override may have failed")
+        # RETRY_DELAY_SECS is overridden to 0, so this must be fast.
+        self.assertLess(elapsed, 5.0, "retry delay override may have failed")
 
 
 if __name__ == "__main__":

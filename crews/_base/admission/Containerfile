@@ -27,6 +27,13 @@ RUN apt-get update -qq && \
       mailutils msmtp msmtp-mta && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# TRN-136: Ed25519 Admiral-mail verification (verify-admiral-sig) needs the
+# `cryptography` package. It is NOT present in any layer of the upstream crew
+# image, so pin it here — every composition inherits from this base, so the
+# verifier can import cryptography.hazmat.primitives.asymmetric.ed25519 at
+# runtime. Pinned to a specific version for a deterministic, reproducible build.
+RUN pip3 install --no-cache-dir --break-system-packages 'cryptography==43.0.1'
+
 # Provision Maildir mailboxes for all 7 local addresses
 # (6 personas + captain; admiral is written by the transport only)
 # Owned by kirocrew so agents can deliver without root or mail group.
@@ -46,7 +53,7 @@ RUN chmod 644 /etc/msmtprc && chmod 755 /usr/local/bin/maildeliver && \
     chmod 755 /usr/local/bin/sendmail-local && \
     ln -sf /usr/local/bin/sendmail-local /usr/sbin/sendmail
 
-# HMAC verification helper for Admiral mail authenticity
+# Ed25519 verification helper for Admiral mail authenticity (TRN-136)
 COPY --chown=root:root verify-admiral-sig /usr/local/bin/verify-admiral-sig
 RUN chmod 755 /usr/local/bin/verify-admiral-sig
 

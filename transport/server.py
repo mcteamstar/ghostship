@@ -185,6 +185,7 @@ try:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_crew_secret,
         _write_batch,
         _get_batch,
         _update_batch_status,
@@ -205,6 +206,7 @@ except ModuleNotFoundError:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_crew_secret,
         _write_batch,
         _get_batch,
         _update_batch_status,
@@ -1945,6 +1947,36 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 f"{container_env['KIROCREW_CORS_ORIGINS']},{_ui_host}"
             )
 
+        # TRN-136: generate the Admiral Ed25519 keypair BEFORE creating the
+        # container. The private key is persisted host-side and never enters the
+        # container; the public key is registered as a Podman secret and attached
+        # to the container spec so it mounts read-only (immutable from inside the
+        # container — CAP_SYS_ADMIN, needed to remount rw, is dropped). This must
+        # happen before container_create because a Podman secret can only be
+        # attached at creation time.
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            PrivateFormat,
+            PublicFormat,
+            NoEncryption,
+        )
+
+        _admiral_private_key = Ed25519PrivateKey.generate()
+        _admiral_private_seed = _admiral_private_key.private_bytes(
+            Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+        )
+        _admiral_public_bytes = _admiral_private_key.public_key().public_bytes(
+            Encoding.Raw, PublicFormat.Raw
+        )
+        _admiral_secret_hex = _admiral_private_seed.hex()
+        _admiral_secret_name = f"admiral-pubkey-{crew_id}"
+
+        # Register the public key as a Podman secret for read-only delivery. This
+        # MUST happen before container_create — a Podman secret can only be
+        # attached to a container at creation time.
+        podman.secret_create(_admiral_secret_name, _admiral_public_bytes)
+
         podman.container_create(
             name=container,
             image=image,
@@ -1952,7 +1984,21 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             network=GA_STARBOARD_NETWORK,
             workspace_volume=volume,
             home_volume=home_volume,
+            # TRN-136: mount the Admiral public key read-only, root-owned, 0444.
+            secrets=[{
+                "source": _admiral_secret_name,
+                "target": f"{KIRO_CREW_DIR}/.admiral_public_key",
+                "uid": 0,
+                "gid": 0,
+                "mode": 0o444,
+            }],
         )
+        # Persist the private seed host-side so captain.py can sign standing
+        # orders (same path/format as before — hex of the raw 32-byte seed).
+        # Done right after create (before start) — standing orders only flow far
+        # later, in _finish_crew_setup, so the private key is always on disk
+        # before the crew can be signed to.
+        _write_crew_secret(crew_id, _admiral_secret_hex)
         podman.container_start(container)
         logger.info("Started %s", container)
 
@@ -1967,7 +2013,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
         # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:
