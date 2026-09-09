@@ -122,7 +122,9 @@ def _to_openapi_path(raw_path: str) -> str:
             return "{param" + str(counter[0]) + "}"
         return p
 
-    return "/" + "/".join(_replace(p) for p in parts if p or parts.index(p) == 0)
+    # Skip the leading empty string that split("/") produces for "/..." paths;
+    # the prepended "/" already provides the leading slash.
+    return "/" + "/".join(_replace(p) for p in parts[1:])
 
 
 def _path_description(method: str, path: str, is_public: bool) -> str:

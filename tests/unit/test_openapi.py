@@ -566,6 +566,9 @@ class TestToOpenApiPath(unittest.TestCase):
         result = openapi_mod._to_openapi_path("/foo/*/bar")
         self.assertIn("{", result)
         self.assertNotIn("*", result)
+        # Must be a valid path: single leading slash, no double slashes
+        self.assertTrue(result.startswith("/"), "path must start with /")
+        self.assertFalse(result.startswith("//"), "path must not have double leading slash")
 
     def test_no_mutation_of_input(self) -> None:
         original = "/crews/*/ui"
