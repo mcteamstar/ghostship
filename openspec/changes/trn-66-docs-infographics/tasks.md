@@ -5,23 +5,19 @@
 
 ## 2. Visual Infographics — Generate Images
 
-- [x] 2.1 Generate `docs/images/arch-system-placement.png` — layered horizontal flow diagram showing harness (Admiral) → ghostship MCP transport → KiroCrew crew containers → agents, dark navy/black background with cyan accent lighting (see design.md D6 for full prompt guidance); style should match the existing agent persona images in `docs/images/`
-- [x] 2.2 Generate `docs/images/usage-flow.png` — six-step circular or linear loop: install → connect → launch → dispatch → pickup → nuke, each step as a glowing node with a brief label (same dark tech aesthetic)
+- [x] 2.1 Generate `docs/images/docs-arch-system-placement.png` — layered horizontal flow diagram showing harness (Admiral) → ghostship MCP transport → KiroCrew crew containers → agents, dark navy/black background with cyan accent lighting (see design.md D6 for full prompt guidance); style should match the existing agent persona images in `docs/images/`
+- [x] 2.2 Generate `docs/images/docs-usage-flow.png` — six-step circular or linear loop: install → connect → launch → dispatch → pickup → nuke, each step as a glowing node with a brief label (same dark tech aesthetic)
 - [x] 2.3 Generate `docs/images/fleet-crew-hierarchy.png` — vertical tree diagram: Admiral at top, fleet spanning multiple crew nodes below, each crew showing Captain → worker agent personas
 - [x] 2.4 Generate `docs/images/sdd-workflow.png` — circular SDD pipeline: Spectre (plan) → Ghost (implement) → Banshee (review) → Reaper (close), with Raven and Captain shown as the outer orchestration ring
-- [x] 2.5 Generate `docs/images/agent-roles-overview.png` — six-panel grid, one cell per persona, each showing persona name, silhouette-style avatar, and a two-word role label
-
-## 2b. Image Fixes (post-review)
-
-- [ ] 2b.1 Fix `docs-agent-roles.png` — Wraith label is "spec syncer" (incorrect — that's Reaper); should be "researcher" or "recon". Raven label is "crew coordinator" (incorrect — Raven is the messenger/watcher, Captain is the coordinator); should be "messenger" or "watcher"
+~~- [ ] 2.5 Generate `docs/images/agent-roles-overview.png` — dropped; the README agents table with persona portraits already covers this adequately.~~
 
 ## 3. Visual Infographics — Insert into Docs
 
-- [x] 3.1 Insert `arch-system-placement.png` into `README.md` — after the introductory paragraph ("A multi-agent orchestration system...") and before the "## Why Ghostship?" heading, using: `![Ghostship architecture: harness → transport → crews → agents](docs/images/arch-system-placement.png)`
-- [x] 3.2 Insert `usage-flow.png` into `README.md` — at the start of the "### MCP Tools" section, immediately before the tools table, using: `![Usage flow: install → connect → launch → dispatch → pickup → nuke](docs/images/usage-flow.png)`
+- [x] 3.1 Insert `docs-arch-system-placement.png` into `README.md` — after the introductory paragraph ("A multi-agent orchestration system...") and before the "## Why Ghostship?" heading, using: `![Ghostship architecture: harness → transport → crews → agents](docs/images/docs-arch-system-placement.png)`
+- [x] 3.2 Insert `docs-usage-flow.png` into `README.md` — at the start of the "### MCP Tools" section, immediately before the tools table, using: `![Usage flow: install → connect → launch → dispatch → pickup → nuke](docs/images/docs-usage-flow.png)`
 - [x] 3.3 Insert `fleet-crew-hierarchy.png` into `docs/architecture.md` — immediately before the "## Components" heading, using: `![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](docs/images/fleet-crew-hierarchy.png)`
 - [x] 3.4 Insert `sdd-workflow.png` into `docs/architecture.md` — immediately after the "## Ghost Academy" section's closing paragraph (after "See [agents.md](agents.md) for what each persona owns..."), using: `![SDD workflow: Spectre → Ghost → Banshee → Reaper, with Raven/Captain orchestration](docs/images/sdd-workflow.png)`
-- [x] 3.5 Insert `agent-roles-overview.png` into `docs/agents.md` — after the agents table and before the paragraph beginning "The five worker personas form the OpenSpec cycle...", using: `![Agent roles: the six personas and what each owns in the OpenSpec workflow](docs/images/agent-roles-overview.png)`
+~~- [ ] 3.5 Insert `agent-roles-overview.png` into `docs/agents.md` — dropped with 2.5.~~
 
 ## 4. Tool Descriptions — transport/server.py
 
