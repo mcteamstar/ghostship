@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.3.2 (unreleased)
+## v0.4.0 (unreleased)
+
+---
+
+## v0.3.2
 
 ### Security
 
