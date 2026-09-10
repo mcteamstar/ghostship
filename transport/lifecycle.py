@@ -203,6 +203,14 @@ GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
+GA_PREWARM_ENABLED = cfg.ga_prewarm_enabled
+GA_PREWARM_TTL_SECS = cfg.ga_prewarm_ttl_secs
+
+# The effective crew session idle timeout. Spec-ops crews are patched with a
+# fixed ``session.timeout_secs = 300`` override (see _patch_crew_config); a
+# warm marker must never claim a session is warm past the point the idle reaper
+# would have reclaimed it, so the prewarm TTL is capped at this value.
+GA_SESSION_TIMEOUT_SECS = 300
 
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 
@@ -229,6 +237,14 @@ _startup_events_lock = threading.Lock()
 # _crew_api_with_recovery.
 _recovery_locks: dict[str, threading.Lock] = {}
 _recovery_locks_lock = threading.Lock()
+
+# TRN-131: Per-crew ACP warm markers. Maps crew_id → warmed_at (monotonic
+# seconds) recording the last successful prewarm. Guarded by its own lock,
+# mirroring the _startup_events_lock / _task_timestamps_lock patterns. The
+# marker is advisory: a missed or stale marker at worst causes one extra
+# idempotent warm-up request, never real work.
+_warm_markers: dict[str, float] = {}
+_warm_markers_lock = threading.Lock()
 
 _SCHEDULE_MONITOR_INTERVAL = 30  # seconds
 
@@ -685,6 +701,117 @@ def _ensure_crew_running(
         with _startup_events_lock:
             _startup_events.pop(crew_id, None)
         event.set()
+
+
+# ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────────
+
+# D1: the gateway surface used to fork the kiro-cli-chat session and complete
+# the ACP handshake WITHOUT enqueuing a real agent task. Pinned to a single
+# constant so a future KiroCrew change is a one-function fix (design D1 / risk
+# note). /api/ready is the gateway's readiness/session surface: it is
+# auth-bypassed and returns 200 only once the session manager is wired, which
+# is the request the transport drives to establish the session/ACP connection.
+_PREWARM_WARMUP_PATH = "/api/ready"
+
+
+def _effective_prewarm_ttl() -> int:
+    """Return the warm-lifetime hint, capped at the session idle timeout.
+
+    D3/D4: GA_PREWARM_TTL_SECS is an operator hint but a warm marker must never
+    claim a session is warm past the point the idle reaper (session.timeout_secs)
+    would have reclaimed it, so the effective TTL is capped at
+    GA_SESSION_TIMEOUT_SECS.
+    """
+    ttl = GA_PREWARM_TTL_SECS if GA_PREWARM_TTL_SECS > 0 else 0
+    return min(ttl, GA_SESSION_TIMEOUT_SECS)
+
+
+def _issue_warmup(crew: dict, crew_id: str) -> None:
+    """Drive the gateway warm-up request that forks the session (D1).
+
+    Routed through _crew_api_with_recovery so the Phase-0 503 "still spawning"
+    tolerance applies exactly as it does for a real dispatch. Raises on failure;
+    the caller translates that into an ``error:`` status.
+    """
+    _crew_api_with_recovery(crew, crew_id, "GET", _PREWARM_WARMUP_PATH)
+
+
+def _prewarm_crew(crew: dict, crew_id: str) -> dict:
+    """Pre-establish a crew's ACP session ahead of an expected dispatch.
+
+    Returns ``{"crew_id": crew_id, "status": <status>}`` where status is one of:
+
+    - ``disabled``      — GA_PREWARM_ENABLED is false; no start / no fork.
+    - ``already_warm``  — running container with a fresh warm marker; no second
+                          warm-up request and no restart.
+    - ``blocked:<gate>``— the memory or active-crew gate refused the start; no
+                          container start.
+    - ``warmed``        — the session was (re)warmed successfully.
+    - ``error:<msg>``   — the warm-up request failed; dispatch behaviour is
+                          unchanged.
+
+    Non-destructive: it dispatches no real task, sends no mail, and writes no
+    spec/workspace state. The only bookkeeping is the in-memory warm marker and
+    whatever _ensure_crew_running already performs for a normal auto-start.
+    """
+    # 2.2: opt-in gate — return early when disabled, before any start/fork.
+    if not GA_PREWARM_ENABLED:
+        return {"crew_id": crew_id, "status": "disabled"}
+
+    ttl = _effective_prewarm_ttl()
+
+    # 2.3: idempotency — a fresh warm marker on a running container is a no-op.
+    try:
+        podman = _get_podman()
+        container_running = podman.container_is_running(crew["container"])
+    except Exception:
+        container_running = False
+
+    if container_running and ttl > 0:
+        with _warm_markers_lock:
+            warmed_at = _warm_markers.get(crew_id)
+        if warmed_at is not None and (time.monotonic() - warmed_at) < ttl:
+            return {"crew_id": crew_id, "status": "already_warm"}
+
+    # 2.4: enforce the memory + active-crew gates, per-crew start serialisation,
+    # and gateway readiness via _ensure_crew_running. A gate RuntimeError is
+    # translated into blocked:<gate>.
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError as e:
+        msg = str(e)
+        if "Active crew limit" in msg:
+            gate = "active-crew-limit"
+        elif "memory" in msg.lower():
+            gate = "insufficient-memory"
+        else:
+            gate = "start-failed"
+        return {"crew_id": crew_id, "status": f"blocked:{gate}"}
+
+    # 2.5 / 2.6: issue the session warm-up (D1). On success record the marker
+    # and report warmed; on failure report error and leave dispatch unchanged.
+    try:
+        _issue_warmup(crew, crew_id)
+    except Exception as e:
+        return {"crew_id": crew_id, "status": f"error:{e}"}
+
+    with _warm_markers_lock:
+        _warm_markers[crew_id] = time.monotonic()
+    logger.info("Crew %s prewarmed (ACP session warm)", crew_id)
+    return {"crew_id": crew_id, "status": "warmed"}
+
+
+def prewarm(crew_id: str | None) -> dict:
+    """Public prewarm entry point shared by the MCP tool and REST endpoint.
+
+    Resolves the crew (2.7: an unknown crew_id returns an error and performs no
+    start or fork) then delegates to _prewarm_crew.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as e:
+        return {"error": str(e)}
+    return _prewarm_crew(crew, crew_id)
 
 
 # ── Launch helpers ────────────────────────────────────────────────────────────

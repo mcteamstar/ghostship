@@ -90,6 +90,21 @@
 # Maximum turns per task. KiroCrew default is 100.
 # GA_SUBAGENT_MAX_TURNS=200
 
+# ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────────
+# Opt-in warm-up of a crew's ACP session ahead of an expected dispatch, to hide
+# session cold-start latency. Off by default: when disabled, the prewarm MCP
+# tool and POST /crews/{id}/prewarm endpoint do nothing and report "disabled".
+# Set true (or 1/yes/on) to enable. Prewarm still respects GA_MIN_FREE_MEM_GB
+# and GA_MAX_ACTIVE_CREWS, and a warmed-but-unused session is still reaped by
+# the crew's session.timeout_secs idle timer.
+# GA_PREWARM_ENABLED=false
+
+# Warm-lifetime hint (seconds) for prewarm's idempotency check. A prewarm on a
+# running crew warmed within this window returns "already_warm" with no second
+# warm-up request. Capped internally at the crew's session.timeout_secs (300),
+# so a larger value has no effect beyond the cap. Only consulted when enabled.
+# GA_PREWARM_TTL_SECS=300
+
 # ── Memory gate ───────────────────────────────────────────────────────────────
 # Minimum free host memory (GB) required before launching a new crew.
 # Set to 0 to disable the gate entirely.

@@ -31,6 +31,11 @@ def _env_bool_default_on(name: str) -> bool:
     return os.environ.get(name, "1").strip() not in ("0", "false", "")
 
 
+def _env_bool_default_off(name: str) -> bool:
+    """Truthy only when explicitly enabled (default: off)."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 _config_logger = logging.getLogger(__name__)
 
 
@@ -93,6 +98,17 @@ class Config:
     # ── Subagent timeouts ────────────────────────────────────────────────────
     ga_subagent_timeout_secs: int = 3600
     ga_subagent_max_turns: int = 200
+
+    # ── ACP prewarm (TRN-131) ────────────────────────────────────────────────
+    # Opt-in warm-up of a crew's ACP session ahead of an expected dispatch.
+    # ga_prewarm_enabled defaults to False so no behaviour changes on existing
+    # installs: the prewarm MCP tool + REST endpoint report ``disabled`` and
+    # perform no container start or session fork. ga_prewarm_ttl_secs is the
+    # warm-lifetime hint used for the idempotency freshness check; it is capped
+    # at the effective session.timeout_secs (currently 300) inside _prewarm_crew
+    # so a warm marker can never outlive the idle reaper.
+    ga_prewarm_enabled: bool = False
+    ga_prewarm_ttl_secs: int = 300
 
     # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────
     # TRN-101: GA_DASHBOARD_PORT_ENABLED removed — dashboard access is now
@@ -184,6 +200,8 @@ class Config:
             ga_subagent_max_turns=int(
                 os.environ.get("GA_SUBAGENT_MAX_TURNS", "200")
             ),
+            ga_prewarm_enabled=_env_bool_default_off("GA_PREWARM_ENABLED"),
+            ga_prewarm_ttl_secs=int(os.environ.get("GA_PREWARM_TTL_SECS", "300")),
             ga_dashboard_port_range_start=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_START", "64058")),
             ga_dashboard_port_range_size=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_SIZE", "50")),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
