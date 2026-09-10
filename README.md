@@ -206,3 +206,11 @@ Registered as `ghostship`:
 - [docs/dashboard-proxy.md](docs/dashboard-proxy.md) — per-crew browser UI proxy, port allocation, security model
 - [docs/forks.md](docs/forks.md) — fork model: private/internal/public visibility, keeping your fork current with upstream
 - [docs/remote.md](docs/remote.md) — remote deployment guide: TLS, reverse proxy, known limitations
+
+### Route reference
+
+The transport serves a machine-readable OpenAPI 3.1.0 schema at **`GET /openapi.json`** (no auth required). It is generated at startup from the live route table and MCP tool registry and is the authoritative reference for all HTTP routes, auth requirements, and MCP tool definitions.
+
+```bash
+curl -s http://localhost:64057/openapi.json | jq .paths
+```

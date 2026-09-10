@@ -204,6 +204,8 @@ cannot call them. They are plain HTTP routes that require the same
 `Authorization: Bearer <key>` header as all other routes when `GA_API_KEY`
 is set.
 
+> **Route reference:** For the authoritative list of all transport HTTP routes and their auth requirements, fetch `GET /openapi.json` (no auth required) from the running transport. The schema is generated at startup from the live route table.
+
 ### Academy auth state machine
 
 ```
@@ -380,43 +382,68 @@ configs if desired.
 
 ## Admiral mail signing (`admiral_secret`)
 
-When a crew is launched, the transport generates a random 32-byte hex secret
-(`admiral_secret`) and injects it into the crew container at
-`/home/kirocrew/.kiro/crew/.admiral_secret` (mode `0600`). Every standing order
-the transport writes to `/var/mail/captain` includes an `X-Admiral-Sig:` header
-— an HMAC-SHA256 signature of the message body keyed by this secret. Raven can
-invoke `/usr/local/bin/verify-admiral-sig` to confirm a message is genuine
-before acting on it as a standing order.
+When a crew is launched, the transport generates an **Ed25519 keypair**
+(`Ed25519PrivateKey.generate()`). The **private seed** (hex-encoded raw 32-byte
+seed) is persisted host-side only — read by `captain.py` to sign standing
+orders — and is never placed inside the crew container. The **public key** is
+delivered into the container as a **Podman secret** named
+`admiral-pubkey-<crew_id>`, mounted read-only, root-owned, mode `0444` at
+`/run/secrets/.admiral_public_key`. Every standing order the
+transport writes to `/var/mail/captain` includes an `X-Admiral-Sig:` header —
+a base64url-encoded Ed25519 signature of the message body produced with the
+host-side private seed. Raven can invoke `/usr/local/bin/verify-admiral-sig`
+to confirm a message is genuine before acting on it as a standing order; the
+verifier loads the 32-byte public key from `.admiral_public_key`, base64url-
+decodes the header, and calls `public_key.verify(sig, payload)`.
 
 ### Delivery path and threat model
 
-The `admiral_secret` is written to one place:
+The Admiral signing key is now split into a private/public pair — the private
+half never enters the container, which is the core hardening over the previous
+symmetric HMAC design (TRN-136):
 
-1. **`.admiral_secret` file** (mode `0600`) — read by `verify-admiral-sig` to
-   verify Admiral mail signatures. This file is readable only by the
-   `kirocrew` user inside the container. The secret is delivered to the
-   injection script over **stdin** (TRN-93), never as a `podman exec`
-   argument, so it never appears in the exec argument list or in
-   `/proc/<pid>/cmdline` on the host.
+1. **Private seed (host-side only)** — the hex-encoded Ed25519 private seed is
+   persisted on the host via `_write_crew_secret` (mode `0600`, never stored in
+   `crews.json`) and used exclusively by `captain.py` to sign standing orders.
+   No copy of it exists inside the crew container, so no in-container process
+   can forge an Admiral signature regardless of its privileges.
 
-A separate `policy_signing_key` (also a random 32-byte hex secret) is
+2. **Public key (`.admiral_public_key`, in-container)** — delivered as a Podman
+   secret mounted **read-only, root-owned (uid/gid 0), mode `0444`**. A Podman
+   secret can only be attached at `container_create` time, so the transport
+   generates the keypair and calls `secret_create` *before* the create call.
+   Because the mount is read-only **and** the container drops `CAP_SYS_ADMIN`
+   (it cannot remount the filesystem read/write), `.admiral_public_key` is
+   **immutable from inside the container** — an agent cannot overwrite it with
+   a public key whose matching private key it controls. Verifying a signature
+   requires only the public key, so no secret is exposed in-container at all.
+
+   The mount point is `/run/secrets/`, deliberately **outside** the home and
+   workspace volumes. Podman creates the intermediate directories for a secret
+   target itself, owned by `root:root`, so a target under `/home/kirocrew` makes
+   the crew's own config directory unwritable and the entrypoint dies before the
+   gateway binds. `transport.constants.ADMIRAL_PUBKEY_PATH` and the `PUBKEY_PATH`
+   constant in `verify-admiral-sig` hold this path and must change together.
+
+**Threat model:** With an asymmetric keypair, reading `.admiral_public_key`
+grants no forging capability — the public key verifies signatures but cannot
+produce them, and the private seed is never in the container. This closes the
+symmetric-secret exposure risk of the prior HMAC scheme entirely. The
+**residual risk is replay**: a previously issued, correctly signed standing
+order can be re-delivered verbatim and will still verify, because the signature
+covers only the message body and carries no nonce or timestamp binding. Raven
+must therefore treat standing-order *content* and ordering as it always has;
+signature validity proves authenticity of origin, not freshness.
+
+A separate `policy_signing_key` (a random 32-byte hex secret) is
 generated at crew creation and used exclusively for policy signing:
 
-2. **`admission_policy.json` `trust_keys` field** — required by KiroCrew's
+3. **`admission_policy.json` `trust_keys` field** — required by KiroCrew's
    governance API to verify the security policy signature on gateway startup.
    This file is mode `0600` but is readable by agent processes running as the
-   `kirocrew` user inside the container. Because it contains `policy_signing_key`
-   (not `admiral_secret`), an agent that reads it can no longer extract the
-   Admiral mail-signing secret and forge standing orders.
-
-**Threat model:** An agent that reads `admission_policy.json` can extract the
-`policy_signing_key` and forge security policy signatures, but it cannot forge
-Admiral standing orders — those require `admiral_secret`, which is only
-accessible via the `.admiral_secret` file. This separation closes the
-previously accepted risk noted in TRN-38. For multi-operator or
-untrusted-agent deployments, storing `policy_signing_key` in
-`admission_policy.json` (which any `kirocrew`-user process can read) is
-still an accepted risk for the current isolated-container use case.
+   `kirocrew` user inside the container. It contains only `policy_signing_key`,
+   never the Admiral private seed, so an agent that reads it cannot forge
+   Admiral standing orders.
 
 ### Policy signing
 
@@ -431,23 +458,41 @@ valid policy without the `policy_signing_key`.
 `admission_policy.json` carries the `policy_signing_key` in its `trust_keys`
 field — this is required by KiroCrew's governance API, which reads trust keys
 from the policy file at gateway startup. Because `policy_signing_key` is
-separate from `admiral_secret`, agent-readable `admission_policy.json` no
-longer exposes the Admiral mail-signing secret (see TRN-53).
+separate from the Admiral signing key — and the Admiral private seed never
+enters the container at all — agent-readable `admission_policy.json` cannot be
+used to forge Admiral standing orders (see TRN-53, TRN-136).
+
+### Upgrade note (operators)
+
+TRN-136 replaces the previous symmetric HMAC Admiral-signing scheme
+(`.admiral_secret` + `admiral_secret`) with an Ed25519 keypair delivered via a
+read-only Podman secret (`.admiral_public_key`). **Existing crews are not
+migrated in place.** A Podman secret can only be attached at
+`container_create` time, so a transport restart or a crew *restart* does not
+give a running crew the new public-key mount, and a crew launched under the old
+scheme still has `.admiral_secret` (not `.admiral_public_key`) on its home
+volume. To adopt Ed25519 signing, an existing crew must be **nuked and
+relaunched** — the relaunch generates a fresh keypair and mounts the public key
+correctly. Until then, standing orders signed by the upgraded transport (now
+Ed25519, base64url) will not verify against an old crew's HMAC verifier, so
+plan the nuke/relaunch as part of the upgrade rather than expecting a rolling
+restart to suffice.
 
 ### Storage
 
-After `admiral_secret` and `policy_signing_key` are injected into the crew
-container, `crews.json` stores only a non-reversible identifier for each secret
+After the Admiral keypair and `policy_signing_key` are established for the crew,
+`crews.json` stores only a non-reversible identifier for each secret
 rather than the plaintext value. The identifiers use the scheme
 `"sha256:<hex[:16]>"` (a SHA-256 digest of the secret, truncated to 64 bits
 and prefixed with a label). These identifiers are sufficient for log correlation
 ("which crew used this secret fingerprint?") but cannot be used to replay or
-derive the original secrets. The `admiral_secret` plaintext is additionally
-persisted (mode `0600`) to `DATA_DIR/secrets/<crew_id>` so the transport can
-sign Captain standing orders after launch — but it is never stored in
-`crews.json`. The `policy_signing_key` plaintext is not persisted to disk on
-the host at all beyond the in-container `admission_policy.json`; only its
-identifier reaches the registry.
+derive the original secrets. The **Admiral Ed25519 private seed** (hex-encoded)
+is additionally persisted (mode `0600`) to `DATA_DIR/secrets/<crew_id>` so the
+transport can sign Captain standing orders after launch — but it is never stored
+in `crews.json` and is never delivered into the crew container (only the public
+key is, as a read-only Podman secret). The `policy_signing_key` plaintext is not
+persisted to disk on the host at all beyond the in-container
+`admission_policy.json`; only its identifier reaches the registry.
 
 `policy_signing_key_id` is only written to the registry when policy injection
 succeeds.
@@ -466,12 +511,13 @@ succeeds.
   `podman inspect` access should be restricted.
 - **Agent-level isolation:** Agent processes inside the crew container can
   read `admission_policy.json`, which carries `policy_signing_key` in its
-  `trust_keys` field (a hard dependency of the governance API). As of TRN-53,
-  `admission_policy.json` no longer contains `admiral_secret` — the two
-  secrets are now distinct. An agent that reads the file can no longer forge
-  Admiral standing orders; it can only forge security policy signatures, which
-  is a lower-impact capability in the current single-operator, isolated-container
-  use case.
+  `trust_keys` field (a hard dependency of the governance API). The container
+  holds only the Admiral **public** key (`.admiral_public_key`, mounted
+  read-only); the Ed25519 private seed used to sign standing orders never
+  enters the container (TRN-136). An agent that reads any in-container file can
+  therefore no longer forge Admiral standing orders; it can only forge security
+  policy signatures, which is a lower-impact capability in the current
+  single-operator, isolated-container use case.
 
 ## Dashboard session auth (Caddy / Portal mode)
 

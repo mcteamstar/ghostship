@@ -122,6 +122,12 @@ class Config:
     # Session TTL for gs_session cookies (dashboard login); default 24 h.
     ga_portal_session_ttl_secs: int = 86400
 
+    # ── User-defined orders directory (TRN-135) ──────────────────────────────
+    # When set, templates from this directory are merged with the built-in
+    # academy/orders/ templates. User-defined templates take precedence on
+    # name collision. Unset (default) means only built-in templates are used.
+    ga_orders_dir: str = ""
+
     # ── kiro-cli identity ────────────────────────────────────────────────────
     kiro_license: str = ""
     kiro_identity_provider: str = ""
@@ -195,4 +201,5 @@ class Config:
             kiro_identity_provider=os.environ.get("KIRO_IDENTITY_PROVIDER", ""),
             kiro_region=os.environ.get("KIRO_REGION", ""),
             kiro_api_key=os.environ.get("KIRO_API_KEY", ""),
+            ga_orders_dir=os.environ.get("GA_ORDERS_DIR", ""),
         )

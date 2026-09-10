@@ -126,19 +126,28 @@ The system SHALL only mark a crew "running" after all required setup steps have
 succeeded, and SHALL clean up the crew if any required step fails. Auth injection
 SHALL be verified by exit code, not by pattern-matching the output string.
 
+The Admiral Ed25519 keypair is established **before** crew setup begins, as part
+of container creation rather than as a setup step: the transport generates the
+keypair, persists the private seed host-side, registers the public key as a
+Podman secret, and attaches that secret to the `container_create` spec. The
+public key is therefore present in the container from the moment it first
+starts, and no setup step injects it. See the `crew-auth` capability for the
+keypair requirements.
+
 The setup steps SHALL execute in dependency order:
 
 1. Wait for gateway (pre-restart)
 2. Inject kiro-cli auth (`_inject_auth`)
-3. Generate and inject admiral signing secret — alongside auth, before restart,
-   so the secret is in place before Raven can ever run
+3. Generate the `policy_signing_key` — before restart, so it is in place before
+   the security policy is injected
 4. Patch crew config (`_patch_crew_config`) — including the required `agent`
    field sourced from `GA_CREW_AGENT` (default: `"kiro"`)
 5. Container restart (auth + config take effect)
 6. Wait for gateway (post-restart)
 7. Copy agents, skills, steering
 8. Seed OpenSpec store
-9. Inject security policy (depends only on admiral secret, not on the gateway)
+9. Inject security policy (depends only on `policy_signing_key`, not on the
+   gateway and not on the Admiral keypair)
 10. Wait for KiroCrew to seed built-in agent files (gateway-dependent)
 11. Patch model overrides — write `agents` directory files **before** calling
     any gateway endpoint, because the agents directory is write-protected at
@@ -146,9 +155,10 @@ The setup steps SHALL execute in dependency order:
 12. Mint session cookie
 13. Read version label, write registry entry
 
-The admiral signing secret write SHALL use `os.fsync` before closing the file
-descriptor to ensure the write is durable before any process inside the container
-can read the file.
+The host-side write of the Admiral private seed SHALL use `os.fsync` before
+closing the file descriptor, so the seed is durable before any standing order
+can be signed against it. Durability is no longer about in-container
+readability: the private seed never enters the container.
 
 The `_patch_crew_config` call in step 4 (pre-restart) SHALL write the `agent`
 field into `config.local.json` so the gateway picks it up on first start. The
@@ -164,16 +174,24 @@ runtime.
 #### Scenario: Successful setup
 
 - **WHEN** all setup steps succeed
-- **THEN** the crew is marked "running" and the admiral secret is present in the
-  container before the post-restart gateway ever becomes reachable
+- **THEN** the crew is marked "running", and the Admiral public key has been
+  present in the container since it first started
 
 #### Scenario: Admiral secret present before post-restart gateway
 
 - **WHEN** the transport has completed auth injection and the pre-restart gateway
   wait, and then restarts the container
-- **THEN** the admiral secret file exists at
-  `/home/kirocrew/.kiro/crew/.admiral_secret` before any post-restart gateway
-  call is made
+- **THEN** the Admiral key material the crew needs is already in place, because
+  the public key was attached to the `container_create` spec as a read-only
+  Podman secret and has been readable at `/run/secrets/.admiral_public_key`
+  since the container first started. No setup step writes it, and the guarantee
+  now holds from container creation rather than from just before the restart
+
+#### Scenario: No setup step writes the Admiral key into the container
+
+- **WHEN** crew setup runs to completion
+- **THEN** no `container_exec` call writes Admiral key material, and the private
+  seed exists only host-side
 
 #### Scenario: Cookie mint fails
 
@@ -623,8 +641,11 @@ The `_patch_crew_config` function SHALL write `"sandbox": "off"` into the `agent
 The transport SHALL enforce a separate limit on simultaneously running crew
 containers via `GA_MAX_ACTIVE_CREWS` (default: 3). Before starting a stopped
 crew container, `_ensure_crew_running` SHALL count the number of currently
-running containers in the registry and refuse to start if the count is at or
-above `GA_MAX_ACTIVE_CREWS`.
+running containers by verifying actual Podman container state, not by reading
+registry `status` alone. Any registry entry whose `status` is `"running"` but
+whose Podman container is not actually running SHALL be excluded from the running
+count and SHALL have its registry `status` corrected to `"stopped"` as a side
+effect of the check.
 
 This limit protects host memory independently of the registered-crew count: an
 operator can keep many idle crews registered while preventing too many from
@@ -632,20 +653,24 @@ running simultaneously.
 
 #### Scenario: Active limit not reached
 - **WHEN** `_ensure_crew_running` is called for a stopped crew and fewer than
-  `GA_MAX_ACTIVE_CREWS` crew containers are currently running
+  `GA_MAX_ACTIVE_CREWS` crew containers are currently running according to Podman
 - **THEN** the crew container is started normally
 
 #### Scenario: Active limit reached
 - **WHEN** `_ensure_crew_running` is called for a stopped crew and
-  `GA_MAX_ACTIVE_CREWS` crew containers are already running
-- **THEN** `_ensure_crew_running` raises `CrewUnresponsiveError` (or equivalent)
-  with a clear message indicating the active crew limit and instructing the
-  operator to wait for a running crew to idle out or nuke one
+  `GA_MAX_ACTIVE_CREWS` crew containers are actually running in Podman
+- **THEN** `_ensure_crew_running` raises a clear error indicating the active crew
+  limit and instructing the operator to wait for a running crew to idle out or nuke one
+
+#### Scenario: Stale registry entry excluded from active count
+- **WHEN** `_ensure_crew_running` counts running crews and a registry entry has
+  `status: "running"` but `container_is_running` returns false for its container
+- **THEN** that entry is NOT counted toward `GA_MAX_ACTIVE_CREWS` and its
+  registry status is corrected to `"stopped"`
 
 #### Scenario: Already-running crew is unaffected
 - **WHEN** `_ensure_crew_running` is called for a crew that is already running
-- **THEN** the active limit check is skipped — the crew is not counted a
-  second time
+- **THEN** the active limit check is skipped — the crew is not counted a second time
 
 #### Scenario: GA_MAX_ACTIVE_CREWS=0 disables the limit
 - **WHEN** `GA_MAX_ACTIVE_CREWS` is set to `0`
@@ -680,3 +705,31 @@ The `_ensure_crew_running` function SHALL serialise the probe-then-start sequenc
 #### Scenario: Second caller sees already-running container
 - **WHEN** a second caller acquires the per-crew lock after the first has already completed the start
 - **THEN** the second caller finds the container already running and returns immediately without issuing another `container_start`
+
+### Requirement: crews() active_crews reflects actual Podman state
+
+The `crews()` tool SHALL compute `active_crews` by verifying actual Podman
+container state for every registry entry whose `status` is `"running"`. A crew
+SHALL be included in `active_crews` only if its container is confirmed running
+via `container_is_running`. A crew whose registry says `"running"` but whose
+container is not actually running SHALL be reported with `status: "stopped"` in
+the response and SHALL NOT be counted in `active_crews`. The registry entry for
+any such crew SHALL be corrected to `status: "stopped"` as a side effect of
+the `crews()` call.
+
+#### Scenario: Registry-running crew whose container is actually running
+- **WHEN** `crews()` is called and a crew has `status: "running"` in the registry
+  and its Podman container is confirmed running
+- **THEN** that crew appears with `status: "running"` and is counted in `active_crews`
+
+#### Scenario: Registry-running crew whose container is externally stopped
+- **WHEN** `crews()` is called and a crew has `status: "running"` in the registry
+  but its Podman container is not running
+- **THEN** that crew appears with `status: "stopped"` in the response, is NOT
+  counted in `active_crews`, and the registry entry is corrected to `"stopped"`
+
+#### Scenario: active_crews matches confirmed running container count
+- **WHEN** `crews()` is called after one or more crew containers have been
+  stopped outside ghostship (e.g. via `podman stop` or a VM reboot)
+- **THEN** `active_crews` equals the number of containers that are actually
+  running in Podman, not the number of registry entries with `status: "running"`

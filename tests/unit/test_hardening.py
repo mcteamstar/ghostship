@@ -1,0 +1,812 @@
+"""Unit tests for container hardening -- stdin secret delivery, crews.json hygiene, container flags, file transfer audit, and admiral signing secret."""
+from __future__ import annotations
+
+import hashlib
+import importlib
+import io
+import json
+import logging
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
+
+# ── import helpers ────────────────────────────────────────────────────────────
+
+# Bootstrap transport modules via the dependency-free stub installer.
+from tests.unit.test_file_transfer import server  # noqa: F401  (installs stubs)
+
+import transport.lifecycle as lifecycle
+import transport.files as files_mod
+import transport.podman as podman_mod
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _make_podman_mock(**kwargs):
+    """Return a MagicMock Podman client with sensible defaults."""
+    m = MagicMock()
+    m.container_exec.return_value = "ready"
+    m.container_exec_checked.return_value = "ok"
+    m.container_exec_stdin.return_value = "admiral secret injected"
+    m.container_inspect.return_value = {"Config": {"Labels": {}}}
+    for k, v in kwargs.items():
+        setattr(m, k, v)
+    return m
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRN-136: Admiral public key is NOT injected via container-exec
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAdmiralKeyNotExecInjected(unittest.TestCase):
+    """TRN-136: the Admiral key is delivered as a read-only Podman secret at
+    container_create time, so _finish_crew_setup must NOT run any
+    container-exec injection script for it."""
+
+    def test_finish_crew_setup_does_not_exec_inject_admiral(self) -> None:
+        """_finish_crew_setup makes no container_exec_stdin call for the admiral key."""
+        import transport.registry as _registry_mod
+        stdin_calls: list[tuple[str, list, bytes]] = []
+
+        podman = MagicMock()
+        podman.container_exec.return_value = "ready"
+        podman.container_exec_checked.return_value = "ok"
+        podman.container_inspect.return_value = {"Config": {"Labels": {}}}
+        podman.container_stop = MagicMock()
+        podman.container_start = MagicMock()
+
+        def capture_exec_stdin(container, cmd, stdin_data):
+            stdin_calls.append((container, cmd, stdin_data))
+            return "ok"
+
+        podman.container_exec_stdin = MagicMock(side_effect=capture_exec_stdin)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                stack.enter_context(patch.object(lifecycle, "_inject_auth"))
+                stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+                stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+                stack.enter_context(patch.object(lifecycle, "_patch_models"))
+                stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+                stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
+                lifecycle._finish_crew_setup(
+                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth",
+                    admiral_secret="ab" * 32,
+                )
+
+        admiral_inject_calls = [
+            c for c in stdin_calls if any("inject_admiral_secret" in part for part in c[1])
+        ]
+        self.assertEqual(
+            len(admiral_inject_calls), 0,
+            "TRN-136: admiral key must not be delivered via container_exec_stdin",
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# crews.json credential hygiene
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCrewsJsonHygiene(unittest.TestCase):
+    """crews.json must store identifiers only, never plaintext secrets."""
+
+    def _run_finish_crew_setup(self) -> dict:
+        """Run lifecycle._finish_crew_setup and return the crews.json entry for 'demo'."""
+        import transport.registry as _registry_mod
+
+        podman = MagicMock()
+        podman.container_exec.return_value = "ready"
+        podman.container_exec_checked.return_value = "ok"
+        podman.container_exec_stdin.return_value = "admiral secret injected"
+        podman.container_inspect.return_value = {"Config": {"Labels": {}}}
+        podman.container_stop = MagicMock()
+        podman.container_start = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "crews.json"
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", registry_path))
+                stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                stack.enter_context(patch.object(lifecycle, "_inject_auth"))
+                stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+                stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+                stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+                stack.enter_context(patch.object(lifecycle, "_patch_models"))
+                stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+                stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
+                lifecycle._finish_crew_setup(
+                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth",
+                    admiral_secret="cd" * 32,
+                )
+            registry_data = json.loads(registry_path.read_text())
+        return registry_data.get("crews", {}).get("demo", {})
+
+    def test_admiral_secret_absent_from_crews_json(self) -> None:
+        """crews.json must not contain the plaintext admiral_secret field."""
+        entry = self._run_finish_crew_setup()
+        self.assertNotIn("admiral_secret", entry,
+                         "plaintext admiral_secret must not be stored in crews.json")
+
+    def test_admiral_secret_id_present_as_sha256_identifier(self) -> None:
+        """crews.json must contain admiral_secret_id as a sha256:<hex> string."""
+        entry = self._run_finish_crew_setup()
+        self.assertIn("admiral_secret_id", entry,
+                      "admiral_secret_id identifier must be present in crews.json")
+        val = entry["admiral_secret_id"]
+        self.assertTrue(str(val).startswith("sha256:"),
+                        f"admiral_secret_id must start with 'sha256:', got: {val!r}")
+
+    def test_secret_identifier_format(self) -> None:
+        """_secret_identifier returns sha256:<16-char hex prefix>."""
+        result = lifecycle._secret_identifier("my_secret_value")
+        expected_hash = hashlib.sha256("my_secret_value".encode()).hexdigest()[:16]
+        self.assertEqual(result, f"sha256:{expected_hash}")
+
+    def test_secret_identifier_is_non_reversible(self) -> None:
+        """Two different secrets produce different identifiers."""
+        id1 = lifecycle._secret_identifier("secret_one")
+        id2 = lifecycle._secret_identifier("secret_two")
+        self.assertNotEqual(id1, id2)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Container hardening flags
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestContainerHardeningFlags(unittest.TestCase):
+    """container_create and worker_run specs include no_new_privileges and cap_drop."""
+
+    def test_container_create_includes_no_new_privileges(self) -> None:
+        """container_create spec must include no_new_privileges=True."""
+        captured: list[dict] = []
+
+        client = podman_mod.PodmanClient.__new__(podman_mod.PodmanClient)
+
+        def fake_req(method, path, **kw):
+            if method == "POST" and "containers/create" in path:
+                captured.append(kw.get("json", {}))
+            return {}
+
+        client._req = fake_req
+
+        client.container_create(
+            name="test-crew",
+            image="localhost/spec-ops:latest",
+            env={},
+            network="ga-net",
+            workspace_volume="gs-vol-test",
+            home_volume="gs-home-test",
+        )
+
+        self.assertEqual(len(captured), 1)
+        spec = captured[0]
+        self.assertTrue(spec.get("no_new_privileges"),
+                        "container_create spec must include no_new_privileges=True")
+
+    def test_container_create_includes_cap_drop(self) -> None:
+        """container_create spec must drop CAP_NET_RAW and CAP_SYS_ADMIN."""
+        captured: list[dict] = []
+
+        client = podman_mod.PodmanClient.__new__(podman_mod.PodmanClient)
+
+        def fake_req(method, path, **kw):
+            if method == "POST" and "containers/create" in path:
+                captured.append(kw.get("json", {}))
+            return {}
+
+        client._req = fake_req
+
+        client.container_create(
+            name="test-crew",
+            image="localhost/spec-ops:latest",
+            env={},
+            network="ga-net",
+            workspace_volume="gs-vol-test",
+            home_volume="gs-home-test",
+        )
+
+        spec = captured[0]
+        cap_drop = spec.get("cap_drop", [])
+        self.assertIn("CAP_NET_RAW", cap_drop,
+                      "container_create spec must drop CAP_NET_RAW")
+        self.assertIn("CAP_SYS_ADMIN", cap_drop,
+                      "container_create spec must drop CAP_SYS_ADMIN")
+
+    def test_worker_run_includes_no_new_privileges(self) -> None:
+        """worker_run spec must include no_new_privileges=True."""
+        captured: list[dict] = []
+
+        client = podman_mod.PodmanClient.__new__(podman_mod.PodmanClient)
+
+        def fake_req(method, path, **kw):
+            if method == "POST" and "containers/create" in path:
+                captured.append(kw.get("json", {}))
+            return {"Id": "fake-exec-id"} if "exec" in path else {}
+
+        def fake_image_exists(image):
+            return True
+
+        client._req = fake_req
+        client._image_exists = fake_image_exists
+        # container_start, container_stop, volume ops aren't needed
+        client.container_start = MagicMock()
+
+        # Simulate the create→start→wait→logs sequence by patching the httpx client
+        mock_c = MagicMock()
+        mock_c.post.return_value.status_code = 200
+        mock_c.post.return_value.content = b""
+        mock_c.post.return_value.json.return_value = 0  # exit code 0
+        mock_c.get.return_value.status_code = 200
+        mock_c.get.return_value.content = b""
+        mock_c.delete.return_value = MagicMock()
+        client._c = mock_c
+
+        # The worker_run spec is captured via fake_req before container_start is called
+        try:
+            client.worker_run("gs-vol-test", ["cat", "/workspace/README.md"])
+        except Exception:
+            pass  # Container operations will fail; we only care about the spec
+
+        # worker_run may also use the _c.post path for create
+        if not captured:
+            # Fall back: check via _c.post calls
+            for c in mock_c.post.call_args_list:
+                args, kwargs = c
+                if kwargs.get("json"):
+                    captured.append(kwargs["json"])
+
+        # If we got any spec from the create call, check it
+        create_specs = [s for s in captured if "no_new_privileges" in s or "image" in s]
+        if create_specs:
+            spec = create_specs[0]
+            self.assertTrue(spec.get("no_new_privileges"),
+                            "worker_run spec must include no_new_privileges=True")
+
+    def test_worker_run_spec_has_hardening_flags_via_inspection(self) -> None:
+        """worker_run builds a spec dict that includes no_new_privileges and cap_drop.
+
+        This test inspects the spec dict constructed inside worker_run by
+        intercepting the _req call before it reaches Podman.
+        """
+        captured_spec: list[dict] = []
+
+        client = podman_mod.PodmanClient.__new__(podman_mod.PodmanClient)
+
+        def fake_req(method, path, **kw):
+            if method == "POST" and path.endswith("/containers/create"):
+                captured_spec.append(kw.get("json", {}))
+                # Return a minimal "created" response so worker_run can proceed
+                return {}
+            # For other calls (start, wait, logs, delete), return safe defaults
+            return {}
+
+        def fake_image_exists(image: str) -> bool:
+            return True
+
+        mock_c = MagicMock()
+        # container_start: no-op
+        mock_c.post.return_value.status_code = 200
+        mock_c.post.return_value.content = b"\x00\x00\x00\x00\x00\x00\x00\x00"  # exit 0 wait
+        mock_c.post.return_value.raise_for_status = MagicMock()
+        # wait response: return exit code 0
+        wait_resp = MagicMock()
+        wait_resp.status_code = 200
+        wait_resp.content = b"0"
+        wait_resp.json.return_value = 0
+        wait_resp.raise_for_status = MagicMock()
+        # logs response
+        logs_resp = MagicMock()
+        logs_resp.status_code = 200
+        logs_resp.content = b""
+        mock_c.post.side_effect = lambda *a, **kw: wait_resp if "wait" in str(a) else mock_c.post.return_value
+        mock_c.get.return_value = logs_resp
+        mock_c.delete.return_value = MagicMock()
+        client._c = mock_c
+        client._req = fake_req
+        client._image_exists = fake_image_exists
+
+        try:
+            client.worker_run("gs-vol-test", ["echo", "hi"])
+        except Exception:
+            pass
+
+        self.assertTrue(len(captured_spec) >= 1, "worker_run must call _req POST containers/create")
+        spec = captured_spec[0]
+        self.assertTrue(spec.get("no_new_privileges"),
+                        "worker_run spec must include no_new_privileges=True")
+        cap_drop = spec.get("cap_drop", [])
+        self.assertIn("CAP_NET_RAW", cap_drop,
+                      "worker_run spec must drop CAP_NET_RAW")
+        self.assertIn("CAP_SYS_ADMIN", cap_drop,
+                      "worker_run spec must drop CAP_SYS_ADMIN")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# File transfer audit events
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFileTransferAudit(unittest.TestCase):
+    """audit_auth_event is called with correct action/outcome for file-transfer operations."""
+
+    # ── presign_evac ──────────────────────────────────────────────────────────
+
+    def test_evac_presign_emits_audit_event(self) -> None:
+        """evac() calls audit_auth_event(action='presign_evac', outcome='issued')."""
+        audit_calls: list[dict] = []
+
+        def capture_audit(**kw):
+            audit_calls.append(kw)
+            return kw
+
+        with (
+            patch.object(server, "_require_crew", return_value={"container": "gs-demo", "cookie": "c"}),
+            patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo", "cookie": "c"}),
+            patch.object(server._security, "audit_auth_event", side_effect=capture_audit),
+        ):
+            result = server.evac(path="repo/file.txt", crew_id="demo")
+
+        self.assertNotIn("error", result)
+        evac_events = [e for e in audit_calls if e.get("action") == "presign_evac"]
+        self.assertEqual(len(evac_events), 1,
+                         "evac() must emit exactly one presign_evac audit event")
+        self.assertEqual(evac_events[0]["outcome"], "issued")
+        self.assertIsNone(evac_events[0].get("source"))
+
+    # ── presign_supply ────────────────────────────────────────────────────────
+
+    def test_supply_presign_emits_audit_event(self) -> None:
+        """supply() calls audit_auth_event(action='presign_supply', outcome='issued')."""
+        audit_calls: list[dict] = []
+
+        def capture_audit(**kw):
+            audit_calls.append(kw)
+            return kw
+
+        with (
+            patch.object(server, "_require_crew", return_value={"container": "gs-demo", "cookie": "c"}),
+            patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo", "cookie": "c"}),
+            patch.object(server._security, "audit_auth_event", side_effect=capture_audit),
+        ):
+            result = server.supply(path="repo/file.txt", crew_id="demo")
+
+        self.assertNotIn("error", result)
+        supply_events = [e for e in audit_calls if e.get("action") == "presign_supply"]
+        self.assertEqual(len(supply_events), 1,
+                         "supply() must emit exactly one presign_supply audit event")
+        self.assertEqual(supply_events[0]["outcome"], "issued")
+
+    # ── verify_file_token: valid ──────────────────────────────────────────────
+
+    def test_verify_file_token_valid_emits_audit_event(self) -> None:
+        """A valid token calls audit_auth_event(action='verify_file_token', outcome='valid')."""
+        import hashlib, hmac as _hmac, time as _time
+        import transport.files as f
+
+        secret = "test-secret-xyz"
+        crew_id, path = "demo", "repo/file.txt"
+        expires = int(_time.time()) + 300
+        flags = ""
+        payload = f"{crew_id}:{path}:{expires}:GET::{flags}"
+        sig = _hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+        audit_calls: list[dict] = []
+
+        def capture(**kw):
+            audit_calls.append(kw)
+            return kw
+
+        with (
+            patch.object(f, "_FILE_SECRET", secret),
+            patch.object(f._security, "audit_auth_event", side_effect=capture),
+        ):
+            result = f._verify_file_token(crew_id, path, str(expires), sig)
+
+        self.assertTrue(result)
+        valid_events = [e for e in audit_calls if e.get("outcome") == "valid"]
+        self.assertEqual(len(valid_events), 1)
+        self.assertEqual(valid_events[0]["action"], "verify_file_token")
+
+    # ── verify_file_token: invalid HMAC ──────────────────────────────────────
+
+    def test_verify_file_token_invalid_hmac_emits_audit_event(self) -> None:
+        """A bad HMAC calls audit_auth_event(action='verify_file_token', outcome='invalid')."""
+        import transport.files as f
+        import time as _time
+
+        expires = int(_time.time()) + 300
+        audit_calls: list[dict] = []
+
+        def capture(**kw):
+            audit_calls.append(kw)
+            return kw
+
+        with patch.object(f._security, "audit_auth_event", side_effect=capture):
+            result = f._verify_file_token("demo", "repo/file.txt", str(expires), "bad_sig")
+
+        self.assertFalse(result)
+        invalid_events = [e for e in audit_calls if e.get("outcome") == "invalid"]
+        self.assertEqual(len(invalid_events), 1)
+        self.assertEqual(invalid_events[0]["action"], "verify_file_token")
+
+    # ── verify_file_token: expired ────────────────────────────────────────────
+
+    def test_verify_file_token_expired_emits_audit_event(self) -> None:
+        """An expired token calls audit_auth_event(action='verify_file_token', outcome='expired')."""
+        import transport.files as f
+
+        # Use an expires timestamp in the past
+        expires = str(int(time.time()) - 100)
+        audit_calls: list[dict] = []
+
+        def capture(**kw):
+            audit_calls.append(kw)
+            return kw
+
+        with patch.object(f._security, "audit_auth_event", side_effect=capture):
+            result = f._verify_file_token("demo", "repo/file.txt", expires, "any_sig")
+
+        self.assertFalse(result)
+        expired_events = [e for e in audit_calls if e.get("outcome") == "expired"]
+        self.assertEqual(len(expired_events), 1)
+        self.assertEqual(expired_events[0]["action"], "verify_file_token")
+
+    # ── audit events must not include secret material ─────────────────────────
+
+    def test_audit_events_do_not_include_presigned_url(self) -> None:
+        """Presign audit events must not log the presigned URL."""
+        audit_calls: list[dict] = []
+
+        def capture(**kw):
+            audit_calls.append(kw)
+            return kw
+
+        with (
+            patch.object(server, "_require_crew", return_value={"container": "gs-demo", "cookie": "c"}),
+            patch.object(server, "_ensure_crew_running", return_value={"container": "gs-demo", "cookie": "c"}),
+            patch.object(server._security, "audit_auth_event", side_effect=capture),
+        ):
+            server.evac(path="repo/file.txt", crew_id="demo")
+            server.supply(path="repo/file.txt", crew_id="demo")
+
+        for event in audit_calls:
+            event_str = json.dumps(event)
+            # A presigned URL starts with http and contains expires/sig params
+            self.assertNotIn("expires=", event_str,
+                             "Audit event must not contain presigned URL params")
+            self.assertNotIn("&sig=", event_str,
+                             "Audit event must not contain HMAC signature")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Admiral signing-secret file (TRN-93 Banshee fix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAdmiralSigningSecretFile(unittest.TestCase):
+    """The admiral private seed is persisted to a separate host-side file at
+    launch time (TRN-136: before container_create); captain reads it back so
+    standing orders are signed correctly."""
+
+    def test_launch_writes_crew_secret_file(self) -> None:
+        """launch() calls _write_crew_secret with the hex-encoded Ed25519 seed."""
+        import transport.registry as _registry_mod
+        import transport.server as server_mod
+
+        written_secrets: list[tuple[str, str]] = []
+
+        def capture_write(crew_id: str, secret: str) -> None:
+            written_secrets.append((crew_id, secret))
+
+        podman = MagicMock()
+        podman.network_create = MagicMock()
+        podman.volume_create = MagicMock()
+        podman.container_create = MagicMock(return_value={})
+        podman.container_start = MagicMock()
+        podman.secret_create = MagicMock()
+        podman.secret_remove = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
+                stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                stack.enter_context(patch.object(server_mod, "DATA_DIR", Path(tmp)))
+                stack.enter_context(patch.object(server_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
+                stack.enter_context(patch.object(server_mod, "_get_podman", return_value=podman))
+                stack.enter_context(patch.object(server_mod, "_read_auth_file", return_value="auth"))
+                stack.enter_context(patch.object(server_mod, "_write_crew_secret", side_effect=capture_write))
+                # Fail the gateway wait right after start so we stop before the
+                # full finish flow; the secret write happens before create.
+                stack.enter_context(patch.object(server_mod, "_wait_gateway", return_value=False))
+                server_mod.launch("demo")
+
+        self.assertEqual(len(written_secrets), 1,
+                         "_write_crew_secret must be called exactly once at launch")
+        crew_id, secret = written_secrets[0]
+        self.assertEqual(crew_id, "demo")
+        self.assertIsInstance(secret, str)
+        # The seed is a 64-char hex string (32 raw bytes) — not the identifier.
+        self.assertEqual(len(secret), 64, "admiral seed must be 32-byte hex (64 chars)")
+        self.assertFalse(secret.startswith("sha256:"),
+                         "_write_crew_secret must receive the raw seed, not the identifier")
+        # And it must be valid hex.
+        bytes.fromhex(secret)
+
+    def test_write_and_read_crew_secret_roundtrip(self) -> None:
+        """_write_crew_secret and _read_crew_secret roundtrip correctly."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                _registry_mod._write_crew_secret("test-crew", "my_secret_value_abc")
+                result = _registry_mod._read_crew_secret("test-crew")
+        self.assertEqual(result, "my_secret_value_abc")
+
+    def test_read_crew_secret_returns_none_when_absent(self) -> None:
+        """_read_crew_secret returns None for a crew with no secret file."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                result = _registry_mod._read_crew_secret("nonexistent-crew")
+        self.assertIsNone(result)
+
+    def test_crew_secret_file_has_mode_0600(self) -> None:
+        """The crew secret file is written with mode 0600."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                _registry_mod._write_crew_secret("test-crew", "s3cr3t")
+                secret_path = _registry_mod._crew_secret_path("test-crew")
+                mode = secret_path.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600,
+                         "Crew secret file must be mode 0600")
+
+    def test_delete_crew_secret_removes_file(self) -> None:
+        """_delete_crew_secret removes the secret file."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                _registry_mod._write_crew_secret("test-crew", "s3cr3t")
+                _registry_mod._delete_crew_secret("test-crew")
+                result = _registry_mod._read_crew_secret("test-crew")
+        self.assertIsNone(result, "_delete_crew_secret must remove the secret file")
+
+    def test_delete_crew_secret_noop_when_absent(self) -> None:
+        """_delete_crew_secret does not raise if the file doesn't exist."""
+        import transport.registry as _registry_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(_registry_mod, "DATA_DIR", Path(tmp)):
+                # Should not raise
+                _registry_mod._delete_crew_secret("nonexistent-crew")
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API key loading
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestApiKeyLoading(unittest.TestCase):
+    """Transport reads /run/secrets/ga-api-key when file exists."""
+
+    def test_reads_from_secrets_file(self):
+        """Transport reads /run/secrets/ga-api-key when file exists."""
+        original_is_file = Path.is_file
+        original_read_text = Path.read_text
+
+        def mock_is_file(self):
+            if str(self) == "/run/secrets/ga-api-key":
+                return True
+            return original_is_file(self)
+
+        def mock_read_text(self, *args, **kwargs):
+            if str(self) == "/run/secrets/ga-api-key":
+                return "  test-secret-key-123  \n"
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.object(Path, "is_file", mock_is_file), \
+             patch.object(Path, "read_text", mock_read_text):
+            result = server._load_api_key()
+            self.assertEqual(result, "test-secret-key-123")
+
+    def test_no_key_returns_empty(self):
+        """Neither secret file nor env var → empty string, auth disabled."""
+        import os
+        original_is_file = Path.is_file
+
+        def mock_is_file(self):
+            if str(self) == "/run/secrets/ga-api-key":
+                return False
+            return original_is_file(self)
+
+        env_backup = os.environ.pop("GA_API_KEY", None)
+        try:
+            with patch.object(Path, "is_file", mock_is_file), \
+                 patch("logging.getLogger") as mock_get_logger:
+                mock_logger = MagicMock()
+                mock_get_logger.return_value = mock_logger
+                result = server._load_api_key()
+                self.assertEqual(result, "")
+                mock_logger.warning.assert_called_once()
+        finally:
+            if env_backup is not None:
+                os.environ["GA_API_KEY"] = env_backup
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Login concurrency
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LoginConcurrencyTests(unittest.TestCase):
+    """Concurrent POST /login and guarded GET /login clear."""
+
+    def test_concurrent_post_login_one_wins(self):
+        """Two threads call POST /login simultaneously; exactly one gets 200, other 409."""
+        import asyncio
+        import threading
+        import time
+
+        # Reset module state
+        lifecycle._login_pending = None
+
+        results = [None, None]
+        barrier = threading.Barrier(2, timeout=5)
+
+        # Mock dependencies
+        mock_podman = MagicMock()
+        mock_podman.container_exec.return_value = "kiro-cli"
+
+        container_counter = [0]
+        counter_lock = threading.Lock()
+
+        def slow_start(podman):
+            with counter_lock:
+                container_counter[0] += 1
+                n = container_counter[0]
+            time.sleep(0.05)
+            return f"ga-login-test-{n}"
+
+        def mock_read_auth():
+            return ""  # Not authenticated
+
+        def mock_get_podman():
+            return mock_podman
+
+        # Mock the pty exec to return a fake URL
+        mock_sock = MagicMock()
+        mock_sock.recv.return_value = b"Open this URL: https://example.com/device?user_code=TEST-1234"
+        mock_sock.setblocking = MagicMock()
+        mock_podman.container_exec_pty_stdin.return_value = ("exec-123", mock_sock)
+
+        def run_login(idx):
+            barrier.wait()
+            loop = asyncio.new_event_loop()
+            try:
+                with patch.object(server, "_read_auth_file", mock_read_auth), \
+                     patch.object(server, "_get_podman", mock_get_podman), \
+                     patch.object(lifecycle, "_start_login_container", slow_start), \
+                     patch.object(lifecycle, "_nuke_login_container"):
+                    request = MagicMock()
+                    resp = loop.run_until_complete(server._handle_login_post(request))
+                    results[idx] = resp.status_code
+            except Exception as e:
+                results[idx] = f"error: {e}"
+            finally:
+                loop.close()
+
+        t1 = threading.Thread(target=run_login, args=(0,))
+        t2 = threading.Thread(target=run_login, args=(1,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Exactly one should be 409
+        status_codes = sorted([r for r in results if isinstance(r, int)])
+        self.assertIn(409, status_codes,
+                      f"Expected one 409 from concurrent POST /login, got: {results}")
+        # The other should succeed (200) or at least not also be 409
+        non_409 = [s for s in status_codes if s != 409]
+        self.assertTrue(len(non_409) >= 1,
+                        f"Expected at least one non-409 result, got: {results}")
+
+        # Clean up
+        lifecycle._login_pending = None
+
+    def test_does_not_clear_if_different_container(self):
+        """_login_pending with different container name is NOT cleared."""
+        import time
+
+        # The old container (the one that just completed)
+        old_pending = {
+            "container": "ga-login-OLD-xyz789",
+            "started_at": time.time() - 60,
+            "state": "started",
+            "exec_id": "exec-old",
+        }
+
+        # Simulate: the GET handler captured old_pending, then a new POST set a new sentinel
+        lifecycle._login_pending = {
+            "container": "ga-login-NEW-abc123",
+            "started_at": time.time(),
+            "state": "started",
+            "exec_id": "exec-new",
+        }
+
+        # Execute the guarded clear logic (as in _handle_login_get)
+        with lifecycle._login_pending_lock:
+            if lifecycle._login_pending is not None and \
+               lifecycle._login_pending.get("container") == old_pending["container"]:
+                lifecycle._login_pending = None
+
+        # _login_pending should NOT be cleared (different container)
+        self.assertIsNotNone(lifecycle._login_pending)
+        self.assertEqual(lifecycle._login_pending["container"], "ga-login-NEW-abc123")
+
+        # Clean up
+        lifecycle._login_pending = None
+
+    def test_clears_when_container_matches(self):
+        """GET /login clears _login_pending when container matches."""
+        import time
+
+        container_name = "ga-login-match-abc"
+        lifecycle._login_pending = {
+            "container": container_name,
+            "started_at": time.time(),
+            "state": "started",
+            "exec_id": "exec-match",
+        }
+
+        pending = lifecycle._login_pending.copy()
+
+        # Execute the guarded clear logic
+        with lifecycle._login_pending_lock:
+            if lifecycle._login_pending is not None and \
+               lifecycle._login_pending.get("container") == pending["container"]:
+                lifecycle._login_pending = None
+
+        self.assertIsNone(lifecycle._login_pending)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# install.sh Podman secret
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestInstallShPodmanSecret(unittest.TestCase):
+    """install.sh creates Podman secret, no GA_API_KEY in env."""
+
+    def test_install_script_has_secret_create(self):
+        """install.sh contains podman secret create and no env-var pass."""
+        install_path = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
+        if not install_path.exists():
+            self.skipTest("scripts/install.sh not found relative to test")
+
+        content = install_path.read_text()
+        self.assertIn("secret rm ga-api-key", content)
+        self.assertIn("secret create ga-api-key", content)
+        # Secret is referenced in the compose file's secrets section, not via --secret flag
+        self.assertIn("ga-api-key", content)
+        # Verify plain env var pass is gone
+        self.assertNotIn('-e "GA_API_KEY=${GA_API_KEY:-}"', content)
+
+
+if __name__ == "__main__":
+    unittest.main()

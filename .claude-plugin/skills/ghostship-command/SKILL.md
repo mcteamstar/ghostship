@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.3.1"
+  version: "0.3.2"
 ---
 
 # Ghostship Command
@@ -255,7 +255,7 @@ Use `interval=300` (5 min) for SDD work — comfortably inside the idle-stop
 window. A scheduled check-in existing does **not** by itself keep a crew
 warm between runs; only actual dispatch/cron activity refreshes the idle timer.
 
-The built-in `sdd` template (full body via `transport://orders`) drives Raven
+The built-in `spec-driven-development` template (aliases: `sdd`, `specky`) drives Raven
 to read real OpenSpec + `tasks.md` state each check-in, then dispatch spectre
 while planning is incomplete, ghost while tasks are unchecked, banshee for
 review, and reaper to archive. After one unresolved fix/re-review cycle, it
@@ -267,13 +267,14 @@ comma-separated list of change names as `change_name` and Raven sets up an
 isolated git worktree per change, drives each through the full SDD lifecycle
 concurrently, then merges all branches and runs tests in a reconciliation phase.
 
-The built-in `independent-review` template (full body via `transport://orders`)
-dispatches Banshee × 3 (security, quality, test-coverage) and Wraith (docs)
-concurrently on each check-in, collects their findings, and mails a
-consolidated report to Admiral. Use it for periodic or pre-release audits.
+The built-in `independent-review` template (alias: `indy`) dispatches Banshee × 3
+(security, quality, test-coverage) and Wraith (docs) concurrently on each check-in,
+collects their findings, and mails a consolidated report to Admiral. Use it for
+periodic or pre-release audits.
 
-**Available built-in templates:** `sdd`, `independent-review`. Read
-`transport://orders` for the full body of each before use — the list is
+**Available built-in templates:** `spec-driven-development` (`sdd`, `specky`),
+`independent-review` (`indy`). Read `transport://orders` for the index or
+`transport://orders/{name}` for a template's full body — the list is
 install-configurable and may include custom templates.
 
 For monitoring orders (watch a one-shot task, report when done), write a

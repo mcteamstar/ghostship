@@ -87,6 +87,8 @@ A crew launched headless (the default) has `dashboard_url: null` in its response
 
 A headless crew can be given a dashboard later — and a dashboard can be released — through two REST endpoints on the transport port. Both require the `Authorization: Bearer <key>` header when `GA_API_KEY` is set.
 
+> **Route reference:** For the authoritative list of all transport HTTP routes, fetch `GET /openapi.json` (no auth required) from the running transport.
+
 **`POST /crews/{crew_id}/dashboard`** — allocate a UI port, register with Portal, and store `dashboard_port` in the registry. Returns `{"dashboard_url": "..."}`. No-op if the crew already has a dashboard.
 
 ```bash

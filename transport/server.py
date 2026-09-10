@@ -130,6 +130,7 @@ except ModuleNotFoundError:
 try:
     import caddy as _caddy  # container: both files flat in /app
     from caddy import (  # noqa: F401  re-exported for existing call-sites
+        CaddyPortal,
         _dashboard_ports_in_use,
         _allocate_dashboard_port,
         _release_dashboard_port,
@@ -140,12 +141,26 @@ try:
 except ModuleNotFoundError:
     from transport import caddy as _caddy  # local dev
     from transport.caddy import (  # noqa: F401  re-exported for existing call-sites
+        CaddyPortal,
         _dashboard_ports_in_use,
         _allocate_dashboard_port,
         _release_dashboard_port,
         _caddy_admin_url,
         _caddy_register_crew,
         _caddy_deregister_crew,
+    )
+
+try:
+    import dashboard as _dashboard  # container: both files flat in /app
+    from dashboard import (  # noqa: F401  re-exported for existing call-sites
+        DashboardGate,
+        _validate_next_url,
+    )
+except ModuleNotFoundError:
+    from transport import dashboard as _dashboard  # local dev
+    from transport.dashboard import (  # noqa: F401  re-exported for existing call-sites
+        DashboardGate,
+        _validate_next_url,
     )
 
 try:
@@ -170,6 +185,7 @@ try:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_crew_secret,
         _write_batch,
         _get_batch,
         _update_batch_status,
@@ -190,6 +206,7 @@ except ModuleNotFoundError:
         _get_crew,
         _touch_crew,
         _delete_crew_secret,
+        _write_crew_secret,
         _write_batch,
         _get_batch,
         _update_batch_status,
@@ -282,6 +299,7 @@ try:
         _RAVEN_STORE_RESOLUTION,
         _RAVEN_SELF_CANCEL,
         _resolve_orders_dir,
+        _list_order_templates,
         _load_order_template,
         _substitute_placeholders,
         _format_captain_mail,
@@ -310,6 +328,7 @@ except ModuleNotFoundError:
         _RAVEN_STORE_RESOLUTION,
         _RAVEN_SELF_CANCEL,
         _resolve_orders_dir,
+        _list_order_templates,
         _load_order_template,
         _substitute_placeholders,
         _format_captain_mail,
@@ -349,10 +368,29 @@ DATA_DIR = Path(cfg.transport_data_dir)
 
 
 # KiroCrew gateway port — fixed by upstream, not configurable from this transport.
-CREW_GATEWAY_PORT = 5476
-CREW_CONTAINER_PREFIX = "gs-"
-CREW_VOLUME_PREFIX = "gs-vol-"
-CREW_HOME_VOLUME_PREFIX = "gs-home-"
+# Canonical home is transport/constants.py (TRN-142).
+try:
+    from constants import (  # container: flat /app/
+        ADMIRAL_PUBKEY_PATH,
+        CREW_CONTAINER_PREFIX,
+        CREW_GATEWAY_PORT,
+        CREW_HOME_VOLUME_PREFIX,
+        CREW_VOLUME_PREFIX,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
+        PERSONA_NAMES,
+    )
+except ModuleNotFoundError:
+    from transport.constants import (  # local dev
+        ADMIRAL_PUBKEY_PATH,
+        CREW_CONTAINER_PREFIX,
+        CREW_GATEWAY_PORT,
+        CREW_HOME_VOLUME_PREFIX,
+        CREW_VOLUME_PREFIX,
+        GA_PORTSIDE_NETWORK,
+        GA_STARBOARD_NETWORK,
+        PERSONA_NAMES,
+    )
 
 PODMAN_SOCK = cfg.podman_socket
 
@@ -360,12 +398,9 @@ KC_IMAGE = cfg.kc_image
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # ga-login). Using the base image here avoids any risk from a tainted crew image.
 KC_BASE_IMAGE = cfg.kc_base_image
-GA_PORTSIDE_NETWORK = "ga-portside"
-GA_STARBOARD_NETWORK = "ga-starboard"
 GA_MAX_CREWS = cfg.ga_max_crews
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"
-PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 _MODEL_MAX_LENGTH = 500
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
@@ -485,15 +520,17 @@ def _load_api_key() -> str:
 
 GA_API_KEY = _load_api_key()
 
-# TRN-116: caddy.py resolves PORT/port-range from cfg at its own import, but
-# GA_API_KEY is loaded from a mounted Podman secret here (a server concern), so
-# push the resolved runtime values into the caddy module. Its register/deregister
-# helpers read these from their own module globals at call time. PORT and the
-# port-range are re-synced too so a single source of truth stays in server.py.
-_caddy.PORT = PORT
-_caddy.GA_API_KEY = GA_API_KEY
-_caddy.GA_DASHBOARD_PORT_RANGE_START = GA_DASHBOARD_PORT_RANGE_START
-_caddy.GA_DASHBOARD_PORT_RANGE_SIZE = GA_DASHBOARD_PORT_RANGE_SIZE
+# TRN-141: construct the CaddyPortal after secrets load, replacing the former
+# `_caddy.PORT = PORT` / `_caddy.GA_API_KEY = ...` post-import mutation. PORT and
+# the port-range come from cfg; GA_API_KEY is loaded from a mounted Podman secret
+# here (a server concern). server.py's own call sites use this instance; the
+# caddy module keeps thin wrappers over a module-default portal for isolated use.
+_caddy_portal = CaddyPortal(
+    port=PORT,
+    api_key=GA_API_KEY,
+    port_range_start=GA_DASHBOARD_PORT_RANGE_START,
+    port_range_size=GA_DASHBOARD_PORT_RANGE_SIZE,
+)
 
 
 def _load_transport_secret() -> str:
@@ -524,55 +561,11 @@ def _load_transport_secret() -> str:
 GA_TRANSPORT_SECRET = _load_transport_secret()
 
 
-def _auth_file_path() -> Path:
-    """Return the reusable kiro-cli auth file under the data mount."""
-    return DATA_DIR / GA_AUTH_FILE
+# _auth_file_path, _read_auth_file, _write_auth_file moved to
+# transport.lifecycle (TRN-143) alongside _initiate_login; imported below.
+# KIRO_LICENSE / KIRO_IDENTITY_PROVIDER / KIRO_REGION also moved to lifecycle
+# (they drive only the moved _initiate_login device flow).
 
-
-def _read_auth_file(_path: Path | None = None) -> str:
-    """Read the persisted auth value, or "" if it doesn't exist yet.
-
-    _path: override the default path (for testing only).
-    """
-    path = _path if _path is not None else _auth_file_path()
-    if not path.is_file():
-        return ""
-    try:
-        return path.read_text()
-    except Exception as e:
-        logger.warning("Failed to read %s: %s", path, e)
-        return ""
-
-
-def _write_auth_file(value: str, _path: Path | None = None) -> None:
-    """Persist the reusable auth value for future launches.
-
-    _path: override the default path (for testing only).
-    """
-    path = _path if _path is not None else _auth_file_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        f = os.fdopen(fd, "w")
-        fd = -1
-        with f:
-            f.write(value)
-            f.flush()
-            os.fsync(f.fileno())
-    finally:
-        if fd != -1:
-            os.close(fd)
-    os.chmod(path, 0o600)
-
-# kiro-cli identity provider for crew logins. Left unset, `kiro-cli login`
-# falls back to Builder ID (free tier) — a different identity system than an
-# org's IAM Identity Center Pro tenant. Set these to match whatever identity
-# an org's own kiro-cli install already authenticates against (see
-# `kiro-cli whoami`).
-KIRO_LICENSE = cfg.kiro_license
-KIRO_IDENTITY_PROVIDER = cfg.kiro_identity_provider
-KIRO_REGION = cfg.kiro_region
 # When set, kiro-cli authenticates via this API key and the device-code auth
 # flow is skipped entirely (TRN-62). Injected as an env var into crew
 # containers; unset (default) => existing device-code flow is used.
@@ -627,9 +620,19 @@ try:
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
+        _auth_file_path,
+        _read_auth_file,
+        _write_auth_file,
+        _initiate_login,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
+        _pickup_list,
+        _pickup_single,
+        _dispatch_batch,
+        _record_last_task_at,
+        _task_timestamps,
+        _task_timestamps_lock,
         _probe_gateway,
         _read_auth_from_crew,
         _reconcile_registry,
@@ -683,9 +686,19 @@ except ModuleNotFoundError:
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
+        _auth_file_path,
+        _read_auth_file,
+        _write_auth_file,
+        _initiate_login,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
+        _pickup_list,
+        _pickup_single,
+        _dispatch_batch,
+        _record_last_task_at,
+        _task_timestamps,
+        _task_timestamps_lock,
         _probe_gateway,
         _read_auth_from_crew,
         _reconcile_registry,
@@ -744,6 +757,21 @@ except ImportError:
         _validate_academy,
     )
 
+# TRN-143: the login device-flow state (_login_pending / _login_pending_lock)
+# lives in lifecycle and is reassigned by lifecycle._initiate_login. The login
+# HTTP handlers below must read/clear that SAME object, so reference it through
+# the module (lifecycle._login_pending) rather than importing the value — an
+# imported name would fork into a stale server-local copy after reassignment.
+try:
+    import lifecycle as _lifecycle  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import lifecycle as _lifecycle  # local dev
+
+try:
+    import openapi as _openapi  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import openapi as _openapi  # local dev
+
 mcp = MCPServer(
     name="transport",
     description=(
@@ -755,11 +783,9 @@ mcp = MCPServer(
 # ── Task timestamps (TRN-89) ──────────────────────────────────────────────────
 # In-memory store for task lifecycle timestamps. Keyed by task_id.
 # Lost on transport restart — acceptable per design decision D1.
-_task_timestamps: dict[str, dict] = {}
-# TRN-123: guards all read-modify-write access to _task_timestamps. The dict is
-# written by dispatch (worker thread) and read-modified-written by pickup
-# handlers (worker threads); without this lock those accesses race.
-_task_timestamps_lock = threading.Lock()
+# _task_timestamps and _task_timestamps_lock moved to transport.lifecycle
+# (TRN-143) alongside the pickup/dispatch helpers; imported above. server's
+# dispatch tools mutate the same shared objects.
 
 # ── UI port pool + Caddy admin API (TRN-80 / TRN-92) ─────────────────────────
 # _dashboard_ports_in_use, _allocate_dashboard_port, _release_dashboard_port,
@@ -768,281 +794,17 @@ _task_timestamps_lock = threading.Lock()
 # port-pool helpers must still be called while holding _registry_lock.
 
 # ── Dashboard session store (TRN-92 / TRN-121) ───────────────────────────────
-# Dashboard login is guarded by security.Throttle (brute-force protection) and
-# gs_session cookies are backed by security.SessionStore (bounded, revocable).
-# Both carry their own internal lock and hold state in memory — lost on
-# transport restart (acceptable — users re-login; an active attacker only
-# regains the throttle window).
-_dashboard_throttle = _security.Throttle(max_failures=5, window_secs=900)
-_gs_sessions = _security.SessionStore(lifetime_secs=cfg.ga_portal_session_ttl_secs)
-
-# ── Dashboard CSRF token (TRN-122) ────────────────────────────────────────────
-# Single random token generated at process startup and held for the process
-# lifetime.  Embedded in the GET /dashboard/login form and validated on every
-# POST /dashboard/login before the API-key check.  See design.md D1.
-_dashboard_csrf_token: str = secrets.token_hex(32)
-
-
-# ── Dashboard auth HTTP handlers (TRN-92) ─────────────────────────────────────
-
-async def _handle_dashboard_login_post(request: Request) -> Response:
-    """POST /dashboard/login — validate ga_api_key, issue gs_session cookie.
-
-    Reads ``ga_api_key`` from the form body, constant-time compares against
-    ``GA_API_KEY``. On success returns 200 + ``Set-Cookie: gs_session=...``.
-    On failure returns 401 with no cookie.
-    """
-    if not GA_API_KEY:
-        # No API key configured — dashboard login is only meaningful with one.
-        return Response(status_code=401)
-
-    source = _request_source(request)
-    # TRN-138: the login throttle key must come from the actual ASGI
-    # connection IP (request.client.host), NOT X-Forwarded-For, which a
-    # client can spoof to evade or poison the brute-force lock (design D3).
-    # _request_source() prefers XFF and is retained only for audit context.
-    client = getattr(request, "client", None)
-    throttle_source = getattr(client, "host", None) if client is not None else None
-    # Throttle brute-force attempts before touching the credential (avoids a
-    # timing oracle on the reject path — see design D3).
-    if _dashboard_throttle.is_locked(account="dashboard", source=throttle_source):
-        return Response(status_code=429)
-
-    try:
-        form = await request.form()
-        provided = str(form.get("ga_api_key", ""))
-        # TRN-122: read and validate CSRF token before touching the API-key path.
-        # Fail-fast on forged submissions (design.md D4).
-        provided_csrf = str(form.get("csrf_token", ""))
-        # TRN-138: capture the submitted next URL so the server — not the
-        # client — is the source of truth for the post-login redirect target.
-        next_url = _validate_next_url(str(form.get("next", "/")))
-    except Exception:
-        return Response(status_code=400)
-
-    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
-        return Response(status_code=403)
-
-    if not hmac.compare_digest(provided, GA_API_KEY):
-        _dashboard_throttle.record_failure(account="dashboard", source=throttle_source)
-        return Response(status_code=401)
-
-    _dashboard_throttle.record_success(account="dashboard", source=throttle_source)
-
-    token = _gs_sessions.issue()
-    # Build Set-Cookie header manually — avoids starlette version differences
-    # and is more explicit about the exact cookie attributes. The Secure flag
-    # is only set when the portal runs behind TLS (TRN-121); a plain-HTTP
-    # portal must not set Secure or the browser drops the cookie.
-    secure_attr = "; Secure" if cfg.ga_portal_tls_mode != "off" else ""
-    cookie_value = (
-        f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"
-    )
-    # TRN-138: return the server-sanitised next URL in the JSON body so the
-    # login-form JS redirects from _validate_next_url() output rather than
-    # from the raw submitted FormData field (open-redirect fix).
-    return JSONResponse(
-        {"ok": True, "next": next_url},
-        status_code=200,
-        headers={"Set-Cookie": cookie_value},
-    )
-
-
-async def _handle_dashboard_auth(request: Request) -> Response:
-    """GET /dashboard/auth — Caddy forward_auth endpoint.
-
-    Validates the ``gs_session`` cookie. On 200 returns
-    ``X-Crew-Cookie: mc_token_5476=<crew_cookie>`` so Caddy's ``copy_headers``
-    injects it into the upstream request to the crew gateway. The target crew
-    is identified from the incoming dashboard port via ``_dashboard_port_crew``.
-    Returns 401 on missing/invalid session.
-
-    When ``GA_API_KEY`` is not configured, the dashboard is open-access and
-    all requests are passed through immediately (200) without a session check.
-    """
-    # Open-access mode: no API key means no session gate.
-    if not GA_API_KEY:
-        return Response(status_code=200)
-
-    # Extract gs_session cookie
-    token = request.cookies.get("gs_session", "")
-    if not token or not _gs_sessions.validate(token):
-        return Response(status_code=401)
-
-    # Determine which crew this request is for by looking up the incoming port.
-    # In Caddy mode the forward_auth call comes from ga-portal → ga-transport,
-    # so we read the X-Forwarded-For / X-Real-Port Caddy passes, or fall back
-    # to reading the original dashboard-port from a custom header that the
-    # Caddy server config can inject.
-    # The simplest Caddy-compatible approach: encode the crew's port in the
-    # forward_auth URI, e.g. /dashboard/auth?port=64058. Caddy's forward_auth
-    # directive supports arbitrary URIs. We derive the crew from the port.
-    port_str = request.query_params.get("port", "")
-    crew_id: str | None = None
-    if port_str:
-        try:
-            port_int = int(port_str)
-            with _dashboard_port_crew_lock:
-                crew_id = _dashboard_port_crew.get(port_int)
-        except ValueError:
-            pass
-
-    if crew_id is None:
-        # Fallback: check X-Forwarded-Port or X-Dashboard-Port header
-        fwd_port = request.headers.get("x-dashboard-port", "")
-        if fwd_port:
-            try:
-                with _dashboard_port_crew_lock:
-                    crew_id = _dashboard_port_crew.get(int(fwd_port))
-            except ValueError:
-                pass
-
-    if crew_id is None:
-        # Last resort: return 200 (session is valid; crew cookie is injected
-        # directly by Caddy's crew proxy config, not here).
-        return Response(status_code=200)
-
-    # Valid session — return 200 to allow Caddy to proxy to the crew gateway.
-    # The mc_token_5476 cookie is injected by the Caddy crew proxy config.
-    return Response(status_code=200)
-
-
-async def _handle_dashboard_logout_post(request: Request) -> Response:
-    """POST /dashboard/logout — revoke the gs_session and clear the cookie.
-
-    Validates the current ``gs_session`` cookie; returns 401 when it is
-    missing/invalid. On a valid token, revokes it in the session store and
-    responds with a ``Set-Cookie`` header that clears the cookie in the
-    browser (TRN-121).
-    """
-    # TRN-138: logout is a state-changing POST — validate the CSRF token
-    # before any session check, matching the login POST pattern. Reject a
-    # missing or mismatched token with 403.
-    try:
-        form = await request.form()
-        provided_csrf = str(form.get("csrf_token", ""))
-    except Exception:
-        return Response(status_code=400)
-
-    if not hmac.compare_digest(provided_csrf, _dashboard_csrf_token):
-        return Response(status_code=403)
-
-    token = request.cookies.get("gs_session", "")
-    if not _gs_sessions.validate(token):
-        return Response(status_code=401)
-
-    _gs_sessions.revoke(token)
-    return Response(
-        status_code=200,
-        content="OK",
-        headers={
-            "Set-Cookie": (
-                "gs_session=; Max-Age=0; "
-                "Expires=Thu, 01 Jan 1970 00:00:00 GMT; "
-                "HttpOnly; SameSite=Lax; Path=/"
-            )
-        },
-    )
-
-
-# SEC-09 — open redirect guard for /dashboard/login ?next=
-def _validate_next_url(url: str) -> str:
-    """Validate next_url is a safe same-origin relative path.
-
-    Returns a sanitised path, falling back to "/" for any value that could
-    enable an open redirect (protocol-relative URLs, javascript: URIs, or
-    anything that is not a relative path).
-    """
-    if not url:
-        return "/"
-    # Must be a relative path starting with / but not // (protocol-relative).
-    # The leading-slash guard already blocks javascript: and //evil.com inputs.
-    if not url.startswith("/") or url.startswith("//"):
-        return "/"
-    return url
-
-
-async def _handle_login_ui(request: Request) -> Response:
-    """GET /dashboard/login — serve the minimal HTML login form.
-
-    Accepts an optional ``?next=<url>`` query parameter for post-login
-    redirect.
-    """
-    next_url = _validate_next_url(request.query_params.get("next", "/"))
-    next_url_escaped = _security.encode_html_attr(next_url)
-    # TRN-122: embed the startup CSRF token in the form so POST /dashboard/login
-    # can validate it.  encode_html_attr applied for defence-in-depth (hex output
-    # is already safe, but the pattern matches next_url_escaped usage above).
-    csrf_token_escaped = _security.encode_html_attr(_dashboard_csrf_token)
-    # Simple HTML login page — no external dependencies.
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ghost Academy — Login</title>
-<style>
-  body {{ font-family: sans-serif; display: flex; align-items: center;
-         justify-content: center; min-height: 100vh; margin: 0;
-         background: #0f0f0f; color: #e8e8e8; }}
-  .card {{ background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
-           padding: 2rem; width: 320px; }}
-  h1 {{ font-size: 1.2rem; margin: 0 0 1.5rem; }}
-  label {{ display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.4rem; }}
-  input {{ width: 100%; box-sizing: border-box; padding: 0.6rem;
-           background: #0f0f0f; border: 1px solid #444; border-radius: 4px;
-           color: #e8e8e8; font-size: 1rem; }}
-  button {{ margin-top: 1rem; width: 100%; padding: 0.7rem;
-            background: #2d6a4f; border: none; border-radius: 4px;
-            color: #fff; font-size: 1rem; cursor: pointer; }}
-  button:hover {{ background: #3a8a65; }}
-  .err {{ color: #e07070; font-size: 0.85rem; margin-top: 0.8rem; display: none; }}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>👻 Ghost Academy</h1>
-  <form id="f" method="post" action="/dashboard/login">
-    <input type="hidden" name="next" value="{next_url_escaped}">
-    <input type="hidden" name="csrf_token" value="{csrf_token_escaped}">
-    <label for="k">API Key</label>
-    <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
-    <button type="submit">Sign in</button>
-    <p class="err" id="err">Invalid API key.</p>
-  </form>
-</div>
-<script>
-  const f = document.getElementById('f');
-  f.addEventListener('submit', async e => {{
-    e.preventDefault();
-    const fd = new FormData(f);
-    const r = await fetch('/dashboard/login', {{method:'POST', body: fd}});
-    if (r.ok) {{
-      // TRN-138: redirect to the server-sanitised next URL from the JSON
-      // response body, not the raw submitted FormData field, so the open-
-      // redirect guard in _validate_next_url() is always authoritative.
-      let dest = '/';
-      try {{ const data = await r.json(); dest = data.next || '/'; }} catch (_e) {{}}
-      window.location.href = dest;
-    }} else {{
-      document.getElementById('err').style.display = 'block';
-    }}
-  }});
-</script>
-</body>
-</html>"""
-    return Response(content=html, media_type="text/html; charset=utf-8")
-
-
-# ── Dashboard port registry (TRN-92 / TRN-101) ───────────────────────────────
-# TRN-101: The per-port uvicorn proxy pool was removed. Portal (ga-portal)
-# is the sole dashboard proxy. Port→crew mapping is retained for forward_auth
-# lookups by _handle_dashboard_auth.
-_dashboard_port_crew: dict[int, str] = {}  # port → crew_id
-# TRN-123: guards all read-modify-write access to _dashboard_port_crew. Written
-# from _handle_crew_dashboard_post/_delete, launch, nuke and _main, and read in
-# _handle_dashboard_auth — a mix of asyncio and startup contexts.
-_dashboard_port_crew_lock = threading.Lock()
+# ── DashboardGate (TRN-141) ───────────────────────────────────────────────────
+# The dashboard auth/session state cluster (throttle, session store, CSRF token,
+# and the port→crew map) and its four HTTP handlers now live in a single
+# DashboardGate instance in transport/dashboard.py. Constructed here after
+# config/secrets load so its dependencies (session TTL, API key, TLS mode) are
+# explicit constructor arguments rather than implicit module globals.
+_dashboard_gate = DashboardGate(
+    session_ttl_secs=cfg.ga_portal_session_ttl_secs,
+    api_key=GA_API_KEY,
+    tls_mode=cfg.ga_portal_tls_mode,
+)
 
 # TRN-123: per-crew asyncio lock registry serialising concurrent
 # _ensure_crew_running call sites in the async proxy handlers, so that
@@ -1087,6 +849,20 @@ _HOP_BY_HOP_HEADERS: frozenset[str] = frozenset({
     # bytes. content-length is also wrong after decompression so strip it too.
     "content-encoding",
     "content-length",
+})
+
+# Headers stripped when proxying a request down to a crew's own gateway
+# (gs-{crew_id}:5476). Authorization and X-Transport-Token authenticate the
+# caller to ga-transport itself — the crew gateway neither needs nor checks
+# them, and forwarding them would hand a crew (which shares ga-starboard with
+# ga-transport) a credential it could replay directly against the transport's
+# own control-plane API. host/cookie are replaced with the crew's own
+# mc_token_5476 session cookie immediately after this filter is applied.
+_STRIPPED_CREW_PROXY_HEADERS: frozenset[str] = frozenset({
+    "host",
+    "cookie",
+    "authorization",
+    "x-transport-token",
 })
 
 
@@ -1186,6 +962,43 @@ def _cookie_near_expiry(cookie: str) -> bool:
     return remaining < 0.20 * ttl_secs
 
 
+async def _resolve_crew_for_proxy(
+    path: str, auto_wake: bool = True
+) -> tuple[str, str, dict] | Response:
+    """Resolve the crew targeted by a proxy request path.
+
+    Encapsulates the parse + require (+ optional auto-wake) preamble shared by
+    the crew proxy handlers. On success returns ``(crew_id, sub_path, crew)``.
+    On failure returns a ``Response``:
+
+    - 404 if the path does not parse as a crew proxy path
+    - 404 if the crew is unknown
+    - 502 if ``auto_wake`` is set and ensuring the crew is running fails
+
+    ``auto_wake`` defaults to True (UI/API/WS handlers proxy to a live crew and
+    must wake it first). The dashboard handler passes ``auto_wake=False`` — it
+    only needs the parse + require portion.
+    """
+    parsed = _extract_crew_proxy_parts(path)
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, sub_path = parsed
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError) as e:
+        return PlainTextResponse(str(e), status_code=404)
+
+    if auto_wake:
+        try:
+            async with _get_ensure_running_lock(crew_id):
+                crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
+        except RuntimeError as e:
+            return PlainTextResponse(str(e), status_code=502)
+
+    return crew_id, sub_path, crew
+
+
 async def _handle_crew_ui_proxy(request: Request) -> Response:
     """Reverse-proxy GET/POST to the crew gateway UI at http://gs-{crew_id}:5476/.
 
@@ -1193,7 +1006,9 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
            /crews/{crew_id}/ui/{path}  →  http://gs-{crew_id}:5476/{path}
 
     - Auto-wakes the crew before proxying.
-    - Passes request headers through (minus host and any inbound cookie).
+    - Passes request headers through (minus host, any inbound cookie, and the
+      Authorization / X-Transport-Token credentials used to reach ga-transport
+      itself — never forwarded to the crew gateway).
     - Injects the crew's ``mc_token_5476`` session cookie on every forwarded
       request so the KiroCrew SPA is pre-authenticated. The cookie is minted
       from ga-transport's IP, satisfying the gateway's IP binding (TRN-102).
@@ -1202,23 +1017,10 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
     - Streams the upstream response body without buffering.
     - Returns 404 for unknown crew_id.
     """
-    parsed = _extract_crew_proxy_parts(request.scope["path"])
-    if parsed is None:
-        return PlainTextResponse("Not found", status_code=404)
-    crew_id, _segment, sub_path = parsed
-
-    # Crew lookup
-    try:
-        crew = _require_crew(crew_id)
-    except (KeyError, ValueError) as e:
-        return PlainTextResponse(str(e), status_code=404)
-
-    # Auto-wake if stopped
-    try:
-        async with _get_ensure_running_lock(crew_id):
-            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
-    except RuntimeError as e:
-        return PlainTextResponse(str(e), status_code=502)
+    resolved = await _resolve_crew_for_proxy(request.scope["path"])
+    if isinstance(resolved, Response):
+        return resolved
+    crew_id, sub_path, crew = resolved
 
     # TRN-102: transparently re-mint the session cookie when it is near expiry
     # so the browser session never sees a "Session expired" prompt. Best-effort:
@@ -1237,14 +1039,14 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
         upstream_url = f"{upstream_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{upstream_url}"
 
-    # Forward headers minus host and any inbound cookie, then inject the crew's
-    # session cookie. The cookie is minted from ga-transport's IP so the gateway's
-    # IP binding is satisfied — Caddy (ga-portal) proxies here rather than to the
-    # crew gateway directly (TRN-102).
+    # Forward headers minus _STRIPPED_CREW_PROXY_HEADERS, then inject the
+    # crew's session cookie. The cookie is minted from ga-transport's IP so
+    # the gateway's IP binding is satisfied — Caddy (ga-portal) proxies here
+    # rather than to the crew gateway directly (TRN-102).
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() != "host" and k.lower() != "cookie"
+        if k.lower() not in _STRIPPED_CREW_PROXY_HEADERS
     }
     forward_headers["Cookie"] = _crew_cookie(crew)
 
@@ -1318,23 +1120,14 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
 
     ws = _StarletteWebSocket(scope, receive=receive, send=send)
 
-    parsed = _extract_crew_proxy_parts(scope["path"])
-    if parsed is None:
-        await ws.close(code=1008)
+    resolved = await _resolve_crew_for_proxy(scope["path"])
+    if isinstance(resolved, Response):
+        # Translate the HTTP failure status to a WS close code:
+        # 404 (parse error / unknown crew) -> 1008 policy violation;
+        # 502 (ensure-running failure) -> 1011 internal error.
+        await ws.close(code=1008 if resolved.status_code == 404 else 1011)
         return
-    crew_id, _segment, sub_path = parsed
-
-    try:
-        crew = _require_crew(crew_id)
-    except (KeyError, ValueError):
-        await ws.close(code=1008)
-        return
-    try:
-        async with _get_ensure_running_lock(crew_id):
-            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
-    except RuntimeError:
-        await ws.close(code=1011)
-        return
+    crew_id, sub_path, crew = resolved
 
     if _cookie_near_expiry(crew.get("cookie", "")):
         _refresh_cookie(crew, crew_id)
@@ -1433,23 +1226,10 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
     - On upstream 401/403, refreshes the cookie and retries once (D4).
     - Returns 404 for unknown crew_id.
     """
-    parsed = _extract_crew_proxy_parts(request.scope["path"])
-    if parsed is None:
-        return PlainTextResponse("Not found", status_code=404)
-    crew_id, _segment, sub_path = parsed
-
-    # Crew lookup
-    try:
-        crew = _require_crew(crew_id)
-    except (KeyError, ValueError) as e:
-        return PlainTextResponse(str(e), status_code=404)
-
-    # Auto-wake if stopped
-    try:
-        async with _get_ensure_running_lock(crew_id):
-            crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
-    except RuntimeError as e:
-        return PlainTextResponse(str(e), status_code=502)
+    resolved = await _resolve_crew_for_proxy(request.scope["path"])
+    if isinstance(resolved, Response):
+        return resolved
+    crew_id, sub_path, crew = resolved
 
     # Build upstream URL
     upstream_base = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
@@ -1459,11 +1239,11 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
         api_path = f"{api_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{api_path}"
 
-    # Forward headers minus host and cookie, then inject session cookie
+    # Forward headers minus _STRIPPED_CREW_PROXY_HEADERS, then inject session cookie
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() != "host" and k.lower() != "cookie"
+        if k.lower() not in _STRIPPED_CREW_PROXY_HEADERS
     }
     forward_headers["Cookie"] = _crew_cookie(crew)
 
@@ -1518,15 +1298,10 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
 
     Returns 404 for unknown crew. Returns 409 if port pool is exhausted.
     """
-    parsed = _extract_crew_proxy_parts(request.scope["path"])
-    if parsed is None:
-        return PlainTextResponse("Not found", status_code=404)
-    crew_id, _segment, _sub = parsed
-
-    try:
-        _require_crew(crew_id)
-    except (KeyError, ValueError) as e:
-        return PlainTextResponse(str(e), status_code=404)
+    resolved = await _resolve_crew_for_proxy(request.scope["path"], auto_wake=False)
+    if isinstance(resolved, Response):
+        return resolved
+    crew_id, _sub, _crew = resolved
 
     # H-2: Consolidate the no-op check and port allocation into a single lock
     # section, reading the registry under the lock (not the pre-lock crew dict)
@@ -1555,7 +1330,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         # write are atomic (prevents duplicate port allocation from concurrent
         # POSTs).
         try:
-            dashboard_port = _allocate_dashboard_port()
+            dashboard_port = _caddy_portal.allocate_port()
         except RuntimeError as e:
             return JSONResponse({"error": str(e)}, status_code=409)
 
@@ -1576,10 +1351,9 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     else:
         dashboard_url = f"{_caddy_scheme}://localhost:{dashboard_port}/"
 
-    _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
+    _caddy_portal.register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_val)
     # Store port→crew mapping for forward_auth lookups.
-    with _dashboard_port_crew_lock:
-        _dashboard_port_crew[dashboard_port] = crew_id
+    _dashboard_gate.register_port(crew_id, dashboard_port)
 
     logger.info(
         "TRN-101: POST /crews/%s/dashboard — UI port %d, dashboard_url=%s",
@@ -1621,15 +1395,14 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         # C-1: Extract all needed values and mutate registry under the lock,
         # then call _caddy_deregister_crew AFTER releasing it to avoid holding
         # the lock across blocking I/O.
-        with _dashboard_port_crew_lock:
-            _dashboard_port_crew.pop(int(existing_port), None)
-        _release_dashboard_port(int(existing_port))
+        _dashboard_gate.release_port(int(existing_port))
+        _caddy_portal.release_port(int(existing_port))
         reg["crews"][crew_id].pop("dashboard_port", None)
         reg["crews"][crew_id]["dashboard_url"] = None
         _save_registry(reg)
 
     # C-1: Deregister from Caddy after releasing _registry_lock.
-    _caddy_deregister_crew(crew_id)
+    _caddy_portal.deregister_crew(crew_id)
 
     logger.info(
         "TRN-101: DELETE /crews/%s/dashboard — released UI port %d",
@@ -1641,6 +1414,25 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
+
+
+# ── OpenAPI schema (TRN-129) ──────────────────────────────────────────────────
+# Generated once at startup (after all routes are defined) and cached here.
+# task 2.2: handler that returns the cached schema.
+
+_openapi_schema = None  # dict | None — populated by startup in __main__ block
+
+
+async def _handle_openapi_get(request: Request) -> Response:
+    """GET /openapi.json — return the cached OpenAPI 3.1.0 schema (public)."""
+    import json as _json
+    if _openapi_schema is None:
+        return Response("schema not yet generated", status_code=503)
+    return Response(
+        _json.dumps(_openapi_schema, indent=2),
+        media_type="application/json",
+    )
+
 
 # ── Auth / security middleware (TRN-116) ──────────────────────────────────────
 # TransportSecretMiddleware, RateLimitMiddleware, BearerAuthMiddleware,
@@ -1663,221 +1455,9 @@ async def _handle_version_get(request: Request) -> Response:
 # transport.lifecycle and are imported above.
 
 
-# ── Academy login state ───────────────────────────────────────────────────────
-
-# Single-slot for the active login flow. Keyed fields:
-#   container: str   — name of the ephemeral ga-login-<token> container
-#   exec_id:   str   — Podman exec session id (informational)
-#   started_at: float — time.time() when the flow started
-_login_pending: dict | None = None
-_login_pending_lock = threading.Lock()
-
-
-# ── Academy login / logout HTTP routes ───────────────────────────────────────
-
-def _initiate_login(podman: "PodmanClient") -> dict:
-    """Start a device auth flow and return login URL and code.
-
-    Acquires _login_pending_lock, applies TOCTOU-safe guards, starts the
-    ephemeral login container, runs kiro-cli login via PTY, answers interactive
-    prompts, extracts the device URL and code, and hands the stream to a
-    background drain thread.
-
-    Returns one of:
-      {"login_url": str, "code": str | None}     — flow started successfully
-      {"login_pending": True}                     — a flow is already in progress
-      {"error": str}                              — hard failure (container / PTY)
-
-    Callers must NOT hold _login_pending_lock when calling this.
-    """
-    global _login_pending
-    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
-    # _login_pending_lock serialises concurrent callers: the first one through
-    # sets the sentinel immediately before releasing the lock, so any race
-    # between "is flow pending?" and "start a flow" is eliminated.
-    with _login_pending_lock:
-        if _login_pending is not None:
-            return {"login_pending": True}
-        # Set lightweight sentinel immediately to prevent concurrent starts
-        _login_pending = {
-            "container": None,
-            "started_at": time.time(),
-            "state": "starting",
-        }
-
-    # ── Phase: start login container ──────────────────────────────────────────
-    try:
-        container = _start_login_container(podman)
-    except Exception as e:
-        logger.error("Failed to start login container: %s", e)
-        with _login_pending_lock:
-            _login_pending = None
-        return {"error": f"Failed to start login container: {e}"}
-
-    # Update sentinel with real container name
-    with _login_pending_lock:
-        _login_pending = {
-            "container": container,
-            "started_at": _login_pending["started_at"] if _login_pending else time.time(),
-            "state": "started",
-        }
-
-    # ── Phase: wait for kiro-cli ───────────────────────────────────────────────
-    for _ in range(10):
-        try:
-            check = podman.container_exec(container, ["which", "kiro-cli"])
-            if "kiro-cli" in check:
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-
-    # ── Phase: PTY exec + prompt loop ─────────────────────────────────────────
-    # kiro-cli ignores --identity-provider / --region flags in interactive/PTY
-    # mode (upstream bug kiro#6120). Use a raw-socket exec so we can write
-    # stdin answers to the interactive prompts automatically.
-    # With --license pro the provider-selection menu is skipped; kiro-cli goes
-    # straight to Start URL → Region, then makes a network round-trip to AWS
-    # to register the device (which takes a few seconds) before printing the
-    # URL.
-    #
-    # Deadline is 45 seconds to accommodate the AWS IAM Identity Center
-    # round-trip that happens after the user answers the Region prompt.  The
-    # device-registration call can take several seconds on a warm network; 45s
-    # gives comfortable headroom without leaving users waiting indefinitely on
-    # a failed flow.
-    #
-    # The read loop uses select() rather than a blocking recv() so it can poll
-    # for the URL without blocking the event loop thread.  PTY sockets are set
-    # non-blocking; select() with a 0.1s timeout yields control between chunks
-    # so the outer deadline check and prompt-matching logic run frequently.
-    cmd = ["kiro-cli", "login", "--use-device-flow"] + (
-        ["--license", KIRO_LICENSE] if KIRO_LICENSE else []
-    )
-    try:
-        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
-    except Exception as e:
-        _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
-        return {"error": f"Failed to start kiro-cli login: {e}"}
-
-    pty_sock.setblocking(False)
-
-    # ── Phase: PTY read loop ───────────────────────────────────────────────────
-    # Read output, answer prompts, wait for device URL (max 45s).
-    # After answering the Start URL and Region prompts, kiro-cli makes a
-    # network round-trip to AWS IAM Identity Center to register the device
-    # before printing the verification URL. This takes a few seconds on a
-    # warm network but can be slow. 45s (up from the original 15s) gives
-    # comfortable headroom for that call to complete.
-    deadline = time.time() + 45.0
-    collected = bytearray()
-    login_url: str | None = None
-    login_code: str | None = None
-    prompt_rules: list[tuple[str, bytes]] = [
-        ("Select login method", b"\n"),
-        ("Start URL", (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()),
-        ("Region", (KIRO_REGION + "\n").encode()),
-    ]
-    answered_prompts: set[str] = set()
-    answered_url = False
-    start_url_seen = False
-
-    try:
-        while time.time() < deadline:
-            ready, _, _ = select.select([pty_sock], [], [], 0.1)
-            if ready:
-                try:
-                    chunk = pty_sock.recv(4096)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    break
-                collected.extend(chunk)
-                text = collected.decode("utf-8", errors="replace")
-
-                for matcher, answer in prompt_rules:
-                    if matcher not in text or matcher in answered_prompts:
-                        continue
-                    if matcher == "Select login method":
-                        menu_position = text.find(matcher)
-                        start_url_position = text.find("Start URL")
-                        if start_url_seen or (
-                            start_url_position >= 0
-                            and start_url_position < menu_position
-                        ):
-                            continue
-                    elif matcher == "Region" and not answered_url:
-                        continue
-
-                    pty_sock.sendall(answer)
-                    answered_prompts.add(matcher)
-                    if matcher == "Select login method":
-                        logger.debug("Answered login method menu with Builder ID default")
-                    elif matcher == "Start URL":
-                        answered_url = True
-                        start_url_seen = True
-                        logger.debug("Answered Start URL prompt")
-                    else:
-                        logger.debug("Answered Region prompt")
-
-                url_match = re.search(r'Open this URL[:\s]+(https?://\S+)', text)
-                if not url_match:
-                    url_match = re.search(r'(https?://\S+user_code=\S+)', text)
-                code_match = re.search(r'[Cc]ode[:\s]+([A-Z0-9-]{4,})', text)
-                if url_match:
-                    login_url = url_match.group(1).rstrip(").,")
-                    uc_match = re.search(r'user_code=([A-Z0-9-]{4,})', login_url)
-                    if uc_match:
-                        login_code = uc_match.group(1)
-                    elif code_match:
-                        login_code = code_match.group(1)
-                    break
-    except Exception as e:
-        logger.warning("PTY read error during login: %s", e)
-
-    if not login_url:
-        raw_output = collected.decode("utf-8", errors="replace")
-        try:
-            pty_sock.close()
-        except Exception:
-            pass
-        _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
-        return {"error": f"kiro-cli did not produce a login URL within 45s.\nOutput:\n{raw_output}"}
-
-    # ── Phase: drain thread + finalise ────────────────────────────────────────
-    # Hand off remaining PTY stream to a background daemon thread so the
-    # socket is drained to EOF (avoiding a broken-pipe in the container) without
-    # blocking the event loop.  The thread exits when kiro-cli closes the pty.
-    pty_sock.setblocking(True)
-
-    def _drain_pty() -> None:
-        try:
-            while True:
-                chunk = pty_sock.recv(4096)
-                if not chunk:
-                    break
-        except Exception:
-            pass
-        finally:
-            try:
-                pty_sock.close()
-            except Exception:
-                pass
-
-    drain_thread = threading.Thread(target=_drain_pty, daemon=True, name=f"pty-drain-{container}")
-    drain_thread.start()
-
-    with _login_pending_lock:
-        if _login_pending is not None:
-            _login_pending["exec_id"] = exec_id
-
-    logger.info("Login flow started in %s, URL extracted", container)
-    return {"login_url": login_url, "code": login_code}
-
+# ── Academy login state + _initiate_login moved to transport.lifecycle (TRN-143);
+# _login_pending / _login_pending_lock and the device-flow driver now live
+# there. The HTTP handlers below import them from lifecycle.
 
 # _request_source now lives in transport/auth.py (TRN-116) and is imported at
 # the top of this file.
@@ -1893,14 +1473,13 @@ async def _handle_login_post(request: Request) -> Response:
     Delegates to _initiate_login() for the actual container start and PTY flow.
     Returns the URL and code immediately so the operator can open the browser.
     """
-    global _login_pending
-    with _login_pending_lock:
+    with _lifecycle._login_pending_lock:
         if _read_auth_file():
             return PlainTextResponse(
                 "Already authenticated. POST /logout first.",
                 status_code=409,
             )
-        if _login_pending is not None:
+        if _lifecycle._login_pending is not None:
             return PlainTextResponse(
                 "Login already in progress. Poll GET /login for status.",
                 status_code=409,
@@ -1936,9 +1515,8 @@ async def _handle_login_get(request: Request) -> Response:
     nukes the temp container, clears _login_pending, returns {status: "complete"}.
     Returns 404 if no login flow is in progress.
     """
-    global _login_pending
-    with _login_pending_lock:
-        pending = _login_pending
+    with _lifecycle._login_pending_lock:
+        pending = _lifecycle._login_pending
 
     if pending is None:
         return PlainTextResponse("No login in progress.", status_code=404)
@@ -1972,11 +1550,14 @@ async def _handle_login_get(request: Request) -> Response:
 
     # Nuke temp container and clear pending state (guarded)
     _nuke_login_container(podman, pending["container"])
-    with _login_pending_lock:
+    with _lifecycle._login_pending_lock:
         # Only clear if the pending login is the one we just completed;
         # a new concurrent login may have started between nuke and here.
-        if _login_pending is not None and _login_pending.get("container") == pending["container"]:
-            _login_pending = None
+        if (
+            _lifecycle._login_pending is not None
+            and _lifecycle._login_pending.get("container") == pending["container"]
+        ):
+            _lifecycle._login_pending = None
 
     _security.audit_auth_event(
         action="login", outcome="success", account="academy",
@@ -2079,13 +1660,29 @@ def crews() -> dict:
         host_mem = None
 
     result = []
+    corrections: list[str] = []  # crew_ids registered running but not actually running
     for cid, info in reg["crews"].items():
         # Determine gateway health: stopped containers are unhealthy without
-        # probing; running containers get a liveness probe.
+        # probing; running containers get a liveness probe — but only after
+        # confirming with Podman that the container is actually running. A
+        # registry entry marked "running" whose container was stopped
+        # externally is corrected to "stopped" here (self-heal), and must not
+        # trigger a gateway probe or an uptime inspect.
         status = info.get("status", "unknown")
-        if status != "running":
+        if status == "running" and podman is not None:
+            if not podman.container_is_running(info["container"]):
+                # Stale running entry — container is not actually running.
+                status = "stopped"
+                gateway_healthy = False
+                corrections.append(cid)
+            else:
+                crew_url = _crew_url(info)
+                gateway_healthy = _probe_gateway(crew_url)
+        elif status != "running":
             gateway_healthy = False
         else:
+            # status == "running" but no Podman client — fall back to a probe
+            # (cannot confirm container state without Podman).
             crew_url = _crew_url(info)
             gateway_healthy = _probe_gateway(crew_url)
 
@@ -2160,6 +1757,27 @@ def crews() -> dict:
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
         result.append(entry)
+
+    # TRN-132: write back any stale running→stopped corrections discovered
+    # above, in a single save under the registry lock (second acquisition,
+    # following the established reconcile pattern). Only flip entries that are
+    # still marked "running" in the registry to avoid clobbering a concurrent
+    # legitimate state change.
+    if corrections:
+        with _registry_lock:
+            reg2 = _load_registry()
+            changed = False
+            for cid in corrections:
+                entry2 = reg2["crews"].get(cid)
+                if entry2 is not None and entry2.get("status") == "running":
+                    entry2["status"] = "stopped"
+                    changed = True
+            if changed:
+                _save_registry(reg2)
+
+    # active_crews reflects containers actually confirmed running by Podman:
+    # each result entry's status has already been corrected to "stopped" for
+    # stale registry-running entries above.
     active_crews = sum(1 for e in result if e.get("status") == "running")
     return {
         "crews": result,
@@ -2325,7 +1943,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         if dashboard:
             with _registry_lock:
                 try:
-                    dashboard_port = _allocate_dashboard_port()
+                    dashboard_port = _caddy_portal.allocate_port()
                 except RuntimeError as _err:
                     _cleanup_crew(podman, container, volume, home_volume)
                     reg = _load_registry()
@@ -2347,6 +1965,36 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 f"{container_env['KIROCREW_CORS_ORIGINS']},{_ui_host}"
             )
 
+        # TRN-136: generate the Admiral Ed25519 keypair BEFORE creating the
+        # container. The private key is persisted host-side and never enters the
+        # container; the public key is registered as a Podman secret and attached
+        # to the container spec so it mounts read-only (immutable from inside the
+        # container — CAP_SYS_ADMIN, needed to remount rw, is dropped). This must
+        # happen before container_create because a Podman secret can only be
+        # attached at creation time.
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            PrivateFormat,
+            PublicFormat,
+            NoEncryption,
+        )
+
+        _admiral_private_key = Ed25519PrivateKey.generate()
+        _admiral_private_seed = _admiral_private_key.private_bytes(
+            Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+        )
+        _admiral_public_bytes = _admiral_private_key.public_key().public_bytes(
+            Encoding.Raw, PublicFormat.Raw
+        )
+        _admiral_secret_hex = _admiral_private_seed.hex()
+        _admiral_secret_name = f"admiral-pubkey-{crew_id}"
+
+        # Register the public key as a Podman secret for read-only delivery. This
+        # MUST happen before container_create — a Podman secret can only be
+        # attached to a container at creation time.
+        podman.secret_create(_admiral_secret_name, _admiral_public_bytes)
+
         podman.container_create(
             name=container,
             image=image,
@@ -2354,14 +2002,31 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
             network=GA_STARBOARD_NETWORK,
             workspace_volume=volume,
             home_volume=home_volume,
+            # TRN-136: mount the Admiral public key read-only, root-owned, 0444.
+            # ADMIRAL_PUBKEY_PATH deliberately sits outside the home volume; see
+            # the constant's definition for why a volume-backed target breaks
+            # crew startup.
+            secrets=[{
+                "source": _admiral_secret_name,
+                "target": ADMIRAL_PUBKEY_PATH,
+                "uid": 0,
+                "gid": 0,
+                "mode": 0o444,
+            }],
         )
+        # Persist the private seed host-side so captain.py can sign standing
+        # orders (same path/format as before — hex of the raw 32-byte seed).
+        # Done right after create (before start) — standing orders only flow far
+        # later, in _finish_crew_setup, so the private key is always on disk
+        # before the crew can be signed to.
+        _write_crew_secret(crew_id, _admiral_secret_hex)
         podman.container_start(container)
         logger.info("Started %s", container)
 
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
         if not _wait_gateway(crew_url, timeout=60):
             if dashboard_port is not None:
-                _release_dashboard_port(dashboard_port)
+                _caddy_portal.release_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
             with _registry_lock:
                 reg = _load_registry()
@@ -2369,7 +2034,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
         # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:
@@ -2383,10 +2048,9 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 _crew_cookie_for_caddy = reg["crews"].get(crew_id, {}).get("cookie", "")
             # C-1: Call _caddy_register_crew AFTER releasing _registry_lock to
             # avoid holding the lock across up to 7 s of blocking I/O.
-            _caddy_register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
+            _caddy_portal.register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
             # Record port→crew mapping for forward_auth lookups.
-            with _dashboard_port_crew_lock:
-                _dashboard_port_crew[dashboard_port] = crew_id
+            _dashboard_gate.register_port(crew_id, dashboard_port)
             result["dashboard_url"] = dashboard_url
         elif "error" not in result:
             result["dashboard_url"] = None
@@ -2401,7 +2065,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # TRN-80: free any port allocated before the failure
         try:
             if dashboard_port is not None:
-                _release_dashboard_port(dashboard_port)
+                _caddy_portal.release_port(dashboard_port)
         except Exception:
             pass
         with _registry_lock:
@@ -2637,10 +2301,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         # the registry entry. Per-port uvicorn proxy removed; Portal is sole proxy.
         _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
-            _caddy_deregister_crew(crew_id)
-            with _dashboard_port_crew_lock:
-                _dashboard_port_crew.pop(int(_ui_p), None)
-            _release_dashboard_port(int(_ui_p))
+            _caddy_portal.deregister_crew(crew_id)
+            _dashboard_gate.release_port(int(_ui_p))
+            _caddy_portal.release_port(int(_ui_p))
         # TRN-105: explicitly drop any batch records so no orphan batch entry
         # survives a nuke. Popping the crew entry below already removes them,
         # but clearing here keeps the intent explicit and in the same atomic
@@ -2662,6 +2325,356 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
 
 
+def _captain_do_order(
+    crew_id: str,
+    message: str | None,
+    template: str | None,
+    change_name: str | None,
+    cron: str | None,
+    interval: int | None,
+    timezone: str,
+    fire_immediately: bool | None,
+    model: str | None,
+) -> dict:
+    """Handle ``captain(action="order")`` (TRN-141 extraction).
+
+    Validates the order arguments, resolves a template when given, wakes the
+    crew, provisions/resumes the single Raven check-in job, persists the
+    schedule entry, and appends the standing order to ``captain@localhost``.
+    ``action`` and ``model`` are already validated by the ``captain()``
+    dispatcher.
+    """
+    has_message = message is not None
+    has_template = template is not None
+    if has_message == has_template:
+        return {"error": "order requires exactly one of message or template"}
+    if cron is not None and interval is not None:
+        return {"error": "Provide cron or interval, not both"}
+    if has_template:
+        try:
+            order_message = _resolve_order_template(template, change_name)
+        except ValueError as exc:
+            return {"error": str(exc)}
+    else:
+        if not message:
+            return {"error": "message is required for order"}
+        if change_name is not None:
+            return {"error": "change_name requires template"}
+        order_message = message
+
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
+
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except (ValueError, KeyError, RuntimeError) as exc:
+        return {"error": str(exc)}
+
+    with _captain_order_lock(crew_id):
+        try:
+            cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
+        except (ValueError, KeyError, RuntimeError, CrewUnresponsiveError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+
+        existing_job = _captain_checkin_job(cron_listing)
+        enabled_job = _captain_checkin_job(cron_listing, enabled_only=True)
+        if existing_job is None and not cron and not interval:
+            return {
+                "error": "A new Captain check-in requires either cron or interval",
+            }
+
+        job = existing_job
+        is_new_job = False
+        if job is None:
+            body: dict[str, Any] = {
+                "name": _CAPTAIN_CHECKIN_JOB_NAME,
+                "message": _CAPTAIN_CHECKIN_TASK,
+                "agent": "raven",
+            }
+            if cron:
+                body["cron"] = cron
+                body["timezone"] = timezone
+            else:
+                body["every"] = interval
+            if model is not None:
+                body["model"] = model
+            try:
+                job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
+            except Exception as exc:
+                return {"error": f"Could not create Captain check-in: {exc}"}
+            job = dict(job)
+            is_new_job = True
+        elif enabled_job is None:
+            try:
+                toggle = _crew_api_with_recovery(
+                    crew,
+                    crew_id,
+                    "POST",
+                    f"/api/crons/{job.get('id')}/enable",
+                    json={"enabled": True},
+                )
+                if isinstance(toggle, dict) and toggle.get("ok") is False:
+                    return {"error": "Could not resume Captain check-in: job not found"}
+            except Exception as exc:
+                return {"error": f"Could not resume Captain check-in: {exc}"}
+            job = dict(job)
+            job["enabled"] = True
+
+        # TRN-29: Write schedule entry to transport registry
+        schedule_entry = {
+            "job_id": job.get("id"),
+            "name": _CAPTAIN_CHECKIN_JOB_NAME,
+            "interval_secs": interval,
+            "cron_expr": cron,
+            "next_fire_at": time.time() + (interval or 60),
+            "agent": "raven",
+            "message": _CAPTAIN_CHECKIN_TASK,
+            "enabled": True,
+        }
+        if is_new_job:
+            schedule_entry["model"] = model
+        try:
+            with _registry_lock:
+                reg = _load_registry()
+                if not is_new_job:
+                    # Resume does not accept a new model.  Prefer the
+                    # gateway's value when present, but preserve the
+                    # registry pin for older gateway responses that omit it.
+                    if "model" in job:
+                        schedule_entry["model"] = job.get("model")
+                    else:
+                        prior_entry = next(
+                            (
+                                entry
+                                for entry in _get_crew_schedules(reg, crew_id)
+                                if entry.get("job_id") == schedule_entry["job_id"]
+                            ),
+                            None,
+                        )
+                        if prior_entry is not None and "model" in prior_entry:
+                            schedule_entry["model"] = prior_entry["model"]
+                _upsert_crew_schedule(reg, crew_id, schedule_entry)
+                _save_registry(reg)
+        except Exception as exc:
+            logger.warning("TRN-29: Could not persist schedule entry: %s", exc)
+
+        # Only append an order after the check-in exists and is enabled.  A
+        # failed provisioning call must not leave mail that no Raven can read.
+        try:
+            podman = _get_podman()
+            _append_captain_mail(podman, crew["container"], order_message, crew_id=crew_id)
+        except Exception as exc:
+            return {"error": f"Could not write Captain order: {exc}"}
+
+        result: dict[str, Any] = {
+            "crew_id": crew_id,
+            "action": "order",
+            "status": "ordered",
+            "mode": "standing-orders",
+            "job_id": job.get("id"),
+            "mailbox": "captain@localhost",
+            "schedule": job.get("schedule") or cron or (
+                f"every {interval}s" if interval else None
+            ),
+        }
+
+        # Immediate dispatch: only for newly created jobs (not resumes)
+        if is_new_job:
+            should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
+            if should_fire:
+                try:
+                    immediate_body: dict[str, Any] = {
+                        "task": _CAPTAIN_CHECKIN_TASK,
+                        "agent": "raven",
+                        "keep": True,
+                    }
+                    if model is not None:
+                        immediate_body["model"] = model
+                    _crew_api_with_recovery(
+                        crew, crew_id, "POST", "/api/spawn", json=immediate_body,
+                    )
+                except Exception as exc:
+                    result["immediate_dispatch_error"] = str(exc)
+
+        return result
+
+
+def _captain_do_status(crew_id: str) -> dict:
+    """Handle ``captain(action="status")`` (TRN-141 extraction).
+
+    Skims all mailboxes (works on running and stopped containers) and reports
+    the durable standing-orders state without waking a dormant crew.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
+
+    action = "status"
+    podman = _get_podman()
+    # Single call — covers all 8 mailboxes; falls back to archive API on
+    # stopped containers.
+    agent_mail = _skim_all_mailboxes(podman, crew["container"])
+    captain_subjects = agent_mail.get("captain", [])
+    admiral_subjects = agent_mail.get("admiral", [])
+    captain_mail = len(captain_subjects)
+    admiral_mail = len(admiral_subjects)
+
+    # If the container is already running, read the live cron job state
+    # without waking it. If stopped, return dormant/no-job without starting.
+    try:
+        is_running = podman.container_is_running(crew["container"])
+    except Exception:
+        is_running = False
+
+    if is_running:
+        standing_job: dict[str, Any] | None = None
+        try:
+            running_crew = _ensure_crew_running(crew, crew_id)
+            cron_listing = _crew_api_with_recovery(running_crew, crew_id, "GET", "/api/crons")
+            standing_job = _captain_checkin_job(cron_listing)
+        except Exception:
+            standing_job = None
+    else:
+        standing_job = None
+
+    if standing_job is None:
+        return {
+            "crew_id": crew_id,
+            "action": action,
+            "status": "dormant",
+            "mode": "standing-orders",
+            "job_id": None,
+            "enabled": False,
+            "unread_mail": captain_mail,
+            "mailbox": "captain@localhost",
+            "captain_subjects": captain_subjects,
+            "captain_mail": captain_mail,
+            "unread_admiral_mail": admiral_mail,
+            "admiral_mailbox": "admiral@localhost",
+            "admiral_subjects": admiral_subjects,
+            "admiral_mail": admiral_mail,
+            "agent_mail": agent_mail,
+        }
+
+    status_result = _captain_standing_view(
+        crew_id,
+        action,
+        standing_job,
+        podman,
+        crew["container"],
+    )
+    status_result["captain_subjects"] = captain_subjects
+    status_result["admiral_subjects"] = admiral_subjects
+    status_result["captain_mail"] = captain_mail
+    status_result["admiral_mail"] = admiral_mail
+    status_result["agent_mail"] = agent_mail
+    return status_result
+
+
+def _captain_do_stop(crew_id: str) -> dict:
+    """Handle ``captain(action="stop")`` (TRN-141 extraction).
+
+    Wakes the crew (the gateway cron API is needed to disable the job),
+    best-effort disables the gateway cron, and always marks the registry
+    schedule disabled so restart reconciliation and the idle monitor see the
+    correct state.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
+
+    action = "stop"
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+        podman = _get_podman()
+    except (ValueError, KeyError, RuntimeError) as exc:
+        return {"error": str(exc)}
+
+    try:
+        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
+        standing_job = _captain_checkin_job(cron_listing)
+    except Exception as exc:
+        return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+
+    if standing_job is None:
+        return {
+            "crew_id": crew_id,
+            "action": "stop",
+            "status": "dormant",
+            "mode": "standing-orders",
+            "job_id": None,
+            "enabled": False,
+            "mailbox": "captain@localhost",
+        }
+
+    # Best-effort: disable the gateway cron if it is currently enabled.
+    # A failure here is logged as a warning — it must not block the
+    # registry update below (TRN-104).
+    if standing_job.get("enabled", False):
+        try:
+            toggle = _crew_api_with_recovery(
+                crew,
+                crew_id,
+                "POST",
+                f"/api/crons/{standing_job.get('id')}/enable",
+                json={"enabled": False},
+            )
+            if isinstance(toggle, dict) and toggle.get("ok") is False:
+                logger.warning(
+                    "captain stop: gateway cron %s not found for crew %s",
+                    standing_job.get("id"),
+                    crew_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "captain stop: gateway cron disable failed for crew %s: %s",
+                crew_id,
+                exc,
+            )
+    standing_job = dict(standing_job)
+    standing_job["enabled"] = False
+
+    # TRN-104 / TRN-29: Always update the registry to disabled, regardless
+    # of the gateway API call result.  This ensures TRN-82's
+    # reconcile-on-restart sees the correct state and the idle monitor can
+    # eventually stop the crew.
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            schedules = _get_crew_schedules(reg, crew_id)
+            matched = False
+            for sched in schedules:
+                if sched.get("job_id") == standing_job.get("id"):
+                    sched["enabled"] = False
+                    matched = True
+                    break
+            if not matched:
+                logger.warning(
+                    "captain stop: no registry entry found for job %s in crew %s",
+                    standing_job.get("id"),
+                    crew_id,
+                )
+            _save_registry(reg)
+    except Exception as exc:
+        logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
+
+    result = _captain_standing_view(
+        crew_id,
+        action,
+        standing_job,
+        podman,
+        crew["container"],
+    )
+    result["status"] = "stopped"
+    return result
+
+
 @mcp.tool()
 def captain(
     crew_id: str,
@@ -2679,14 +2692,16 @@ def captain(
 
     ``order`` requires exactly one of ``message`` or ``template``. A named
     template is resolved before it is written to ``captain@localhost``;
-    ``sdd`` is the built-in template and uses ``change_name`` to name the
-    OpenSpec change it should drive — pass a comma-separated list for
-    parallel multi-change execution with automatic worktree isolation.
-    ``independent-review`` is the built-in review template; ``change_name``
-    is optional — when provided it scopes the review to that change; when
-    omitted it reviews the entire codebase. The resolved order shares the same
-    recurring Raven check-in as a hand-written message. ``stop`` pauses that
-    check-in without deleting it, and ``status`` reports its durable state.
+    ``spec-driven-development`` (aliases: ``sdd``, ``specky``) is the built-in
+    template and uses ``change_name`` to name the OpenSpec change it should
+    drive — pass a comma-separated list for parallel multi-change execution
+    with automatic worktree isolation.
+    ``independent-review`` (alias: ``indy``) is the built-in review template;
+    ``change_name`` is optional — when provided it scopes the review to that
+    change; when omitted it reviews the entire codebase. The resolved order
+    shares the same recurring Raven check-in as a hand-written message.
+    ``stop`` pauses that check-in without deleting it, and ``status`` reports
+    its durable state.
 
     When fire_immediately is True (the default for interval-based check-ins),
     Raven is dispatched once immediately after a newly created check-in job,
@@ -2700,8 +2715,9 @@ def captain(
         action: One of ``order``, ``stop``, or ``status``.
         message: Free-form standing order text.
         template: Name of a built-in standing-order template. Available
-            templates: ``sdd`` (single or multi-change lifecycle),
-            ``independent-review`` (scoped or whole-codebase review).
+            templates: ``spec-driven-development`` / ``sdd`` / ``specky``
+            (single or multi-change lifecycle), ``independent-review`` /
+            ``indy`` (scoped or whole-codebase review).
         change_name: Substitution value for a template. For ``sdd``, accepts
             a single change name or a comma-separated list for multi-change
             mode. For ``independent-review``, optional — omit to review the
@@ -2727,24 +2743,21 @@ def captain(
         return {"error": str(exc)}
 
     if action == "order":
-        has_message = message is not None
-        has_template = template is not None
-        if has_message == has_template:
-            return {"error": "order requires exactly one of message or template"}
-        if cron is not None and interval is not None:
-            return {"error": "Provide cron or interval, not both"}
-        if has_template:
-            try:
-                order_message = _resolve_order_template(template, change_name)
-            except ValueError as exc:
-                return {"error": str(exc)}
-        else:
-            if not message:
-                return {"error": "message is required for order"}
-            if change_name is not None:
-                return {"error": "change_name requires template"}
-            order_message = message
-    elif any(
+        return _captain_do_order(
+            crew_id,
+            message,
+            template,
+            change_name,
+            cron,
+            interval,
+            timezone,
+            fire_immediately,
+            model,
+        )
+
+    # Non-order actions accept only crew_id (and action). Reject any order-only
+    # argument, including a non-default timezone.
+    if any(
         value is not None
         for value in (message, template, change_name, cron, interval, fire_immediately, model)
     ) or timezone != "UTC":
@@ -2752,299 +2765,9 @@ def captain(
             "error": f"{action} does not accept message, template, change_name, cron, interval, fire_immediately, model, or timezone"
         }
 
-    try:
-        crew = _require_crew(crew_id)
-    except (ValueError, KeyError) as exc:
-        return {"error": str(exc)}
-
-    if action == "order":
-        try:
-            crew = _ensure_crew_running(crew, crew_id)
-        except (ValueError, KeyError, RuntimeError) as exc:
-            return {"error": str(exc)}
-
-        with _captain_order_lock(crew_id):
-            try:
-                cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-            except (ValueError, KeyError, RuntimeError, CrewUnresponsiveError) as exc:
-                return {"error": str(exc)}
-            except Exception as exc:
-                return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
-
-            existing_job = _captain_checkin_job(cron_listing)
-            enabled_job = _captain_checkin_job(cron_listing, enabled_only=True)
-            if existing_job is None and not cron and not interval:
-                return {
-                    "error": "A new Captain check-in requires either cron or interval",
-                }
-
-            job = existing_job
-            is_new_job = False
-            if job is None:
-                body: dict[str, Any] = {
-                    "name": _CAPTAIN_CHECKIN_JOB_NAME,
-                    "message": _CAPTAIN_CHECKIN_TASK,
-                    "agent": "raven",
-                }
-                if cron:
-                    body["cron"] = cron
-                    body["timezone"] = timezone
-                else:
-                    body["every"] = interval
-                if model is not None:
-                    body["model"] = model
-                try:
-                    job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
-                except Exception as exc:
-                    return {"error": f"Could not create Captain check-in: {exc}"}
-                job = dict(job)
-                is_new_job = True
-            elif enabled_job is None:
-                try:
-                    toggle = _crew_api_with_recovery(
-                        crew,
-                        crew_id,
-                        "POST",
-                        f"/api/crons/{job.get('id')}/enable",
-                        json={"enabled": True},
-                    )
-                    if isinstance(toggle, dict) and toggle.get("ok") is False:
-                        return {"error": "Could not resume Captain check-in: job not found"}
-                except Exception as exc:
-                    return {"error": f"Could not resume Captain check-in: {exc}"}
-                job = dict(job)
-                job["enabled"] = True
-
-            # TRN-29: Write schedule entry to transport registry
-            schedule_entry = {
-                "job_id": job.get("id"),
-                "name": _CAPTAIN_CHECKIN_JOB_NAME,
-                "interval_secs": interval,
-                "cron_expr": cron,
-                "next_fire_at": time.time() + (interval or 60),
-                "agent": "raven",
-                "message": _CAPTAIN_CHECKIN_TASK,
-                "enabled": True,
-            }
-            if is_new_job:
-                schedule_entry["model"] = model
-            try:
-                with _registry_lock:
-                    reg = _load_registry()
-                    if not is_new_job:
-                        # Resume does not accept a new model.  Prefer the
-                        # gateway's value when present, but preserve the
-                        # registry pin for older gateway responses that omit it.
-                        if "model" in job:
-                            schedule_entry["model"] = job.get("model")
-                        else:
-                            prior_entry = next(
-                                (
-                                    entry
-                                    for entry in _get_crew_schedules(reg, crew_id)
-                                    if entry.get("job_id") == schedule_entry["job_id"]
-                                ),
-                                None,
-                            )
-                            if prior_entry is not None and "model" in prior_entry:
-                                schedule_entry["model"] = prior_entry["model"]
-                    _upsert_crew_schedule(reg, crew_id, schedule_entry)
-                    _save_registry(reg)
-            except Exception as exc:
-                logger.warning("TRN-29: Could not persist schedule entry: %s", exc)
-
-            # Only append an order after the check-in exists and is enabled.  A
-            # failed provisioning call must not leave mail that no Raven can read.
-            try:
-                podman = _get_podman()
-                _append_captain_mail(podman, crew["container"], order_message, crew_id=crew_id)
-            except Exception as exc:
-                return {"error": f"Could not write Captain order: {exc}"}
-
-            result: dict[str, Any] = {
-                "crew_id": crew_id,
-                "action": "order",
-                "status": "ordered",
-                "mode": "standing-orders",
-                "job_id": job.get("id"),
-                "mailbox": "captain@localhost",
-                "schedule": job.get("schedule") or cron or (
-                    f"every {interval}s" if interval else None
-                ),
-            }
-
-            # Immediate dispatch: only for newly created jobs (not resumes)
-            if is_new_job:
-                should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
-                if should_fire:
-                    try:
-                        immediate_body: dict[str, Any] = {
-                            "task": _CAPTAIN_CHECKIN_TASK,
-                            "agent": "raven",
-                            "keep": True,
-                        }
-                        if model is not None:
-                            immediate_body["model"] = model
-                        _crew_api_with_recovery(
-                            crew, crew_id, "POST", "/api/spawn", json=immediate_body,
-                        )
-                    except Exception as exc:
-                        result["immediate_dispatch_error"] = str(exc)
-
-            return result
-
-    # ── Captain status — no container wake required ───────────────────────────
-    # For action == "status", skim all 8 mailboxes (works on both running and
-    # stopped containers via _skim_all_mailboxes) and return early without
-    # calling _ensure_crew_running. The stop action still needs a running
-    # container to reach the gateway's cron API to disable the job.
     if action == "status":
-        podman = _get_podman()
-        # Single call — covers all 8 mailboxes; falls back to archive API on
-        # stopped containers.
-        agent_mail = _skim_all_mailboxes(podman, crew["container"])
-        captain_subjects = agent_mail.get("captain", [])
-        admiral_subjects = agent_mail.get("admiral", [])
-        captain_mail = len(captain_subjects)
-        admiral_mail = len(admiral_subjects)
-
-        # If the container is already running, read the live cron job state
-        # without waking it. If stopped, return dormant/no-job without starting.
-        try:
-            is_running = podman.container_is_running(crew["container"])
-        except Exception:
-            is_running = False
-
-        if is_running:
-            standing_job: dict[str, Any] | None = None
-            try:
-                running_crew = _ensure_crew_running(crew, crew_id)
-                cron_listing = _crew_api_with_recovery(running_crew, crew_id, "GET", "/api/crons")
-                standing_job = _captain_checkin_job(cron_listing)
-            except Exception:
-                standing_job = None
-        else:
-            standing_job = None
-
-        if standing_job is None:
-            return {
-                "crew_id": crew_id,
-                "action": action,
-                "status": "dormant",
-                "mode": "standing-orders",
-                "job_id": None,
-                "enabled": False,
-                "unread_mail": captain_mail,
-                "mailbox": "captain@localhost",
-                "captain_subjects": captain_subjects,
-                "captain_mail": captain_mail,
-                "unread_admiral_mail": admiral_mail,
-                "admiral_mailbox": "admiral@localhost",
-                "admiral_subjects": admiral_subjects,
-                "admiral_mail": admiral_mail,
-                "agent_mail": agent_mail,
-            }
-
-        status_result = _captain_standing_view(
-            crew_id,
-            action,
-            standing_job,
-            podman,
-            crew["container"],
-        )
-        status_result["captain_subjects"] = captain_subjects
-        status_result["admiral_subjects"] = admiral_subjects
-        status_result["captain_mail"] = captain_mail
-        status_result["admiral_mail"] = admiral_mail
-        status_result["agent_mail"] = agent_mail
-        return status_result
-
-    # ── Stop — container must be running to reach cron API ───────────────────
-    try:
-        crew = _ensure_crew_running(crew, crew_id)
-        podman = _get_podman()
-    except (ValueError, KeyError, RuntimeError) as exc:
-        return {"error": str(exc)}
-
-    try:
-        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-        standing_job = _captain_checkin_job(cron_listing)
-    except Exception as exc:
-        return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
-
-    if standing_job is None:
-        return {
-            "crew_id": crew_id,
-            "action": "stop",
-            "status": "dormant",
-            "mode": "standing-orders",
-            "job_id": None,
-            "enabled": False,
-            "mailbox": "captain@localhost",
-        }
-
-    if action == "stop":
-        # Best-effort: disable the gateway cron if it is currently enabled.
-        # A failure here is logged as a warning — it must not block the
-        # registry update below (TRN-104).
-        if standing_job.get("enabled", False):
-            try:
-                toggle = _crew_api_with_recovery(
-                    crew,
-                    crew_id,
-                    "POST",
-                    f"/api/crons/{standing_job.get('id')}/enable",
-                    json={"enabled": False},
-                )
-                if isinstance(toggle, dict) and toggle.get("ok") is False:
-                    logger.warning(
-                        "captain stop: gateway cron %s not found for crew %s",
-                        standing_job.get("id"),
-                        crew_id,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "captain stop: gateway cron disable failed for crew %s: %s",
-                    crew_id,
-                    exc,
-                )
-        standing_job = dict(standing_job)
-        standing_job["enabled"] = False
-
-        # TRN-104 / TRN-29: Always update the registry to disabled, regardless
-        # of the gateway API call result.  This ensures TRN-82's
-        # reconcile-on-restart sees the correct state and the idle monitor can
-        # eventually stop the crew.
-        try:
-            with _registry_lock:
-                reg = _load_registry()
-                schedules = _get_crew_schedules(reg, crew_id)
-                matched = False
-                for sched in schedules:
-                    if sched.get("job_id") == standing_job.get("id"):
-                        sched["enabled"] = False
-                        matched = True
-                        break
-                if not matched:
-                    logger.warning(
-                        "captain stop: no registry entry found for job %s in crew %s",
-                        standing_job.get("id"),
-                        crew_id,
-                    )
-                _save_registry(reg)
-        except Exception as exc:
-            logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
-
-    result = _captain_standing_view(
-        crew_id,
-        action,
-        standing_job,
-        podman,
-        crew["container"],
-    )
-    if action == "stop":
-        result["status"] = "stopped"
-    return result
+        return _captain_do_status(crew_id)
+    return _captain_do_stop(crew_id)
 
 
 @mcp.tool()
@@ -3482,97 +3205,9 @@ def dispatch(
     }
 
 
-def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
-    """Write last_task_at to the crew's registry entry (best-effort)."""
-    try:
-        with _registry_lock:
-            reg = _load_registry()
-            if crew_id in reg["crews"]:
-                reg["crews"][crew_id]["last_task_at"] = created_at
-                _save_registry(reg)
-    except Exception as exc:
-        logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
-
-
-def _dispatch_batch(
-    tasks: list[str],
-    agent: str,
-    crew_id: str | None,
-    model: str | None,
-) -> dict:
-    """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
-
-    Validation (size, agent, model) has already run in ``dispatch``. On the
-    first CrewUnresponsiveError or unexpected failure the loop breaks and a
-    ``partial`` batch is recorded with the task_ids assigned so far.
-    """
-    # Size validation (task 2.3).
-    max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
-    if len(tasks) == 0 or len(tasks) == 1:
-        return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
-    if len(tasks) > max_tasks:
-        return {"error": f"tasks exceeds maximum batch size of {max_tasks}"}
-
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    batch_id = str(uuid.uuid4())
-    task_ids: list[str] = []
-    now = datetime.now(timezone.utc)
-    created_at = now.isoformat()
-    dispatch_error: str | None = None
-
-    for t in tasks:
-        body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
-        if model is not None:
-            body["model"] = model
-        try:
-            result = _crew_api_with_recovery(
-                crew, crew_id, "POST", "/api/spawn", json=body,
-            )
-        except (CrewUnresponsiveError, RuntimeError, ValueError) as e:
-            dispatch_error = str(e)
-            break
-        tid = result.get("id")
-        if not tid:
-            dispatch_error = "spawn returned no task id"
-            break
-        task_ids.append(tid)
-        # Per-task timestamp + last_task_at, using this task's response time.
-        task_created = datetime.now(timezone.utc).isoformat()
-        with _task_timestamps_lock:
-            _task_timestamps[tid] = {
-                "created_at": task_created,
-                "started_at": None,
-                "completed_at": None,
-            }
-        _record_last_task_at(crew_id, task_created)
-
-    if dispatch_error is None:
-        # Task 2.5: full success.
-        _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
-        return {
-            "batch_id": batch_id,
-            "task_ids": task_ids,
-            "crew_id": crew_id,
-            "status": "dispatched",
-            "agent": agent,
-            "created_at": created_at,
-        }
-
-    # Task 2.6: partial failure. Record what was started; surface the error.
-    _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
-    return {
-        "batch_id": batch_id,
-        "task_ids": task_ids,
-        "crew_id": crew_id,
-        "status": "partial",
-        "agent": agent,
-        "created_at": created_at,
-        "error": dispatch_error,
-    }
+# _record_last_task_at and _dispatch_batch moved to transport.lifecycle
+# (TRN-143), next to _pickup_batch; imported above. The dispatch MCP tools
+# below call them as before.
 
 
 @mcp.tool()
@@ -3745,210 +3380,6 @@ def pickup(
         return _pickup_list(crew, crew_id, podman, container, effective_timeout)
 
 
-def _pickup_single(
-    crew: dict,
-    crew_id: str,
-    task_id: str,
-    podman: PodmanClient,
-    container: str,
-    timeout_secs: int,
-) -> dict:
-    """Single-task pickup with optional polling and mail state."""
-    # Capture initial admiral mail count for early-return detection using a
-    # single batched exec rather than a dedicated _mail_count call.
-    if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-    deadline = time.monotonic() + timeout_secs
-
-    while True:
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
-        except CrewUnresponsiveError as e:
-            return {"error": str(e), "task_id": task_id, "crew_id": crew_id}
-        done = r.get("done", False)
-
-        # Single exec reads all mailboxes at once.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
-        agent_persona = r.get("agent", "")
-        agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
-        admiral_mail = mail_counts.get("admiral", 0)
-
-        # TRN-89 task 1: populate task timestamps
-        now = datetime.now(timezone.utc)
-        with _task_timestamps_lock:
-            ts = _task_timestamps.get(task_id, {})
-            elapsed = r.get("elapsed", 0)
-            if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
-                ts["started_at"] = now.isoformat()
-            if ts and done and ts.get("completed_at") is None:
-                ts["completed_at"] = now.isoformat()
-            # TRN-123: snapshot ts under the lock so the post-lock reads below
-            # see a stable copy rather than a live reference that a concurrent
-            # _pickup_single or _dispatch_batch could mutate after release.
-            ts = dict(ts)
-
-        out: dict[str, Any] = {
-            "task_id": r.get("id"),
-            "crew_id": crew_id,
-            "done": done,
-            "turns": r.get("turns", 0),
-            "last_tool": r.get("last_tool", ""),
-            "elapsed_secs": int(r.get("elapsed", 0)),
-            "result": r.get("result", ""),
-            "error": r.get("error", ""),
-            "outcome": r.get("outcome", ""),
-            "agent_mail": agent_mail,
-            "created_at": ts.get("created_at") if ts else None,
-            "started_at": ts.get("started_at") if ts else None,
-            "completed_at": ts.get("completed_at") if ts else None,
-        }
-
-        # Include subject lines for the agent persona, raven, captain, and admiral.
-        # captain/admiral come from the single _read_all_mail_subjects exec above
-        # (same shape: [{subject, received_at}]). The admiral_mail count above is
-        # still used for the reason="admiral_mail" early-return signal.
-        if agent_persona:
-            out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
-        raven_subjects = mail_subjects.get("raven", [])
-        if raven_subjects:
-            out["raven_subjects"] = raven_subjects
-        captain_subjects = mail_subjects.get("captain", [])
-        admiral_subjects = mail_subjects.get("admiral", [])
-        out["captain_subjects"] = captain_subjects
-        out["captain_mail"] = len(captain_subjects)
-        out["admiral_subjects"] = admiral_subjects
-        out["admiral_mail"] = len(admiral_subjects)
-
-        if done or timeout_secs == 0:
-            return out
-
-        # Check for admiral mail early-return
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            if not done:
-                out["reason"] = "timeout"
-            return out
-
-        # F-03 audit: @mcp.tool() handlers are dispatched via run_in_executor
-        # (confirmed: MCPServer.streamable_http_app wraps sync handlers in the
-        # default thread-pool executor). time.sleep blocks the worker thread,
-        # not the event loop — safe, no conversion to asyncio.sleep needed.
-        time.sleep(min(3, remaining))
-
-
-def _pickup_list(
-    crew: dict,
-    crew_id: str,
-    podman: PodmanClient,
-    container: str,
-    timeout_secs: int,
-) -> dict:
-    """List-all pickup with optional polling and mail state."""
-    # Capture initial admiral mail count for early-return detection using a
-    # single batched exec rather than a dedicated _mail_count call.
-    if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-    deadline = time.monotonic() + timeout_secs
-
-    while True:
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
-        except CrewUnresponsiveError as e:
-            return {"error": str(e), "crew_id": crew_id}
-        agents = r.get("agents", [])
-
-        # Check if any task is done
-        any_done = any(a.get("done", False) for a in agents)
-
-        # Single exec reads all mailboxes at once; split into persona summary
-        # and admiral count for the response surface.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
-        mail_summary: dict[str, int] = {
-            name: mail_counts[name]
-            for name in PERSONA_NAMES
-            if mail_counts.get(name, 0) > 0
-        }
-        admiral_mail = mail_counts.get("admiral", 0)
-
-        # TRN-123: snapshot the timestamp entries for the listed agents under
-        # the lock, then build the response list from the snapshot so the
-        # comprehension does not read _task_timestamps concurrently with writes.
-        with _task_timestamps_lock:
-            _ts_snapshot = {
-                a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
-                for a in agents
-            }
-
-        task_list = [
-            {
-                "task_id": a.get("id"),
-                "crew_id": crew_id,
-                "task": a.get("task", "")[:80],
-                "agent": a.get("agent", ""),
-                "done": a.get("done", False),
-                "elapsed_secs": int(a.get("elapsed", 0)),
-                "last_tool": a.get("last_tool", ""),
-                "outcome": a.get("outcome", ""),
-                "error": a.get("error", ""),
-                # TRN-89 task 1: include per-task timestamps (null if missing)
-                "created_at": _ts_snapshot.get(a.get("id", ""), {}).get("created_at"),
-                "started_at": _ts_snapshot.get(a.get("id", ""), {}).get("started_at"),
-                "completed_at": _ts_snapshot.get(a.get("id", ""), {}).get("completed_at"),
-            }
-            for a in agents
-        ]
-
-        # Build subject summaries for all persona mailboxes + captain + admiral.
-        # captain/admiral come from the single _read_all_mail_subjects exec above.
-        subjects_summary: dict[str, list[str]] = {}
-        for name in PERSONA_NAMES:
-            subs = mail_subjects.get(name, [])
-            if subs:
-                subjects_summary[f"{name}_subjects"] = subs
-        captain_subjects = mail_subjects.get("captain", [])
-        admiral_subjects = mail_subjects.get("admiral", [])
-        subjects_summary["captain_subjects"] = captain_subjects
-        subjects_summary["captain_mail"] = len(captain_subjects)
-        subjects_summary["admiral_subjects"] = admiral_subjects
-        subjects_summary["admiral_mail"] = len(admiral_subjects)
-
-        out: dict[str, Any] = {
-            "crew_id": crew_id,
-            "tasks": task_list,
-            "mail_summary": mail_summary,
-            "agent_subjects": mail_subjects,
-            **subjects_summary,
-        }
-
-        if any_done or timeout_secs == 0:
-            return out
-
-        # Check for admiral mail early-return
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            out["reason"] = "timeout"
-            return out
-
-        # F-03: same as _pickup_single — time.sleep is safe in executor thread.
-        time.sleep(min(3, remaining))
-
-
 # ── MCP resources ────────────────────────────────────────────────────────────
 
 # _AGENTS_DIR is imported from transport.lifecycle above.
@@ -3981,28 +3412,37 @@ def resource_agents() -> str:
 
 
 
+
 @mcp.resource(
     "transport://orders",
     name="orders",
     title="Standing-Order Templates",
-    description="Lists the built-in standing-order templates available to captain(order).",
+    description="Summary index of available standing-order templates — name and description only. Use transport://orders/{name} to fetch a template's full resolved body.",
     mime_type="text/plain",
 )
 def resource_orders() -> str:
-    """Return every standing-order template from academy/orders/ and its full body."""
-    orders_dir = _resolve_orders_dir()
-    if not orders_dir.is_dir():
-        return "No standing-order templates are available."
-    templates = sorted(p for p in orders_dir.glob("*.md") if not p.name.startswith("."))
+    """Return a summary index of available order templates (name + description only)."""
+    templates = _list_order_templates()
     if not templates:
         return "No standing-order templates are available."
-    sections = []
-    for template_path in templates:
-        name = template_path.stem
-        description, body = _load_order_template(name)
-        resolved_body = _substitute_placeholders(body)
-        sections.append(f"## {name}\n{description}\n\n{resolved_body}")
-    return "\n\n".join(sections)
+    lines = [f"{name}: {description}" for name, description in templates]
+    return "\n".join(lines)
+
+
+@mcp.resource(
+    "transport://orders/{name}",
+    name="orders_by_name",
+    title="Standing-Order Template",
+    description="Returns the full resolved body of the named standing-order template, with all placeholders substituted and front-matter stripped. Use transport://orders to list available templates.",
+    mime_type="text/plain",
+)
+def resource_orders_by_name(name: str) -> str:
+    """Return the full resolved body of a single order template by name."""
+    try:
+        _description, body = _load_order_template(name)
+    except ValueError:
+        return f"Not found: no standing-order template named {name!r}. Use transport://orders to list available templates."
+    return _substitute_placeholders(body)
 
 
 @mcp.resource(
@@ -4148,6 +3588,38 @@ if __name__ == "__main__":
         host=HOST,
     )
     _file_starlette = Starlette(routes=file_routes)
+
+    # TRN-129: generate the OpenAPI schema once, after all routes/tools are
+    # defined, before constructing BearerAuthMiddleware. Cached globally so
+    # _handle_openapi_get can serve it without re-generating on every request.
+    _openapi_schema_routes = {
+        ("POST", "/login"): _handle_login_post,
+        ("GET",  "/login"): _handle_login_get,
+        ("POST", "/logout"): _handle_logout_post,
+        ("GET",  "/health"): _handle_health,
+        ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
+        ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
+        ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
+        ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+        ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+    }
+    _openapi_schema_public_routes = {
+        ("GET",  "/version"): _handle_version_get,
+        ("POST", "/dashboard/login"): _dashboard_gate.handle_login_post,
+        ("POST", "/dashboard/logout"): _dashboard_gate.handle_logout_post,
+        ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
+        ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
+        ("GET",  "/openapi.json"): _handle_openapi_get,
+    }
+    _openapi_schema = _openapi.generate_schema(
+        routes=_openapi_schema_routes,
+        public_routes=_openapi_schema_public_routes,
+        file_routes=file_routes,
+        mcp_tools=_openapi.get_mcp_tools(mcp),
+        version=TRANSPORT_VERSION,
+    )
+    logger.info("TRN-129: OpenAPI schema generated (%d paths)", len(_openapi_schema.get("paths", {})))
+
     app = BearerAuthMiddleware(mcp_app,
         api_key=GA_API_KEY,
         file_app=_file_starlette,
@@ -4165,10 +3637,11 @@ if __name__ == "__main__":
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,
-            ("POST", "/dashboard/login"): _handle_dashboard_login_post,
-            ("POST", "/dashboard/logout"): _handle_dashboard_logout_post,
-            ("GET",  "/dashboard/auth"): _handle_dashboard_auth,
-            ("GET",  "/dashboard/login"): _handle_login_ui,
+            ("POST", "/dashboard/login"): _dashboard_gate.handle_login_post,
+            ("POST", "/dashboard/logout"): _dashboard_gate.handle_logout_post,
+            ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
+            ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
+            ("GET",  "/openapi.json"): _handle_openapi_get,  # TRN-129: public, no auth
         },
     )
     # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all
@@ -4258,11 +3731,10 @@ if __name__ == "__main__":
         for _cid, _info in _restored_reg["crews"].items():
             _p = _info.get("dashboard_port")
             if _p is not None:
-                with _dashboard_port_crew_lock:
-                    _dashboard_port_crew[int(_p)] = _cid
+                _dashboard_gate.register_port(_cid, int(_p))
                 with _registry_lock:
                     _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
-                    _caddy_register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
+                    _caddy_portal.register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
         logger.info("TRN-103: Portal (Caddy) is the sole dashboard proxy")
         await server.serve()
 

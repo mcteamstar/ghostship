@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 import threading
 import time
 import unittest
@@ -211,8 +212,14 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         resource = server.resource_orders()
         resolved_body = server._resolve_order_template("sdd", "test-change")
 
-        self.assertIn("## sdd", resource)
+        # TRN-135: resource_orders() now returns a summary index (name: description),
+        # not full template bodies. Verify the new format.
+        self.assertIn("sdd:", resource)
         self.assertIn("Drive one or more named OpenSpec changes through the standard", resource)
+        # Full body is NOT in the index
+        self.assertNotIn("openspec store list --json", resource)
+        self.assertNotIn("openspec store register", resource)
+        # The resolved body from _resolve_order_template is unaffected
         self.assertIn("openspec store list --json", resolved_body)
         self.assertIn("openspec store register", resolved_body)
         self.assertIn("`--store <id>`", resolved_body)
@@ -342,15 +349,17 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("nonexistent-template", str(ctx.exception))
 
     def test_resource_orders_returns_dynamic_listing_from_academy_orders(self) -> None:
-        """resource_orders() returns dynamic listing from academy/orders/."""
+        """resource_orders() returns summary index (name: description) from academy/orders/."""
         resource = server.resource_orders()
-        # Should contain the sdd template section
-        self.assertIn("## sdd", resource)
-        # Should contain resolved content (no raw placeholders)
+        # TRN-135: new format is "name: description" per line, not "## name\n...body"
+        self.assertIn("sdd:", resource)
+        # Summary should contain the description (starts with "Drive one or more…")
+        self.assertIn("Drive one or more named OpenSpec changes", resource)
+        # Full body text must NOT appear in the summary
         import re as _re
+        self.assertNotIn("Drive OpenSpec change '<change>'", resource)
+        # No raw placeholders in the index
         self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resource))
-        # Should contain parts of the resolved body
-        self.assertIn("Drive OpenSpec change", resource)
 
     def test_placeholder_residual_warning(self) -> None:
         """A warning is logged when an unknown {{…}} placeholder remains after substitution."""
@@ -497,27 +506,44 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertTrue(msg_id.startswith("<"))
         self.assertTrue(msg_id.endswith("@localhost>"))
 
-    def test_mail_helper_adds_supersedes_and_hmac_headers(self) -> None:
+    def test_mail_helper_adds_supersedes_and_ed25519_sig_headers(self) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, PrivateFormat, NoEncryption,
+        )
+
+        seed = Ed25519PrivateKey.generate().private_bytes(
+            Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+        ).hex()
         message, _ = server._format_captain_mail(
-            "updated order", signing_secret="deadbeef", supersedes_id="<prev@localhost>"
+            "updated order", signing_secret=seed, supersedes_id="<prev@localhost>"
         )
         self.assertIn("Supersedes: <prev@localhost>", message)
         self.assertIn("X-Admiral-Sig: ", message)
 
     def test_admiral_sig_round_trip_matches_verify_admiral_sig_logic(self) -> None:
-        """X-Admiral-Sig covers Subject, From, and body after parsing.
+        """X-Admiral-Sig is a valid Ed25519 signature over Subject, From, and body.
 
         Simulates the verify-admiral-sig logic: parse the message with
         email.message_from_string, extract the signed headers, strip the
-        trailing newline from the payload, re-derive the HMAC, and compare.
+        trailing newline from the payload, base64url-decode the signature, and
+        verify against the public key derived from the same seed.
         """
         import email as _email
-        import hmac as _hmac
-        import hashlib as _hashlib
+        import base64 as _base64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, PrivateFormat, PublicFormat, NoEncryption,
+        )
 
-        secret = "test-round-trip-secret"
+        private_key = Ed25519PrivateKey.generate()
+        seed = private_key.private_bytes(
+            Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+        ).hex()
+        public_key = private_key.public_key()
+
         body = "You are conducting a review.\n\nSection 1: Transport core."
-        message, _ = server._format_captain_mail(body, signing_secret=secret)
+        message, _ = server._format_captain_mail(body, signing_secret=seed)
 
         # Parse as email (what verify-admiral-sig does)
         msg = _email.message_from_string(message)
@@ -526,14 +552,16 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         sender = msg.get("From", "")
         parsed_body = (msg.get_payload() or "").rstrip("\n")
 
-        # Re-derive expected HMAC over the same headers and body as the verifier.
-        expected = _hmac.new(
-            secret.encode("utf-8"),
-            f"Subject:{subject}\nFrom:{sender}\n\n{parsed_body}".encode("utf-8"),
-            _hashlib.sha256,
-        ).hexdigest()
+        # base64url-decode (tolerating stripped padding) and verify — this must
+        # not raise InvalidSignature.
+        padding = "=" * (-len(sig_header) % 4)
+        sig_raw = _base64.urlsafe_b64decode(sig_header + padding)
+        payload = f"Subject:{subject}\nFrom:{sender}\n\n{parsed_body}".encode("utf-8")
+        public_key.verify(sig_raw, payload)  # raises on failure
 
-        self.assertEqual(sig_header, expected, "X-Admiral-Sig should verify after stripping trailing newline")
+        # A tampered body must fail verification.
+        with self.assertRaises(Exception):
+            public_key.verify(sig_raw, payload + b"tampered")
 
     def test_mail_append_delivers_via_maildeliver(self) -> None:
         podman = Mock()
@@ -1483,6 +1511,196 @@ class CaptainStatusAgentMailTests(unittest.TestCase):
         mock_archive.assert_not_called()
         self.assertEqual(result["captain_subjects"], captain_subs)
         self.assertEqual(result["admiral_subjects"], admiral_subs)
+
+
+class LoadOrderTemplateGaDirTests(unittest.TestCase):
+    """TRN-135 — _load_order_template() resolves GA_ORDERS_DIR with precedence.
+
+    Guards the requirement that a user-defined template is both listable AND
+    resolvable — via the per-template resource and the captain order path,
+    both of which go through _load_order_template().
+    """
+
+    def test_user_defined_template_resolves_new_name(self) -> None:
+        """A template that exists only in GA_ORDERS_DIR resolves by name."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: Built-in SDD\n---\nbuiltin body", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "deploy.md").write_text("---\ndescription: Deploy\n---\ndeploy body here", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                description, body = captain_mod._load_order_template("deploy")
+
+        self.assertEqual(description, "Deploy")
+        self.assertEqual(body, "deploy body here")
+
+    def test_user_defined_template_overrides_builtin_on_load(self) -> None:
+        """A user-defined template with a built-in stem takes precedence on load."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: Built-in SDD\n---\nbuiltin body", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "sdd.md").write_text("---\ndescription: User SDD\n---\noverridden body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                description, body = captain_mod._load_order_template("sdd")
+
+        self.assertEqual(description, "User SDD")
+        self.assertEqual(body, "overridden body")
+
+    def test_builtin_still_resolves_when_ga_dir_lacks_it(self) -> None:
+        """A built-in with no user-defined counterpart still resolves when GA_ORDERS_DIR is set."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "independent-review.md").write_text("---\ndescription: IR\n---\nir body", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "deploy.md").write_text("---\ndescription: Deploy\n---\ndeploy body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                description, body = captain_mod._load_order_template("independent-review")
+
+        self.assertEqual(description, "IR")
+        self.assertEqual(body, "ir body")
+
+    def test_unknown_template_still_raises_with_ga_dir_set(self) -> None:
+        """An unknown name raises ValueError even when GA_ORDERS_DIR is set."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            user = Path(td) / "user"
+            user.mkdir()
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                with self.assertRaises(ValueError):
+                    captain_mod._load_order_template("nonexistent")
+
+
+class ListOrderTemplatesTests(unittest.TestCase):
+    """TRN-135 — _list_order_templates() merges built-ins and GA_ORDERS_DIR."""
+
+    def _make_builtin_dir(self, tmp: Path, templates: dict[str, str]) -> Path:
+        """Write .md template files into a directory, return the path."""
+        for stem, content in templates.items():
+            (tmp / f"{stem}.md").write_text(content, encoding="utf-8")
+        return tmp
+
+    def test_builtin_only_when_ga_orders_dir_unset(self) -> None:
+        """(a) Only built-in templates returned when GA_ORDERS_DIR is empty."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "alpha.md").write_text("---\ndescription: Alpha desc\n---\nbody", encoding="utf-8")
+            (builtin / "beta.md").write_text("---\ndescription: Beta desc\n---\nbody", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", ""),
+            ):
+                result = captain_mod._list_order_templates()
+
+        names = [n for n, _ in result]
+        self.assertIn("alpha", names)
+        self.assertIn("beta", names)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(dict(result)["alpha"], "Alpha desc")
+
+    def test_user_defined_templates_added_when_ga_orders_dir_set(self) -> None:
+        """(b) User-defined templates appear alongside built-ins when GA_ORDERS_DIR set."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: SDD desc\n---\nbody", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "custom.md").write_text("---\ndescription: Custom desc\n---\ncustom body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                result = captain_mod._list_order_templates()
+
+        result_dict = dict(result)
+        self.assertIn("sdd", result_dict)
+        self.assertIn("custom", result_dict)
+        self.assertEqual(result_dict["custom"], "Custom desc")
+
+    def test_user_defined_overrides_builtin_on_name_collision(self) -> None:
+        """(c) User-defined template with same stem takes precedence over built-in."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: Built-in SDD\n---\nbody", encoding="utf-8")
+
+            user = Path(td) / "user"
+            user.mkdir()
+            (user / "sdd.md").write_text("---\ndescription: User SDD override\n---\noverridden body", encoding="utf-8")
+
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", str(user)),
+            ):
+                result = captain_mod._list_order_templates()
+
+        result_dict = dict(result)
+        self.assertEqual(result_dict["sdd"], "User SDD override")
+        # Only one entry for sdd, not two
+        self.assertEqual(len([n for n, _ in result if n == "sdd"]), 1)
+
+    def test_non_existent_ga_orders_dir_logs_warning_and_falls_back(self) -> None:
+        """(d) Non-existent GA_ORDERS_DIR logs warning once and returns only built-ins."""
+        with tempfile.TemporaryDirectory() as td:
+            builtin = Path(td) / "builtin"
+            builtin.mkdir()
+            (builtin / "sdd.md").write_text("---\ndescription: SDD desc\n---\nbody", encoding="utf-8")
+
+            non_existent = str(Path(td) / "does_not_exist")
+
+            # Reset the warning flag before each test
+            captain_mod._ga_orders_dir_warned = False
+            with (
+                patch.object(captain_mod, "_resolve_orders_dir", return_value=builtin),
+                patch.object(captain_mod, "GA_ORDERS_DIR", non_existent),
+            ):
+                with self.assertLogs("transport.captain", level="WARNING") as log_ctx:
+                    result = captain_mod._list_order_templates()
+                # Warning should have been logged
+                self.assertTrue(any("GA_ORDERS_DIR" in msg for msg in log_ctx.output))
+                # Falls back to built-ins only
+                result_dict = dict(result)
+                self.assertIn("sdd", result_dict)
+                self.assertEqual(len(result), 1)
+
+                # Second call: no additional warning (one-time flag)
+                with self.assertNoLogs("transport.captain", level="WARNING"):
+                    result2 = captain_mod._list_order_templates()
+                self.assertEqual(len(result2), 1)
+
+            # Reset flag for other tests
+            captain_mod._ga_orders_dir_warned = False
 
 
 if __name__ == "__main__":

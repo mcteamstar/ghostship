@@ -51,15 +51,40 @@ The system SHALL expose a `transport://agents` MCP resource that lists every age
 - **THEN** the resource returns a message stating no agents directory was found, rather than raising an error
 
 ### Requirement: Order template resource
-The system SHALL expose a `transport://orders` MCP resource that lists every built-in standing-order template — name, description, and full text — formatted for a client to read before calling `captain(action="order", template=<name>, ...)` or before composing an equivalent `message` by hand.
+
+The system SHALL expose the following MCP resources for standing-order template discovery and retrieval:
+
+**Summary index — `transport://orders`**
+The system SHALL expose a `transport://orders` MCP resource that returns a lightweight index of all available standing-order templates — built-in and user-defined. Each entry SHALL include only the template name and its one-line description. The full body of any template SHALL NOT be included in this response.
+
+**Per-template resource — `transport://orders/{name}`**
+The system SHALL expose a `transport://orders/{name}` MCP resource for each available template. When read, it SHALL return the template's complete resolved body exactly as `captain(action="order", template=<name>, ...)` would use it — with all placeholder substitutions applied and the front-matter description stripped from the body. If the requested template does not exist, the resource SHALL return an appropriate error or 404-equivalent response rather than an empty body.
+
+Both resources SHALL remain available without any running crew, since templates are static transport-side content.
 
 #### Scenario: Templates present
-- **WHEN** `transport://orders` is read
-- **THEN** the response is a plain-text listing with one heading per template, each showing that template's name, description, and complete body text exactly as `captain(order, template=<name>, ...)` would resolve it
+- **WHEN** `transport://orders` is read and one or more templates are available
+- **THEN** the response is a plain-text summary index — one entry per template showing the template name and its one-line description; the full template body text is NOT included
 
 #### Scenario: Reading the resource requires no crew
-- **WHEN** `transport://orders` is read
-- **THEN** the response does not depend on any crew existing or being reachable, since templates are static, transport-side content — the same property `transport://agents` already has for the agent roster
+- **WHEN** `transport://orders` or `transport://orders/{name}` is read
+- **THEN** the response does not depend on any crew existing or being reachable, since templates are static transport-side content
+
+#### Scenario: transport://orders/{name} returns full resolved body
+- **WHEN** `transport://orders/sdd` is read
+- **THEN** the response contains the complete resolved body of the `sdd` template with all `{{PLACEHOLDER}}` tokens substituted, and without the YAML front-matter block
+
+#### Scenario: transport://orders/{name} for unknown template
+- **WHEN** `transport://orders/nonexistent` is read
+- **THEN** the resource returns an error indicating the template was not found, rather than an empty or partial response
+
+#### Scenario: User-defined template appears in summary index
+- **WHEN** `GA_ORDERS_DIR` is set, a user-defined template named `my-workflow` exists in that directory, and `transport://orders` is read
+- **THEN** `my-workflow` appears in the summary index alongside built-in templates
+
+#### Scenario: User-defined template is readable via per-template resource
+- **WHEN** `GA_ORDERS_DIR` is set, a user-defined template named `my-workflow` exists, and `transport://orders/my-workflow` is read
+- **THEN** the response contains the full resolved body of `my-workflow`
 
 ### Requirement: Client-facing server identity
 The system SHALL identify itself to MCP clients as `transport` (server name) while the convention across this project's docs and registration commands is to register the connection under the client-side name `ghostship`.
@@ -71,9 +96,15 @@ The system SHALL identify itself to MCP clients as `transport` (server name) whi
 ### Requirement: Tool surface covers the full crew lifecycle
 The system SHALL expose exactly these tools to MCP clients, grouped and ordered by what they operate on — workspace tools first (`crews`, `launch`, `supply`, `evac`, `nuke`), then agent tools (`captain`, `dispatch`, `schedule`, `steer`, `pickup`, `bridge`) — covering creation, file exchange, teardown, autonomous and manual task orchestration, and blocking task waits.
 
+The transport SHALL also expose `GET /openapi.json` as part of its public HTTP surface. This route is listed in the transport spec (`trn-openapi-schema`) and is not a new MCP tool, but its existence is part of the transport's documented public surface.
+
 #### Scenario: Tool discovery
 - **WHEN** an MCP client lists tools on the `ghostship` connection
 - **THEN** it sees all eleven tools above, in that order, and no others, including `bridge` with the docstring-derived description used for model tool selection
+
+#### Scenario: OpenAPI schema discoverable without MCP client
+- **WHEN** an HTTP GET request is made to `/openapi.json` on the transport port
+- **THEN** the response is a valid OpenAPI 3.x JSON document describing the transport's full HTTP surface, accessible without an MCP client or authentication
 
 ### Requirement: User-facing error messages on recovery failure
 The system SHALL return human-readable, actionable error messages to MCP clients when crew recovery fails, replacing raw HTTP status codes with messages that state the crew identifier, what recovery was attempted, and a suggested next action.

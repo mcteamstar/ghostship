@@ -10,8 +10,6 @@ podman (PodmanClient), config. Must NOT import from lifecycle or server
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -39,7 +37,12 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 
 # Container-side helper scripts baked into the crew image at /scripts/.
-SCRIPTS_DIR = "/scripts"
+# Canonical home is transport/constants.py (TRN-142). constants.py is a
+# zero-dependency leaf, so importing it here is cycle-safe.
+try:
+    from constants import SCRIPTS_DIR  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.constants import SCRIPTS_DIR  # local dev
 
 
 # ── Captain standing orders ──────────────────────────────────────────────────
@@ -60,6 +63,13 @@ _ORDERS_DIR = Path(os.environ.get("ACADEMY_PATH", str(Path(__file__).resolve().p
 # /orders is the canonical mount point for academy/orders/.
 _ORDERS_CONTAINER_DIR = Path("/orders")
 
+# User-defined orders directory (TRN-135). When set, its .md files are merged
+# with the built-in templates; user-defined takes precedence on name collision.
+GA_ORDERS_DIR: str = os.environ.get("GA_ORDERS_DIR", "")
+
+# One-time warning flag: log at most once if GA_ORDERS_DIR is set but missing.
+_ga_orders_dir_warned: bool = False
+
 
 def _resolve_orders_dir() -> Path:
     """Return the orders directory, checking the container mount first."""
@@ -68,20 +78,137 @@ def _resolve_orders_dir() -> Path:
     return _ORDERS_DIR
 
 
+def _template_search_dirs() -> list[Path]:
+    """Return search directories for order templates, user-defined first."""
+    dirs = []
+    if GA_ORDERS_DIR:
+        dirs.append(Path(GA_ORDERS_DIR))
+    dirs.append(_resolve_orders_dir())
+    return dirs
+
+
+def _list_order_templates() -> list[tuple[str, str]]:
+    """Return the effective set of order templates as (name, description) pairs.
+
+    Enumerates built-in templates first, then merges user-defined templates from
+    GA_ORDERS_DIR (if set and exists). User-defined templates with the same stem
+    as a built-in template take precedence (override). Results are sorted by name.
+
+    Templates that declare an ``aliases`` front-matter field have each alias
+    included as a separate entry in the index pointing at the same description.
+
+    Logs a one-time WARNING if GA_ORDERS_DIR is set but the path does not exist.
+    """
+    global _ga_orders_dir_warned
+
+    # Build dict keyed by name/alias; populate built-ins first.
+    templates: dict[str, str] = {}  # name -> description
+
+    builtin_dir = _resolve_orders_dir()
+    if builtin_dir.is_dir():
+        for path in sorted(builtin_dir.glob("*.md")):
+            if path.name.startswith("."):
+                continue
+            stem = path.stem
+            try:
+                description, aliases, _body = _parse_order_front_matter(
+                    path.read_text(encoding="utf-8")
+                )
+            except Exception:
+                description, aliases = "", []
+            templates[stem] = description
+            for alias in aliases:
+                templates[alias] = description
+
+    # Overlay with user-defined templates if GA_ORDERS_DIR is set.
+    if GA_ORDERS_DIR:
+        user_dir = Path(GA_ORDERS_DIR)
+        if user_dir.is_dir():
+            for path in sorted(user_dir.glob("*.md")):
+                if path.name.startswith("."):
+                    continue
+                stem = path.stem
+                try:
+                    content = path.read_text(encoding="utf-8")
+                    description, aliases, _body = _parse_order_front_matter(content)
+                    templates[stem] = description
+                    for alias in aliases:
+                        templates[alias] = description
+                except Exception:
+                    templates[stem] = ""
+        else:
+            if not _ga_orders_dir_warned:
+                _ga_orders_dir_warned = True
+                logger.warning(
+                    "GA_ORDERS_DIR=%r is set but does not exist — using built-in templates only",
+                    GA_ORDERS_DIR,
+                )
+
+    return sorted(templates.items())
+
+
 def _load_order_template(name: str) -> tuple[str, str]:
     """Load a template from academy/orders/<name>.md.
 
     Returns (description, body). Parses optional YAML front-matter for
     the ``description`` field; defaults to "" if absent.
+
+    Supports aliases: if no file with stem ``name`` is found, scans all
+    templates for one that declares ``name`` in its ``aliases`` list.
+    GA_ORDERS_DIR user-defined templates take precedence over built-ins.
     """
-    orders_dir = _resolve_orders_dir()
-    template_path = orders_dir / f"{name}.md"
-    if not template_path.is_file():
+    # TRN-135: honour GA_ORDERS_DIR with user-defined precedence, mirroring the
+    # merge in _list_order_templates(). A user-defined template with the same
+    # stem overrides the built-in; otherwise fall back to the built-in dir.
+    template_path: Path | None = None
+    if GA_ORDERS_DIR:
+        user_path = Path(GA_ORDERS_DIR) / f"{name}.md"
+        if user_path.is_file():
+            template_path = user_path
+    if template_path is None:
+        builtin_path = _resolve_orders_dir() / f"{name}.md"
+        if builtin_path.is_file():
+            template_path = builtin_path
+
+    # Alias resolution: if no direct match, scan all templates for an alias.
+    if template_path is None:
+        for search_dir in _template_search_dirs():
+            if not search_dir.is_dir():
+                continue
+            for candidate in sorted(search_dir.glob("*.md")):
+                if candidate.name.startswith("."):
+                    continue
+                try:
+                    content = candidate.read_text(encoding="utf-8")
+                    _desc, aliases, _body = _parse_order_front_matter(content)
+                    if name in aliases:
+                        template_path = candidate
+                        break
+                except Exception:
+                    continue
+            if template_path is not None:
+                break
+
+    if template_path is None:
         raise ValueError(f"Unknown Captain order template: {name!r}")
     content = template_path.read_text(encoding="utf-8")
+    description, _aliases, body = _parse_order_front_matter(content)
+    return description, body.strip()
 
-    # Parse optional YAML front-matter
+
+def _parse_order_front_matter(content: str) -> tuple[str, list[str], str]:
+    """Split optional YAML front-matter from a template file.
+
+    Returns (description, aliases, body). The ``description`` field is read from the
+    front-matter block (surrounding quotes stripped); it defaults to "" when
+    the front-matter is absent or has no ``description`` key. ``aliases`` is a
+    list of alternative names for the template (from the ``aliases:`` field in
+    the front-matter); it defaults to [] when absent. ``body`` is the content
+    following the closing ``---`` (or the whole content when there is no
+    front-matter).
+    """
     description = ""
+    aliases: list[str] = []
     body = content
     if content.startswith("---\n"):
         end = content.find("\n---\n", 4)
@@ -96,9 +223,17 @@ def _load_order_template(name: str) -> tuple[str, str]:
                        (desc_val.startswith("'") and desc_val.endswith("'")):
                         desc_val = desc_val[1:-1]
                     description = desc_val
-                    break
-
-    return description, body.strip()
+                elif line.startswith("aliases:"):
+                    # Parse inline list: aliases: ["a", "b"] or aliases: [a, b]
+                    import ast as _ast
+                    aliases_val = line[len("aliases:"):].strip()
+                    try:
+                        parsed = _ast.literal_eval(aliases_val)
+                        if isinstance(parsed, list):
+                            aliases = [str(a).strip() for a in parsed if a]
+                    except Exception:
+                        pass
+    return description, aliases, body
 
 
 def _substitute_placeholders(body: str) -> str:
@@ -192,11 +327,14 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
     of standing orders; persona messages in the captain mailbox are crew
     correspondence.
 
-    When signing_secret is provided, an X-Admiral-Sig HMAC-SHA256 header is
-    added over the Subject and From headers plus the message body. When
-    supersedes_id is provided, a Supersedes
-    header referencing the previous order's Message-ID is included.
+    When signing_secret is provided, an X-Admiral-Sig header carrying a
+    base64url-encoded Ed25519 signature over the Subject and From headers plus
+    the message body is added. ``signing_secret`` is the hex-encoded 32-byte
+    Ed25519 private seed (as persisted by lifecycle via _write_crew_secret).
+    When supersedes_id is provided, a Supersedes header referencing the
+    previous order's Message-ID is included.
     """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     import uuid as _uuid
 
     body = body.rstrip("\r\n")
@@ -224,12 +362,14 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
         headers.append(f"Supersedes: {supersedes_id}")
 
     if signing_secret:
-        sig = hmac.new(
-            signing_secret.encode(),
-            f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8"),
-            digestmod=hashlib.sha256,
-        ).hexdigest()
-        headers.append(f"X-Admiral-Sig: {sig}")
+        # TRN-136: sign with Ed25519. signing_secret is the hex-encoded 32-byte
+        # private seed; the detached 64-byte signature is base64url-encoded
+        # (no padding) into the X-Admiral-Sig header.
+        private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_secret))
+        payload = f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8")
+        sig = private_key.sign(payload)
+        sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
+        headers.append(f"X-Admiral-Sig: {sig_b64}")
 
     message = "\n".join(headers) + "\n\n" + body + "\n"
     return message, message_id

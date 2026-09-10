@@ -292,6 +292,7 @@ class LifecycleRegressionTests(unittest.TestCase):
                         "gs-vol-demo",
                         "gs-home-demo",
                         "auth-b64",
+                        admiral_secret="ab" * 32,
                     )
 
             self.assertEqual(result["status"], "ready")
@@ -696,12 +697,17 @@ class ActiveCrewLimitTests(unittest.TestCase):
             lifecycle.GA_MAX_ACTIVE_CREWS = 2
             reg = self._registry_with_running(2)  # 2 running, limit is 2
 
+            # TRN-132: the active-limit count now confirms each registry-running
+            # entry against Podman. The two running crews (gs-0, gs-1) must be
+            # reported as actually running so they count toward the limit; the
+            # stopped target (gs-target) is not in the running snapshot.
             class StoppedPodman:
                 def container_is_running(self, name: str) -> bool:
-                    return False
+                    return name in ("gs-0", "gs-1")
 
             with (
                 patch.object(lifecycle, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_save_registry"),
                 patch.object(lifecycle, "_get_podman", return_value=StoppedPodman()),
                 patch.object(lifecycle, "_startup_events", {}),
                 patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
@@ -878,11 +884,25 @@ class ActiveCrewLimitTests(unittest.TestCase):
                     "stopped-c": {"status": "stopped", "container": "gs-c", "cookie": "c3"},
                 }
             }
-            fake = FakePodmanClient([int(4 * 1024**3)])
+            # TRN-132: crews() now confirms each registry-running entry against
+            # Podman before counting it. Both running crews' containers must be
+            # reported as actually running to count toward active_crews.
+            class _RunningPodman:
+                def container_is_running(self, name: str) -> bool:
+                    return name in ("gs-a", "gs-b")
+
+                def container_inspect(self, name: str) -> dict:
+                    return {"State": {"StartedAt": "2020-01-01T00:00:00Z"}}
+
+                def system_info(self) -> dict:
+                    return {"host": {"memAvailable": int(4 * 1024**3)}}
+
+            fake = _RunningPodman()
             server._host_memory_cache = None
 
             with (
                 patch.object(server, "_load_registry", return_value=reg),
+                patch.object(server, "_save_registry"),
                 patch.object(server, "_get_podman", return_value=fake),
                 patch.object(server, "_probe_gateway", return_value=False),
                 patch.object(server, "_crew_api", side_effect=Exception("offline")),
@@ -897,6 +917,223 @@ class ActiveCrewLimitTests(unittest.TestCase):
             self.assertEqual(result["max_active_crews"], 3)
         finally:
             server.GA_MAX_ACTIVE_CREWS = original
+
+
+class StaleActiveCrewTests(unittest.TestCase):
+    """TRN-132: active_crews / active-limit count must reflect actual Podman
+    container state, not stale registry status. A registry entry marked
+    "running" whose container is not actually running is excluded from the
+    count and corrected to "stopped" in the registry.
+    """
+
+    # ── _ensure_crew_running active-limit (tasks 1.1–1.3) ────────────────────
+
+    class _SelectivePodman:
+        """Podman stub: container_is_running returns True only for names in
+        ``running``. Records container_start / container_stop for the target.
+        """
+
+        def __init__(self, running: set[str]) -> None:
+            self.running = set(running)
+            self.starts = 0
+
+        def container_is_running(self, name: str) -> bool:
+            return name in self.running
+
+        def container_start(self, name: str) -> None:
+            self.starts += 1
+            self.running.add(name)
+
+        def container_stop(self, name: str) -> None:
+            self.running.discard(name)
+
+        def container_exec(self, name, cmd, env=None) -> str:
+            return "ok"
+
+    def _run_ensure(self, reg: dict, running: set[str], limit: int):
+        """Drive _ensure_crew_running for the 'target' crew, returning
+        (podman, save_mock, raised_exc_or_None)."""
+        original = lifecycle.GA_MAX_ACTIVE_CREWS
+        podman = self._SelectivePodman(running)
+        saved: dict = {}
+
+        def _save(r):
+            saved["reg"] = json.loads(json.dumps(r))
+
+        try:
+            lifecycle.GA_MAX_ACTIVE_CREWS = limit
+            with (
+                patch.object(lifecycle, "_load_registry", return_value=reg),
+                patch.object(lifecycle, "_save_registry", side_effect=_save),
+                patch.object(lifecycle, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_startup_events", {}),
+                patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
+                patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_mint_cookie", return_value="new-c"),
+            ):
+                crew = reg["crews"]["target"]
+                exc = None
+                try:
+                    server._ensure_crew_running(crew, "target")
+                except Exception as e:  # noqa: BLE001
+                    exc = e
+            return podman, saved, exc
+        finally:
+            lifecycle.GA_MAX_ACTIVE_CREWS = original
+
+    def test_stale_running_entry_excluded_from_limit(self) -> None:
+        """(a) A registry entry marked running whose container is stopped is
+        excluded from the active count, so a stopped target below the limit
+        restarts successfully."""
+        # limit=2; two entries marked running but only one actually running →
+        # active count is 1, target restart allowed.
+        reg = {
+            "crews": {
+                "real": {"status": "running", "container": "gs-real", "cookie": "c"},
+                "stale": {"status": "running", "container": "gs-stale", "cookie": "c"},
+                "target": {"status": "stopped", "container": "gs-target", "cookie": "c"},
+            }
+        }
+        podman, _saved, exc = self._run_ensure(
+            reg, running={"gs-real"}, limit=2
+        )
+        self.assertIsNone(exc, f"expected no limit error, got {exc!r}")
+        self.assertGreaterEqual(podman.starts, 1)  # target was started
+
+    def test_stale_entry_corrected_to_stopped(self) -> None:
+        """(b) The stale running entry is written back as stopped in the registry."""
+        reg = {
+            "crews": {
+                "stale": {"status": "running", "container": "gs-stale", "cookie": "c"},
+                "target": {"status": "stopped", "container": "gs-target", "cookie": "c"},
+            }
+        }
+        _podman, saved, _exc = self._run_ensure(
+            reg, running=set(), limit=3
+        )
+        self.assertIn("reg", saved)
+        self.assertEqual(saved["reg"]["crews"]["stale"]["status"], "stopped")
+
+    def test_limit_enforced_after_stale_excluded(self) -> None:
+        """(c) With enough genuinely-running crews at the limit, a stopped
+        target is still blocked — the check counts confirmed-running only."""
+        reg = {
+            "crews": {
+                "a": {"status": "running", "container": "gs-a", "cookie": "c"},
+                "b": {"status": "running", "container": "gs-b", "cookie": "c"},
+                "target": {"status": "stopped", "container": "gs-target", "cookie": "c"},
+            }
+        }
+        _podman, _saved, exc = self._run_ensure(
+            reg, running={"gs-a", "gs-b"}, limit=2
+        )
+        self.assertIsInstance(exc, RuntimeError)
+        self.assertIn("Active crew limit", str(exc))
+
+    # ── crews() active_crews (tasks 2.1–2.4) ─────────────────────────────────
+
+    class _CrewsPodman:
+        """Podman stub for crews(): container_is_running True only for names in
+        ``running``; container_inspect records calls and returns a StartedAt.
+        system_info supplies host memory.
+        """
+
+        def __init__(self, running: set[str]) -> None:
+            self.running = set(running)
+            self.inspect_calls: list[str] = []
+
+        def container_is_running(self, name: str) -> bool:
+            return name in self.running
+
+        def container_inspect(self, name: str) -> dict:
+            self.inspect_calls.append(name)
+            return {"State": {"StartedAt": "2020-01-01T00:00:00Z"}}
+
+        def system_info(self) -> dict:
+            return {"host": {"memAvailable": 4 * 1024**3}}
+
+    def _run_crews(self, reg: dict, running: set[str]):
+        """Drive server.crews(); returns (result, podman, probe_mock, save_mock)."""
+        original = server.GA_MAX_ACTIVE_CREWS
+        podman = self._CrewsPodman(running)
+        server._host_memory_cache = None
+        saved: dict = {}
+
+        def _save(r):
+            saved["reg"] = json.loads(json.dumps(r))
+
+        try:
+            server.GA_MAX_ACTIVE_CREWS = 5
+            with (
+                patch.object(server, "_load_registry", return_value=reg),
+                patch.object(server, "_save_registry", side_effect=_save),
+                patch.object(server, "_get_podman", return_value=podman),
+                patch.object(server, "_probe_gateway", return_value=True) as probe,
+                patch.object(server, "_crew_api", side_effect=Exception("offline")),
+            ):
+                result = server.crews()
+            return result, podman, probe, saved
+        finally:
+            server.GA_MAX_ACTIVE_CREWS = original
+
+    def _base_crews_registry(self) -> dict:
+        return {
+            "crews": {
+                "real": {"status": "running", "container": "gs-real", "cookie": "c1"},
+                "stale": {"status": "running", "container": "gs-stale", "cookie": "c2"},
+                "stopped": {"status": "stopped", "container": "gs-stopped", "cookie": "c3"},
+            }
+        }
+
+    def _entry(self, result: dict, cid: str) -> dict:
+        return next(e for e in result["crews"] if e["crew_id"] == cid)
+
+    def test_active_crews_excludes_stopped_container(self) -> None:
+        """(a) active_crews excludes a registered-running crew whose container
+        is actually stopped, and (e) equals the confirmed-running count."""
+        result, _podman, _probe, _saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        self.assertEqual(result["active_crews"], 1)  # only 'real' confirmed running
+
+    def test_stale_crew_status_reported_stopped(self) -> None:
+        """(b) The stale crew's per-crew status in the response is 'stopped'."""
+        result, _podman, _probe, _saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        self.assertEqual(self._entry(result, "stale")["status"], "stopped")
+        self.assertEqual(self._entry(result, "stale")["gateway_healthy"], False)
+        self.assertEqual(self._entry(result, "real")["status"], "running")
+
+    def test_probe_and_inspect_skipped_for_stale_crew(self) -> None:
+        """(c) _probe_gateway is NOT called for the stale crew, and neither is
+        container_inspect (uptime skipped)."""
+        result, podman, probe, _saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        # probe called once — only for the genuinely running 'real' crew.
+        probe.assert_called_once()
+        # inspect only for the running crew's uptime, never for the stale one.
+        self.assertEqual(podman.inspect_calls, ["gs-real"])
+        self.assertIsNone(self._entry(result, "stale")["uptime_secs"])
+
+    def test_registry_written_back_with_correction(self) -> None:
+        """(d) The registry is saved with the stale entry corrected to stopped."""
+        _result, _podman, _probe, saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real"}
+        )
+        self.assertIn("reg", saved)
+        self.assertEqual(saved["reg"]["crews"]["stale"]["status"], "stopped")
+        self.assertEqual(saved["reg"]["crews"]["real"]["status"], "running")
+
+    def test_no_write_when_no_stale_entries(self) -> None:
+        """No registry write occurs when every running entry is confirmed."""
+        _result, _podman, _probe, saved = self._run_crews(
+            self._base_crews_registry(), running={"gs-real", "gs-stale"}
+        )
+        self.assertNotIn("reg", saved)  # _save_registry not called
 
 
 # ── CopyAgentsMcpTests (task 2.13) ───────────────────────────────────────────
@@ -1147,20 +1384,21 @@ class CopyAgentsMcpTests(unittest.TestCase):
 # ── LoginLogoutTests (task 2.14) ─────────────────────────────────────────────
 #
 # ``_handle_login_post`` / ``_handle_login_get`` / ``_handle_logout_post`` are
-# defined in server.py and resolve _get_podman / _start_login_container /
-# _nuke_login_container / _read_auth_from_crew / _inject_auth / _read_auth_file
-# / _write_auth_file / select / time from server's namespace → patch server.X
-# exclusively. Task 2.14: _nuke_login_container lives in lifecycle but is called
-# from server's body, so the assertion patches server._nuke_login_container.
+# defined in server.py (the HTTP layer). The HANDLERS resolve _get_podman /
+# _read_auth_file / _write_auth_file / _read_auth_from_crew / _inject_auth from
+# server's namespace → patch server.X for those. TRN-143 moved the device-flow
+# ENGINE (_initiate_login) and its state (_login_pending / _login_pending_lock)
+# plus _start_login_container / _nuke_login_container / select into lifecycle,
+# so those are patched on lifecycle.X (the handler delegates into lifecycle,
+# which reads its own module globals).
 
 
 class LoginLogoutTests(unittest.TestCase):
     """Tests for POST /login, GET /login, and POST /logout routes."""
 
     def setUp(self) -> None:
-        import transport.server as srv
-        with srv._login_pending_lock:
-            srv._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
     def test_post_login_happy_path_sets_pending_and_returns_url(self) -> None:
         podman = Mock()
@@ -1188,8 +1426,8 @@ class LoginLogoutTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value=container_name),
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=(exec_id, fake_sock)),
         ):
@@ -1203,8 +1441,8 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertIn("https://device.auth.example.com", body["login_url"])
         self.assertEqual(body["code"], "ABCD-1234")
 
-        with server._login_pending_lock:
-            pending = server._login_pending
+        with lifecycle._login_pending_lock:
+            pending = lifecycle._login_pending
         self.assertIsNotNone(pending)
         self.assertEqual(pending["container"], container_name)
         self.assertEqual(pending["exec_id"], exec_id)
@@ -1247,11 +1485,11 @@ class LoginLogoutTests(unittest.TestCase):
         fake_sock.recv.side_effect = fake_recv
 
         with (
-            patch.object(server, "KIRO_IDENTITY_PROVIDER", ""),
+            patch.object(lifecycle, "KIRO_IDENTITY_PROVIDER", ""),
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value=container_name),
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(
                 podman,
@@ -1284,10 +1522,10 @@ class LoginLogoutTests(unittest.TestCase):
     def test_post_login_returns_409_when_login_already_in_progress(self) -> None:
         with (
             patch.object(server, "_read_auth_file", return_value=""),
-            patch.object(server, "_login_pending_lock"),
+            patch.object(lifecycle, "_login_pending_lock"),
         ):
-            with server._login_pending_lock:
-                server._login_pending = {
+            with lifecycle._login_pending_lock:
+                lifecycle._login_pending = {
                     "container": "ga-login-existing",
                     "exec_id": "x",
                     "started_at": 999.0,
@@ -1295,8 +1533,8 @@ class LoginLogoutTests(unittest.TestCase):
             request = Mock()
             response = asyncio.run(server._handle_login_post(request))
 
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("Login already in progress", response.body.decode())
@@ -1312,10 +1550,10 @@ class LoginLogoutTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value=container_name),
-            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "_start_login_container", return_value=container_name),
+            patch.object(lifecycle, "_nuke_login_container") as nuke,
             patch.object(server, "time") as mock_time,
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-fail", fake_sock)),
         ):
@@ -1326,8 +1564,8 @@ class LoginLogoutTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 500)
         nuke.assert_called_once_with(podman, container_name)
-        with server._login_pending_lock:
-            self.assertIsNone(server._login_pending)
+        with lifecycle._login_pending_lock:
+            self.assertIsNone(lifecycle._login_pending)
 
     def test_get_login_returns_404_when_no_pending_flow(self) -> None:
         request = Mock()
@@ -1336,8 +1574,8 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertIn("No login in progress", response.body.decode())
 
     def test_get_login_returns_pending_when_auth_not_complete(self) -> None:
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-abcd",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1351,8 +1589,8 @@ class LoginLogoutTests(unittest.TestCase):
             request = Mock()
             response = asyncio.run(server._handle_login_get(request))
 
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
@@ -1363,8 +1601,8 @@ class LoginLogoutTests(unittest.TestCase):
         running_crew = {"status": "running", "container": "gs-crew1"}
         registry = {"crews": {"crew1": running_crew}}
 
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-done",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1389,8 +1627,8 @@ class LoginLogoutTests(unittest.TestCase):
         inject.assert_called_once_with(podman, "gs-crew1", auth_b64)
         nuke.assert_called_once_with(podman, "ga-login-done")
 
-        with server._login_pending_lock:
-            self.assertIsNone(server._login_pending)
+        with lifecycle._login_pending_lock:
+            self.assertIsNone(lifecycle._login_pending)
 
     def test_post_logout_returns_404_when_not_authenticated(self) -> None:
         with patch.object(server, "_read_auth_file", return_value=""):
@@ -1445,8 +1683,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
     """Tests for login flow edge cases (trn-17 tasks 7.x)."""
 
     def setUp(self) -> None:
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
     def test_pty_exec_no_url_within_15s_returns_500_and_cleans_up(self) -> None:
         """7.1: PTY exec with no URL within 15s returns 500 and cleans up container."""
@@ -1458,10 +1696,10 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value="ga-login-timeout"),
-            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-timeout"),
+            patch.object(lifecycle, "_nuke_login_container") as nuke,
             patch.object(server, "time") as mock_time,
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-x", fake_sock)),
         ):
@@ -1492,9 +1730,9 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value="ga-login-region"),
-            patch.object(server, "select") as mock_select,
-            patch.object(server, "KIRO_REGION", "us-west-2"),
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-region"),
+            patch.object(lifecycle, "select") as mock_select,
+            patch.object(lifecycle, "KIRO_REGION", "us-west-2"),
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-r", fake_sock)),
         ):
@@ -1510,8 +1748,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
 
     def test_concurrent_post_login_while_pending_returns_409(self) -> None:
         """7.3: concurrent POST /login while _login_pending is set returns 409."""
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-existing",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1525,8 +1763,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
             self.assertEqual(response.status_code, 409)
             self.assertIn("Login already in progress", response.body.decode())
         finally:
-            with server._login_pending_lock:
-                server._login_pending = None
+            with lifecycle._login_pending_lock:
+                lifecycle._login_pending = None
 
     def test_login_pty_timeout_45s_returns_error_and_nukes_container(self) -> None:
         """F-4: when the 45s PTY deadline fires without a URL appearing,
@@ -1541,10 +1779,10 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(server, "_start_login_container", return_value="ga-login-pty45"),
-            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(lifecycle, "_start_login_container", return_value="ga-login-pty45"),
+            patch.object(lifecycle, "_nuke_login_container") as nuke,
             patch.object(server, "time") as mock_time,
-            patch.object(server, "select") as mock_select,
+            patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-pty45", fake_sock)),
         ):
@@ -1588,8 +1826,11 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         policy_injection_ok: bool = True,
     ) -> tuple[dict, dict]:
         """Run lifecycle._finish_crew_setup with enough mocking to reach the
-        registry write, capturing _inject_policy call args and the
-        inject_admiral_secret.py exec args.
+        registry write, capturing _inject_policy call args.
+
+        TRN-136: the admiral key is no longer injected via container-exec, so
+        ``admiral_secret_calls`` records any (unexpected) admiral exec calls —
+        it must stay empty. The admiral secret is passed in as a parameter.
 
         Returns (registry_data, result) so callers can inspect both.
         """
@@ -1613,9 +1854,9 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                 self, container: str, cmd: list, stdin_data: bytes
             ) -> str:
                 if "inject_admiral_secret.py" in " ".join(cmd):
-                    # Secret is delivered via stdin
+                    # TRN-136: must never happen — recorded so the test can assert.
                     admiral_secret_calls.append(stdin_data.decode())
-                return "admiral secret injected"
+                return "ok"
 
             def container_inspect(self, container: str) -> dict:
                 return {"Config": {"Labels": {}}}
@@ -1658,35 +1899,36 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                     "gs-vol-demo",
                     "gs-home-demo",
                     "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
 
             registry_data = json.loads(registry.read_text()) if registry.exists() else {}
         return registry_data, result
 
     def test_two_distinct_secrets_generated_and_policy_signing_key_forwarded(self) -> None:
-        """4.3: policy_signing_key (not admiral_secret) is passed to _inject_policy;
-        and the two secrets are distinct values."""
+        """4.3 (TRN-136): policy_signing_key (not the admiral secret) is passed to
+        _inject_policy; and the two secrets are distinct. The admiral key is NOT
+        injected via container-exec anymore."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
         self._run_finish_crew_setup(inject_policy_calls, admiral_secret_calls)
 
         self.assertEqual(len(inject_policy_calls), 1,
                          "Expected exactly one _inject_policy call")
-        self.assertEqual(len(admiral_secret_calls), 1,
-                         "Expected exactly one inject_admiral_secret.py exec call")
+        self.assertEqual(len(admiral_secret_calls), 0,
+                         "TRN-136: admiral key must not be injected via container-exec")
 
         forwarded_key = inject_policy_calls[0]["policy_signing_key"]
-        admiral_secret_value = admiral_secret_calls[0]
+        admiral_secret_value = "ab" * 32  # the param passed in
 
         # The two secrets must be distinct
         self.assertNotEqual(
             forwarded_key,
             admiral_secret_value,
-            "policy_signing_key and admiral_secret must be distinct secrets",
+            "policy_signing_key and the admiral secret must be distinct secrets",
         )
-        # Both must be non-empty
+        # policy_signing_key must be non-empty
         self.assertTrue(forwarded_key, "policy_signing_key must be non-empty")
-        self.assertTrue(admiral_secret_value, "admiral_secret must be non-empty")
 
     def test_policy_signing_key_stored_in_registry_when_injection_succeeds(self) -> None:
         """4.4 (TRN-93): crews.json entry contains policy_signing_key_id (identifier) when
@@ -1772,6 +2014,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                     "gs-vol-demo",
                     "gs-home-demo",
                     None if api_key else "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
         return inject_auth
 

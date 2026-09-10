@@ -81,15 +81,20 @@ launch(crew_id)
      └── missing → start kiro-cli device auth flow, return login URL
                    call launch again after auth to finish setup
   2. Create gs-vol-<id> + gs-home-<id> volumes
-  3. Start crew container (localhost/spec-ops:latest)
-  4. Wait for gateway ready (GET / on :5476, 30s timeout)
-  5. Inject kiro-cli auth rows into crew's SQLite DB
-  6. Inject the admiral signing secret (random 32-byte hex) into
-     `~/.kiro/crew/.admiral_secret` (mode 0600). The secret is piped in over
-     stdin, never passed as an exec argument, so it never appears in
-     `podman exec` argv or `/proc/<pid>/cmdline` (TRN-93). The plaintext is
-     also persisted to `DATA_DIR/secrets/<id>` so Captain can sign standing
-     orders; `crews.json` stores only a non-reversible identifier.
+  3. Generate the Admiral Ed25519 keypair and register the public key as a
+     Podman secret (`admiral-pubkey-<id>`). This must precede container
+     creation: a Podman secret can only be attached at create time. The private
+     seed is persisted (hex, mode 0600) to
+     `DATA_DIR/secrets/<id>.admiral_secret` so Captain can sign standing orders,
+     and never enters the container; `crews.json` stores only a non-reversible
+     identifier.
+  4. Start crew container (localhost/spec-ops:latest) with the public key
+     attached as a read-only secret at `/run/secrets/.admiral_public_key`
+     (root-owned, 0444). The target sits outside the home and workspace volumes
+     on purpose — Podman creates a secret target's parent directories as
+     root:root, which would leave the crew unable to write its own config.
+  5. Wait for gateway ready (GET / on :5476, 30s timeout)
+  6. Inject kiro-cli auth rows into crew's SQLite DB
   7. Patch KiroCrew config (`agent`, `dangerously_skip_permissions=true`,
      `spawn_min_memory_gb=GA_SPAWN_MIN_MEMORY_GB` [1.5 default],
      `resource_pressure_gb`, `resource_critical_gb`, `subagent_timeout_secs`,
@@ -437,15 +442,15 @@ governance; the files are the API.
 
 ### How policy files are injected
 
-During `_finish_crew_setup`, after the `admiral_secret` is generated and
-injected:
+During `_finish_crew_setup`, after the `policy_signing_key` is generated:
 
 1. The transport reads a policy template from `/policies/<composition>.json`
    inside the transport container (bind-mounted from `academy/policies/` on the
    host at container start). If no composition-specific template exists,
    `/policies/default.json` is used.
 2. The canonical (sorted-keys) JSON body is HMAC-SHA256 signed using the
-   crew's `admiral_secret`.
+   crew's `policy_signing_key`, which is generated per crew and is deliberately
+   distinct from the Admiral keypair.
 3. Two files are written into `~/.kiro/crew/` inside the container:
    - `security_policy.json` — the governance ceiling
    - `admission_policy.json` — contains `require_policy_signature: true`
@@ -473,10 +478,14 @@ with that composition name.
 
 - The container is the security boundary. Default policy covers platform
   integrity only — no filesystem, sandbox, or network restrictions.
-- Policy is HMAC-signed with the `admiral_secret`. A tampered policy causes
-  the gateway to detect a signature mismatch and refuse to continue.
-- The agent has no path to the `admiral_secret` and cannot forge a valid
-  policy signature.
+- Policy is HMAC-signed with the crew's `policy_signing_key`. A tampered policy
+  causes the gateway to detect a signature mismatch and refuse to continue.
+- The agent has no path to the Admiral private key, which never enters the
+  container, so it cannot forge an Admiral standing order. It can read
+  `policy_signing_key` from `admission_policy.json` (`trust_keys` is a hard
+  dependency of the governance API) and could therefore forge a policy
+  signature; see [auth.md](auth.md) for why that is treated as the lower-impact
+  capability.
 - Policy is set once at launch. To change policy, nuke and relaunch the
   crew.
 

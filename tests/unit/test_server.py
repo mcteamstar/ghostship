@@ -56,6 +56,8 @@ import httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
+# TRN-143 §4: async proxy HTTP mock consolidated in tests.unit.helpers.
+from tests.unit.helpers import FakeAsyncHTTP  # noqa: F401
 
 # ── container_scripts import (TRN-74) ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
@@ -573,9 +575,9 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "sleep") as sleep,
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "sleep") as sleep,
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
 
@@ -595,9 +597,9 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value={"agents": agents}) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "sleep") as sleep,
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "sleep") as sleep,
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
 
@@ -623,10 +625,10 @@ class PickupTimeoutTests(unittest.TestCase):
                 side_effect=[self._task_response(False), self._task_response(True)],
             ) as api,
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance) as sleep,
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance) as sleep,
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
 
@@ -647,10 +649,10 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=5)
 
@@ -673,10 +675,10 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance),
         ):
             # caller requests 60s, but the internal cap is 30s (pickup timeout, unrelated to gateway)
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
@@ -696,8 +698,8 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(True, agent="ghost")),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={"ghost": 3, "admiral": 1}),
-            patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["hello"], "admiral": ["order1"]}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={"ghost": 3, "admiral": 1}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={"ghost": ["hello"], "admiral": ["order1"]}),
             patch.object(server, "_read_mail_subjects_archive", mock_archive),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
@@ -720,8 +722,8 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={"ghost": 2, "admiral": 1}),
-            patch.object(server, "_read_all_mail_subjects", return_value={"ghost": ["done"], "admiral": ["check"]}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={"ghost": 2, "admiral": 1}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={"ghost": ["done"], "admiral": ["check"]}),
             patch.object(server, "_read_mail_subjects_archive", mock_archive),
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
@@ -757,11 +759,11 @@ class PickupTimeoutTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=self._task_response(False)),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", side_effect=mock_read_all_mail_counts),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_counts", side_effect=mock_read_all_mail_counts),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
             patch.object(server, "_read_mail_subjects_archive", Mock(return_value=[])),
-            patch.object(server.time, "monotonic", side_effect=lambda: clock[0]),
-            patch.object(server.time, "sleep", side_effect=advance),
+            patch.object(lifecycle.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(lifecycle.time, "sleep", side_effect=advance),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=60)
 
@@ -1007,6 +1009,10 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_initiate_login", initiate_login),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_finish_crew_setup", finish_setup),
+            # TRN-136: the launch flow now generates an Ed25519 keypair and
+            # persists the private seed via _write_crew_secret before start.
+            # Patch it so the test does not touch the real crew-secret path.
+            patch.object(server, "_write_crew_secret"),
         ):
             result = server.launch("api-crew")
 
@@ -1521,6 +1527,9 @@ class TestPolicyInjection(unittest.TestCase):
             _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
             _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
             _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
+            # TRN-136: launch() persists the Ed25519 private seed host-side; stub
+            # it so the test does not touch the real DATA_DIR.
+            _stack.enter_context(patch.object(server, "_write_crew_secret"))
 
             mock_podman = Mock()
             mock_get_podman.return_value = mock_podman
@@ -2006,7 +2015,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 _stack.enter_context(patch.object(lifecycle, "_inject_policy", side_effect=inject_policy))
                 _stack.enter_context(patch.object(server, "_inject_policy", side_effect=inject_policy))
                 result = server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
+                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
 
         self.assertEqual(result["status"], "ready")
@@ -2039,8 +2049,9 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         self.assertLess(policy_idx, models_idx)
         self.assertLess(models_idx, cookie_idx)
 
-    def test_admiral_secret_injected_before_container_restart(self) -> None:
-        """6.3 (trn-36 2.1): admiral secret exec call occurs before container_stop/start."""
+    def test_admiral_key_not_exec_injected_in_finish_setup(self) -> None:
+        """TRN-136: _finish_crew_setup performs no admiral-key container-exec
+        injection (the key is a read-only Podman secret mounted at create time)."""
         stdin_calls: list[tuple[int, list[str]]] = []
         stop_calls: list[int] = []
         start_calls: list[int] = []
@@ -2051,7 +2062,7 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         def track_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
             call_counter[0] += 1
             stdin_calls.append((call_counter[0], cmd))
-            return "admiral secret injected"
+            return "ok"
 
         def track_stop(name: str) -> None:
             call_counter[0] += 1
@@ -2096,46 +2107,39 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
                 _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
                 result = server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
+                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64",
+                    admiral_secret="ab" * 32,
                 )
 
         self.assertEqual(result["status"], "ready")
-        # Find the admiral secret injection call (first exec_stdin call whose
-        # command contains inject_admiral_secret.py)
-        secret_call_order = None
-        for order, cmd in stdin_calls:
-            if any("admiral_secret" in part for part in cmd):
-                secret_call_order = order
-                break
-        self.assertIsNotNone(secret_call_order, "Admiral secret injection exec_stdin call not found")
-        # The container restart (first stop) must come after the secret injection
-        first_stop_order = stop_calls[0] if stop_calls else None
-        self.assertIsNotNone(first_stop_order, "Expected at least one container_stop call")
-        self.assertLess(
-            secret_call_order,
-            first_stop_order,
-            "Admiral secret injection must occur before first container_stop",
+        # No exec_stdin call may reference the (removed) admiral injection script.
+        admiral_exec = [
+            (order, cmd) for order, cmd in stdin_calls
+            if any("admiral_secret" in part for part in cmd)
+        ]
+        self.assertEqual(
+            admiral_exec, [],
+            "TRN-136: admiral key must not be injected via container_exec_stdin",
         )
 
-    def test_admiral_secret_injection_script_contains_fsync(self) -> None:
-        """6.4 (trn-36 2.2): the admiral secret injection script contains os.fsync."""
-        captured_cmds: list[list[str]] = []
+    def test_launch_creates_admiral_pubkey_secret_and_ro_mount(self) -> None:
+        """TRN-136: launch() creates the Podman secret and mounts it read-only
+        (mode 0444) at .admiral_public_key before starting the container."""
+        created_secrets: list[tuple[str, bytes]] = []
+        create_spec: dict = {}
 
         podman = Mock()
-
-        def capture_exec_stdin(container: str, cmd: list[str], stdin_data: bytes) -> str:
-            if len(cmd) >= 2 and cmd[0] == "python3" and cmd[1].endswith(
-                "/inject_admiral_secret.py"
-            ):
-                captured_cmds.append(cmd)
-            return "admiral secret injected"
-
-        podman.container_exec_stdin = Mock(side_effect=capture_exec_stdin)
-        podman.container_exec_checked = Mock(return_value="ok")
-        podman.container_stop = Mock()
+        podman.network_create = Mock()
+        podman.volume_create = Mock()
         podman.container_start = Mock()
-        podman.container_exec = Mock(return_value="ready")
-        podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
+        podman.secret_create = Mock(side_effect=lambda name, data: created_secrets.append((name, data)))
+        podman.secret_remove = Mock()
+
+        def fake_container_create(**kwargs):
+            create_spec.update(kwargs)
+            return {}
+
+        podman.container_create = Mock(side_effect=fake_container_create)
 
         with tempfile.TemporaryDirectory() as tmp:
             import contextlib
@@ -2144,48 +2148,29 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 _stack.enter_context(patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"))
                 _stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
                 _stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
-                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(lifecycle, "_inject_auth"))
-                _stack.enter_context(patch.object(server, "_inject_auth"))
-                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
-                _stack.enter_context(patch.object(server, "_patch_crew_config"))
-                _stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_agents", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_skills", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(server, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(lifecycle, "_patch_models"))
-                _stack.enter_context(patch.object(server, "_patch_models"))
-                _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
-                _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
-                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
-                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
-                server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
-                )
+                _stack.enter_context(patch.object(server, "_get_podman", return_value=podman))
+                # Auth passes via a present auth file; stop launch right after
+                # container start by failing the gateway wait so we do not have
+                # to mock the full finish flow.
+                _stack.enter_context(patch.object(server, "_read_auth_file", return_value="auth"))
+                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=False))
+                result = server.launch("demo")
 
-        self.assertEqual(
-            len(captured_cmds), 1, "Expected exactly one admiral secret injection call"
-        )
-        cmd = captured_cmds[0]
-        # The call passes the secret file path as argv; secret delivered via stdin.
-        # argv[1] is the destination path (e.g. /home/kirocrew/.kiro/crew/.admiral_secret)
-        self.assertTrue(cmd[2].endswith("/.admiral_secret"))
-        script_path = (
-            Path(server.__file__).resolve().parent
-            / "container_scripts"
-            / "inject_admiral_secret.py"
-        )
-        script_src = script_path.read_text()
-        self.assertIn(
-            "os.fsync",
-            script_src,
-            "Secret injection script must call os.fsync for durability",
-        )
+        # Secret created with the crew-scoped name and a raw 32-byte public key.
+        self.assertEqual(len(created_secrets), 1)
+        name, data = created_secrets[0]
+        self.assertEqual(name, "admiral-pubkey-demo")
+        self.assertEqual(len(data), 32, "Ed25519 raw public key is 32 bytes")
+
+        # container_create received a read-only 0444 mount at .admiral_public_key.
+        secrets_arg = create_spec.get("secrets")
+        self.assertTrue(secrets_arg, "container_create must receive a secrets mount")
+        entry = secrets_arg[0]
+        self.assertEqual(entry["source"], "admiral-pubkey-demo")
+        self.assertTrue(entry["target"].endswith("/.admiral_public_key"))
+        self.assertEqual(entry["mode"], 0o444)
+        self.assertEqual(entry["uid"], 0)
+        self.assertEqual(entry["gid"], 0)
 
     def test_gateway_failure_after_restart_triggers_cleanup(self) -> None:
         """6.2: gateway failure after auth restart triggers cleanup and returns error."""
@@ -2221,7 +2206,8 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
             patch.object(server, "_cleanup_crew", side_effect=cleanup),
         ):
             result = server._finish_crew_setup(
-                podman, "test", "gs-test", "vol-test", "home-test", "auth-b64"
+                podman, "test", "gs-test", "vol-test", "home-test", "auth-b64",
+                admiral_secret="ab" * 32,
             )
 
         self.assertIn("error", result)
@@ -2231,15 +2217,15 @@ class LoginGuardClearTests(unittest.TestCase):
     """Tests for _handle_login_get guard-clear ordering (trn-17 tasks 8.x)."""
 
     def setUp(self) -> None:
-        with server._login_pending_lock:
-            server._login_pending = None
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = None
 
     def test_guard_clear_ordering_verified(self) -> None:
         """8.1: _login_pending is cleared ONLY AFTER _nuke_login_container completes."""
         # Set up a pending login
         pending_container = "ga-login-test1234"
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": pending_container,
                 "exec_id": "exec-1",
                 "started_at": time.time(),
@@ -2250,8 +2236,8 @@ class LoginGuardClearTests(unittest.TestCase):
 
         def fake_nuke(podman, container):
             # At the point nuke is called, _login_pending must NOT yet be None
-            with server._login_pending_lock:
-                if server._login_pending is None:
+            with lifecycle._login_pending_lock:
+                if lifecycle._login_pending is None:
                     cleared_before_nuke["seen"] = True
             nuked_flag["done"] = True
 
@@ -2284,16 +2270,16 @@ class LoginGuardClearTests(unittest.TestCase):
             "_login_pending was cleared before _nuke_login_container returned",
         )
         # After the function returns, _login_pending should be None
-        with server._login_pending_lock:
-            self.assertIsNone(server._login_pending, "_login_pending should be None after cleanup")
+        with lifecycle._login_pending_lock:
+            self.assertIsNone(lifecycle._login_pending, "_login_pending should be None after cleanup")
 
     def test_concurrent_post_during_cleanup_window_returns_409(self) -> None:
         """8.2: concurrent POST /login during cleanup window receives 409."""
         # Simulate the scenario where _handle_login_get has detected auth and
         # is between nuke and guard-clear. If a POST /login arrives at this
         # moment, the _login_pending is still set so the POST should get 409.
-        with server._login_pending_lock:
-            server._login_pending = {
+        with lifecycle._login_pending_lock:
+            lifecycle._login_pending = {
                 "container": "ga-login-completing",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -2306,8 +2292,8 @@ class LoginGuardClearTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 409)
         finally:
-            with server._login_pending_lock:
-                server._login_pending = None
+            with lifecycle._login_pending_lock:
+                lifecycle._login_pending = None
 class ProxyHandlerTests(unittest.TestCase):
     """Tests for _handle_crew_ui_proxy and _handle_crew_api_proxy (TRN-31)."""
 
@@ -2493,7 +2479,10 @@ class ProxyHandlerTests(unittest.TestCase):
 
     def test_api_proxy_injects_mc_token_cookie(self) -> None:
         """5.3a: API proxy injects mc_token_5476 cookie."""
-        captured_headers: list[dict] = []
+        fake_http = FakeAsyncHTTP(
+            content=b'{"agents":[]}',
+            headers={"content-type": "application/json"},
+        )
 
         async def run():
             with (
@@ -2504,28 +2493,19 @@ class ProxyHandlerTests(unittest.TestCase):
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/spawn")
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        captured_headers.append(dict(headers or {}))
-                        resp = Mock()
-                        resp.status_code = 200
-                        resp.content = b'{"agents":[]}'
-                        resp.headers = {"content-type": "application/json"}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(captured_headers)
-        cookie = captured_headers[0].get("Cookie", "")
+        self.assertTrue(fake_http.captured_headers)
+        cookie = fake_http.captured_headers[0].get("Cookie", "")
         self.assertIn("mc_token_5476", cookie)
         self.assertIn("test-cookie-val", cookie)
 
     def test_api_proxy_retries_on_401_after_cookie_refresh(self) -> None:
         """5.3b: API proxy retries once after 401 with refreshed cookie."""
-        call_count = [0]
+        fake_http = FakeAsyncHTTP(statuses=[401, 200], content=b"")
 
         async def run():
             with (
@@ -2538,27 +2518,17 @@ class ProxyHandlerTests(unittest.TestCase):
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/spawn")
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        call_count[0] += 1
-                        resp = Mock()
-                        # First call: 401, second call: 200
-                        resp.status_code = 401 if call_count[0] == 1 else 200
-                        resp.content = b""
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request), refresh
 
         response, refresh_mock = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(call_count[0], 2)
+        self.assertEqual(fake_http.call_count, 2)
         refresh_mock.assert_called_once()
 
     def test_api_proxy_retries_on_403_after_cookie_refresh(self) -> None:
         """5.3c: API proxy retries once after 403 with refreshed cookie."""
-        call_count = [0]
+        fake_http = FakeAsyncHTTP(statuses=[403, 200], content=b"")
 
         async def run():
             with (
@@ -2571,21 +2541,12 @@ class ProxyHandlerTests(unittest.TestCase):
             ):
                 request = _FakeStreamRequest(path="/crews/demo/api/crons")
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        call_count[0] += 1
-                        resp = Mock()
-                        resp.status_code = 403 if call_count[0] == 1 else 200
-                        resp.content = b""
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         response = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(call_count[0], 2)
+        self.assertEqual(fake_http.call_count, 2)
 
     # ── 5.4: Stopped crew is woken before proxying ───────────────────────────
 
@@ -2761,7 +2722,7 @@ class ProxyHandlerTests(unittest.TestCase):
 
     def test_api_proxy_strips_inbound_cookie_header_to_prevent_duplicates(self) -> None:
         """3.2 (trn-78): inbound lowercase 'cookie' header is stripped — no duplicate Cookie in forwarded request."""
-        captured_headers: list[dict] = []
+        fake_http = FakeAsyncHTTP(content=b"{}")
 
         async def run():
             with (
@@ -2776,21 +2737,12 @@ class ProxyHandlerTests(unittest.TestCase):
                     headers={"cookie": "session=browser-session-id; theme=dark"},
                 )
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        captured_headers.append(dict(headers or {}))
-                        resp = Mock()
-                        resp.status_code = 200
-                        resp.content = b"{}"
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         asyncio.run(run())
-        self.assertTrue(captured_headers)
-        fwd = captured_headers[0]
+        self.assertTrue(fake_http.captured_headers)
+        fwd = fake_http.captured_headers[0]
         # Count Cookie / cookie occurrences — must be exactly one
         cookie_keys = [k for k in fwd if k.lower() == "cookie"]
         self.assertEqual(len(cookie_keys), 1, "Exactly one Cookie header must be forwarded, not duplicated")
@@ -2800,7 +2752,7 @@ class ProxyHandlerTests(unittest.TestCase):
 
     def test_api_proxy_injected_session_cookie_present_when_inbound_had_cookie_header(self) -> None:
         """3.3 (trn-78): injected mc_token_5476 cookie is correct even when inbound request had a 'cookie' header."""
-        captured_headers: list[dict] = []
+        fake_http = FakeAsyncHTTP(content=b"{}")
 
         async def run():
             with (
@@ -2814,21 +2766,12 @@ class ProxyHandlerTests(unittest.TestCase):
                     headers={"cookie": "old=stale-val"},
                 )
 
-                class FakeHTTP:
-                    async def request(self_inner, method, url, headers=None, content=None):
-                        captured_headers.append(dict(headers or {}))
-                        resp = Mock()
-                        resp.status_code = 200
-                        resp.content = b"{}"
-                        resp.headers = {}
-                        return resp
-
-                with patch.object(server, "_async_http", FakeHTTP()):
+                with patch.object(server, "_async_http", fake_http):
                     return await server._handle_crew_api_proxy(request)
 
         asyncio.run(run())
-        self.assertTrue(captured_headers)
-        fwd = captured_headers[0]
+        self.assertTrue(fake_http.captured_headers)
+        fwd = fake_http.captured_headers[0]
         cookie_keys = [k for k in fwd if k.lower() == "cookie"]
         self.assertEqual(len(cookie_keys), 1)
         cookie_val = fwd[cookie_keys[0]]
@@ -3095,7 +3038,8 @@ class GitIdentityInjectionTests(unittest.TestCase):
                 _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
                 _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
                 result = server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol", "home", "auth"
+                    podman, "test", "gs-test", "vol", "home", "auth",
+                    admiral_secret="ab" * 32,
                 )
 
         self.assertEqual(result["status"], "ready")
@@ -3137,8 +3081,8 @@ class Trn89TaskTimestampTests(unittest.TestCase):
                     "elapsed": 10, "turns": 1, "last_tool": "", "result": "", "error": "", "outcome": "",
                 }),
                 patch.object(server, "_get_podman", return_value=Mock()),
-                patch.object(server, "_read_all_mail_counts", return_value={}),
-                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
                 patch.object(server, "_read_mail_subjects_archive", return_value=[]),
             ):
                 result = server.pickup(task_id="running-task", crew_id="demo", timeout_secs=0)
@@ -3165,8 +3109,8 @@ class Trn89TaskTimestampTests(unittest.TestCase):
                     "elapsed": 5, "turns": 2, "last_tool": "", "result": "ok", "error": "", "outcome": "success",
                 }),
                 patch.object(server, "_get_podman", return_value=Mock()),
-                patch.object(server, "_read_all_mail_counts", return_value={}),
-                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
                 patch.object(server, "_read_mail_subjects_archive", return_value=[]),
             ):
                 result = server.pickup(task_id="done-task", crew_id="demo", timeout_secs=0)
@@ -3194,8 +3138,8 @@ class Trn89TaskTimestampTests(unittest.TestCase):
                 patch.object(server, "_ensure_crew_running", return_value=self.CREW),
                 patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
                 patch.object(server, "_get_podman", return_value=Mock()),
-                patch.object(server, "_read_all_mail_counts", return_value={}),
-                patch.object(server, "_read_all_mail_subjects", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+                patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
                 patch.object(server, "_read_mail_subjects_archive", return_value=[]),
             ):
                 result = server.pickup(crew_id="demo", timeout_secs=0)
@@ -3234,6 +3178,8 @@ class Trn89CrewTimestampTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-ts"}),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=fake_save),
         ):
             server.dispatch("do work", agent="ghost", crew_id="demo")
 
@@ -3301,8 +3247,8 @@ class PickupAgentSubjectsTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value={"agents": agents}),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value=skim),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value=skim),
         ):
             result = server.pickup(crew_id="demo", timeout_secs=0)
         self.assertIn("agent_subjects", result)
@@ -3320,8 +3266,8 @@ class PickupAgentSubjectsTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=task_resp),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
         ):
             result = server.pickup(task_id="task-1", crew_id="demo", timeout_secs=0)
         self.assertNotIn("agent_subjects", result)
@@ -3391,8 +3337,8 @@ class PickupAgentSubjectsTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_crew_api", return_value=task_resp),
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_read_all_mail_counts", return_value={}),
-            patch.object(server, "_read_all_mail_subjects", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_counts", return_value={}),
+            patch.object(lifecycle, "_read_all_mail_subjects", return_value={}),
         ):
             # agent is set but task_id takes priority
             result = server.pickup(task_id="task-1", crew_id="demo", agent="ghost", timeout_secs=0)
@@ -3525,12 +3471,12 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
     """Concurrency tests for the _dashboard_port_crew threading.Lock (TRN-123)."""
 
     def setUp(self) -> None:
-        with server._dashboard_port_crew_lock:
-            server._dashboard_port_crew.clear()
+        with server._dashboard_gate._port_crew_lock:
+            server._dashboard_gate._port_crew.clear()
 
     def tearDown(self) -> None:
-        with server._dashboard_port_crew_lock:
-            server._dashboard_port_crew.clear()
+        with server._dashboard_gate._port_crew_lock:
+            server._dashboard_gate._port_crew.clear()
 
     async def test_concurrent_dashboard_post_consistent_mapping(self) -> None:
         """5.1: concurrent _handle_crew_dashboard_post calls for the same crew
@@ -3560,8 +3506,8 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", side_effect=_fake_load_registry),
             patch.object(server, "_save_registry"),
-            patch.object(server, "_allocate_dashboard_port", side_effect=_fake_allocate_port),
-            patch.object(server, "_caddy_register_crew"),
+            patch.object(server._caddy_portal, "allocate_port", side_effect=_fake_allocate_port),
+            patch.object(server._caddy_portal, "register_crew"),
         ):
             reqs = [_StubRequest(path=f"/crews/{crew_id}/dashboard") for _ in range(50)]
             results = await asyncio.gather(
@@ -3570,8 +3516,8 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(results), 50)
         # Every allocated port maps back to the crew — no lost / partial entries.
-        with server._dashboard_port_crew_lock:
-            snapshot = dict(server._dashboard_port_crew)
+        with server._dashboard_gate._port_crew_lock:
+            snapshot = dict(server._dashboard_gate._port_crew)
         self.assertEqual(len(snapshot), 50, "expected 50 distinct port mappings")
         # No duplicate ports (dict keys are unique by construction) and every
         # value is the crew_id.
@@ -3582,17 +3528,17 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
         sees the entry present or absent — never a partial/torn value."""
         crew_id = "demo"
         port = 41000
-        with server._dashboard_port_crew_lock:
-            server._dashboard_port_crew[port] = crew_id
+        with server._dashboard_gate._port_crew_lock:
+            server._dashboard_gate._port_crew[port] = crew_id
 
         # A "delete-style" writer removing the mapping under the lock, mirroring
         # the locked pop in _handle_crew_dashboard_delete / nuke.
         def _delete_writer() -> None:
             for _ in range(200):
-                with server._dashboard_port_crew_lock:
-                    server._dashboard_port_crew.pop(port, None)
-                with server._dashboard_port_crew_lock:
-                    server._dashboard_port_crew[port] = crew_id
+                with server._dashboard_gate._port_crew_lock:
+                    server._dashboard_gate._port_crew.pop(port, None)
+                with server._dashboard_gate._port_crew_lock:
+                    server._dashboard_gate._port_crew[port] = crew_id
 
         stop = threading.Event()
 
@@ -3604,19 +3550,19 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
         writer.start()
         try:
             # TRN-121 removed _gs_session_valid; session validation now goes
-            # through _gs_sessions.validate — patch the SessionStore instance.
+            # through the DashboardGate's SessionStore — patch it on the gate.
             mock_sessions = server._security.SessionStore(lifetime_secs=3600)
             mock_sessions._issued["tok"] = float("inf")  # never expires
             with (
-                patch.object(server, "GA_API_KEY", "k"),
-                patch.object(server, "_gs_sessions", mock_sessions),
+                patch.object(server._dashboard_gate, "_api_key", "k"),
+                patch.object(server._dashboard_gate, "_sessions", mock_sessions),
             ):
                 for _ in range(200):
                     req = _StubRequest(
                         query_params={"port": str(port)},
                         cookies={"gs_session": "tok"},
                     )
-                    resp = await server._handle_dashboard_auth(req)
+                    resp = await server._dashboard_gate.handle_auth(req)
                     # The handler returns a Response with an int status_code —
                     # a torn read would raise or produce something non-200.
                     self.assertEqual(resp.status_code, 200)
@@ -3765,9 +3711,9 @@ class Trn138LogoutCsrfTests(unittest.IsolatedAsyncioTestCase):
     async def test_logout_missing_csrf_returns_403(self) -> None:
         sessions = server._security.SessionStore(lifetime_secs=3600)
         token = sessions.issue()
-        with patch.object(server, "_gs_sessions", sessions):
+        with patch.object(server._dashboard_gate, "_sessions", sessions):
             req = _FormRequest(form={}, cookies={"gs_session": token})
-            resp = await server._handle_dashboard_logout_post(req)
+            resp = await server._dashboard_gate.handle_logout_post(req)
         self.assertEqual(resp.status_code, 403)
         # Session must NOT have been revoked on a rejected (403) request.
         self.assertTrue(sessions.validate(token))
@@ -3775,23 +3721,23 @@ class Trn138LogoutCsrfTests(unittest.IsolatedAsyncioTestCase):
     async def test_logout_wrong_csrf_returns_403(self) -> None:
         sessions = server._security.SessionStore(lifetime_secs=3600)
         token = sessions.issue()
-        with patch.object(server, "_gs_sessions", sessions):
+        with patch.object(server._dashboard_gate, "_sessions", sessions):
             req = _FormRequest(
                 form={"csrf_token": "deadbeef"}, cookies={"gs_session": token}
             )
-            resp = await server._handle_dashboard_logout_post(req)
+            resp = await server._dashboard_gate.handle_logout_post(req)
         self.assertEqual(resp.status_code, 403)
         self.assertTrue(sessions.validate(token))
 
     async def test_logout_correct_csrf_and_valid_session_returns_200(self) -> None:
         sessions = server._security.SessionStore(lifetime_secs=3600)
         token = sessions.issue()
-        with patch.object(server, "_gs_sessions", sessions):
+        with patch.object(server._dashboard_gate, "_sessions", sessions):
             req = _FormRequest(
-                form={"csrf_token": server._dashboard_csrf_token},
+                form={"csrf_token": server._dashboard_gate._csrf_token},
                 cookies={"gs_session": token},
             )
-            resp = await server._handle_dashboard_logout_post(req)
+            resp = await server._dashboard_gate.handle_logout_post(req)
         self.assertEqual(resp.status_code, 200)
         # Session revoked and cookie cleared on the success path.
         self.assertFalse(sessions.validate(token))
@@ -3805,19 +3751,19 @@ class Trn138LoginRedirectTests(unittest.IsolatedAsyncioTestCase):
         sessions = server._security.SessionStore(lifetime_secs=3600)
         throttle = server._security.Throttle(max_failures=5, window_secs=900)
         with (
-            patch.object(server, "GA_API_KEY", "secret-key"),
-            patch.object(server, "_gs_sessions", sessions),
-            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(server._dashboard_gate, "_api_key", "secret-key"),
+            patch.object(server._dashboard_gate, "_sessions", sessions),
+            patch.object(server._dashboard_gate, "_throttle", throttle),
         ):
             req = _FormRequest(
                 form={
                     "ga_api_key": "secret-key",
-                    "csrf_token": server._dashboard_csrf_token,
+                    "csrf_token": server._dashboard_gate._csrf_token,
                     "next": "//evil.com",
                 },
                 client_host="10.0.0.5",
             )
-            resp = await server._handle_dashboard_login_post(req)
+            resp = await server._dashboard_gate.handle_login_post(req)
         self.assertEqual(resp.status_code, 200)
         body = json.loads(bytes(resp.body).decode())
         self.assertEqual(body["next"], "/")
@@ -3828,19 +3774,19 @@ class Trn138LoginRedirectTests(unittest.IsolatedAsyncioTestCase):
         sessions = server._security.SessionStore(lifetime_secs=3600)
         throttle = server._security.Throttle(max_failures=5, window_secs=900)
         with (
-            patch.object(server, "GA_API_KEY", "secret-key"),
-            patch.object(server, "_gs_sessions", sessions),
-            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(server._dashboard_gate, "_api_key", "secret-key"),
+            patch.object(server._dashboard_gate, "_sessions", sessions),
+            patch.object(server._dashboard_gate, "_throttle", throttle),
         ):
             req = _FormRequest(
                 form={
                     "ga_api_key": "secret-key",
-                    "csrf_token": server._dashboard_csrf_token,
+                    "csrf_token": server._dashboard_gate._csrf_token,
                     "next": "/dashboard/crews",
                 },
                 client_host="10.0.0.5",
             )
-            resp = await server._handle_dashboard_login_post(req)
+            resp = await server._dashboard_gate.handle_login_post(req)
         body = json.loads(bytes(resp.body).decode())
         self.assertEqual(body["next"], "/dashboard/crews")
 
@@ -3860,9 +3806,9 @@ class Trn138LoginThrottleSourceTests(unittest.IsolatedAsyncioTestCase):
             return real_record_failure(account=account, source=source)
 
         with (
-            patch.object(server, "GA_API_KEY", "secret-key"),
-            patch.object(server, "_gs_sessions", sessions),
-            patch.object(server, "_dashboard_throttle", throttle),
+            patch.object(server._dashboard_gate, "_api_key", "secret-key"),
+            patch.object(server._dashboard_gate, "_sessions", sessions),
+            patch.object(server._dashboard_gate, "_throttle", throttle),
             patch.object(throttle, "record_failure", side_effect=_spy_failure),
         ):
             # Wrong key so we hit record_failure; XFF claims a different IP than
@@ -3870,12 +3816,12 @@ class Trn138LoginThrottleSourceTests(unittest.IsolatedAsyncioTestCase):
             req = _FormRequest(
                 form={
                     "ga_api_key": "WRONG",
-                    "csrf_token": server._dashboard_csrf_token,
+                    "csrf_token": server._dashboard_gate._csrf_token,
                 },
                 headers={"x-forwarded-for": "1.2.3.4"},
                 client_host="10.0.0.5",
             )
-            resp = await server._handle_dashboard_login_post(req)
+            resp = await server._dashboard_gate.handle_login_post(req)
 
         self.assertEqual(resp.status_code, 401)
         # The throttle source must be the ASGI client IP, never the spoofable
@@ -3909,3 +3855,64 @@ class Trn138RegistryCorruptGuardTests(unittest.TestCase):
         from transport.registry import RegistryCorruptError
 
         self.assertTrue(issubclass(RegistryCorruptError, RuntimeError))
+
+
+class ResourceOrdersIndexTests(unittest.TestCase):
+    """TRN-135 — resource_orders() returns summary index (name + description, no body)."""
+
+    def test_response_contains_only_name_and_description_no_body(self) -> None:
+        """(a) resource_orders() returns name: description lines, no body text."""
+        templates = [
+            ("independent-review", "Independent review of a change"),
+            ("sdd", "Software design document-driven implementation"),
+        ]
+        with patch.object(server, "_list_order_templates", return_value=templates):
+            result = server.resource_orders()
+
+        self.assertIn("independent-review: Independent review of a change", result)
+        self.assertIn("sdd: Software design document-driven implementation", result)
+        # Body keywords that would only appear in the full template should not be present
+        self.assertNotIn("{{", result)
+
+    def test_user_defined_templates_appear_in_index(self) -> None:
+        """(b) User-defined templates are included in the summary index."""
+        templates = [
+            ("my-workflow", "My custom workflow"),
+            ("sdd", "SDD description"),
+        ]
+        with patch.object(server, "_list_order_templates", return_value=templates):
+            result = server.resource_orders()
+
+        self.assertIn("my-workflow: My custom workflow", result)
+        self.assertIn("sdd: SDD description", result)
+
+    def test_no_templates_available(self) -> None:
+        """resource_orders() returns a clear message when no templates exist."""
+        with patch.object(server, "_list_order_templates", return_value=[]):
+            result = server.resource_orders()
+
+        self.assertIn("No standing-order templates", result)
+
+
+class ResourceOrdersByNameTests(unittest.TestCase):
+    """TRN-135 — resource_orders_by_name() returns full resolved body per template."""
+
+    def test_known_template_returns_resolved_body_without_front_matter(self) -> None:
+        """(a) Known template returns resolved body with placeholders substituted."""
+        with (
+            patch.object(server, "_load_order_template", return_value=("desc", "body content {{RAVEN_GATEWAY_ORIENTATION}}")) as mock_load,
+            patch.object(server, "_substitute_placeholders", return_value="body content resolved") as mock_sub,
+        ):
+            result = server.resource_orders_by_name("sdd")
+
+        self.assertEqual(result, "body content resolved")
+        mock_load.assert_called_once_with("sdd")
+        mock_sub.assert_called_once()
+
+    def test_unknown_template_returns_not_found_message(self) -> None:
+        """(b) Unknown template name returns a clear not-found message."""
+        with patch.object(server, "_load_order_template", side_effect=ValueError("Unknown Captain order template: 'nonexistent'")):
+            result = server.resource_orders_by_name("nonexistent")
+
+        self.assertIn("Not found", result)
+        self.assertIn("nonexistent", result)

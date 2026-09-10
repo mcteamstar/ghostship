@@ -1,5 +1,6 @@
 ---
 description: "Dispatch four concurrent independent reviewers and consolidate their findings. Scoped to a named change when change_name is provided; reviews the entire codebase when omitted."
+aliases: ["indy"]
 ---
 Scope: <change?>
 

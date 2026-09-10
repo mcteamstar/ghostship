@@ -28,6 +28,16 @@ import httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
+# TRN-143 §4: FakeHTTP / FakeResponse are consolidated in tests.unit.helpers.
+from tests.unit.helpers import FakeHTTP, FakeResponse  # noqa: F401
+
+
+# Backwards-compatible shim: this suite historically used
+# ``MockHTTPResponse(status_code, json_data)`` where the second positional is the
+# JSON body. The consolidated ``FakeResponse`` takes ``content`` in that slot, so
+# remap the positional json through the ``json_data`` keyword.
+def MockHTTPResponse(status_code: int = 200, json_data: Any = None) -> FakeResponse:
+    return FakeResponse(status_code=status_code, json_data=json_data)
 
 
 class SetupPodman:
@@ -63,15 +73,8 @@ class IdleMonitorPodman:
 
     def container_stop(self, name: str) -> None:
         self.stops.append(name)
-class MockHTTPResponse:
-    """Mock HTTP response factory for idle_monitor API calls."""
 
-    def __init__(self, status_code: int = 200, json_data: Any = None) -> None:
-        self.status_code = status_code
-        self._json = json_data or {}
 
-    def json(self) -> Any:
-        return self._json
 class IdleMonitorTests(unittest.TestCase):
     """Tests for _idle_monitor logic (trn-17 tasks 4.x and 5.x)."""
 
@@ -83,16 +86,11 @@ class IdleMonitorTests(unittest.TestCase):
         mint_cookie_return: str | None = None,
     ) -> dict[str, Any]:
         """Run a single iteration of the idle monitor and return state."""
-        http_calls = []
-        response_iter = iter(http_responses or [])
-
-        class FakeHTTP:
-            def get(self, url: str, **kwargs: Any) -> MockHTTPResponse:
-                http_calls.append(url)
-                response = next(response_iter, MockHTTPResponse(500))
-                if isinstance(response, BaseException):
-                    raise response
-                return response
+        # TRN-143 §4: use the consolidated FakeHTTP. It records requested URLs in
+        # ``.calls`` (the old inline closure recorded into ``http_calls``) and
+        # returns a 500 FakeResponse once the scripted list is exhausted, raising
+        # any BaseException entries — matching the previous behaviour exactly.
+        fake_http = FakeHTTP(list(http_responses or []), default=FakeResponse(500))
 
         touched: list[str] = []
         saved_regs: list[dict] = []
@@ -113,7 +111,7 @@ class IdleMonitorTests(unittest.TestCase):
 
         with (
             patch.object(monitors, "_get_podman", return_value=podman),
-            patch.object(monitors, "_http", FakeHTTP()),
+            patch.object(monitors, "_http", fake_http),
             patch.object(monitors, "_touch_crew", side_effect=touch),
             patch.object(monitors, "_load_registry", return_value={"crews": dict(crew_items)}),
             patch.object(monitors, "_save_registry", side_effect=save_reg),
@@ -129,7 +127,7 @@ class IdleMonitorTests(unittest.TestCase):
         return {
             "stops": podman.stops,
             "touched": touched,
-            "http_calls": http_calls,
+            "http_calls": fake_http.calls,
             "saved_regs": saved_regs,
         }
 

@@ -4,6 +4,12 @@ httpx-ws==0.7.0
 croniter==3.0.3
 # Declared explicitly — mcp[cli] pulls these as transitive deps but pinning
 # prevents silent breakage if mcp ever restructures its extras.
-starlette>=0.27.0,<2.0.0
+starlette>=1.0.1,<2.0.0
 uvicorn>=0.31.1,<1.0.0
 unittest-parallel==1.8.6
+# TRN-136: captain.py imports cryptography directly for Ed25519 Admiral-mail
+# signing. Declared explicitly rather than relied on transitively (PyJWT[crypto]
+# happens to pull it today) so a change to that extra cannot silently break
+# signing. Ranged, not exact: an exact old pin would downgrade the resolved
+# version and strip security fixes from a security-critical library.
+cryptography>=43.0.1,<51.0.0

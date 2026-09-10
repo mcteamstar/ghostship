@@ -58,6 +58,7 @@ process sees and what each default means:
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Operator email injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` into every crew container at setup time. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only — no CLI flag |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports in the range (the cap on concurrent crew dashboards). Config-file-only |
+| `GA_ORDERS_DIR` | _(unset)_ | Path to an operator-managed directory of additional standing-order template `.md` files. When set and the path exists, its templates are merged with the built-in `academy/orders/` templates; a user-defined template whose filename stem matches a built-in template name takes precedence (overrides it). When unset, or when the path does not exist, only built-in templates are available (a warning is logged in the latter case). Config-file-only |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for all Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step — path printed by `install.sh` and `ghostship status`), `tailscale` (browser-trusted `.ts.net` certs via Tailscale ACME; no trust step), `acme` (public Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). An unrecognised value logs a WARNING and falls back to `internal` |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name used for ACME (Let's Encrypt) certificate requests. Required when `GA_PORTAL_TLS_MODE=acme` |
 | `PORT` / ~~`GA_PORTAL_PORT`~~ | `64057` | Port Caddy listens on. TLS mode is independent — HTTP or HTTPS on any port. `GA_PORTAL_PORT` is the deprecated alias for `PORT`; install.sh auto-migrates config files that still use the old name. |
@@ -157,6 +158,7 @@ Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
 `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
 `GA_DASHBOARD_PORT_RANGE_START`,
 `GA_DASHBOARD_PORT_RANGE_SIZE`,
+`GA_ORDERS_DIR`,
 `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
 have no CLI flag and no ambient-environment-variable input.
 
