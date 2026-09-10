@@ -733,6 +733,9 @@ services:
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
+      GA_PREWARM_ENABLED: "${GA_PREWARM_ENABLED:-false}"
+      GA_PREWARM_TTL_SECS: "${GA_PREWARM_TTL_SECS:-0}"
+      GA_ORDERS_DIR: "${GA_ORDERS_DIR:-}"
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
