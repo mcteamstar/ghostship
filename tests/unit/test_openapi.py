@@ -353,12 +353,16 @@ class TestToolCoverage(unittest.TestCase):
 def _server_available() -> bool:
     """Return True if transport.server can be imported (via test bootstrap stubs)."""
     try:
-        # Use the same stub-install bootstrap used by the rest of the suite.
-        # This installs httpx/mcp/starlette/uvicorn stubs if the real packages
-        # are not present, making transport.server importable in a bare checkout.
-        from tests.unit.test_file_transfer import _install_import_stubs  # noqa: F401
-        _install_import_stubs()
-        import transport.server  # noqa: F401
+        # Match test_file_transfer's import strategy: only install dependency
+        # stubs when the production module is not already importable. Replacing
+        # sys.modules["httpx"] after transport modules load creates a second
+        # set of exception classes and makes full-suite recovery tests fail.
+        try:
+            import transport.server  # noqa: F401
+        except ModuleNotFoundError:
+            # test_file_transfer owns the dependency-free bootstrap; importing
+            # its exported server runs that bootstrap at most once.
+            from tests.unit.test_file_transfer import server as _server  # noqa: F401
         return True
     except Exception:
         return False
