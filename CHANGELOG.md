@@ -2,16 +2,37 @@
 
 ## v0.3.2 (unreleased)
 
+### Security
+
+- **Ed25519 admiral signing (TRN-136)** — Admiral mail signing moved from a shared HMAC secret to Ed25519 asymmetric keys. The private key never leaves the transport (persisted at `DATA_DIR/secrets/<crew_id>.admiral_secret`); each crew receives only the public key, mounted as a read-only, root-owned Podman secret it cannot modify even if compromised. The `X-Admiral-Sig` header and `verify-admiral-sig` exit-code contract (0/1/2) are unchanged. **Operator action required:** existing crews must be nuked and relaunched to pick up the new signing scheme — a plain restart does not migrate a crew. See [docs/auth.md](docs/auth.md).
+- **Crew proxy no longer forwards transport credentials** — the crew UI/API proxy (`_handle_crew_ui_proxy` / `_handle_crew_api_proxy`) stopped forwarding the inbound `Authorization` and `X-Transport-Token` headers down to a crew's own gateway. Crew containers share the `ga-starboard` network with `ga-transport`, so a compromised crew that captured either header could previously replay it directly against the transport's own control-plane API. Neither header is used by the crew gateway — it authenticates purely via its own `mc_token_5476` session cookie — so nothing downstream depended on them.
+- **`starlette` pinned to `>=1.0.1`** — closes CVE-2024-47874 and CVE-2026-48710.
+
+### API
+
+- **`GET /openapi.json` (TRN-129)** — new public, unauthenticated endpoint serving an OpenAPI 3.1.0 schema generated at startup from the live route table and MCP tool registry (HTTP routes with per-route auth requirements, plus MCP tools as synthetic `mcp-tools` paths). Intended as a self-documenting source of truth for client/tooling authors. A build-time script (`scripts/generate_openapi.py`) also writes the schema to disk for CI artefact capture. Reachable through Caddy's public port as well as directly on the transport.
+
+### Fixes
+
+- **Stale active-crew counts (TRN-132)** — `crews()` and the `GA_MAX_ACTIVE_CREWS` limit check now cross-reference the registry against actual Podman container state instead of trusting a potentially-stale `status: "running"` field. A crew stopped outside ghostship (`podman stop`, a VM reboot, an idle-monitor stop the registry missed) no longer inflates the active count or blocks legitimate launches — the registry self-heals the stale entry to `"stopped"` immediately, no transport restart needed.
+
 ### Captain templates
 
 - **`independent-review`** — dispatches four concurrent independent reviewers (Wraith for docs, three Banshees for security/quality/test-coverage); `change_name` is optional — when provided, scopes the review to that change; when omitted, reviews the entire codebase. Consolidates findings by severity. (`independent-review-all` is merged into this template and deleted.)
 - **`sdd`** — drives one or more named OpenSpec changes through the standard Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a single name or a comma-separated list for parallel multi-change execution with automatic worktree isolation and merge reconciliation. (`sdd-parallel` is merged into this template and deleted.)
 - **`<change?>`** token in `transport/captain.py` — optional change-name token: substitutes the provided name when `change_name` is given, or `"entire codebase"` when omitted. Raises if mixed with required `<change>` or `<changes>` in the same template body.
+- **SDD reconciliation attempts conflict resolution before escalating (TRN-140)** — in parallel multi-change `sdd` execution, the reconciliation-phase Ghost task now reads each conflicting change's specs and tasks to understand intent, resolves merge conflicts by treating them as additive where possible, and re-runs the test suite, recording every decision in the Admiral mail. It previously escalated to the Admiral on the first conflict; now it only escalates if conflicts remain unresolved or tests still fail.
+- **`transport://orders` is now a summary index (TRN-135)** — returns name + one-line description per standing-order template instead of every template's full body. Use the new `transport://orders/{name}` resource for a specific template's full text. New `GA_ORDERS_DIR` env var lets operators point at a directory of custom `.md` templates that merge with (and can override) the built-in `academy/orders/` set.
 
 ### Install
 
 - **`--client-only`** flag — skips all container infrastructure (no Podman check, no image builds, no `compose up`) and wires up just the `ghostship` CLI and agent harness integrations. Designed for machines connecting to an already-running remote transport. Use with `--url` and optionally `--api-key`.
 - **Transport source hash detection** — `install.sh` now hashes the transport source tree and embeds it as a label on the built image. On subsequent installs, if the version matches but the source has changed (mid-release commits), a clean rebuild is forced automatically.
+
+### Testing
+
+- Full-suite test bootstrap stabilized (TRN-144) — a shared httpx stub module (`tests/unit/_stubs.py`) fixes exception-identity mismatches that caused spurious `test_recovery.py` failures under the parallel test runner.
+- `tests/integration/test_uninstall_auth_preservation.sh` is now actually wired into `tests/run.sh`'s integration suite — it existed but was never executed.
 
 ---
 
