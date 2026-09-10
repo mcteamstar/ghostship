@@ -634,6 +634,8 @@ try:
         _task_timestamps,
         _task_timestamps_lock,
         _probe_gateway,
+        _prewarm_crew,
+        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -700,6 +702,8 @@ except ModuleNotFoundError:
         _task_timestamps,
         _task_timestamps_lock,
         _probe_gateway,
+        _prewarm_crew,
+        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -1409,6 +1413,36 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         crew_id, existing_port,
     )
     return JSONResponse({"dashboard_url": None})
+
+
+async def _handle_crew_prewarm_post(request: Request) -> Response:
+    """POST /crews/{crew_id}/prewarm — pre-establish the crew's ACP session (TRN-131).
+
+    Thin REST wrapper over the ``prewarm`` MCP tool. Behaves identically for a
+    given crew: it warms the crew's session ahead of an expected dispatch,
+    respecting the enable flag and the memory / active-crew gates, and returns
+    ``{"crew_id", "status"}`` with status in ``warmed | already_warm | disabled
+    | blocked:<gate> | error:<msg>``.
+
+    Auth: gated by the same ``GA_API_KEY`` Bearer auth as the other crew REST
+    endpoints (enforced by BearerAuthMiddleware, which never dispatches to this
+    handler without a valid key). Returns 404 for an unknown crew.
+    """
+    # Parse + require only (auto_wake=False) — _prewarm_crew owns the start/gate
+    # path via _ensure_crew_running, exactly like the dashboard handler.
+    resolved = await _resolve_crew_for_proxy(request.scope["path"], auto_wake=False)
+    if isinstance(resolved, Response):
+        return resolved
+    crew_id, _sub, crew = resolved
+
+    result = await asyncio.to_thread(_prewarm_crew, crew, crew_id)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    logger.info(
+        "TRN-131: POST /crews/%s/prewarm — status=%s",
+        crew_id, result.get("status"),
+    )
+    return JSONResponse(result)
 
 
 async def _handle_version_get(request: Request) -> Response:
@@ -3205,6 +3239,34 @@ def dispatch(
     }
 
 
+@mcp.tool()
+@_registry_guard
+def prewarm(crew_id: str | None = None) -> dict:
+    """Pre-establish a crew's ACP session ahead of an expected dispatch (TRN-131).
+
+    Warms the crew's ``kiro-cli-chat`` session — forking the session process and
+    completing the ACP handshake — so a subsequent ``dispatch`` on that crew does
+    not pay session cold-start latency. Returns promptly; it never blocks on a
+    real task and never dispatches real agent work, sends mail, or writes specs.
+
+    Opt-in and operator-bounded: prewarm does nothing unless
+    ``GA_PREWARM_ENABLED=true``. It respects the same memory
+    (``GA_MIN_FREE_MEM_GB``) and active-crew (``GA_MAX_ACTIVE_CREWS``) gates that
+    gate a real dispatch, and a warmed-but-unused session is still reaped by the
+    crew's ``session.timeout_secs`` idle timer.
+    Also: warm, preheat, pre-fork session.
+
+    Args:
+        crew_id: Which crew to warm. Required — use launch first.
+
+    Returns:
+        ``{"crew_id", "status"}`` where status is one of ``warmed`` |
+        ``already_warm`` | ``disabled`` | ``blocked:<gate>`` | ``error:<msg>``.
+        An unknown crew_id returns ``{"error": ...}`` and performs no start/fork.
+    """
+    return prewarm_impl(crew_id)
+
+
 # _record_last_task_at and _dispatch_batch moved to transport.lifecycle
 # (TRN-143), next to _pickup_batch; imported above. The dispatch MCP tools
 # below call them as before.
@@ -3601,6 +3663,7 @@ if __name__ == "__main__":
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
         ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
         ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+        ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
         ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
     }
     _openapi_schema_public_routes = {
@@ -3633,6 +3696,7 @@ if __name__ == "__main__":
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
             ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
             ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+            ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
         },
         public_routes={
