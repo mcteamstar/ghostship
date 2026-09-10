@@ -9,8 +9,7 @@ from your local machine over the network.
   Podman >= 4.4 and podman-compose are available. See
   [manual-install.md](manual-install.md) for requirements.
 - **Podman rootless** — `podman info` should succeed as a non-root user.
-- **Port exposure** — the transport port (default `64057`) serves all routes:
-  MCP, REST API, and file transfer. Only one port needs to be exposed.
+- **Port exposure** — `ga-portal` (Caddy) is the public-facing listener on port `64057` (default). MCP, REST API, file transfer, and dashboard traffic all route through Caddy to `ga-transport` on the internal `ga-portside` network. Only one port needs to be exposed.
   Open it in your firewall or security group.
 - **API key** — required for any non-loopback deployment. Without it, anyone
   who can reach the port has full MCP access.
@@ -48,8 +47,7 @@ Or use a config file (`--config ./ghostship.conf`). See
 
 ## TLS termination via reverse proxy
 
-The transport binds plain HTTP inside the container. For production remote
-deployments, terminate TLS at a reverse proxy. Example with nginx:
+`ga-portal` (Caddy) handles TLS termination for dashboard ports and MCP/API routes via the `GA_PORTAL_TLS_MODE` setting — see [docs/caddy.md](caddy.md). For deployments where you want to front ghostship with your own existing reverse proxy (e.g. a shared nginx or Caddy instance), proxy to port `64057` (the Caddy listener):
 
 ```nginx
 # /etc/nginx/sites-available/ghostship
@@ -79,12 +77,13 @@ server {
 }
 ```
 
-Caddy is simpler if you prefer automatic certificate management:
+Alternatively, use `GA_PORTAL_TLS_MODE=acme` with `GA_PORTAL_DOMAIN` to let Caddy manage your certificate directly (no external reverse proxy needed):
 
-```
-mcp.your-domain.com {
-    reverse_proxy localhost:64057
-}
+```bash
+# ghostship.conf
+GA_PORTAL_TLS_MODE=acme
+GA_PORTAL_DOMAIN=mcp.your-domain.com
+GA_HOST_URL=https://mcp.your-domain.com
 ```
 
 ## MCP client registration (remote host)
@@ -136,14 +135,8 @@ Once `complete`, the transport is ready to launch crews.
 - **No HA** — there is no replication, failover, or state sync between
   multiple transport instances. Running two transports against the same
   data directory is unsupported and will corrupt the registry.
-- **File transfer: HMAC-only, no TLS natively** — the file transfer routes
-  use HMAC presigned URLs for authorization but the transport does not speak
-  TLS itself. You must terminate TLS at a reverse proxy (see above) to
-  protect file content in transit. Without TLS, presigned URLs and file
-  bytes travel in plaintext.
-- **No native certificate management** — the transport does not handle
-  certificates, ACME, or renewal. Use your reverse proxy or a sidecar
-  (certbot, Caddy) for certificate lifecycle.
+- **File transfer: HMAC-only** — the file transfer routes use HMAC presigned URLs for authorization. When `GA_PORTAL_TLS_MODE` is set to `off` (the default), presigned URLs and file bytes travel in plaintext; use a non-`off` TLS mode or an external reverse proxy (see above) to protect file content in transit.
+- **Certificate management** — `GA_PORTAL_TLS_MODE=acme` lets Caddy manage certificates via Let's Encrypt automatically. For other modes (`internal`, `tailscale`, `off`) see [docs/caddy.md](caddy.md). An external reverse proxy can also handle TLS entirely.
 - **Podman socket security** — the transport requires access to the Podman
   socket, which grants container management privileges for the user. On a
   shared host, restrict access to `DATA_DIR` and the Podman socket to the

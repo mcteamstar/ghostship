@@ -154,6 +154,9 @@ Ghost while tasks remain unchecked, Banshee for an independent review, and
 Reaper to sync specs and archive after a clean review. One unresolved review
 cycle may be fixed and re-reviewed; unresolved findings after that cycle are
 escalated to the Admiral, and archival is confirmed from OpenSpec state.
+`change_name` accepts a single name or a comma-separated list for parallel
+multi-change execution with automatic worktree isolation and merge
+reconciliation.
 
 For an independent multi-angle review of the codebase (security, quality,
 test coverage, and docs), use the built-in `independent-review` template:
@@ -167,9 +170,7 @@ or implementation phase — it is review-only.
 last-run summary, and both Captain and Admiral mailbox counts. `action="stop"` pauses the job
 with `POST /api/crons/{job_id}/enable` rather than deleting its history or
 mailbox. A scheduled check-in has a `job_id`, not a dispatch `task_id`, so
-`steer` is not its control channel. The `transport://orders` resource exposes
-the name, description, and complete body of every built-in template alongside
-the `transport://agents` roster resource.
+`steer` is not its control channel. The `transport://orders` resource returns a **summary index** — name and one-line description per template. Use `transport://orders/{name}` to fetch a specific template's full resolved body (placeholders substituted, front-matter stripped). `GA_ORDERS_DIR` lets operators point at a directory of custom `.md` templates that merge with (and can override) the built-in `academy/orders/` set.
 
 
 ## Steering
@@ -427,8 +428,7 @@ not exist in old containers.
   `In-Reply-To` and `References`
 - **Supersedes**: replacement standing orders carry a `Supersedes:` header
   so Raven can identify current orders without full history scan
-- **HMAC signing**: Admiral mail carries `X-Admiral-Sig` (HMAC-SHA256 of
-  body); `verify-admiral-sig` validates authenticity inside the crew
+- **HMAC signing**: Admiral mail carries `X-Admiral-Sig`; `verify-admiral-sig` validates authenticity inside the crew. From v0.3.2 onward the signing scheme is **Ed25519** asymmetric keys (TRN-136): the private seed stays host-side only, and each crew receives only the public key as a read-only Podman secret. The `X-Admiral-Sig` header and `verify-admiral-sig` exit-code contract (0/1/2) are unchanged from the agent's perspective. See [auth.md](auth.md#admiral-mail-signing-admiral_secret).
 - **Plus-addressing**: `ghost+taskid@localhost` routes to `/var/mail/ghost/`
   via the `maildeliver` script
 

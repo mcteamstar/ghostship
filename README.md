@@ -54,7 +54,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds the crew images and starts the `ga-transport` container on `localhost:64057`. MCP, REST API, and file transfer all share this single port.
+Builds the crew images, starts the `ga-transport` container, and starts `ga-portal` (Caddy) as the public-facing reverse proxy on `localhost:64057`. MCP, REST API, and file transfer all share this single port. Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` when `GA_API_KEY` is set, and routes dashboard traffic via the Caddy admin API — see [docs/dashboard-proxy.md](docs/dashboard-proxy.md).
 
 For a repeatable setup, copy the example config and fill in your values before running:
 
@@ -187,13 +187,13 @@ Registered as `ghostship`:
 | Tool | Name | Description |
 |:-:|:------|:-----|
 | <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
-| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). `dashboard=True` allocates a dedicated port and returns a `dashboard_url` for the crew's browser UI; the default `dashboard=False` leaves the crew headless. Repository seeding is a separate step. |
+| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`; see `transport://compositions`). `dashboard=True` allocates a port via the Caddy admin API and returns a `dashboard_url` for the crew's browser UI; the default `dashboard=False` leaves the crew headless. Repository seeding is a separate step. |
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace via a presigned upload URL. |
 | <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
-| <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it, and the built-in `sdd` template covers standard OpenSpec lifecycle work. |
+| <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order; `order` sets or updates it, `stop`/`status` pause and check it. Built-in templates: `sdd` (drives one or more named OpenSpec changes through the Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a single name or a comma-separated list) and `independent-review` (dispatches four concurrent reviewers — Wraith for docs, three Banshees for security/quality/test-coverage — and mails a consolidated report to the Admiral). |
 | <img src="docs/images/tool-schedule.png" width="256"> | `schedule` | Book, cancel, or list recurring tasks on a crew. `action="create"` (default) with `cron`, `interval`, or `delay` schedules work; `action="cancel"` removes a job by job_id; `action="list"` returns all active jobs. |
-| <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. |
+| <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas (below) in a named crew. Always immediate — returns a `task_id`. Pass `tasks=[...]` for atomic batch dispatch of multiple tasks in one call (all share the same `agent`, `model`, and crew); the response includes `batch_id` and per-task `task_ids`. |
 | <img src="docs/images/tool-steer.png" width="256"> | `steer` | Guide a running task or continue a completed one with new context; use `force=True` to hard-stop a running task before continuing it. |
 | <img src="docs/images/tool-pickup.png" width="256"> | `pickup` | Check progress or collect result. `timeout_secs=0` (default) checks once immediately; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
