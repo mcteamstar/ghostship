@@ -18,7 +18,7 @@ Quick reference for operators and developers. For full docs see the linked files
 
 | Tool | What it does | Also known as |
 |:-----|:-------------|:--------------|
-| `dispatch` | Spawn a task on a named agent persona | dropoff, send, assign |
+| `dispatch` | Spawn a task on a named agent persona; pass `tasks=[...]` for atomic batch dispatch (returns `batch_id` + per-task `task_ids`) | dropoff, send, assign |
 | `pickup` | Check a task / list all tasks / wait for completion + mail state | see below |
 | `steer` | Redirect a running task or continue a completed one | redirect, update, continue, follow up, add context |
 | `captain` | Manage the crew's standing-orders Captain (Raven check-in) | supervise, oversee, autopilot, govern, sitrep, status |
@@ -51,7 +51,8 @@ Quick reference for operators and developers. For full docs see the linked files
 |:---------|:----------------|
 | `transport://agents` | Available agent personas and their roles |
 | `transport://compositions` | Available crew compositions for `launch` |
-| `transport://orders` | Built-in Captain standing-order templates |
+| `transport://orders` | Summary index of built-in Captain standing-order templates — name and one-line description per template |
+| `transport://orders/{name}` | Full resolved body of the named standing-order template (placeholders substituted, front-matter stripped) |
 | `transport://version` | Transport version and per-crew image versions |
 | `transport://jobs` | Scheduled jobs across all running crews |
 

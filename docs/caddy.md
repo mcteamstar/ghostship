@@ -214,5 +214,5 @@ See [configuration.md](configuration.md) for the full `GA_PORTAL_*` variable tab
 |:---------|:--------|:------------|
 | `GA_PORTAL_TLS_MODE` | `off` | `internal` / `tailscale` / `acme` / `off` |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
-| `GA_PORTAL_PORT` | `64057` | Port Caddy listens on (HTTP or HTTPS, any port). |
+| `PORT` (~~`GA_PORTAL_PORT`~~) | `64057` | Port Caddy listens on (HTTP or HTTPS, any port). `GA_PORTAL_PORT` is the deprecated alias; `install.sh` auto-migrates existing config files. |
 | `GA_PORTAL_SESSION_TTL_SECS` | `86400` | Session cookie TTL (seconds) |

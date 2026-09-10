@@ -46,14 +46,27 @@ persistent session.
   to sync specs and archive after a clean review. After one fix-and-re-review
   cycle with unresolved findings, Raven escalates to the Admiral instead of
   looping; it confirms archival from OpenSpec state rather than memory.
+  `change_name` accepts a single name or a comma-separated list for parallel
+  multi-change execution with automatic worktree isolation and merge
+  reconciliation.
+
+- **Built-in `independent-review` template:** call `captain(crew_id,
+  action="order", template="independent-review", interval=<n>)`. On each tick,
+  Raven dispatches four concurrent reviewers (Banshee × 3 for
+  security/quality/test-coverage and Wraith for docs), collects their reports,
+  and mails a consolidated summary to the Admiral. `change_name` is optional —
+  when provided, scopes the review to that change; when omitted, reviews the
+  entire codebase. Review-only: no planning or implementation phase.
 
 Both forms append the resolved order to `captain@localhost` and use the same
 Raven check-in. `captain(..., action="status")` reports the job's enabled state,
 last-run summary, and both Captain and Admiral mailbox counts; `action="stop"` pauses the cron
 with its history and mailbox intact. A scheduled check-in has a `job_id`, not a
 dispatch `task_id`, so `steer` is not its control channel. The
-`transport://orders` resource lists each built-in template's name, description,
-and full body before an Admiral orders it or adapts it into a message.
+`transport://orders` resource returns a summary index (name + one-line
+description per template); use `transport://orders/{name}` to fetch a
+specific template's full resolved body before an Admiral orders it or
+adapts it into a message.
 
 Ghost and Banshee carry the same tool grant — the difference is role, not
 permission: Ghost stays inside a given brief, Banshee is the independent pass
