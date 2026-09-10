@@ -851,6 +851,20 @@ _HOP_BY_HOP_HEADERS: frozenset[str] = frozenset({
     "content-length",
 })
 
+# Headers stripped when proxying a request down to a crew's own gateway
+# (gs-{crew_id}:5476). Authorization and X-Transport-Token authenticate the
+# caller to ga-transport itself — the crew gateway neither needs nor checks
+# them, and forwarding them would hand a crew (which shares ga-starboard with
+# ga-transport) a credential it could replay directly against the transport's
+# own control-plane API. host/cookie are replaced with the crew's own
+# mc_token_5476 session cookie immediately after this filter is applied.
+_STRIPPED_CREW_PROXY_HEADERS: frozenset[str] = frozenset({
+    "host",
+    "cookie",
+    "authorization",
+    "x-transport-token",
+})
+
 
 def _extract_crew_proxy_parts(path: str) -> tuple[str, str, str] | None:
     """Parse /crews/{crew_id}/{segment}/{sub_path} into (crew_id, segment, sub_path).
@@ -992,7 +1006,9 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
            /crews/{crew_id}/ui/{path}  →  http://gs-{crew_id}:5476/{path}
 
     - Auto-wakes the crew before proxying.
-    - Passes request headers through (minus host and any inbound cookie).
+    - Passes request headers through (minus host, any inbound cookie, and the
+      Authorization / X-Transport-Token credentials used to reach ga-transport
+      itself — never forwarded to the crew gateway).
     - Injects the crew's ``mc_token_5476`` session cookie on every forwarded
       request so the KiroCrew SPA is pre-authenticated. The cookie is minted
       from ga-transport's IP, satisfying the gateway's IP binding (TRN-102).
@@ -1023,14 +1039,14 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
         upstream_url = f"{upstream_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{upstream_url}"
 
-    # Forward headers minus host and any inbound cookie, then inject the crew's
-    # session cookie. The cookie is minted from ga-transport's IP so the gateway's
-    # IP binding is satisfied — Caddy (ga-portal) proxies here rather than to the
-    # crew gateway directly (TRN-102).
+    # Forward headers minus _STRIPPED_CREW_PROXY_HEADERS, then inject the
+    # crew's session cookie. The cookie is minted from ga-transport's IP so
+    # the gateway's IP binding is satisfied — Caddy (ga-portal) proxies here
+    # rather than to the crew gateway directly (TRN-102).
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() != "host" and k.lower() != "cookie"
+        if k.lower() not in _STRIPPED_CREW_PROXY_HEADERS
     }
     forward_headers["Cookie"] = _crew_cookie(crew)
 
@@ -1223,11 +1239,11 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
         api_path = f"{api_path}?{_sanitise_query_string(query)}"
     upstream_full = f"{upstream_base}{api_path}"
 
-    # Forward headers minus host and cookie, then inject session cookie
+    # Forward headers minus _STRIPPED_CREW_PROXY_HEADERS, then inject session cookie
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() != "host" and k.lower() != "cookie"
+        if k.lower() not in _STRIPPED_CREW_PROXY_HEADERS
     }
     forward_headers["Cookie"] = _crew_cookie(crew)
 
