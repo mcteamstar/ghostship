@@ -15,7 +15,7 @@ The system SHALL accept an optional `mode` parameter on `dispatch()` with one of
 - `"anchored"` (default when the crew was launched with `dashboard=True`) — every task dispatched to the crew attaches to a single shared dashboard slot by passing `parent_session="dashboard:<crew-id>"` on `/api/spawn`.
 - `"free"` — each dispatched task attaches to its own named dashboard slot by passing `parent_session="dashboard:<crew-id>-<8hex>"` on `/api/spawn`, where `<8hex>` is a transport-generated `uuid4().hex[:8]` suffix chosen before the `/api/spawn` call.
 
-When `mode` is not explicitly provided, the system SHALL derive the default at dispatch time from the crew's current `dashboard_url` registry field: `"anchored"` if `dashboard_url` is set (dashboard is active), `"headless"` otherwise. This approach self-corrects automatically when the dashboard is enabled or disabled mid-flight — no stored default is needed.
+When `mode` is not explicitly provided, the system SHALL derive the default at dispatch time from the crew's current `dashboard_port` registry field: `"anchored"` if `dashboard_port` is set (dashboard is active), `"headless"` otherwise. This approach self-corrects automatically when the dashboard is enabled or disabled mid-flight — no stored default is needed.
 
 The effective `mode` SHALL be echoed back in the `dispatch()` response.
 

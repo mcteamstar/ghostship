@@ -3211,7 +3211,7 @@ def dispatch(
             ``"free"`` — each task gets its own named slot
             ``dashboard:<crew-id>-<8hex>``; isolated transcripts, more slots.
             When omitted, defaults to ``"anchored"`` if the crew has an active
-            dashboard (``dashboard_url`` is set), ``"headless"`` otherwise.
+            dashboard (``dashboard_port`` is set), ``"headless"`` otherwise.
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
@@ -3238,7 +3238,7 @@ def dispatch(
 
     # Resolve effective mode: explicit arg > live dashboard check
     _VALID_DISPATCH_MODES = ("headless", "anchored", "free")
-    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_url") else "headless")
+    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_port") else "headless")
     if effective_mode not in _VALID_DISPATCH_MODES:
         return {"error": f"mode must be one of: {', '.join(_VALID_DISPATCH_MODES)}"}
 

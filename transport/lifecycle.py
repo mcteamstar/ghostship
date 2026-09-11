@@ -2271,7 +2271,7 @@ def _dispatch_batch(
 
     # Resolve effective mode: explicit arg > live dashboard check
     _VALID_DISPATCH_MODES = ("headless", "anchored", "free")
-    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_url") else "headless")
+    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_port") else "headless")
     if effective_mode not in _VALID_DISPATCH_MODES:
         return {"error": f"mode must be one of: {', '.join(_VALID_DISPATCH_MODES)}"}
 

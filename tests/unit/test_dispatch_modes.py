@@ -27,7 +27,7 @@ _FREE_PS_RE = re.compile(r"^dashboard:[a-z0-9-]+-[0-9a-f]{8}$")
 # Crew fixture without dashboard (headless default)
 _CREW_NO_DASH = {"container": "gs-demo"}
 # Crew fixture with active dashboard (anchored default)
-_CREW_WITH_DASH = {"container": "gs-demo", "dashboard_url": "https://example.com/dash/demo"}
+_CREW_WITH_DASH = {"container": "gs-demo", "dashboard_port": 64058}
 
 
 class DispatchModeHeadlessTests(unittest.TestCase):
