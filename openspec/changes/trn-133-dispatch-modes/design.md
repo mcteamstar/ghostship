@@ -9,35 +9,35 @@ KiroCrew's `session_surface.has_dashboard_surface()` returns `True` unconditiona
 ## Goals / Non-Goals
 
 **Goals:**
-- Add `dispatch_mode: "none" | "shared" | "unique"` to `dispatch()` and `_dispatch_batch()`
-- Store `dispatch_mode_default` in the crew registry at launch, derived from the `dashboard` flag
+- Add `mode: "headless" | "anchored" | "free"` to `dispatch()` and `_dispatch_batch()`
+- Store `mode_default` in the crew registry at launch, derived from the `dashboard` flag
 - Echo the effective mode in the dispatch response
-- No regression for callers that do not pass `dispatch_mode`
+- No regression for callers that do not pass `mode`
 
 **Non-Goals:**
 - Pre-creating dashboard sessions via API (not possible; 405)
-- Applying `dispatch_mode` to Captain/Raven cron sessions (they use `/api/crons`)
+- Applying `mode` to Captain/Raven cron sessions (they use `/api/crons`)
 - Per-agent dispatch modes (one mode per call is sufficient)
-- Persisting `dispatch_mode` in the schedule registry for `schedule()` tool
+- Persisting `mode` in the schedule registry for `schedule()` tool
 
 ## Decisions
 
 **D1 — Registry default, not a live lookup**
-Store `dispatch_mode_default` in `crews.json` at launch time rather than re-examining the `dashboard` flag on every dispatch. The registry is the single source of truth for crew state; adding a derived field keeps dispatch fast and avoids coupling dispatch to the launch path.
+Store `mode_default` in `crews.json` at launch time rather than re-examining the `dashboard` flag on every dispatch. The registry is the single source of truth for crew state; adding a derived field keeps dispatch fast and avoids coupling dispatch to the launch path.
 
-Stored value: `"shared"` if `dashboard=True` at launch, `"none"` otherwise.
+Stored value: `"anchored"` if `dashboard=True` at launch, `"headless"` otherwise.
 
 **D2 — Caller override wins over registry default**
-Explicit `dispatch_mode` on a `dispatch()` call overrides the registry default for that call only. The registry default is not mutated.
+Explicit `mode` on a `dispatch()` call overrides the registry default for that call only. The registry default is not mutated.
 
 **D3 — `unique` mode: task-id suffix format**
 `dashboard:<crew-id>-<task-id>` — the task ID is the gateway-assigned `id` from the `/api/spawn` response. For `unique` mode in `_dispatch_batch`, the `parent_session` key per task must therefore be constructed *after* each `/api/spawn` response is received, not before. This is already the natural order since batch dispatch iterates sequentially.
 
-**D4 — Batch: shared mode sends one key for all tasks**
-All tasks in a `tasks=[...]` batch with `dispatch_mode="shared"` share the same `parent_session="dashboard:<crew-id>"`. This is the point of `shared` — one slot, all completions visible together. Concurrent completions serialising into one transcript is the documented tradeoff.
+**D4 — Batch: anchored mode sends one key for all tasks**
+All tasks in a `tasks=[...]` batch with `mode="anchored"` share the same `parent_session="dashboard:<crew-id>"`. This is the point of `anchored` — one slot, all completions visible together. Concurrent completions serialising into one transcript is the documented tradeoff.
 
 **D5 — Validation at call time, not at registry load**
-Invalid `dispatch_mode` values are rejected immediately with a validation error, before any `/api/spawn` call is made — consistent with how `agent` and `model` are validated.
+Invalid `mode` values are rejected immediately with a validation error, before any `/api/spawn` call is made — consistent with how `agent` and `model` are validated.
 
 ## Implementation Plan
 
@@ -45,17 +45,17 @@ Invalid `dispatch_mode` values are rejected immediately with a validation error,
 
 In `_finish_crew_setup()`, after the `dashboard` flag is resolved, add to the registry entry:
 ```python
-"dispatch_mode_default": "shared" if dashboard else "none"
+"mode_default": "anchored" if dashboard else "headless"
 ```
 
 ### 2. `transport/server.py` — `dispatch()`
 
-Add `dispatch_mode: str | None = None` parameter. After the existing model/agent validation:
+Add `mode: str | None = None` parameter. After the existing model/agent validation:
 ```python
-VALID_DISPATCH_MODES = ("none", "shared", "unique")
-effective_mode = dispatch_mode or crew.get("dispatch_mode_default", "none")
+VALID_DISPATCH_MODES = ("headless", "anchored", "free")
+effective_mode = mode or crew.get("mode_default", "headless")
 if effective_mode not in VALID_DISPATCH_MODES:
-    return {"error": f"dispatch_mode must be one of: {', '.join(VALID_DISPATCH_MODES)}"}
+    return {"error": f"mode must be one of: {', '.join(VALID_DISPATCH_MODES)}"}
 ```
 
 In the body construction:
@@ -63,13 +63,13 @@ In the body construction:
 body = {"task": task, "agent": agent, "keep": True}
 if model:
     body["model"] = model
-if effective_mode == "shared":
+if effective_mode == "anchored":
     body["parent_session"] = f"dashboard:{crew_id}"
 ```
 
 After receiving the spawn response (to get `task_id` for `unique`):
 ```python
-if effective_mode == "unique" and task_id:
+if effective_mode == "free" and task_id:
     # Can't set parent_session before we have task_id — for unique mode,
     # re-dispatch is not needed; the parent_session is only used by the
     # dashboard for completion routing, not by the gateway to start the run.
@@ -82,7 +82,7 @@ Wait — for `unique`, `parent_session` must be in the *spawn body* before the c
 **Revised D3:** For `unique` mode, use a transport-generated UUID as the slot suffix rather than the gateway task ID. This makes the key predictable before the spawn call:
 ```python
 import uuid
-if effective_mode == "unique":
+if effective_mode == "free":
     slot_suffix = uuid.uuid4().hex[:8]
     body["parent_session"] = f"dashboard:{crew_id}-{slot_suffix}"
 ```
@@ -90,20 +90,20 @@ Return `slot_suffix` (or the full `parent_session` value) in the response alongs
 
 ### 3. `transport/server.py` — `_dispatch_batch()`
 
-Pass `dispatch_mode` through to the batch helper. Apply the same resolution logic. For `unique` mode, generate a distinct UUID suffix per task in the batch loop.
+Pass `mode` through to the batch helper. Apply the same resolution logic. For `unique` mode, generate a distinct UUID suffix per task in the batch loop.
 
 ### 4. Response shape
 
-Single dispatch — add `"dispatch_mode"` and, for `unique` mode, `"parent_session"` to the returned dict so the caller knows which slot to watch.
+Single dispatch — add `"mode"` and, for `unique` mode, `"parent_session"` to the returned dict so the caller knows which slot to watch.
 
-Batch dispatch — add `"dispatch_mode"` at the top level; per-task entries include `"parent_session"` when `unique`.
+Batch dispatch — add `"mode"` at the top level; per-task entries include `"parent_session"` when `unique`.
 
 ### 5. Tests
 
-- Unit: `dispatch_mode="none"` sends no `parent_session`
-- Unit: `dispatch_mode="shared"` sends `parent_session="dashboard:<crew-id>"`
-- Unit: `dispatch_mode="unique"` sends `parent_session` with unique suffix per call
-- Unit: invalid `dispatch_mode` returns error before spawn
-- Unit: registry default `"shared"` used when crew launched with `dashboard=True` and no explicit mode
-- Unit: registry default `"none"` used when crew launched without dashboard and no explicit mode
+- Unit: `mode="headless"` sends no `parent_session`
+- Unit: `mode="anchored"` sends `parent_session="dashboard:<crew-id>"`
+- Unit: `mode="free"` sends `parent_session` with unique suffix per call
+- Unit: invalid `mode` returns error before spawn
+- Unit: registry default `"anchored"` used when crew launched with `dashboard=True` and no explicit mode
+- Unit: registry default `"headless"` used when crew launched without dashboard and no explicit mode
 - Unit: batch with `unique` mode gives each task a distinct `parent_session`
