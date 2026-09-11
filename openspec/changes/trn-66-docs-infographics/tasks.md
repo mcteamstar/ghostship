@@ -21,16 +21,16 @@
 
 ## 4. Tool Descriptions — transport/server.py
 
-- [ ] 4.1 Update the server-level `description=` field in the `MCPServer(...)` constructor — replace `"Ghost Academy crew orchestration: launch workspaces, dispatch agents, evac results, nuke crews"` with a description that names the workflow sequence explicitly: launch a crew → supply a repo → dispatch tasks to agents → pickup results → steer if needed → evac output → nuke when done
-- [ ] 4.2 Update `crews()` docstring — frame it as situational awareness: check what crews and tasks are running before deciding what to do next
-- [ ] 4.3 Update `launch()` docstring — add explicit "Step 1: create a crew workspace" framing; reinforce that `supply` must follow before any repo-touching dispatch; keep the auth-fallback description
-- [ ] 4.4 Update `supply()` docstring — add "Step 2: seed the workspace" framing; make the "dispatch into an empty crew is a real failure mode" guardrail explicit in the docstring (currently only in ghostship-command/SKILL.md)
-- [ ] 4.5 Update `dispatch()` docstring — add "Step 3: send a task to an agent persona" framing; clarify that the agent has zero context beyond the `task` string; note that `pickup` is the next step
-- [ ] 4.6 Update `pickup()` docstring — add "Step 4: check progress or collect the result" framing; note the relationship to `steer` (use steer to redirect mid-flight or continue a completed session)
-- [ ] 4.7 Update `steer()` docstring — add "Step 4b: redirect a running task or continue a completed session" framing; clarify the running-vs-completed distinction upfront
-- [ ] 4.8 Update `evac()` docstring — add "Step 5: extract results, diffs, or a git bundle" framing; note it pairs with `supply` as the complete file exchange protocol
-- [ ] 4.9 Update `nuke()` docstring — add "Step 6: destroy the crew and both volumes when work is done" framing; emphasize that `evac` must come first (irreversible)
-- [ ] 4.10 Update `captain()` docstring — add "Autopilot: hand the full SDD lifecycle to a recurring Raven check-in" framing; clarify the relationship between the manual relay (dispatch/pickup/steer yourself) and the captain autopilot
+- [x] 4.1 Update the server-level `description=` field in the `MCPServer(...)` constructor — replace `"Ghost Academy crew orchestration: launch workspaces, dispatch agents, evac results, nuke crews"` with a description that names the workflow sequence explicitly: launch a crew → supply a repo → dispatch tasks to agents → pickup results → steer if needed → evac output → nuke when done
+- [x] 4.2 Update `crews()` docstring — frame it as situational awareness: check what crews and tasks are running before deciding what to do next
+- [x] 4.3 Update `launch()` docstring — add explicit "Step 1: create a crew workspace" framing; reinforce that `supply` must follow before any repo-touching dispatch; keep the auth-fallback description
+- [x] 4.4 Update `supply()` docstring — add "Step 2: seed the workspace" framing; make the "dispatch into an empty crew is a real failure mode" guardrail explicit in the docstring (currently only in ghostship-command/SKILL.md)
+- [x] 4.5 Update `dispatch()` docstring — add "Step 3: send a task to an agent persona" framing; clarify that the agent has zero context beyond the `task` string; note that `pickup` is the next step
+- [x] 4.6 Update `pickup()` docstring — add "Step 4: check progress or collect the result" framing; note the relationship to `steer` (use steer to redirect mid-flight or continue a completed session)
+- [x] 4.7 Update `steer()` docstring — add "Step 4b: redirect a running task or continue a completed session" framing; clarify the running-vs-completed distinction upfront
+- [x] 4.8 Update `evac()` docstring — add "Step 5: extract results, diffs, or a git bundle" framing; note it pairs with `supply` as the complete file exchange protocol
+- [x] 4.9 Update `nuke()` docstring — add "Step 6: destroy the crew and both volumes when work is done" framing; emphasize that `evac` must come first (irreversible)
+- [x] 4.10 Update `captain()` docstring — add "Autopilot: hand the full SDD lifecycle to a recurring Raven check-in" framing; clarify the relationship between the manual relay (dispatch/pickup/steer yourself) and the captain autopilot
 
 ## 5. Plugin Skill Files
 

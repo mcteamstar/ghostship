@@ -779,8 +779,9 @@ except ModuleNotFoundError:
 mcp = MCPServer(
     name="transport",
     description=(
-        "Ghost Academy crew orchestration: launch workspaces, dispatch agents, "
-        "evac results, nuke crews"
+        "Ghost Academy crew orchestration. Workflow: launch a crew → supply a repo "
+        "→ dispatch tasks to agents → pickup results → steer if needed → evac output "
+        "→ nuke when done."
     ),
 )
 
@@ -1672,7 +1673,7 @@ def _registry_guard(fn):
 @mcp.tool()
 @_registry_guard
 def crews() -> dict:
-    """List all live crews in the registry.
+    """Situational awareness — list all crews and what's running before deciding what to do next.
 
     Shows crew_id, container, status, created_at, and last_task_at for each,
     plus uptime_secs (seconds since the container started; present only for
@@ -1842,10 +1843,12 @@ def resource_compositions() -> str:
 @mcp.tool()
 @_registry_guard
 def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False) -> dict:
-    """Summon a new crew container into existence, with its own workspace volume.
+    """Step 1: create a crew workspace — summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
-    with a dedicated workspace. Repository seeding is a separate supply step.
+    with a dedicated workspace. Repository seeding is a separate supply step —
+    dispatching into an empty crew without calling supply first is a real
+    failure mode.
     Also: calldown, create workspace, launch crew, init environment, load the ghostship.
 
     Requires prior authentication. If not authenticated, launch automatically
@@ -2118,7 +2121,11 @@ def supply(
     bundle: bool = False,
     force: bool = False,
 ) -> dict:
-    """Deliver a file, archive, or git bundle into a crew's workspace via a presigned upload URL.
+    """Step 2: seed the workspace — deliver a file, archive, or git bundle into a crew's workspace via a presigned upload URL.
+
+    Always call supply before dispatching any task that touches the repo.
+    Dispatching into an empty crew workspace is a real failure mode — the agent
+    has no codebase to work with and will hallucinate or fail silently.
 
     Returns a URL to POST raw file bytes to. Use curl or any HTTP client
     to upload from your local machine — no credentials required beyond
@@ -2215,7 +2222,10 @@ def evac(
     crew_id: str | None = None,
     bundle: bool = False,
 ) -> dict:
-    """Extract files, diffs, or git bundles from a crew workspace.
+    """Step 5: extract results, diffs, or a git bundle — extract files, diffs, or git bundles from a crew workspace.
+
+    Always evac before nuking — nuke is irreversible and the workspace is gone.
+    Pairs with supply as the complete file exchange protocol for crew workspaces.
 
     Returns a direct download URL to the file on the transport server.
     Fetch the URL from any client that can reach the transport host —
@@ -2258,7 +2268,9 @@ def evac(
 @mcp.tool()
 @_registry_guard
 def nuke(crew_id: str, confirm: bool = False) -> dict:
-    """Destroy a crew completely — tear down its container and both volumes.
+    """Step 6: destroy the crew and both volumes when work is done — tear down its container and both volumes completely.
+
+    Always evac first — nuke is irreversible. There is no undo.
 
     With confirm=True: stops and removes the container and both volumes.
     Total teardown — no residue.
@@ -2722,7 +2734,11 @@ def captain(
     fire_immediately: bool | None = None,
     model: str | None = None,
 ) -> dict:
-    """Manage the single Raven-backed standing-orders Captain for a crew.
+    """Autopilot: hand the full SDD lifecycle to a recurring Raven check-in — manage the single Raven-backed standing-orders Captain for a crew.
+
+    Two paths: manual relay (you dispatch/pickup/steer each persona yourself),
+    or Captain autopilot (a recurring Raven check-in drives the full cycle
+    unattended). Captain is the autopilot path.
 
     ``order`` requires exactly one of ``message`` or ``template``. A named
     template is resolved before it is written to ``captain@localhost``;
@@ -3137,7 +3153,11 @@ def dispatch(
     model: str | None = None,
     tasks: list[str] | None = None,
 ) -> dict:
-    """Spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
+    """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
+
+    The agent has zero context beyond the ``task`` string — be specific and
+    self-contained. Use pickup as the next step to check progress or collect
+    the result.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
     research, coding, shell commands, file edits, anything that can run
@@ -3280,7 +3300,11 @@ def steer(
     crew_id: str | None = None,
     force: bool = False,
 ) -> dict:
-    """Guide a running task mid-flight, or continue a completed one.
+    """Step 4b: redirect a running task or continue a completed session — guide a running task mid-flight, or continue a completed one.
+
+    Running vs completed matters: a running task receives a /steer redirect;
+    a completed task resumes via /continue with full prior context intact.
+    Use force=True to hard-stop a running task before resuming its session.
 
     For running tasks: redirects the agent — add constraints, correct
     direction, provide new information. With ``force=True``, hard-stops the
@@ -3337,11 +3361,11 @@ def pickup(
     agent: str | None = None,
     task_ids: list[str] | None = None,
 ) -> dict | list:
-    """Check a task's progress, retrieve its completed result, or list all tasks.
+    """Step 4: check progress or collect the result — check a task's progress, retrieve its completed result, or list all tasks.
 
     With a task_id: returns current state including mail counts. Sessions are
-    preserved after completion — use steer to continue the session, or nuke to
-    destroy it. Also: collect, get result, check progress.
+    preserved after completion — use steer to continue or redirect the session,
+    or nuke to destroy the crew when work is done. Also: collect, get result, check progress.
 
     With a task_ids list (batch pickup): polls every listed task and returns a
     dict keyed by task_id, each value the full single-task pickup shape, plus
