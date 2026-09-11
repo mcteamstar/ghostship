@@ -2244,7 +2244,7 @@ def _dispatch_batch(
     agent: str,
     crew_id: str | None,
     model: str | None,
-    mode: str | None = None,
+    slot: str | bool | None = None,
 ) -> dict:
     """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
 
@@ -2252,10 +2252,11 @@ def _dispatch_batch(
     first CrewUnresponsiveError or unexpected failure the loop breaks and a
     ``partial`` batch is recorded with the task_ids assigned so far.
 
-    ``mode`` follows the same three-value semantics as single-task dispatch
-    (TRN-133): explicit arg > crew registry ``mode_default`` > ``"headless"``.
-    For ``anchored`` mode all tasks in the batch share one ``parent_session``.
-    For ``free`` mode each task gets a distinct UUID-suffixed slot.
+    ``slot`` follows the same semantics as single-task dispatch: explicit arg
+    (``True`` / ``"<name>"``) > default resolution (``"bridge"`` if the crew
+    has an active dashboard, else ``None`` for headless). For a string slot all
+    tasks in the batch share one ``parent_session``. For ``slot=True`` each
+    task gets a distinct UUID-suffixed slot.
     """
     # Size validation (task 2.3).
     max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
@@ -2269,26 +2270,26 @@ def _dispatch_batch(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    # Resolve effective mode: explicit arg > live dashboard check
-    _VALID_DISPATCH_MODES = ("headless", "anchored", "free")
-    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_port") else "headless")
-    if effective_mode not in _VALID_DISPATCH_MODES:
-        return {"error": f"mode must be one of: {', '.join(_VALID_DISPATCH_MODES)}"}
+    # Resolve effective slot: explicit arg > live dashboard check.
+    if slot is None:
+        effective_slot: str | bool | None = "bridge" if crew.get("dashboard_port") else None
+    else:
+        effective_slot = slot
 
-    # For anchored mode, all tasks share the same parent_session.
-    # Pre-create the dashboard session slot so it appears in the Sessions list
-    # (TRN-133 D6). 409 = slot already exists, treat as success. Non-fatal.
-    anchored_parent_session: str | None = None
-    if effective_mode == "anchored":
-        anchored_parent_session = f"dashboard:{crew_id}"
+    # For a string slot, all tasks share the same parent_session; pre-create
+    # the dashboard session slot once before the loop (409 = already exists,
+    # treat as success). Non-fatal.
+    shared_parent_session: str | None = None
+    if isinstance(effective_slot, str):
+        shared_parent_session = f"dashboard:{effective_slot}"
         try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": crew_id})
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
         except Exception:
             pass
 
     batch_id = str(uuid.uuid4())
     task_ids: list[str] = []
-    task_parent_sessions: dict[str, str] = {}  # task_id -> parent_session (for free mode)
+    task_slots: dict[str, str] = {}  # task_id -> slot name (for slot=True)
     now = datetime.now(timezone.utc)
     created_at = now.isoformat()
     dispatch_error: str | None = None
@@ -2297,21 +2298,18 @@ def _dispatch_batch(
         body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
         if model is not None:
             body["model"] = model
-        # Inject parent_session per task based on effective mode
-        if effective_mode == "anchored" and anchored_parent_session is not None:
-            body["parent_session"] = anchored_parent_session
-        elif effective_mode == "free":
-            slot_suffix = uuid.uuid4().hex[:8]
-            slot_name = f"{crew_id}-{slot_suffix}"
-            task_ps = f"dashboard:{slot_name}"
-            body["parent_session"] = task_ps
-            # Pre-create the per-task session slot (TRN-133 D6). Non-fatal.
+        # Inject parent_session per task based on the effective slot.
+        task_slot_name: str | None = None
+        if effective_slot is True:
+            task_slot_name = uuid.uuid4().hex[:8]
+            body["parent_session"] = f"dashboard:{task_slot_name}"
+            # Pre-create the per-task session slot. Non-fatal.
             try:
-                _crew_api(crew, "POST", "/api/chat/slots", json={"name": slot_name})
+                _crew_api(crew, "POST", "/api/chat/slots", json={"name": task_slot_name})
             except Exception:
                 pass
-        else:
-            task_ps = None  # headless
+        elif shared_parent_session is not None:
+            body["parent_session"] = shared_parent_session
 
         try:
             result = _crew_api_with_recovery(
@@ -2325,9 +2323,9 @@ def _dispatch_batch(
             dispatch_error = "spawn returned no task id"
             break
         task_ids.append(tid)
-        # Record per-task parent_session for free mode
-        if effective_mode == "free" and task_ps is not None:
-            task_parent_sessions[tid] = task_ps
+        # Record per-task slot name for slot=True
+        if effective_slot is True and task_slot_name is not None:
+            task_slots[tid] = task_slot_name
         # Per-task timestamp + last_task_at, using this task's response time.
         task_created = datetime.now(timezone.utc).isoformat()
         with _task_timestamps_lock:
@@ -2338,6 +2336,9 @@ def _dispatch_batch(
             }
         _record_last_task_at(crew_id, task_created)
 
+    # Echo the effective slot: the string name, True (auto-per-task), or None.
+    response_slot: str | bool | None = effective_slot
+
     if dispatch_error is None:
         # Task 2.5: full success.
         _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
@@ -2347,12 +2348,12 @@ def _dispatch_batch(
             "crew_id": crew_id,
             "status": "dispatched",
             "agent": agent,
-            "mode": effective_mode,
+            "slot": response_slot,
             "created_at": created_at,
         }
-        # For free mode, include per-task parent_session values
-        if effective_mode == "free" and task_parent_sessions:
-            response["task_parent_sessions"] = task_parent_sessions
+        # For slot=True, include per-task slot names.
+        if effective_slot is True and task_slots:
+            response["task_slots"] = task_slots
         return response
 
     # Task 2.6: partial failure. Record what was started; surface the error.
@@ -2363,12 +2364,12 @@ def _dispatch_batch(
         "crew_id": crew_id,
         "status": "partial",
         "agent": agent,
-        "mode": effective_mode,
+        "slot": response_slot,
         "created_at": created_at,
         "error": dispatch_error,
     }
-    if effective_mode == "free" and task_parent_sessions:
-        response["task_parent_sessions"] = task_parent_sessions
+    if effective_slot is True and task_slots:
+        response["task_slots"] = task_slots
     return response
 
 

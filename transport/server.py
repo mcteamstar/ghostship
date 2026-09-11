@@ -3152,7 +3152,7 @@ def dispatch(
     crew_id: str | None = None,
     model: str | None = None,
     tasks: list[str] | None = None,
-    mode: str | None = None,
+    slot: str | bool | None = None,
 ) -> dict:
     """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
 
@@ -3170,7 +3170,7 @@ def dispatch(
 
     Batch: pass ``tasks=[...]`` (a list of task strings) to dispatch N tasks
     atomically against the same crew. All tasks in a batch share the same
-    ``agent``, ``model``, ``mode``, and ``crew_id``. The batch is dispatched
+    ``agent``, ``model``, ``slot``, and ``crew_id``. The batch is dispatched
     sequentially against ``/api/spawn`` and recorded in the transport registry
     under a single ``batch_id``; the response includes ``batch_id`` and
     per-task ``task_ids``. The batch size must be between 2 and
@@ -3183,10 +3183,12 @@ def dispatch(
 
     Returns:
         Single: ``{"task_id", "crew_id", "status": "dispatched", "task",
-        "agent", "mode", "created_at"}``. For ``mode="free"``, also includes
-        ``"parent_session"`` so the caller knows which dashboard slot to watch.
+        "agent", "slot", "created_at"}``. ``slot`` echoes the resolved slot
+        name, or ``None`` when headless.
         Batch (all started): ``{"batch_id", "task_ids", "crew_id",
-        "status": "dispatched", "agent", "mode", "created_at"}``.
+        "status": "dispatched", "agent", "slot", "created_at"}``. For
+        ``slot=True``, also includes ``"task_slots"`` mapping each task_id to
+        its generated slot name.
         Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
         the ``task_ids`` assigned so far, and an ``error`` field naming the
         failure. Tasks that never received a ``task_id`` are the lost members.
@@ -3201,17 +3203,20 @@ def dispatch(
             steer/continue operations.
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
-        mode: Dashboard visibility mode for this dispatch. One of:
-            ``"headless"`` — no ``parent_session`` on ``/api/spawn``; tasks are
-            invisible in the dashboard (default for crews launched without
-            ``dashboard=True``).
-            ``"anchored"`` — every task attaches to a shared dashboard slot
-            ``dashboard:<crew-id>``; one tab to watch, completions serialise
-            into one transcript (default for crews with a dashboard active).
-            ``"free"`` — each task gets its own named slot
-            ``dashboard:<crew-id>-<8hex>``; isolated transcripts, more slots.
-            When omitted, defaults to ``"anchored"`` if the crew has an active
-            dashboard (``dashboard_port`` is set), ``"headless"`` otherwise.
+        slot: Dashboard session routing for this dispatch. One of:
+            ``None`` (default) — resolved at dispatch time from the crew's
+            ``dashboard_port``: ``"bridge"`` if a dashboard is active,
+            ``None`` (headless, no ``parent_session``) otherwise.
+            ``"bridge"`` — tasks attach to the crew's shared ``"bridge"``
+            session (``parent_session="dashboard:bridge"``); one command post
+            for the crew.
+            ``True`` — auto-generate a unique slot name (``uuid4().hex[:8]``)
+            per task; each task gets its own dedicated visible session.
+            ``"<name>"`` — attach to the named slot
+            (``parent_session="dashboard:<name>"``); multiple dispatches with
+            the same name share one session.
+            When a slot resolves to a non-None value, the system pre-creates it
+            via ``POST /api/chat/slots`` (409 treated as success; non-fatal).
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
@@ -3229,42 +3234,46 @@ def dispatch(
         return {"error": str(e)}
 
     if tasks is not None:
-        return _dispatch_batch(tasks, agent, crew_id, model, mode=mode)
+        return _dispatch_batch(tasks, agent, crew_id, model, slot=slot)
 
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    # Resolve effective mode: explicit arg > live dashboard check
-    _VALID_DISPATCH_MODES = ("headless", "anchored", "free")
-    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_port") else "headless")
-    if effective_mode not in _VALID_DISPATCH_MODES:
-        return {"error": f"mode must be one of: {', '.join(_VALID_DISPATCH_MODES)}"}
+    # Resolve effective slot: explicit arg > live dashboard check.
+    # slot=None (default) → "bridge" if dashboard active, else None (headless).
+    # A string or True is taken as-is.
+    if slot is None:
+        effective_slot: str | bool | None = "bridge" if crew.get("dashboard_port") else None
+    else:
+        effective_slot = slot
 
     body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
     if model is not None:
         body["model"] = model
 
-    # Inject parent_session for anchored and free modes, and pre-create the
-    # dashboard session slot so it appears in the Sessions list (TRN-133 D6).
-    # POST /api/chat/slots {"name": "<slot>"} materialises a visible session;
-    # a 409 means the slot already exists — treat as success.
+    # Build parent_session from the effective slot and pre-create the dashboard
+    # session slot so it appears in the Sessions list. POST /api/chat/slots
+    # {"name": "<slot>"} materialises a visible session; a 409 means the slot
+    # already exists — treat as success. Non-fatal — parent_session routing
+    # still works via the dashboard: prefix even if slot creation fails.
     parent_session: str | None = None
-    if effective_mode == "anchored":
-        parent_session = f"dashboard:{crew_id}"
+    resolved_slot_name: str | None = None
+    if effective_slot is True:
+        resolved_slot_name = uuid.uuid4().hex[:8]
+        parent_session = f"dashboard:{resolved_slot_name}"
         body["parent_session"] = parent_session
         try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": crew_id})
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": resolved_slot_name})
         except Exception:
-            pass  # non-fatal — notification routing still works without the slot
-    elif effective_mode == "free":
-        slot_suffix = uuid.uuid4().hex[:8]
-        slot_name = f"{crew_id}-{slot_suffix}"
-        parent_session = f"dashboard:{slot_name}"
+            pass  # non-fatal
+    elif isinstance(effective_slot, str):
+        resolved_slot_name = effective_slot
+        parent_session = f"dashboard:{effective_slot}"
         body["parent_session"] = parent_session
         try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": slot_name})
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
         except Exception:
             pass  # non-fatal
 
@@ -3298,12 +3307,9 @@ def dispatch(
         "status": "dispatched",
         "task": task,
         "agent": agent,
-        "mode": effective_mode,
+        "slot": resolved_slot_name,
         "created_at": created_at,
     }
-    # For free mode, include parent_session so the caller knows which slot to watch
-    if effective_mode == "free" and parent_session is not None:
-        response["parent_session"] = parent_session
     return response
 
 
