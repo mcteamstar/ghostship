@@ -2071,7 +2071,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=dashboard)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
         # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:
@@ -3152,6 +3152,7 @@ def dispatch(
     crew_id: str | None = None,
     model: str | None = None,
     tasks: list[str] | None = None,
+    mode: str | None = None,
 ) -> dict:
     """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
 
@@ -3169,21 +3170,23 @@ def dispatch(
 
     Batch: pass ``tasks=[...]`` (a list of task strings) to dispatch N tasks
     atomically against the same crew. All tasks in a batch share the same
-    ``agent``, ``model``, and ``crew_id``. The batch is dispatched sequentially
-    against ``/api/spawn`` and recorded in the transport registry under a single
-    ``batch_id``; the response includes ``batch_id`` and per-task ``task_ids``.
-    The batch size must be between 2 and ``GA_BATCH_MAX_TASKS`` (default 20, read
-    from the ``GA_BATCH_MAX_TASKS`` env var). Collect batch results in one call
-    with ``pickup(task_ids=[...], timeout_secs=N)``.
+    ``agent``, ``model``, ``mode``, and ``crew_id``. The batch is dispatched
+    sequentially against ``/api/spawn`` and recorded in the transport registry
+    under a single ``batch_id``; the response includes ``batch_id`` and
+    per-task ``task_ids``. The batch size must be between 2 and
+    ``GA_BATCH_MAX_TASKS`` (default 20, read from the ``GA_BATCH_MAX_TASKS``
+    env var). Collect batch results in one call with
+    ``pickup(task_ids=[...], timeout_secs=N)``.
 
     ``task`` and ``tasks`` are mutually exclusive — supply exactly one. Existing
     single-task callers are unaffected.
 
     Returns:
         Single: ``{"task_id", "crew_id", "status": "dispatched", "task",
-        "agent", "created_at"}``.
+        "agent", "mode", "created_at"}``. For ``mode="free"``, also includes
+        ``"parent_session"`` so the caller knows which dashboard slot to watch.
         Batch (all started): ``{"batch_id", "task_ids", "crew_id",
-        "status": "dispatched", "agent", "created_at"}``.
+        "status": "dispatched", "agent", "mode", "created_at"}``.
         Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
         the ``task_ids`` assigned so far, and an ``error`` field naming the
         failure. Tasks that never received a ``task_id`` are the lost members.
@@ -3198,6 +3201,17 @@ def dispatch(
             steer/continue operations.
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
+        mode: Dashboard visibility mode for this dispatch. One of:
+            ``"headless"`` — no ``parent_session`` on ``/api/spawn``; tasks are
+            invisible in the dashboard (default for crews launched without
+            ``dashboard=True``).
+            ``"anchored"`` — every task attaches to a shared dashboard slot
+            ``dashboard:<crew-id>``; one tab to watch, completions serialise
+            into one transcript (default for crews with a dashboard active).
+            ``"free"`` — each task gets its own named slot
+            ``dashboard:<crew-id>-<8hex>``; isolated transcripts, more slots.
+            When omitted, defaults to ``"anchored"`` if the crew has an active
+            dashboard (``dashboard_url`` is set), ``"headless"`` otherwise.
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
@@ -3215,16 +3229,33 @@ def dispatch(
         return {"error": str(e)}
 
     if tasks is not None:
-        return _dispatch_batch(tasks, agent, crew_id, model)
+        return _dispatch_batch(tasks, agent, crew_id, model, mode=mode)
 
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
+    # Resolve effective mode: explicit arg > live dashboard check
+    _VALID_DISPATCH_MODES = ("headless", "anchored", "free")
+    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_url") else "headless")
+    if effective_mode not in _VALID_DISPATCH_MODES:
+        return {"error": f"mode must be one of: {', '.join(_VALID_DISPATCH_MODES)}"}
+
     body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
     if model is not None:
         body["model"] = model
+
+    # Inject parent_session for anchored and free modes
+    parent_session: str | None = None
+    if effective_mode == "anchored":
+        parent_session = f"dashboard:{crew_id}"
+        body["parent_session"] = parent_session
+    elif effective_mode == "free":
+        slot_suffix = uuid.uuid4().hex[:8]
+        parent_session = f"dashboard:{crew_id}-{slot_suffix}"
+        body["parent_session"] = parent_session
+
     try:
         result = _crew_api_with_recovery(
             crew, crew_id, "POST", "/api/spawn",
@@ -3249,14 +3280,19 @@ def dispatch(
     # TRN-89 task 3: write last_task_at to crew's registry entry
     _record_last_task_at(crew_id, created_at)
 
-    return {
+    response: dict[str, Any] = {
         "task_id": task_id,
         "crew_id": crew_id,
         "status": "dispatched",
         "task": task,
         "agent": agent,
+        "mode": effective_mode,
         "created_at": created_at,
     }
+    # For free mode, include parent_session so the caller knows which slot to watch
+    if effective_mode == "free" and parent_session is not None:
+        response["parent_session"] = parent_session
+    return response
 
 
 @mcp.tool()

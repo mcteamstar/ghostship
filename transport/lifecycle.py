@@ -1632,6 +1632,7 @@ def _finish_crew_setup(
     composition_entry: dict | None = None,
     *,
     admiral_secret: str,
+    dashboard: bool = False,
 ) -> dict:
     """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
     crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
@@ -2243,12 +2244,18 @@ def _dispatch_batch(
     agent: str,
     crew_id: str | None,
     model: str | None,
+    mode: str | None = None,
 ) -> dict:
     """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
 
     Validation (size, agent, model) has already run in ``dispatch``. On the
     first CrewUnresponsiveError or unexpected failure the loop breaks and a
     ``partial`` batch is recorded with the task_ids assigned so far.
+
+    ``mode`` follows the same three-value semantics as single-task dispatch
+    (TRN-133): explicit arg > crew registry ``mode_default`` > ``"headless"``.
+    For ``anchored`` mode all tasks in the batch share one ``parent_session``.
+    For ``free`` mode each task gets a distinct UUID-suffixed slot.
     """
     # Size validation (task 2.3).
     max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
@@ -2262,8 +2269,20 @@ def _dispatch_batch(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
+    # Resolve effective mode: explicit arg > live dashboard check
+    _VALID_DISPATCH_MODES = ("headless", "anchored", "free")
+    effective_mode = mode if mode is not None else ("anchored" if crew.get("dashboard_url") else "headless")
+    if effective_mode not in _VALID_DISPATCH_MODES:
+        return {"error": f"mode must be one of: {', '.join(_VALID_DISPATCH_MODES)}"}
+
+    # For anchored mode, all tasks share the same parent_session.
+    anchored_parent_session: str | None = None
+    if effective_mode == "anchored":
+        anchored_parent_session = f"dashboard:{crew_id}"
+
     batch_id = str(uuid.uuid4())
     task_ids: list[str] = []
+    task_parent_sessions: dict[str, str] = {}  # task_id -> parent_session (for free mode)
     now = datetime.now(timezone.utc)
     created_at = now.isoformat()
     dispatch_error: str | None = None
@@ -2272,6 +2291,16 @@ def _dispatch_batch(
         body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
         if model is not None:
             body["model"] = model
+        # Inject parent_session per task based on effective mode
+        if effective_mode == "anchored" and anchored_parent_session is not None:
+            body["parent_session"] = anchored_parent_session
+        elif effective_mode == "free":
+            slot_suffix = uuid.uuid4().hex[:8]
+            task_ps = f"dashboard:{crew_id}-{slot_suffix}"
+            body["parent_session"] = task_ps
+        else:
+            task_ps = None  # headless
+
         try:
             result = _crew_api_with_recovery(
                 crew, crew_id, "POST", "/api/spawn", json=body,
@@ -2284,6 +2313,9 @@ def _dispatch_batch(
             dispatch_error = "spawn returned no task id"
             break
         task_ids.append(tid)
+        # Record per-task parent_session for free mode
+        if effective_mode == "free" and task_ps is not None:
+            task_parent_sessions[tid] = task_ps
         # Per-task timestamp + last_task_at, using this task's response time.
         task_created = datetime.now(timezone.utc).isoformat()
         with _task_timestamps_lock:
@@ -2297,26 +2329,35 @@ def _dispatch_batch(
     if dispatch_error is None:
         # Task 2.5: full success.
         _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
-        return {
+        response: dict[str, Any] = {
             "batch_id": batch_id,
             "task_ids": task_ids,
             "crew_id": crew_id,
             "status": "dispatched",
             "agent": agent,
+            "mode": effective_mode,
             "created_at": created_at,
         }
+        # For free mode, include per-task parent_session values
+        if effective_mode == "free" and task_parent_sessions:
+            response["task_parent_sessions"] = task_parent_sessions
+        return response
 
     # Task 2.6: partial failure. Record what was started; surface the error.
     _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
-    return {
+    response = {
         "batch_id": batch_id,
         "task_ids": task_ids,
         "crew_id": crew_id,
         "status": "partial",
         "agent": agent,
+        "mode": effective_mode,
         "created_at": created_at,
         "error": dispatch_error,
     }
+    if effective_mode == "free" and task_parent_sessions:
+        response["task_parent_sessions"] = task_parent_sessions
+    return response
 
 
 def _pickup_single(

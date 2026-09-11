@@ -12,7 +12,7 @@ The system SHALL accept an optional `mode` parameter on `dispatch()` with one of
 
 - `"headless"` (default when the crew has no dashboard) — no `parent_session` is set on `/api/spawn`. Current behaviour, zero regression.
 - `"anchored"` (default when the crew was launched with `dashboard=True`) — every task dispatched to the crew attaches to a single shared dashboard slot by passing `parent_session="dashboard:<crew-id>"` on `/api/spawn`.
-- `"free"` — each dispatched task attaches to its own named dashboard slot by passing `parent_session="dashboard:<crew-id>-<task-id>"` on `/api/spawn`.
+- `"free"` — each dispatched task attaches to its own named dashboard slot by passing `parent_session="dashboard:<crew-id>-<8hex>"` on `/api/spawn`, where `<8hex>` is a transport-generated `uuid4().hex[:8]` suffix chosen before the `/api/spawn` call.
 
 When `mode` is not explicitly provided, the system SHALL use the crew's `mode_default` from the registry (set at launch time: `"anchored"` if `dashboard=True`, `"headless"` otherwise).
 
@@ -33,19 +33,19 @@ The effective `mode` SHALL be echoed back in the `dispatch()` response.
 - **WHEN** `dispatch` is called without `crew_id` and no crews are registered
 - **THEN** the system returns an error instructing the caller to call `launch` first
 
-#### Scenario: mode=shared attaches task to crew slot
+#### Scenario: mode=anchored attaches task to crew slot
 
 - **WHEN** `dispatch` is called with `mode="anchored"` (or defaulted to shared via the crew's registry flag)
 - **THEN** the `/api/spawn` body includes `parent_session="dashboard:<crew-id>"` and the response includes `"mode": "anchored"`
 
-#### Scenario: mode=unique attaches each task to its own slot
+#### Scenario: mode=free attaches each task to its own slot
 
 - **WHEN** `dispatch` is called with `mode="free"`
-- **THEN** the `/api/spawn` body includes `parent_session="dashboard:<crew-id>-<task-id>"` where `<task-id>` is the ID returned by the gateway, and the response includes `"mode": "free"`
+- **THEN** the `/api/spawn` body includes `parent_session="dashboard:<crew-id>-<8hex>"` where `<8hex>` is a transport-generated `uuid4().hex[:8]` suffix chosen before the call (revised D3), and the response includes `"mode": "free"` and `"parent_session"` echoing the slot name
 
-#### Scenario: mode=none sends no parent_session
+#### Scenario: mode=headless sends no parent_session
 
-- **WHEN** `dispatch` is called with `mode="headless"` (or the crew's default is none)
+- **WHEN** `dispatch` is called with `mode="headless"` (or the crew's default is headless)
 - **THEN** the `/api/spawn` body does NOT include a `parent_session` field, and the response includes `"mode": "headless"`
 
 #### Scenario: mode invalid value rejected
@@ -67,7 +67,7 @@ The effective `mode` SHALL be echoed back in the `dispatch()` response.
 
 The `dispatch` tool SHALL accept `tasks: list[str]` as an alternative to `task: str`. The two parameters SHALL be mutually exclusive. When `tasks` is provided, all dispatch semantics (agent validation, model validation, crew lookup, `_ensure_crew_running`) apply identically to each task in the list before any `/api/spawn` call is made. All tasks in one batch share the same `agent`, `model`, `crew_id`, and `mode`.
 
-The `mode` parameter SHALL apply uniformly across all tasks in a batch. For `"free"` mode, each task in the batch receives its own `parent_session` keyed to its individual `task_id`.
+The `mode` parameter SHALL apply uniformly across all tasks in a batch. For `"free"` mode, each task in the batch receives its own `parent_session` keyed to a transport-generated `uuid4().hex[:8]` suffix (not the gateway-assigned task ID, which is unavailable before the `/api/spawn` call).
 
 See `specs/batch-dispatch/spec.md` for the full batch dispatch contract, registry record, and error scenarios.
 
@@ -81,12 +81,12 @@ See `specs/batch-dispatch/spec.md` for the full batch dispatch contract, registr
 - **WHEN** `dispatch` is called with `tasks=[...]` and all `/api/spawn` calls succeed
 - **THEN** the transport updates `last_task_at` in the crew registry for each successfully dispatched task, using the timestamp of that task's `/api/spawn` response
 
-#### Scenario: Batch dispatch with shared mode uses one parent_session for all tasks
+#### Scenario: Batch dispatch with anchored mode uses one parent_session for all tasks
 
 - **WHEN** `dispatch` is called with `tasks=[...]` and `mode="anchored"`
 - **THEN** every task in the batch is sent to `/api/spawn` with the same `parent_session="dashboard:<crew-id>"`
 
-#### Scenario: Batch dispatch with unique mode gives each task its own parent_session
+#### Scenario: Batch dispatch with free mode gives each task its own parent_session
 
 - **WHEN** `dispatch` is called with `tasks=[...]` and `mode="free"`
-- **THEN** each task is sent with `parent_session="dashboard:<crew-id>-<task-id>"` where `<task-id>` is that task's gateway-assigned ID
+- **THEN** each task is sent with `parent_session="dashboard:<crew-id>-<8hex>"` where `<8hex>` is a distinct transport-generated `uuid4().hex[:8]` suffix per task, and `task_parent_sessions` in the response maps each `task_id` to its slot name
