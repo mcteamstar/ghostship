@@ -4,7 +4,7 @@ See proposal.md — Why.
 
 `dispatch()` in `transport/server.py` builds a body dict and calls `_crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=body)`. The body currently contains `task`, `agent`, `keep=True`, and optionally `model`. The KiroCrew gateway's `/api/spawn` handler already accepts `parent_session` as an optional field — it is passed straight to `state.subagents.spawn(parent_session_key=...)`. No gateway changes are needed.
 
-KiroCrew's `session_surface.has_dashboard_surface()` returns `True` unconditionally for any key beginning with `"dashboard:"`, so passing `parent_session="dashboard:<name>"` without pre-creating a session is the correct and intended pattern. Sessions are created lazily by the dashboard on first navigation to the slot.
+KiroCrew's `session_surface.has_dashboard_surface()` returns `True` unconditionally for any key beginning with `"dashboard:"`, so passing `parent_session="dashboard:<name>"` without pre-creating a session routes completion *notifications* to the dashboard bell. However, this does NOT create a visible session in the Sessions list — sessions are materialised only via `POST /api/chat/slots` on the crew gateway. For `anchored` and `free` modes to show up in the Sessions panel, the transport must call `POST /api/chat/slots {"name": "<slot-name>"}` before dispatching.
 
 ## Goals / Non-Goals
 
@@ -15,7 +15,6 @@ KiroCrew's `session_surface.has_dashboard_surface()` returns `True` unconditiona
 - No regression for callers that do not pass `mode`
 
 **Non-Goals:**
-- Pre-creating dashboard sessions via API (not possible; 405)
 - Applying `mode` to Captain/Raven cron sessions (they use `/api/crons`)
 - Per-agent dispatch modes (one mode per call is sufficient)
 - Persisting `mode` in the schedule registry for `schedule()` tool
@@ -40,6 +39,14 @@ All tasks in a `tasks=[...]` batch with `mode="anchored"` share the same `parent
 
 **D5 — Validation at call time, not at registry load**
 Invalid `mode` values are rejected immediately with a validation error, before any `/api/spawn` call is made — consistent with how `agent` and `model` are validated.
+
+**D6 — Pre-create the dashboard session slot before dispatching**
+`anchored` and `free` modes must call `POST /api/chat/slots` on the crew gateway before each `/api/spawn` call to materialise the session in the Sessions list. Without this, tasks route completion notifications to the bell icon but never appear as visible sessions.
+
+- `anchored`: call `POST /api/chat/slots {"name": "<crew-id>"}` once before the first dispatch (or before each dispatch — the endpoint returns 409 if the slot already exists, which is safe to ignore).
+- `free`: call `POST /api/chat/slots {"name": "<crew-id>-<suffix>"}` once per task, before its `/api/spawn` call, using the same UUID suffix that will be used in `parent_session`.
+
+The slot `name` is the key without the `dashboard:` prefix — the gateway stores it normalised and addresses it as `dashboard:<name>` in the session surface registry. A 409 response means the slot already exists and should be treated as success.
 
 ## Implementation Plan
 

@@ -2276,9 +2276,15 @@ def _dispatch_batch(
         return {"error": f"mode must be one of: {', '.join(_VALID_DISPATCH_MODES)}"}
 
     # For anchored mode, all tasks share the same parent_session.
+    # Pre-create the dashboard session slot so it appears in the Sessions list
+    # (TRN-133 D6). 409 = slot already exists, treat as success. Non-fatal.
     anchored_parent_session: str | None = None
     if effective_mode == "anchored":
         anchored_parent_session = f"dashboard:{crew_id}"
+        try:
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": crew_id})
+        except Exception:
+            pass
 
     batch_id = str(uuid.uuid4())
     task_ids: list[str] = []
@@ -2296,8 +2302,14 @@ def _dispatch_batch(
             body["parent_session"] = anchored_parent_session
         elif effective_mode == "free":
             slot_suffix = uuid.uuid4().hex[:8]
-            task_ps = f"dashboard:{crew_id}-{slot_suffix}"
+            slot_name = f"{crew_id}-{slot_suffix}"
+            task_ps = f"dashboard:{slot_name}"
             body["parent_session"] = task_ps
+            # Pre-create the per-task session slot (TRN-133 D6). Non-fatal.
+            try:
+                _crew_api(crew, "POST", "/api/chat/slots", json={"name": slot_name})
+            except Exception:
+                pass
         else:
             task_ps = None  # headless
 

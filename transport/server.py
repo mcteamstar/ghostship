@@ -3246,15 +3246,27 @@ def dispatch(
     if model is not None:
         body["model"] = model
 
-    # Inject parent_session for anchored and free modes
+    # Inject parent_session for anchored and free modes, and pre-create the
+    # dashboard session slot so it appears in the Sessions list (TRN-133 D6).
+    # POST /api/chat/slots {"name": "<slot>"} materialises a visible session;
+    # a 409 means the slot already exists — treat as success.
     parent_session: str | None = None
     if effective_mode == "anchored":
         parent_session = f"dashboard:{crew_id}"
         body["parent_session"] = parent_session
+        try:
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": crew_id})
+        except Exception:
+            pass  # non-fatal — notification routing still works without the slot
     elif effective_mode == "free":
         slot_suffix = uuid.uuid4().hex[:8]
-        parent_session = f"dashboard:{crew_id}-{slot_suffix}"
+        slot_name = f"{crew_id}-{slot_suffix}"
+        parent_session = f"dashboard:{slot_name}"
         body["parent_session"] = parent_session
+        try:
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": slot_name})
+        except Exception:
+            pass  # non-fatal
 
     try:
         result = _crew_api_with_recovery(

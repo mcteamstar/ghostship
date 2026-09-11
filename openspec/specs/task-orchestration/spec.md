@@ -12,8 +12,8 @@ The system SHALL dispatch a task to a named agent persona within a specified cre
 The system SHALL accept an optional `mode` parameter on `dispatch()` with one of three values:
 
 - `"headless"` (default when the crew has no dashboard) — no `parent_session` is set on `/api/spawn`. Current behaviour, zero regression.
-- `"anchored"` (default when the crew was launched with `dashboard=True`) — every task dispatched to the crew attaches to a single shared dashboard slot by passing `parent_session="dashboard:<crew-id>"` on `/api/spawn`.
-- `"free"` — each dispatched task attaches to its own named dashboard slot by passing `parent_session="dashboard:<crew-id>-<8hex>"` on `/api/spawn`, where `<8hex>` is a transport-generated `uuid4().hex[:8]` suffix chosen before the `/api/spawn` call.
+- `"anchored"` (default when the crew was launched with `dashboard=True`) — before dispatching, the system SHALL call `POST /api/chat/slots {"name": "<crew-id>"}` on the crew gateway to materialise the session in the Sessions list (409 if already exists is treated as success), then pass `parent_session="dashboard:<crew-id>"` on `/api/spawn`.
+- `"free"` — before each task's dispatch, the system SHALL call `POST /api/chat/slots {"name": "<crew-id>-<8hex>"}` on the crew gateway to materialise a dedicated session slot, then pass `parent_session="dashboard:<crew-id>-<8hex>"` on `/api/spawn`. Each task gets its own visible session.
 
 When `mode` is not explicitly provided, the system SHALL derive the default at dispatch time from the crew's current `dashboard_port` registry field: `"anchored"` if `dashboard_port` is set (dashboard is active), `"headless"` otherwise. This approach self-corrects automatically when the dashboard is enabled or disabled mid-flight — no stored default is needed.
 
@@ -31,13 +31,13 @@ The effective `mode` SHALL be echoed back in the `dispatch()` response.
 - **WHEN** `dispatch` is called without `crew_id` and no crews are registered
 - **THEN** the system returns an error instructing the caller to call `launch` first
 
-#### Scenario: mode=anchored attaches task to crew slot
-- **WHEN** `dispatch` is called with `mode="anchored"` (or defaulted to anchored via the crew's registry flag)
-- **THEN** the `/api/spawn` body includes `parent_session="dashboard:<crew-id>"` and the response includes `"mode": "anchored"`
+#### Scenario: mode=anchored creates a session slot and attaches task to it
+- **WHEN** `dispatch` is called with `mode="anchored"` (or defaulted to anchored via the crew's dashboard_port flag)
+- **THEN** the system calls `POST /api/chat/slots {"name": "<crew-id>"}` on the crew gateway (treating 409 as success), then sends `/api/spawn` with `parent_session="dashboard:<crew-id>"`, and the response includes `"mode": "anchored"`
 
-#### Scenario: mode=free attaches each task to its own slot
+#### Scenario: mode=free creates a dedicated session slot per task
 - **WHEN** `dispatch` is called with `mode="free"`
-- **THEN** the `/api/spawn` body includes `parent_session="dashboard:<crew-id>-<8hex>"` where `<8hex>` is a transport-generated `uuid4().hex[:8]` suffix chosen before the call, and the response includes `"mode": "free"` and `"parent_session"` echoing the slot name
+- **THEN** the system calls `POST /api/chat/slots {"name": "<crew-id>-<8hex>"}` on the crew gateway, then sends `/api/spawn` with `parent_session="dashboard:<crew-id>-<8hex>"` where `<8hex>` is the same transport-generated `uuid4().hex[:8]` suffix used for the slot, and the response includes `"mode": "free"` and `"parent_session"` echoing the slot name
 
 #### Scenario: mode=headless sends no parent_session
 - **WHEN** `dispatch` is called with `mode="headless"` (or the crew's default is headless)
