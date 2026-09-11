@@ -185,11 +185,10 @@ Registered as `ghostship`:
 
 - [docs/architecture.md](docs/architecture.md) — components, crew lifecycle, idle-stop/auto-restart, reboot recovery, project layout
 - [docs/agents.md](docs/agents.md) — the six personas, OpenSpec ownership, and enforcement
-- [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
-- [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
-- [docs/portal.md](docs/portal.md) — per-crew browser UI proxy, port allocation, security model
+- [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret management
+- [docs/configuration.md](docs/configuration.md) — full environment variable reference, remote deployment, extending the crew image
+- [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions, auth upgrade paths
 - [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
-- [docs/configuration.md](docs/configuration.md) — remote deployment: TLS, reverse proxy, known limitations
 
 ### Route reference
 
