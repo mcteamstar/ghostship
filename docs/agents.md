@@ -1,107 +1,40 @@
 # Agents
 
-Every ghostship ships the same six KiroCrew agent personas — the Ghost
-Academy's curriculum, defined in [`academy/agents/`](../academy/agents/) and
-copied into each crew on `launch` (see
-[architecture.md](architecture.md#crew-lifecycle), step 9). The five worker
-personas split up the [OpenSpec](https://github.com/Fission-AI/OpenSpec)
-spec-driven workflow — explore → propose → apply → archive, plus update-change
-and sync-specs — while Raven coordinates standing orders without implementing
-work. The definitions are baked into the crew image (`crews/spec-ops/Containerfile`
-installs the `openspec` CLI; the `openspec-*` skills under
-[`academy/skills/`](../academy/skills/) shell out to it).
+Every ghostship ships the same six KiroCrew agent personas, defined in
+[`academy/agents/`](../academy/agents/) and copied into each crew on `launch`
+(see [architecture.md](architecture.md#crew-lifecycle), step 9).
 
-| Agent | Role | Tools | Owns |
-|:------|:-----|:------|:-----|
-| **Spectre** | Planning operative — drives the front half of a change: investigates, scaffolds proposals, revises plans as understanding evolves | `read grep glob write code shell web_search web_fetch` | `openspec-explore`, `openspec-propose`, `openspec-update-change` |
-| **Ghost** | General-purpose precision operative — executes one well-scoped task or brief end to end, including implementing a change's tasks | `read grep glob write code shell web_search web_fetch` | all six OpenSpec operations |
-| **Banshee** | Independent review/fix operative — a second pair of eyes across a wider field than Ghost's single task; finds bugs, runs tests, traces to root | `read grep glob write code shell web_search web_fetch` | `openspec-explore`, `openspec-propose`, `openspec-update-change`, `openspec-apply-change` |
-| **Reaper** | Cleanup operative — closes out finished changes | `read grep glob write shell web_search web_fetch` | `openspec-sync-specs`, `openspec-archive-change` |
-| **Wraith** | Recon and documentation operative — research, investigation, writing project docs; read-only over code, may explore OpenSpec context via openspec-explore | `read grep glob shell web_search web_fetch` | `openspec-explore` |
-| **Raven** | Watcher and messenger — skims all crew mailboxes, checks task state, and carries messages between personas and the Admiral. Dispatches bounded next steps without implementing work. Captain-loop behaviour is injected via standing order template, not baked into the persona. | `read grep glob shell` | dispatch via the `kirocrew` CLI and the crew gateway's REST API |
+| Agent | Role | OpenSpec ops |
+|:------|:-----|:-------------|
+| **Ghost** | General-purpose operative — executes one well-scoped task end to end | all six |
+| **Spectre** | Planning operative — investigates, scaffolds proposals, revises plans | explore, propose, update-change |
+| **Banshee** | Review/fix operative — independent second pass; finds bugs, runs tests, traces to root | explore, propose, update-change, apply-change |
+| **Reaper** | Cleanup operative — closes out finished changes | sync-specs, archive-change |
+| **Wraith** | Recon/docs operative — research and docs writing; read-only over code | explore |
+| **Raven** | Watcher/coordinator — skims mailboxes, checks task state, dispatches bounded next steps. Captain-loop behaviour injected via standing-order template. | dispatch via `kirocrew` CLI + gateway REST API |
 
-The five worker personas form the OpenSpec cycle: Spectre explores and
-proposes, Ghost implements, Banshee independently reviews and fixes, Reaper
-syncs specs and archives the change, and Wraith researches and documents what
-the cycle surfaces. Raven is separate from that cycle: the Captain is the
-recurring check-in loop itself, not Raven — Raven is only the persona that
-loop dispatches each cycle to watch the crew and carry its messages. Not
-every task needs the full worker loop; small, self-contained work can start
-and end with a single Ghost.
+All five workers share the same tool set (`read grep glob write code shell web_search web_fetch`); Raven has `read grep glob shell` only.
 
-### Opt-in Captain path
+The five workers form the OpenSpec cycle: Spectre explores and proposes, Ghost implements, Banshee reviews and fixes independently, Reaper syncs and archives, Wraith researches and documents. Raven is outside that cycle — it's the persona the Captain check-in loop dispatches each tick.
 
-The fully manual relay remains available: an Admiral can dispatch and pick up
-each persona task directly. Captain has one autonomous mechanism per crew: a
-recurring `/api/crons` job named `captain` that dispatches Raven in a
-persistent session.
+Ghost is the one agent with the full OpenSpec lifecycle (explore through archive), so a well-scoped task is drivable end to end without a hand-off. Banshee gets explore through apply-change — an independent reviewer hands fixes to Reaper to formally close out. Banshee's preferred pattern is to amend the existing change via `openspec-update-change` when the fix fits, or `openspec-propose` when it doesn't.
 
-- **Free-form standing order:** call `captain(crew_id, action="order",
-  message="<standing order>", interval=<n>)` or provide a cron expression.
-- **Built-in SDD template:** call `captain(crew_id, action="order",
-  template="sdd", change_name="<change>", interval=<n>)`. The template
-  directs Raven to read the named change's real OpenSpec status and `tasks.md`
-  state on every check-in, dispatch Spectre for incomplete planning, Ghost for
-  unchecked implementation tasks, Banshee for an independent review, and Reaper
-  to sync specs and archive after a clean review. After one fix-and-re-review
-  cycle with unresolved findings, Raven escalates to the Admiral instead of
-  looping; it confirms archival from OpenSpec state rather than memory.
-  `change_name` accepts a single name or a comma-separated list for parallel
-  multi-change execution with automatic worktree isolation and merge
-  reconciliation.
+Small, self-contained work can start and end with a single Ghost. Not every task needs the full cycle.
 
-- **Built-in `independent-review` template:** call `captain(crew_id,
-  action="order", template="independent-review", interval=<n>)`. On each tick,
-  Raven dispatches four concurrent reviewers (Banshee × 3 for
-  security/quality/test-coverage and Wraith for docs), collects their reports,
-  and mails a consolidated summary to the Admiral. `change_name` is optional —
-  when provided, scopes the review to that change; when omitted, reviews the
-  entire codebase. Review-only: no planning or implementation phase.
+## Captain
 
-Both forms append the resolved order to `captain@localhost` and use the same
-Raven check-in. `captain(..., action="status")` reports the job's enabled state,
-last-run summary, and both Captain and Admiral mailbox counts; `action="stop"` pauses the cron
-with its history and mailbox intact. A scheduled check-in has a `job_id`, not a
-dispatch `task_id`, so `steer` is not its control channel. The
-`transport://orders` resource returns a summary index (name + one-line
-description per template); use `transport://orders/{name}` to fetch a
-specific template's full resolved body before an Admiral orders it or
-adapts it into a message.
+Captain adds one autonomous mechanism on top of manual dispatch: a recurring `/api/crons` job named `captain` that dispatches Raven in a persistent session.
 
-Ghost and Banshee carry the same tool grant — the difference is role, not
-permission: Ghost stays inside a given brief, Banshee is the independent pass
-that goes looking for what's wrong across the whole thing. Ghost is the one
-agent with the full OpenSpec lifecycle available to it — explore through
-archive — on the logic that a well-scoped task should be drivable end to end
-without a hand-off. Banshee gets explore through apply for whatever it finds,
-but not sync-specs or archive-change: an independent reviewer still hands a
-fix off to Reaper to formally close out, rather than closing its own findings
-on its own authority — that keeps fixing and the formal record of closing as
-two separate checkpoints, even when Banshee drives the fix itself. Banshee's
-preferred pattern is still to amend the existing change
-(`openspec-update-change`) when the fix fits, or propose a new one
-(`openspec-propose`) when it doesn't, rather than patching code ad hoc.
+- **Free-form order:** `captain(crew_id, action="order", message="<order>", interval=<n>)` — or pass a cron expression.
+- **SDD template:** `captain(crew_id, action="order", template="sdd", change_name="<change>", interval=<n>)`. Directs Raven to read the change's OpenSpec status and `tasks.md` each tick, then dispatch Spectre for incomplete planning, Ghost for unchecked tasks, Banshee for independent review, and Reaper to sync and archive after a clean review. After one fix-and-re-review cycle with unresolved findings, Raven escalates to the Admiral. `change_name` accepts a single name or comma-separated list; multiple changes run in parallel with automatic worktree isolation and merge reconciliation.
+- **`independent-review` template:** `captain(crew_id, action="order", template="independent-review", interval=<n>)`. Each tick dispatches four concurrent reviewers (Banshee × 3 for security/quality/test-coverage; Wraith for docs) and mails a consolidated summary to the Admiral. Omit `change_name` to review the entire codebase.
+
+Both forms append the resolved order to `captain@localhost`. `captain(..., action="status")` reports the job's enabled state, last-run summary, and mailbox counts. `action="stop"` pauses the cron with history intact.
+
+`transport://orders` returns a summary index; `transport://orders/{name}` returns the full resolved body.
 
 ## Steering, not enforcement
 
-The `tools`/`allowedTools` arrays in each agent JSON are a real technical
-gate — KiroCrew enforces those. The "owns" column above is not: skills are
-copied crew-wide (every crew gets all `openspec-*` skills, not a subset per
-agent), and a custom agent inherits every default resource — including every
-skill — unless both `chat.disableInheritingDefaultResources` is set *and* the
-agent defines its own `resources` list. None of the six currently do, so any
-agent can technically invoke any `openspec-*` skill regardless of what its
-prompt says it "owns". The division above is enforced only by each agent's
-own system prompt — it tells the model what it's meant to focus on, it
-doesn't block the alternative. Raven's five-worker roster is likewise
-prompt-level guidance: a dispatched KiroCrew session has no native MCP
-surface for subagent control, so Raven dispatches, steers, and continues
-worker tasks over the crew gateway's own REST API (with the CLI covering
-routine listing and its own cron pause/resume) — nothing in that call path
-technically restricts the `agent` value Raven names; transport's allowlist
-still enforces all six names for `dispatch` and `schedule`.
+The `tools`/`allowedTools` arrays in each agent JSON are a real technical gate. The "OpenSpec ops" column above is not: skills are copied crew-wide, and a custom agent inherits every default resource — including every skill — unless `chat.disableInheritingDefaultResources` is set *and* the agent defines its own `resources` list. None of the six currently do. The division is enforced only by each agent's system prompt. Raven's five-worker roster is similarly prompt-level; transport's allowlist enforces all six names for `dispatch` and `schedule`.
 
-Two related things are deliberately not built yet: per-agent skill scoping
-via `resources`/`skill://` (which would make the "owns" column a real
-technical boundary), and per-crew workspace seeding/customization. Revisit
-if role bleed between agents becomes a real problem in practice.
+Not yet built: per-agent skill scoping via `resources`/`skill://` (which would make the ops column a real technical boundary), and per-crew workspace seeding. Revisit if role bleed becomes a problem.

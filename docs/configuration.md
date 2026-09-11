@@ -1,147 +1,112 @@
 # Configuration
 
-## Environment variables in the transport container
+## Environment variables
 
-The following variables are baked into the transport container's runtime
-environment by `install.sh` at `podman run` time (via `-e "VAR=value"`
-flags). They are **not** variables an operator sets by exporting them in
-any shell — `install.sh` resolves each variable internally using the
-built-in default → config file → CLI flag hierarchy, then passes the
-resolved value to the container. The table documents what the transport
-process sees and what each default means:
+These variables are baked into the transport container by `install.sh` at `podman run` time (via `-e "VAR=value"`). Operators do **not** set them by exporting shell variables — `install.sh` resolves each through its default → config file → CLI flag hierarchy and passes the resolved value to the container.
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host regardless of this value. |
-| `PORT` | `64057` | Transport server port (MCP + file routes on the same port) — set via `install.sh --port <port>` |
-| `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image |
-| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.5.0` | Base KiroCrew image used for ephemeral login containers (`/login` flow). Not the crew runtime image — that is `KC_IMAGE`. Override when pulling from a private registry or pinning a specific tag |
-| `GA_MAX_CREWS` | `20` | Maximum number of registered crews (running + stopped). Stopped crews cost no memory, so this is primarily a housekeeping limit on how many persistent workspaces you keep around. Raise it freely on unconstrained hosts |
-| `GA_MAX_ACTIVE_CREWS` | `3` | Maximum number of simultaneously running (active) crew containers. Enforced when a stopped crew is restarted — if the running count already equals this limit, the restart is refused until another crew idles out. Set to `0` to disable the active limit entirely. At ~2–3 GB per running crew, the default of 3 fits comfortably on an 8 GB host |
-| `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before stopping container |
-| `KC_MODEL_OVERRIDE` | _(unset)_ | When set, overrides the model in all agent JSON files at launch — takes precedence over per-agent defaults. Set via `install.sh --model <model>`. Leave unset to use each agent's own default. |
-| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json`. Applies when no per-agent model field overrides it. Lower precedence than `KC_MODEL_OVERRIDE` and per-agent model field. Set via `install.sh --model-default <model>`. Full precedence order: `KC_MODEL_OVERRIDE` > per-agent model > `KC_MODEL_DEFAULT` > KiroCrew built-in. Omit to leave KiroCrew's built-in default unchanged. |
-| `TRANSPORT_DATA_DIR` | `/data` | Registry + data dir |
-| `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path — on Linux this is your host uid (`id -u`); on macOS it's the `podman machine` guest's uid (`podman machine ssh -- id -u`), which is often different |
-| `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links — set this for all externally-reachable deployments |
-| `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs — set explicitly if you need presigned URLs to survive a transport restart |
-| `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`, read from `/run/secrets/ga-api-key`). Set via `install.sh --api-key <key>` — persisted to your data directory and reused on later installs automatically; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md) for client configuration. |
-| `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins — see [auth.md](auth.md) |
-| `KIRO_REGION` | unset | AWS region for that identity provider |
-| `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider |
-| `KIRO_API_KEY` | _(unset)_ | API key for headless kiro-cli authentication in crew containers — bypasses the interactive device auth flow. See [auth.md](auth.md) for the headless auth setup |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) required before starting a crew container. Compared against `MemAvailable` from `/proc/meminfo` (which includes reclaimable page cache and buffers), with a fallback to `MemFree` on kernels that do not expose `MemAvailable`. The transport polls in 5-second intervals up to 60 seconds for the balloon/hypervisor to free memory. Set to `0` to disable the pre-launch memory gate entirely |
-| `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) exclusively for Ghost Academy. Crew containers are fully isolated from the host's default Podman runtime. Set to `false` to use the default socket instead |
-| `GA_MACHINE_CPUS` | `8` | vCPUs allocated to the dedicated Podman machine VM (macOS only) — a cap on concurrent vCPU threads, not a reservation; the host scheduler time-shares real cores across them like any other process. Ignored on Linux |
-| `GA_MACHINE_MEMORY` | `16384` | Memory in MB allocated to the dedicated Podman machine VM (macOS only) — a ceiling, not an upfront reservation (Apple's Virtualization.framework backs guest RAM on demand, so idle usage stays far below this). Ignored on Linux |
-| `GA_MACHINE_DISK` | `100` | Disk size in GB allocated to the dedicated Podman machine VM (macOS only) — backed by a sparse file, so this is an apparent-size ceiling; actual disk blocks are only consumed as data is written. Ignored on Linux |
-| `GA_MACHINE_NAME` | `ghost-academy` | Name of the dedicated machine (macOS) or systemd service suffix (Linux). Used as the machine name in `podman machine` commands and as the service name in `podman-<name>.socket`/`.service` |
-| `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Value patched into each crew's `spawn_min_memory_gb` config (KiroCrew's internal subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate triggers first |
-| `GA_RESOURCE_PRESSURE_GB` | `2.0` | Value patched into each crew's `resource_pressure_gb` config — KiroCrew throttles subagent spawning below this threshold |
-| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Value patched into each crew's `resource_critical_gb` config — KiroCrew refuses subagent spawning below this hard floor |
-| `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Value patched into each crew's `subagent_timeout_secs` config — maximum wall-clock seconds per subagent task. Increase for long-running implementation work |
-| `GA_SUBAGENT_MAX_TURNS` | `200` | Value patched into each crew's `subagent_max_turns` config — maximum tool-call turns per subagent task. Increase for complex multi-file changes |
-| `GA_BATCH_MAX_TASKS` | `20` | Maximum number of tasks allowed in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned |
-| `GA_PREWARM_ENABLED` | `false` | Master switch for the ACP prewarm operation (TRN-131). When `false` (default), the `prewarm` MCP tool and `POST /crews/{crew_id}/prewarm` endpoint perform no container start or session fork and report status `disabled` — existing installs see no behaviour change. Set to `true` (or `1`/`yes`/`on`) to allow on-demand warm-up of a crew's `kiro-cli-chat` session ahead of an expected dispatch, hiding session cold-start latency. Prewarm still respects the `GA_MIN_FREE_MEM_GB` and `GA_MAX_ACTIVE_CREWS` gates, and a warmed-but-unused session is still reaped by the crew's `session.timeout_secs` idle timer |
-| `GA_PREWARM_TTL_SECS` | `300` | Warm-lifetime hint (seconds) for prewarm's idempotency check (TRN-131). A `prewarm` call on a running crew whose last warm-up was within this window returns `already_warm` without issuing a second warm-up request. Capped internally at the crew's effective `session.timeout_secs` (300) so a warm marker can never claim a session is warm after the idle reaper would have reclaimed it — setting a larger value has no effect beyond the cap. Only consulted when `GA_PREWARM_ENABLED=true` |
-| `GA_CREW_AGENT` | `kiro` | Value patched into each crew's `agent` config field in `config.local.json`. KiroCrew 0.5.0 requires this field to be present — crew creation fails at the gateway with a 4xx if it is absent. Defaults to `kiro` (KiroCrew's built-in agent name); override only if your KiroCrew instance uses a differently-named built-in agent |
-| `GA_TLS_MIN_VERSION` | `1.2` | Minimum TLS version enforced when the transport terminates TLS directly (passed as `ssl_version` to uvicorn). Values: `1.2` or `1.3`. Only takes effect when `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` are set |
-| `GA_TLS_CERTFILE` | _(unset)_ | Path to a TLS certificate file. Setting both this and `GA_TLS_KEYFILE` enables direct TLS termination in the transport rather than relying on an edge terminator |
-| `GA_TLS_KEYFILE` | _(unset)_ | Path to the TLS private key file paired with `GA_TLS_CERTFILE` |
-| `GA_ENABLE_SECURITY_HEADERS` | `1` | Emit baseline security response headers (HSTS, etc.). On unless set to `0`, `false`, or empty |
-| `GA_RATE_LIMIT_ENABLED` | `true` | Master switch for HTTP rate limiting. Set to `false` to disable the `RateLimitMiddleware` entirely; any other value (default) leaves it enabled. See [Rate limiting](#rate-limiting) below |
-| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` limit in `<count>:<window_secs>` format (both positive integers). On parse failure the default is used and a `WARNING` is logged naming the variable |
-| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` limit in `<count>:<window_secs>` format |
-| `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` (and sub-paths) limit in `<count>:<window_secs>` format |
-| `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` limit in `<count>:<window_secs>` format |
-| `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/*/api/*` limit in `<count>:<window_secs>` format |
-| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard/auth` limit — the Caddy `forward_auth` endpoint polled on every dashboard request |
-| `GA_GIT_AUTHOR_NAME` | _(unset)_ | Operator name injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup time. When set together with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. When unset, per-persona git identity is used (e.g. `Ghost <ghost@localhost>`). Config-file-only — no CLI flag |
-| `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Operator email injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` into every crew container at setup time. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only — no CLI flag |
-| `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only |
-| `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports in the range (the cap on concurrent crew dashboards). Config-file-only |
-| `GA_ORDERS_DIR` | _(unset)_ | Path to an operator-managed directory of additional standing-order template `.md` files. When set and the path exists, its templates are merged with the built-in `academy/orders/` templates; a user-defined template whose filename stem matches a built-in template name takes precedence (overrides it). When unset, or when the path does not exist, only built-in templates are available (a warning is logged in the latter case). Config-file-only |
-| `GA_PORTAL_TLS_MODE` | `off` | TLS mode for all Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step — path printed by `install.sh` and `ghostship status`), `tailscale` (browser-trusted `.ts.net` certs via Tailscale ACME; no trust step), `acme` (public Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). An unrecognised value logs a WARNING and falls back to `internal` |
-| `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name used for ACME (Let's Encrypt) certificate requests. Required when `GA_PORTAL_TLS_MODE=acme` |
-| `PORT` / ~~`GA_PORTAL_PORT`~~ | `64057` | Port Caddy listens on. TLS mode is independent — HTTP or HTTPS on any port. `GA_PORTAL_PORT` is the deprecated alias for `PORT`; install.sh auto-migrates config files that still use the old name. |
-| `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard/login`. Sessions are held in-memory and reset on transport restart |
-| `GA_TRANSPORT_SECRET` | _(auto-generated by `install.sh`)_ | **Not user-settable directly.** Shared secret between `ga-portal` (Caddy) and `ga-transport`. `install.sh` generates it with `openssl rand -hex 32` and stores it as Podman secret `ga-transport-secret`. Caddy injects it as `X-Transport-Token` on every upstream request; transport rejects requests missing or presenting a wrong token with HTTP 401 (TRN-107). The secret is idempotent — preserved across reinstalls so the portal and transport stay in sync. To rotate it, delete the `ga-transport-secret` Podman secret and re-run `install.sh`. |
+| `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host. |
+| `PORT` | `64057` | Transport server port (MCP + file routes). Set via `install.sh --port <port>`. |
+| `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. |
+| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.5.0` | Base KiroCrew image for ephemeral login containers (`/login` flow). Not the crew runtime image (`KC_IMAGE`). Override when pulling from a private registry or pinning a tag. |
+| `GA_MAX_CREWS` | `20` | Maximum registered crews (running + stopped). Stopped crews cost no memory; this is a housekeeping limit. |
+| `GA_MAX_ACTIVE_CREWS` | `3` | Maximum simultaneously running crews. Enforced on restart — if the running count equals this limit, restart is refused until another crew idles out. Set to `0` to disable. At ~2–3 GB per running crew, the default of 3 fits an 8 GB host. |
+| `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before the container is stopped. |
+| `KC_MODEL_OVERRIDE` | _(unset)_ | Operator-wide model override (via `--model`). Takes precedence over per-agent defaults. Leave unset to use each agent's own default. |
+| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json`. Lower precedence than `KC_MODEL_OVERRIDE` and per-agent model fields. Set via `--model-default`. Full precedence: `KC_MODEL_OVERRIDE` > per-agent model > `KC_MODEL_DEFAULT` > KiroCrew built-in. |
+| `TRANSPORT_DATA_DIR` | `/data` | Registry and data directory. |
+| `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. On Linux uses host uid (`id -u`); on macOS uses the `podman machine` guest uid (`podman machine ssh -- id -u`), which may differ. |
+| `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Set for externally-reachable deployments. |
+| `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs. Set explicitly if presigned URLs must survive a transport restart. |
+| `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`). Set via `install.sh --api-key <key>` — persisted to the data directory and reused on later installs; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md). |
+| `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
+| `KIRO_REGION` | unset | AWS region for the identity provider. |
+| `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider. |
+| `KIRO_API_KEY` | _(unset)_ | API key for headless kiro-cli authentication in crew containers — bypasses the interactive device auth flow. See [auth.md](auth.md). |
+| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. Checked against `MemAvailable` from `/proc/meminfo` (falls back to `MemFree`), polled every 5 s for up to 60 s. Set to `0` to disable. |
+| `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) for Ghost Academy. Set to `false` to use the default socket. |
+| `GA_MACHINE_CPUS` | `8` | vCPUs for the dedicated Podman machine VM (macOS only; a cap, not a reservation). Ignored on Linux. |
+| `GA_MACHINE_MEMORY` | `16384` | Memory in MB for the dedicated Podman machine VM (macOS only). A ceiling backed on demand by Apple's Virtualization.framework; idle usage stays well below this. Ignored on Linux. |
+| `GA_MACHINE_DISK` | `100` | Disk in GB for the dedicated Podman machine VM (macOS only). Backed by a sparse file. Ignored on Linux. |
+| `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine name (macOS) or systemd service suffix (Linux). Used in `podman machine` commands and as the `podman-<name>.socket`/`.service` name. |
+| `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Patched into each crew's `spawn_min_memory_gb` (KiroCrew subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate fires first. |
+| `GA_RESOURCE_PRESSURE_GB` | `2.0` | Patched into each crew's `resource_pressure_gb` — KiroCrew throttles subagent spawning below this threshold. |
+| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Patched into each crew's `resource_critical_gb` — KiroCrew refuses subagent spawning below this hard floor. |
+| `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
+| `GA_SUBAGENT_MAX_TURNS` | `200` | Patched into each crew's `subagent_max_turns` — maximum tool-call turns per subagent task. |
+| `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
+| `GA_PREWARM_ENABLED` | `false` | Master switch for ACP prewarm. When `false` (default), the `prewarm` tool and `POST /crews/{crew_id}/prewarm` endpoint do nothing. Set to `true` (or `1`/`yes`/`on`) to allow on-demand warm-up of a crew's `kiro-cli-chat` session before dispatch. Prewarm respects `GA_MIN_FREE_MEM_GB` and `GA_MAX_ACTIVE_CREWS`; warmed-but-unused sessions are reaped by `session.timeout_secs`. |
+| `GA_PREWARM_TTL_SECS` | `300` | Idempotency window for prewarm (seconds). A `prewarm` call on a crew warmed within this window returns `already_warm`. Capped at the crew's effective `session.timeout_secs` (300). Only consulted when `GA_PREWARM_ENABLED=true`. |
+| `GA_CREW_AGENT` | `kiro` | Patched into each crew's `agent` field in `config.local.json`. KiroCrew 0.5.0 requires this field — crew creation fails with 4xx if absent. Override only if your instance uses a differently-named built-in agent. |
+| `GA_TLS_MIN_VERSION` | `1.2` | Minimum TLS version when the transport terminates TLS directly (`1.2` or `1.3`). Only takes effect when both `GA_TLS_CERTFILE` and `GA_TLS_KEYFILE` are set. |
+| `GA_TLS_CERTFILE` | _(unset)_ | Path to a TLS certificate file. Setting both this and `GA_TLS_KEYFILE` enables direct TLS termination. |
+| `GA_TLS_KEYFILE` | _(unset)_ | Path to the TLS private key paired with `GA_TLS_CERTFILE`. |
+| `GA_ENABLE_SECURITY_HEADERS` | `1` | Emit baseline security response headers (HSTS, etc.). Disable by setting to `0`, `false`, or empty. |
+| `GA_RATE_LIMIT_ENABLED` | `true` | Master switch for HTTP rate limiting. Set to `false` to disable `RateLimitMiddleware` entirely. See [Rate limiting](#rate-limiting). |
+| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` limit (`<count>:<window_secs>`). On parse failure the default is used and a `WARNING` is logged. |
+| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` limit (`<count>:<window_secs>`). |
+| `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` (and sub-paths) limit (`<count>:<window_secs>`). |
+| `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` limit (`<count>:<window_secs>`). |
+| `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/*/api/*` limit (`<count>:<window_secs>`). |
+| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard/auth` limit — the Caddy `forward_auth` endpoint polled on every dashboard request. |
+| `GA_GIT_AUTHOR_NAME` | _(unset)_ | Injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup. When set with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. Config-file-only. |
+| `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only. |
+| `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
+| `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports in the range (caps concurrent crew dashboards). Config-file-only. |
+| `GA_ORDERS_DIR` | _(unset)_ | Path to an operator-managed directory of additional standing-order template `.md` files. When set and the path exists, its templates are merged with built-in `academy/orders/` templates; a user-defined template whose filename stem matches a built-in name takes precedence. A warning is logged if the path is set but missing. Config-file-only. |
+| `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). Unrecognised values fall back to `internal` with a WARNING. |
+| `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name for ACME certificate requests. Required when `GA_PORTAL_TLS_MODE=acme`. |
+| `PORT` / ~~`GA_PORTAL_PORT`~~ | `64057` | Port Caddy listens on. `GA_PORTAL_PORT` is the deprecated alias; `install.sh` auto-migrates config files still using it. |
+| `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard/login`. Sessions are in-memory and reset on transport restart. |
+| `GA_TRANSPORT_SECRET` | _(auto-generated by `install.sh`)_ | **Not user-settable directly.** Shared secret between `ga-portal` (Caddy) and `ga-transport`. Generated with `openssl rand -hex 32`, stored as Podman secret `ga-transport-secret`. Caddy injects it as `X-Transport-Token` on every upstream request; the transport rejects requests with a missing or wrong token with HTTP 401. Preserved across reinstalls. To rotate: delete the `ga-transport-secret` Podman secret and re-run `install.sh`. |
 
-> **Network topology (TRN-107):** Two static Podman networks replace the retired `ga-net`:
+> **Network topology:** Two static Podman networks replace the retired `ga-net`:
 > - **`ga-portside`** — `ga-portal` ↔ `ga-transport` only. Crew containers are not on this network.
 > - **`ga-starboard`** — `ga-transport` ↔ all crew containers (`gs-*`) and login containers.
 >
-> Crew containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked
-> at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` cannot reach crew containers
-> by hostname (not on `ga-starboard`). See `docs/architecture.md` for the full security model.
+> Crew containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` cannot reach crew containers by hostname. See `docs/architecture.md` for the full security model.
 >
-> **Upgrading from a version using `ga-net`:** The transport automatically migrates existing
-> crew containers from `ga-net` to `ga-starboard` on first startup after the upgrade.
-> No operator action is required. `ga-net` is removed when empty.
+> **Upgrading from `ga-net`:** The transport automatically migrates existing crew containers from `ga-net` to `ga-starboard` on first startup after the upgrade. No operator action required. `ga-net` is removed when empty.
 
 > **Internal constant — not user-settable:**
-> `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each
-> crew container's gateway over the internal `ga-starboard` network. It is
-> hardcoded in `server.py` and is **not** configurable via environment
-> variable. Changing it would require rebuilding both the crew image and the
-> transport. All user-facing routes — MCP, the REST API, and file transfer —
-> are served on the single `PORT` above; there is no separate file-server port.
+> `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each crew container's gateway over `ga-starboard`. It is hardcoded in `server.py` and is not configurable.
 
 ## Model precedence
 
-The model used for a given agent task is resolved through the following chain,
-from highest to lowest precedence:
+Resolved highest to lowest:
 
-1. **`dispatch(model=...)`** — per-call override passed directly in the `dispatch` tool invocation. Always wins.
-2. **`KC_MODEL_OVERRIDE`** — operator-wide override set in config or via `--model`. Overrides everything below it.
-3. **Per-agent model field** — the `model` field in the agent's JSON file under `academy/agents/`. Specific to that agent.
-4. **`KC_MODEL_DEFAULT`** — operator-wide fallback written as `default_model` in `config.local.json`. Applies when none of the above is set.
-5. **KiroCrew built-in default** — KiroCrew's own model default. Used when no operator or per-agent setting is present.
+1. **`dispatch(model=...)`** — per-call override. Always wins.
+2. **`KC_MODEL_OVERRIDE`** — operator-wide override via `--model`.
+3. **Per-agent model field** — the `model` field in the agent's JSON under `academy/agents/`.
+4. **`KC_MODEL_DEFAULT`** — operator-wide fallback written as `default_model` in `config.local.json`.
+5. **KiroCrew built-in default** — used when no operator or per-agent setting is present.
 
-The most common configuration patterns:
+Common patterns:
 
-- **Headless / uniform model**: set `KC_MODEL_OVERRIDE` — every agent uses the same model regardless of their per-agent JSON.
-- **Per-agent customization with a fallback**: leave `KC_MODEL_OVERRIDE` unset, set `KC_MODEL_DEFAULT` for non-customized agents, and set per-agent model fields for agents that need a different model.
-- **KiroCrew default everywhere**: leave both `KC_MODEL_OVERRIDE` and `KC_MODEL_DEFAULT` unset — KiroCrew's built-in default applies throughout.
+- **Uniform model**: set `KC_MODEL_OVERRIDE`.
+- **Per-agent with fallback**: leave `KC_MODEL_OVERRIDE` unset, set `KC_MODEL_DEFAULT` as the baseline, add per-agent model fields where needed.
+- **KiroCrew default everywhere**: leave both unset.
 
 ## Config file
 
-`install.sh` accepts a `--config <path>` flag pointing to a shell file that
-sets default values for any of the variables below. The file is sourced
-before argument parsing, so **command-line flags always override config-file
-values**.
+`install.sh` accepts `--config <path>` pointing to a shell file that sets default values. The file is sourced before argument parsing, so **CLI flags always win over config-file values**.
 
 ### Resolution order
 
-For every settable variable, the effective value is resolved in this order
-(later tiers unconditionally override earlier ones):
+1. **Built-in default** (e.g. `PORT=64057`)
+2. **Config file** (sourced from `--config <path>`)
+3. **CLI flag** (e.g. `--port 9000`)
 
-1. **Built-in default** (literal assignment in `install.sh`, e.g. `PORT=64057`)
-2. **Config file** (sourced from `--config <path>`, overwrites the built-in)
-3. **Command-line flag** (e.g. `--port 9000`, overwrites both)
-
-> **⚠️ Behavior change:** There is **no ambient-environment-variable tier**
-> for `install.sh` configuration.
-> Exporting a variable in the invoking shell (or in a wrapper script, CI job,
-> `.bashrc`, etc.) has no effect on `install.sh` or `uninstall.sh`. Only the
-> config file and CLI flags are supported configuration inputs. If you
-> previously relied on exported variables reaching the installer, move those
-> values into a config file and pass `--config <path>`.
+> **⚠️ No ambient-environment-variable tier.** Exporting a variable in the invoking shell has no effect on `install.sh` or `uninstall.sh`. Only config files and CLI flags are supported. Move any previously exported values into a config file and pass `--config <path>`.
 >
-> **Exception — `PODMAN_SOCK`:** This single variable *is* read directly from
-> the ambient environment by `install.sh`, before config-file sourcing, to
-> allow overriding the Podman socket path without a config file. This is a
-> deliberate, narrow exception and does not generalise to any other variable.
+> **Exception — `PODMAN_SOCK`:** Read from the ambient environment before config-file sourcing as a narrow exception to allow overriding the Podman socket without a config file. Does not generalise to other variables.
 
 ### Format
 
-A plain shell file that exports (or simply assigns) variables. Lines
-starting with `#` are comments.
+A plain shell file that assigns (or exports) variables. Lines starting with `#` are comments.
 
 ### Supported variables (flag-mapped)
-
-These variables have a corresponding CLI flag. If neither the config file
-nor the flag sets them, the built-in default applies.
 
 | Variable | Corresponding flag |
 |:---------|:-------------------|
@@ -156,25 +121,17 @@ nor the flag sets them, the built-in default applies.
 | `GA_PORTAL_DOMAIN` | `--caddy-domain` |
 | `GA_PORTAL_TLS_MODE` | `--caddy-tls-mode` |
 
-Variables outside this table (e.g. `GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`,
-`GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`,
-`GA_DASHBOARD_PORT_RANGE_START`,
-`GA_DASHBOARD_PORT_RANGE_SIZE`,
-`GA_ORDERS_DIR`,
-`GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — they
-have no CLI flag and no ambient-environment-variable input.
+Variables not in this table (`GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`, `GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_ORDERS_DIR`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — no CLI flag, no ambient-environment input.
 
 ### Error handling
 
-If `--config <path>` is passed and the file does not exist or is not
-readable, `install.sh` aborts immediately with a clear error message.
-Omitting `--config` entirely skips config-file sourcing (no error).
+If `--config <path>` is passed and the file does not exist or is unreadable, `install.sh` aborts immediately. Omitting `--config` skips config-file sourcing (no error).
 
 ### Example config file
 
 ```bash
 # ghostship.conf — site-specific install defaults
-# Place anywhere; reference with: ./install.sh --config ./ghostship.conf
+# Reference with: ./install.sh --config ./ghostship.conf
 
 KIRO_IDENTITY_PROVIDER="https://identitycenter.amazonaws.com/ssoins-abc123"
 KIRO_REGION="us-east-1"
@@ -184,7 +141,7 @@ KC_MODEL_OVERRIDE="anthropic/claude-sonnet-4-20250514"
 GA_HOST_URL="https://academy.example.com"
 ```
 
-Then override any single value at the command line:
+CLI flags override any config-file value:
 
 ```bash
 ./install.sh --config ./ghostship.conf --port 8080
@@ -193,13 +150,7 @@ Then override any single value at the command line:
 
 ## Client-only install
 
-`scripts/install.sh --client-only` wires the `ghostship` CLI and the agent
-harnesses (kiro-cli, Claude Code, opencode) to an already-running transport
-— usually a shared remote academy — without executing any container
-infrastructure. In this mode the script skips the Podman prerequisites check,
-dedicated machine/network setup, image builds, and `compose up`; it installs
-the `~/.local/bin/ghostship` symlink and then calls `ghostship setup` to
-register the MCP entry and skill symlinks for every detected agent client.
+`scripts/install.sh --client-only` wires the `ghostship` CLI and agent harnesses (kiro-cli, Claude Code, opencode) to an already-running transport — typically a shared remote academy — without any container infrastructure. In this mode `install.sh` skips Podman prerequisites, machine/network setup, image builds, and `compose up`; it installs the `~/.local/bin/ghostship` symlink and calls `ghostship setup` to register MCP entries and skill symlinks for every detected agent client.
 
 ```bash
 ./install.sh --client-only --url https://academy.example.com/mcp
@@ -207,53 +158,30 @@ register the MCP entry and skill symlinks for every detected agent client.
 
 Flags accepted in `--client-only` mode:
 
-- `--url <transport-url>` — the MCP endpoint the client connects to. Default:
-  `http://localhost:64057/mcp` (matches the full-install port). Forwarded to
-  `ghostship setup --url`.
-- `--api-key <key>` — optional bearer token for the transport. When supplied,
-  `ghostship setup` registers the MCP entry with an `Authorization: Bearer`
-  header. Omit it for an unauthenticated (e.g. Tailscale-gated or local)
-  transport.
+- `--url <transport-url>` — MCP endpoint the client connects to. Default: `http://localhost:64057/mcp`.
+- `--api-key <key>` — optional bearer token. When supplied, `ghostship setup` registers the MCP entry with an `Authorization: Bearer` header.
 
-`--client-only` is idempotent: re-running it with the same arguments produces
-the same end state and does not accumulate duplicate MCP entries or symlinks.
-These flags are one-shot wiring options and are **not** config-file variables.
+`--client-only` is idempotent. These flags are one-shot wiring options and are not config-file variables.
 
 ## Git repository transfer
 
-See the [Repository transfer](architecture.md#repository-transfer)
-section in architecture.md for full bundle instructions (supply, evac, incremental bundles).
+See [Repository transfer](architecture.md#repository-transfer) in architecture.md for bundle instructions (supply, evac, incremental bundles).
 
 ## Deployment security boundary
 
-`install.sh` publishes the transport port on `127.0.0.1` only. For remote or
-shared-network deployments, set `GA_API_KEY` to require bearer authentication
-on MCP requests and terminate TLS at a trusted reverse proxy or encrypted VPN.
+`install.sh` publishes the transport port on `127.0.0.1` only. For remote or shared-network deployments, set `GA_API_KEY` to require bearer authentication on MCP requests and terminate TLS at a trusted reverse proxy or encrypted VPN.
 
-The file-transfer routes retain their existing HMAC presigned-URL
-authorization — they do **not** require the API key. A valid presigned URL
-remains a bearer capability until its TTL expires, regardless of whether
-`GA_API_KEY` is set. See [auth.md](auth.md) for the full authentication
-model.
+File-transfer routes use HMAC presigned-URL authorization and do **not** require the API key. A valid presigned URL is a bearer capability until its TTL expires, regardless of `GA_API_KEY`. See [auth.md](auth.md).
 
-The Podman socket and the unsandboxed crew runtime are additional deployment
-risks not redesigned by API-key authentication.
+The Podman socket and unsandboxed crew runtime are additional deployment risks not addressed by API-key authentication.
 
 ## Rate limiting
 
-The transport applies per-endpoint HTTP rate limiting via a
-`RateLimitMiddleware` ASGI layer that sits **outside** the bearer-auth
-middleware, so every caller — including unauthenticated `/login` requests — is
-subject to limits. It complements the brute-force `Throttle` (which counts
-failed auth attempts) by bounding request *volume* regardless of outcome.
+The transport applies per-endpoint HTTP rate limiting via a `RateLimitMiddleware` ASGI layer that sits **outside** bearer-auth middleware, so every caller — including unauthenticated `/login` requests — is subject to limits.
 
-Each limiter is a sliding window keyed on caller identity: the source IP alone
-when no bearer token is presented, or `SHA-256(token)[:8]:<ip>` when one is (the
-raw token value is never stored in limiter state). The source IP is taken from
-the first hop of `X-Forwarded-For` when present, falling back to the ASGI
-client address.
+Each limiter is a sliding window keyed on caller identity: source IP alone when no bearer token is presented, or `SHA-256(token)[:8]:<ip>` when one is (the raw token is never stored). The source IP is taken from the first hop of `X-Forwarded-For` when present, falling back to the ASGI client address.
 
-When a caller exceeds a limit the middleware returns:
+When a caller exceeds a limit:
 
 ```
 HTTP/1.1 429 Too Many Requests
@@ -263,30 +191,19 @@ Retry-After: <window_secs>
 Rate limit exceeded. Retry after <window_secs> seconds.
 ```
 
-`Retry-After` is the full window duration (conservative — it tells the client
-to back off for the whole window rather than retry-looping near the boundary).
-`/health` and `/version` are unconditionally exempt and never return `429`. Any
-path not matched by a registered limiter (e.g. `/logout`, the `/crews/{id}/ui/`
-browser-asset proxy) passes through without a rate check.
-
-Every limit is configured via a `GA_RATE_LIMIT_*` environment variable in
-`<count>:<window_secs>` format (both positive integers). On a parse failure the
-built-in default is used and a `WARNING` naming the variable is logged.
+`Retry-After` is the full window duration. `/health` and `/version` are unconditionally exempt. Paths not matched by any registered limiter pass through without a rate check.
 
 | Variable | Default | Endpoint |
 |:---------|:--------|:---------|
-| `GA_RATE_LIMIT_ENABLED` | `true` | Master switch (`true`/`false`). `false` removes the middleware entirely and logs an `INFO` entry confirming rate limiting is disabled |
-| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` — polling allowed, hammering blocked |
-| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` — tight limit enforces deliberate use |
-| `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` and sub-paths — headroom for multi-tool orchestration |
-| `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` — protects git subprocess execution |
-| `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/{id}/api/*` — the proxied crew REST API |
-| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard/auth` — the Caddy `forward_auth` endpoint polled on every dashboard request |
+| `GA_RATE_LIMIT_ENABLED` | `true` | Master switch. `false` removes the middleware entirely and logs an `INFO` confirmation. |
+| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` |
+| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` |
+| `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` and sub-paths |
+| `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` |
+| `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/{id}/api/*` |
+| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard/auth` — Caddy `forward_auth` endpoint |
 
-**State is in-memory only and is not persisted.** Restarting the transport
-process resets all counters to zero — no caller is pre-limited based on
-pre-restart history. This is the intended behaviour for the single-process
-local deployment; a deliberate restart is an effective limit reset.
+**State is in-memory only.** Restarting the transport resets all counters.
 
 ## Extending the crew image
 
@@ -302,46 +219,27 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 USER kirocrew
 ```
 
-The new image is built at install time. Existing crews continue using the
-old image until nuked and re-called-down.
+The new image is built at install time. Existing crews use the old image until nuked and re-called-down.
 
 ## Updating academy/ and crews/
 
-`install.sh` snapshots `academy/` (agents, skills, steering, policies, orders,
-mcp) and `crews/` from the repo into the data volume at install time. The
-transport container mounts these from the data volume — it has no runtime
-dependency on the repo checkout path.
+`install.sh` snapshots `academy/` (agents, skills, steering, policies, orders, mcp) and `crews/` from the repo into the data volume at install time. The transport container mounts these from the data volume — it has no runtime dependency on the repo checkout path.
 
-This means:
-
-- **Editing files under `academy/` or `crews/` in the repo takes effect only
-  after re-running `./install.sh`.** A running transport reads the snapshot in
-  the data volume, not the live repo.
-- **Moving or deleting the repo after install does not break the transport** —
-  the academy/crews content is fully self-contained in the data volume.
-- **Reinstalling is always safe** — `install.sh` uses `rsync --delete` (or
-  `rm -rf` + `cp -r` if rsync is absent) so the data-volume snapshot is always
-  an exact mirror of the repo at install time. Stale files from a previous
-  install are removed automatically.
+- **Edits under `academy/` or `crews/` take effect only after re-running `./install.sh`.** The transport reads the data-volume snapshot, not the live repo.
+- **Moving or deleting the repo after install does not break the transport** — content is fully self-contained in the data volume.
+- **Reinstalling is safe** — `install.sh` uses `rsync --delete` (or `rm -rf` + `cp -r` if rsync is absent) to keep the snapshot an exact mirror of the repo, removing stale files automatically.
 
 ## MCP server catalogue
 
-Crew agents can be given MCP servers (external tools) that vary by composition.
-Server definitions live in a **catalogue** at `academy/mcp/`, and compositions
-opt in to specific servers via their `manifest.json`.
+Crew agents can be given MCP servers (external tools) that vary by composition. Server definitions live in a catalogue at `academy/mcp/`; compositions opt in via their `manifest.json`.
 
 ### Catalogue format (`academy/mcp/`)
 
-Each file in `academy/mcp/` is a named MCP server definition in JSON. The
-filename without the `.json` extension is the server name referenced from a
-manifest. `install.sh` snapshots `academy/mcp/` into the data volume and the
-transport container mounts it read-only at `/mcp`.
+Each file in `academy/mcp/` is a named MCP server definition in JSON. The filename stem is the server name referenced from a manifest. `install.sh` snapshots `academy/mcp/` into the data volume, mounted read-only at `/mcp`.
 
-Each JSON object conforms to the kiro-cli `mcpServers` entry format: at minimum
-a `type` field and either a `url` (HTTP/SSE) or a `command` (stdio) field.
+Each JSON object conforms to the kiro-cli `mcpServers` entry format: at minimum a `type` field and either a `url` (HTTP/SSE) or a `command` (stdio) field.
 
-**Stdio server** — `academy/mcp/playwright.json` (shipped as an example, not
-wired into any composition by default):
+**Stdio server** (`academy/mcp/playwright.json`, shipped as an example):
 
 ```json
 {
@@ -360,7 +258,7 @@ wired into any composition by default):
 }
 ```
 
-**HTTP server with an auth header:**
+**HTTP server with auth header:**
 
 ```json
 {
@@ -372,13 +270,11 @@ wired into any composition by default):
 }
 ```
 
-An empty catalogue (no JSON files) is valid — no `mcp.json` is written into
-crew containers and agents run with only their built-in tools.
+An empty catalogue is valid — no `mcp.json` is written into crew containers and agents run with only their built-in tools.
 
 ### Declaring servers in a composition (`manifest.json → mcpServers`)
 
-A composition's `crews/<name>/manifest.json` gains an optional `mcpServers`
-array of catalogue server names:
+A composition's `crews/<name>/manifest.json` gains an optional `mcpServers` array of catalogue server names:
 
 ```json
 {
@@ -389,70 +285,41 @@ array of catalogue server names:
 }
 ```
 
-At crew setup, `_copy_agents()` resolves each name against `/mcp/<name>.json`,
-substitutes any `${VAR}` references, and writes the resolved configs into
-`~/.kiro/mcp.json` inside the crew container. Agents reference these servers
-via `@<name>` in their `tools` list.
+At crew setup, `_copy_agents()` resolves each name against `/mcp/<name>.json`, substitutes `${VAR}` references, and writes the resolved configs into `~/.kiro/mcp.json` inside the crew container. Agents reference servers via `@<name>` in their `tools` list.
 
 Behaviour:
 
-- **No `mcpServers` key (or an empty array)** → no `mcp.json` is written.
-- **A name with no matching catalogue file** → a warning is logged and that
-  entry is skipped; the remaining servers are still written and crew setup
-  continues.
-- **An entry containing a `headers` field** → `poolable: false` is added
-  automatically when written into `mcp.json` (KiroCrew 0.5.0 must not pool
-  auth-bearing HTTP servers). The catalogue file does not need to declare it.
+- **No `mcpServers` key (or empty array)** → no `mcp.json` written.
+- **Name with no matching catalogue file** → warning logged, entry skipped; remaining servers still written, crew setup continues.
+- **Entry with a `headers` field** → `poolable: false` added automatically when written into `mcp.json` (KiroCrew 0.5.0 must not pool auth-bearing HTTP servers).
 
 ### Secret substitution (`${VAR}`)
 
-Any `${VAR}` reference in a catalogue entry's string values is substituted from
-the **transport container's environment** at the point `_copy_agents()` writes
-the crew's `mcp.json`. This keeps secrets (API keys, tokens) out of committed
-files — the catalogue stores `${NEXUS_API_KEY}`, and the real token is injected
-at crew setup from the transport environment.
+Any `${VAR}` reference in a catalogue entry's string values is substituted from the **transport container's environment** when `_copy_agents()` writes the crew's `mcp.json`. This keeps secrets out of committed files.
 
-- If the variable **is set**: its value is substituted into the written entry.
-- If the variable **is not set**: a warning is logged, the literal `${VAR}`
-  string is written, and crew setup continues (the server will auth-fail at
-  call time rather than blocking the crew from starting).
+- **Variable set**: value is substituted.
+- **Variable unset**: a warning is logged, the literal `${VAR}` string is written, and crew setup continues (the server will auth-fail at call time).
 
-Pass secrets into the transport container's environment via `install.sh`
-configuration (config file or environment the transport inherits at
-`podman run` time), the same mechanism used for other `GA_*` / `KIRO_*`
-runtime variables.
+Pass secrets into the transport environment via the same `install.sh` configuration mechanism used for other `GA_*`/`KIRO_*` variables.
 
 ### Per-agent servers
 
-Individual agent JSON files in `academy/agents/` may also declare their own
-`mcpServers` map for servers specific to that agent regardless of the
-composition. kiro-cli resolves the agent's own `mcpServers` entry before the
-composition-level `mcp.json`, so a name declared in both is served from the
-agent's entry (the `mcp.json` entry is shadowed — no error). An agent may set
-`includeMcpJson: false` to opt out of the composition-level `mcp.json`
-entirely.
+Individual agent JSON files in `academy/agents/` may declare their own `mcpServers` map for servers specific to that agent. kiro-cli resolves agent-level entries before the composition-level `mcp.json`, so a name declared in both is served from the agent's entry. An agent may set `includeMcpJson: false` to opt out of the composition-level `mcp.json` entirely.
 
 ## Fixed headless overrides
 
-Every crew launched by the transport receives a set of fixed, headless-optimised
-values written into `config.local.json` at startup by `_patch_crew_config`. These
-are not operator-tunable env vars — they are always applied because a headless
-server crew has no microphone, no interactive user, and no reason to pre-fork
-session processes. The values below complement the env-var-configurable settings
-in the table above.
+Every crew launched by the transport receives fixed headless-optimised values written into `config.local.json` at startup by `_patch_crew_config`. These are not operator-tunable.
 
 | Config path | Value | Rationale |
 |:------------|:------|:----------|
-| `stt.enabled` | `false` | No microphone in a headless server crew. Disables Whisper STT, which loads a base model (~148 MB) even when no speech input is possible. |
-| `session.eager_spawn` | `false` | Stop pre-forking `kiro-cli-chat` at container startup. Without this, KiroCrew forks a session process (~340 MB) immediately on gateway start, regardless of whether any task is running. With it disabled, the session process is spawned on the first dispatch and adds 2–5 s of first-dispatch latency (acceptable for dispatch-based use). |
-| `session.timeout_secs` | `300` | Reclaim session memory 5 minutes after task completion instead of the default 1 hour. The session process is reaped once it has been idle for this many seconds, returning the crew to its ~160 MB gateway-only baseline. |
-| `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session process (KiroCrew 0.5.0+). If a session process exceeds 2000 MB, KiroCrew recycles it automatically. The ceiling is intentionally set above the ~1.9 GB measured active-task peak so healthy sessions are not recycled mid-task; its purpose is to catch runaway RSS accumulation across many sequential tasks on a long-lived crew. |
-| `telemetry.beacon_enabled` | `false` | Suppress outbound telemetry beacon pings. Network hygiene for server deployments where outbound beacons are unwanted. |
-| `auto_update` | `false` | Prevent KiroCrew from self-updating inside a container pinned to a specific image version. Version management is handled at the image level, not inside the running container. |
+| `stt.enabled` | `false` | No microphone in a headless crew. Disables Whisper STT (~148 MB base model). |
+| `session.eager_spawn` | `false` | Stops pre-forking `kiro-cli-chat` at container startup (~340 MB); spawned on first dispatch instead (adds 2–5 s first-dispatch latency). |
+| `session.timeout_secs` | `300` | Reclaim session memory 5 minutes after task completion (vs. 1-hour default). |
+| `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session process (KiroCrew 0.5.0+). Set above the ~1.9 GB active-task peak to avoid recycling healthy sessions; catches runaway RSS accumulation. |
+| `telemetry.beacon_enabled` | `false` | Suppress outbound telemetry beacon pings. |
+| `auto_update` | `false` | Prevents KiroCrew from self-updating inside a pinned container image. |
 
 ### Memory profile
-
-With these overrides applied, the expected RSS profile for a spec-ops crew is:
 
 | State | RSS |
 |:------|:----|
@@ -460,15 +327,8 @@ With these overrides applied, the expected RSS profile for a spec-ops crew is:
 | Active task peak | ~1.5–1.9 GB (session + subagents) |
 | Post-task (after `session.timeout_secs`) | ~160 MB (session reaped) |
 
-Without these overrides (KiroCrew 0.5.0 defaults), idle RSS is ~470 MB due to
-the eagerly pre-spawned `kiro-cli-chat` process (~340 MB) that exists
-regardless of whether any task is running.
+Without these overrides (KiroCrew 0.5.0 defaults), idle RSS is ~470 MB due to the eagerly pre-spawned `kiro-cli-chat` process.
 
 ### `session.watchdog_rss_max_mb` guidance
 
-The 2000 MB ceiling is not meant to enforce a tight budget — it is a safety net
-for accumulation. If you observe session processes being recycled on legitimate
-large tasks (e.g. intensive Banshee reviews of very large codebases), raise the
-limit by editing `_patch_crew_config` in `transport/lifecycle.py`. The value is
-hardcoded rather than env-var-configurable because a headless spec-ops crew has
-no operational reason for an operator to tune it.
+The 2000 MB ceiling is a safety net for accumulation, not a tight budget. If session processes are recycled on legitimate large tasks (e.g. intensive reviews of very large codebases), raise the limit by editing `_patch_crew_config` in `transport/lifecycle.py`.
