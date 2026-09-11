@@ -1758,6 +1758,21 @@ def _finish_crew_setup(
         result["policy_version"] = policy_version
     if policy_warning is not None:
         result["policy_warning"] = f"Policy injection failed — crew is ungoverned: {policy_warning}"
+
+    # ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────
+    # Fire-and-report: non-fatal. AcpProcessDied on the prewarm is acceptable —
+    # it still expands the balloon. Errors are logged but never bubble up to the
+    # caller so launch always succeeds even if prewarm fails.
+    if GA_PREWARM_ENABLED:
+        try:
+            pw = _prewarm_crew(crew_entry, crew_id)
+            if pw.get("pre_warm_task_id"):
+                result["pre_warm_task_id"] = pw["pre_warm_task_id"]
+            result["pre_warm_status"] = pw.get("status", "unknown")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Crew %s prewarm failed (non-fatal): %s", crew_id, exc)
+            result["pre_warm_status"] = "error"
+
     return result
 
 

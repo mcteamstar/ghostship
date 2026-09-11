@@ -2035,6 +2035,61 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
 #
 # ``_patch_crew_config`` is defined in lifecycle.py → patch lifecycle.X.
 # The function calls podman.container_exec with the overrides b64-encoded in
+    # ── TRN-131: auto-prewarm at launch ──────────────────────────────────────
+
+    def test_finish_crew_setup_calls_prewarm_when_enabled(self) -> None:
+        """TRN-131: _finish_crew_setup calls _prewarm_crew when GA_PREWARM_ENABLED=true."""
+        inject_policy_calls: list = []
+        admiral_secret_calls: list = []
+
+        prewarm_calls: list = []
+
+        def fake_prewarm(crew: dict, crew_id: str) -> dict:
+            prewarm_calls.append(crew_id)
+            return {"status": "warmed", "pre_warm_task_id": "abc123"}
+
+        with patch.object(lifecycle, "GA_PREWARM_ENABLED", True), \
+             patch.object(lifecycle, "_prewarm_crew", side_effect=fake_prewarm):
+            _, result = self._run_finish_crew_setup(inject_policy_calls, admiral_secret_calls)
+
+        self.assertEqual(prewarm_calls, ["demo"], "Expected _prewarm_crew to be called once")
+        self.assertEqual(result.get("pre_warm_status"), "warmed")
+        self.assertEqual(result.get("pre_warm_task_id"), "abc123")
+
+    def test_finish_crew_setup_skips_prewarm_when_disabled(self) -> None:
+        """TRN-131: _finish_crew_setup skips _prewarm_crew when GA_PREWARM_ENABLED=false."""
+        inject_policy_calls: list = []
+        admiral_secret_calls: list = []
+
+        prewarm_calls: list = []
+
+        def fake_prewarm(crew: dict, crew_id: str) -> dict:
+            prewarm_calls.append(crew_id)
+            return {"status": "warmed"}
+
+        with patch.object(lifecycle, "GA_PREWARM_ENABLED", False), \
+             patch.object(lifecycle, "_prewarm_crew", side_effect=fake_prewarm):
+            _, result = self._run_finish_crew_setup(inject_policy_calls, admiral_secret_calls)
+
+        self.assertEqual(prewarm_calls, [], "_prewarm_crew must not be called when disabled")
+        self.assertNotIn("pre_warm_status", result)
+
+    def test_finish_crew_setup_prewarm_failure_is_nonfatal(self) -> None:
+        """TRN-131: a prewarm error must not prevent launch from succeeding."""
+        inject_policy_calls: list = []
+        admiral_secret_calls: list = []
+
+        def exploding_prewarm(crew: dict, crew_id: str) -> dict:
+            raise RuntimeError("AcpProcessDied")
+
+        with patch.object(lifecycle, "GA_PREWARM_ENABLED", True), \
+             patch.object(lifecycle, "_prewarm_crew", side_effect=exploding_prewarm):
+            _, result = self._run_finish_crew_setup(inject_policy_calls, admiral_secret_calls)
+
+        self.assertEqual(result.get("status"), "ready", "launch must succeed even if prewarm fails")
+        self.assertEqual(result.get("pre_warm_status"), "error")
+
+
 # the last argv position. We capture that call and decode the dict to inspect
 # the written values.
 
