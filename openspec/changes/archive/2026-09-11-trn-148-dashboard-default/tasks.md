@@ -25,5 +25,5 @@
 
 ## 5. Verification
 
-- [ ] 5.1 `python3 -m py_compile transport/server.py transport/config.py` — syntax clean
-- [ ] 5.2 Set `GA_DASHBOARD_DEFAULT=true` in academy ghostship.conf, deploy, launch a crew → confirm `dashboard_url` is non-null
+- [x] 5.1 `python3 -m py_compile transport/server.py transport/config.py` — syntax clean
+- [x] 5.2 Set `GA_DASHBOARD_DEFAULT=true` in academy ghostship.conf, deploy, launch a crew → confirm `dashboard_url` is non-null
