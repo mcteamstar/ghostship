@@ -10,7 +10,7 @@ KiroCrew's `session_surface.has_dashboard_surface()` returns `True` unconditiona
 
 **Goals:**
 - Add `mode: "headless" | "anchored" | "free"` to `dispatch()` and `_dispatch_batch()`
-- Store `mode_default` in the crew registry at launch, derived from the `dashboard` flag
+- Derive the default mode at dispatch time from the crew's current `dashboard_url` registry field
 - Echo the effective mode in the dispatch response
 - No regression for callers that do not pass `mode`
 
@@ -22,13 +22,15 @@ KiroCrew's `session_surface.has_dashboard_surface()` returns `True` unconditiona
 
 ## Decisions
 
-**D1 — Registry default, not a live lookup**
-Store `mode_default` in `crews.json` at launch time rather than re-examining the `dashboard` flag on every dispatch. The registry is the single source of truth for crew state; adding a derived field keeps dispatch fast and avoids coupling dispatch to the launch path.
+**D1 — Live lookup, not a stored default**
+Derive the default mode at dispatch time from `crew.get("dashboard_url")` in the registry, rather than storing a `mode_default` field. `dashboard_url` is already updated when the dashboard is enabled or disabled (`POST`/`DELETE /crews/{id}/dashboard`), so this approach self-corrects when the dashboard is toggled mid-flight — no extra registry writes, no stale defaults.
 
-Stored value: `"anchored"` if `dashboard=True` at launch, `"headless"` otherwise.
+```python
+effective_mode = mode or ("anchored" if crew.get("dashboard_url") else "headless")
+```
 
-**D2 — Caller override wins over registry default**
-Explicit `mode` on a `dispatch()` call overrides the registry default for that call only. The registry default is not mutated.
+**D2 — Caller override wins over derived default**
+Explicit `mode` on a `dispatch()` call overrides the derived default for that call only.
 
 **D3 — `unique` mode: task-id suffix format**
 `dashboard:<crew-id>-<task-id>` — the task ID is the gateway-assigned `id` from the `/api/spawn` response. For `unique` mode in `_dispatch_batch`, the `parent_session` key per task must therefore be constructed *after* each `/api/spawn` response is received, not before. This is already the natural order since batch dispatch iterates sequentially.
@@ -41,19 +43,12 @@ Invalid `mode` values are rejected immediately with a validation error, before a
 
 ## Implementation Plan
 
-### 1. `transport/lifecycle.py` — store default at launch
-
-In `_finish_crew_setup()`, after the `dashboard` flag is resolved, add to the registry entry:
-```python
-"mode_default": "anchored" if dashboard else "headless"
-```
-
-### 2. `transport/server.py` — `dispatch()`
+### 1. `transport/server.py` — `dispatch()`
 
 Add `mode: str | None = None` parameter. After the existing model/agent validation:
 ```python
 VALID_DISPATCH_MODES = ("headless", "anchored", "free")
-effective_mode = mode or crew.get("mode_default", "headless")
+effective_mode = mode or ("anchored" if crew.get("dashboard_url") else "headless")
 if effective_mode not in VALID_DISPATCH_MODES:
     return {"error": f"mode must be one of: {', '.join(VALID_DISPATCH_MODES)}"}
 ```
@@ -88,22 +83,24 @@ if effective_mode == "free":
 ```
 Return `slot_suffix` (or the full `parent_session` value) in the response alongside `task_id`.
 
-### 3. `transport/server.py` — `_dispatch_batch()`
+### 2. `transport/server.py` — `_dispatch_batch()`
 
 Pass `mode` through to the batch helper. Apply the same resolution logic. For `unique` mode, generate a distinct UUID suffix per task in the batch loop.
 
-### 4. Response shape
+### 3. Response shape
 
 Single dispatch — add `"mode"` and, for `unique` mode, `"parent_session"` to the returned dict so the caller knows which slot to watch.
 
 Batch dispatch — add `"mode"` at the top level; per-task entries include `"parent_session"` when `unique`.
 
-### 5. Tests
+### 4. Tests
 
 - Unit: `mode="headless"` sends no `parent_session`
 - Unit: `mode="anchored"` sends `parent_session="dashboard:<crew-id>"`
 - Unit: `mode="free"` sends `parent_session` with unique suffix per call
 - Unit: invalid `mode` returns error before spawn
-- Unit: registry default `"anchored"` used when crew launched with `dashboard=True` and no explicit mode
-- Unit: registry default `"headless"` used when crew launched without dashboard and no explicit mode
-- Unit: batch with `unique` mode gives each task a distinct `parent_session`
+- Unit: crew with `dashboard_url` set → default effective mode is `anchored`
+- Unit: crew with no `dashboard_url` → default effective mode is `headless`
+- Unit: dashboard toggled mid-flight — dispatch after `DELETE /dashboard` defaults to `headless`; after `POST /dashboard` defaults to `anchored`
+- Unit: batch with `mode="free"` gives each task a distinct `parent_session`
+- Unit: batch with `mode="anchored"` gives all tasks the same `parent_session`
