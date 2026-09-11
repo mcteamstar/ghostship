@@ -53,7 +53,6 @@ These variables are baked into the transport container by `install.sh` at `podma
 | `GA_GIT_AUTHOR_NAME` | _(unset)_ | Injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup. When set with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. Config-file-only. |
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
-| `GA_DASHBOARD_PORT_RANGE_SIZE` | `50` | Number of ports in the range (caps concurrent crew dashboards). Config-file-only. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path to an operator-managed directory of additional standing-order template `.md` files. When set and the path exists, its templates are merged with built-in `academy/orders/` templates; a user-defined template whose filename stem matches a built-in name takes precedence. A warning is logged if the path is set but missing. Config-file-only. |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). Unrecognised values fall back to `internal` with a WARNING. |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name for ACME certificate requests. Required when `GA_PORTAL_TLS_MODE=acme`. |
@@ -121,7 +120,7 @@ A plain shell file that assigns (or exports) variables. Lines starting with `#` 
 | `GA_PORTAL_DOMAIN` | `--caddy-domain` |
 | `GA_PORTAL_TLS_MODE` | `--caddy-tls-mode` |
 
-Variables not in this table (`GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`, `GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_ORDERS_DIR`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — no CLI flag, no ambient-environment input.
+Variables not in this table (`GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`, `GA_DASHBOARD_PORT_RANGE_START`, `GA_ORDERS_DIR`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — no CLI flag, no ambient-environment input.
 
 ### Error handling
 
@@ -332,3 +331,86 @@ Without these overrides (KiroCrew 0.5.0 defaults), idle RSS is ~470 MB due to th
 ### `session.watchdog_rss_max_mb` guidance
 
 The 2000 MB ceiling is a safety net for accumulation, not a tight budget. If session processes are recycled on legitimate large tasks (e.g. intensive reviews of very large codebases), raise the limit by editing `_patch_crew_config` in `transport/lifecycle.py`.
+
+---
+
+## Remote deployment
+
+Run the transport on a remote Linux host and connect MCP clients from your local machine.
+
+### Prerequisites
+
+- Linux host with Podman >= 4.4 and podman-compose (Ubuntu 22.04+ verified)
+- **API key** — required for any non-loopback deployment
+
+### Install
+
+```bash
+./install.sh --api-key <your-secret-key> \
+  --public-url https://mcp.your-domain.com
+```
+
+| Flag | Purpose |
+|:-----|:--------|
+| `--api-key <key>` | Require bearer auth on all MCP requests |
+| `--public-url <url>` | Base URL for all externally-visible links (presigned URLs and MCP endpoint) |
+| `--port <port>` | Override the transport listen port |
+
+For IAM Identity Center logins, add `--identity-provider` and `--region` — see [auth.md](auth.md#identity-provider-config).
+
+### TLS
+
+`ga-portal` (Caddy) handles TLS via `GA_PORTAL_TLS_MODE` — see [portal.md](portal.md). To front ghostship with your own existing reverse proxy, proxy to port `64057`:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name mcp.your-domain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:64057;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        chunked_transfer_encoding on;
+    }
+}
+```
+
+Or use `GA_PORTAL_TLS_MODE=acme` to let Caddy manage certificates directly:
+
+```bash
+GA_PORTAL_TLS_MODE=acme
+GA_PORTAL_DOMAIN=mcp.your-domain.com
+GA_HOST_URL=https://mcp.your-domain.com
+```
+
+### MCP client registration
+
+**kiro-cli:**
+```bash
+kiro-cli mcp add --name ghostship \
+  --url https://mcp.your-domain.com/mcp \
+  --headers '{"Authorization": "Bearer ${GHOSTSHIP_API_KEY}"}' \
+  --scope global
+```
+
+**Claude Code** (`~/.claude.json`):
+```json
+"ghostship": {
+  "type": "http",
+  "url": "https://mcp.your-domain.com/mcp",
+  "headers": { "Authorization": "Bearer ${GHOSTSHIP_API_KEY}" }
+}
+```
+
+### Linger (headless servers)
+
+`install.sh` enables `loginctl enable-linger` automatically. Without linger, all user services stop when your last SSH session disconnects.
+
+### Known limitations
+
+- **Single-host only** — no horizontal scaling or HA. Running two transports against the same data directory is unsupported and will corrupt the registry.
+- **File transfer** — presigned URLs travel in plaintext when `GA_PORTAL_TLS_MODE=off`; use a non-`off` TLS mode or an external reverse proxy for remote deployments.
+- **Podman socket security** — restrict access to `DATA_DIR` and the Podman socket to the service account running the transport on shared hosts.

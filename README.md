@@ -52,7 +52,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts the `ga-transport` container, and starts `ga-portal` (Caddy) on `localhost:64057`. MCP, REST API, and file transfer all share this port. Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` when `GA_API_KEY` is set — see [docs/dashboard-proxy.md](docs/dashboard-proxy.md).
+Builds crew images, starts the `ga-transport` container, and starts `ga-portal` (Caddy) on `localhost:64057`. MCP, REST API, and file transfer all share this port. Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` when `GA_API_KEY` is set — see [docs/portal.md](docs/portal.md).
 
 For a repeatable setup:
 ```bash
@@ -118,7 +118,7 @@ kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
 ```
 Omit `headers` if API-key auth is disabled.
 
-For remote deployments, IAM Identity Center config, and TLS setup: [docs/remote.md](docs/remote.md) and [docs/auth.md](docs/auth.md).
+For remote deployments, IAM Identity Center config, and TLS setup: [docs/configuration.md](docs/configuration.md) and [docs/auth.md](docs/auth.md).
 
 ### Skills
 
@@ -187,9 +187,9 @@ Registered as `ghostship`:
 - [docs/agents.md](docs/agents.md) — the six personas, OpenSpec ownership, and enforcement
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret rotation
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, extending the crew image
-- [docs/dashboard-proxy.md](docs/dashboard-proxy.md) — per-crew browser UI proxy, port allocation, security model
+- [docs/portal.md](docs/portal.md) — per-crew browser UI proxy, port allocation, security model
 - [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
-- [docs/remote.md](docs/remote.md) — remote deployment: TLS, reverse proxy, known limitations
+- [docs/configuration.md](docs/configuration.md) — remote deployment: TLS, reverse proxy, known limitations
 
 ### Route reference
 

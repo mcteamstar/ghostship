@@ -214,22 +214,6 @@ ghostship/
 └── docs/                  # this folder
 ```
 
-## Mail system migration (trn-1-unix-mail)
-
-### Breaking change: mbox → Maildir
-
-Prior to this change, inter-agent mail used flat mbox files at `/var/mail/<persona>`. After this change, those paths are Maildir directories with `new/`, `cur/`, and `tmp/` subdirectories; each message is delivered atomically via rename.
-
-**Existing crews (pre-trn-1-unix-mail) must be nuked and relaunched.** Old flat files are unreadable by Maildir-aware tooling and delivery scripts expect directory structure that does not exist in old containers.
-
-### New capabilities
-
-- **Atomic delivery**: tmp → new rename (no corruption under concurrent writes)
-- **Threading**: every message carries `Message-ID`; replies include `In-Reply-To` and `References`
-- **Supersedes**: replacement standing orders carry a `Supersedes:` header for efficient Raven triage
-- **HMAC signing**: Admiral mail carries `X-Admiral-Sig`; `verify-admiral-sig` validates authenticity. From v0.3.2, signing is **Ed25519** asymmetric keys (TRN-136): the private seed stays host-side, each crew receives only the public key as a read-only Podman secret. The `X-Admiral-Sig` header and `verify-admiral-sig` exit-code contract (0/1/2) are unchanged. See [auth.md](auth.md#admiral-mail-signing-admiralsecret).
-- **Plus-addressing**: `ghost+taskid@localhost` routes to `/var/mail/ghost/` via `maildeliver`
-
 ## Operator governance
 
 Ghostship uses the KiroCrew **operator tier** — a static-file-at-boot governance model where transport writes config into each crew container during setup and the gateway enforces it as an unforgeable ceiling the agent cannot weaken.
@@ -262,7 +246,7 @@ Policy injection failure is logged but never aborts launch.
 - The Admiral private key never enters the container, so the agent cannot forge an Admiral standing order. The agent can read `policy_signing_key` from `admission_policy.json` and could forge a policy signature — see [auth.md](auth.md) for the threat model.
 - Policy is set once at launch. To change policy, nuke and relaunch.
 
-## Networking (TRN-107: Portside/Starboard split)
+## Networking
 
 Ghost Academy uses two static Podman networks, replacing the retired `ga-net`:
 
@@ -297,14 +281,3 @@ Ghost Academy uses two static Podman networks, replacing the retired `ga-net`:
 - Mounted into `ga-portal`; Caddy reads it via `{file./run/secrets/ga-transport-secret}` in the reverse proxy config.
 - Registered with the transport's log redaction filter at startup; never appears in logs or errors.
 
-### Migration from ga-net
-
-On first startup after upgrading from a `ga-net` version, `_reconcile_registry` migrates each crew:
-
-1. Connects `ga-transport` to `ga-starboard` (idempotent).
-2. Stops the crew container.
-3. Disconnects it from `ga-net` (best-effort).
-4. Connects it to `ga-starboard`.
-5. Starts it, waits for the gateway, and refreshes the session cookie.
-
-After all crews are migrated, `ga-net` is removed if empty (best-effort). `install.sh` also attempts a best-effort `ga-net` removal at the end.

@@ -115,7 +115,7 @@ class Config:
     # exclusively provided by ga-portal (Caddy). The port range config is
     # retained because Portal still uses it via the transport's port pool.
     ga_dashboard_port_range_start: int = 64058
-    ga_dashboard_port_range_size: int = 50
+    ga_dashboard_port_range_size: int = 1024
 
     # ── Transport security (TRN-70) ──────────────────────────────────────────
     ga_tls_min_version: str = "1.2"
@@ -203,7 +203,7 @@ class Config:
             ga_prewarm_enabled=_env_bool_default_off("GA_PREWARM_ENABLED"),
             ga_prewarm_ttl_secs=int(os.environ.get("GA_PREWARM_TTL_SECS", "300")),
             ga_dashboard_port_range_start=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_START", "64058")),
-            ga_dashboard_port_range_size=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_SIZE", "50")),
+            ga_dashboard_port_range_size=1024,
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
             ga_tls_certfile=os.environ.get("GA_TLS_CERTFILE", "").strip(),
             ga_tls_keyfile=os.environ.get("GA_TLS_KEYFILE", "").strip(),
