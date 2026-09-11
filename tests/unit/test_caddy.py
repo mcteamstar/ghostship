@@ -1118,6 +1118,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
             mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
+            mock_cfg.ga_dashboard_default = False
             result = server.launch("demo")  # no dashboard=... passed
 
         self.assertIsNone(result.get("dashboard_url"))

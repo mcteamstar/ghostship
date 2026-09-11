@@ -1842,7 +1842,7 @@ def resource_compositions() -> str:
 
 @mcp.tool()
 @_registry_guard
-def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False) -> dict:
+def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None = None) -> dict:
     """Step 1: create a crew workspace — summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
@@ -1865,11 +1865,15 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                    dashboard SPA is accessible via HTTPS. The SPA owns its
                    entire origin so assets, client-side navigation, and hard
                    reloads all work. Returns dashboard_url in the response.
-                   Default is False — crews are headless unless a dashboard is
-                   explicitly requested.
+                   None (default) uses the site default from GA_DASHBOARD_DEFAULT
+                   (false unless configured). Pass False to force headless even
+                   when GA_DASHBOARD_DEFAULT=true.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """
+    # Resolve effective dashboard: explicit arg wins; None falls back to site default.
+    effective_dashboard = dashboard if dashboard is not None else cfg.ga_dashboard_default
+
     if not re.match(r'^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$', crew_id):
         return {"error": "crew_id must be lowercase alphanumeric/hyphens, 1-50 chars"}
 
@@ -1977,7 +1981,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # TRN-103: ga-portal (Caddy) is always present and is the sole dashboard
         # proxy; port allocation is gated only on the per-launch dashboard flag.
         dashboard_url: str | None = None
-        if dashboard:
+        if effective_dashboard:
             with _registry_lock:
                 try:
                     dashboard_port = _caddy_portal.allocate_port()
@@ -2071,7 +2075,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=dashboard)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
         # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:

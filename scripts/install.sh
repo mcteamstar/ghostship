@@ -77,6 +77,7 @@ GA_RESOURCE_CRITICAL_GB=1.0
 GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
+# GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
 GA_DASHBOARD_PORT_RANGE_SIZE=1024
 # ── Client-only install (TRN-115) ────────────────────────────────────────────
 # --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
@@ -729,6 +730,7 @@ services:
       GA_RATE_LIMIT_FILES: "${GA_RATE_LIMIT_FILES:-60:60}"
       GA_RATE_LIMIT_CREW_API: "${GA_RATE_LIMIT_CREW_API:-120:60}"
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
+      GA_DASHBOARD_DEFAULT: "${GA_DASHBOARD_DEFAULT:-false}"
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-1024}"
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
