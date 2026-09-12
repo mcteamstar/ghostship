@@ -403,6 +403,13 @@ def auth_login(args: list) -> int:
             body = exc.read().decode("utf-8", errors="replace").strip()
         except Exception:
             body = exc.reason
+        # The transport signals "already authenticated" as a 409 with a
+        # plain-text body (not the {"status": "complete"} JSON shape the
+        # check below expects) — treat it as a no-op success so this
+        # command is idempotent, rather than surfacing it as an error.
+        if exc.code == 409 and "already authenticated" in body.lower():
+            print("Already authenticated.")
+            return 0
         print(f"error: transport returned HTTP {exc.code}: {body}",
               file=sys.stderr)
         return 1
