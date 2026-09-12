@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.1
+
+### Fixes
+
+- **Device-flow login completion falsely detected from the OIDC registration precursor** — `_read_auth_from_crew` treated *any* non-empty `auth_kv` row as proof a login had completed, including `kirocli:odic:device-registration`, which kiro-cli writes the instant the device flow starts, before the user has approved anything. Under fast polling, `GET /login` could report `complete` — and inject that precursor-only capture into every running/newly-launched crew — well before the actual OAuth grant existed, leaving crews with a stored "auth" that still fails kiro-cli's own login check (`AcpAuthRequired`). Fixed by requiring a real credential row (anything beyond the registration precursor) before treating a login as complete.
+
+- **`ghostship auth login` errored instead of no-op when already authenticated** — the transport reports "already authenticated" as a `409` with a plain-text body, not the `{"status": "complete"}` JSON shape `auth_login`'s happy path checked for, so the CLI's only reachable behaviour was a hard error requiring a manual `logout` first. `auth_login` now recognises the 409 "already authenticated" body and treats it as a successful no-op; a genuinely different 409 (e.g. a concurrent login already in progress) still errors as before.
+
+### Tests
+
+- New unit coverage for `_read_auth_from_crew`: returns `None` when only the device-registration row is populated (the exact shape observed live), returns the payload once a real credential row joins it.
+- Rewrote `ghostship auth login`'s 409-handling tests: the "already authenticated" 409 is now asserted as a no-op success; a new test covers a different 409 reason (login already in progress) still erroring correctly.
+
 ## v0.4.0
 
 ### New features
