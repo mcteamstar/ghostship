@@ -338,8 +338,11 @@ class PodmanClient(ContainerRuntime):
             json={"Detach": False},
             headers={"Content-Type": "application/json"},
         )
-        with self._c.send(req) as response:
+        response = self._c.send(req)
+        try:
             return self._demux(response.content)
+        finally:
+            response.close()
 
     def container_exec_pty_stdin(
         self, name: str, cmd: list[str]
