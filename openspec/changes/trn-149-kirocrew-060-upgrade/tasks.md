@@ -2,7 +2,7 @@
 
 ## Pre-flight
 
-- [ ] **T0: Verify image availability**
+- [x] **T0: Verify image availability**
   Pull `ghcr.io/kirodotdev/kirocrew:0.6.0` on the target host and confirm the
   pull succeeds. If the image is not yet published, do not proceed with the
   version bump.
@@ -13,7 +13,7 @@
 
 ## Code changes
 
-- [ ] **T1: Bump `kc_base_image` default in `transport/config.py`**
+- [x] **T1: Bump `kc_base_image` default in `transport/config.py`**
   Change both occurrences of `ghcr.io/kirodotdev/kirocrew:0.5.0` to
   `ghcr.io/kirodotdev/kirocrew:0.6.0`:
   - `Config` dataclass field: `kc_base_image: str = "ghcr.io/kirodotdev/kirocrew:0.6.0"`
@@ -24,24 +24,24 @@
   grep -r "kirocrew:0.5.0" transport/
   ```
 
-- [ ] **T2: Update sandbox comment in `transport/lifecycle.py` (`_patch_crew_config`)**
+- [x] **T2: Update sandbox comment in `transport/lifecycle.py` (`_patch_crew_config`)**
   Replace the comment block that says "What changed in 0.5.0 is that
   sandbox='auto' (the default) now issues a MS_REMOUNT..." with the updated
   version described in design D2a. The patch value `"sandbox": "off"` itself
   does NOT change.
 
-- [ ] **T3: Update `subagent_max_turns` UI cap comment in `transport/lifecycle.py`**
+- [x] **T3: Update `subagent_max_turns` UI cap comment in `transport/lifecycle.py`**
   In the comment above `agent_overrides`, update "(UI cap 200)" to
   "(UI cap 1000, raised in KiroCrew 0.6.0)".
 
-- [ ] **T4: Update login container watchdog comment in `transport/lifecycle.py`**
+- [x] **T4: Update login container watchdog comment in `transport/lifecycle.py`**
   In `_start_login_container`, replace "be killed by the 0.5.0 loop watchdog
   after ~35s" with "the loop watchdog will recycle it after a timeout" as
   described in design D2c.
 
 ## Test and verify
 
-- [ ] **T5: Run transport unit tests**
+- [x] **T5: Run transport unit tests**
   ```bash
   cd /home/kirocrew/workplace/kirocrew-workspace/repo
   python -m pytest transport/tests/ -x -q 2>&1 | tail -20
@@ -49,7 +49,7 @@
   All tests must pass. If any test asserts the old image tag string, update
   the assertion to `0.6.0`.
 
-- [ ] **T6: Grep for any remaining `0.5.0` version references in transport/**
+- [x] **T6: Grep for any remaining `0.5.0` version references in transport/**
   ```bash
   grep -rn "0\.5\.0" transport/ --include="*.py"
   ```
@@ -59,7 +59,7 @@
 
 ## Commit
 
-- [ ] **T7: Commit**
+- [x] **T7: Commit**
   Stage and commit all changed files with message:
   ```
   feat(transport): bump kc_base_image to kirocrew:0.6.0 (TRN-149)

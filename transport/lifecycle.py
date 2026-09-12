@@ -1556,7 +1556,7 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     #   spawn_min_memory_gb: >= 0 (0 disables the spawn memory gate); no upper cap.
     #   resource_pressure_gb: >= 0; must be >= resource_critical_gb.
     #   resource_critical_gb: >= 0, and <= resource_pressure_gb.
-    #   subagent_timeout_secs: > 0. subagent_max_turns: >= 1 (UI cap 200).
+    #   subagent_timeout_secs: > 0. subagent_max_turns: >= 1 (UI cap 1000, raised in KiroCrew 0.6.0).
     #
     # Memory thresholds default to 0 (disabled). Inside a container, memory is
     # dynamically allocated by the host (balloon on Linux, Podman VM on macOS).
@@ -1583,13 +1583,13 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "subagent_max_turns": GA_SUBAGENT_MAX_TURNS,
         # ``sandbox="off"`` disables the kiro-cli inner namespace sandbox.
         # The config key and value are not new — "off" has been valid since
-        # before 0.5.0. What changed in 0.5.0 is that sandbox="auto" (the
-        # default) now issues a MS_REMOUNT|MS_BIND|MS_RDONLY mount to seal
-        # credential directories read-only, and this call is fail-closed:
-        # kiro-cli calls sys.exit(rc=1) if the mount fails rather than
-        # continuing unsandboxed. Under Podman rootless the kernel denies the
-        # remount (errno EPERM — no seccomp allowance for MS_REMOUNT inside a
-        # user namespace), so every agent spawn failed with AcpRuntimeDead rc=1.
+        # before 0.5.0. sandbox="auto" (the default since 0.6.0, and present
+        # in fail-closed form since 0.5.0) issues a MS_REMOUNT|MS_BIND|MS_RDONLY
+        # mount to seal credential directories read-only; kiro-cli calls
+        # sys.exit(rc=1) if that mount fails (fail-closed). Under Podman rootless
+        # the kernel denies the remount (errno EPERM — no seccomp allowance for
+        # MS_REMOUNT inside a user namespace), so every agent spawn fails with
+        # AcpRuntimeDead rc=1 unless this is set to "off".
         # Setting "off" short-circuits detect_backend() to return "none", so the
         # namespace sandbox setup (and the failing mount) are never attempted.
         # The Podman container itself remains the OS-level isolation boundary.
@@ -1871,8 +1871,8 @@ def _start_login_container(podman: PodmanClient) -> str:
         "Networks": {GA_STARBOARD_NETWORK: {}},
         # Use the default gateway command — kirocrew-entrypoint seeds
         # ~/.kiro/crew/config.json which kiro-cli requires. The gateway will
-        # stall on AcpAuthRequired (no auth yet) and be killed by the 0.5.0
-        # loop watchdog after ~35s, but GET /login polls the auth DB
+        # stall on AcpAuthRequired (no auth yet) and the loop watchdog will
+        # recycle it after a timeout, but GET /login polls the auth DB
         # continuously and will catch a completed auth before that window.
         # No volumes — ephemeral writable layer only
     })
