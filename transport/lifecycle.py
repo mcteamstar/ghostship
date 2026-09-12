@@ -25,7 +25,7 @@ import tarfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -856,6 +856,13 @@ def _prewarm_crew(crew: dict, crew_id: str) -> dict:
 
     with _warm_markers_lock:
         _warm_markers[crew_id] = time.monotonic()
+        # TRN-156: evict warm markers older than twice the prewarm TTL (1h min)
+        # so _warm_markers does not accumulate entries for crews long gone.
+        _wm_ttl = max(GA_PREWARM_TTL_SECS * 2 if GA_PREWARM_TTL_SECS > 0 else 3600, 3600)
+        _wm_now = time.monotonic()
+        _expired_wm = [k for k, v in _warm_markers.items() if (_wm_now - v) > _wm_ttl]
+        for k in _expired_wm:
+            _warm_markers.pop(k, None)
     logger.info("Crew %s prewarmed (ACP session warm)", crew_id)
     return {"crew_id": crew_id, "status": "warmed"}
 
@@ -2493,6 +2500,18 @@ def _pickup_single(
             # _pickup_single or _dispatch_batch could mutate after release.
             ts = dict(ts)
 
+            # TRN-156: evict completed-task timestamp entries older than TTL so
+            # _task_timestamps does not grow without bound over the process life.
+            _ttl_secs = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
+            _evict_cutoff = (now - timedelta(seconds=_ttl_secs)).isoformat()
+            _to_evict = [
+                k
+                for k, v in _task_timestamps.items()
+                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
+            ]
+            for k in _to_evict:
+                _task_timestamps.pop(k, None)
+
         out: dict[str, Any] = {
             "task_id": r.get("id"),
             "crew_id": crew_id,
@@ -2588,6 +2607,19 @@ def _pickup_list(
         # the lock, then build the response list from the snapshot so the
         # comprehension does not read _task_timestamps concurrently with writes.
         with _task_timestamps_lock:
+            # TRN-156: evict completed-task timestamp entries older than TTL
+            # first (reading _task_timestamps), then snapshot the survivors.
+            _ttl_secs = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
+            _evict_cutoff = (
+                datetime.now(timezone.utc) - timedelta(seconds=_ttl_secs)
+            ).isoformat()
+            _to_evict = [
+                k
+                for k, v in _task_timestamps.items()
+                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
+            ]
+            for k in _to_evict:
+                _task_timestamps.pop(k, None)
             _ts_snapshot = {
                 a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
                 for a in agents

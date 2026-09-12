@@ -270,11 +270,30 @@ def _schedule_monitor() -> None:
                                     break
                             _save_registry(reg)
 
-                    # H-2: For one-shot (delay) jobs, delete the cron from the
-                    # gateway so its annual cron expression never fires again.
+                    # H-2 / TRN-156: For one-shot (delay) jobs, disable the
+                    # schedule in the registry FIRST (durable safety gate that
+                    # prevents the annual cron expression from replaying if the
+                    # gateway DELETE fails), then best-effort delete the cron
+                    # from the gateway.
                     if sched.get("one_shot"):
                         job_id = sched.get("job_id")
                         if job_id:
+                            # Step 1: mark disabled in registry (durable gate)
+                            try:
+                                with _registry_lock:
+                                    _reg = _load_registry()
+                                    for _s in _get_crew_schedules(_reg, crew_id):
+                                        if _s.get("job_id") == job_id:
+                                            _s["enabled"] = False
+                                            _s["next_fire_at"] = _NEVER_FIRE_AT
+                                            break
+                                    _save_registry(_reg)
+                            except Exception as e:
+                                logger.warning(
+                                    "Schedule monitor: could not disable one-shot cron %s in registry: %s",
+                                    job_id, e,
+                                )
+                            # Step 2: best-effort DELETE from gateway
                             try:
                                 _crew_api_with_recovery(
                                     crew, crew_id, "DELETE", f"/api/crons/{job_id}"

@@ -1,6 +1,6 @@
 # Tasks: TRN-156 — Lifecycle Memory Leak + One-Shot Cron Annual Replay
 
-## Task 1: Add TTL eviction to `_task_timestamps` in `_pickup_single`
+## Task 1 [x]: Add TTL eviction to `_task_timestamps` in `_pickup_single`
 
 **File**: `transport/lifecycle.py`
 **Function**: `_pickup_single` (line ~2484)
@@ -40,7 +40,7 @@ Note: `timedelta` is not yet imported in `lifecycle.py`; add `from datetime impo
 
 ---
 
-## Task 2: Add TTL eviction to `_task_timestamps` in `_pickup_list`
+## Task 2 [x]: Add TTL eviction to `_task_timestamps` in `_pickup_list`
 
 **File**: `transport/lifecycle.py`
 **Function**: `_pickup_list` (line ~2590)
@@ -49,7 +49,7 @@ Same eviction block as Task 1, added inside the `with _task_timestamps_lock:` se
 
 ---
 
-## Task 3: Add TTL eviction to `_warm_markers` in `_prewarm_crew`
+## Task 3 [x]: Add TTL eviction to `_warm_markers` in `_prewarm_crew`
 
 **File**: `transport/lifecycle.py`
 **Function**: `_prewarm_crew` (line ~857)
@@ -69,7 +69,7 @@ for k in _expired_wm:
 
 ---
 
-## Task 4: Reorder one-shot job cleanup in schedule monitor — registry-first
+## Task 4 [x]: Reorder one-shot job cleanup in schedule monitor — registry-first
 
 **File**: `transport/monitors.py`
 **Function**: `_schedule_monitor` (line ~273)
@@ -130,7 +130,7 @@ Note: `_registry_lock`, `_load_registry`, `_get_crew_schedules`, `_save_registry
 
 ---
 
-## Task 5: Write unit tests
+## Task 5 [x]: Write unit tests
 
 **File**: `transport/tests/test_trn156_lifecycle_memory_cron.py` (new file)
 
