@@ -204,3 +204,30 @@ HTTPS redirect is handled unconditionally by Caddy. Minimum TLS is 1.2.
 - `security.validate_str` checks type, length, and format server-side, independent of client checks.
 - All `auth_kv` access uses parameterized SQL — no string-built queries.
 - `tests/security_scan.py` flags string-built SQL and fails the build.
+
+---
+
+## Using the CLI
+
+The `ghostship auth` subcommand group drives the device auth flow directly from
+the CLI — useful for re-authenticating after a token expires, switching
+identity, or on a fresh install without an agent client.
+
+```bash
+# Start the device auth flow: prints an activation URL + code, then polls
+# until you complete authentication (or the flow times out after ~5 min).
+ghostship auth login
+
+# Revoke the current transport session.
+ghostship auth logout
+```
+
+Both commands accept `--url` / `--api-key` for non-default or remote transports:
+
+```bash
+ghostship auth login --url https://remote.example.com --api-key <key>
+```
+
+The transport URL is resolved as `--url` > `GHOSTSHIP_URL` env var >
+`http://localhost:64057`. The transport must be running; `auth login` fails
+immediately (with the URL it tried) if it is unreachable.

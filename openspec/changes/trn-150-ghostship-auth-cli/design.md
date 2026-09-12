@@ -1,6 +1,6 @@
 ## Context
 
-The `ghostship` CLI is a single-file Python 3 stdlib-only script (`ghostship` at the repo root). Subcommands are registered in `_COMMANDS: dict[str, Callable]`. The transport REST API handles device auth at `POST /login` (starts flow, returns `{login_url, user_code}`) and `GET /login` (polls status, returns `{status}` where status is `pending`, `complete`, or `expired`). Logout is `POST /logout`. All three are public (no Bearer required) since auth is what you're establishing.
+The `ghostship` CLI is a single-file Python 3 stdlib-only script (`ghostship` at the repo root). Subcommands are registered in `_COMMANDS: dict[str, Callable]`. The transport REST API handles device auth at `POST /login` (starts flow, returns `{login_url, code}`) and `GET /login` (polls status, returns `{status}` where status is `pending` or `complete`). Logout is `POST /logout`. Login and logout endpoints require Bearer auth when `GA_API_KEY` is set (they are dispatched after auth in `BearerAuthMiddleware`) and are open when `GA_API_KEY` is unset.
 
 ## Goals / Non-Goals
 
