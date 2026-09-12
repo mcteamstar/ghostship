@@ -42,7 +42,7 @@ _config_logger = logging.getLogger(__name__)
 _CADDY_TLS_MODES: frozenset[str] = frozenset({"internal", "tailscale", "acme", "off"})
 
 
-def _validate_caddy_tls_mode(value: str, default: str = "internal") -> str:
+def _validate_caddy_tls_mode(value: str, default: str = "off") -> str:
     """Validate GA_PORTAL_TLS_MODE against the four allowed values.
 
     On an unrecognised value, logs a WARNING and falls back to ``default``.
@@ -132,7 +132,7 @@ class Config:
     # - tailscale: real certs from Tailscale ACME for .ts.net hostnames
     # - acme: public Let's Encrypt; requires GA_PORTAL_DOMAIN and port 80/443
     # - off: plain HTTP, no TLS
-    ga_portal_tls_mode: str = "internal"
+    ga_portal_tls_mode: str = "off"
     # Domain name used for ACME (Let's Encrypt) certificate requests.
     ga_portal_domain: str = ""
     # Session TTL for gs_session cookies (dashboard login); default 24 h.
@@ -209,7 +209,7 @@ class Config:
                 "GA_ENABLE_SECURITY_HEADERS"
             ),
             ga_portal_tls_mode=_validate_caddy_tls_mode(
-                os.environ.get("GA_PORTAL_TLS_MODE", "internal").strip()
+                os.environ.get("GA_PORTAL_TLS_MODE", "off").strip()
             ),
             ga_portal_domain=os.environ.get("GA_PORTAL_DOMAIN", "").strip(),
             ga_portal_session_ttl_secs=int(os.environ.get("GA_PORTAL_SESSION_TTL_SECS", "86400")),
