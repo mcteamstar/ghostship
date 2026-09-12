@@ -21,7 +21,7 @@ import time
 import unittest
 from urllib.parse import urlsplit, urlunsplit
 
-import httpx
+import httpx2 as httpx
 
 from tests.e2e.helpers import (
     GHOSTSHIP_E2E_URL,

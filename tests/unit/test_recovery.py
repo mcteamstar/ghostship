@@ -27,7 +27,7 @@ from tests.unit.test_file_transfer import server
 import transport.lifecycle as lifecycle
 
 _ensure_httpx_exceptions()
-import httpx
+import httpx2 as httpx
 import transport.registry as _registry_mod
 
 # TRN-144: identity invariant — lifecycle's bound exception classes and the

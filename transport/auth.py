@@ -483,6 +483,24 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                     response = PlainTextResponse("Method Not Allowed", status_code=405)
                     await response(scope, receive, send)
                     return
+            # TRN-131: POST /crews/{id}/prewarm (GA_API_KEY unset path)
+            if (
+                len(_parts) == 3
+                and _parts[0] == "crews"
+                and _parts[2] == "prewarm"
+            ):
+                request = Request(scope, receive)
+                if scope["method"] == "POST":
+                    prewarm_post = self._routes.get(("POST", "/crews/*/prewarm"))
+                    if prewarm_post is not None:
+                        response = await prewarm_post(request)
+                        await response(scope, receive, send)
+                        return
+                else:
+                    from starlette.responses import PlainTextResponse
+                    response = PlainTextResponse("Method Not Allowed", status_code=405)
+                    await response(scope, receive, send)
+                    return
             await self.app(scope, receive, send)
             return
 
@@ -577,6 +595,25 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 dash_delete = self._routes.get(("DELETE", "/crews/*/dashboard"))
                 if dash_delete is not None:
                     response = await dash_delete(request)
+                    await response(scope, receive, send)
+                    return
+            else:
+                response = PlainTextResponse("Method Not Allowed", status_code=405)
+                await response(scope, receive, send)
+                return
+
+        # TRN-131: POST /crews/{id}/prewarm (keyed path — auth already passed above)
+        if (
+            len(path_parts) == 3
+            and path_parts[0] == "crews"
+            and path_parts[2] == "prewarm"
+        ):
+            from starlette.responses import PlainTextResponse
+            request = Request(scope, receive)
+            if scope["method"] == "POST":
+                prewarm_post = self._routes.get(("POST", "/crews/*/prewarm"))
+                if prewarm_post is not None:
+                    response = await prewarm_post(request)
                     await response(scope, receive, send)
                     return
             else:

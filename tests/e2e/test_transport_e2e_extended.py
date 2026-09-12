@@ -10,7 +10,7 @@ import os
 import time
 import unittest
 
-import httpx
+import httpx2 as httpx
 
 from tests.e2e.helpers import (
     GHOSTSHIP_E2E_URL,

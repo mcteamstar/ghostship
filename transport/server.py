@@ -71,7 +71,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
-import httpx
+import httpx2 as httpx
 from mcp.server.mcpserver.server import MCPServer
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -634,6 +634,8 @@ try:
         _task_timestamps,
         _task_timestamps_lock,
         _probe_gateway,
+        _prewarm_crew,
+        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -700,6 +702,8 @@ except ModuleNotFoundError:
         _task_timestamps,
         _task_timestamps_lock,
         _probe_gateway,
+        _prewarm_crew,
+        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -775,8 +779,9 @@ except ModuleNotFoundError:
 mcp = MCPServer(
     name="transport",
     description=(
-        "Ghost Academy crew orchestration: launch workspaces, dispatch agents, "
-        "evac results, nuke crews"
+        "Ghost Academy crew orchestration. Workflow: launch a crew → supply a repo "
+        "→ dispatch tasks to agents → pickup results → steer if needed → evac output "
+        "→ nuke when done."
     ),
 )
 
@@ -1411,6 +1416,36 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
     return JSONResponse({"dashboard_url": None})
 
 
+async def _handle_crew_prewarm_post(request: Request) -> Response:
+    """POST /crews/{crew_id}/prewarm — pre-establish the crew's ACP session (TRN-131).
+
+    Thin REST wrapper over the ``prewarm`` MCP tool. Behaves identically for a
+    given crew: it warms the crew's session ahead of an expected dispatch,
+    respecting the enable flag and the memory / active-crew gates, and returns
+    ``{"crew_id", "status"}`` with status in ``warmed | already_warm | disabled
+    | blocked:<gate> | error:<msg>``.
+
+    Auth: gated by the same ``GA_API_KEY`` Bearer auth as the other crew REST
+    endpoints (enforced by BearerAuthMiddleware, which never dispatches to this
+    handler without a valid key). Returns 404 for an unknown crew.
+    """
+    # Parse + require only (auto_wake=False) — _prewarm_crew owns the start/gate
+    # path via _ensure_crew_running, exactly like the dashboard handler.
+    resolved = await _resolve_crew_for_proxy(request.scope["path"], auto_wake=False)
+    if isinstance(resolved, Response):
+        return resolved
+    crew_id, _sub, crew = resolved
+
+    result = await asyncio.to_thread(_prewarm_crew, crew, crew_id)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    logger.info(
+        "TRN-131: POST /crews/%s/prewarm — status=%s",
+        crew_id, result.get("status"),
+    )
+    return JSONResponse(result)
+
+
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
@@ -1638,7 +1673,7 @@ def _registry_guard(fn):
 @mcp.tool()
 @_registry_guard
 def crews() -> dict:
-    """List all live crews in the registry.
+    """Situational awareness — list all crews and what's running before deciding what to do next.
 
     Shows crew_id, container, status, created_at, and last_task_at for each,
     plus uptime_secs (seconds since the container started; present only for
@@ -1807,11 +1842,13 @@ def resource_compositions() -> str:
 
 @mcp.tool()
 @_registry_guard
-def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False) -> dict:
-    """Summon a new crew container into existence, with its own workspace volume.
+def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None = None) -> dict:
+    """Step 1: create a crew workspace — summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
-    with a dedicated workspace. Repository seeding is a separate supply step.
+    with a dedicated workspace. Repository seeding is a separate supply step —
+    dispatching into an empty crew without calling supply first is a real
+    failure mode.
     Also: calldown, create workspace, launch crew, init environment, load the ghostship.
 
     Requires prior authentication. If not authenticated, launch automatically
@@ -1828,11 +1865,15 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                    dashboard SPA is accessible via HTTPS. The SPA owns its
                    entire origin so assets, client-side navigation, and hard
                    reloads all work. Returns dashboard_url in the response.
-                   Default is False — crews are headless unless a dashboard is
-                   explicitly requested.
+                   None (default) uses the site default from GA_DASHBOARD_DEFAULT
+                   (false unless configured). Pass False to force headless even
+                   when GA_DASHBOARD_DEFAULT=true.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """
+    # Resolve effective dashboard: explicit arg wins; None falls back to site default.
+    effective_dashboard = dashboard if dashboard is not None else cfg.ga_dashboard_default
+
     if not re.match(r'^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$', crew_id):
         return {"error": "crew_id must be lowercase alphanumeric/hyphens, 1-50 chars"}
 
@@ -1940,7 +1981,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
         # TRN-103: ga-portal (Caddy) is always present and is the sole dashboard
         # proxy; port allocation is gated only on the per-launch dashboard flag.
         dashboard_url: str | None = None
-        if dashboard:
+        if effective_dashboard:
             with _registry_lock:
                 try:
                     dashboard_port = _caddy_portal.allocate_port()
@@ -2034,7 +2075,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool = False)
                 _save_registry(reg)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard)
         # TRN-101: persist dashboard_port in registry and register with Caddy.
         # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:
@@ -2084,7 +2125,11 @@ def supply(
     bundle: bool = False,
     force: bool = False,
 ) -> dict:
-    """Deliver a file, archive, or git bundle into a crew's workspace via a presigned upload URL.
+    """Step 2: seed the workspace — deliver a file, archive, or git bundle into a crew's workspace via a presigned upload URL.
+
+    Always call supply before dispatching any task that touches the repo.
+    Dispatching into an empty crew workspace is a real failure mode — the agent
+    has no codebase to work with and will hallucinate or fail silently.
 
     Returns a URL to POST raw file bytes to. Use curl or any HTTP client
     to upload from your local machine — no credentials required beyond
@@ -2181,7 +2226,10 @@ def evac(
     crew_id: str | None = None,
     bundle: bool = False,
 ) -> dict:
-    """Extract files, diffs, or git bundles from a crew workspace.
+    """Step 5: extract results, diffs, or a git bundle — extract files, diffs, or git bundles from a crew workspace.
+
+    Always evac before nuking — nuke is irreversible and the workspace is gone.
+    Pairs with supply as the complete file exchange protocol for crew workspaces.
 
     Returns a direct download URL to the file on the transport server.
     Fetch the URL from any client that can reach the transport host —
@@ -2224,7 +2272,9 @@ def evac(
 @mcp.tool()
 @_registry_guard
 def nuke(crew_id: str, confirm: bool = False) -> dict:
-    """Destroy a crew completely — tear down its container and both volumes.
+    """Step 6: destroy the crew and both volumes when work is done — tear down its container and both volumes completely.
+
+    Always evac first — nuke is irreversible. There is no undo.
 
     With confirm=True: stops and removes the container and both volumes.
     Total teardown — no residue.
@@ -2688,7 +2738,11 @@ def captain(
     fire_immediately: bool | None = None,
     model: str | None = None,
 ) -> dict:
-    """Manage the single Raven-backed standing-orders Captain for a crew.
+    """Autopilot: hand the full SDD lifecycle to a recurring Raven check-in — manage the single Raven-backed standing-orders Captain for a crew.
+
+    Two paths: manual relay (you dispatch/pickup/steer each persona yourself),
+    or Captain autopilot (a recurring Raven check-in drives the full cycle
+    unattended). Captain is the autopilot path.
 
     ``order`` requires exactly one of ``message`` or ``template``. A named
     template is resolved before it is written to ``captain@localhost``;
@@ -3102,8 +3156,13 @@ def dispatch(
     crew_id: str | None = None,
     model: str | None = None,
     tasks: list[str] | None = None,
+    slot: str | bool | None = None,
 ) -> dict:
-    """Spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
+    """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
+
+    The agent has zero context beyond the ``task`` string — be specific and
+    self-contained. Use pickup as the next step to check progress or collect
+    the result.
 
     Use this to send work to a ghost, spectre, banshee, wraith, reaper, or raven —
     research, coding, shell commands, file edits, anything that can run
@@ -3115,21 +3174,25 @@ def dispatch(
 
     Batch: pass ``tasks=[...]`` (a list of task strings) to dispatch N tasks
     atomically against the same crew. All tasks in a batch share the same
-    ``agent``, ``model``, and ``crew_id``. The batch is dispatched sequentially
-    against ``/api/spawn`` and recorded in the transport registry under a single
-    ``batch_id``; the response includes ``batch_id`` and per-task ``task_ids``.
-    The batch size must be between 2 and ``GA_BATCH_MAX_TASKS`` (default 20, read
-    from the ``GA_BATCH_MAX_TASKS`` env var). Collect batch results in one call
-    with ``pickup(task_ids=[...], timeout_secs=N)``.
+    ``agent``, ``model``, ``slot``, and ``crew_id``. The batch is dispatched
+    sequentially against ``/api/spawn`` and recorded in the transport registry
+    under a single ``batch_id``; the response includes ``batch_id`` and
+    per-task ``task_ids``. The batch size must be between 2 and
+    ``GA_BATCH_MAX_TASKS`` (default 20, read from the ``GA_BATCH_MAX_TASKS``
+    env var). Collect batch results in one call with
+    ``pickup(task_ids=[...], timeout_secs=N)``.
 
     ``task`` and ``tasks`` are mutually exclusive — supply exactly one. Existing
     single-task callers are unaffected.
 
     Returns:
         Single: ``{"task_id", "crew_id", "status": "dispatched", "task",
-        "agent", "created_at"}``.
+        "agent", "slot", "created_at"}``. ``slot`` echoes the resolved slot
+        name, or ``None`` when headless.
         Batch (all started): ``{"batch_id", "task_ids", "crew_id",
-        "status": "dispatched", "agent", "created_at"}``.
+        "status": "dispatched", "agent", "slot", "created_at"}``. For
+        ``slot=True``, also includes ``"task_slots"`` mapping each task_id to
+        its generated slot name.
         Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
         the ``task_ids`` assigned so far, and an ``error`` field naming the
         failure. Tasks that never received a ``task_id`` are the lost members.
@@ -3144,6 +3207,20 @@ def dispatch(
             steer/continue operations.
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
+        slot: Dashboard session routing for this dispatch. One of:
+            ``None`` (default) — resolved at dispatch time from the crew's
+            ``dashboard_port``: ``"bridge"`` if a dashboard is active,
+            ``None`` (headless, no ``parent_session``) otherwise.
+            ``"bridge"`` — tasks attach to the crew's shared ``"bridge"``
+            session (``parent_session="dashboard:bridge"``); one command post
+            for the crew.
+            ``True`` — auto-generate a unique slot name (``uuid4().hex[:8]``)
+            per task; each task gets its own dedicated visible session.
+            ``"<name>"`` — attach to the named slot
+            (``parent_session="dashboard:<name>"``); multiple dispatches with
+            the same name share one session.
+            When a slot resolves to a non-None value, the system pre-creates it
+            via ``POST /api/chat/slots`` (409 treated as success; non-fatal).
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
@@ -3161,16 +3238,49 @@ def dispatch(
         return {"error": str(e)}
 
     if tasks is not None:
-        return _dispatch_batch(tasks, agent, crew_id, model)
+        return _dispatch_batch(tasks, agent, crew_id, model, slot=slot)
 
     try:
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
+    # Resolve effective slot: explicit arg > live dashboard check.
+    # slot=None (default) → "bridge" if dashboard active, else None (headless).
+    # A string or True is taken as-is.
+    if slot is None:
+        effective_slot: str | bool | None = "bridge" if crew.get("dashboard_port") else None
+    else:
+        effective_slot = slot
+
     body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
     if model is not None:
         body["model"] = model
+
+    # Build parent_session from the effective slot and pre-create the dashboard
+    # session slot so it appears in the Sessions list. POST /api/chat/slots
+    # {"name": "<slot>"} materialises a visible session; a 409 means the slot
+    # already exists — treat as success. Non-fatal — parent_session routing
+    # still works via the dashboard: prefix even if slot creation fails.
+    parent_session: str | None = None
+    resolved_slot_name: str | None = None
+    if effective_slot is True:
+        resolved_slot_name = uuid.uuid4().hex[:8]
+        parent_session = f"dashboard:{resolved_slot_name}"
+        body["parent_session"] = parent_session
+        try:
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": resolved_slot_name})
+        except Exception:
+            pass  # non-fatal
+    elif isinstance(effective_slot, str):
+        resolved_slot_name = effective_slot
+        parent_session = f"dashboard:{effective_slot}"
+        body["parent_session"] = parent_session
+        try:
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
+        except Exception:
+            pass  # non-fatal
+
     try:
         result = _crew_api_with_recovery(
             crew, crew_id, "POST", "/api/spawn",
@@ -3195,14 +3305,44 @@ def dispatch(
     # TRN-89 task 3: write last_task_at to crew's registry entry
     _record_last_task_at(crew_id, created_at)
 
-    return {
+    response: dict[str, Any] = {
         "task_id": task_id,
         "crew_id": crew_id,
         "status": "dispatched",
         "task": task,
         "agent": agent,
+        "slot": resolved_slot_name,
         "created_at": created_at,
     }
+    return response
+
+
+@mcp.tool()
+@_registry_guard
+def prewarm(crew_id: str | None = None) -> dict:
+    """Pre-establish a crew's ACP session ahead of an expected dispatch (TRN-131).
+
+    Warms the crew's ``kiro-cli-chat`` session — forking the session process and
+    completing the ACP handshake — so a subsequent ``dispatch`` on that crew does
+    not pay session cold-start latency. Returns promptly; it never blocks on a
+    real task and never dispatches real agent work, sends mail, or writes specs.
+
+    Opt-in and operator-bounded: prewarm does nothing unless
+    ``GA_PREWARM_ENABLED=true``. It respects the same memory
+    (``GA_MIN_FREE_MEM_GB``) and active-crew (``GA_MAX_ACTIVE_CREWS``) gates that
+    gate a real dispatch, and a warmed-but-unused session is still reaped by the
+    crew's ``session.timeout_secs`` idle timer.
+    Also: warm, preheat, pre-fork session.
+
+    Args:
+        crew_id: Which crew to warm. Required — use launch first.
+
+    Returns:
+        ``{"crew_id", "status"}`` where status is one of ``warmed`` |
+        ``already_warm`` | ``disabled`` | ``blocked:<gate>`` | ``error:<msg>``.
+        An unknown crew_id returns ``{"error": ...}`` and performs no start/fork.
+    """
+    return prewarm_impl(crew_id)
 
 
 # _record_last_task_at and _dispatch_batch moved to transport.lifecycle
@@ -3218,7 +3358,11 @@ def steer(
     crew_id: str | None = None,
     force: bool = False,
 ) -> dict:
-    """Guide a running task mid-flight, or continue a completed one.
+    """Step 4b: redirect a running task or continue a completed session — guide a running task mid-flight, or continue a completed one.
+
+    Running vs completed matters: a running task receives a /steer redirect;
+    a completed task resumes via /continue with full prior context intact.
+    Use force=True to hard-stop a running task before resuming its session.
 
     For running tasks: redirects the agent — add constraints, correct
     direction, provide new information. With ``force=True``, hard-stops the
@@ -3275,11 +3419,11 @@ def pickup(
     agent: str | None = None,
     task_ids: list[str] | None = None,
 ) -> dict | list:
-    """Check a task's progress, retrieve its completed result, or list all tasks.
+    """Step 4: check progress or collect the result — check a task's progress, retrieve its completed result, or list all tasks.
 
     With a task_id: returns current state including mail counts. Sessions are
-    preserved after completion — use steer to continue the session, or nuke to
-    destroy it. Also: collect, get result, check progress.
+    preserved after completion — use steer to continue or redirect the session,
+    or nuke to destroy the crew when work is done. Also: collect, get result, check progress.
 
     With a task_ids list (batch pickup): polls every listed task and returns a
     dict keyed by task_id, each value the full single-task pickup shape, plus
@@ -3601,6 +3745,7 @@ if __name__ == "__main__":
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
         ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
         ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+        ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
         ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
     }
     _openapi_schema_public_routes = {
@@ -3633,6 +3778,7 @@ if __name__ == "__main__":
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
             ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
             ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+            ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
         },
         public_routes={

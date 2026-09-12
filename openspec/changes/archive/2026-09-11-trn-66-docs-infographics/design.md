@@ -51,8 +51,8 @@ The `.claude-plugin/skills/` directory is explicitly not copied into crews — i
 ### D3 — Image filenames and storage
 
 **Decision:** Store in `docs/images/` with descriptive kebab-case names:
-- `arch-system-placement.png` — harness → transport → crew → agents
-- `usage-flow.png` — install → connect → launch → dispatch → pickup → nuke
+- `docs-arch-system-placement.png` — harness → transport → crew → agents
+- `docs-usage-flow.png` — install → connect → launch → dispatch → pickup → nuke
 - `fleet-crew-hierarchy.png` — Admiral → fleet → crew → Captain → agents
 - `sdd-workflow.png` — Spectre → Ghost → Banshee → Reaper with Raven/Captain
 - `agent-roles-overview.png` — six personas, what each owns
@@ -62,17 +62,17 @@ The `.claude-plugin/skills/` directory is explicitly not copied into crews — i
 ### D4 — README insertion points
 
 **Decision:**
-- `arch-system-placement.png` — insert after the introductory paragraph ("A multi-agent orchestration system...") and before the "Why Ghostship?" section
-- `usage-flow.png` — insert at the top of the "MCP Tools" table section, just before the tools table
+- `docs-arch-system-placement.png` — insert after the introductory paragraph ("A multi-agent orchestration system...") and before the "Why Ghostship?" section
+- `docs-usage-flow.png` — insert at the top of the "MCP Tools" table section, just before the tools table
 
 **Rationale:** The architecture placement image answers "what is this?" as early as possible for a first-time reader. The usage flow sits next to the tools table because that's where the operational sequence lives and the visual directly annotates it. Inserting earlier would front-load the README too heavily.
 
 **Markdown to use:**
 ```markdown
-![Ghostship architecture: harness → transport → crews → agents](docs/images/arch-system-placement.png)
+![Ghostship architecture: harness → transport → crews → agents](docs/images/docs-arch-system-placement.png)
 ```
 ```markdown
-![Usage flow: install → connect → launch → dispatch → pickup → nuke](docs/images/usage-flow.png)
+![Usage flow: install → connect → launch → dispatch → pickup → nuke](docs/images/docs-usage-flow.png)
 ```
 
 ### D5 — docs/ insertion points

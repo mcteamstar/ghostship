@@ -24,6 +24,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -326,6 +329,194 @@ def cmd_setup(args: list) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand group: auth
+# ---------------------------------------------------------------------------
+
+_AUTH_POLL_INTERVAL = 5      # seconds between GET /login polls
+_AUTH_TIMEOUT = 300          # total seconds before the flow times out
+
+
+def _resolve_transport_url(args: list) -> str:
+    """Resolve the transport base URL.
+
+    Resolution order: --url flag > GHOSTSHIP_URL env var >
+    http://localhost:64057. Trailing slash is stripped.
+    """
+    url = None
+    if "--url" in args:
+        idx = args.index("--url")
+        if idx + 1 < len(args):
+            url = args[idx + 1]
+    if not url:
+        url = os.environ.get("GHOSTSHIP_URL") or "http://localhost:64057"
+    return url.rstrip("/")
+
+
+def _parse_api_key(args: list):
+    """Return the value following --api-key, or None if absent."""
+    if "--api-key" in args:
+        idx = args.index("--api-key")
+        if idx + 1 < len(args):
+            return args[idx + 1]
+    return None
+
+
+def _http_json(url: str, method: str, body=None, api_key=None):
+    """Perform an HTTP request and return the parsed JSON response.
+
+    Sends a JSON body when *body* is provided.
+
+    Raises:
+        urllib.error.HTTPError  — on an HTTP error response (4xx/5xx).
+                                  Callers can read .code and .read() for the
+                                  body before falling through to URLError.
+        urllib.error.URLError   — on a connection failure (network unreachable,
+                                  refused, timeout).
+    """
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req) as resp:
+        raw = resp.read().decode("utf-8")
+    if not raw:
+        return {}
+    return json.loads(raw)
+
+
+def auth_login(args: list) -> int:
+    url = _resolve_transport_url(args)
+    api_key = _parse_api_key(args)
+    login_url = f"{url}/login"
+
+    # Initiate the device auth flow.
+    try:
+        resp = _http_json(login_url, "POST", body={}, api_key=api_key)
+    except urllib.error.HTTPError as exc:
+        # The transport responded with an HTTP error — surface the server
+        # message rather than the generic HTTP reason phrase.
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            body = exc.reason
+        print(f"error: transport returned HTTP {exc.code}: {body}",
+              file=sys.stderr)
+        return 1
+    except urllib.error.URLError as exc:
+        print(f"error: could not reach transport at {url} — {exc.reason}",
+              file=sys.stderr)
+        return 1
+
+    # Transport may report auth is already established.
+    if resp.get("status") == "complete" or resp.get("already_authenticated"):
+        print("Already authenticated.")
+        return 0
+
+    activation_url = resp.get("login_url") or resp.get("verification_url") or ""
+    user_code = resp.get("user_code") or resp.get("code") or ""
+
+    print("To authenticate, open the following URL and enter the code:")
+    if activation_url:
+        print(f"  URL:  {activation_url}")
+    if user_code:
+        print(f"  Code: {user_code}")
+    print("Waiting for you to complete authentication", end="", flush=True)
+
+    # Poll GET /login until complete or the client-side timeout fires.
+    # The server returns {status: "pending"} while the flow is active and
+    # {status: "complete"} when the user finishes authentication.  A 404
+    # ("No login in progress") means the flow was lost server-side (restart,
+    # external nuke) — report that distinctly rather than "lost connection".
+    elapsed = 0
+    while elapsed < _AUTH_TIMEOUT:
+        time.sleep(_AUTH_POLL_INTERVAL)
+        elapsed += _AUTH_POLL_INTERVAL
+        print(".", end="", flush=True)
+        try:
+            poll = _http_json(login_url, "GET", api_key=api_key)
+        except urllib.error.HTTPError as exc:
+            print()
+            try:
+                body = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                body = exc.reason
+            print(f"error: transport returned HTTP {exc.code} while polling: {body}",
+                  file=sys.stderr)
+            return 1
+        except urllib.error.URLError as exc:
+            print()
+            print(f"error: lost connection to transport at {url} — {exc.reason}",
+                  file=sys.stderr)
+            return 1
+        status = poll.get("status")
+        if status == "complete":
+            print()
+            print("Authenticated successfully.")
+            return 0
+
+    print()
+    print("error: authentication timed out before completion.", file=sys.stderr)
+    if activation_url:
+        print(f"  Retry at: {activation_url}", file=sys.stderr)
+    return 1
+
+
+def auth_logout(args: list) -> int:
+    url = _resolve_transport_url(args)
+    api_key = _parse_api_key(args)
+    logout_url = f"{url}/logout"
+    try:
+        _http_json(logout_url, "POST", body={}, api_key=api_key)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            body = exc.reason
+        print(f"error: transport returned HTTP {exc.code}: {body}",
+              file=sys.stderr)
+        return 1
+    except urllib.error.URLError as exc:
+        print(f"error: could not reach transport at {url} — {exc.reason}",
+              file=sys.stderr)
+        return 1
+    print("Logged out.")
+    return 0
+
+
+_AUTH_USAGE = """\
+Usage: ghostship auth <login|logout> [flags]
+
+  login    Start the device auth flow with the transport, print the
+           activation URL + code, and poll until you complete it.
+  logout   Revoke the current transport session.
+
+Flags (both subcommands):
+  --url <transport-url>   Transport base URL
+                          (default: GHOSTSHIP_URL env var, then http://localhost:64057)
+  --api-key <key>         Bearer token for transports that require auth
+"""
+
+_AUTH_COMMANDS = {"login": auth_login, "logout": auth_logout}
+
+
+def cmd_auth(args: list) -> int:
+    if not args or args[0] in ("--help", "-h"):
+        print(_AUTH_USAGE, end="")
+        return 0
+    sub = args[0]
+    handler = _AUTH_COMMANDS.get(sub)
+    if handler is None:
+        print(f"error: unknown auth subcommand '{sub}'", file=sys.stderr)
+        print(_AUTH_USAGE, end="", file=sys.stderr)
+        return 1
+    return handler(args[1:])
+
+
+# ---------------------------------------------------------------------------
 # Usage / dispatch
 # ---------------------------------------------------------------------------
 
@@ -340,6 +531,7 @@ Subcommands:
   uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
   status               Show transport status
   setup      [flags]   Register MCP server + skills for agent clients (kiro, Claude Code, opencode)
+  auth       [login|logout]  Authenticate or deauthenticate with the transport
   version              Print ghostship version
 
 Run 'ghostship <subcommand> --help' for flags specific to that subcommand.
@@ -353,6 +545,7 @@ _COMMANDS = {
     "uninstall": cmd_uninstall,
     "status":    cmd_status,
     "setup":     cmd_setup,
+    "auth":      cmd_auth,
     "version":   cmd_version,
 }
 

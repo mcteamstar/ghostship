@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import time
 
-import httpx
+import httpx2 as httpx
 
 try:
     from config import Config  # container: flat /app/
@@ -66,7 +66,7 @@ _cfg = Config.from_env()
 PORT: int = _cfg.port
 GA_API_KEY: str = ""
 GA_DASHBOARD_PORT_RANGE_START: int = _cfg.ga_dashboard_port_range_start
-GA_DASHBOARD_PORT_RANGE_SIZE: int = _cfg.ga_dashboard_port_range_size
+GA_DASHBOARD_PORT_RANGE_SIZE: int = 1024
 
 
 # ── UI port pool (TRN-80) ─────────────────────────────────────────────────────

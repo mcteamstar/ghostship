@@ -1,6 +1,57 @@
 # Changelog
 
-## v0.3.2 (unreleased)
+## v0.4.0
+
+### New features
+
+- **`ghostship auth login` / `ghostship auth logout` (TRN-150)** — CLI subcommands for the device auth flow. `auth login` initiates the flow, prints the URL and code, and polls until complete. `auth logout` revokes the current session. Both accept `--url` and `--api-key` flags for non-default or remote transports. No new dependencies — stdlib only (`urllib.request`).
+
+- **`GA_DASHBOARD_DEFAULT` config flag (TRN-148)** — sets the default value of the `dashboard` parameter on `launch`. When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call that omits `dashboard` gets a dashboard port allocated automatically. Explicit `True`/`False` always wins. Useful for academies where you always want dashboards without updating every call site.
+
+- **Dispatch slot parameter (TRN-147)** — replaces the `mode` parameter with `slot: str | bool | None`. Controls which KiroCrew dashboard session a dispatched task is attached to:
+  - `slot=None` — headless (no session); default when the crew has no dashboard
+  - `slot="bridge"` — attach to the shared `bridge` slot; default when the crew has a dashboard
+  - `slot=True` — auto-generate a unique slot name per task
+  - `slot="<name>"` — attach to a named slot
+  - The slot is pre-created via `POST /api/chat/slots` before dispatch (409 treated as success).
+
+- **Auto-prewarm at launch (TRN-131)** — `_prewarm_crew()` fires at the end of `_finish_crew_setup`, sending a no-op canary dispatch to warm the KiroCrew process pool before the first real task arrives. Non-fatal — a prewarm failure is logged but does not fail the launch. `pre_warm_status` in the launch response. New env vars: `GA_PREWARM_ENABLED`, `GA_PREWARM_TTL_SECS`.
+
+- **Docs infographics + tool docstrings (TRN-66)** — 3 new infographic PNGs (architecture, usage flow, fleet hierarchy). All 10 `server.py` MCP tool docstrings updated with workflow framing. README and docs reduced by ~30% via a targeted clarity pass.
+
+### Fixes
+
+- **Registry batch lookup subset match (TRN-151)** — `_find_batch_by_task_ids` previously required exact set equality, so a caller with a partial task list (lost or replaced tasks) could never resolve the batch and pickup stayed pending forever. Changed to subset match: if all provided `task_ids` are members of a batch, the batch is returned. Unit tests cover exact match, subset, superset (no match), and disjoint (no match).
+
+- **`_ensure_crew_running` waiter race (TRN-152)** — when the leader's restart raised (memory gate, active-crew limit, gateway-not-ready), `finally` still set the Event but registry status was not reliably corrected. Waiters read stale `"running"` status and proceeded against a crew the leader had just failed to start. The leader now records an explicit success/failure flag on the Event; waiters read it and propagate the error rather than proceeding blindly.
+
+- **`podman.py` hygiene (TRN-154)**:
+  - Bare `except Exception: pass` narrowed to expected HTTP statuses (404/409) across `container_stop`, `container_remove`, `volume_create`, `volume_remove`, `secret_remove`, `network_disconnect`, `network_rm`, and worker cleanup. Real socket/permission failures now propagate or log at WARNING instead of being silently swallowed.
+  - httpx2 sync and async clients are now closed via the uvicorn lifespan shutdown hook instead of module-level atexit (the event loop is gone by atexit time for async clients).
+  - `container_exec` response closed via `try/finally` — httpx2 `Response` has no context manager protocol.
+  - Raw sockets in `container_exec_pty_stdin` / `container_exec_stdin` wrapped in `try/finally` to prevent fd leak on header-phase raise.
+
+### Tests
+
+- **TLS context factory tests (TRN-153)** — new `tests/unit/test_tls.py` covering `_ssl_context_factory`: TLS disabled (no cert/key), TLS enabled with valid cert/key, TLS 1.2 minimum floor enforced, missing cert file raises.
+- **`TransportSecretMiddleware` tests (TRN-153)** — passthrough when secret not configured, correct header passes, wrong header → 401, missing header → 401, constant-time compare verified.
+- **`_ensure_crew_running` + recovery engine tests (TRN-152)** — new unit tests for `_crew_api_with_recovery` and `_phase0_transient_503` / `_phase1_stale_cookie` / `_phase2_dead_gateway` helpers: transient 503 retry, stale cookie refresh, dead-gateway restart, and leader-failure propagation.
+
+### Docs
+
+- **Docs consolidation** — 13 → 8 docs files: `caddy.md` + `dashboard-proxy.md` merged into `portal.md`; `security.md` merged into `auth.md`; `remote.md` folded into `configuration.md`; `reference.md` removed.
+
+### httpx → httpx2 migration
+
+`encode/httpx` went unmaintained in early 2026; Pydantic picked up stewardship under the `httpx2` package name. All 5 transport modules and all test files now use `import httpx2 as httpx`. The old `httpx` package is kept pinned in `requirements.txt` solely for `httpx-ws` until it adds `httpx2` support.
+
+### Other
+
+- Dashboard port range hardcoded to 1024 (was configurable at 50). `GA_DASHBOARD_PORT_RANGE_SIZE` removed as a configurable env var.
+
+---
+
+## v0.3.2
 
 ### Security
 
@@ -89,7 +140,7 @@ Crews now support a `KIRO_API_KEY` env var for headless kiro-cli authentication,
 - Schedule monitor checks the crew gateway `/api/crons` as source of truth before firing jobs.
 - Captain `stop` always updates the registry; the gateway cron call is best-effort.
 
-## v0.2.4 (2026-09-03)
+## v0.2.4
 
 ### TRN-80 — Per-crew dashboard proxy
 - `launch(dashboard=True)` allocates a dedicated port and returns a `dashboard_url` for the crew's browser UI (opt-in; `dashboard=False` by default)

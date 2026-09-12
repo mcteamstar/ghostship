@@ -9,7 +9,9 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ### Requirement: Crew creation via launch
 The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew-type registry based on the optional `composition` parameter (defaulting to `"kirocrew"`). At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
 
-`launch` gains a `dashboard` parameter (default `false`). When `dashboard=true` and `GA_DASHBOARD_PORT_ENABLED=true`, `launch` allocates a port from the configured range, starts a transport-side listener, injects the session cookie and CORS origins, stores `dashboard_port` in the registry, and returns `dashboard_url` in the response. When `dashboard=false` (default), no port is allocated and `dashboard_url` is `null`.
+`launch` gains a `dashboard` parameter (default `null`). When `dashboard=true`, `launch` allocates a port from the configured range, registers it with Portal, stores `dashboard_port` in the registry, and returns `dashboard_url` in the response. When `dashboard=false` or when `dashboard=null` (default) and `GA_DASHBOARD_DEFAULT` is unset or false, no port is allocated and `dashboard_url` is `null`.
+
+When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call behaves as if `dashboard=True` was passed unless the caller explicitly passes `dashboard=False`. The caller-supplied value always wins over the site default. The resolution rule is: `effective_dashboard = dashboard if dashboard is not None else GA_DASHBOARD_DEFAULT`.
 
 #### Scenario: First launch for a new crew_id
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
@@ -42,6 +44,18 @@ The system SHALL create an isolated crew container with a dedicated workspace vo
 #### Scenario: Launch image without version label
 - **WHEN** `launch` is called and the resolved container image does not carry the `org.ghostship.version` label
 - **THEN** the system stores `"unknown"` as `crew_image_version` in the registry and proceeds normally — the missing label is not a launch failure
+
+#### Scenario: GA_DASHBOARD_DEFAULT=true, no explicit dashboard arg
+- **WHEN** `GA_DASHBOARD_DEFAULT=true` is configured and `launch(crew_id)` is called with no `dashboard` argument
+- **THEN** a dashboard port is allocated and `dashboard_url` is non-null in the response, as if `dashboard=True` had been passed
+
+#### Scenario: GA_DASHBOARD_DEFAULT=true, explicit dashboard=False overrides
+- **WHEN** `GA_DASHBOARD_DEFAULT=true` is configured and `launch(crew_id, dashboard=False)` is called
+- **THEN** no dashboard is allocated and `dashboard_url` is null — the explicit `False` wins over the site default
+
+#### Scenario: GA_DASHBOARD_DEFAULT unset or false, no explicit arg — unchanged behaviour
+- **WHEN** `GA_DASHBOARD_DEFAULT` is unset or `false` and `launch(crew_id)` is called with no `dashboard` argument
+- **THEN** no dashboard is allocated and `dashboard_url` is null — existing default behaviour preserved
 
 ### Requirement: Crew teardown via nuke
 The system SHALL require explicit confirmation before tearing down a crew, and SHALL remove the crew's container and both volumes completely once confirmed. When `GA_DASHBOARD_PORT_ENABLED=true` and the crew has a `dashboard_port` assigned, `nuke` SHALL stop the listener and release the port before removing the registry entry. The system SHALL NOT frame `nuke` as routine cleanup or a normal post-task step; its documentation and tooling aliases SHALL communicate that it is a destructive workspace teardown intended only when the operator wants to permanently discard the workspace.

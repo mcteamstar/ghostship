@@ -55,7 +55,7 @@ The transport registry SHALL maintain a `batches` list per crew entry in `crews.
 
 ### Requirement: Blocking batch pickup collects results for a task_ids list
 
-The system SHALL accept `task_ids: list[str]` as an alternative to `task_id: str` on the `pickup` tool. When `task_ids` is provided with `timeout_secs > 0`, the system SHALL poll all listed tasks concurrently (using sequential calls to `_pickup_single` per round) until every task is `done`, the timeout elapses, or new Admiral mail arrives. The response SHALL be a dict keyed by `task_id` with each task's result as the value. When `timeout_secs == 0` and `task_ids` is provided, the system SHALL return a snapshot of each task's current state without blocking. The `task_id` and `task_ids` parameters SHALL be mutually exclusive.
+The system SHALL accept `task_ids: list[str]` as an alternative to `task_id: str` on the `pickup` tool. When `task_ids` is provided with `timeout_secs > 0`, the system SHALL poll all listed tasks concurrently (using sequential calls to `_pickup_single` per round) until every task is `done`, the timeout elapses, or new Admiral mail arrives. The response SHALL be a dict keyed by `task_id` with each task's result as the value. When `timeout_secs == 0` and `task_ids` is provided, the system SHALL return a snapshot of each task's current state without blocking. The `task_id` and `task_ids` parameters SHALL be mutually exclusive. `_find_batch_by_task_ids` SHALL match a batch when **all** provided `task_ids` are members of that batch's recorded task list (subset match), not only when the sets are identical. A superset of task IDs (caller passes more than the batch recorded) SHALL NOT match — the intent is to find the batch a subset belongs to, not to accept arbitrary over-specification.
 
 #### Scenario: Blocking batch pickup — all tasks complete before timeout
 
@@ -86,6 +86,26 @@ The system SHALL accept `task_ids: list[str]` as an alternative to `task_id: str
 
 - **WHEN** `pickup` is called with `task_ids=[]`
 - **THEN** the system returns `{"error": "task_ids must not be empty"}`
+
+#### Scenario: Batch lookup — subset match
+
+- **WHEN** `pickup(task_ids=[id1, id2])` is called and a registered batch contains `[id1, id2, id3]`
+- **THEN** the batch is found and returned (subset of batch task IDs matches)
+
+#### Scenario: Batch lookup — exact match still works
+
+- **WHEN** `pickup(task_ids=[id1, id2, id3])` is called and a registered batch contains exactly `[id1, id2, id3]`
+- **THEN** the batch is found and returned
+
+#### Scenario: Batch lookup — superset does not match
+
+- **WHEN** `pickup(task_ids=[id1, id2, id3, id4])` is called and a registered batch contains only `[id1, id2, id3]`
+- **THEN** no batch is returned (caller passed more IDs than the batch holds)
+
+#### Scenario: Batch lookup — disjoint does not match
+
+- **WHEN** `pickup(task_ids=[id_x, id_y])` is called and no batch contains either ID
+- **THEN** no batch is returned
 
 ### Requirement: Lost-member detection
 

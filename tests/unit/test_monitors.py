@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import ANY, Mock, MagicMock, patch
 
-import httpx
+import httpx2 as httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401

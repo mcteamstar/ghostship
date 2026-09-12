@@ -158,7 +158,7 @@ class FakeResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            import httpx
+            import httpx2 as httpx
 
             raise httpx.HTTPStatusError(
                 f"HTTP {self.status_code}",

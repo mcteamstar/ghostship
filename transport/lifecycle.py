@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 
 try:
     from config import Config  # container: flat /app/
@@ -203,6 +203,14 @@ GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
+GA_PREWARM_ENABLED = cfg.ga_prewarm_enabled
+GA_PREWARM_TTL_SECS = cfg.ga_prewarm_ttl_secs
+
+# The effective crew session idle timeout. Spec-ops crews are patched with a
+# fixed ``session.timeout_secs = 300`` override (see _patch_crew_config); a
+# warm marker must never claim a session is warm past the point the idle reaper
+# would have reclaimed it, so the prewarm TTL is capped at this value.
+GA_SESSION_TIMEOUT_SECS = 300
 
 PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 
@@ -225,10 +233,25 @@ def _secret_identifier(value: str) -> str:
 _startup_events: dict[str, threading.Event] = {}
 _startup_events_lock = threading.Lock()
 
+# TRN-152: Maps crew_id → (success, exc) recorded by the leader before it fires
+# the startup Event. Waiters read this after event.wait() and re-raise the
+# stored exception when success is False, instead of proceeding against a crew
+# that never started. Guarded by _startup_events_lock (same lifecycle as the
+# event it accompanies).
+_crew_restart_outcomes: dict[str, tuple[bool, Exception | None]] = {}
+
 # Per-crew recovery locks: prevent concurrent recovery races within
 # _crew_api_with_recovery.
 _recovery_locks: dict[str, threading.Lock] = {}
 _recovery_locks_lock = threading.Lock()
+
+# TRN-131: Per-crew ACP warm markers. Maps crew_id → warmed_at (monotonic
+# seconds) recording the last successful prewarm. Guarded by its own lock,
+# mirroring the _startup_events_lock / _task_timestamps_lock patterns. The
+# marker is advisory: a missed or stale marker at worst causes one extra
+# idempotent warm-up request, never real work.
+_warm_markers: dict[str, float] = {}
+_warm_markers_lock = threading.Lock()
 
 _SCHEDULE_MONITOR_INTERVAL = 30  # seconds
 
@@ -568,12 +591,42 @@ def _ensure_crew_running(
             event = threading.Event()
             _startup_events[crew_id] = event
             is_leader = True
+            # TRN-152: a NEW restart cycle begins here — drop any outcome left
+            # by a PRIOR leader for this crew. The outcome map is never popped
+            # on completion (its read happens after event.set(), so it cannot
+            # be cleared in the leader's finally without racing the waiter), so
+            # a stale entry survives between cycles. If we did not clear it, a
+            # waiter whose event.wait() times out (leader still in flight, e.g.
+            # a 60s memory wait plus a 60s gateway wait exceeding the 45s wait
+            # window) would read the previous cycle's failure and raise an
+            # unrelated exception. Clearing at election makes the map hold at
+            # most one entry per crew AND guarantees a timed-out waiter sees
+            # None (→ explicit timeout error) rather than a stale outcome.
+            _crew_restart_outcomes.pop(crew_id, None)
 
     if not is_leader:
         # Another caller is already restarting — wait for it then return
         # the refreshed crew dict
         logger.info("Crew %s restart already in progress — waiting", crew_id)
         event.wait(timeout=45)
+        # TRN-152: read the outcome the leader recorded before firing the
+        # Event. If the leader's restart failed (memory gate, crew limit,
+        # gateway timeout, ...), propagate that exact exception instead of
+        # reading a stale "running" status and proceeding against a crew that
+        # never started. A missing entry means the leader timed out without
+        # recording — treat that as a failure too.
+        with _startup_events_lock:
+            outcome = _crew_restart_outcomes.get(crew_id)
+        if outcome is None:
+            raise RuntimeError(
+                f"Crew {crew_id} restart (concurrent) failed -- leader did not "
+                f"record an outcome within the wait window"
+            )
+        success, exc = outcome
+        if not success:
+            raise exc if exc is not None else RuntimeError(
+                f"Crew {crew_id} restart (concurrent) failed"
+            )
         crew_after = _get_crew(crew_id)
         if crew_after.get("status") in ("stopped", "launching", None):
             raise RuntimeError(
@@ -583,6 +636,13 @@ def _ensure_crew_running(
         return crew_after
 
     # We are the leader — do the restart
+    # TRN-152: record a success/failure outcome for waiters before firing the
+    # Event. Default to failure so any exit path that is not an explicit
+    # success (an exception below) leaves waiters with a failure to propagate.
+    _outcome: tuple[bool, Exception | None] = (
+        False,
+        RuntimeError(f"Crew {crew_id} restart (leader) failed"),
+    )
     try:
         logger.info("Crew %s is stopped — restarting", crew_id)
 
@@ -679,12 +739,135 @@ def _ensure_crew_running(
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
             _touch_crew(crew_id)
+        _outcome = (True, None)
         return crew
+    except Exception as exc:
+        # TRN-152: record the failure so waiters re-raise it instead of
+        # proceeding on stale "running" status, then re-raise for our own
+        # caller.
+        _outcome = (False, exc)
+        raise
     finally:
-        # Always unblock waiters and clean up, even on error
+        # Always unblock waiters and clean up, even on error. Publish the
+        # outcome BEFORE firing the Event so a waiter that wakes immediately
+        # sees it. The outcome entry's lifetime is tied to the event's: both
+        # are cleared here once the leader is done (a subsequent leader
+        # re-populates them).
         with _startup_events_lock:
+            _crew_restart_outcomes[crew_id] = _outcome
             _startup_events.pop(crew_id, None)
         event.set()
+
+
+# ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────────
+
+# D1: the gateway surface used to fork the kiro-cli-chat session and complete
+# the ACP handshake WITHOUT enqueuing a real agent task. Pinned to a single
+# constant so a future KiroCrew change is a one-function fix (design D1 / risk
+# note). /api/ready is the gateway's readiness/session surface: it is
+# auth-bypassed and returns 200 only once the session manager is wired, which
+# is the request the transport drives to establish the session/ACP connection.
+_PREWARM_WARMUP_PATH = "/api/ready"
+
+
+def _effective_prewarm_ttl() -> int:
+    """Return the warm-lifetime hint, capped at the session idle timeout.
+
+    D3/D4: GA_PREWARM_TTL_SECS is an operator hint but a warm marker must never
+    claim a session is warm past the point the idle reaper (session.timeout_secs)
+    would have reclaimed it, so the effective TTL is capped at
+    GA_SESSION_TIMEOUT_SECS.
+    """
+    ttl = GA_PREWARM_TTL_SECS if GA_PREWARM_TTL_SECS > 0 else 0
+    return min(ttl, GA_SESSION_TIMEOUT_SECS)
+
+
+def _issue_warmup(crew: dict, crew_id: str) -> None:
+    """Drive the gateway warm-up request that forks the session (D1).
+
+    Routed through _crew_api_with_recovery so the Phase-0 503 "still spawning"
+    tolerance applies exactly as it does for a real dispatch. Raises on failure;
+    the caller translates that into an ``error:`` status.
+    """
+    _crew_api_with_recovery(crew, crew_id, "GET", _PREWARM_WARMUP_PATH)
+
+
+def _prewarm_crew(crew: dict, crew_id: str) -> dict:
+    """Pre-establish a crew's ACP session ahead of an expected dispatch.
+
+    Returns ``{"crew_id": crew_id, "status": <status>}`` where status is one of:
+
+    - ``disabled``      — GA_PREWARM_ENABLED is false; no start / no fork.
+    - ``already_warm``  — running container with a fresh warm marker; no second
+                          warm-up request and no restart.
+    - ``blocked:<gate>``— the memory or active-crew gate refused the start; no
+                          container start.
+    - ``warmed``        — the session was (re)warmed successfully.
+    - ``error:<msg>``   — the warm-up request failed; dispatch behaviour is
+                          unchanged.
+
+    Non-destructive: it dispatches no real task, sends no mail, and writes no
+    spec/workspace state. The only bookkeeping is the in-memory warm marker and
+    whatever _ensure_crew_running already performs for a normal auto-start.
+    """
+    # 2.2: opt-in gate — return early when disabled, before any start/fork.
+    if not GA_PREWARM_ENABLED:
+        return {"crew_id": crew_id, "status": "disabled"}
+
+    ttl = _effective_prewarm_ttl()
+
+    # 2.3: idempotency — a fresh warm marker on a running container is a no-op.
+    try:
+        podman = _get_podman()
+        container_running = podman.container_is_running(crew["container"])
+    except Exception:
+        container_running = False
+
+    if container_running and ttl > 0:
+        with _warm_markers_lock:
+            warmed_at = _warm_markers.get(crew_id)
+        if warmed_at is not None and (time.monotonic() - warmed_at) < ttl:
+            return {"crew_id": crew_id, "status": "already_warm"}
+
+    # 2.4: enforce the memory + active-crew gates, per-crew start serialisation,
+    # and gateway readiness via _ensure_crew_running. A gate RuntimeError is
+    # translated into blocked:<gate>.
+    try:
+        crew = _ensure_crew_running(crew, crew_id)
+    except RuntimeError as e:
+        msg = str(e)
+        if "Active crew limit" in msg:
+            gate = "active-crew-limit"
+        elif "memory" in msg.lower():
+            gate = "insufficient-memory"
+        else:
+            gate = "start-failed"
+        return {"crew_id": crew_id, "status": f"blocked:{gate}"}
+
+    # 2.5 / 2.6: issue the session warm-up (D1). On success record the marker
+    # and report warmed; on failure report error and leave dispatch unchanged.
+    try:
+        _issue_warmup(crew, crew_id)
+    except Exception as e:
+        return {"crew_id": crew_id, "status": f"error:{e}"}
+
+    with _warm_markers_lock:
+        _warm_markers[crew_id] = time.monotonic()
+    logger.info("Crew %s prewarmed (ACP session warm)", crew_id)
+    return {"crew_id": crew_id, "status": "warmed"}
+
+
+def prewarm(crew_id: str | None) -> dict:
+    """Public prewarm entry point shared by the MCP tool and REST endpoint.
+
+    Resolves the crew (2.7: an unknown crew_id returns an error and performs no
+    start or fork) then delegates to _prewarm_crew.
+    """
+    try:
+        crew = _require_crew(crew_id)
+    except (ValueError, KeyError) as e:
+        return {"error": str(e)}
+    return _prewarm_crew(crew, crew_id)
 
 
 # ── Launch helpers ────────────────────────────────────────────────────────────
@@ -1505,6 +1688,7 @@ def _finish_crew_setup(
     composition_entry: dict | None = None,
     *,
     admiral_secret: str,
+    dashboard: bool = False,
 ) -> dict:
     """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
     crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
@@ -1631,6 +1815,21 @@ def _finish_crew_setup(
         result["policy_version"] = policy_version
     if policy_warning is not None:
         result["policy_warning"] = f"Policy injection failed — crew is ungoverned: {policy_warning}"
+
+    # ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────
+    # Fire-and-report: non-fatal. AcpProcessDied on the prewarm is acceptable —
+    # it still expands the balloon. Errors are logged but never bubble up to the
+    # caller so launch always succeeds even if prewarm fails.
+    if GA_PREWARM_ENABLED:
+        try:
+            pw = _prewarm_crew(crew_entry, crew_id)
+            if pw.get("pre_warm_task_id"):
+                result["pre_warm_task_id"] = pw["pre_warm_task_id"]
+            result["pre_warm_status"] = pw.get("status", "unknown")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Crew %s prewarm failed (non-fatal): %s", crew_id, exc)
+            result["pre_warm_status"] = "error"
+
     return result
 
 
@@ -2101,12 +2300,19 @@ def _dispatch_batch(
     agent: str,
     crew_id: str | None,
     model: str | None,
+    slot: str | bool | None = None,
 ) -> dict:
     """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
 
     Validation (size, agent, model) has already run in ``dispatch``. On the
     first CrewUnresponsiveError or unexpected failure the loop breaks and a
     ``partial`` batch is recorded with the task_ids assigned so far.
+
+    ``slot`` follows the same semantics as single-task dispatch: explicit arg
+    (``True`` / ``"<name>"``) > default resolution (``"bridge"`` if the crew
+    has an active dashboard, else ``None`` for headless). For a string slot all
+    tasks in the batch share one ``parent_session``. For ``slot=True`` each
+    task gets a distinct UUID-suffixed slot.
     """
     # Size validation (task 2.3).
     max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
@@ -2120,8 +2326,26 @@ def _dispatch_batch(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
+    # Resolve effective slot: explicit arg > live dashboard check.
+    if slot is None:
+        effective_slot: str | bool | None = "bridge" if crew.get("dashboard_port") else None
+    else:
+        effective_slot = slot
+
+    # For a string slot, all tasks share the same parent_session; pre-create
+    # the dashboard session slot once before the loop (409 = already exists,
+    # treat as success). Non-fatal.
+    shared_parent_session: str | None = None
+    if isinstance(effective_slot, str):
+        shared_parent_session = f"dashboard:{effective_slot}"
+        try:
+            _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
+        except Exception:
+            pass
+
     batch_id = str(uuid.uuid4())
     task_ids: list[str] = []
+    task_slots: dict[str, str] = {}  # task_id -> slot name (for slot=True)
     now = datetime.now(timezone.utc)
     created_at = now.isoformat()
     dispatch_error: str | None = None
@@ -2130,6 +2354,19 @@ def _dispatch_batch(
         body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
         if model is not None:
             body["model"] = model
+        # Inject parent_session per task based on the effective slot.
+        task_slot_name: str | None = None
+        if effective_slot is True:
+            task_slot_name = uuid.uuid4().hex[:8]
+            body["parent_session"] = f"dashboard:{task_slot_name}"
+            # Pre-create the per-task session slot. Non-fatal.
+            try:
+                _crew_api(crew, "POST", "/api/chat/slots", json={"name": task_slot_name})
+            except Exception:
+                pass
+        elif shared_parent_session is not None:
+            body["parent_session"] = shared_parent_session
+
         try:
             result = _crew_api_with_recovery(
                 crew, crew_id, "POST", "/api/spawn", json=body,
@@ -2142,6 +2379,9 @@ def _dispatch_batch(
             dispatch_error = "spawn returned no task id"
             break
         task_ids.append(tid)
+        # Record per-task slot name for slot=True
+        if effective_slot is True and task_slot_name is not None:
+            task_slots[tid] = task_slot_name
         # Per-task timestamp + last_task_at, using this task's response time.
         task_created = datetime.now(timezone.utc).isoformat()
         with _task_timestamps_lock:
@@ -2152,29 +2392,41 @@ def _dispatch_batch(
             }
         _record_last_task_at(crew_id, task_created)
 
+    # Echo the effective slot: the string name, True (auto-per-task), or None.
+    response_slot: str | bool | None = effective_slot
+
     if dispatch_error is None:
         # Task 2.5: full success.
         _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
-        return {
+        response: dict[str, Any] = {
             "batch_id": batch_id,
             "task_ids": task_ids,
             "crew_id": crew_id,
             "status": "dispatched",
             "agent": agent,
+            "slot": response_slot,
             "created_at": created_at,
         }
+        # For slot=True, include per-task slot names.
+        if effective_slot is True and task_slots:
+            response["task_slots"] = task_slots
+        return response
 
     # Task 2.6: partial failure. Record what was started; surface the error.
     _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
-    return {
+    response = {
         "batch_id": batch_id,
         "task_ids": task_ids,
         "crew_id": crew_id,
         "status": "partial",
         "agent": agent,
+        "slot": response_slot,
         "created_at": created_at,
         "error": dispatch_error,
     }
+    if effective_slot is True and task_slots:
+        response["task_slots"] = task_slots
+    return response
 
 
 def _pickup_single(

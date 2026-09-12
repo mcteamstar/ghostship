@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import ANY, Mock, MagicMock, patch
 
-import httpx
+import httpx2 as httpx
 import transport.registry as _registry_mod  # noqa: F401
 import transport.auth as _auth_mod  # noqa: F401  (TRN-137: _parse_bearer_token)
 
@@ -608,3 +608,150 @@ class ParseBearerTokenTests(unittest.TestCase):
         # lacks the required "bearer " (with trailing space) prefix.
         self.assertIsNone(_auth_mod._parse_bearer_token("Bearer"))
         self.assertIsNone(_auth_mod._parse_bearer_token("Bearerx"))
+
+
+# ── TRN-153: TransportSecretMiddleware ──────────────────────────────────────────
+
+class TransportSecretMiddlewareTests(unittest.TestCase):
+    """TRN-153: coverage for the GA_TRANSPORT_SECRET X-Transport-Token gate.
+
+    The middleware header is ``X-Transport-Token`` (the portal→transport secret
+    gate, TRN-107). When the secret is empty the middleware is a transparent
+    pass-through; when set, requests must present a matching token or get 401.
+    """
+
+    def test_secret_not_configured_passes_through(self) -> None:
+        # Empty secret → transparent pass-through, no 401.
+        downstream = _FakeDownstream()
+        mw = _auth_mod.TransportSecretMiddleware(downstream, transport_secret="")
+        scope = _http_scope()
+        status, _, body = _run_asgi(mw, scope)
+        self.assertTrue(downstream.called)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"OK")
+
+    def test_correct_token_passes_through(self) -> None:
+        downstream = _FakeDownstream()
+        mw = _auth_mod.TransportSecretMiddleware(downstream, transport_secret="s3cr3t")
+        scope = _http_scope([(b"x-transport-token", b"s3cr3t")])
+        status, _, body = _run_asgi(mw, scope)
+        self.assertTrue(downstream.called)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"OK")
+
+    def test_wrong_token_returns_401(self) -> None:
+        downstream = _FakeDownstream()
+        mw = _auth_mod.TransportSecretMiddleware(downstream, transport_secret="s3cr3t")
+        scope = _http_scope([(b"x-transport-token", b"wrong")])
+        status, _, _ = _run_asgi(mw, scope)
+        self.assertFalse(downstream.called)
+        self.assertEqual(status, 401)
+
+    def test_missing_token_header_returns_401(self) -> None:
+        downstream = _FakeDownstream()
+        mw = _auth_mod.TransportSecretMiddleware(downstream, transport_secret="s3cr3t")
+        scope = _http_scope([])  # no X-Transport-Token header
+        status, _, _ = _run_asgi(mw, scope)
+        self.assertFalse(downstream.called)
+        self.assertEqual(status, 401)
+
+    def test_token_comparison_uses_compare_digest(self) -> None:
+        # 2.6: the token check must be constant-time (hmac.compare_digest),
+        # not a plain ``==``. Patch hmac.compare_digest and assert it is the
+        # function that decides the outcome.
+        downstream = _FakeDownstream()
+        mw = _auth_mod.TransportSecretMiddleware(downstream, transport_secret="s3cr3t")
+        scope = _http_scope([(b"x-transport-token", b"s3cr3t")])
+        with patch.object(_auth_mod.hmac, "compare_digest", wraps=_auth_mod.hmac.compare_digest) as spy:
+            status, _, _ = _run_asgi(mw, scope)
+        self.assertTrue(spy.called)
+        spy.assert_called_once_with("s3cr3t", "s3cr3t")
+        self.assertEqual(status, 200)
+
+    def test_compare_digest_false_forces_401(self) -> None:
+        # Belt-and-braces: if compare_digest reports a mismatch the request is
+        # rejected even when the raw values would compare equal under ``==``.
+        downstream = _FakeDownstream()
+        mw = _auth_mod.TransportSecretMiddleware(downstream, transport_secret="s3cr3t")
+        scope = _http_scope([(b"x-transport-token", b"s3cr3t")])
+        with patch.object(_auth_mod.hmac, "compare_digest", return_value=False):
+            status, _, _ = _run_asgi(mw, scope)
+        self.assertFalse(downstream.called)
+        self.assertEqual(status, 401)
+
+    def test_non_http_scope_passes_through(self) -> None:
+        # WebSocket/lifespan scopes bypass the token gate entirely.
+        downstream = _FakeDownstream()
+        mw = _auth_mod.TransportSecretMiddleware(downstream, transport_secret="s3cr3t")
+        ws_calls: list = []
+
+        async def _ws_app(scope, receive, send):
+            ws_calls.append(scope["type"])
+
+        mw.app = _ws_app
+
+        async def _noop_recv():
+            return {}
+
+        async def _noop_send(_msg):
+            return None
+
+        asyncio.run(mw({"type": "websocket"}, _noop_recv, _noop_send))
+        self.assertEqual(ws_calls, ["websocket"])
+
+
+# ── TRN-153: _load_transport_secret ─────────────────────────────────────────────
+
+class LoadTransportSecretTests(unittest.TestCase):
+    """TRN-153: coverage for server._load_transport_secret.
+
+    Documented behaviour: read /run/secrets/ga-transport-secret, return its
+    content stripped when present and non-empty; return "" when the file is
+    absent (so transport can boot in dev/test without the Podman secret).
+    """
+
+    def test_secret_file_present_returns_stripped_content(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            secret_file = Path(td) / "ga-transport-secret"
+            secret_file.write_text("  my-transport-secret\n")
+
+            class _FakePath:
+                # Stand in for server.Path so the hard-coded /run/secrets path
+                # resolves to our temp file.
+                def __init__(self, _p):
+                    self._p = secret_file
+
+                def is_file(self):
+                    return self._p.is_file()
+
+                def read_text(self):
+                    return self._p.read_text()
+
+            with patch.object(server, "Path", _FakePath), \
+                    patch.object(server._security, "register_secret") as reg:
+                result = server._load_transport_secret()
+
+            self.assertEqual(result, "my-transport-secret")
+            # Non-empty secret is registered with the log-redaction filter.
+            reg.assert_called_once_with("my-transport-secret")
+
+    def test_secret_file_absent_returns_empty_string(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            missing = Path(td) / "does-not-exist"
+
+            class _FakePath:
+                def __init__(self, _p):
+                    self._p = missing
+
+                def is_file(self):
+                    return self._p.is_file()
+
+                def read_text(self):  # pragma: no cover - not reached
+                    return self._p.read_text()
+
+            with patch.object(server, "Path", _FakePath), \
+                    patch.object(server._security, "register_secret") as reg:
+                result = server._load_transport_secret()
+
+            self.assertEqual(result, "")
+            reg.assert_not_called()

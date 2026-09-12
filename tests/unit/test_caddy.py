@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import ANY, Mock, MagicMock, patch
 
-import httpx
+import httpx2 as httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
@@ -1118,6 +1118,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
             mock_cfg.ga_portal_tls_mode = "internal"
             mock_cfg.ga_dashboard_port_range_start = 9000
             mock_cfg.ga_dashboard_port_range_size = 50
+            mock_cfg.ga_dashboard_default = False
             result = server.launch("demo")  # no dashboard=... passed
 
         self.assertIsNone(result.get("dashboard_url"))
