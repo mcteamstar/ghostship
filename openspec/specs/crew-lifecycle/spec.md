@@ -636,12 +636,31 @@ The effective model for any given agent is resolved in this precedence order (hi
 - **WHEN** both `KC_MODEL_OVERRIDE` and `KC_MODEL_DEFAULT` are set
 - **THEN** `_patch_models` writes `KC_MODEL_OVERRIDE` into every agent JSON's `"model"` field, making `KC_MODEL_DEFAULT` irrelevant in practice (the per-agent field is now set, so the default is never reached)
 
+### Requirement: Base image version
+
+The transport SHALL use `ghcr.io/kirodotdev/kirocrew:0.6.0` as the default value of `KC_BASE_IMAGE` (both the `Config` dataclass field and the `from_env()` fallback). The version string SHALL appear in exactly two places in `transport/config.py` and nowhere else as a hardcoded literal.
+
+#### Scenario: Default base image is 0.6.0
+- **WHEN** `Config.from_env()` is called without `KC_BASE_IMAGE` set
+- **THEN** `cfg.kc_base_image` is `"ghcr.io/kirodotdev/kirocrew:0.6.0"`
+
+#### Scenario: KC_BASE_IMAGE override is respected
+- **WHEN** `KC_BASE_IMAGE=ghcr.io/myorg/custom:latest` is set
+- **THEN** `cfg.kc_base_image` is `"ghcr.io/myorg/custom:latest"`
+
 ### Requirement: Crew config patches sandbox=off for Podman rootless compatibility
 
-The `_patch_crew_config` function SHALL write `"sandbox": "off"` into the `agent` block of `config.local.json`. This disables the KiroCrew inner namespace sandbox, which since 0.5.0 performs a `MS_REMOUNT|MS_BIND|MS_RDONLY` bind-mount to seal credential directories read-only and exits rc=1 (fail-closed) if that mount fails. Under Podman rootless the kernel denies this remount with EPERM because user namespaces inside rootless containers do not have the required mount permission; without this override every agent spawn fails immediately with `AcpRuntimeDead`. The `"sandbox": "off"` value is a pre-existing KiroCrew config option — it short-circuits `detect_backend()` to return `"none"` before the mount is attempted. The Podman container itself remains the OS-level isolation boundary.
+The `_patch_crew_config` function SHALL write `"sandbox": "off"` into the `agent` block of `config.local.json`. This disables the KiroCrew inner namespace sandbox, which performs a `MS_REMOUNT|MS_BIND|MS_RDONLY` bind-mount to seal credential directories read-only and exits rc=1 (fail-closed) if that mount fails.
+
+In KiroCrew 0.5.0 this behaviour was introduced. In KiroCrew 0.6.0 the sandbox mode `"auto"` became the explicit gateway default (previously the default was named `"off"` on hosts that did not support namespaces, but is now `"auto"` on all capable hosts). Under Podman rootless the kernel denies the remount with EPERM because user namespaces inside rootless containers lack the required mount privilege; without this override every agent spawn fails with `AcpRuntimeDead rc=1`. The `"sandbox": "off"` value is a pre-existing KiroCrew config option — it short-circuits `detect_backend()` to return `"none"` before the mount is attempted. The Podman container itself remains the OS-level isolation boundary.
 
 #### Scenario: Crew spawns succeed on Podman rootless
 - **WHEN** a crew is launched on a Podman rootless host (the standard ghostship deployment)
+- **THEN** `config.local.json` contains `"sandbox": "off"` inside the `agent` block
+- **AND** agent dispatches complete without `AcpRuntimeDead: process exited (rc=1)`
+
+#### Scenario: Crew spawns succeed on Podman rootless with 0.6.0 image
+- **WHEN** a crew is launched using `ghcr.io/kirodotdev/kirocrew:0.6.0` on a Podman rootless host
 - **THEN** `config.local.json` contains `"sandbox": "off"` inside the `agent` block
 - **AND** agent dispatches complete without `AcpRuntimeDead: process exited (rc=1)`
 
@@ -649,6 +668,27 @@ The `_patch_crew_config` function SHALL write `"sandbox": "off"` into the `agent
 - **WHEN** `"sandbox": "off"` is patched into the crew config
 - **THEN** kiro-cli authentication, model selection, and all governance policy checks remain fully enforced
 - **AND** only the inner Linux user-namespace bind-mount step is bypassed
+
+### Requirement: subagent_max_turns ceiling documentation
+
+The `_patch_crew_config` function writes `GA_SUBAGENT_MAX_TURNS` (default 200) into `config.local.json` as `subagent_max_turns`. This value is subject to a KiroCrew-enforced ceiling:
+
+- KiroCrew 0.5.0: ceiling was 200
+- KiroCrew 0.6.0: ceiling raised to 1000
+
+The transport default of 200 is within the 0.6.0 ceiling. Operators who wish to allow longer-running tasks may set `GA_SUBAGENT_MAX_TURNS` up to 1000 without a KiroCrew validation error.
+
+#### Scenario: Default subagent_max_turns is within 0.6.0 ceiling
+- **WHEN** `GA_SUBAGENT_MAX_TURNS` is unset
+- **THEN** `subagent_max_turns` is patched to 200, which is within the KiroCrew 0.6.0 ceiling of 1000
+
+#### Scenario: GA_SUBAGENT_MAX_TURNS up to 1000 is accepted
+- **WHEN** `GA_SUBAGENT_MAX_TURNS=1000`
+- **THEN** `subagent_max_turns` is patched to 1000 without a gateway rejection
+
+#### Scenario: GA_SUBAGENT_MAX_TURNS above 1000 behaviour
+- **WHEN** `GA_SUBAGENT_MAX_TURNS=2000`
+- **THEN** the transport writes 2000 to the config; KiroCrew 0.6.0 may clamp or reject this at runtime. Operators should stay within the documented ceiling.
 
 ### Requirement: Active crew limit enforced before restart
 
