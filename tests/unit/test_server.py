@@ -1231,6 +1231,36 @@ class ReadAuthFromCrewTests(unittest.TestCase):
         result = server._read_auth_from_crew(podman, "gs-test")
         self.assertEqual(result, b64)
 
+    def test_returns_none_when_only_the_device_registration_row_is_populated(self) -> None:
+        """The registration row is written the instant the device flow starts —
+        with a real (non-empty) client_id/client_secret payload, well before
+        the user approves anything. Its presence alone must not read as
+        'login complete' (observed live: this exact key/shape got captured
+        and injected into crews before the actual grant existed)."""
+        rows = [["kirocli:odic:device-registration",
+                  '{"client_id": "abc", "client_secret": "xyz"}']]
+        b64 = self._b64_rows(rows)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertIsNone(result)
+
+    def test_returns_payload_once_a_real_credential_row_joins_the_registration_row(self) -> None:
+        """Once a non-registration row also has a value, the grant is real."""
+        rows = [
+            ["kirocli:odic:device-registration", '{"client_id": "abc"}'],
+            ["kirocli:odic:access-token", "eyJhbGciOiJSUzI1NiJ9.payload"],
+        ]
+        b64 = self._b64_rows(rows)
+
+        podman = Mock()
+        podman.container_exec.return_value = b64
+
+        result = server._read_auth_from_crew(podman, "gs-test")
+        self.assertEqual(result, b64)
+
     def test_uses_inline_python_not_a_bundled_script_path(self) -> None:
         """Must work in bare kirocrew login containers, which have no /scripts/.
 

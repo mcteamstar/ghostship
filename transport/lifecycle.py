@@ -1141,12 +1141,25 @@ def _mint_cookie(podman: PodmanClient, container: str, crew_url: str) -> str | N
         return None
 
 
+# kiro-cli writes this row the instant it registers an OIDC device-flow
+# client — before the user has even seen the approval screen, let alone
+# granted it. It is present throughout the whole flow (pending or complete),
+# so its mere existence must never be treated as evidence the login finished;
+# only a *different*, non-empty auth_kv row (the actual granted credential,
+# written after the user approves) proves that.
+_LOGIN_PRECURSOR_KEYS = {"kirocli:odic:device-registration"}
+
+
 def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
     """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON.
 
     Uses an inline python one-liner so this works in both crew containers
     (base-admission image, which has /scripts/) and ephemeral login containers
     (bare kirocrew image, which does not).
+
+    Returns None while only the device-flow registration precursor row is
+    present — that row exists from the moment the flow *starts*, so it is not
+    evidence the user has actually completed the grant (TRN-143 follow-up).
     """
     extract = (
         "import sqlite3, json, base64; "
@@ -1159,7 +1172,9 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
         b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
         if b64:
             rows = json.loads(base64.b64decode(b64).decode())
-            if rows and any(r[1] for r in rows if len(r) > 1):
+            if rows and any(
+                r[1] for r in rows if len(r) > 1 and r[0] not in _LOGIN_PRECURSOR_KEYS
+            ):
                 return b64
     except Exception as e:
         logger.warning("Auth read failed: %s", e)
