@@ -243,6 +243,13 @@ _startup_events_lock = threading.Lock()
 # event it accompanies).
 _crew_restart_outcomes: dict[str, tuple[bool, Exception | None]] = {}
 
+# TRN-157: generation counter — tracks restart cycle identity per crew.
+# Incremented when a new leader is elected; waiters capture the generation before
+# event.wait() and verify it is unchanged after waking, so a third concurrent caller
+# starting a new cycle cannot corrupt a prior waiter's outcome read.
+# Guarded by _startup_events_lock (same lifecycle as _startup_events).
+_startup_generation: dict[str, int] = {}
+
 # Per-crew recovery locks: prevent concurrent recovery races within
 # _crew_api_with_recovery.
 _recovery_locks: dict[str, threading.Lock] = {}
@@ -590,6 +597,8 @@ def _ensure_crew_running(
         if crew_id in _startup_events:
             event = _startup_events[crew_id]
             is_leader = False
+            # TRN-157: capture generation before releasing lock
+            _waiter_gen = _startup_generation.get(crew_id, 0)
         else:
             event = threading.Event()
             _startup_events[crew_id] = event
@@ -606,6 +615,9 @@ def _ensure_crew_running(
             # most one entry per crew AND guarantees a timed-out waiter sees
             # None (→ explicit timeout error) rather than a stale outcome.
             _crew_restart_outcomes.pop(crew_id, None)
+            # TRN-157: increment generation for this new restart cycle
+            _startup_generation[crew_id] = _startup_generation.get(crew_id, 0) + 1
+            _waiter_gen = _startup_generation[crew_id]  # leader also captures (unused but symmetric)
 
     if not is_leader:
         # Another caller is already restarting — wait for it then return
@@ -618,8 +630,16 @@ def _ensure_crew_running(
         # reading a stale "running" status and proceeding against a crew that
         # never started. A missing entry means the leader timed out without
         # recording — treat that as a failure too.
+        # TRN-157: check generation under lock before reading outcome
         with _startup_events_lock:
             outcome = _crew_restart_outcomes.get(crew_id)
+            _current_gen = _startup_generation.get(crew_id, 0)
+        if _current_gen != _waiter_gen:
+            raise RuntimeError(
+                f"Crew {crew_id} restart (concurrent) failed -- restart cycle changed "
+                f"during wait (waited on gen {_waiter_gen}, current gen {_current_gen}); "
+                f"a new restart cycle started before outcome was read"
+            )
         if outcome is None:
             raise RuntimeError(
                 f"Crew {crew_id} restart (concurrent) failed -- leader did not "

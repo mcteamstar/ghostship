@@ -2083,6 +2083,20 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard)
+        # TRN-157: _finish_crew_setup error-dict paths have already called _cleanup_crew
+        # (removing the admiral secret and Podman resources). The registry placeholder
+        # entry written before the try block still exists and must be removed here.
+        if "error" in result:
+            with _registry_lock:
+                reg = _load_registry()
+                reg["crews"].pop(crew_id, None)
+                _save_registry(reg)
+            if dashboard_port is not None:
+                try:
+                    _caddy_portal.release_port(dashboard_port)
+                except Exception:
+                    pass
+            return result
         # TRN-101: persist dashboard_port in registry and register with Caddy.
         # The per-port uvicorn listener is removed; Portal is the sole proxy.
         if dashboard_port is not None and "error" not in result:
