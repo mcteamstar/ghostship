@@ -19,14 +19,13 @@ CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7474"]
 
 Dependencies (`lighthouse/requirements.txt`):
 ```
-uvicorn==0.30.6
-starlette==0.41.2
-httpx==0.27.2
+uvicorn>=0.31.1,<1.0.0
+starlette>=1.0.1,<2.0.0
+httpx2==2.12.0
 ```
 
-These three are already present in `transport/requirements.txt` — no new
-library surface. The versions here must be pinned and kept in sync with the
-transport's pins to avoid image-layer divergence.
+These are kept in sync with the transport's `requirements.txt` pins — use the
+same versions to avoid image-layer divergence and ensure API compatibility.
 
 ### Directory Layout
 

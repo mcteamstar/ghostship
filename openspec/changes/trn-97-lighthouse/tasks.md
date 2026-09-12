@@ -106,8 +106,10 @@ for unknown crew. Returns `503` for stopped crew. Returns `404` when
 - `lighthouse/requirements.txt`
 
 Contents as specified in `design.md` under "Container Specification". Pin all
-versions. The three dependencies (`uvicorn`, `starlette`, `httpx`) must use
-the same pinned versions as `transport/requirements.txt`.
+versions. The three dependencies (`uvicorn`, `starlette`, `httpx2`) must use
+the same pinned versions as `transport/requirements.txt` — use `httpx2`, not
+`httpx` (the transport migrated to `httpx2` in TRN-155; `httpx` is no longer
+a direct transport dependency).
 
 Verify the image builds with `podman build -t localhost/lighthouse:latest
 lighthouse/`. It must produce a runnable container.
@@ -134,7 +136,8 @@ Starlette application that:
 3. Implements a proxy route `GET /api/*` that:
    - Adds `X-Transport-Token: <TRANSPORT_TOKEN>` to all outbound requests
    - If `API_KEY` is non-empty, adds `Authorization: Bearer <API_KEY>`
-   - Forwards to `http://ga-transport:64057/api/{rest-of-path}` via `httpx`
+   - Forwards to `http://ga-transport:64057/api/{rest-of-path}` via `httpx2`
+     (`import httpx2 as httpx` — consistent with the transport and TRN-155)
    - Streams the response body and status code back to the browser unchanged
    - Sets a hard timeout of 10 s per request
 4. Implements a `GET /healthz` endpoint that returns `200 OK {"status": "ok"}`.
