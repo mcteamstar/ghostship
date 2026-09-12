@@ -84,7 +84,7 @@ Run it as-is or make it your own. Once you add agent personas, skills, or new cr
 
 ### Connecting to a harness
 
-Before your first `launch`, complete the device auth flow — open the URL returned by `POST /login` or by calling `launch` without auth. See [docs/auth.md](docs/auth.md) for the walkthrough.
+Before your first `launch`, complete the device auth flow — run `ghostship auth login`, or open the URL returned by `POST /login` or by calling `launch` without auth. See [docs/auth.md](docs/auth.md) for the walkthrough.
 
 > **Shortcut:** `ghostship setup` automatically registers the MCP server and installs skill symlinks for detected agent clients (kiro-cli, Claude Code, opencode). Run it after `./install.sh`. It is idempotent — safe to re-run.
 
@@ -171,13 +171,13 @@ Registered as `ghostship`:
 | Tool | Name | Description |
 |:-:|:------|:-----|
 | <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
-| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`). `dashboard=True` allocates a port and returns a `dashboard_url`; default is headless. |
+| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`). `dashboard=True` allocates a port and returns a `dashboard_url`; default follows `GA_DASHBOARD_DEFAULT` (headless if unset). |
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace. |
 | <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
 | <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order. Built-in templates: `sdd` (drives named OpenSpec changes through the Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a name or comma-separated list) and `independent-review` (four concurrent reviewers — Wraith for docs, three Banshees for security/quality/test-coverage — mailing a consolidated report to the Admiral). |
 | <img src="docs/images/tool-schedule.png" width="256"> | `schedule` | Book, cancel, or list recurring tasks. `action="create"` with `cron`, `interval`, or `delay`; `action="cancel"` by job_id; `action="list"` returns all active jobs. |
-| <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas. Always immediate — returns a `task_id`. Pass `tasks=[...]` for atomic batch dispatch; response includes `batch_id` and per-task `task_ids`. |
+| <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas. Always immediate — returns a `task_id`. Pass `tasks=[...]` for atomic batch dispatch; response includes `batch_id` and per-task `task_ids`. `slot` controls which dashboard session the task attaches to (`None` headless, `"bridge"` shared, `True` auto-unique, `"<name>"` named). |
 | <img src="docs/images/tool-steer.png" width="256"> | `steer` | Guide a running task or continue a completed one; `force=True` hard-stops before continuing. |
 | <img src="docs/images/tool-pickup.png" width="256"> | `pickup` | Check progress or collect result. `timeout_secs=0` checks once; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
