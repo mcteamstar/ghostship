@@ -580,8 +580,9 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         # Maildir: empty new/ and cur/ → "0 0"
         missing.container_exec_checked.return_value = "0 0\n"
         self.assertEqual(server._mail_count(missing, "gs-demo", "/var/mail/captain"), 0)
-        script = missing.container_exec_checked.call_args.args[1][2]
-        self.assertIn("/var/mail/captain", script)
+        # mailbox_path is now passed as a positional arg ($1) at index 3 after "--"
+        call_args = missing.container_exec_checked.call_args.args[1]
+        self.assertIn("/var/mail/captain", call_args)
 
         unavailable = Mock()
         unavailable.container_exec_checked.side_effect = RuntimeError(

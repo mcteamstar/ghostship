@@ -737,9 +737,12 @@ class SecurityHeadersMiddleware:
             host = self._host(scope)
             path = scope.get("path", "/")
             qs = scope.get("query_string", b"")
+            # Strip control characters from all Location components to prevent
+            # CRLF injection in the redirect header.
+            host = re.sub(r"[\x00-\x1f\x7f]", "", host)
+            path = re.sub(r"[\x00-\x1f\x7f]", "", path)
             target = f"https://{host}{path}"
             if qs:
-                # Strip control characters to prevent CRLF injection in Location.
                 sanitised = re.sub(r"[\x00-\x1f\x7f]", "", qs.decode("latin-1"))
                 target += "?" + sanitised
             await send({

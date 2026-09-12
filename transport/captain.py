@@ -435,16 +435,21 @@ def _mail_count(
     Counts files in new/ and cur/ subdirectories of the Maildir.
     Falls back to mbox counting for backward compatibility with
     pre-Maildir crews.
+
+    Uses list-form exec (no shell interpolation) to avoid shell injection
+    via mailbox_path. The path argument is passed as a positional parameter
+    rather than interpolated into the script string.
     """
+    # Single sh invocation but mailbox_path is passed as a positional arg ($1)
+    # rather than interpolated into the script — safe against injection.
     script = (
-        f'if [ -d "{mailbox_path}/new" ]; then '
-        f'echo $(ls -1 "{mailbox_path}/new" 2>/dev/null | wc -l) '
-        f'$(ls -1 "{mailbox_path}/cur" 2>/dev/null | wc -l); '
-        f'elif [ -f "{mailbox_path}" ]; then '
-        f'grep -c "^From " "{mailbox_path}" 2>/dev/null || echo 0; '
-        f'else echo "0 0"; fi'
+        'if [ -d "$1/new" ]; then '
+        'echo $(ls -1 "$1/new" 2>/dev/null | wc -l) $(ls -1 "$1/cur" 2>/dev/null | wc -l); '
+        'elif [ -f "$1" ]; then '
+        'grep -c "^From " "$1" 2>/dev/null || echo 0; '
+        'else echo "0 0"; fi'
     )
-    raw = podman.container_exec_checked(container, ["sh", "-c", script])
+    raw = podman.container_exec_checked(container, ["sh", "-c", script, "--", mailbox_path])
     parts = raw.strip().split()
     try:
         if len(parts) == 2:
