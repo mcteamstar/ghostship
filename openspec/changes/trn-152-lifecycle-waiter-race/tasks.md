@@ -2,7 +2,7 @@
 
 - [ ] 1.1 Locate `_ensure_crew_running` in `transport/lifecycle.py` — understand the Event + per-crew dict structure
 - [ ] 1.2 Add an outcome slot to the per-crew event entry: `_crew_restart_outcomes: dict[str, tuple[bool, Exception | None]]`
-- [ ] 1.3 In the leader's `finally` block: write `(True, None)` on success, `(exc_type is None, exc)` on failure before calling `event.set()`
+- [ ] 1.3 In the leader block: use a `_outcome` local initialized to `(False, RuntimeError("leader failed"))` before the restart attempt; overwrite with `(True, None)` on success; on exception catch and store `(False, exc)` — then call `event.set()` after writing the outcome
 - [ ] 1.4 In waiter code after `event.wait()`: read the outcome and `raise` the stored exception if `success is False`
 - [ ] 1.5 Clean up the outcome entry after waiters have consumed it (or tie lifetime to the event's lifecycle)
 - [ ] 1.6 `python3 -m py_compile transport/lifecycle.py` — syntax clean

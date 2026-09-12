@@ -9,7 +9,7 @@
 ## 2. Close httpx2 clients on exit
 
 - [ ] 2.1 After the two module-level client instantiations, add `atexit.register(client.close)` for the sync client
-- [ ] 2.2 Add a sync wrapper that calls `asyncio.run(async_client.aclose())` and register with `atexit` for the async client
+- [ ] 2.2 For the async client: register a `signal.signal(SIGTERM, ...)` handler or use uvicorn's lifespan shutdown hook to call `await async_client.aclose()` — do NOT use `asyncio.run` in atexit (event loop may be gone); alternatively restructure the async client as a module-level lazy singleton closed in the app lifespan
 - [ ] 2.3 Verify import: `import atexit` added if not already present
 
 ## 3. Fix container_exec response leak
@@ -18,7 +18,7 @@
 
 ## 4. Fix raw socket leaks
 
-- [ ] 4.1 In `container_exec_pty_stdin` — wrap connect + HTTP upgrade block in `try/except: sock.close(); raise`
+- [ ] 4.1 In `container_exec_pty_stdin` — wrap connect + HTTP upgrade block in `try/finally: if not success: sock.close()` (success flag set after upgrade completes; on raise, finally closes the socket before propagating)
 - [ ] 4.2 In `container_exec_stdin` — same pattern
 
 ## 5. Verification
