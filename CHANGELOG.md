@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 (unreleased)
+## v0.4.0
 
 ### New features
 
@@ -140,7 +140,7 @@ Crews now support a `KIRO_API_KEY` env var for headless kiro-cli authentication,
 - Schedule monitor checks the crew gateway `/api/crons` as source of truth before firing jobs.
 - Captain `stop` always updates the registry; the gateway cron call is best-effort.
 
-## v0.2.4 (2026-09-03)
+## v0.2.4
 
 ### TRN-80 — Per-crew dashboard proxy
 - `launch(dashboard=True)` allocates a dedicated port and returns a `dashboard_url` for the crew's browser UI (opt-in; `dashboard=False` by default)
