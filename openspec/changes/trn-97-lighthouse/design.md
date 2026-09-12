@@ -230,12 +230,12 @@ Returns the fleet registry augmented with live agent state. Shape mirrors the
       "dashboard_url": "http://localhost:64058",
       "agents": [
         {"task_id": "abc123", "agent": "ghost", "done": false, "elapsed_secs": 120}
-      ],
-      "host_memory_available_gb": 8.4,
-      "active_crews": 2,
-      "max_active_crews": 3
+      ]
     }
-  ]
+  ],
+  "host_memory_available_gb": 8.4,
+  "active_crews": 2,
+  "max_active_crews": 6
 }
 ```
 

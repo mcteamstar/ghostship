@@ -85,12 +85,13 @@ The `ga-transport` server SHALL expose a new REST endpoint
 - **WHEN** a client sends `GET /api/crews` with a valid Bearer token
   (or no token when `GA_API_KEY` is not set)
 - **THEN** the server SHALL return `200 OK` with `application/json`
-- **AND** the response body SHALL be a JSON object with a `"crews"` array
-- **AND** each element SHALL include: `crew_id`, `container`, `status`,
-  `composition`, `created_at`, `last_task_at`, `gateway_healthy`,
-  `crew_image_version`, `uptime_secs`, `dashboard_url`,
-  `agents` (array of `{task_id, agent, done, elapsed_secs}`),
-  `host_memory_available_gb`, `active_crews`, `max_active_crews`
+- **AND** the response body SHALL be a JSON object with:
+  - a `"crews"` array where each element includes: `crew_id`, `container`,
+    `status`, `composition`, `created_at`, `last_task_at`, `gateway_healthy`,
+    `crew_image_version`, `uptime_secs`, `dashboard_url`, and
+    `agents` (array of `{task_id, agent, done, elapsed_secs}`)
+  - top-level `host_memory_available_gb`, `active_crews`, `max_active_crews`
+    (matching the shape returned by the `crews()` MCP tool)
 
 ### Scenario: endpoint absent when flag off
 

@@ -59,8 +59,10 @@ extract those functions into a shared utility that both the MCP tool and this
 route call.
 
 **Acceptance**: `GET /api/crews` with a valid Bearer token returns `200` with
-the correct JSON shape. With no token (when `GA_API_KEY` is set), returns `401`.
-When `GA_LIGHTHOUSE_ENABLED=false`, returns `404`.
+the correct JSON shape: top-level `crews` array plus top-level
+`host_memory_available_gb`, `active_crews`, `max_active_crews` (matching the
+`crews()` MCP tool response shape). With no token (when `GA_API_KEY` is set),
+returns `401`. When `GA_LIGHTHOUSE_ENABLED=false`, returns `404`.
 
 ---
 
@@ -180,9 +182,9 @@ The script must:
    after TTL).
 5. "Open dashboard" link: `href = window.location.origin + '/crews/' + crewId + '/ui/'`.
 6. Fleet header: show `active_crews` / `max_active_crews` and
-   `host_memory_available_gb` (from the first element of `data.crews`, or
-   from a separate property if the response shape is adjusted to include
-   host-level data at the top level — see T2 acceptance).
+   `host_memory_available_gb` from the top-level fields of the `/api/crews`
+   response (i.e. `data.active_crews`, `data.max_active_crews`,
+   `data.host_memory_available_gb` — not from inside any crew element).
 7. Last-updated timestamp in the header, updated on every successful poll.
 
 Style: minimal, functional. Dark-on-light or light-on-dark is acceptable.
