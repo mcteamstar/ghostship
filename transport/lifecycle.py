@@ -263,6 +263,18 @@ _recovery_locks_lock = threading.Lock()
 _warm_markers: dict[str, float] = {}
 _warm_markers_lock = threading.Lock()
 
+# TRN-156: bounded in-process memory. _task_timestamps completed entries are
+# evicted once their completed_at is older than _TASK_TIMESTAMP_TTL_SECS
+# (env-overridable); _warm_markers entries are evicted once older than
+# _WARM_MARKER_TTL_SECS. Both TTLs floor at one hour.
+_TASK_TIMESTAMP_TTL_SECS = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
+
+
+def _warm_marker_ttl_secs() -> float:
+    """Warm-marker TTL: twice the prewarm TTL, with a one-hour floor."""
+    return float(max(GA_PREWARM_TTL_SECS * 2 if GA_PREWARM_TTL_SECS > 0 else 3600, 3600))
+
+
 _SCHEDULE_MONITOR_INTERVAL = 30  # seconds
 
 
@@ -876,9 +888,10 @@ def _prewarm_crew(crew: dict, crew_id: str) -> dict:
 
     with _warm_markers_lock:
         _warm_markers[crew_id] = time.monotonic()
-        # TRN-156: evict warm markers older than twice the prewarm TTL (1h min)
-        # so _warm_markers does not accumulate entries for crews long gone.
-        _wm_ttl = max(GA_PREWARM_TTL_SECS * 2 if GA_PREWARM_TTL_SECS > 0 else 3600, 3600)
+        # TRN-156: evict warm markers older than _WARM_MARKER_TTL_SECS (twice
+        # the prewarm TTL, 1h min) so _warm_markers does not accumulate entries
+        # for crews long gone.
+        _wm_ttl = _warm_marker_ttl_secs()
         _wm_now = time.monotonic()
         _expired_wm = [k for k, v in _warm_markers.items() if (_wm_now - v) > _wm_ttl]
         for k in _expired_wm:
@@ -2522,8 +2535,9 @@ def _pickup_single(
 
             # TRN-156: evict completed-task timestamp entries older than TTL so
             # _task_timestamps does not grow without bound over the process life.
-            _ttl_secs = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
-            _evict_cutoff = (now - timedelta(seconds=_ttl_secs)).isoformat()
+            _evict_cutoff = (
+                now - timedelta(seconds=_TASK_TIMESTAMP_TTL_SECS)
+            ).isoformat()
             _to_evict = [
                 k
                 for k, v in _task_timestamps.items()
@@ -2629,9 +2643,9 @@ def _pickup_list(
         with _task_timestamps_lock:
             # TRN-156: evict completed-task timestamp entries older than TTL
             # first (reading _task_timestamps), then snapshot the survivors.
-            _ttl_secs = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
             _evict_cutoff = (
-                datetime.now(timezone.utc) - timedelta(seconds=_ttl_secs)
+                datetime.now(timezone.utc)
+                - timedelta(seconds=_TASK_TIMESTAMP_TTL_SECS)
             ).isoformat()
             _to_evict = [
                 k
