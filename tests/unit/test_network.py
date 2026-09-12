@@ -375,7 +375,7 @@ class PodmanNetworkHelperTests(unittest.TestCase):
 
     def test_network_connect_raises_on_non_409_error(self) -> None:
         """Fix 5: network_connect raises on a non-409 HTTP error."""
-        import httpx
+        import httpx2 as httpx
         client = self._make_client()
         resp = MagicMock()
         resp.status_code = 500

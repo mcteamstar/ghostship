@@ -71,7 +71,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
-import httpx
+import httpx2 as httpx
 from mcp.server.mcpserver.server import MCPServer
 from starlette.applications import Starlette
 from starlette.requests import Request

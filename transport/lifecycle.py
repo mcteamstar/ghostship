@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 
 try:
     from config import Config  # container: flat /app/

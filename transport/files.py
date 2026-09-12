@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
-import httpx
+import httpx2 as httpx
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route

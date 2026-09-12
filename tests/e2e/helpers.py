@@ -4,7 +4,7 @@ import json
 import os
 import time
 
-import httpx
+import httpx2 as httpx
 
 GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "http://localhost:64057").rstrip("/")
 GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
