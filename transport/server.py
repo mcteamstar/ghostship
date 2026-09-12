@@ -83,15 +83,11 @@ except (ImportError, AttributeError):
     _StarletteWebSocket = None  # type: ignore[assignment,misc]
     _StarletteWebSocketDisconnect = Exception  # type: ignore[assignment,misc]
 try:
-    from httpx_ws import aconnect_ws as _aconnect_ws
-    from wsproto.events import CloseConnection as _WsCloseConnection  # httpx-ws dep
-    from wsproto.events import TextMessage as _WsTextMessage
-    from wsproto.events import BytesMessage as _WsBytesMessage
-except (ImportError, AttributeError):
-    _aconnect_ws = None  # type: ignore[assignment,misc]
-    _WsCloseConnection = None  # type: ignore[assignment,misc]
-    _WsTextMessage = None  # type: ignore[assignment,misc]
-    _WsBytesMessage = None  # type: ignore[assignment,misc]
+    import websockets as _websockets
+    import websockets.exceptions as _ws_exceptions
+except ImportError:
+    _websockets = None  # type: ignore[assignment]
+    _ws_exceptions = None  # type: ignore[assignment]
 import uvicorn
 import asyncio
 
@@ -1114,11 +1110,11 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
 
     Bidirectionally relays text and binary frames between the browser-side
     Starlette WebSocket and the upstream connection opened with
-    ``httpx_ws.aconnect_ws``. The crew's ``mc_token_5476`` session cookie is
+    ``websockets.connect``. The crew's ``mc_token_5476`` session cookie is
     injected on the upstream handshake so the gateway accepts the connection
     from ga-transport's IP. A disconnect on either side tears down the other.
     """
-    if _StarletteWebSocket is None or _aconnect_ws is None:
+    if _StarletteWebSocket is None or _websockets is None:
         # No WS support available (dependency-free test env) — reject cleanly.
         await send({"type": "websocket.close", "code": 1011})
         return
@@ -1157,13 +1153,13 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
     # C-2: Accept the client connection ONLY after the upstream connection
     # succeeds. If upstream fails before accept, close with code 1011.
     try:
-        async with _aconnect_ws(
+        async with _websockets.connect(
             upstream_ws_url,
-            _async_http,
-            headers=handshake_headers,
+            additional_headers=handshake_headers,
             subprotocols=subprotocols or None,
         ) as upstream:
-            await ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
+            await ws.accept(subprotocol=upstream.subprotocol)
+
             async def _client_to_upstream() -> None:
                 while True:
                     msg = await ws.receive()
@@ -1171,28 +1167,16 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
                         await upstream.close()
                         return
                     if msg.get("text") is not None:
-                        await upstream.send_text(msg["text"])
+                        await upstream.send(msg["text"])
                     elif msg.get("bytes") is not None:
-                        await upstream.send_bytes(msg["bytes"])
+                        await upstream.send(msg["bytes"])
 
             async def _upstream_to_client() -> None:
-                while True:
-                    try:
-                        data = await upstream.receive()
-                    except Exception:
-                        # httpx-ws raises WebSocketDisconnect / CloseConnection
-                        # when the upstream ends — propagate as a client close.
-                        await ws.close()
-                        return
-                    # upstream.receive() returns wsproto.events.Event objects,
-                    # not raw bytes/str — dispatch on the event type (TRN-102 fix).
-                    if _WsBytesMessage is not None and isinstance(data, _WsBytesMessage):
-                        await ws.send_bytes(data.data)
-                    elif _WsTextMessage is not None and isinstance(data, _WsTextMessage):
-                        await ws.send_text(data.data)
-                    # Ignore Ping, Pong, CloseConnection and other control events —
-                    # the httpx-ws layer handles Ping/Pong internally; CloseConnection
-                    # surfaces as WebSocketDisconnect which the except above catches.
+                async for message in upstream:
+                    if isinstance(message, str):
+                        await ws.send_text(message)
+                    else:
+                        await ws.send_bytes(message)
 
             done, pending = await asyncio.wait(
                 {asyncio.create_task(_client_to_upstream()),
@@ -1201,12 +1185,35 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
             )
             for task in pending:
                 task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            # Retrieve and log exceptions from the completed task so Python
+            # doesn't emit "Task exception was never retrieved" to stderr.
+            # ConnectionClosedError (abnormal upstream close) is expected and
+            # logged at DEBUG; other exceptions are logged at WARNING.
+            for task in done:
+                exc = task.exception()
+                if exc is not None:
+                    if _ws_exceptions is not None and isinstance(
+                        exc, _ws_exceptions.ConnectionClosedError
+                    ):
+                        logger.debug(
+                            "UI WS proxy upstream closed abnormally for crew %s: %s",
+                            crew_id, exc,
+                        )
+                    elif not isinstance(exc, (asyncio.CancelledError,)):
+                        logger.debug(
+                            "UI WS proxy task finished with error for crew %s: %s",
+                            crew_id, exc,
+                        )
     except _StarletteWebSocketDisconnect:
         pass
     except Exception as e:
         logger.warning("UI WS proxy error for crew %s: %s", crew_id, e)
         # C-2: The upstream connection failed before we accepted the client
-        # (ws.accept is now inside the try block, after _aconnect_ws succeeds).
+        # (ws.accept is now inside the try block, after _websockets.connect succeeds).
         # Send a close frame with code 1011 (internal error) so the client is
         # not left hanging with an unaccepted connection.
         try:
