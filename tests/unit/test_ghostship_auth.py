@@ -225,20 +225,25 @@ class TestAuthLogin(unittest.TestCase):
         )
         self.assertEqual(rc, 1)
 
-    def test_http_error_409_on_post_returns_nonzero(self):
-        """409 'already authenticated' must not show 'could not reach transport'."""
+    def test_http_error_409_already_authenticated_is_noop(self):
+        """409 'already authenticated' is idempotent: no-op success, not an error."""
         http_err = urllib.error.HTTPError(
             "http://host/login", 409, "Conflict", {},
             io.BytesIO(b"Already authenticated. POST /logout first.")
         )
-        rc = self._run([], [http_err])
-        self.assertEqual(rc, 1)
 
-    def test_http_error_409_prints_server_message_not_connection_error(self, capsys=None):
-        """Error output for 409 should mention HTTP code, not 'could not reach'."""
+        captured_stdout = io.StringIO()
+        with patch("sys.stdout", captured_stdout):
+            rc = self._run([], [http_err])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Already authenticated", captured_stdout.getvalue())
+
+    def test_http_error_409_login_in_progress_still_errors(self):
+        """A different 409 reason (concurrent login) is a real error, not a no-op."""
         http_err = urllib.error.HTTPError(
             "http://host/login", 409, "Conflict", {},
-            io.BytesIO(b"Already authenticated. POST /logout first.")
+            io.BytesIO(b"Login already in progress. Poll GET /login for status.")
         )
 
         captured_stderr = io.StringIO()
