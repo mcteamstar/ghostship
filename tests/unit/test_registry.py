@@ -291,5 +291,106 @@ class WriteCrewSecretDurabilityTests(unittest.TestCase):
             self.assertEqual(written, "s3cr3t")
 
 
+class FindBatchByTaskIdsTests(unittest.TestCase):
+    """Tests for _find_batch_by_task_ids (trn-151: subset-match semantics).
+
+    All cases use an in-memory registry patched over REGISTRY_PATH so no
+    real disk I/O takes place.
+    """
+
+    def _make_registry_with_batch(
+        self,
+        crew_id: str,
+        batch_id: str,
+        task_ids: list[str],
+    ) -> dict:
+        """Return a minimal registry dict containing one crew with one batch."""
+        return {
+            "crews": {
+                crew_id: {
+                    "batches": [
+                        {
+                            "batch_id": batch_id,
+                            "task_ids": task_ids,
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "status": "pending",
+                        }
+                    ]
+                }
+            }
+        }
+
+    def _patch_registry(self, reg: dict, tmp_path: Path):
+        """Write *reg* to *tmp_path*/crews.json and return context-manager patches."""
+        import tempfile
+        reg_path = tmp_path / "crews.json"
+        reg_path.write_text(json.dumps(reg))
+        return (
+            patch.object(registry, "DATA_DIR", tmp_path),
+            patch.object(registry, "REGISTRY_PATH", reg_path),
+        )
+
+    def test_exact_match_returns_batch(self) -> None:
+        """Exact match: provided IDs == batch IDs → batch returned (2.1)."""
+        import tempfile
+        crew_id = "c-exact"
+        batch_id = "b-exact"
+        task_ids = ["t1", "t2", "t3"]
+        reg = self._make_registry_with_batch(crew_id, batch_id, task_ids)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p1, p2 = self._patch_registry(reg, tmp)
+            with p1, p2:
+                result = registry._find_batch_by_task_ids(crew_id, task_ids)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["batch_id"], batch_id)
+
+    def test_subset_match_returns_batch(self) -> None:
+        """Subset match: provided IDs ⊂ batch IDs → batch returned (2.2)."""
+        import tempfile
+        crew_id = "c-sub"
+        batch_id = "b-sub"
+        batch_task_ids = ["t1", "t2", "t3"]
+        provided_task_ids = ["t1", "t2"]  # subset
+        reg = self._make_registry_with_batch(crew_id, batch_id, batch_task_ids)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p1, p2 = self._patch_registry(reg, tmp)
+            with p1, p2:
+                result = registry._find_batch_by_task_ids(crew_id, provided_task_ids)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["batch_id"], batch_id)
+
+    def test_superset_does_not_match(self) -> None:
+        """Superset: provided IDs ⊃ batch IDs → None returned (2.3)."""
+        import tempfile
+        crew_id = "c-sup"
+        batch_id = "b-sup"
+        batch_task_ids = ["t1", "t2", "t3"]
+        provided_task_ids = ["t1", "t2", "t3", "t4"]  # superset
+        reg = self._make_registry_with_batch(crew_id, batch_id, batch_task_ids)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p1, p2 = self._patch_registry(reg, tmp)
+            with p1, p2:
+                result = registry._find_batch_by_task_ids(crew_id, provided_task_ids)
+        self.assertIsNone(result)
+
+    def test_disjoint_does_not_match(self) -> None:
+        """Disjoint: no overlap between provided and batch IDs → None returned (2.4)."""
+        import tempfile
+        crew_id = "c-dis"
+        batch_id = "b-dis"
+        batch_task_ids = ["t1", "t2", "t3"]
+        provided_task_ids = ["tx", "ty"]  # completely disjoint
+        reg = self._make_registry_with_batch(crew_id, batch_id, batch_task_ids)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p1, p2 = self._patch_registry(reg, tmp)
+            with p1, p2:
+                result = registry._find_batch_by_task_ids(crew_id, provided_task_ids)
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

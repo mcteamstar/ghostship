@@ -29,15 +29,15 @@ The test suite SHALL exercise `TransportSecretMiddleware` and `_load_transport_s
 - **THEN** all requests pass through `TransportSecretMiddleware` without a 401
 
 #### Scenario: Secret configured — correct header passes
-- **WHEN** a transport secret is configured AND a request carries the correct `X-Portal-Token` value
+- **WHEN** a transport secret is configured AND a request carries the correct `X-Transport-Token` value
 - **THEN** the request passes through
 
 #### Scenario: Secret configured — wrong header returns 401
-- **WHEN** a transport secret is configured AND a request carries an incorrect `X-Portal-Token`
+- **WHEN** a transport secret is configured AND a request carries an incorrect `X-Transport-Token`
 - **THEN** `TransportSecretMiddleware` returns 401
 
 #### Scenario: Secret configured — missing header returns 401
-- **WHEN** a transport secret is configured AND a request has no `X-Portal-Token` header
+- **WHEN** a transport secret is configured AND a request has no `X-Transport-Token` header
 - **THEN** `TransportSecretMiddleware` returns 401
 
 #### Scenario: Constant-time comparison used

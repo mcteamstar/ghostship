@@ -4,7 +4,9 @@
 Ensures comprehensive test coverage for the transport layer's critical lifecycle
 paths — startup reconciliation, idle monitoring, crew setup sequencing, and login
 flow edge cases — plus concurrency fixes discovered during test authoring.
+
 ## Requirements
+
 ### Requirement: _reconcile_registry test coverage
 
 The test suite SHALL exercise every branch of `_reconcile_registry` using a mock
@@ -166,7 +168,6 @@ potentially active crew whose cookie merely expired.
 - **WHEN** `/api/spawn` returns 401 AND cookie refresh fails
 - **THEN** the crew is NOT stopped for this cycle
 
-
 ### Requirement: e2e suite fixture model
 
 The e2e test suite SHALL use a module-level shared crew as the primary fixture,
@@ -208,3 +209,63 @@ no cross-class state interference) SHALL read `CREW_ID` from the module-level
 #### Scenario: TestErrorPaths lifecycle tests use throw-away crews
 - **WHEN** `test_pickup_nonexistent_task`, `test_launch_duplicate_crew`, or `test_nuke_without_confirm` runs
 - **THEN** each test launches and nukes its own short-lived throw-away crew within the test method body, using a distinct `crew_id` that does not collide with `SHARED_CREW_ID`
+
+### Requirement: _crew_api_with_recovery test coverage
+
+The test suite SHALL exercise `_crew_api_with_recovery` and its three phase helpers using mocked HTTP responses, verifying retry behaviour and error propagation.
+
+#### Scenario: Phase 0 — transient 503 is retried
+- **WHEN** `_crew_api_with_recovery` receives a 503 from the first call
+- **THEN** `_phase0_transient_503` retries the call and returns the second response
+
+#### Scenario: Phase 1 — stale cookie triggers refresh
+- **WHEN** `_crew_api_with_recovery` receives a 401 indicating a stale cookie
+- **THEN** `_phase1_stale_cookie` refreshes the cookie and retries the call
+
+#### Scenario: Phase 2 — dead gateway triggers container restart
+- **WHEN** `_crew_api_with_recovery` cannot reach the crew gateway
+- **THEN** `_phase2_dead_gateway` restarts the container, waits for readiness, and retries
+
+#### Scenario: _ensure_crew_running leader failure propagates to waiters
+- **WHEN** the leader coroutine in `_ensure_crew_running` raises during restart
+- **THEN** waiters that were blocked on the same Event receive the same exception rather than proceeding with stale registry status
+
+### Requirement: _ssl_context_factory test coverage
+
+The test suite SHALL exercise `_ssl_context_factory` (the direct-TLS path via `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE`) to verify TLS version floor and file-path gating.
+
+#### Scenario: TLS disabled — no cert/key configured
+- **WHEN** `GA_TLS_CERTFILE` and `GA_TLS_KEYFILE` are not set
+- **THEN** no `_ssl_context_factory` is registered on the uvicorn kwargs
+
+#### Scenario: TLS enabled — valid cert and key files
+- **WHEN** `GA_TLS_CERTFILE` and `GA_TLS_KEYFILE` are both set to readable files
+- **THEN** `_ssl_context_factory` is registered and the returned context enforces TLS 1.2 as minimum
+
+#### Scenario: TLS enabled — missing cert file raises
+- **WHEN** `GA_TLS_CERTFILE` points to a non-existent file
+- **THEN** `_ssl_context_factory` raises an appropriate error at startup
+
+### Requirement: TransportSecretMiddleware and _load_transport_secret test coverage
+
+The test suite SHALL exercise `TransportSecretMiddleware` and `_load_transport_secret`, covering the configured and unconfigured paths.
+
+#### Scenario: Secret not configured — requests pass through
+- **WHEN** no transport secret is configured (`GA_TRANSPORT_SECRET` absent / empty)
+- **THEN** all requests pass through `TransportSecretMiddleware` without a 401
+
+#### Scenario: Secret configured — correct header passes
+- **WHEN** a transport secret is configured AND a request carries the correct `X-Transport-Token` value
+- **THEN** the request passes through
+
+#### Scenario: Secret configured — wrong header returns 401
+- **WHEN** a transport secret is configured AND a request carries an incorrect `X-Transport-Token`
+- **THEN** `TransportSecretMiddleware` returns 401
+
+#### Scenario: Secret configured — missing header returns 401
+- **WHEN** a transport secret is configured AND a request has no `X-Transport-Token` header
+- **THEN** `TransportSecretMiddleware` returns 401
+
+#### Scenario: Constant-time comparison used
+- **WHEN** `TransportSecretMiddleware` validates the token
+- **THEN** `hmac.compare_digest` (or equivalent constant-time compare) is used, not `==`

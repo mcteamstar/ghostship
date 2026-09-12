@@ -2528,5 +2528,194 @@ class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(podman.start_calls.get("gs-b", 0), 2)
 
 
+# ── TRN-152: recovery engine + waiter failure-propagation ────────────────────
+#
+# ``_crew_api_with_recovery`` and its three ``_phaseN`` helpers are defined in
+# lifecycle.py, so they read their dependencies (``_crew_api``,
+# ``_refresh_cookie``, ``_probe_gateway``, ``_ensure_crew_running``) from
+# lifecycle's globals — patch ``lifecycle.X`` (design.md D2, call-site rule).
+
+import httpx2 as _httpx  # noqa: E402  (module-level import kept near use)
+
+
+def _http_status_error(status: int) -> _httpx.HTTPStatusError:
+    """Build an httpx HTTPStatusError whose response exposes ``status_code``.
+
+    The recovery engine branches on ``e.response.status_code``, so that is the
+    only attribute the helpers read.
+    """
+    resp = Mock()
+    resp.status_code = status
+    return _httpx.HTTPStatusError(f"HTTP {status}", request=Mock(), response=resp)
+
+
+class CrewApiRecoveryEngineTests(unittest.TestCase):
+    """TRN-152: unit coverage for the three-phase recovery engine.
+
+    Each test drives ``_crew_api_with_recovery`` through one phase by making
+    the mocked ``_crew_api`` raise the triggering error on the first call and
+    succeed on the retry.
+    """
+
+    def setUp(self) -> None:
+        # Recovery serialises on a per-crew lock; clear it so each test starts
+        # from a clean map (the lock itself is re-created lazily).
+        with lifecycle._recovery_locks_lock:
+            lifecycle._recovery_locks.clear()
+        self.crew = {"container": "gs-demo", "status": "running", "cookie": "old"}
+
+    def tearDown(self) -> None:
+        with lifecycle._recovery_locks_lock:
+            lifecycle._recovery_locks.clear()
+
+    def test_phase0_transient_503_retries_then_returns(self) -> None:
+        """2.1: 503 on first call → phase0 retries → returns second response."""
+        # First call 503, retry succeeds. Patch time.sleep so the 1s backoff
+        # does not slow the suite.
+        crew_api = Mock(side_effect=[_http_status_error(503), {"ok": True}])
+        with (
+            patch.object(lifecycle, "_crew_api", crew_api),
+            patch.object(lifecycle.time, "sleep"),
+        ):
+            result = lifecycle._crew_api_with_recovery(
+                self.crew, "demo", "GET", "/api/spawn/task-1"
+            )
+        self.assertEqual(result, {"ok": True})
+        # One first attempt + one successful retry inside phase0.
+        self.assertEqual(crew_api.call_count, 2)
+
+    def test_phase1_stale_cookie_refresh_then_returns(self) -> None:
+        """2.2: 401 stale cookie → phase1 refreshes cookie → retries → returns."""
+        crew_api = Mock(side_effect=[_http_status_error(401), {"ok": "fresh"}])
+        refresh = Mock(return_value=True)
+        with (
+            patch.object(lifecycle, "_crew_api", crew_api),
+            patch.object(lifecycle, "_refresh_cookie", refresh),
+            # If phase1 tried to escalate it would call _ensure_crew_running;
+            # assert it does NOT by making that blow up.
+            patch.object(
+                lifecycle,
+                "_ensure_crew_running",
+                side_effect=AssertionError("should not escalate on successful refresh"),
+            ),
+        ):
+            result = lifecycle._crew_api_with_recovery(
+                self.crew, "demo", "GET", "/api/spawn"
+            )
+        self.assertEqual(result, {"ok": "fresh"})
+        refresh.assert_called_once_with(self.crew, "demo")
+        self.assertEqual(crew_api.call_count, 2)
+
+    def test_phase2_connection_error_restarts_then_returns(self) -> None:
+        """2.3: connection error → phase2 restarts container → retries → returns."""
+        crew_api = Mock(side_effect=[_httpx.ConnectError("refused"), {"ok": "up"}])
+        ensure = Mock(return_value={**self.crew, "cookie": "new"})
+        with (
+            patch.object(lifecycle, "_crew_api", crew_api),
+            # Gateway confirmed DEAD so phase2 takes the restart branch.
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", ensure),
+        ):
+            result = lifecycle._crew_api_with_recovery(
+                self.crew, "demo", "GET", "/api/spawn"
+            )
+        self.assertEqual(result, {"ok": "up"})
+        ensure.assert_called_once()
+        self.assertEqual(crew_api.call_count, 2)
+
+
+class EnsureCrewRunningWaiterPropagationTests(unittest.IsolatedAsyncioTestCase):
+    """TRN-152: when the leader's restart raises, waiters must propagate that
+    exact exception rather than reading stale 'running' status and proceeding.
+    """
+
+    def setUp(self) -> None:
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events.clear()
+            lifecycle._crew_restart_outcomes.clear()
+
+    def tearDown(self) -> None:
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events.clear()
+            lifecycle._crew_restart_outcomes.clear()
+
+    async def _run_leader_and_waiter(self, leader_exc: Exception) -> BaseException:
+        """Start a leader whose restart raises ``leader_exc`` and a waiter that
+        blocks on the same crew, and return the exception the WAITER raised.
+
+        A gate ensures the leader wins the leader-election race, and the leader
+        stalls briefly so the waiter arrives while the restart is in flight.
+        """
+        crew = {"container": "gs-demo", "status": "stopped", "cookie": "old"}
+        leader_in_body = threading.Event()
+
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        podman.container_start.return_value = None
+        podman.container_stop.return_value = None
+
+        def failing_wait_for_memory(*_a, **_k):
+            # Signal the waiter it may proceed, then raise the leader failure.
+            leader_in_body.set()
+            time.sleep(0.15)
+            raise leader_exc
+
+        original_mem = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MIN_FREE_MEM_GB = 1.0
+            with (
+                patch.object(lifecycle, "_get_podman", return_value=podman),
+                patch.object(lifecycle, "_probe_gateway", return_value=False),
+                patch.object(lifecycle, "_wait_for_memory", side_effect=failing_wait_for_memory),
+                # Waiter's post-wake status read — stale "running" would let the
+                # OLD code proceed; the fix must ignore it in favour of the
+                # recorded failure outcome.
+                patch.object(
+                    lifecycle,
+                    "_get_crew",
+                    return_value={"container": "gs-demo", "status": "running", "cookie": "old"},
+                ),
+                patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": crew}}),
+                patch.object(lifecycle, "_save_registry"),
+            ):
+                async def leader():
+                    return await asyncio.to_thread(
+                        lifecycle._ensure_crew_running, crew, "demo", touch=False
+                    )
+
+                async def waiter():
+                    # Ensure the leader has claimed leadership and entered its
+                    # body before this caller attempts the election.
+                    await asyncio.to_thread(leader_in_body.wait, 5.0)
+                    return await asyncio.to_thread(
+                        lifecycle._ensure_crew_running, crew, "demo", touch=False
+                    )
+
+                results = await asyncio.gather(
+                    leader(), waiter(), return_exceptions=True
+                )
+        finally:
+            lifecycle.GA_MIN_FREE_MEM_GB = original_mem
+
+        # Both callers should have raised (leader re-raises, waiter propagates).
+        # Return the waiter's exception for assertion.
+        return results[1]
+
+    async def test_waiter_gets_memory_gate_exception(self) -> None:
+        """2.4: leader raises memory gate → waiter gets same exception, not a
+        stale-status proceed."""
+        gate = RuntimeError("Insufficient available memory to start crew demo")
+        waiter_exc = await self._run_leader_and_waiter(gate)
+        self.assertIsInstance(waiter_exc, RuntimeError)
+        self.assertIn("Insufficient available memory", str(waiter_exc))
+
+    async def test_waiter_propagates_gateway_timeout(self) -> None:
+        """2.5: leader raises gateway timeout → waiter propagates timeout error."""
+        timeout_exc = RuntimeError("Gateway did not recover after config re-patch for crew demo")
+        waiter_exc = await self._run_leader_and_waiter(timeout_exc)
+        self.assertIsInstance(waiter_exc, RuntimeError)
+        self.assertIn("Gateway did not recover", str(waiter_exc))
+
+
 if __name__ == "__main__":
     unittest.main()

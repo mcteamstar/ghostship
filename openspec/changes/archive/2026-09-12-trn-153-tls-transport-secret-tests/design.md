@@ -2,7 +2,7 @@
 
 `_ssl_context_factory` lives in `server.py`'s startup block, gated on `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE`. It's a legacy direct-TLS path predating the Caddy portal. It's still present and active but completely untested.
 
-`TransportSecretMiddleware` in `auth.py` is the innermost security gate — every request to the transport must carry the correct `X-Portal-Token` injected by Caddy. `_load_transport_secret` in `server.py` reads it from `/run/secrets/ga-transport-secret`. Both have zero test coverage.
+`TransportSecretMiddleware` in `auth.py` is the innermost security gate — every request to the transport must carry the correct `X-Transport-Token` injected by Caddy. `_load_transport_secret` in `server.py` reads it from `/run/secrets/ga-transport-secret`. Both have zero test coverage.
 
 ## Goals / Non-Goals
 

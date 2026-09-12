@@ -99,12 +99,22 @@ class BatchRegistryCRUDTests(unittest.TestCase):
             self.assertEqual(found["batch_id"], "b-match")
 
     def test_find_batch_by_task_ids_no_match(self) -> None:
-        """Returns None when no batch has exactly these task_ids."""
+        """Returns None when the provided IDs are not a subset of any batch's task_ids.
+
+        Under trn-151 subset semantics the function returns None only for:
+        - Disjoint IDs (no overlap with any batch)
+        - Superset IDs (caller has more IDs than the batch holds)
+        A proper subset still matches, so ["t1"] alone is no longer a no-match case
+        for a batch containing ["t1", "t2"] — it is now a valid subset match.
+        """
         with self._isolated():
             self._seed_crew()
             registry._write_batch("demo", "b1", ["t1", "t2"], status="pending")
+            # Disjoint: t3 is not in the batch, so ["t1", "t3"] as a set is NOT a
+            # subset of {"t1", "t2"} (t3 is missing from the batch).
             self.assertIsNone(registry._find_batch_by_task_ids("demo", ["t1", "t3"]))
-            self.assertIsNone(registry._find_batch_by_task_ids("demo", ["t1"]))
+            # Superset: ["t1", "t2", "t3"] has more IDs than the batch holds → no match.
+            self.assertIsNone(registry._find_batch_by_task_ids("demo", ["t1", "t2", "t3"]))
 
     def test_find_batch_by_task_ids_unknown_crew(self) -> None:
         """Returns None for an unknown crew."""

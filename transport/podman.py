@@ -7,6 +7,8 @@ by this module. Proxy handlers in server.py import them from here.
 
 from __future__ import annotations
 
+import atexit
+import asyncio
 import json
 import logging
 import secrets
@@ -73,6 +75,30 @@ _http = httpx.Client(timeout=60.0)
 # executor. Using an async client here avoids blocking the event loop while
 # streaming potentially large proxy response bodies.
 _async_http = httpx.AsyncClient(timeout=60.0)
+
+atexit.register(_http.close)
+
+
+def _close_async_http() -> None:
+    """Close the async HTTP client on interpreter exit (best-effort).
+
+    httpx2's AsyncClient exposes only the coroutine ``aclose()`` — there is no
+    synchronous close path — so we must drive it on an event loop. At interpreter
+    exit no loop is running, so we spin up a short-lived one to drain the
+    connection pool. If a loop is unexpectedly already running (or aclose fails),
+    we swallow the error: this is best-effort cleanup on the way out.
+    """
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (the normal atexit case) — safe to run our own.
+            asyncio.run(_async_http.aclose())
+    except Exception:
+        pass
+
+
+atexit.register(_close_async_http)
 
 
 # ── ContainerRuntime ABC ─────────────────────────────────────────────────────
@@ -245,16 +271,22 @@ class PodmanClient(ContainerRuntime):
             self._c.post(
                 f"/libpod/containers/{name}/stop", params={"t": 10}
             ).raise_for_status()
-        except Exception:
-            pass
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404,):
+                return  # already gone — not an error
+            logger.warning("container_stop %s failed: %s", name, e)
+            raise
 
     def container_remove(self, name: str) -> None:
         try:
             self._c.delete(
                 f"/libpod/containers/{name}", params={"force": "true"}
             ).raise_for_status()
-        except Exception:
-            pass
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404,):
+                return  # already gone — not an error
+            logger.warning("container_remove %s failed: %s", name, e)
+            raise
 
     def container_inspect(self, name: str) -> dict:
         """Inspect a container, returning the full JSON object."""
@@ -300,12 +332,14 @@ class PodmanClient(ContainerRuntime):
             spec["Env"] = [f"{k}={v}" for k, v in env.items()]
         r = self._req("POST", f"/libpod/containers/{name}/exec", json=spec)
         exec_id = r["Id"]
-        resp = self._c.post(
+        req = self._c.build_request(
+            "POST",
             f"/libpod/exec/{exec_id}/start",
             json={"Detach": False},
             headers={"Content-Type": "application/json"},
         )
-        return self._demux(resp.content)
+        with self._c.send(req) as response:
+            return self._demux(response.content)
 
     def container_exec_pty_stdin(
         self, name: str, cmd: list[str]
@@ -332,27 +366,34 @@ class PodmanClient(ContainerRuntime):
 
         # Open a raw Unix socket — httpx can't do bidirectional hijacking.
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(self._sock_path)
+        success = False
+        try:
+            sock.connect(self._sock_path)
 
-        body = json.dumps({"Detach": False}).encode()
-        request_line = f"POST /v4.0.0/libpod/exec/{exec_id}/start HTTP/1.1\r\n"
-        headers = (
-            "Host: d\r\n"
-            "Content-Type: application/json\r\n"
-            f"Content-Length: {len(body)}\r\n"
-            "Connection: Upgrade\r\n"
-            "Upgrade: tcp\r\n"
-            "\r\n"
-        )
-        sock.sendall((request_line + headers).encode() + body)
+            body = json.dumps({"Detach": False}).encode()
+            request_line = f"POST /v4.0.0/libpod/exec/{exec_id}/start HTTP/1.1\r\n"
+            headers = (
+                "Host: d\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: Upgrade\r\n"
+                "Upgrade: tcp\r\n"
+                "\r\n"
+            )
+            sock.sendall((request_line + headers).encode() + body)
 
-        # Read until end of HTTP response headers (the 101 Switching Protocols).
-        response_buf = bytearray()
-        while b"\r\n\r\n" not in response_buf:
-            chunk = sock.recv(4096)
-            if not chunk:
-                raise RuntimeError("Socket closed before exec upgrade completed")
-            response_buf.extend(chunk)
+            # Read until end of HTTP response headers (the 101 Switching Protocols).
+            response_buf = bytearray()
+            while b"\r\n\r\n" not in response_buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise RuntimeError("Socket closed before exec upgrade completed")
+                response_buf.extend(chunk)
+
+            success = True
+        finally:
+            if not success:
+                sock.close()
 
         return exec_id, sock
 
@@ -449,27 +490,34 @@ class PodmanClient(ContainerRuntime):
 
         # Open a raw Unix socket for hijacked stdin/stdout communication.
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(self._sock_path)
+        success = False
+        try:
+            sock.connect(self._sock_path)
 
-        body = json.dumps({"Detach": False}).encode()
-        request_line = f"POST /v4.0.0/libpod/exec/{exec_id}/start HTTP/1.1\r\n"
-        headers = (
-            "Host: d\r\n"
-            "Content-Type: application/json\r\n"
-            f"Content-Length: {len(body)}\r\n"
-            "Connection: Upgrade\r\n"
-            "Upgrade: tcp\r\n"
-            "\r\n"
-        )
-        sock.sendall((request_line + headers).encode() + body)
+            body = json.dumps({"Detach": False}).encode()
+            request_line = f"POST /v4.0.0/libpod/exec/{exec_id}/start HTTP/1.1\r\n"
+            headers = (
+                "Host: d\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: Upgrade\r\n"
+                "Upgrade: tcp\r\n"
+                "\r\n"
+            )
+            sock.sendall((request_line + headers).encode() + body)
 
-        # Read until end of HTTP response headers (the 101 Switching Protocols).
-        response_buf = bytearray()
-        while b"\r\n\r\n" not in response_buf:
-            chunk = sock.recv(4096)
-            if not chunk:
-                raise RuntimeError("Socket closed before exec upgrade completed")
-            response_buf.extend(chunk)
+            # Read until end of HTTP response headers (the 101 Switching Protocols).
+            response_buf = bytearray()
+            while b"\r\n\r\n" not in response_buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise RuntimeError("Socket closed before exec upgrade completed")
+                response_buf.extend(chunk)
+
+            success = True
+        finally:
+            if not success:
+                sock.close()
 
         # Write stdin_data then shut down the write side so the process sees EOF.
         try:
@@ -563,16 +611,22 @@ class PodmanClient(ContainerRuntime):
     def volume_create(self, name: str) -> None:
         try:
             self._req("POST", "/libpod/volumes/create", json={"Name": name})
-        except Exception:
-            pass  # already exists
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 409:
+                return  # volume already exists — idempotent
+            logger.warning("volume_create %s failed: %s", name, e)
+            raise
 
     def volume_remove(self, name: str) -> None:
         try:
             self._c.delete(
                 f"/libpod/volumes/{name}", params={"force": "true"}
             ).raise_for_status()
-        except Exception:
-            pass
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404,):
+                return  # already gone — not an error
+            logger.warning("volume_remove %s failed: %s", name, e)
+            raise
 
     # ── secrets (TRN-136) ─────────────────────────────────────────────────────
 
@@ -614,8 +668,11 @@ class PodmanClient(ContainerRuntime):
         """Remove the Podman secret named ``name`` (best-effort, idempotent)."""
         try:
             self._c.delete(f"/libpod/secrets/{name}").raise_for_status()
-        except Exception:
-            pass
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in (404,):
+                logger.warning("secret_remove %s failed: %s", name, e)
+        except Exception as e:
+            logger.warning("secret_remove %s failed: %s", name, e)
 
     # ── worker sidecar (TRN-81) ─────────────────────────────────────────────
 
@@ -725,8 +782,11 @@ class PodmanClient(ContainerRuntime):
                     self._c.delete(
                         f"/libpod/containers/{name}", params={"force": "true"}
                     )
-                except Exception:
-                    pass
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code not in (404,):
+                        logger.warning("worker cleanup failed to remove %s: %s", name, e)
+                except Exception as e:
+                    logger.warning("worker cleanup failed to remove %s: %s", name, e)
 
     def _demux_stdout(self, raw: bytes) -> bytes:
         """Demux a Docker multiplexed stream, keeping only stdout (type 1) bytes.
@@ -757,8 +817,11 @@ class PodmanClient(ContainerRuntime):
         try:
             self._req("POST", "/libpod/networks/create",
                       json={"name": name, "dns_enabled": True})
-        except Exception:
-            pass  # already exists
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 409:
+                return  # network already exists — idempotent
+            logger.warning("network_create %s failed: %s", name, e)
+            raise
 
     def network_connect(self, container: str, network: str) -> None:
         """Connect a container to a network (idempotent — ignores 'already connected' errors).
@@ -789,8 +852,11 @@ class PodmanClient(ContainerRuntime):
             )
             if r.status_code not in (200, 204):
                 r.raise_for_status()
-        except Exception:
-            pass  # best-effort; callers log on failure
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404,):
+                return  # container or network already gone — not an error
+            logger.warning("network_disconnect %s/%s failed: %s", container, network, e)
+            raise
 
     def network_rm(self, name: str) -> None:
         """Remove a network (best-effort — used for ga-net cleanup after migration)."""
@@ -798,8 +864,11 @@ class PodmanClient(ContainerRuntime):
             r = self._c.delete(f"/libpod/networks/{name}")
             if r.status_code not in (200, 204):
                 r.raise_for_status()
-        except Exception:
-            pass  # best-effort
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404,):
+                return  # already gone — not an error
+            logger.warning("network_rm %s failed: %s", name, e)
+            raise
 
     def container_networks(self, container: str) -> list[str]:
         """Return the list of network names the container is currently connected to.

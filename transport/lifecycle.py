@@ -233,6 +233,13 @@ def _secret_identifier(value: str) -> str:
 _startup_events: dict[str, threading.Event] = {}
 _startup_events_lock = threading.Lock()
 
+# TRN-152: Maps crew_id → (success, exc) recorded by the leader before it fires
+# the startup Event. Waiters read this after event.wait() and re-raise the
+# stored exception when success is False, instead of proceeding against a crew
+# that never started. Guarded by _startup_events_lock (same lifecycle as the
+# event it accompanies).
+_crew_restart_outcomes: dict[str, tuple[bool, Exception | None]] = {}
+
 # Per-crew recovery locks: prevent concurrent recovery races within
 # _crew_api_with_recovery.
 _recovery_locks: dict[str, threading.Lock] = {}
@@ -584,12 +591,42 @@ def _ensure_crew_running(
             event = threading.Event()
             _startup_events[crew_id] = event
             is_leader = True
+            # TRN-152: a NEW restart cycle begins here — drop any outcome left
+            # by a PRIOR leader for this crew. The outcome map is never popped
+            # on completion (its read happens after event.set(), so it cannot
+            # be cleared in the leader's finally without racing the waiter), so
+            # a stale entry survives between cycles. If we did not clear it, a
+            # waiter whose event.wait() times out (leader still in flight, e.g.
+            # a 60s memory wait plus a 60s gateway wait exceeding the 45s wait
+            # window) would read the previous cycle's failure and raise an
+            # unrelated exception. Clearing at election makes the map hold at
+            # most one entry per crew AND guarantees a timed-out waiter sees
+            # None (→ explicit timeout error) rather than a stale outcome.
+            _crew_restart_outcomes.pop(crew_id, None)
 
     if not is_leader:
         # Another caller is already restarting — wait for it then return
         # the refreshed crew dict
         logger.info("Crew %s restart already in progress — waiting", crew_id)
         event.wait(timeout=45)
+        # TRN-152: read the outcome the leader recorded before firing the
+        # Event. If the leader's restart failed (memory gate, crew limit,
+        # gateway timeout, ...), propagate that exact exception instead of
+        # reading a stale "running" status and proceeding against a crew that
+        # never started. A missing entry means the leader timed out without
+        # recording — treat that as a failure too.
+        with _startup_events_lock:
+            outcome = _crew_restart_outcomes.get(crew_id)
+        if outcome is None:
+            raise RuntimeError(
+                f"Crew {crew_id} restart (concurrent) failed -- leader did not "
+                f"record an outcome within the wait window"
+            )
+        success, exc = outcome
+        if not success:
+            raise exc if exc is not None else RuntimeError(
+                f"Crew {crew_id} restart (concurrent) failed"
+            )
         crew_after = _get_crew(crew_id)
         if crew_after.get("status") in ("stopped", "launching", None):
             raise RuntimeError(
@@ -599,6 +636,13 @@ def _ensure_crew_running(
         return crew_after
 
     # We are the leader — do the restart
+    # TRN-152: record a success/failure outcome for waiters before firing the
+    # Event. Default to failure so any exit path that is not an explicit
+    # success (an exception below) leaves waiters with a failure to propagate.
+    _outcome: tuple[bool, Exception | None] = (
+        False,
+        RuntimeError(f"Crew {crew_id} restart (leader) failed"),
+    )
     try:
         logger.info("Crew %s is stopped — restarting", crew_id)
 
@@ -695,10 +739,22 @@ def _ensure_crew_running(
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
             _touch_crew(crew_id)
+        _outcome = (True, None)
         return crew
+    except Exception as exc:
+        # TRN-152: record the failure so waiters re-raise it instead of
+        # proceeding on stale "running" status, then re-raise for our own
+        # caller.
+        _outcome = (False, exc)
+        raise
     finally:
-        # Always unblock waiters and clean up, even on error
+        # Always unblock waiters and clean up, even on error. Publish the
+        # outcome BEFORE firing the Event so a waiter that wakes immediately
+        # sees it. The outcome entry's lifetime is tied to the event's: both
+        # are cleared here once the leader is done (a subsequent leader
+        # re-populates them).
         with _startup_events_lock:
+            _crew_restart_outcomes[crew_id] = _outcome
             _startup_events.pop(crew_id, None)
         event.set()
 

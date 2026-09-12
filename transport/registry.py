@@ -317,23 +317,24 @@ def _delete_batch(crew_id: str, batch_id: str) -> bool:
 
 
 def _find_batch_by_task_ids(crew_id: str, task_ids: list[str]) -> dict | None:
-    """Return the first batch entry whose task_ids set matches *task_ids*, or None.
+    """Return the first batch entry whose task_ids set contains *task_ids*, or None.
 
     Used by ``pickup(task_ids=[...])`` to discover the ``batch_id`` so that
     ``_update_batch_status`` can mark the batch ``complete`` when all members
     are done — satisfying the spec requirement without adding a ``batch_id``
     parameter to the ``pickup`` MCP tool surface.
 
-    The match is an exact set equality check (order-independent) so it is safe
-    as long as task IDs are UUIDs (collision probability negligible). Returns
-    the first match found; the registry should not have two batches with
-    identical task_id sets under normal operation.
+    The match is a subset check: all provided *task_ids* must be members of the
+    recorded batch's task list (``set(provided) <= set(recorded)``). A superset
+    — more provided IDs than the batch holds — does NOT match, as that indicates
+    a mis-specified call. Returns the first match found; first-match-wins is safe
+    in practice because task IDs are UUIDs (collision probability negligible).
     """
     wanted = set(task_ids)
     with _registry_lock:
         reg = _load_registry()
     crew_entry = reg.get("crews", {}).get(crew_id, {})
     for entry in crew_entry.get("batches", []):
-        if set(entry.get("task_ids", [])) == wanted:
+        if wanted <= set(entry.get("task_ids", [])):
             return entry
     return None
