@@ -191,7 +191,10 @@ GA_LOGIN_CONTAINER_PREFIX = "ga-login-"
 
 # ── Config-driven constants ───────────────────────────────────────────────────
 KC_IMAGE = cfg.kc_image
-KC_BASE_IMAGE = cfg.kc_base_image
+# Login containers use the upstream base image directly (not the locally-built
+# crew image) to avoid any risk from a tainted local build. This must match the
+# FROM pin in crews/_base/admission/Containerfile.
+KC_BASE_IMAGE = "ghcr.io/kirodotdev/kirocrew:0.6.0"
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 GA_CREW_AGENT = cfg.ga_crew_agent

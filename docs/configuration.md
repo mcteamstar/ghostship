@@ -9,7 +9,6 @@ These variables are baked into the transport container by `install.sh` at `podma
 | `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host. |
 | `PORT` | `64057` | Transport server port (MCP + file routes). Set via `install.sh --port <port>`. |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. |
-| `KC_BASE_IMAGE` | `ghcr.io/kirodotdev/kirocrew:0.6.0` | Base KiroCrew image for ephemeral login containers (`/login` flow). Not the crew runtime image (`KC_IMAGE`). Override when pulling from a private registry or pinning a tag. |
 | `GA_MAX_CREWS` | `20` | Maximum registered crews (running + stopped). Stopped crews cost no memory; this is a housekeeping limit. |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum simultaneously running crews. Enforced on restart — if the running count equals this limit, restart is refused until another crew idles out. Set to `0` to disable. At ~2–3 GB per running crew, the default of 3 fits an 8 GB host. |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before the container is stopped. |

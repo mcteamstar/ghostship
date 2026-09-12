@@ -396,8 +396,8 @@ PODMAN_SOCK = cfg.podman_socket
 
 KC_IMAGE = cfg.kc_image
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
-# ga-login). Using the base image here avoids any risk from a tainted crew image.
-KC_BASE_IMAGE = cfg.kc_base_image
+# Login containers use the upstream base image directly — see lifecycle.py.
+KC_BASE_IMAGE = "ghcr.io/kirodotdev/kirocrew:0.6.0"
 GA_MAX_CREWS = cfg.ga_max_crews
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"

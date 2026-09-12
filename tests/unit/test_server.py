@@ -2891,7 +2891,6 @@ class InstallEnvVarSyncTests(unittest.TestCase):
         # Vars that are intentionally not forwarded via plain -e flags
         excluded = {
             "KC_IMAGE",       # build-time image name, not a runtime var
-            "KC_BASE_IMAGE",  # build-time base image for login containers
             "GA_API_KEY",     # passed via podman secret (--secret ga-api-key), not -e
             "GA_FILE_SECRET", # generated internally by the transport at startup
         }

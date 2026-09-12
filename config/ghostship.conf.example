@@ -140,9 +140,6 @@
 # Crew container image used for spec-ops crews.
 # KC_IMAGE=localhost/spec-ops:latest
 
-# Upstream base image used for ephemeral kiro-cli-only containers (e.g. login).
-# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.6.0
-
 # ── Crew agent ────────────────────────────────────────────────────────────────
 # KiroCrew agent name written to config.local.json inside each crew. Must be
 # non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
