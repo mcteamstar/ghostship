@@ -323,10 +323,11 @@ Every crew launched by the transport receives fixed headless-optimised values wr
 | State | RSS |
 |:------|:----|
 | Idle (no active task) | ~160 MB (gateway process only) |
-| Active task peak | ~1.5–1.9 GB (session + subagents) |
-| Post-task (after `session.timeout_secs`) | ~160 MB (session reaped) |
+| Active task, headless (`slot=None`) | ~400–600 MB (subagents only, no session attached) |
+| Active task, with session slot (`slot="bridge"` or `slot=True`) | ~1.5–1.9 GB (session + subagents) |
+| Idle, session reaped (after `session.timeout_secs`) | ~160 MB |
 
-Without these overrides (KiroCrew 0.5.0 defaults), idle RSS is ~470 MB due to the eagerly pre-spawned `kiro-cli-chat` process.
+Without these overrides, idle RSS is ~470 MB due to an eagerly pre-spawned `kiro-cli-chat` process. With `session.eager_spawn=false` (the ghostship default), the session process is not created until first dispatch — and with headless dispatch (`slot=None`), no persistent session process is created at all.
 
 ### `session.watchdog_rss_max_mb` guidance
 

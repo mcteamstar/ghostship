@@ -45,6 +45,8 @@ launch(crew_id)
      spawn_min_memory_gb, resource_pressure_gb, resource_critical_gb,
      subagent_timeout_secs, subagent_max_turns, default_agent=ghost,
      reasoning_effort=max)
+     These thresholds govern KiroCrew's internal subagent admission; set
+     lower than GA_MIN_FREE_MEM_GB so the transport's outer memory gate fires first.
   8. Restart container (workers pick up auth + config)
   9. Wait for gateway ready again
   10. Copy manifest-selected agent JSONs from /agents bind-mount
@@ -98,6 +100,8 @@ Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. Without int
 ## Task retention and force-stop
 
 Every `dispatch` requests a retained run (`keep=true`), keeping each task's session data available for continuation after a forceful stop.
+
+**Dispatch model:** Tasks are dispatched via KiroCrew's `/api/spawn` endpoint — each runs as an isolated subagent process with its own working directory (`subagent_<task_id>/`). This is the minimal-overhead path: no persistent `kiro-cli-chat` session is attached, and the process exits when the task completes. Dashboard session slots (`slot=` on `dispatch`) attach a `kiro-cli-chat` session for browser visibility at the cost of ~300–400 MB RSS per slot. Slots are opt-in — the default is headless spawn. On crews launched with `dashboard=True`, the transport defaults `slot="bridge"` automatically, so all dispatches attach a session unless `slot=None` is passed explicitly.
 
 `steer(task_id, message, crew_id, force=False)` defaults to turn-boundary behaviour: a running task receives `/steer`; a completed task uses `/continue`. With `force=True` on a running task, transport calls `DELETE /api/spawn/{task_id}` then `POST /api/spawn/{task_id}/continue` and returns `force_redeployed`. A completed task follows the normal `/continue` path even with `force=True`.
 
