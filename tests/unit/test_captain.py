@@ -1,6 +1,6 @@
 """Unit tests for ``transport.captain`` — Captain standing orders + mail helpers.
 
-TRN-85 migration target. ``CaptainStandingOrdersTests`` exercises the
+Migration target. ``CaptainStandingOrdersTests`` exercises the
 ``server.captain()`` MCP tool plus captain-owned helpers (``_format_captain_mail``,
 ``_append_captain_mail``, ``_mail_count``, ``_resolve_order_template``) and a
 couple of ``server.schedule()`` reservation checks.
@@ -14,7 +14,7 @@ Patch targets follow the call-site principle (design §2):
 - ``captain()`` reaches the gateway through ``_crew_api_with_recovery`` (lifecycle),
   which calls ``_crew_api`` from lifecycle's own namespace → patch
   ``lifecycle._crew_api`` for the crew-API mock (the ``server._crew_api``
-  dual-patch shadows from TRN-71 are dropped).
+  dual-patch shadows are dropped).
 """
 
 from __future__ import annotations
@@ -212,7 +212,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         resource = server.resource_orders()
         resolved_body = server._resolve_order_template("sdd", "test-change")
 
-        # TRN-135: resource_orders() now returns a summary index (name: description),
+        # resource_orders() now returns a summary index (name: description),
         # not full template bodies. Verify the new format.
         self.assertIn("sdd:", resource)
         self.assertIn("Drive one or more named OpenSpec changes through the standard", resource)
@@ -351,7 +351,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
     def test_resource_orders_returns_dynamic_listing_from_academy_orders(self) -> None:
         """resource_orders() returns summary index (name: description) from academy/orders/."""
         resource = server.resource_orders()
-        # TRN-135: new format is "name: description" per line, not "## name\n...body"
+        # New format is "name: description" per line, not "## name\n...body"
         self.assertIn("sdd:", resource)
         # Summary should contain the description (starts with "Drive one or more…")
         self.assertIn("Drive one or more named OpenSpec changes", resource)
@@ -697,7 +697,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("Could not resume Captain check-in", result["error"])
 
     def test_standing_stop_gateway_not_found_still_returns_stopped(self) -> None:
-        # TRN-104: gateway returns {"ok": False} (job not found) — stop should
+        # gateway returns {"ok": False} (job not found) — stop should
         # still succeed and the registry should be updated.
         existing = {
             "id": "job-existing",
@@ -724,7 +724,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         save_reg.assert_called_once()
 
     def test_stop_when_already_disabled_in_gateway_still_updates_registry(self) -> None:
-        # TRN-104 (task 2.1): gateway already shows enabled=False (e.g. Raven
+        # gateway already shows enabled=False (e.g. Raven
         # paused it externally) — registry must still be updated to enabled=False.
         existing = {
             "id": "job-existing",
@@ -758,7 +758,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertFalse(sched["enabled"])
 
     def test_stop_when_gateway_api_raises_exception_still_updates_registry(self) -> None:
-        # TRN-104 (task 2.2): gateway API call raises an exception — stop must
+        # gateway API call raises an exception — stop must
         # still return success and update the registry to enabled=False.
         existing = {
             "id": "job-existing",
@@ -831,7 +831,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertEqual(payload["cron"], "0 9 * * 1")
         self.assertNotIn("cron_expr", payload)
 
-    # ── TRN-110 task 6.3 / TRN-120 task 3 — sdd multi-change via comma-separated <change> ──
+    # ── sdd multi-change via comma-separated <change> ────────────────────────
 
     def test_resolve_sdd_multi_change_substitutes_value(self) -> None:
         """sdd: comma-separated change_name is substituted and no bare <change> token remains."""
@@ -850,7 +850,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server._resolve_order_template("sdd", None)
 
-    # ── TRN-110 tasks 3.1–3.3 — independent-review template resolution ────────
+    # ── independent-review template resolution ────────────────────────────────
 
     def test_resolve_independent_review_scopes_to_change(self) -> None:
         """Task 3.1: independent-review with change_name substitutes Scope line, no residual {{...}}."""
@@ -862,7 +862,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
 
     def test_resolve_independent_review_accepts_none_change_name(self) -> None:
-        """TRN-120 task 2.5: independent-review with change_name=None resolves to 'entire codebase'."""
+        """independent-review with change_name=None resolves to 'entire codebase'."""
         resolved = server._resolve_order_template("independent-review", None)
         self.assertIn("Scope: entire codebase", resolved)
         self.assertNotIn("<change?>", resolved)
@@ -871,7 +871,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertFalse(_re.search(r"\{\{[A-Z_]+\}\}", resolved))
 
     def test_resolve_independent_review_whole_codebase(self) -> None:
-        """TRN-120 task 2.5: independent-review with change_name=None yields Scope: entire codebase, no residual tokens."""
+        """independent-review with change_name=None yields Scope: entire codebase, no residual tokens."""
         resolved = server._resolve_order_template("independent-review", None)
         self.assertIn("Scope: entire codebase", resolved)
         self.assertNotIn("<change>", resolved)
@@ -894,7 +894,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         finally:
             test_template.unlink(missing_ok=True)
 
-    # ── TRN-120 task 1.2 — <change?> optional token tests ────────────────────
+    # ── <change?> optional token tests ───────────────────────────────────────
 
     def test_optional_change_token_with_name(self) -> None:
         """<change?> with a provided change_name substitutes the name."""
@@ -1177,7 +1177,7 @@ class CaptainStatusArchiveTests(unittest.TestCase):
 
 
 class MaildirSubjectTimestampTests(unittest.TestCase):
-    """TRN-89 Task 2 — received_at in _read_maildir_subjects_from_tar."""
+    """received_at in _read_maildir_subjects_from_tar."""
 
     @staticmethod
     def _make_maildir_tar(messages: dict[str, str]) -> bytes:
@@ -1237,7 +1237,7 @@ class MaildirSubjectTimestampTests(unittest.TestCase):
 
 
 class CaptainLastCheckinAtTests(unittest.TestCase):
-    """TRN-89 Task 4 — last_checkin_at in captain status."""
+    """last_checkin_at in captain status."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 
@@ -1329,11 +1329,11 @@ class CaptainLastCheckinAtTests(unittest.TestCase):
         self.assertEqual(result["last_checkin_at"], checkin_ts)
 
 
-# ── TRN-94 tests ─────────────────────────────────────────────────────────────
+# ── captain status / mail tests ──────────────────────────────────────────────
 
 
 class ReadAllMailSubjectsTests(unittest.TestCase):
-    """TRN-94 task 1.5 — _read_all_mail_subjects returns new dict shape."""
+    """_read_all_mail_subjects returns new dict shape."""
 
     CONTAINER = "gs-demo"
 
@@ -1375,7 +1375,7 @@ class ReadAllMailSubjectsTests(unittest.TestCase):
 
 
 class SkimAllMailboxesTests(unittest.TestCase):
-    """TRN-94 tasks 1.3 + 2.2 — _skim_all_mailboxes happy path and fallback."""
+    """_skim_all_mailboxes happy path and fallback."""
 
     CONTAINER = "gs-demo"
 
@@ -1423,7 +1423,7 @@ class SkimAllMailboxesTests(unittest.TestCase):
 
 
 class CaptainStatusAgentMailTests(unittest.TestCase):
-    """TRN-94 task 2.4 — captain status includes agent_mail field."""
+    """captain status includes agent_mail field."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 
@@ -1515,7 +1515,7 @@ class CaptainStatusAgentMailTests(unittest.TestCase):
 
 
 class LoadOrderTemplateGaDirTests(unittest.TestCase):
-    """TRN-135 — _load_order_template() resolves GA_ORDERS_DIR with precedence.
+    """_load_order_template() resolves GA_ORDERS_DIR with precedence.
 
     Guards the requirement that a user-defined template is both listable AND
     resolvable — via the per-template resource and the captain order path,
@@ -1599,7 +1599,7 @@ class LoadOrderTemplateGaDirTests(unittest.TestCase):
 
 
 class ListOrderTemplatesTests(unittest.TestCase):
-    """TRN-135 — _list_order_templates() merges built-ins and GA_ORDERS_DIR."""
+    """_list_order_templates() merges built-ins and GA_ORDERS_DIR."""
 
     def _make_builtin_dir(self, tmp: Path, templates: dict[str, str]) -> Path:
         """Write .md template files into a directory, return the path."""

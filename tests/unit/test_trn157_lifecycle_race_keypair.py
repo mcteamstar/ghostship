@@ -1,4 +1,4 @@
-"""TRN-157 unit tests: generation-counter race fix + Admiral keypair TOCTOU fix.
+"""Unit tests: generation-counter race fix + Admiral keypair TOCTOU fix.
 
 CR-1: Three-caller generation-counter tests — exercise the _startup_generation
       mechanism added to _ensure_crew_running.
@@ -30,7 +30,7 @@ def _make_stopped_crew(container: str = "gs-test") -> dict:
 
 
 class GenerationCounterTests(unittest.TestCase):
-    """Tests for the TRN-157 generation-counter fix in _ensure_crew_running."""
+    """Tests for the generation-counter fix in _ensure_crew_running."""
 
     def test_three_caller_generation_check_raises(self) -> None:
         """Waiter wakes to find generation has advanced (third caller took over) —
@@ -213,7 +213,7 @@ class GenerationCounterTests(unittest.TestCase):
 
 
 class FinishCrewSetupCookieCleanupTests(unittest.TestCase):
-    """Tests for TRN-157 CR-2: _cleanup_crew called on cookie-mint failure."""
+    """Tests for CR-2: _cleanup_crew called on cookie-mint failure."""
 
     def test_finish_crew_setup_cookie_failure_calls_cleanup(self) -> None:
         """When _mint_cookie returns None, _cleanup_crew is called and
@@ -259,7 +259,7 @@ class FinishCrewSetupCookieCleanupTests(unittest.TestCase):
 
 
 class LaunchRegistryCleanupOnErrorDictTests(unittest.TestCase):
-    """Tests for TRN-157 CR-2: launch() cleans up registry when
+    """Tests for CR-2: launch() cleans up registry when
     _finish_crew_setup returns an error dict."""
 
     def _build_launch_patches(

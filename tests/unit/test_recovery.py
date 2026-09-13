@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch, MagicMock
 def _ensure_httpx_exceptions() -> None:
     """Ensure the shared stub httpx (with its exception classes) is installed.
 
-    TRN-144: this must NEVER synthesize its own ``ConnectError`` /
+    This must NEVER synthesize its own ``ConnectError`` /
     ``ConnectTimeout`` / ``HTTPStatusError`` — doing so created a *second* class
     that ``transport.lifecycle``'s ``except httpx.ConnectError`` never matched,
     erroring all recovery tests under full-suite discovery. It now delegates to
@@ -30,7 +30,7 @@ _ensure_httpx_exceptions()
 import httpx2 as httpx
 import transport.registry as _registry_mod
 
-# TRN-144: identity invariant — lifecycle's bound exception classes and the
+# Identity invariant — lifecycle's bound exception classes and the
 # classes these tests raise must be one and the same object. If this fails, the
 # shared-stub reconciliation has regressed and recovery tests would error under
 # full-suite discovery.
@@ -38,7 +38,7 @@ assert lifecycle.httpx.ConnectError is httpx.ConnectError
 assert lifecycle.httpx.ConnectTimeout is httpx.ConnectTimeout
 assert lifecycle.httpx.HTTPStatusError is httpx.HTTPStatusError
 
-# TRN-143 §4: FakeHTTP / FakeResponse are consolidated in tests.unit.helpers.
+# FakeHTTP / FakeResponse are consolidated in tests.unit.helpers.
 from tests.unit.helpers import FakeHTTP, FakeResponse  # noqa: E402
 
 

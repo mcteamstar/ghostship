@@ -37,8 +37,8 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 
 # Container-side helper scripts baked into the crew image at /scripts/.
-# Canonical home is transport/constants.py (TRN-142). constants.py is a
-# zero-dependency leaf, so importing it here is cycle-safe.
+# Canonical home is transport/constants.py. constants.py is a zero-dependency
+# leaf, so importing it here is cycle-safe.
 try:
     from constants import SCRIPTS_DIR  # container: flat /app/
 except ModuleNotFoundError:
@@ -63,8 +63,8 @@ _ORDERS_DIR = Path(os.environ.get("ACADEMY_PATH", str(Path(__file__).resolve().p
 # /orders is the canonical mount point for academy/orders/.
 _ORDERS_CONTAINER_DIR = Path("/orders")
 
-# User-defined orders directory (TRN-135). When set, its .md files are merged
-# with the built-in templates; user-defined takes precedence on name collision.
+# User-defined orders directory. When set, its .md files are merged with the
+# built-in templates; user-defined takes precedence on name collision.
 GA_ORDERS_DIR: str = os.environ.get("GA_ORDERS_DIR", "")
 
 # One-time warning flag: log at most once if GA_ORDERS_DIR is set but missing.
@@ -157,9 +157,9 @@ def _load_order_template(name: str) -> tuple[str, str]:
     templates for one that declares ``name`` in its ``aliases`` list.
     GA_ORDERS_DIR user-defined templates take precedence over built-ins.
     """
-    # TRN-135: honour GA_ORDERS_DIR with user-defined precedence, mirroring the
-    # merge in _list_order_templates(). A user-defined template with the same
-    # stem overrides the built-in; otherwise fall back to the built-in dir.
+    # Honour GA_ORDERS_DIR with user-defined precedence, mirroring the merge in
+    # _list_order_templates(). A user-defined template with the same stem overrides
+    # the built-in; otherwise fall back to the built-in dir.
     template_path: Path | None = None
     if GA_ORDERS_DIR:
         user_path = Path(GA_ORDERS_DIR) / f"{name}.md"
@@ -362,9 +362,9 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
         headers.append(f"Supersedes: {supersedes_id}")
 
     if signing_secret:
-        # TRN-136: sign with Ed25519. signing_secret is the hex-encoded 32-byte
-        # private seed; the detached 64-byte signature is base64url-encoded
-        # (no padding) into the X-Admiral-Sig header.
+        # Sign with Ed25519. signing_secret is the hex-encoded 32-byte private
+        # seed; the detached 64-byte signature is base64url-encoded (no padding)
+        # into the X-Admiral-Sig header.
         private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_secret))
         payload = f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8")
         sig = private_key.sign(payload)
@@ -400,8 +400,8 @@ def _append_captain_mail(
             reg = _load_registry()
             crew_entry = reg["crews"].get(crew_id, {})
             supersedes_id = crew_entry.get("last_captain_message_id")
-        # TRN-93: admiral_secret is no longer stored in crews.json. Read it from
-        # the separate per-crew secrets file written by lifecycle._finish_crew_setup.
+        # Read the admiral_secret from the per-crew secrets file written by
+        # lifecycle._finish_crew_setup.
         signing_secret = _read_crew_secret(crew_id)
 
     # Pure computation — outside any lock
@@ -604,7 +604,7 @@ def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[dict]:
                     subject = msg.get("Subject", "")
                     if not subject:
                         continue
-                    # TRN-89 task 2: parse Date header into received_at
+                    # Parse Date header into received_at
                     received_at: str | None = None
                     date_header = msg.get("Date", "")
                     if date_header:
@@ -724,7 +724,7 @@ def _captain_standing_view(
         "result": job.get("last_result"),
     }
 
-    # TRN-89 task 4: read last_checkin_at from the crew's schedule entry
+    # Read last_checkin_at from the crew's schedule entry
     last_checkin_at: str | None = None
     try:
         with _registry_lock:
@@ -748,7 +748,7 @@ def _captain_standing_view(
         "last_run_ts": last_run["timestamp"],
         "last_status": last_run["status"],
         "last_result": last_run["result"],
-        "last_checkin_at": last_checkin_at,  # TRN-89 task 4
+        "last_checkin_at": last_checkin_at,
         "unread_mail": unread_mail,
         "mailbox": "captain@localhost",
         "unread_admiral_mail": unread_admiral_mail,

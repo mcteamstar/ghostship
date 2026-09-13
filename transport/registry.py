@@ -54,7 +54,7 @@ def _load_registry() -> dict:
         # quarantine file be named "crews.json.corrupt".
         corrupt = REGISTRY_PATH.with_name(REGISTRY_PATH.name + ".corrupt")
         os.replace(REGISTRY_PATH, corrupt)
-        # TRN-138: raise a named exception rather than re-raising the internal
+        # Raise a named exception rather than re-raising the internal
         # json.JSONDecodeError, so MCP tool handlers catch one thing.
         raise RegistryCorruptError(
             "registry corrupt — crews.json.corrupt preserved for inspection"
@@ -87,7 +87,7 @@ def _save_registry(reg: dict) -> None:
         os.close(dir_fd)
 
 
-# ── Schedule registry helpers (TRN-29) ───────────────────────────────────────
+# ── Schedule registry helpers ─────────────────────────────────────────────────
 
 def _get_crew_schedules(reg: dict, crew_id: str) -> list:
     """Return the schedules list for a crew, defaulting to []."""
@@ -166,10 +166,9 @@ def _touch_crew(crew_id: str) -> None:
             _save_registry(reg)
 
 
-# ── Per-crew signing-secret store (TRN-93) ───────────────────────────────────
-# The admiral_secret is no longer written to crews.json (plaintext removed by
-# TRN-93).  Instead, the transport stores it in a separate file under
-# DATA_DIR/secrets/<crew_id>.admiral_secret (mode 0600).  This keeps the value
+# ── Per-crew signing-secret store ────────────────────────────────────────────
+# The admiral_secret is stored in a separate file under
+# DATA_DIR/secrets/<crew_id>.admiral_secret (mode 0600). This keeps the value
 # in a file that inherits DATA_DIR's access controls (0700 for multi-operator
 # deployments) while keeping it out of the structured JSON registry that is
 # more likely to be backed up or inspected.
@@ -222,7 +221,7 @@ def _delete_crew_secret(crew_id: str) -> None:
         pass
 
 
-# ── Batch registry helpers (TRN-105) ─────────────────────────────────────────
+# ── Batch registry helpers ────────────────────────────────────────────────────
 # Batch dispatch records live under crews[crew_id]["batches"], co-located with
 # schedule and crew metadata. Each entry records the batch_id, its constituent
 # task_ids, an ISO-8601 UTC created_at, and a status (pending | partial |

@@ -66,7 +66,7 @@ class TestVersionEndpoint(unittest.TestCase):
     def test_version_endpoint_in_public_routes(self) -> None:
         """The /version route is registered as a public (unauthenticated) route.
 
-        TRN-116: BearerAuthMiddleware moved to transport/auth.py and no longer
+        BearerAuthMiddleware lives in transport/auth.py and no longer
         hard-codes its public routes; server.py injects them at app-build time
         (see create/serve). Construct the middleware the way server wires it.
         """

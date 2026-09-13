@@ -1,4 +1,4 @@
-"""transport/auth.py — ASGI authentication and rate-limit middleware (TRN-116).
+"""transport/auth.py — ASGI authentication and rate-limit middleware.
 
 Extracted from server.py to improve navigability.  All classes and helpers
 in this module are self-contained: they import only from stdlib, security,
@@ -30,10 +30,9 @@ except ModuleNotFoundError:
     from transport import security as _security  # local dev
 
 
-# TRN-116: this middleware was extracted from server.py. Its log records are
-# part of the transport's observable behaviour (operators grep the
-# "transport.server" logger, and tests assert on it), so we deliberately keep
-# the original logger name rather than switching to __name__ ("transport.auth").
+# This middleware's log records are part of the transport's observable behaviour
+# (operators grep the "transport.server" logger, and tests assert on it), so we
+# deliberately keep the original logger name rather than switching to __name__.
 logger = logging.getLogger("transport.server")
 
 
@@ -58,7 +57,7 @@ def _parse_bearer_token(header_value: str) -> str | None:
     return token
 
 
-# ── Rate-limit configuration (TRN-52) ─────────────────────────────────────────
+# ── Rate-limit configuration ──────────────────────────────────────────────────
 # Per-endpoint sliding-window limits, each overridable via a GA_RATE_LIMIT_*
 # env var in "<count>:<window_secs>" format. GA_RATE_LIMIT_ENABLED is the master
 # switch (default "true"); state is in-memory and resets on process restart.
@@ -70,7 +69,6 @@ _RATE_LIMIT_DEFAULTS: dict[str, tuple[str, int, int]] = {
     "mcp": ("GA_RATE_LIMIT_MCP", 300, 60),
     "files": ("GA_RATE_LIMIT_FILES", 60, 60),
     "crew_api": ("GA_RATE_LIMIT_CREW_API", 120, 60),
-    # TRN-92: dashboard login endpoint rate limit (default 60 req / 60 s).
     # /dashboard/auth (forward_auth) is called by Caddy per-request; keep it
     # generous. /dashboard/login (the key check) is more sensitive.
     "dashboard_auth": ("GA_RATE_LIMIT_DASHBOARD_AUTH", 600, 60),
@@ -152,7 +150,7 @@ def _build_rate_limiters() -> "dict[str, _security.RateLimiter] | None":
 # ── AsyncMiddlewareBase ────────────────────────────────────────────────────────
 
 class AsyncMiddlewareBase:
-    """Minimal ASGI middleware base (TRN-141).
+    """Minimal ASGI middleware base.
 
     Encapsulates the ``if scope["type"] != "http"`` non-HTTP pass-through that
     every HTTP-only middleware repeats as its first line. Subclasses implement
@@ -176,7 +174,7 @@ class AsyncMiddlewareBase:
 # ── TransportSecretMiddleware ──────────────────────────────────────────────────
 
 class TransportSecretMiddleware(AsyncMiddlewareBase):
-    """ASGI middleware enforcing the GA_TRANSPORT_SECRET X-Transport-Token gate (TRN-107).
+    """ASGI middleware enforcing the GA_TRANSPORT_SECRET X-Transport-Token gate.
 
     When ``transport_secret`` is non-empty, every incoming HTTP request must carry
     an ``X-Transport-Token`` header whose value matches ``transport_secret`` exactly
@@ -276,7 +274,7 @@ class RateLimitMiddleware(AsyncMiddlewareBase):
         parts = path.lstrip("/").split("/")
         if len(parts) >= 3 and parts[0] == "crews" and parts[2] == "api":
             return "crew_api"
-        # TRN-92: dashboard auth/login endpoints
+        # Dashboard auth/login endpoints
         if path in ("/dashboard/login", "/dashboard/auth"):
             return "dashboard_auth"
         if path.startswith("/mcp"):
@@ -360,10 +358,10 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
     _PUBLIC_PATHS: set[str] = {"/health"}
 
     async def __call__(self, scope, receive, send) -> None:
-        # TRN-102: WebSocket upgrades for /crews/<id>/ui/<path> are proxied to
-        # the crew gateway with the session cookie injected. Access is gated by
-        # Caddy's forward_auth upstream (keyed deployments); the transport's
-        # bearer check applies to HTTP scopes only, so WS is dispatched here,
+        # WebSocket upgrades for /crews/<id>/ui/<path> are proxied to the crew
+        # gateway with the session cookie injected. Access is gated by Caddy's
+        # forward_auth upstream (keyed deployments); the transport's bearer check
+        # applies to HTTP scopes only, so WS is dispatched here,
         # before AsyncMiddlewareBase forwards other non-HTTP scopes downstream.
         if scope["type"] == "websocket":
             _ws_parts = scope.get("path", "").lstrip("/").split("/")
@@ -437,11 +435,8 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 response = await handler(request)
                 await response(scope, receive, send)
                 return
-            # TRN-80: per-port UI proxy — requests arriving on a crew UI
-            # port are proxied to that crew's gateway. Auth is skipped here
-            # only when GA_API_KEY is unset; the keyed path checks auth first.
-            # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
-            # dashboard port bindings. This block is intentionally gone.
+            # Portal (ga-portal) owns all dashboard port bindings.
+            # Per-port proxy is intentionally gone.
             # Crew proxy routes (no auth required when GA_API_KEY unset)
             _path = scope["path"]
             _parts = _path.lstrip("/").split("/")
@@ -459,7 +454,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                     response = await api_proxy(request)
                     await response(scope, receive, send)
                     return
-            # TRN-80: POST/DELETE /crews/{id}/dashboard
+            # POST/DELETE /crews/{id}/dashboard
             if (
                 len(_parts) == 3
                 and _parts[0] == "crews"
@@ -483,7 +478,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                     response = PlainTextResponse("Method Not Allowed", status_code=405)
                     await response(scope, receive, send)
                     return
-            # TRN-131: POST /crews/{id}/prewarm (GA_API_KEY unset path)
+            # POST /crews/{id}/prewarm (GA_API_KEY unset path)
             if (
                 len(_parts) == 3
                 and _parts[0] == "crews"
@@ -544,9 +539,8 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             await response(scope, receive, send)
             return
 
-        # TRN-80: per-port UI proxy (auth enforced above)
-        # TRN-101: Per-port proxy removed; Portal (ga-portal) owns all
-        # dashboard port bindings. This block is intentionally gone.
+        # Portal (ga-portal) owns all dashboard port bindings.
+        # Per-port proxy is intentionally gone.
 
         # Crew UI proxy — /crews/<id>/ui and /crews/<id>/ui/<path>
         # Dispatch after auth passes so GA_API_KEY enforcement applies.
@@ -577,7 +571,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 await response(scope, receive, send)
                 return
 
-        # TRN-80: POST/DELETE /crews/{id}/dashboard (keyed path — auth already passed above)
+        # POST/DELETE /crews/{id}/dashboard (keyed path — auth already passed above)
         if (
             len(path_parts) == 3
             and path_parts[0] == "crews"
@@ -602,7 +596,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 await response(scope, receive, send)
                 return
 
-        # TRN-131: POST /crews/{id}/prewarm (keyed path — auth already passed above)
+        # POST /crews/{id}/prewarm (keyed path — auth already passed above)
         if (
             len(path_parts) == 3
             and path_parts[0] == "crews"
@@ -625,8 +619,8 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
 
     @staticmethod
     async def _reject(send, scope=None) -> None:
-        # Audit the authorization denial (TRN-70 audit logging). No token value
-        # is ever included — only outcome, source, and timestamp.
+        # Audit the authorization denial. No token value is ever included —
+        # only outcome, source, and timestamp.
         try:
             source = None
             if scope is not None:
@@ -712,7 +706,7 @@ class SecurityHeadersMiddleware:
 
         https = self._is_https(scope)
 
-        # Log plaintext HTTP traffic (TRN-70 task 3.4).
+        # Log plaintext HTTP traffic.
         # HTTPS redirect is disabled (Caddy owns redirects); log plaintext hits
         # for visibility.
         if not https and scope.get("path") != "/health":

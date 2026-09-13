@@ -1,4 +1,4 @@
-"""transport/monitors.py — background schedule/idle monitor threads (TRN-116).
+"""transport/monitors.py — background schedule/idle monitor threads.
 
 Extracted from lifecycle.py to improve navigability.  This module owns the two
 daemon-thread loops that run for the life of the transport process:
@@ -65,8 +65,8 @@ except ModuleNotFoundError:
 
 # CREW_GATEWAY_PORT is a plain integer constant with no transport dependencies,
 # so it is imported directly from the zero-dependency constants leaf rather than
-# injected via bind_lifecycle() (TRN-142). It was never part of the
-# monitors↔lifecycle load-time cycle that bind_lifecycle() exists to break.
+# injected via bind_lifecycle(). It was never part of the monitors↔lifecycle
+# load-time cycle that bind_lifecycle() exists to break.
 try:
     from constants import CREW_GATEWAY_PORT  # container: flat /app/
 except ModuleNotFoundError:
@@ -93,7 +93,7 @@ except ModuleNotFoundError:
 # monitors standalone does not see an AttributeError.
 #
 # CREW_GATEWAY_PORT is NOT injected — it is imported directly from constants
-# (see above), because it is a plain constant, not part of the cycle (TRN-142).
+# (see above), because it is a plain constant, not part of the module cycle.
 GA_IDLE_TIMEOUT_SECS: float = 0.0
 _SCHEDULE_MONITOR_INTERVAL: int = 30
 _ensure_crew_running: Any = None
@@ -184,11 +184,11 @@ def _schedule_monitor() -> None:
                             _save_registry(reg)
                         continue
 
-                    # TRN-108: check gateway enabled state — gateway is source of truth.
+                    # Check gateway enabled state — gateway is source of truth.
                     # After waking the crew, fetch /api/crons and check whether this
                     # specific job is still enabled. The registry may lag behind a
-                    # `kirocrew cron pause` issued inside the container (TRN-82 only
-                    # syncs on restart). Fail-open: if the fetch raises, proceed.
+                    # `kirocrew cron pause` issued inside the container (syncs on
+                    # restart). Fail-open: if the fetch raises, proceed.
                     job_id = sched.get("job_id")
                     try:
                         cron_payload = _crew_api(crew, "GET", "/api/crons")
@@ -253,7 +253,7 @@ def _schedule_monitor() -> None:
 
                     if fired:
                         # Advance next_fire_at in registry only on success
-                        # TRN-89 task 4: write last_checkin_at for captain check-ins
+                        # Write last_checkin_at for captain check-ins
                         _advance_next_fire_at(sched)
                         with _registry_lock:
                             reg = _load_registry()
@@ -270,7 +270,7 @@ def _schedule_monitor() -> None:
                                     break
                             _save_registry(reg)
 
-                    # H-2 / TRN-156: For one-shot (delay) jobs, disable the
+                    # H-2: For one-shot (delay) jobs, disable the
                     # schedule in the registry FIRST (durable safety gate that
                     # prevents the annual cron expression from replaying if the
                     # gateway DELETE fails), then best-effort delete the cron

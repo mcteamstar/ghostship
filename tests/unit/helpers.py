@@ -1,4 +1,4 @@
-"""Shared test helpers for the modularised transport unit suite (TRN-85).
+"""Shared test helpers for the modularised transport unit suite.
 
 The ~8500-line ``test_transport.py`` is being split into one test file per
 transport module (``test_registry.py``, ``test_podman.py``, ``test_files.py``,
@@ -33,7 +33,7 @@ import transport.files as files_mod  # noqa: F401  (re-exported)
 import transport.captain as captain_mod  # noqa: F401  (re-exported)
 import transport.academy as academy  # noqa: F401  (re-exported)
 import transport.lifecycle as lifecycle  # noqa: F401  (re-exported)
-import transport.monitors as monitors  # noqa: F401  (re-exported, TRN-116 §8)
+import transport.monitors as monitors  # noqa: F401  (re-exported)
 
 
 class Request:
@@ -99,7 +99,7 @@ class FakePodmanClient:
         return getattr(self, "_exec_stdin_response", "admiral secret injected")
 
 
-# ── Consolidated HTTP mocks (TRN-143 §4) ────────────────────────────────────
+# ── Consolidated HTTP mocks ───────────────────────────────────────────────────
 #
 # Four independent FakeHTTP / FakeResponse definitions previously lived in
 # test_recovery.py, test_monitors.py (as MockHTTPResponse), test_server.py, and
@@ -118,7 +118,7 @@ class FakePodmanClient:
 
 
 class FakeResponse:
-    """Unified httpx.Response / MockHTTPResponse stand-in (TRN-143 §4).
+    """Unified httpx.Response / MockHTTPResponse stand-in.
 
     Superset of the four prior definitions — pass only the keywords a given
     test needs:
@@ -177,7 +177,7 @@ class FakeResponse:
 
 
 class FakeHTTP:
-    """Sequential sync httpx.Client replacement (TRN-143 §4).
+    """Sequential sync httpx.Client replacement.
 
     Returns the scripted ``responses`` in order for ``get``/``request``; once
     exhausted it returns ``default`` (a 200/empty ``FakeResponse`` by default).
@@ -216,7 +216,7 @@ class FakeHTTP:
 
 
 class FakeAsyncHTTP:
-    """Async httpx.AsyncClient replacement for the crew proxy handlers (TRN-143 §4).
+    """Async httpx.AsyncClient replacement for the crew proxy handlers.
 
     Records every forwarded request's headers in ``self.captured_headers`` and
     returns a ``Mock`` response. ``statuses`` scripts the status code sequence

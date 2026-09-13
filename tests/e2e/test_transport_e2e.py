@@ -201,8 +201,8 @@ class TestSupplyEvac(unittest.TestCase):
 # reachable through ga-portal's per-crew dashboard port. This exact path
 # silently broke in production (first a 502, then a 401) after two unrelated
 # changes — the transport's internal port moving off a stale literal
-# (TRN-111 PORT consolidation) and the GA_TRANSPORT_SECRET gate shipping
-# without updating the dashboard registration code (TRN-107) — while every
+# PORT consolidation and the GA_TRANSPORT_SECRET gate shipping without
+# updating the dashboard registration code — while every
 # other e2e test (health, dispatch, supply/evac, crew lifecycle) kept
 # passing, because none of them ever hit a dashboard port.
 

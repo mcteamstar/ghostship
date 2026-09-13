@@ -1,4 +1,4 @@
-"""Unit tests for ghostship CLI subcommands cmd_status, cmd_stop, cmd_setup (TRN-158).
+"""Unit tests for ghostship CLI subcommands cmd_status, cmd_stop, cmd_setup.
 
 Uses the same importlib-based loader as test_ghostship_auth.py.
 """

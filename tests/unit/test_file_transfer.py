@@ -19,7 +19,7 @@ from typing import Any
 def _install_import_stubs() -> None:
     """Make the stdlib tests importable in a dependency-free checkout.
 
-    TRN-144: the authoritative stub definitions now live in
+    The authoritative stub definitions now live in
     ``tests.unit._stubs``; this remains a thin, idempotent wrapper so that
     ``_install_import_stubs`` (imported by ``test_openapi``) keeps working and
     every caller resolves the one shared ``httpx`` object (and its single

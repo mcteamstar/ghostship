@@ -1,6 +1,6 @@
 """Unit tests for ``transport.server`` — MCP tools, routes, middleware, proxy.
 
-TRN-85: migration target for classes testing the MCP tool surface
+Migration target for classes testing the MCP tool surface
 (``crews``, ``launch``, ``dispatch``, ``pickup``, ``steer``, ``nuke``,
 ``captain``, ``schedule``, ``evac``, ``supply``, ``resource_*``), the login
 state machine routes (``_handle_login_post``/``_get``, ``_handle_logout_post``),
@@ -20,7 +20,7 @@ Call-site notes for the migrated classes (design §2):
   lifecycle's own namespace → mock ``lifecycle._crew_api as api``. The
   ``_require_crew`` / ``_ensure_crew_running`` / ``_get_podman`` /
   ``_read_all_mail_*`` names are called by name from server's namespace →
-  patch ``server.X``. The TRN-71 ``server._crew_api`` /
+  patch ``server.X``.
   ``lifecycle._require_crew`` … shadow dual-patches are dropped.
 - ``resource_jobs`` calls **bare** ``_crew_api`` (not the recovery wrapper) and
   ``_load_registry`` directly from server's namespace → patch ``server._crew_api``
@@ -56,10 +56,10 @@ import httpx2 as httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
-# TRN-143 §4: async proxy HTTP mock consolidated in tests.unit.helpers.
+# Async proxy HTTP mock consolidated in tests.unit.helpers.
 from tests.unit.helpers import FakeAsyncHTTP  # noqa: F401
 
-# ── container_scripts import (TRN-74) ────────────────────────────────────────
+# ── container_scripts import ────────────────────────────────────────
 # _inject_policy / _patch_crew_config now invoke baked scripts under
 # transport/container_scripts/ instead of inline `python3 -c` strings. Import
 # the policy signer directly so policy-injection tests can run the SAME code
@@ -238,7 +238,7 @@ class PersonaValidationTests(unittest.TestCase):
                 ensure.assert_not_called()
                 api.assert_not_called()
 class ModelOverrideTests(unittest.TestCase):
-    """Tests for per-dispatch and per-job model overrides (TRN-87)."""
+    """Tests for per-dispatch and per-job model overrides."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 
@@ -809,7 +809,7 @@ class ResourceJobsTests(unittest.TestCase):
         self.assertIn("report", result)
 
     def test_resource_jobs_no_running_crews(self) -> None:
-        """4.6 — resource_jobs shows stopped crews with registry data (TRN-29)."""
+        """4.6 — resource_jobs shows stopped crews with registry data."""
         reg = {"crews": {"stopped": {"container": "gs-stopped", "status": "stopped"}}}
         with (
             patch.object(server, "_load_registry", return_value=reg),
@@ -902,7 +902,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         self.assertNotIn("SECRETS_DIR", installer)
         self.assertNotIn("/run/podman-secrets", installer)
 
-    # ── TRN-58: launch auth gate tests ───────────────────────────────────────
+    # ── launch auth gate tests ───────────────────────────────────────
 
     def test_launch_not_authenticated_returns_login_url(self) -> None:
         """launch with no auth returns not_authenticated + login_url inline."""
@@ -972,7 +972,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         # The registry dict itself must also be untouched
         self.assertNotIn("no-registry-entry", registry["crews"])
 
-    # ── TRN-62: API key auth path tests ──────────────────────────────────────
+    # ── API key auth path tests ──────────────────────────────────────
 
     def _launch_with_captured_env(
         self, *, api_key: str, auth_file: str
@@ -1009,7 +1009,7 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_initiate_login", initiate_login),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_finish_crew_setup", finish_setup),
-            # TRN-136: the launch flow now generates an Ed25519 keypair and
+            # The launch flow generates an Ed25519 keypair and
             # persists the private seed via _write_crew_secret before start.
             # Patch it so the test does not touch the real crew-secret path.
             patch.object(server, "_write_crew_secret"),
@@ -1080,9 +1080,9 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
 
 
 class WriteAuthFileFdSentinelTests(unittest.TestCase):
-    """Regression tests for the fd-sentinel fix in _write_auth_file() (TRN-139).
+    """Regression tests for the fd-sentinel fix in _write_auth_file().
 
-    Before TRN-139, ``fd = -1`` was set inside the ``with os.fdopen()`` block
+    Before the fix, ``fd = -1`` was set inside the ``with os.fdopen()`` block
     body.  If ``os.fdopen()`` itself raised, the ``finally`` guard saw ``fd !=
     -1`` and called ``os.close(fd)`` on a descriptor that ``os.fdopen`` had
     already internally closed — a double-close.  The fix moves ``fd = -1`` to
@@ -1155,7 +1155,7 @@ class WriteAuthFileFdSentinelTests(unittest.TestCase):
                 self.assertNotIn(
                     raw_fd[0],
                     close_calls,
-                    "fd must not be explicitly os.close'd after fdopen — double-close hazard (TRN-139)",
+                    "fd must not be explicitly os.close'd after fdopen — double-close hazard",
                 )
 
 
@@ -1557,7 +1557,7 @@ class TestPolicyInjection(unittest.TestCase):
             _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
             _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
             _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
-            # TRN-136: launch() persists the Ed25519 private seed host-side; stub
+            # launch() persists the Ed25519 private seed host-side; stub
             # it so the test does not touch the real DATA_DIR.
             _stack.enter_context(patch.object(server, "_write_crew_secret"))
 
@@ -1636,7 +1636,7 @@ class TestPolicyInjection(unittest.TestCase):
         self.assertNotIn("policy_version", crew_list[0])
 
     def test_crews_agent_entry_omits_last_tool(self) -> None:
-        """TRN-95: crews() agent entries no longer include last_tool."""
+        """crews() agent entries no longer include last_tool."""
         reg = {
             "crews": {
                 "test-crew": {
@@ -1677,7 +1677,7 @@ class TestPolicyInjection(unittest.TestCase):
         self.assertEqual(agent_entries[0]["elapsed_secs"], 12)
 
     def test_crews_running_entry_includes_uptime_secs(self) -> None:
-        """TRN-95: a running crew entry includes an integer uptime_secs."""
+        """A running crew entry includes an integer uptime_secs."""
         reg = {
             "crews": {
                 "test-crew": {
@@ -1716,7 +1716,7 @@ class TestPolicyInjection(unittest.TestCase):
         self.assertLessEqual(entry["uptime_secs"], 105)
 
     def test_crews_stopped_entry_uptime_secs_null(self) -> None:
-        """TRN-95: a stopped crew entry has uptime_secs null (no inspect)."""
+        """A stopped crew entry has uptime_secs null (no inspect)."""
         reg = {
             "crews": {
                 "stopped-crew": {
@@ -1774,7 +1774,7 @@ class TestPatchCrewConfig(unittest.TestCase):
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
             full_overrides = _decode_overrides(exec_calls[0][1])
-            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            # Agent-scoped keys live under full_overrides["agent"]
             overrides = full_overrides["agent"]
             self.assertEqual(overrides["spawn_min_memory_gb"], 2.5)
             self.assertEqual(overrides["resource_pressure_gb"], 3.0)
@@ -1807,7 +1807,7 @@ class TestPatchCrewConfig(unittest.TestCase):
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
             full_overrides = _decode_overrides(exec_calls[0][1])
-            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            # Agent-scoped keys live under full_overrides["agent"]
             overrides = full_overrides["agent"]
             self.assertEqual(overrides["subagent_timeout_secs"], 7200)
         finally:
@@ -1830,7 +1830,7 @@ class TestPatchCrewConfig(unittest.TestCase):
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
             full_overrides = _decode_overrides(exec_calls[0][1])
-            # After TRN-127 agent-scoped keys live under full_overrides["agent"]
+            # Agent-scoped keys live under full_overrides["agent"]
             overrides = full_overrides["agent"]
             self.assertEqual(overrides["subagent_max_turns"], 300)
         finally:
@@ -1840,7 +1840,7 @@ class TestPatchCrewConfig(unittest.TestCase):
     def test_agent_field_default_kiro(self) -> None:
         """GA_CREW_AGENT unset → config.local.json gets agent.agent: "kiro" (0.4.0 required field).
 
-        After TRN-127 the top-level ``agent`` key in full_overrides is a dict of
+        The top-level ``agent`` key in full_overrides is a dict of
         agent-scoped config; the KiroCrew "agent name" is nested as
         ``full_overrides["agent"]["agent"]``."""
         original = server.GA_CREW_AGENT
@@ -1861,7 +1861,7 @@ class TestPatchCrewConfig(unittest.TestCase):
             # it is the KiroCrew agent-name field.
             agent_section = full_overrides["agent"]
             self.assertIsInstance(agent_section, dict,
-                                  "full_overrides['agent'] must be a dict after TRN-127")
+                                  "full_overrides['agent'] must be a dict")
             self.assertEqual(agent_section["agent"], "kiro")
         finally:
             server.GA_CREW_AGENT = original
@@ -1883,10 +1883,10 @@ class TestPatchCrewConfig(unittest.TestCase):
             server._patch_crew_config(CapturePodman(), "gs-test")  # type: ignore[arg-type]
             self.assertEqual(len(exec_calls), 1)
             full_overrides = _decode_overrides(exec_calls[0][1])
-            # full_overrides["agent"] is the agent section dict after TRN-127
+            # full_overrides["agent"] is the agent section dict
             agent_section = full_overrides["agent"]
             self.assertIsInstance(agent_section, dict,
-                                  "full_overrides['agent'] must be a dict after TRN-127")
+                                  "full_overrides['agent'] must be a dict")
             self.assertEqual(agent_section["agent"], "custom-agent")
         finally:
             server.GA_CREW_AGENT = original
@@ -1895,7 +1895,7 @@ class TestPatchCrewConfig(unittest.TestCase):
     def test_config_script_has_no_unexpanded_shell_vars(self) -> None:
         """KiroCrew 0.4.0 rejects literal $VAR in config values — the decoded
         overrides must contain no unexpanded shell variable reference in any
-        written value (including nested dicts after TRN-127)."""
+        written value (including nested dicts)."""
         import re
         exec_calls: list[tuple[str, list[str]]] = []
 
@@ -1922,7 +1922,7 @@ class TestPatchCrewConfig(unittest.TestCase):
     def test_kc_model_default_set_writes_default_model(self) -> None:
         """KC_MODEL_DEFAULT set → default_model written to config.local.json.
 
-        After TRN-127 default_model lives under full_overrides["agent"]."""
+        default_model lives under full_overrides["agent"]."""
         original = server.KC_MODEL_DEFAULT
         try:
             server.KC_MODEL_DEFAULT = "anthropic/claude-sonnet-4-20250514"
@@ -2080,7 +2080,7 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         self.assertLess(models_idx, cookie_idx)
 
     def test_admiral_key_not_exec_injected_in_finish_setup(self) -> None:
-        """TRN-136: _finish_crew_setup performs no admiral-key container-exec
+        """_finish_crew_setup performs no admiral-key container-exec
         injection (the key is a read-only Podman secret mounted at create time)."""
         stdin_calls: list[tuple[int, list[str]]] = []
         stop_calls: list[int] = []
@@ -2149,11 +2149,11 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
         ]
         self.assertEqual(
             admiral_exec, [],
-            "TRN-136: admiral key must not be injected via container_exec_stdin",
+            "admiral key must not be injected via container_exec_stdin",
         )
 
     def test_launch_creates_admiral_pubkey_secret_and_ro_mount(self) -> None:
-        """TRN-136: launch() creates the Podman secret and mounts it read-only
+        """launch() creates the Podman secret and mounts it read-only
         (mode 0444) at .admiral_public_key before starting the container."""
         created_secrets: list[tuple[str, bytes]] = []
         create_spec: dict = {}
@@ -2325,7 +2325,7 @@ class LoginGuardClearTests(unittest.TestCase):
             with lifecycle._login_pending_lock:
                 lifecycle._login_pending = None
 class ProxyHandlerTests(unittest.TestCase):
-    """Tests for _handle_crew_ui_proxy and _handle_crew_api_proxy (TRN-31)."""
+    """Tests for _handle_crew_ui_proxy and _handle_crew_api_proxy."""
 
     CREW = {"container": "gs-demo", "cookie": "test-cookie-val"}
 
@@ -2472,11 +2472,11 @@ class ProxyHandlerTests(unittest.TestCase):
         self.assertNotIn("host", {k.lower() for k in captured_headers[0]})
         self.assertIn("accept", {k.lower() for k in captured_headers[0]})
 
-    # ── 5.2: UI proxy injects Cookie (TRN-102) ───────────────────────────────
+    # ── 5.2: UI proxy injects Cookie ───────────────────────────────
 
     def test_ui_proxy_injects_cookie(self) -> None:
-        """5.2 (TRN-102): UI proxy injects mc_token_5476 so the SPA is
-        pre-authenticated. This reverses the pre-TRN-102 D3 behavior where the
+        """5.2: UI proxy injects mc_token_5476 so the SPA is
+        pre-authenticated.
         browser logged in via the gateway UI directly."""
         captured_headers: list[dict] = []
         mock_ctx = _FakeUpstreamResponse(200, b"ok")
@@ -2811,7 +2811,7 @@ class ProxyHandlerTests(unittest.TestCase):
         # The stale inbound cookie must NOT be present
         self.assertNotIn("stale-val", cookie_val)
 
-    # ── 9.1 (TRN-116): non-2xx upstream is surfaced with its status code ─────
+    # ── 9.1: non-2xx upstream is surfaced with its status code ───────────────
 
     def _run_ui_proxy_with_upstream(self, status_code: int, body: bytes):
         """Drive _handle_crew_ui_proxy against an upstream that returns the given
@@ -2903,7 +2903,7 @@ class InstallEnvVarSyncTests(unittest.TestCase):
             "Add the missing -e lines to the podman run block in install.sh.",
         )
 class GitIdentityInjectionTests(unittest.TestCase):
-    """Unit tests for git author identity passthrough (TRN-77 tasks 4.1 and 4.2).
+    """Unit tests for git author identity passthrough.
 
     The identity vars must appear in the container_create env= dict so they are
     part of the process environment from container startup and inherited by the
@@ -3073,7 +3073,7 @@ class GitIdentityInjectionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ready")
 class Trn89TaskTimestampTests(unittest.TestCase):
-    """TRN-89 Task 1 — task lifecycle timestamps in dispatch and pickup."""
+    """Task 1 — task lifecycle timestamps in dispatch and pickup."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 
@@ -3188,7 +3188,7 @@ class Trn89TaskTimestampTests(unittest.TestCase):
         self.assertIsNone(unknown["started_at"])
         self.assertIsNone(unknown["completed_at"])
 class Trn89CrewTimestampTests(unittest.TestCase):
-    """TRN-89 Task 3 — last_task_at in crews list."""
+    """Task 3 — last_task_at in crews list."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 
@@ -3254,7 +3254,7 @@ class Trn89CrewTimestampTests(unittest.TestCase):
         self.assertEqual(crew_map["demo-with-task"]["last_task_at"], "2026-09-02T00:00:00+00:00")
         self.assertIsNone(crew_map["demo-no-task"]["last_task_at"])
 class PickupAgentSubjectsTests(unittest.TestCase):
-    """TRN-94 tasks 3.3 + 4.4 — agent_subjects and agent filter in pickup."""
+    """Tasks 3.3 + 4.4 — agent_subjects and agent filter in pickup."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 
@@ -3376,11 +3376,11 @@ class PickupAgentSubjectsTests(unittest.TestCase):
         self.assertNotIn("subjects", result)  # not the single-inbox format
 
 
-# ── TRN-123: _task_timestamps lock (tasks 4.1 / 4.2) ─────────────────────────
+# ── _task_timestamps lock (tasks 4.1 / 4.2) ─────────────────────────
 
 
 class TaskTimestampsLockTests(unittest.TestCase):
-    """Concurrency tests for the _task_timestamps threading.Lock (TRN-123).
+    """Concurrency tests for the _task_timestamps threading.Lock.
 
     These exercise the locked read-modify-write access pattern directly (the
     "dispatch-style" write and the "_pickup_single-style" read-modify-write)
@@ -3476,7 +3476,7 @@ class TaskTimestampsLockTests(unittest.TestCase):
             self.assertTrue(v is None or isinstance(v, str))
 
 
-# ── TRN-123: _dashboard_port_crew lock (tasks 5.1 / 5.2) ─────────────────────
+# ── _dashboard_port_crew lock (tasks 5.1 / 5.2) ─────────────────────
 
 
 class _StubRequest:
@@ -3497,7 +3497,7 @@ class _StubRequest:
 
 
 class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
-    """Concurrency tests for the _dashboard_port_crew threading.Lock (TRN-123)."""
+    """Concurrency tests for the _dashboard_port_crew threading.Lock."""
 
     def setUp(self) -> None:
         with server._dashboard_gate._port_crew_lock:
@@ -3578,7 +3578,7 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
         writer = threading.Thread(target=_delete_loop)
         writer.start()
         try:
-            # TRN-121 removed _gs_session_valid; session validation now goes
+            # Session validation goes
             # through the DashboardGate's SessionStore — patch it on the gate.
             mock_sessions = server._security.SessionStore(lifetime_secs=3600)
             mock_sessions._issued["tok"] = float("inf")  # never expires
@@ -3600,11 +3600,11 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
             writer.join(timeout=5)
 
 
-# ── TRN-123: _get_ensure_running_lock helper (asyncio lock registry) ──────────
+# ── _get_ensure_running_lock helper (asyncio lock registry) ──────────
 
 
 class GetEnsureRunningLockTests(unittest.IsolatedAsyncioTestCase):
-    """Unit tests for the _get_ensure_running_lock helper (TRN-123).
+    """Unit tests for the _get_ensure_running_lock helper.
 
     Verifies that the helper:
     - Returns an asyncio.Lock for a given crew_id.
@@ -3676,7 +3676,7 @@ class GetEnsureRunningLockTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ValidateNextUrlTests(unittest.TestCase):
-    """TRN-137: direct coverage for ``server._validate_next_url`` open-redirect guard."""
+    """Direct coverage for ``server._validate_next_url`` open-redirect guard."""
 
     def test_protocol_relative_url_rejected(self) -> None:
         self.assertEqual(server._validate_next_url("//evil.com"), "/")
@@ -3697,7 +3697,7 @@ class ValidateNextUrlTests(unittest.TestCase):
 
 
 
-# ── TRN-138: auth/session hardening ───────────────────────────────────────────
+# ── auth/session hardening ───────────────────────────────────────────
 
 
 class _ClientTuple:
@@ -3887,7 +3887,7 @@ class Trn138RegistryCorruptGuardTests(unittest.TestCase):
 
 
 class ResourceOrdersIndexTests(unittest.TestCase):
-    """TRN-135 — resource_orders() returns summary index (name + description, no body)."""
+    """resource_orders() returns summary index (name + description, no body)."""
 
     def test_response_contains_only_name_and_description_no_body(self) -> None:
         """(a) resource_orders() returns name: description lines, no body text."""
@@ -3924,7 +3924,7 @@ class ResourceOrdersIndexTests(unittest.TestCase):
 
 
 class ResourceOrdersByNameTests(unittest.TestCase):
-    """TRN-135 — resource_orders_by_name() returns full resolved body per template."""
+    """resource_orders_by_name() returns full resolved body per template."""
 
     def test_known_template_returns_resolved_body_without_front_matter(self) -> None:
         """(a) Known template returns resolved body with placeholders substituted."""

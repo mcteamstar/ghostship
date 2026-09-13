@@ -1,6 +1,6 @@
 """Extended e2e tests — error paths, schedule/steer tools, response schemas.
 
-Extends the smoke suite from TRN-79. Same skip guard: set GHOSTSHIP_E2E_URL
+Extends the smoke suite. Same skip guard: set GHOSTSHIP_E2E_URL
 to a live transport to run, unset to skip cleanly.
 
     GHOSTSHIP_E2E_URL=http://your-academy-host bash tests/run.sh --e2e
@@ -367,7 +367,7 @@ class TestAuthExtended(unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
-# ── 6. TRN-51: Captain status on stopped crew ─────────────────────────────────
+# ── 6. Captain status on stopped crew ─────────────────────────────────────────
 
 
 @unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
@@ -377,7 +377,7 @@ class TestAuthExtended(unittest.TestCase):
     "set GHOSTSHIP_PODMAN_SOCKET to the transport's Podman socket path or run on the transport host",
 )
 class TestCaptainStatusStoppedCrew(unittest.TestCase):
-    """TRN-51 smoke test: captain status works on stopped crews without waking them.
+    """captain status works on stopped crews without waking them.
 
     Requires a live transport at GHOSTSHIP_E2E_URL and a reachable Podman
     socket at GHOSTSHIP_PODMAN_SOCKET. The test launches a crew, stops the

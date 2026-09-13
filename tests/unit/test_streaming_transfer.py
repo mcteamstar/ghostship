@@ -1,4 +1,4 @@
-"""Unit tests for transport.files streaming classes (TRN-160).
+"""Unit tests for transport.files streaming classes.
 
 Covers _ResponseChunkReader, _TarMemberStream error paths, and the
 _transfer_upload slash-ref workaround path.
@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import MagicMock
 
 # Install httpx2/mcp/starlette stubs before importing any transport module.
-# _stubs.py registers httpx2 alongside httpx as of TRN-155.
+# _stubs.py registers httpx2 alongside httpx.
 from tests.unit.test_file_transfer import _install_import_stubs
 _install_import_stubs()
 

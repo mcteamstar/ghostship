@@ -1,6 +1,6 @@
 """Unit tests for ``transport.lifecycle`` — crew setup / registration lifecycle.
 
-TRN-85 migration target for classes whose function-under-test is defined in
+Migration target for classes whose function-under-test is defined in
 ``lifecycle.py`` (``_ensure_crew_running``, ``_finish_crew_setup``,
 ``_crew_api_with_recovery``, ``_crew_api``, ``_probe_gateway``,
 ``_patch_crew_config``, ``_copy_agents``, ``_copy_skills``, ``_inject_policy``,
@@ -12,8 +12,7 @@ Patch-target rule (design.md §2, the call-site principle):
 
 * A function defined in ``lifecycle.py`` reads its dependencies from
   lifecycle's globals, so patch ``lifecycle.X`` **exclusively**. The
-  ``server.X`` twins from the TRN-71 dual-patch workaround were shadows and
-  are dropped here.
+  ``server.X`` dual-patch shadows are dropped here.
 * A route handler / MCP tool defined in ``server.py`` (``_handle_login_*``,
   ``_handle_logout_post``, ``launch``, ``crews``) resolves the lifecycle names
   it calls from **server's** namespace (``from transport.lifecycle import …``),
@@ -142,12 +141,12 @@ def _make_registry_file(tmp_dir: Path, crews: dict[str, dict]) -> Path:
 
 
 class MemoryGateDisabledTests(unittest.TestCase):
-    """Migrated from TRN-85 ``test_transport.TestMemoryGate``.
+    """Migrated from ``test_transport.TestMemoryGate``.
 
     Verifies ``_ensure_crew_running`` (lifecycle) skips the podman memory gate
     when ``GA_MIN_FREE_MEM_GB == 0``. ``_ensure_crew_running`` runs in
     lifecycle's namespace, so its dependencies are patched on ``lifecycle`` —
-    the server-side dual-patches from TRN-71 were shadows and are dropped.
+    the server-side dual-patches were shadows and are dropped.
     """
 
     def test_gate_skipped_when_disabled(self) -> None:
@@ -189,7 +188,7 @@ class MemoryGateDisabledTests(unittest.TestCase):
 # This class mixes MCP-tool tests (``server.supply``, ``server.nuke`` — bodies
 # in server.py, patched ``server.X``) with a lifecycle test
 # (``server._finish_crew_setup`` — body in lifecycle.py, patched
-# ``lifecycle.X``). The dual-patches from TRN-71 are collapsed per call site.
+# ``lifecycle.X``). The dual-patches are collapsed per call site.
 
 
 class LifecycleRegressionTests(unittest.TestCase):
@@ -540,7 +539,7 @@ class ReconcileRegistryTests(unittest.TestCase):
         self.assertNotIn("del-crew", saved.get("crews", {}))
 
     def test_reseed_registers_missing_jobs(self) -> None:
-        """4.3 — _reseed_crew_schedules POSTs missing jobs to gateway (D8 in TRN-39)."""
+        """4.3 — _reseed_crew_schedules POSTs missing jobs to gateway."""
         crew_info = {
             "container": "gs-demo", "cookie": "cookie",
             "schedules": [{
@@ -697,7 +696,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
             lifecycle.GA_MAX_ACTIVE_CREWS = 2
             reg = self._registry_with_running(2)  # 2 running, limit is 2
 
-            # TRN-132: the active-limit count now confirms each registry-running
+            # The active-limit count confirms each registry-running
             # entry against Podman. The two running crews (gs-0, gs-1) must be
             # reported as actually running so they count toward the limit; the
             # stopped target (gs-target) is not in the running snapshot.
@@ -884,7 +883,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
                     "stopped-c": {"status": "stopped", "container": "gs-c", "cookie": "c3"},
                 }
             }
-            # TRN-132: crews() now confirms each registry-running entry against
+            # crews() now confirms each registry-running entry against
             # Podman before counting it. Both running crews' containers must be
             # reported as actually running to count toward active_crews.
             class _RunningPodman:
@@ -920,7 +919,7 @@ class ActiveCrewLimitTests(unittest.TestCase):
 
 
 class StaleActiveCrewTests(unittest.TestCase):
-    """TRN-132: active_crews / active-limit count must reflect actual Podman
+    """active_crews / active-limit count must reflect actual Podman
     container state, not stale registry status. A registry entry marked
     "running" whose container is not actually running is excluded from the
     count and corrected to "stopped" in the registry.
@@ -1142,7 +1141,7 @@ class StaleActiveCrewTests(unittest.TestCase):
 # (imported into lifecycle from academy), Path, MCP_CATALOGUE_DIR and logger
 # from lifecycle's namespace. Task 2.13: patch transport.lifecycle.Path (not
 # transport.server.Path); the warning handler goes on lifecycle.logger. The
-# server / academy dual-patches from TRN-71 were shadows and are dropped.
+# server / academy dual-patches were shadows and are dropped.
 
 
 class CopyAgentsMcpTests(unittest.TestCase):
@@ -1386,7 +1385,7 @@ class CopyAgentsMcpTests(unittest.TestCase):
 # ``_handle_login_post`` / ``_handle_login_get`` / ``_handle_logout_post`` are
 # defined in server.py (the HTTP layer). The HANDLERS resolve _get_podman /
 # _read_auth_file / _write_auth_file / _read_auth_from_crew / _inject_auth from
-# server's namespace → patch server.X for those. TRN-143 moved the device-flow
+# server's namespace → patch server.X for those. The device-flow
 # ENGINE (_initiate_login) and its state (_login_pending / _login_pending_lock)
 # plus _start_login_container / _nuke_login_container / select into lifecycle,
 # so those are patched on lifecycle.X (the handler delegates into lifecycle,
@@ -1769,7 +1768,7 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
     def test_login_pty_timeout_45s_returns_error_and_nukes_container(self) -> None:
         """F-4: when the 45s PTY deadline fires without a URL appearing,
         _handle_login_post returns an error response and nukes the login
-        container (TRN-113 / LoginFlowEdgeCaseTests task 7.4)."""
+        container (LoginFlowEdgeCaseTests task 7.4)."""
         podman = Mock()
         fake_sock = Mock()
         fake_sock.fileno.return_value = 5
@@ -1805,7 +1804,7 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         nuke.assert_called_once_with(podman, "ga-login-pty45")
 
 
-# ── AdmiralSecretHardeningTests (TRN-53) ─────────────────────────────────────
+# ── AdmiralSecretHardeningTests ─────────────────────────────────────
 #
 # Task 4.3: verify that two distinct secrets are generated and policy_signing_key
 # (not admiral_secret) is forwarded to the _inject_policy() call.
@@ -1814,7 +1813,7 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
 
 
 class AdmiralSecretHardeningTests(unittest.TestCase):
-    """TRN-53: admiral_secret and policy_signing_key are distinct; only
+    """admiral_secret and policy_signing_key are distinct; only
     policy_signing_key flows into the policy injection call; and
     crews.json stores policy_signing_key when injection succeeds.
     """
@@ -1828,7 +1827,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         """Run lifecycle._finish_crew_setup with enough mocking to reach the
         registry write, capturing _inject_policy call args.
 
-        TRN-136: the admiral key is no longer injected via container-exec, so
+        The admiral key is not injected via container-exec, so
         ``admiral_secret_calls`` records any (unexpected) admiral exec calls —
         it must stay empty. The admiral secret is passed in as a parameter.
 
@@ -1854,7 +1853,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                 self, container: str, cmd: list, stdin_data: bytes
             ) -> str:
                 if "inject_admiral_secret.py" in " ".join(cmd):
-                    # TRN-136: must never happen — recorded so the test can assert.
+                    # Must never happen — recorded so the test can assert.
                     admiral_secret_calls.append(stdin_data.decode())
                 return "ok"
 
@@ -1906,7 +1905,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         return registry_data, result
 
     def test_two_distinct_secrets_generated_and_policy_signing_key_forwarded(self) -> None:
-        """4.3 (TRN-136): policy_signing_key (not the admiral secret) is passed to
+        """4.3: policy_signing_key (not the admiral secret) is passed to
         _inject_policy; and the two secrets are distinct. The admiral key is NOT
         injected via container-exec anymore."""
         inject_policy_calls: list = []
@@ -1916,7 +1915,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertEqual(len(inject_policy_calls), 1,
                          "Expected exactly one _inject_policy call")
         self.assertEqual(len(admiral_secret_calls), 0,
-                         "TRN-136: admiral key must not be injected via container-exec")
+                         "admiral key must not be injected via container-exec")
 
         forwarded_key = inject_policy_calls[0]["policy_signing_key"]
         admiral_secret_value = "ab" * 32  # the param passed in
@@ -1931,7 +1930,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertTrue(forwarded_key, "policy_signing_key must be non-empty")
 
     def test_policy_signing_key_stored_in_registry_when_injection_succeeds(self) -> None:
-        """4.4 (TRN-93): crews.json entry contains policy_signing_key_id (identifier) when
+        """4.4: crews.json entry contains policy_signing_key_id (identifier) when
         policy injection succeeds, not the plaintext policy_signing_key."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
@@ -1940,9 +1939,9 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         )
 
         crew_entry = registry_data.get("crews", {}).get("demo", {})
-        # TRN-93: plaintext secrets are replaced with non-reversible identifiers.
+        # Plaintext secrets are replaced with non-reversible identifiers.
         self.assertNotIn("policy_signing_key", crew_entry,
-                         "crews.json entry must NOT contain plaintext policy_signing_key (TRN-93)")
+                         "crews.json entry must NOT contain plaintext policy_signing_key")
         self.assertIn("policy_signing_key_id", crew_entry,
                       "crews.json entry must contain policy_signing_key_id on success")
         val = crew_entry["policy_signing_key_id"]
@@ -1963,7 +1962,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertNotIn("policy_version", crew_entry,
                          "policy_version must not be stored when injection failed")
 
-    # ── TRN-62: _inject_auth skipped when KIRO_API_KEY is set ────────────────
+    # ── _inject_auth skipped when KIRO_API_KEY is set ────────────────
 
     def _run_finish_setup_capturing_inject_auth(self, api_key: str):
         """Run _finish_crew_setup with lifecycle.KIRO_API_KEY set to api_key,
@@ -2035,10 +2034,10 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
 #
 # ``_patch_crew_config`` is defined in lifecycle.py → patch lifecycle.X.
 # The function calls podman.container_exec with the overrides b64-encoded in
-    # ── TRN-131: auto-prewarm at launch ──────────────────────────────────────
+    # ── auto-prewarm at launch ──────────────────────────────────────
 
     def test_finish_crew_setup_calls_prewarm_when_enabled(self) -> None:
-        """TRN-131: _finish_crew_setup calls _prewarm_crew when GA_PREWARM_ENABLED=true."""
+        """_finish_crew_setup calls _prewarm_crew when GA_PREWARM_ENABLED=true."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
 
@@ -2057,7 +2056,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertEqual(result.get("pre_warm_task_id"), "abc123")
 
     def test_finish_crew_setup_skips_prewarm_when_disabled(self) -> None:
-        """TRN-131: _finish_crew_setup skips _prewarm_crew when GA_PREWARM_ENABLED=false."""
+        """_finish_crew_setup skips _prewarm_crew when GA_PREWARM_ENABLED=false."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
 
@@ -2075,7 +2074,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertNotIn("pre_warm_status", result)
 
     def test_finish_crew_setup_prewarm_failure_is_nonfatal(self) -> None:
-        """TRN-131: a prewarm error must not prevent launch from succeeding."""
+        """A prewarm error must not prevent launch from succeeding."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
 
@@ -2095,7 +2094,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
 
 
 class PatchCrewConfigTests(unittest.TestCase):
-    """Tests for _patch_crew_config (TRN-113 / F-2, TRN-127)."""
+    """Tests for _patch_crew_config."""
 
     def _call_patch_crew_config(self) -> dict:
         """Call lifecycle._patch_crew_config with a stub podman that captures
@@ -2123,9 +2122,9 @@ class PatchCrewConfigTests(unittest.TestCase):
     def test_patch_crew_config_sets_sandbox_off(self) -> None:
         """sandbox must be 'off' -- without it every agent spawn fails under
         rootless Podman because kiro-cli 0.5.0+ is fail-closed on the
-        MS_REMOUNT inside a user namespace (TRN-113).
+        MS_REMOUNT inside a user namespace.
 
-        After TRN-127 the full_overrides dict nests agent keys under
+        The full_overrides dict nests agent keys under
         ``full_overrides["agent"]`` rather than at the top level."""
         overrides = self._call_patch_crew_config()
         agent = overrides.get("agent", {})
@@ -2139,7 +2138,7 @@ class PatchCrewConfigTests(unittest.TestCase):
         """dangerously_skip_permissions must be True so the transport (different
         UID) can write config.local.json inside the crew container.
 
-        After TRN-127 the full_overrides dict nests agent keys under
+        The full_overrides dict nests agent keys under
         ``full_overrides["agent"]`` rather than at the top level."""
         overrides = self._call_patch_crew_config()
         agent = overrides.get("agent", {})
@@ -2150,11 +2149,11 @@ class PatchCrewConfigTests(unittest.TestCase):
             f"{agent.get('dangerously_skip_permissions')!r}",
         )
 
-    # ── TRN-127: headless-crew memory baseline overrides ─────────────────────
+    # ── headless-crew memory baseline overrides ─────────────────────
 
     def test_patch_crew_config_disables_stt(self) -> None:
         """stt.enabled must be False — no microphone in a headless server crew
-        (TRN-127).  Absence of the field is also a failure: the Whisper model
+        Absence of the field is also a failure: the Whisper model
         loads by default and wastes ~148 MB of RSS."""
         overrides = self._call_patch_crew_config()
         stt = overrides.get("stt")
@@ -2167,7 +2166,7 @@ class PatchCrewConfigTests(unittest.TestCase):
 
     def test_patch_crew_config_disables_eager_spawn(self) -> None:
         """session.eager_spawn must be False — prevents the ~340 MB kiro-cli-chat
-        pre-fork that happens at startup even when no task is running (TRN-127)."""
+        pre-fork that happens at startup even when no task is running."""
         overrides = self._call_patch_crew_config()
         session = overrides.get("session")
         self.assertIsNotNone(session, "Expected 'session' section in full_overrides but it was absent")
@@ -2179,7 +2178,7 @@ class PatchCrewConfigTests(unittest.TestCase):
 
     def test_patch_crew_config_sets_session_timeout(self) -> None:
         """session.timeout_secs must be 300 — reclaims session memory within
-        5 minutes of task completion instead of the default 3600 s (TRN-127)."""
+        5 minutes of task completion instead of the default 3600 s."""
         overrides = self._call_patch_crew_config()
         session = overrides.get("session", {})
         self.assertEqual(
@@ -2191,7 +2190,7 @@ class PatchCrewConfigTests(unittest.TestCase):
     def test_patch_crew_config_sets_watchdog_rss_max_mb(self) -> None:
         """session.watchdog_rss_max_mb must be 2000 — hard RSS ceiling above
         the ~1.9 GB active task peak; recycles runaway sessions without killing
-        healthy ones (TRN-127 D3)."""
+        healthy ones."""
         overrides = self._call_patch_crew_config()
         session = overrides.get("session", {})
         self.assertEqual(
@@ -2203,7 +2202,7 @@ class PatchCrewConfigTests(unittest.TestCase):
 
     def test_patch_crew_config_disables_telemetry_beacon(self) -> None:
         """telemetry.beacon_enabled must be False — suppresses outbound beacon
-        pings on server deployments (TRN-127)."""
+        pings on server deployments."""
         overrides = self._call_patch_crew_config()
         telemetry = overrides.get("telemetry")
         self.assertIsNotNone(
@@ -2218,7 +2217,7 @@ class PatchCrewConfigTests(unittest.TestCase):
 
     def test_patch_crew_config_disables_auto_update(self) -> None:
         """auto_update must be False at the top level — prevents version drift
-        in a container pinned to a specific image version (TRN-127)."""
+        in a container pinned to a specific image version."""
         overrides = self._call_patch_crew_config()
         self.assertIs(
             overrides.get("auto_update"),
@@ -2227,11 +2226,11 @@ class PatchCrewConfigTests(unittest.TestCase):
         )
 
 
-# ── TRN-108: schedule monitor gateway source-of-truth ────────────────────────
+# ── schedule monitor gateway source-of-truth ────────────────────────
 
 
 class ScheduleMonitorGatewayTests(unittest.TestCase):
-    """TRN-108: _schedule_monitor checks the gateway /api/crons after waking
+    """_schedule_monitor checks the gateway /api/crons after waking
     the crew; the registry is the fallback, not the authority.
 
     Strategy: call _schedule_monitor's inner body once by monkey-patching
@@ -2239,7 +2238,7 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
     parts we don't want to exercise per test.  The function under test
     resolves _crew_api, _crew_api_with_recovery, _load_registry, _save_registry,
     _get_crew_schedules, _ensure_crew_running etc. from the ``monitors`` module
-    namespace (TRN-116 §8 moved the loops there), so all patches are on
+    namespace, so all patches are on
     ``monitors.*`` (call-site principle, design.md §2).
     """
 
@@ -2399,7 +2398,7 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
         spawn_mock.assert_called_once()
 
 
-# ── TRN-123: per-crew serialisation of _ensure_crew_running (tasks 6.1 / 6.2) ─
+# ── per-crew serialisation of _ensure_crew_running (tasks 6.1 / 6.2) ─
 
 
 class _CountingPodman:
@@ -2432,7 +2431,7 @@ class _CountingPodman:
 
 
 class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
-    """TRN-123: concurrent _ensure_crew_running callers must not double-start."""
+    """Concurrent _ensure_crew_running callers must not double-start."""
 
     def setUp(self) -> None:
         # Clear any leftover leader-election state between tests.
@@ -2528,7 +2527,7 @@ class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(podman.start_calls.get("gs-b", 0), 2)
 
 
-# ── TRN-152: recovery engine + waiter failure-propagation ────────────────────
+# ── recovery engine + waiter failure-propagation ────────────────────
 #
 # ``_crew_api_with_recovery`` and its three ``_phaseN`` helpers are defined in
 # lifecycle.py, so they read their dependencies (``_crew_api``,
@@ -2550,7 +2549,7 @@ def _http_status_error(status: int) -> _httpx.HTTPStatusError:
 
 
 class CrewApiRecoveryEngineTests(unittest.TestCase):
-    """TRN-152: unit coverage for the three-phase recovery engine.
+    """Unit coverage for the three-phase recovery engine.
 
     Each test drives ``_crew_api_with_recovery`` through one phase by making
     the mocked ``_crew_api`` raise the triggering error on the first call and
@@ -2625,7 +2624,7 @@ class CrewApiRecoveryEngineTests(unittest.TestCase):
 
 
 class EnsureCrewRunningWaiterPropagationTests(unittest.IsolatedAsyncioTestCase):
-    """TRN-152: when the leader's restart raises, waiters must propagate that
+    """When the leader's restart raises, waiters must propagate that
     exact exception rather than reading stale 'running' status and proceeding.
     """
 

@@ -1,4 +1,4 @@
-"""TRN-153: unit tests for the direct-TLS-termination context factory.
+"""Unit tests for the direct-TLS-termination context factory.
 
 Covers the ``_ssl_context_factory`` path in ``transport.server`` that is
 activated when ``GA_TLS_CERTFILE`` / ``GA_TLS_KEYFILE`` are set (the legacy

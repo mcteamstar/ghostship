@@ -1,6 +1,6 @@
 """Unit tests for ``transport.registry`` — crew registry + schedule persistence.
 
-TRN-85 migration target for classes whose function-under-test is defined in
+Migration target for classes whose function-under-test is defined in
 ``registry.py`` (``_load_registry``, ``_save_registry``, ``_get_crew``,
 ``_touch_crew``, ``_get_crew_schedules``, ``_upsert_crew_schedule``,
 ``_remove_crew_schedule``, ``_advance_next_fire_at``). Patch via
@@ -21,7 +21,7 @@ from tests.unit.helpers import registry, server  # noqa: F401
 
 
 class AdvanceNextFireAtTests(unittest.TestCase):
-    """Tests for _advance_next_fire_at (D4 in TRN-39 design.md)."""
+    """Tests for _advance_next_fire_at."""
 
     def test_interval_branch(self) -> None:
         """interval_secs=300 advances next_fire_at by ~300 seconds."""
@@ -69,7 +69,7 @@ class AdvanceNextFireAtTests(unittest.TestCase):
 
 
 class SaveRegistryDurabilityTests(unittest.TestCase):
-    """Tests for _save_registry durability guarantees (TRN-124)."""
+    """Tests for _save_registry durability guarantees."""
 
     def test_fsync_is_called_on_save(self, tmp_path: Path | None = None) -> None:
         """_save_registry calls os.fsync before returning (task 3.1)."""
@@ -85,7 +85,7 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
             ):
                 registry._save_registry(test_reg)
 
-            mock_fsync.assert_called()  # called for both file and directory fds (TRN-139 dir-fsync)
+            mock_fsync.assert_called()  # called for both file and directory fds
             saved = json.loads(reg_path.read_text())
             self.assertEqual(saved, test_reg)
 
@@ -117,7 +117,7 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
 
     def test_corrupt_json_raises_and_renames_to_corrupt(self) -> None:
         """Corrupt crews.json raises RegistryCorruptError, creates .corrupt,
-        removes original (task 3.3; TRN-138 changed the raised type)."""
+        removes original."""
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             test_dir = Path(td)
@@ -130,7 +130,7 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
                 patch.object(registry, "REGISTRY_PATH", reg_path),
                 self.assertLogs("transport.registry", level="ERROR") as log_ctx,
             ):
-                # TRN-138: _load_registry now raises the named
+                # _load_registry raises the named
                 # RegistryCorruptError instead of re-raising json.JSONDecodeError,
                 # giving MCP tool handlers a single exception to catch. The
                 # original decode error is preserved as the chained cause.
@@ -166,7 +166,7 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
 
 
 class SaveRegistryDirFsyncTests(unittest.TestCase):
-    """Regression test: _save_registry() must fsync the parent directory after os.replace (TRN-139).
+    """Regression test: _save_registry() must fsync the parent directory after os.replace.
 
     ``os.replace`` atomically replaces the destination, but the *directory entry*
     that now points to the new inode may not be durable until the containing
@@ -215,9 +215,9 @@ class SaveRegistryDirFsyncTests(unittest.TestCase):
 
 
 class SaveRegistryFdSentinelTests(unittest.TestCase):
-    """Regression test for the fd-sentinel fix in _save_registry() (TRN-139).
+    """Regression test for the fd-sentinel fix in _save_registry().
 
-    Before TRN-139, ``fd = -1`` was set inside the ``with os.fdopen()`` block
+    Before the fix, ``fd = -1`` was set inside the ``with os.fdopen()`` block
     body.  The fix moves the sentinel to immediately after the ``os.fdopen()``
     call so the ``finally`` guard cannot double-close an already-owned fd.
     """
@@ -246,7 +246,7 @@ class SaveRegistryFdSentinelTests(unittest.TestCase):
 
 
 class WriteCrewSecretDurabilityTests(unittest.TestCase):
-    """Tests for _write_crew_secret durability guarantees (TRN-139)."""
+    """Tests for _write_crew_secret durability guarantees."""
 
     def test_parent_directory_is_fsynced(self) -> None:
         """_write_crew_secret fsyncs the parent dir so the entry survives a crash.

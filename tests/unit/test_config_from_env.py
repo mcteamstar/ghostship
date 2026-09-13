@@ -1,4 +1,4 @@
-"""Unit tests for Config.from_env() error handling (TRN-159).
+"""Unit tests for Config.from_env() error handling.
 
 Covers:
 - ConfigError raised with clear message on invalid int/float env vars
@@ -128,7 +128,7 @@ class TestConfigEnvValidValues(unittest.TestCase):
 
 
 class TestConfigTLSDefault(unittest.TestCase):
-    """GA_PORTAL_TLS_MODE default is 'off' (TRN-159 CR-4)."""
+    """GA_PORTAL_TLS_MODE default is 'off'."""
 
     def test_default_is_off(self):
         with patch.dict("os.environ", {}, clear=False):

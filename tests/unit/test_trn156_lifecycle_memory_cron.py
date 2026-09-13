@@ -1,4 +1,4 @@
-"""Unit tests for TRN-156 — lifecycle memory-leak eviction + one-shot cron replay.
+"""Unit tests for lifecycle memory-leak eviction + one-shot cron replay.
 
 Covers:
 

@@ -210,7 +210,7 @@ except ModuleNotFoundError:
         _find_batch_by_task_ids,
     )
 
-# TRN-138: named exception raised by _load_registry() on a corrupt registry.
+# Named exception raised by _load_registry() on a corrupt registry.
 # Imported separately so both import branches above stay byte-identical to
 # their prior form; the fallback keeps the module importable if an older
 # registry.py without the class is somehow on the path.
@@ -364,7 +364,7 @@ DATA_DIR = Path(cfg.transport_data_dir)
 
 
 # KiroCrew gateway port — fixed by upstream, not configurable from this transport.
-# Canonical home is transport/constants.py (TRN-142).
+# Canonical home is transport/constants.py.
 try:
     from constants import (  # container: flat /app/
         ADMIRAL_PUBKEY_PATH,
@@ -434,20 +434,20 @@ GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 
-# ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
-# TRN-101: GA_DASHBOARD_PORT_ENABLED removed; dashboard access is exclusively
+# ── Crew UI port allocation ───────────────────────────────
+# GA_DASHBOARD_PORT_ENABLED was removed; dashboard access is exclusively
 # provided by ga-portal (Caddy). Port range retained — Portal uses it.
 GA_DASHBOARD_PORT_RANGE_START = cfg.ga_dashboard_port_range_start
 GA_DASHBOARD_PORT_RANGE_SIZE = cfg.ga_dashboard_port_range_size
 
-# ── Git author identity passthrough (TRN-77) ─────────────────────────────────
+# ── Git author identity passthrough ─────────────────────────────────
 # When both vars are set, all four git identity env vars are injected into
 # each crew container at setup time so commits carry the operator's identity.
 # When unset, per-persona identity (e.g. Ghost <ghost@localhost>) is preserved.
 GA_GIT_AUTHOR_NAME = os.environ.get("GA_GIT_AUTHOR_NAME", "").strip()
 GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 
-# ── Transport security (TRN-70) ───────────────────────────────────────────────
+# ── Transport security ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
 # security headers so protection does not depend solely on edge config. These
 # flags let each protection be toggled via config for a staged rollout and
@@ -464,7 +464,7 @@ GA_TLS_CERTFILE = cfg.ga_tls_certfile
 GA_TLS_KEYFILE = cfg.ga_tls_keyfile
 GA_ENABLE_SECURITY_HEADERS = cfg.ga_enable_security_headers
 
-# ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
+# ── Caddy reverse proxy ───────────────────────────────────
 # ga-portal (Caddy) is always present: a ga-portal container owns port bindings
 # for the main HTTPS port AND the dashboard port range (64058–64107). The
 # transport does NOT start per-port uvicorn listeners; instead it calls the
@@ -516,7 +516,7 @@ def _load_api_key() -> str:
 
 GA_API_KEY = _load_api_key()
 
-# TRN-141: construct the CaddyPortal after secrets load, replacing the former
+# Construct the CaddyPortal after secrets load, replacing the former
 # `_caddy.PORT = PORT` / `_caddy.GA_API_KEY = ...` post-import mutation. PORT and
 # the port-range come from cfg; GA_API_KEY is loaded from a mounted Podman secret
 # here (a server concern). server.py's own call sites use this instance; the
@@ -530,7 +530,7 @@ _caddy_portal = CaddyPortal(
 
 
 def _load_transport_secret() -> str:
-    """Load GA_TRANSPORT_SECRET from Podman secret file (TRN-107).
+    """Load GA_TRANSPORT_SECRET from Podman secret file.
 
     Reads /run/secrets/ga-transport-secret. Returns empty string when the file is
     absent (allows transport to start in dev/test environments without the
@@ -558,15 +558,15 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 
 
 # _auth_file_path, _read_auth_file, _write_auth_file moved to
-# transport.lifecycle (TRN-143) alongside _initiate_login; imported below.
+# transport.lifecycle alongside _initiate_login; imported below.
 # KIRO_LICENSE / KIRO_IDENTITY_PROVIDER / KIRO_REGION also moved to lifecycle
 # (they drive only the moved _initiate_login device flow).
 
 # When set, kiro-cli authenticates via this API key and the device-code auth
-# flow is skipped entirely (TRN-62). Injected as an env var into crew
+# flow is skipped entirely. Injected as an env var into crew
 # containers; unset (default) => existing device-code flow is used.
 KIRO_API_KEY = cfg.kiro_api_key
-# Register KIRO_API_KEY with the redaction filter (TRN-70 secrets-management)
+# Register KIRO_API_KEY with the redaction filter
 # so the value is scrubbed from logs if it appears in an error or log record,
 # consistent with the GA_API_KEY pattern in _load_api_key().
 if KIRO_API_KEY:
@@ -575,7 +575,7 @@ if KIRO_API_KEY:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Scrub any registered secret value from every log record (TRN-70
+# Scrub any registered secret value from every log record
 # secrets-management: secrets excluded from logs and errors).
 _security.install_redaction_filter()
 
@@ -717,14 +717,14 @@ except ModuleNotFoundError:
     )
 
 # Academy composition/manifest/validation surface — extracted from lifecycle
-# to transport/academy.py (TRN-86). server reads COMPOSITION_REGISTRY (in
+# to transport/academy.py. server reads COMPOSITION_REGISTRY (in
 # resource_compositions), _AGENTS_DIR (in resource_agents), and the helper
 # functions. It imports them from academy directly rather than re-through
-# lifecycle. Note (pending TRN-85): tests still dual-patch these names on
+# lifecycle. Note: tests still dual-patch these names on
 # BOTH `lifecycle` and `server` (e.g. patch.object(lifecycle,
 # "COMPOSITION_REGISTRY") + patch.object(server, ...)) and also patch
-# transport.academy; that dual/triple-patch is intentional until TRN-85
-# migrates the academy tests to patch transport.academy exclusively.
+# transport.academy; that dual/triple-patch is intentional pending full
+# test migration to patch transport.academy exclusively.
 try:
     from academy import (  # container: flat /app/
         COMPOSITION_REGISTRY,
@@ -757,7 +757,7 @@ except ImportError:
         _validate_academy,
     )
 
-# TRN-143: the login device-flow state (_login_pending / _login_pending_lock)
+# The login device-flow state (_login_pending / _login_pending_lock)
 # lives in lifecycle and is reassigned by lifecycle._initiate_login. The login
 # HTTP handlers below must read/clear that SAME object, so reference it through
 # the module (lifecycle._login_pending) rather than importing the value — an
@@ -781,21 +781,21 @@ mcp = MCPServer(
     ),
 )
 
-# ── Task timestamps (TRN-89) ──────────────────────────────────────────────────
+# ── Task timestamps ──────────────────────────────────────────────────
 # In-memory store for task lifecycle timestamps. Keyed by task_id.
 # Lost on transport restart — acceptable per design decision D1.
-# _task_timestamps and _task_timestamps_lock moved to transport.lifecycle
-# (TRN-143) alongside the pickup/dispatch helpers; imported above. server's
-# dispatch tools mutate the same shared objects.
+# _task_timestamps and _task_timestamps_lock live in transport.lifecycle
+# alongside the pickup/dispatch helpers; imported above. server's dispatch
+# tools mutate the same shared objects.
 
-# ── UI port pool + Caddy admin API (TRN-80 / TRN-92) ─────────────────────────
+# ── UI port pool + Caddy admin API ─────────────────────────
 # _dashboard_ports_in_use, _allocate_dashboard_port, _release_dashboard_port,
 # _caddy_admin_url, _caddy_register_crew, and _caddy_deregister_crew now live in
-# transport/caddy.py (TRN-116) and are imported at the top of this file. The
+# transport/caddy.py and are imported at the top of this file. The
 # port-pool helpers must still be called while holding _registry_lock.
 
-# ── Dashboard session store (TRN-92 / TRN-121) ───────────────────────────────
-# ── DashboardGate (TRN-141) ───────────────────────────────────────────────────
+# ── Dashboard session store ───────────────────────────────
+# ── DashboardGate ───────────────────────────────────────────────────
 # The dashboard auth/session state cluster (throttle, session store, CSRF token,
 # and the port→crew map) and its four HTTP handlers now live in a single
 # DashboardGate instance in transport/dashboard.py. Constructed here after
@@ -807,9 +807,9 @@ _dashboard_gate = DashboardGate(
     tls_mode=cfg.ga_portal_tls_mode,
 )
 
-# TRN-123: per-crew asyncio lock registry serialising concurrent
-# _ensure_crew_running call sites in the async proxy handlers, so that
-# concurrent coroutines for the same crew do not each dispatch a redundant
+# Per-crew asyncio lock registry serialising concurrent _ensure_crew_running
+# call sites in the async proxy handlers, so that concurrent coroutines for
+# the same crew do not each dispatch a redundant
 # probe-then-start thread. The registry dict itself is populated lazily under a
 # threading.Lock because it is also touched from non-async startup paths.
 _ensure_running_locks: dict[str, asyncio.Lock] = {}
@@ -907,7 +907,7 @@ def _parse_ttl_seconds(ttl: str) -> int:
     or a bare integer meaning seconds) into a number of seconds.
 
     Falls back to 24h (86400 s) if the value cannot be parsed. Used to compute
-    the near-expiry window for transparent cookie refresh (TRN-102).
+    the near-expiry window for transparent cookie refresh.
     """
     if not ttl:
         return 86400
@@ -953,7 +953,7 @@ def _cookie_near_expiry(cookie: str) -> bool:
     """True if *cookie*'s JWT ``session_exp`` is within 20% of the configured TTL of
     expiring (i.e. > 80% of the TTL has elapsed). A cookie that is not a JWT,
     has no ``session_exp``, or is already expired is treated as near-expiry so the
-    proxy re-mints it (TRN-102, design.md "Token refresh").
+    proxy re-mints it (design.md "Token refresh").
     """
     exp = _jwt_exp(cookie)
     if exp is None:
@@ -1012,9 +1012,9 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
       itself — never forwarded to the crew gateway).
     - Injects the crew's ``mc_token_5476`` session cookie on every forwarded
       request so the KiroCrew SPA is pre-authenticated. The cookie is minted
-      from ga-transport's IP, satisfying the gateway's IP binding (TRN-102).
+      from ga-transport's IP, satisfying the gateway's IP binding.
     - Transparently re-mints the cookie when it is near expiry (> 80% of TTL
-      elapsed) before forwarding, so sessions never interrupt (TRN-102).
+      elapsed) before forwarding, so sessions never interrupt.
     - Streams the upstream response body without buffering.
     - Returns 404 for unknown crew_id.
     """
@@ -1023,9 +1023,9 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
         return resolved
     crew_id, sub_path, crew = resolved
 
-    # TRN-102: transparently re-mint the session cookie when it is near expiry
-    # so the browser session never sees a "Session expired" prompt. Best-effort:
-    # a failed refresh falls through to the existing (possibly stale) cookie,
+    # Transparently re-mint the session cookie when it is near expiry so the
+    # browser session never sees a "Session expired" prompt. Best-effort: a
+    # failed refresh falls through to the existing (possibly stale) cookie,
     # and the 401/403 retry below still recovers.
     if _cookie_near_expiry(crew.get("cookie", "")):
         logger.info("UI proxy: cookie near expiry for crew %s — refreshing", crew_id)
@@ -1043,7 +1043,7 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
     # Forward headers minus _STRIPPED_CREW_PROXY_HEADERS, then inject the
     # crew's session cookie. The cookie is minted from ga-transport's IP so
     # the gateway's IP binding is satisfied — Caddy (ga-portal) proxies here
-    # rather than to the crew gateway directly (TRN-102).
+    # rather than to the crew gateway directly.
     forward_headers = {
         k: v
         for k, v in request.headers.items()
@@ -1106,7 +1106,7 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
 
 async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
     """Reverse-proxy a WebSocket upgrade for /crews/{crew_id}/ui/{path} to the
-    crew gateway at ws://gs-{crew_id}:5476/{path} (TRN-102, task 1.2).
+    crew gateway at ws://gs-{crew_id}:5476/{path}.
 
     Bidirectionally relays text and binary frames between the browser-side
     Starlette WebSocket and the upstream connection opened with
@@ -1353,7 +1353,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
 
     # C-1: Call _caddy_register_crew AFTER releasing _registry_lock.
     # This avoids holding the lock across up to 7 s of blocking I/O.
-    # TRN-92/TRN-101: Portal (Caddy) is the sole dashboard proxy.
+    # Portal (Caddy) is the sole dashboard proxy.
     # GA_PORTAL_TLS_MODE=off means plain HTTP; all other modes use HTTPS.
     _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
     if cfg.ga_host_url:
@@ -1368,7 +1368,7 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     _dashboard_gate.register_port(crew_id, dashboard_port)
 
     logger.info(
-        "TRN-101: POST /crews/%s/dashboard — UI port %d, dashboard_url=%s",
+        "POST /crews/%s/dashboard — UI port %d, dashboard_url=%s",
         crew_id, dashboard_port, dashboard_url,
     )
     return JSONResponse({"dashboard_url": dashboard_url})
@@ -1417,14 +1417,14 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
     _caddy_portal.deregister_crew(crew_id)
 
     logger.info(
-        "TRN-101: DELETE /crews/%s/dashboard — released UI port %d",
+        "DELETE /crews/%s/dashboard — released UI port %d",
         crew_id, existing_port,
     )
     return JSONResponse({"dashboard_url": None})
 
 
 async def _handle_crew_prewarm_post(request: Request) -> Response:
-    """POST /crews/{crew_id}/prewarm — pre-establish the crew's ACP session (TRN-131).
+    """POST /crews/{crew_id}/prewarm — pre-establish the crew's ACP session.
 
     Thin REST wrapper over the ``prewarm`` MCP tool. Behaves identically for a
     given crew: it warms the crew's session ahead of an expected dispatch,
@@ -1447,7 +1447,7 @@ async def _handle_crew_prewarm_post(request: Request) -> Response:
     if "error" in result:
         return JSONResponse(result, status_code=404)
     logger.info(
-        "TRN-131: POST /crews/%s/prewarm — status=%s",
+        "POST /crews/%s/prewarm — status=%s",
         crew_id, result.get("status"),
     )
     return JSONResponse(result)
@@ -1458,7 +1458,7 @@ async def _handle_version_get(request: Request) -> Response:
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
 
-# ── OpenAPI schema (TRN-129) ──────────────────────────────────────────────────
+# ── OpenAPI schema ──────────────────────────────────────────────────
 # Generated once at startup (after all routes are defined) and cached here.
 # task 2.2: handler that returns the cached schema.
 
@@ -1476,7 +1476,7 @@ async def _handle_openapi_get(request: Request) -> Response:
     )
 
 
-# ── Auth / security middleware (TRN-116) ──────────────────────────────────────
+# ── Auth / security middleware ──────────────────────────────────────
 # TransportSecretMiddleware, RateLimitMiddleware, BearerAuthMiddleware,
 # SecurityHeadersMiddleware, _parse_bearer_token, _request_source,
 # _parse_rate_limit_var, _build_rate_limiters, and _RATE_LIMIT_DEFAULTS now live
@@ -1485,7 +1485,7 @@ async def _handle_openapi_get(request: Request) -> Response:
 
 # ── Rate-limit configuration ──────────────────────────────────────────────────
 # _RATE_LIMIT_DEFAULTS, _parse_rate_limit_var, _build_rate_limiters now live in
-# transport/auth.py (TRN-116) and are imported at the top of this file.
+# transport/auth.py and are imported at the top of this file.
 
 
 # ── Podman client + memory helpers ───────────────────────────────────────────
@@ -1497,12 +1497,11 @@ async def _handle_openapi_get(request: Request) -> Response:
 # transport.lifecycle and are imported above.
 
 
-# ── Academy login state + _initiate_login moved to transport.lifecycle (TRN-143);
-# _login_pending / _login_pending_lock and the device-flow driver now live
-# there. The HTTP handlers below import them from lifecycle.
+# ── Academy login state and _initiate_login ────────────────────────────────────
+# _login_pending / _login_pending_lock and the device-flow driver live in
+# transport.lifecycle. The HTTP handlers below import them from lifecycle.
 
-# _request_source now lives in transport/auth.py (TRN-116) and is imported at
-# the top of this file.
+# _request_source lives in transport/auth.py and is imported at the top of this file.
 
 
 async def _handle_login_post(request: Request) -> Response:
@@ -1657,7 +1656,7 @@ async def _handle_logout_post(request: Request) -> Response:
 
 
 def _registry_guard(fn):
-    """TRN-138: wrap an MCP tool so a corrupt registry becomes a structured
+    """Wrap an MCP tool so a corrupt registry becomes a structured
     error response instead of an unhandled exception crashing the in-flight
     request. Any ``RegistryCorruptError`` raised out of ``_load_registry()``
     (directly or via a registry helper) is caught at the tool boundary and
@@ -1734,13 +1733,13 @@ def crews() -> dict:
             "status": status,
             "composition": info.get("composition", "kirocrew"),
             "created_at": info.get("created_at"),
-            "last_task_at": info.get("last_task_at"),  # TRN-89 task 3
+            "last_task_at": info.get("last_task_at"),
             "gateway_healthy": gateway_healthy,
             "crew_image_version": info.get("crew_image_version", "unknown"),
             "agents": [],
         }
-        # TRN-80: derive dashboard_url from stored dashboard_port (None if no port assigned)
-        # TRN-103: ga-portal is always present — always use the Caddy scheme.
+        # Derive dashboard_url from stored dashboard_port (None if no port assigned).
+        # ga-portal is always present — always use the Caddy scheme.
         _ui_p = info.get("dashboard_port")
         if _ui_p is not None:
             _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
@@ -1754,7 +1753,7 @@ def crews() -> dict:
             entry["dashboard_url"] = None
         if "policy_version" in info:
             entry["policy_version"] = info["policy_version"]
-        # TRN-95: uptime_secs for running crews, derived from the container's
+        # uptime_secs for running crews, derived from the container's
         # State.StartedAt via Podman inspect. Omitted (None) for stopped crews
         # or on any inspect/parse failure.
         entry["uptime_secs"] = None
@@ -1800,11 +1799,11 @@ def crews() -> dict:
             pass  # crew may be idle/stopped — agents list stays empty
         result.append(entry)
 
-    # TRN-132: write back any stale running→stopped corrections discovered
-    # above, in a single save under the registry lock (second acquisition,
-    # following the established reconcile pattern). Only flip entries that are
-    # still marked "running" in the registry to avoid clobbering a concurrent
-    # legitimate state change.
+    # Write back any stale running→stopped corrections discovered above, in a
+    # single save under the registry lock (second acquisition, following the
+    # established reconcile pattern). Only flip entries that are still marked
+    # "running" in the registry to avoid clobbering a concurrent legitimate
+    # state change.
     if corrections:
         with _registry_lock:
             reg2 = _load_registry()
@@ -1909,7 +1908,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         return {"error": str(e)}
 
     # ── Auth check — before registry write to avoid orphaned entries ──────────
-    # When KIRO_API_KEY is set (TRN-62), kiro-cli authenticates via the env var
+    # When KIRO_API_KEY is set, kiro-cli authenticates via the env var
     # injected into the crew container; the device-code flow, the ga-kiro-auth
     # file, and auth_b64 injection are all skipped.
     auth_b64: str | None = _read_auth_file() or None
@@ -1941,7 +1940,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         reg["crews"][crew_id] = {"status": "launching", "container": container}
         _save_registry(reg)
 
-    # TRN-80: initialised before the try so the except block can reference it.
+    # Initialised before the try so the except block can reference it.
     dashboard_port: int | None = None
     try:
         podman.network_create(GA_STARBOARD_NETWORK)
@@ -1955,7 +1954,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # child it spawns.  /etc/environment is NOT used because it is only read
         # by PAM login sessions, not by non-login processes like the gateway.
         #
-        # TRN-80: Derive the transport's public origin for CORS injection.
+        # Derive the transport's public origin for CORS injection.
         # The crew gateway needs to accept API calls from the browser when it is
         # served from the per-crew UI port (a different origin). We append the
         # transport's public origin to KIROCREW_CORS_ORIGINS so those calls are
@@ -1977,7 +1976,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             # Sandbox mode is controlled via the crew's sandbox: config key;
             # KIROCREW_ALLOW_UNSANDBOXED was removed (replaced by sandbox: off).
         }
-        # TRN-62: when an API key is configured, pass it to the crew container so
+        # When an API key is configured, pass it to the crew container so
         # kiro-cli inside authenticates via the env var (no device-code / SQLite
         # auth injection). Only set when non-empty so the device-code path is
         # entirely unaffected when KIRO_API_KEY is unset.
@@ -1989,12 +1988,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             container_env["GIT_COMMITTER_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_COMMITTER_EMAIL"] = GA_GIT_AUTHOR_EMAIL
 
-        # TRN-80: allocate a transport-side UI port for the crew's SPA.
-        # The crew container itself is NOT modified — it stays on the internal
-        # ghost-academy network only. The transport will listen on the allocated
-        # port and proxy to the crew gateway over the internal network.
-        # TRN-103: ga-portal (Caddy) is always present and is the sole dashboard
-        # proxy; port allocation is gated only on the per-launch dashboard flag.
+        # Allocate a transport-side UI port for the crew's SPA. The crew container
+        # itself stays on the internal ghost-academy network only. ga-portal (Caddy)
+        # is always present and is the sole dashboard proxy; port allocation is
+        # gated only on the per-launch dashboard flag.
         dashboard_url: str | None = None
         if effective_dashboard:
             with _registry_lock:
@@ -2006,8 +2003,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                     reg["crews"].pop(crew_id, None)
                     _save_registry(reg)
                     return {"error": str(_err)}
-            # TRN-92/TRN-101: Portal (Caddy) is the sole dashboard proxy.
-            # Scheme depends on TLS mode.
+            # Portal (Caddy) is the sole dashboard proxy. Scheme depends on TLS mode.
             _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
             if cfg.ga_host_url:
                 from urllib.parse import urlparse as _urlparse2
@@ -2021,13 +2017,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 f"{container_env['KIROCREW_CORS_ORIGINS']},{_ui_host}"
             )
 
-        # TRN-136: generate the Admiral Ed25519 keypair BEFORE creating the
-        # container. The private key is persisted host-side and never enters the
-        # container; the public key is registered as a Podman secret and attached
-        # to the container spec so it mounts read-only (immutable from inside the
-        # container — CAP_SYS_ADMIN, needed to remount rw, is dropped). This must
-        # happen before container_create because a Podman secret can only be
-        # attached at creation time.
+        # Generate the Admiral Ed25519 keypair BEFORE creating the container.
+        # The private key is persisted host-side and never enters the container;
+        # the public key is registered as a Podman secret and attached to the
+        # container spec so it mounts read-only (immutable from inside the container
+        # — CAP_SYS_ADMIN, needed to remount rw, is dropped). This must happen
+        # before container_create because a Podman secret can only be attached at
+        # creation time.
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives.serialization import (
             Encoding,
@@ -2058,7 +2054,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             network=GA_STARBOARD_NETWORK,
             workspace_volume=volume,
             home_volume=home_volume,
-            # TRN-136: mount the Admiral public key read-only, root-owned, 0444.
+            # Mount the Admiral public key read-only, root-owned, 0444.
             # ADMIRAL_PUBKEY_PATH deliberately sits outside the home volume; see
             # the constant's definition for why a volume-backed target breaks
             # crew startup.
@@ -2091,7 +2087,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard)
-        # TRN-157: _finish_crew_setup error-dict paths have already called _cleanup_crew
+        # _finish_crew_setup error-dict paths have already called _cleanup_crew
         # (removing the admiral secret and Podman resources). The registry placeholder
         # entry written before the try block still exists and must be removed here.
         if "error" in result:
@@ -2105,8 +2101,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 except Exception:
                     pass
             return result
-        # TRN-101: persist dashboard_port in registry and register with Caddy.
-        # The per-port uvicorn listener is removed; Portal is the sole proxy.
+        # Persist dashboard_port in registry and register with Caddy.
+        # Portal is the sole dashboard proxy.
         if dashboard_port is not None and "error" not in result:
             _crew_cookie_for_caddy = ""
             with _registry_lock:
@@ -2132,7 +2128,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             _cleanup_crew(podman, container, volume, home_volume)
         except Exception:
             pass
-        # TRN-80: free any port allocated before the failure
+        # Free any port allocated before the failure
         try:
             if dashboard_port is not None:
                 _caddy_portal.release_port(dashboard_port)
@@ -2359,9 +2355,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     except RuntimeError as e:
         return {"error": str(e)}
 
-    # TRN-59: cancel gateway cron jobs before teardown (best-effort).
-    # Use bare _crew_api (not _crew_api_with_recovery) to avoid restarting a
-    # container we are about to destroy.
+    # Cancel gateway cron jobs before teardown (best-effort). Use bare _crew_api
+    # (not _crew_api_with_recovery) to avoid restarting a container we are about
+    # to destroy.
     with _registry_lock:
         reg = _load_registry()
     schedules = _get_crew_schedules(reg, crew_id)
@@ -2376,14 +2372,14 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     with _registry_lock:
         reg = _load_registry()
-        # TRN-101: Deregister from Caddy and release the port before removing
-        # the registry entry. Per-port uvicorn proxy removed; Portal is sole proxy.
+        # Deregister from Caddy and release the port before removing the registry
+        # entry. Portal is the sole dashboard proxy.
         _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
             _caddy_portal.deregister_crew(crew_id)
             _dashboard_gate.release_port(int(_ui_p))
             _caddy_portal.release_port(int(_ui_p))
-        # TRN-105: explicitly drop any batch records so no orphan batch entry
+        # Explicitly drop any batch records so no orphan batch entry
         # survives a nuke. Popping the crew entry below already removes them,
         # but clearing here keeps the intent explicit and in the same atomic
         # write that removes the crew.
@@ -2396,7 +2392,7 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     with _captain_order_locks_lock:
         _captain_order_locks.pop(crew_id, None)
 
-    # TRN-93: remove the per-crew signing-secret file (best-effort).
+    # Remove the per-crew signing-secret file (best-effort).
     _delete_crew_secret(crew_id)
 
     logger.info("Crew %s nuked", crew_id)
@@ -2415,7 +2411,7 @@ def _captain_do_order(
     fire_immediately: bool | None,
     model: str | None,
 ) -> dict:
-    """Handle ``captain(action="order")`` (TRN-141 extraction).
+    """Handle ``captain(action="order")``.
 
     Validates the order arguments, resolves a template when given, wakes the
     crew, provisions/resumes the single Raven check-in job, persists the
@@ -2503,7 +2499,7 @@ def _captain_do_order(
             job = dict(job)
             job["enabled"] = True
 
-        # TRN-29: Write schedule entry to transport registry
+        # Write schedule entry to transport registry
         schedule_entry = {
             "job_id": job.get("id"),
             "name": _CAPTAIN_CHECKIN_JOB_NAME,
@@ -2539,7 +2535,7 @@ def _captain_do_order(
                 _upsert_crew_schedule(reg, crew_id, schedule_entry)
                 _save_registry(reg)
         except Exception as exc:
-            logger.warning("TRN-29: Could not persist schedule entry: %s", exc)
+            logger.warning("Could not persist schedule entry: %s", exc)
 
         # Only append an order after the check-in exists and is enabled.  A
         # failed provisioning call must not leave mail that no Raven can read.
@@ -2583,7 +2579,7 @@ def _captain_do_order(
 
 
 def _captain_do_status(crew_id: str) -> dict:
-    """Handle ``captain(action="status")`` (TRN-141 extraction).
+    """Handle ``captain(action="status")``.
 
     Skims all mailboxes (works on running and stopped containers) and reports
     the durable standing-orders state without waking a dormant crew.
@@ -2656,7 +2652,7 @@ def _captain_do_status(crew_id: str) -> dict:
 
 
 def _captain_do_stop(crew_id: str) -> dict:
-    """Handle ``captain(action="stop")`` (TRN-141 extraction).
+    """Handle ``captain(action="stop")``.
 
     Wakes the crew (the gateway cron API is needed to disable the job),
     best-effort disables the gateway cron, and always marks the registry
@@ -2694,7 +2690,7 @@ def _captain_do_stop(crew_id: str) -> dict:
 
     # Best-effort: disable the gateway cron if it is currently enabled.
     # A failure here is logged as a warning — it must not block the
-    # registry update below (TRN-104).
+    # registry update below.
     if standing_job.get("enabled", False):
         try:
             toggle = _crew_api_with_recovery(
@@ -2719,10 +2715,9 @@ def _captain_do_stop(crew_id: str) -> dict:
     standing_job = dict(standing_job)
     standing_job["enabled"] = False
 
-    # TRN-104 / TRN-29: Always update the registry to disabled, regardless
-    # of the gateway API call result.  This ensures TRN-82's
-    # reconcile-on-restart sees the correct state and the idle monitor can
-    # eventually stop the crew.
+    # Always update the registry to disabled, regardless of the gateway API call
+    # result. This ensures the reconcile-on-restart sees the correct state and
+    # the idle monitor can eventually stop the crew.
     try:
         with _registry_lock:
             reg = _load_registry()
@@ -2942,7 +2937,7 @@ def schedule(
     if schedule_params > 1:
         return {"error": "Provide only one of: cron, interval, or delay"}
 
-    # TRN-29: delay creates a one-shot job
+    # Delay creates a one-shot job
     if delay is not None:
         if delay < 1:
             return {"error": "delay must be >= 1"}
@@ -2981,7 +2976,7 @@ def schedule(
                 _upsert_crew_schedule(reg, crew_id, schedule_entry)
                 _save_registry(reg)
         except Exception as exc:
-            logger.warning("TRN-29: Could not persist one-shot schedule entry: %s", exc)
+            logger.warning("Could not persist one-shot schedule entry: %s", exc)
 
         return {
             "job_id": r.get("id"),
@@ -3003,7 +2998,7 @@ def schedule(
     except (CrewUnresponsiveError, RuntimeError) as e:
         return {"error": str(e)}
 
-    # TRN-29: Write schedule entry to transport registry
+    # Write schedule entry to transport registry
     schedule_entry = {
         "job_id": r.get("id"),
         "name": name,
@@ -3021,7 +3016,7 @@ def schedule(
             _upsert_crew_schedule(reg, crew_id, schedule_entry)
             _save_registry(reg)
     except Exception as exc:
-        logger.warning("TRN-29: Could not persist schedule entry: %s", exc)
+        logger.warning("Could not persist schedule entry: %s", exc)
 
     # Resolve fire_immediately default: True for interval, False for cron
     should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
@@ -3059,7 +3054,7 @@ def _schedule_cancel(job_id: str | None, crew_id: str | None) -> dict:
     if not crew_id:
         return {"error": "crew_id is required for action='cancel'"}
 
-    # TRN-29: Check registry for captain guard before touching gateway
+    # Check registry for captain guard before touching gateway
     try:
         with _registry_lock:
             reg = _load_registry()
@@ -3111,14 +3106,14 @@ def _schedule_cancel(job_id: str | None, crew_id: str | None) -> dict:
     except (ValueError, KeyError, RuntimeError):
         pass  # Crew not running — still remove from registry
 
-    # TRN-29: Remove from registry
+    # Remove from registry
     try:
         with _registry_lock:
             reg = _load_registry()
             _remove_crew_schedule(reg, crew_id, job_id)
             _save_registry(reg)
     except Exception as exc:
-        logger.warning("TRN-29: Could not remove schedule entry from registry: %s", exc)
+        logger.warning("Could not remove schedule entry from registry: %s", exc)
 
     return {"status": "cancelled", "job_id": job_id}
 
@@ -3132,7 +3127,7 @@ def _schedule_list(crew_id: str | None) -> dict:
     if not crew_id:
         return {"error": "crew_id is required"}
 
-    # TRN-29: Read from registry first
+    # Read from registry first
     with _registry_lock:
         reg = _load_registry()
         schedules = _get_crew_schedules(reg, crew_id)
@@ -3330,7 +3325,7 @@ def dispatch(
     now = datetime.now(timezone.utc)
     created_at = now.isoformat()
 
-    # TRN-89 task 1: record task timestamps in-memory
+    # Record task timestamps in-memory
     if task_id:
         with _task_timestamps_lock:
             _task_timestamps[task_id] = {
@@ -3339,7 +3334,7 @@ def dispatch(
                 "completed_at": None,
             }
 
-    # TRN-89 task 3: write last_task_at to crew's registry entry
+    # Write last_task_at to crew's registry entry
     _record_last_task_at(crew_id, created_at)
 
     response: dict[str, Any] = {
@@ -3357,7 +3352,7 @@ def dispatch(
 @mcp.tool()
 @_registry_guard
 def prewarm(crew_id: str | None = None) -> dict:
-    """Pre-establish a crew's ACP session ahead of an expected dispatch (TRN-131).
+    """Pre-establish a crew's ACP session ahead of an expected dispatch.
 
     Warms the crew's ``kiro-cli-chat`` session — forking the session process and
     completing the ACP handshake — so a subsequent ``dispatch`` on that crew does
@@ -3382,9 +3377,8 @@ def prewarm(crew_id: str | None = None) -> dict:
     return prewarm_impl(crew_id)
 
 
-# _record_last_task_at and _dispatch_batch moved to transport.lifecycle
-# (TRN-143), next to _pickup_batch; imported above. The dispatch MCP tools
-# below call them as before.
+# _record_last_task_at and _dispatch_batch live in transport.lifecycle next to
+# _pickup_batch; imported above. The dispatch MCP tools below call them as before.
 
 
 @mcp.tool()
@@ -3672,7 +3666,7 @@ def resource_jobs() -> str:
         lines = [f"## {crew_id}"]
         gateway_jobs_shown = set()
 
-        # TRN-29: Include registry jobs (delay-type and all tracked)
+        # Include registry jobs (delay-type and all tracked)
         schedules = info.get("schedules", [])
         for sched in schedules:
             sched_display = sched.get("cron_expr") or (
@@ -3741,7 +3735,7 @@ if __name__ == "__main__":
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
     _reconcile_registry()
-    # TRN-80: restore UI port allocations from persisted registry so restarts
+    # Restore UI port allocations from persisted registry so restarts
     # don't re-allocate ports already claimed by existing crews.
     with _registry_lock:
         _reg = _load_registry()
@@ -3750,7 +3744,7 @@ if __name__ == "__main__":
             if _p is not None:
                 _dashboard_ports_in_use.add(int(_p))
     if _dashboard_ports_in_use:
-        logger.info("TRN-80: restored %d UI port(s) from registry: %s",
+        logger.info("Restored %d UI port(s) from registry: %s",
                     len(_dashboard_ports_in_use), sorted(_dashboard_ports_in_use))
     for _warning in _validate_academy():
         logger.warning("Academy validation: %s", _warning)
@@ -3770,8 +3764,8 @@ if __name__ == "__main__":
     )
     _file_starlette = Starlette(routes=file_routes)
 
-    # TRN-129: generate the OpenAPI schema once, after all routes/tools are
-    # defined, before constructing BearerAuthMiddleware. Cached globally so
+    # Generate the OpenAPI schema once, after all routes/tools are defined,
+    # before constructing BearerAuthMiddleware. Cached globally so
     # _handle_openapi_get can serve it without re-generating on every request.
     _openapi_schema_routes = {
         ("POST", "/login"): _handle_login_post,
@@ -3800,7 +3794,7 @@ if __name__ == "__main__":
         mcp_tools=_openapi.get_mcp_tools(mcp),
         version=TRANSPORT_VERSION,
     )
-    logger.info("TRN-129: OpenAPI schema generated (%d paths)", len(_openapi_schema.get("paths", {})))
+    logger.info("OpenAPI schema generated (%d paths)", len(_openapi_schema.get("paths", {})))
 
     app = BearerAuthMiddleware(mcp_app,
         api_key=GA_API_KEY,
@@ -3824,10 +3818,10 @@ if __name__ == "__main__":
             ("POST", "/dashboard/logout"): _dashboard_gate.handle_logout_post,
             ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
             ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
-            ("GET",  "/openapi.json"): _handle_openapi_get,  # TRN-129: public, no auth
+            ("GET",  "/openapi.json"): _handle_openapi_get,  # public, no auth
         },
     )
-    # Rate-limit wrapper (TRN-52): sits OUTSIDE BearerAuthMiddleware so all
+    # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all
     # callers — including unauthenticated /login — are subject to limits, and
     # INSIDE SecurityHeadersMiddleware. Skipped entirely when the master switch
     # GA_RATE_LIMIT_ENABLED=false.
@@ -3843,19 +3837,19 @@ if __name__ == "__main__":
         )
     else:
         logger.info("HTTP rate limiting: disabled (GA_RATE_LIMIT_ENABLED=false)")
-    # Transport-security wrapper: security headers, HSTS, and CSP enforcement
-    # (TRN-70). HTTPS redirect is disabled — Caddy owns redirects. CSP is
-    # unconditionally enforced.
+    # Transport-security wrapper: security headers, HSTS, and CSP enforcement.
+    # HTTPS redirect is disabled — Caddy owns redirects. CSP is unconditionally
+    # enforced.
     app = SecurityHeadersMiddleware(
         app,
         enable_headers=GA_ENABLE_SECURITY_HEADERS,
         enforce_redirect=False,
         csp_enforce=True,
     )
-    # TRN-107: TransportSecretMiddleware is the absolute outermost gate — it
-    # rejects any request that is not from ga-portal (i.e. missing or wrong
-    # X-Transport-Token) before any other middleware sees it. When GA_TRANSPORT_SECRET
-    # is empty (dev/test) this is a transparent pass-through.
+    # TransportSecretMiddleware is the absolute outermost gate — it rejects any
+    # request not from ga-portal (missing or wrong X-Transport-Token) before any
+    # other middleware sees it. When GA_TRANSPORT_SECRET is empty (dev/test) this
+    # is a transparent pass-through.
     app = TransportSecretMiddleware(app, transport_secret=GA_TRANSPORT_SECRET)
     if GA_TRANSPORT_SECRET:
         logger.info("Portal secret authentication: enabled (X-Transport-Token required)")
@@ -3904,11 +3898,10 @@ if __name__ == "__main__":
     server = uvicorn.Server(config)
 
     async def _main() -> None:
-        # TRN-101/TRN-103: Portal (Caddy) is the sole dashboard proxy and is
-        # always present; the per-port uvicorn listener threads are removed. On
-        # restart, re-register all existing crew servers with Caddy (idempotent
-        # — Caddy's --resume may have already loaded them, but we call again so
-        # a fresh data-volume wipe is handled gracefully).
+        # Portal (Caddy) is the sole dashboard proxy and is always present.
+        # On restart, re-register all existing crew servers with Caddy (idempotent
+        # — Caddy's --resume may have already loaded them, but we call again so a
+        # fresh data-volume wipe is handled gracefully).
         with _registry_lock:
             _restored_reg = _load_registry()
         for _cid, _info in _restored_reg["crews"].items():
@@ -3918,7 +3911,7 @@ if __name__ == "__main__":
                 with _registry_lock:
                     _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
                     _caddy_portal.register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
-        logger.info("TRN-103: Portal (Caddy) is the sole dashboard proxy")
+        logger.info("Portal (Caddy) is the sole dashboard proxy")
         await server.serve()
 
     asyncio.run(_main())

@@ -6,7 +6,7 @@ what the academy directory holds?" This is a different concern from crew
 lifecycle management (launch, recovery, auth injection, monitoring), which
 lives in ``lifecycle.py``.
 
-Extracted from ``lifecycle.py`` by TRN-86.
+Extracted from ``lifecycle.py``.
 
 Depends only on: stdlib and ``config.Config`` (the bottom of the transport
 dependency graph) plus ``captain._resolve_orders_dir`` for the order-template

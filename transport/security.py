@@ -1,4 +1,4 @@
-"""Security hardening primitives for the Ghost Academy transport (TRN-70).
+"""Security hardening primitives for the Ghost Academy transport.
 
 This module is the single home for the security guarantees the OpenSpec change
 `trn-70-security-hardening` makes enforceable:

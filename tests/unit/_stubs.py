@@ -1,6 +1,6 @@
 """Single authoritative source of the dependency-free import stubs.
 
-TRN-144: the unit suite runs in a dependency-free checkout where ``httpx`` /
+The unit suite runs in a dependency-free checkout where ``httpx`` /
 ``mcp`` / ``starlette`` / ``uvicorn`` are not installed. Every test file that
 needs them (``test_file_transfer`` directly, plus ``test_recovery`` /
 ``test_network`` / ``test_server`` / ``test_openapi`` transitively) must resolve
@@ -193,7 +193,7 @@ def _install_starlette_stubs() -> None:
     starlette_websockets = types.ModuleType("starlette.websockets")
 
     class WebSocket:
-        """Minimal starlette WebSocket stub for TRN-80 WS proxy tests."""
+        """Minimal starlette WebSocket stub for WS proxy tests."""
 
         def __init__(self, scope: Any = None, receive: Any = None, send: Any = None) -> None:
             self.scope = scope or {}

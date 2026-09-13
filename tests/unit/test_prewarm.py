@@ -1,4 +1,4 @@
-"""Unit + REST tests for the ACP prewarm operation (TRN-131).
+"""Unit + REST tests for the ACP prewarm operation.
 
 Covers ``lifecycle._prewarm_crew`` / ``lifecycle.prewarm`` (the transport-side
 warm-up mechanism) and the ``POST /crews/{crew_id}/prewarm`` REST surface via

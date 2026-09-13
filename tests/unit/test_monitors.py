@@ -28,7 +28,7 @@ import httpx2 as httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
-# TRN-143 §4: FakeHTTP / FakeResponse are consolidated in tests.unit.helpers.
+# FakeHTTP / FakeResponse are consolidated in tests.unit.helpers.
 from tests.unit.helpers import FakeHTTP, FakeResponse  # noqa: F401
 
 
@@ -86,7 +86,7 @@ class IdleMonitorTests(unittest.TestCase):
         mint_cookie_return: str | None = None,
     ) -> dict[str, Any]:
         """Run a single iteration of the idle monitor and return state."""
-        # TRN-143 §4: use the consolidated FakeHTTP. It records requested URLs in
+        # Use the consolidated FakeHTTP. It records requested URLs in
         # ``.calls`` (the old inline closure recorded into ``http_calls``) and
         # returns a 500 FakeResponse once the scripted list is exhausted, raising
         # any BaseException entries — matching the previous behaviour exactly.
@@ -301,7 +301,7 @@ class IdleMonitorTests(unittest.TestCase):
         self.assertEqual(result["stops"], [])
 
     def test_idle_monitor_cron_401_retries_with_fresh_cookie(self) -> None:
-        """D9 — cron endpoint 401 triggers cookie refresh and retry (TRN-39 4.4)."""
+        """D9 — cron endpoint 401 triggers cookie refresh and retry."""
         podman = IdleMonitorPodman(containers_running={"gs-cron401": True})
         # spawn returns empty (no tasks), cron first returns 401, then (after cookie refresh)
         # returns a listing with an enabled cron job (keeps crew alive).
@@ -396,7 +396,7 @@ class IdleMonitorActivityTests(unittest.TestCase):
         self.assertFalse(server._cron_has_enabled_job({"jobs": []}))
         self.assertFalse(server._cron_has_enabled_job({}))
 class ScheduleMonitorTests(unittest.TestCase):
-    """Tests for TRN-29 _schedule_monitor."""
+    """Tests for _schedule_monitor."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie", "status": "running"}
 
@@ -565,7 +565,7 @@ class ScheduleCancelTests(unittest.TestCase):
         self.assertNotIn("job-abc", remaining_ids, "job-abc should have been removed from registry")
 
     def test_cancel_not_found_is_idempotent(self) -> None:
-        """4.1 — cancel a non-existent job is idempotent (TRN-29: no error)."""
+        """4.1 — cancel a non-existent job is idempotent (no error)."""
         jobs_listing = {"jobs": []}
 
         def api(_crew, _crew_id, method, path, **kwargs):
@@ -718,7 +718,7 @@ class ScheduleListTests(unittest.TestCase):
         self.assertEqual(result["jobs"][0]["job_id"], "gw-j1")
         self.assertEqual(result["jobs"][0]["name"], "gateway-job")
 class SchedulePersistenceTests(unittest.TestCase):
-    """Tests for TRN-29 transport schedule persistence."""
+    """Tests for transport schedule persistence."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 
@@ -887,9 +887,9 @@ class SchedulePersistenceTests(unittest.TestCase):
         self.assertNotIn("delay", sig.parameters)
 
     def test_registry_rejects_inf_in_next_fire_at(self) -> None:
-        """One-shot job with float('inf') must not be JSON-serialisable.  # requires TRN-37
+        """One-shot job with float('inf') must not be JSON-serialisable.
 
-        TRN-37 replaces float('inf') with _NEVER_FIRE_AT (9_999_999_999.0) to
+        Uses _NEVER_FIRE_AT (9_999_999_999.0) to
         ensure the registry can always be serialised with allow_nan=False.
         This test confirms the guard is the correct fix: float('inf') DOES raise.
         """
@@ -965,7 +965,7 @@ class SchedulePersistenceTests(unittest.TestCase):
             f"next_fire_at {entry['next_fire_at']!r} should be ≈ now+{interval}",
         )
 class ReseedCronReconcileTests(unittest.TestCase):
-    """Tests for the gateway→registry reconcile pass in _reseed_crew_schedules (TRN-82)."""
+    """Tests for the gateway→registry reconcile pass in _reseed_crew_schedules."""
 
     def _make_reg(self, schedules):
         return {"crews": {"demo": {
@@ -1127,7 +1127,7 @@ class ReseedCronReconcileTests(unittest.TestCase):
         # Registry should not have been touched
         self.assertEqual(saved, [], "Registry should not be saved when gateway errors")
 class NukeScheduleTests(unittest.TestCase):
-    """Tests for TRN-59 nuke schedule reporting and clearing."""
+    """Tests for nuke schedule reporting and clearing."""
 
     CREW = {
         "container": "gs-demo",
@@ -1510,7 +1510,7 @@ class FireImmediatelyTests(unittest.TestCase):
         # No immediate dispatch for a resume
         self.assertNotIn("POST /api/spawn", api_paths)
 class DispatchFireAfterTests(unittest.TestCase):
-    """Tests for schedule(delay=...) — TRN-29 moved delay from dispatch to schedule."""
+    """Tests for schedule(delay=...)."""
 
     CREW = {"container": "gs-demo", "cookie": "cookie"}
 

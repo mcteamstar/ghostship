@@ -1,7 +1,7 @@
 """Auth middleware tests split from test_server.py (trn-119).
 
-Covers BearerAuthMiddleware, TRN-38 security hardening, and proxy query
-sanitisation. Mock paths point at transport.auth / transport.server per TRN-116.
+Covers BearerAuthMiddleware, security hardening, and proxy query sanitisation.
+Mock paths point at transport.auth / transport.server.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from unittest.mock import ANY, Mock, MagicMock, patch
 
 import httpx2 as httpx
 import transport.registry as _registry_mod  # noqa: F401
-import transport.auth as _auth_mod  # noqa: F401  (TRN-137: _parse_bearer_token)
+import transport.auth as _auth_mod  # noqa: F401  (_parse_bearer_token)
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
 
@@ -221,7 +221,7 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
             self.assertEqual(status, 401, f"Expected 401 for headers={headers}")
             self.assertFalse(downstream.called, f"Downstream called for headers={headers}")
 class TestTrn38SecurityHardening(unittest.TestCase):
-    """Tests for TRN-38 security hardening changes."""
+    """Tests for security hardening changes."""
 
     # ── 9.1 HMAC token length is now 32 hex chars (128-bit) ──────────────────
 
@@ -585,7 +585,7 @@ class TestProxyQuerySanitisation(unittest.TestCase):
 
 
 class ParseBearerTokenTests(unittest.TestCase):
-    """TRN-137: direct coverage for ``auth._parse_bearer_token``."""
+    """Direct coverage for ``auth._parse_bearer_token``."""
 
     def test_valid_bearer_token(self) -> None:
         self.assertEqual(_auth_mod._parse_bearer_token("Bearer abc123"), "abc123")
@@ -610,13 +610,13 @@ class ParseBearerTokenTests(unittest.TestCase):
         self.assertIsNone(_auth_mod._parse_bearer_token("Bearerx"))
 
 
-# ── TRN-153: TransportSecretMiddleware ──────────────────────────────────────────
+# ── TransportSecretMiddleware ──────────────────────────────────────────
 
 class TransportSecretMiddlewareTests(unittest.TestCase):
-    """TRN-153: coverage for the GA_TRANSPORT_SECRET X-Transport-Token gate.
+    """Coverage for the GA_TRANSPORT_SECRET X-Transport-Token gate.
 
     The middleware header is ``X-Transport-Token`` (the portal→transport secret
-    gate, TRN-107). When the secret is empty the middleware is a transparent
+    gate). When the secret is empty the middleware is a transparent
     pass-through; when set, requests must present a matching token or get 401.
     """
 
@@ -700,10 +700,10 @@ class TransportSecretMiddlewareTests(unittest.TestCase):
         self.assertEqual(ws_calls, ["websocket"])
 
 
-# ── TRN-153: _load_transport_secret ─────────────────────────────────────────────
+# ── _load_transport_secret ─────────────────────────────────────────────
 
 class LoadTransportSecretTests(unittest.TestCase):
-    """TRN-153: coverage for server._load_transport_secret.
+    """Coverage for server._load_transport_secret.
 
     Documented behaviour: read /run/secrets/ga-transport-secret, return its
     content stripped when present and non-empty; return "" when the file is

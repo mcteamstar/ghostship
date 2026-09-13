@@ -1,4 +1,4 @@
-"""Single source of truth for transport runtime configuration (TRN-75).
+"""Single source of truth for transport runtime configuration.
 
 All environment-driven runtime configuration the transport reads at startup is
 declared here as a `Config` dataclass. `server.py` builds one instance via
@@ -124,7 +124,7 @@ class Config:
     ga_subagent_timeout_secs: int = 3600
     ga_subagent_max_turns: int = 200
 
-    # ── ACP prewarm (TRN-131) ────────────────────────────────────────────────
+    # ── ACP prewarm ──────────────────────────────────────────────────────────
     # Opt-in warm-up of a crew's ACP session ahead of an expected dispatch.
     # ga_prewarm_enabled defaults to False so no behaviour changes on existing
     # installs: the prewarm MCP tool + REST endpoint report ``disabled`` and
@@ -135,24 +135,24 @@ class Config:
     ga_prewarm_enabled: bool = False
     ga_prewarm_ttl_secs: int = 300
 
-    # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────
-    # TRN-101: GA_DASHBOARD_PORT_ENABLED removed — dashboard access is now
-    # exclusively provided by ga-portal (Caddy). The port range config is
-    # retained because Portal still uses it via the transport's port pool.
+    # ── Crew UI port allocation ───────────────────────────────────────────────
+    # Dashboard access is provided exclusively by ga-portal (Caddy). The port
+    # range config is retained because Portal still uses it via the transport's
+    # port pool.
     ga_dashboard_port_range_start: int = 64058
     ga_dashboard_port_range_size: int = 1024
     ga_dashboard_default: bool = False
 
-    # ── Transport security (TRN-70) ──────────────────────────────────────────
+    # ── Transport security ────────────────────────────────────────────────────
     ga_tls_min_version: str = "1.2"
     ga_tls_certfile: str = ""
     ga_tls_keyfile: str = ""
     ga_enable_security_headers: bool = True
 
-    # ── Caddy reverse proxy (TRN-92) ─────────────────────────────────────────
-    # ga-portal (Caddy) is a required architectural component (TRN-103): it owns
-    # the main HTTPS port and the dashboard port range, and provides the
-    # portal → transport → crew proxy path. It is always started by install.sh.
+    # ── Caddy reverse proxy ───────────────────────────────────────────────────
+    # ga-portal (Caddy) is a required architectural component: it owns the main
+    # HTTPS port and the dashboard port range, and provides the portal →
+    # transport → crew proxy path. It is always started by install.sh.
     # TLS mode: internal | tailscale | acme | off
     # - internal (default): Caddy built-in CA; requires a one-time `caddy trust`
     # - tailscale: real certs from Tailscale ACME for .ts.net hostnames
@@ -164,7 +164,7 @@ class Config:
     # Session TTL for gs_session cookies (dashboard login); default 24 h.
     ga_portal_session_ttl_secs: int = 86400
 
-    # ── User-defined orders directory (TRN-135) ──────────────────────────────
+    # ── User-defined orders directory ────────────────────────────────────────
     # When set, templates from this directory are merged with the built-in
     # academy/orders/ templates. User-defined templates take precedence on
     # name collision. Unset (default) means only built-in templates are used.
@@ -179,7 +179,7 @@ class Config:
     # containers at creation. Unset (default) => device-code flow is used.
     kiro_api_key: str = ""
 
-    # ── Portal secret (TRN-107) ──────────────────────────────────────────────
+    # ── Portal secret ─────────────────────────────────────────────────────────
     # The transport secret is loaded directly via _load_transport_secret() in
     # server.py from the Podman secrets file (/run/secrets/ga-transport-secret).
     # It is NOT part of the Config dataclass — keeping it out of Config avoids

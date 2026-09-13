@@ -110,11 +110,11 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(len(handles), 1)
         crew_proxy = handles[0]
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
-        # TRN-102: upstream is the transport, not the crew gateway; the path is
+        # Upstream is the transport, not the crew gateway; the path is
         # rewritten to /crews/{id}/ui/... and NO Cookie is injected in Caddy.
         self.assertEqual(crew_proxy["upstreams"][0]["dial"], f"ga-transport:{server.PORT}")
         self.assertIn("/crews/alpha/ui", crew_proxy["rewrite"]["uri"])
-        # TRN-107: every route to ga-transport carries the portal secret header,
+        # Every route to ga-transport carries the portal secret header,
         # regardless of whether GA_API_KEY is set.
         self.assertEqual(
             crew_proxy["headers"]["request"]["set"]["X-Transport-Token"],
@@ -126,7 +126,7 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         mock_resp = self._make_response(200)
         mock_put = Mock(return_value=mock_resp)
 
-        # TRN-116: _caddy_register_crew moved to transport/caddy.py and reads
+        # _caddy_register_crew lives in transport/caddy.py and reads
         # GA_API_KEY from that module's globals, so patch it there.
         with patch.object(server._caddy, "GA_API_KEY", "some-key"), \
              patch.object(server.httpx, "put", mock_put):
@@ -139,14 +139,14 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(fwd_auth["handler"], "reverse_proxy")
         self.assertIn("dashboard/auth", fwd_auth["rewrite"]["uri"])
         self.assertIn("handle_response", fwd_auth)
-        # TRN-107: forward_auth also carries the portal secret header.
+        # forward_auth also carries the portal secret header.
         self.assertEqual(
             fwd_auth["headers"]["request"]["set"]["X-Transport-Token"],
             ["{file./run/secrets/ga-transport-secret}"],
         )
         crew_proxy = handles[1]
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
-        # TRN-102: crew proxy upstreams the transport, not the crew gateway.
+        # Crew proxy upstreams the transport, not the crew gateway.
         self.assertEqual(crew_proxy["upstreams"][0]["dial"], f"ga-transport:{server.PORT}")
 
     def test_register_treats_409_as_idempotent(self) -> None:
@@ -231,8 +231,7 @@ class CaddyDeregisterCrewTests(unittest.TestCase):
 class DashboardLoginPostTests(unittest.TestCase):
     """8.2 — _handle_dashboard_login_post: key validation + cookie issuance.
 
-    Migrated from _gs_session_store/_gs_session_store_lock (TRN-92 API,
-    removed in TRN-121) to security.SessionStore + security.Throttle.
+    Migrated to security.SessionStore + security.Throttle.
     Each test injects fresh instances via patch.object so state never leaks.
     """
 
@@ -318,7 +317,7 @@ class DashboardAuthTests(unittest.TestCase):
     """8.3 — _handle_dashboard_auth: session validation + crew cookie injection.
 
     Migrated from _gs_session_store/_gs_session_store_lock/_gs_session_issue
-    (TRN-92 API, removed in TRN-121) to security.SessionStore.
+    to security.SessionStore.
     """
 
     def setUp(self) -> None:
@@ -398,7 +397,7 @@ class DashboardAuthTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class CaddyLaunchNukeTests(unittest.TestCase):
-    """8.5 — launch() registers Caddy server; nuke() deregisters it. (TRN-101 updated)"""
+    """8.5 — launch() registers Caddy server; nuke() deregisters it."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -497,7 +496,7 @@ class GsSessionStoreTests(unittest.TestCase):
     """Verify the gs_session store semantics via security.SessionStore.
 
     Migrated from direct _gs_session_store dict manipulation
-    (TRN-92 API, removed in TRN-121) to the SessionStore public API.
+    to the SessionStore public API.
     Equivalent coverage now also exists in TestDashboardSessionStore in
     test_server.py; this class remains to cover the same scenarios through
     the test_caddy fixture pattern.
@@ -613,7 +612,7 @@ class _FakeUpstreamResponse:
     async def __aexit__(self, *args):
         pass
 class UiPortAllocationTests(unittest.TestCase):
-    """Tests for _allocate_dashboard_port / _release_dashboard_port (TRN-80 task 3)."""
+    """Tests for _allocate_dashboard_port / _release_dashboard_port."""
 
     def setUp(self) -> None:
         # Isolate module-level port state for each test
@@ -661,7 +660,7 @@ class UiPortAllocationTests(unittest.TestCase):
         # Must not raise
         server._release_dashboard_port(9999)
 class UiPortLaunchTests(unittest.TestCase):
-    """Tests for launch() UI port wiring (TRN-80 task 4.1)."""
+    """Tests for launch() UI port wiring."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -713,7 +712,7 @@ class UiPortLaunchTests(unittest.TestCase):
         return result
 
     def test_launch_includes_dashboard_url_when_portal_enabled(self) -> None:
-        """TRN-103: launch(dashboard=True) returns dashboard_url (Portal is always on)."""
+        """launch(dashboard=True) returns dashboard_url (Portal is always on)."""
         result = self._run_launch(ga_host_url="")
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
@@ -728,7 +727,7 @@ class UiPortLaunchTests(unittest.TestCase):
         self.assertIn("9000", result["dashboard_url"])
 
     def test_launch_dashboard_url_is_none_when_dashboard_false(self) -> None:
-        """TRN-103: dashboard=False always gives dashboard_url=None."""
+        """dashboard=False always gives dashboard_url=None."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -790,7 +789,7 @@ class UiPortLaunchTests(unittest.TestCase):
         self.assertNotIn("ports", call_kwargs, "crew containers must not bind host ports")
 
     def test_launch_no_ports_passed_when_dashboard_false(self) -> None:
-        """TRN-101: dashboard=False → no port allocation, container_create has no ports kwarg."""
+        """dashboard=False → no port allocation, container_create has no ports kwarg."""
         registry = {"crews": {}}
         podman = Mock()
         podman.network_create = Mock()
@@ -820,7 +819,7 @@ class UiPortLaunchTests(unittest.TestCase):
         call_kwargs = podman.container_create.call_args.kwargs
         self.assertIsNone(call_kwargs.get("ports"))
 class UiPortNukeTests(unittest.TestCase):
-    """Tests for nuke() UI port release (TRN-80 task 4.2)."""
+    """Tests for nuke() UI port release."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -858,7 +857,7 @@ class UiPortNukeTests(unittest.TestCase):
         self.assertEqual(result["status"], "nuked")
         self.assertNotIn(9000, server._dashboard_ports_in_use)
 class CrewsListUiUrlTests(unittest.TestCase):
-    """Tests for dashboard_url in crews() list (TRN-80 task 5)."""
+    """Tests for dashboard_url in crews() list."""
 
     def _run_crews(
         self,
@@ -894,7 +893,7 @@ class CrewsListUiUrlTests(unittest.TestCase):
         }
         entries = self._run_crews(crews_data, ga_host_url="")
         self.assertEqual(len(entries), 1)
-        # TRN-103: Portal is always on; internal TLS mode → https://
+        # Portal is always on; internal TLS mode → https://
         self.assertEqual(entries[0]["dashboard_url"], "https://localhost:9005/")
 
     def test_crews_dashboard_url_uses_ga_host_url_host(self) -> None:
@@ -924,7 +923,7 @@ class CrewsListUiUrlTests(unittest.TestCase):
         entries = self._run_crews(crews_data)
         self.assertIsNone(entries[0]["dashboard_url"])
 
-    # ── 9.2 (TRN-116): dashboard URL when Caddy portal TLS is off ────────────
+    # ── 9.2: dashboard URL when Caddy portal TLS is off ──────────────────────
 
     def test_crews_dashboard_url_uses_http_when_tls_off(self) -> None:
         """9.2a: with ga_portal_tls_mode='off' the dashboard URL uses http://
@@ -965,7 +964,7 @@ class CrewsListUiUrlTests(unittest.TestCase):
         self.assertTrue(url.startswith("http://"))
         self.assertIn("vm23.example.com:9010", url)
 class TRN101LaunchPortalTests(unittest.TestCase):
-    """TRN-103: Portal is always present; launch(dashboard=True) allocates a dashboard."""
+    """Portal is always present; launch(dashboard=True) allocates a dashboard."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -1021,12 +1020,12 @@ class TRN101LaunchPortalTests(unittest.TestCase):
                          "No port should be allocated for a headless crew")
 
     def test_launch_dashboard_true_succeeds(self) -> None:
-        """TRN-103: dashboard=True returns a dashboard_url (Portal is always on)."""
+        """dashboard=True returns a dashboard_url (Portal is always on)."""
         result = self._run_launch_portal(dashboard=True)
         self.assertNotIn("error", result)
         self.assertIsNotNone(result.get("dashboard_url"))
 class LaunchDashboardParamTests(unittest.TestCase):
-    """TRN-80 task 5.3 / 9.1 / TRN-101 — launch(dashboard=True/False) port allocation gate."""
+    """launch(dashboard=True/False) port allocation gate."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -1076,7 +1075,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
         result = self._run_launch(dashboard=True)
         self.assertIn("dashboard_url", result)
         self.assertIsNotNone(result["dashboard_url"])
-        # TRN-103: Portal internal mode → https://
+        # Portal internal mode → https://
         self.assertTrue(result["dashboard_url"].startswith("https://"))
         self.assertIn("9000", result["dashboard_url"])
         # Port should be marked as in-use
@@ -1124,7 +1123,7 @@ class LaunchDashboardParamTests(unittest.TestCase):
         self.assertIsNone(result.get("dashboard_url"))
         self.assertEqual(len(server._dashboard_ports_in_use), 0)
 class DashboardRestEndpointTests(unittest.TestCase):
-    """TRN-80 task 7.1-7.4 — POST/DELETE /crews/{id}/dashboard REST endpoints."""
+    """POST/DELETE /crews/{id}/dashboard REST endpoints."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()
@@ -1184,7 +1183,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
         response, mock_caddy = asyncio.run(run())
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
-        # TRN-103: Portal internal mode → https://
+        # Portal internal mode → https://
         self.assertIn("9003", body["dashboard_url"])
         # No new port should have been allocated
         self.assertNotIn(9003, server._dashboard_ports_in_use)
@@ -1260,7 +1259,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
     # ── DELETE /crews/{id}/dashboard ──────────────────────────────────────────
 
     def test_delete_dashboard_deregisters_and_releases_port(self) -> None:
-        """TRN-101 2.5 — DELETE deregisters from Caddy, releases port, returns dashboard_url: null."""
+        """DELETE deregisters from Caddy, releases port, returns dashboard_url: null."""
         server._dashboard_ports_in_use.add(9004)
         crew = {"container": "gs-demo", "cookie": "c", "dashboard_port": 9004}
         registry = {"crews": {"demo": {**crew}}}
@@ -1412,7 +1411,7 @@ class DashboardRestEndpointTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("post-dashboard-no-auth", handled)
 class CorsOriginInjectionTests(unittest.TestCase):
-    """Tests for CORS origin injection at container_create time (TRN-80 task 6)."""
+    """Tests for CORS origin injection at container_create time."""
 
     def setUp(self) -> None:
         server._dashboard_ports_in_use.clear()

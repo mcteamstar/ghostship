@@ -31,14 +31,14 @@ cfg = Config.from_env()
 PODMAN_SOCK = cfg.podman_socket
 KIRO_WORKSPACE_ROOT = "/home/kirocrew/workplace/kirocrew-workspace"
 
-# Worker sidecar (TRN-81) — the transport's disposable utility container for
+# Worker sidecar — the transport's disposable utility container for
 # reading files/bundles/diffs from STOPPED crew volumes without waking the
 # crew. Built by install.sh from crews/_worker/. The crew workspace volume is
 # mounted read-only at WORKER_MOUNT; worker commands operate under that path.
 WORKER_IMAGE = "localhost/gs-worker:latest"
 WORKER_MOUNT = "/workspace"
 
-# CREW_VOLUME_PREFIX canonical home is transport/constants.py (TRN-142).
+# CREW_VOLUME_PREFIX canonical home is transport/constants.py.
 # constants.py is a zero-dependency leaf, so importing it here is cycle-safe.
 try:
     from constants import CREW_VOLUME_PREFIX  # container: flat /app/
@@ -243,12 +243,12 @@ class PodmanClient(ContainerRuntime):
                  "dest": KIRO_WORKSPACE_ROOT},
                 {"name": home_volume, "dest": "/home/kirocrew"},
             ],
-            # TRN-93: prevent privilege escalation via setuid binaries and drop
+            # Prevent privilege escalation via setuid binaries and drop
             # the two highest-risk capabilities for crew containers.
             "no_new_privileges": True,
             "cap_drop": ["CAP_NET_RAW", "CAP_SYS_ADMIN"],
         }
-        # TRN-136: mount Podman secrets read-only into the container. Each entry
+        # Mount Podman secrets read-only into the container. Each entry
         # is {"source": <secret name>, "target": <abs path>, "uid", "gid",
         # "mode"} — Podman mounts it as a read-only bind mount that the container
         # cannot overwrite (CAP_SYS_ADMIN, needed to remount rw, is dropped
@@ -631,7 +631,7 @@ class PodmanClient(ContainerRuntime):
             logger.warning("volume_remove %s failed: %s", name, e)
             raise
 
-    # ── secrets (TRN-136) ─────────────────────────────────────────────────────
+    # ── secrets ────────────────────────────────────────────────────────────────
 
     def secret_create(self, name: str, data: bytes) -> None:
         """Create a Podman secret named ``name`` holding raw ``data`` bytes.
@@ -677,7 +677,7 @@ class PodmanClient(ContainerRuntime):
         except Exception as e:
             logger.warning("secret_remove %s failed: %s", name, e)
 
-    # ── worker sidecar (TRN-81) ─────────────────────────────────────────────
+    # ── worker sidecar ────────────────────────────────────────────────────────
 
     @staticmethod
     def volume_name_for_crew(crew_id: str) -> str:
@@ -730,7 +730,7 @@ class PodmanClient(ContainerRuntime):
                     "options": ["ro"],
                 },
             ],
-            # TRN-93: prevent privilege escalation and drop high-risk capabilities.
+            # Prevent privilege escalation and drop high-risk capabilities.
             "no_new_privileges": True,
             "cap_drop": ["CAP_NET_RAW", "CAP_SYS_ADMIN"],
         }

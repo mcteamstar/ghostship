@@ -1,4 +1,4 @@
-"""Tests for transport/openapi.py (TRN-129).
+"""Tests for transport/openapi.py.
 
 Covers:
   4.1 Unit tests for generate_schema with mock routes and tools
