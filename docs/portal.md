@@ -43,8 +43,8 @@ Caddy sits in front of all traffic:
 
 Two routing tiers:
 
-1. **Main port (443/80)** — static server written at install time. Handles MCP, file-transfer, health, and all three auth/login endpoints.
-2. **Per-crew dashboard ports (64058–65081)** — one Caddy server per allocated port, added/removed live via the Caddy admin API when crews launch/nuke. Each server has TLS + `forward_auth` + `reverse_proxy` to the crew gateway.
+1. **Main port (443/80)** — static server written at install time. Handles MCP, file-transfer, health, and auth/login endpoints.
+2. **Per-crew dashboard ports (64058–65081)** — one Caddy server per port, added/removed live via the Caddy admin API on `launch`/`nuke`.
 
 ## Dashboard proxy
 
@@ -63,11 +63,11 @@ Key properties:
 
 - **Portal owns all dashboard port bindings.** The transport does not bind these ports directly.
 - **Caddy talks only to `ga-transport:64057`.** Both the MCP/file routes and the per-crew dashboard routes upstream to `ga-transport:64057`. Caddy has no network path to crew containers.
-- **The transport injects the session cookie.** The `mc_token_5476` cookie is added by the transport's UI-proxy endpoint, from `ga-transport`'s own IP. The cookie is transparently re-minted when near expiry — sessions never see a "Session expired" prompt.
+- **The transport injects the session cookie.** `mc_token_5476` is added by the transport's UI-proxy endpoint and transparently re-minted near expiry.
 - **WebSocket connections are proxied.** Real-time chat/task streaming over WebSocket is upgraded and relayed through the same endpoint.
 - **TLS on every port.** Caddy terminates HTTPS on the main port and on every per-crew dashboard port.
 - **`gs_session` cookie gate.** When `GA_API_KEY` is set, every dashboard port requires a valid `gs_session` cookie issued by `/dashboard/login`.
-- **SPA navigation works correctly.** The SPA owns a full origin, so `history.pushState` navigation, hard reloads, and link sharing all work.
+- **SPA navigation works.** The SPA owns a full origin — `history.pushState`, hard reloads, and link sharing all work.
 - **CORS is pre-configured.** The UI port origin is added to `KIROCREW_CORS_ORIGINS` at container create time.
 
 ### The `dashboard_url`
@@ -104,10 +104,10 @@ Set `GA_PORTAL_TLS_MODE` to one of:
 
 | Mode | When to use | Notes |
 |:-----|:------------|:------|
-| `internal` (default) | Local dev, homelab, Tailscale networks | Caddy's built-in CA issues self-signed certs. Requires a one-time `caddy trust` step. |
+| `internal` | Local dev, homelab, Tailscale networks | Caddy's built-in CA issues self-signed certs. Requires a one-time `caddy trust` step. |
 | `tailscale` | Tailscale-connected deployments | Caddy provisions real browser-trusted certs for `.ts.net` hostnames. Set `GA_PORTAL_DOMAIN` to your `.ts.net` hostname. |
 | `acme` | Internet-facing deployments | Standard Let's Encrypt. Requires `GA_PORTAL_DOMAIN` and ports 80/443 reachable from the internet. |
-| `off` | Local dev, or upstream TLS terminator | Plain HTTP on all ports. |
+| `off` (default) | Local dev, or upstream TLS terminator | Plain HTTP on all ports. |
 
 ### Internal CA trust (one-time)
 
@@ -154,7 +154,7 @@ GA_PORTAL_TLS_MODE=internal   # or tailscale / acme / off
 
 ## Auth upgrade paths
 
-The `forward_auth` gate uses `GA_API_KEY` as the shared credential. For stronger auth, Caddy supports config-only upgrades — no transport changes needed.
+For stronger auth, Caddy supports config-only upgrades — no transport changes needed.
 
 ### Caddy `basicauth`
 

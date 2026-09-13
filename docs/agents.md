@@ -37,4 +37,4 @@ Both forms append the resolved order to `captain@localhost`. `captain(..., actio
 
 The `tools`/`allowedTools` arrays in each agent JSON are a real technical gate. The "OpenSpec ops" column above is not: skills are copied crew-wide, and a custom agent inherits every default resource — including every skill — unless `chat.disableInheritingDefaultResources` is set *and* the agent defines its own `resources` list. None of the six currently do. The division is enforced only by each agent's system prompt. Raven's five-worker roster is similarly prompt-level; transport's allowlist enforces all six names for `dispatch` and `schedule`.
 
-Not yet built: per-agent skill scoping via `resources`/`skill://` (which would make the ops column a real technical boundary), and per-crew workspace seeding. Revisit if role bleed becomes a problem.
+Not yet built: per-agent skill scoping via `resources`/`skill://` and per-crew workspace seeding. Revisit if role bleed becomes a problem.

@@ -54,7 +54,7 @@ These variables are baked into the transport container by `install.sh` at `podma
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path to an operator-managed directory of additional standing-order template `.md` files. When set and the path exists, its templates are merged with built-in `academy/orders/` templates; a user-defined template whose filename stem matches a built-in name takes precedence. A warning is logged if the path is set but missing. Config-file-only. |
-| `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). Unrecognised values fall back to `internal` with a WARNING. |
+| `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). Unrecognised values fall back to `off` with a WARNING. |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name for ACME certificate requests. Required when `GA_PORTAL_TLS_MODE=acme`. |
 | `PORT` / ~~`GA_PORTAL_PORT`~~ | `64057` | Port Caddy listens on. `GA_PORTAL_PORT` is the deprecated alias; `install.sh` auto-migrates config files still using it. |
 | `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard/login`. Sessions are in-memory and reset on transport restart. |
@@ -97,9 +97,9 @@ Common patterns:
 2. **Config file** (sourced from `--config <path>`)
 3. **CLI flag** (e.g. `--port 9000`)
 
-> **⚠️ No ambient-environment-variable tier.** Exporting a variable in the invoking shell has no effect on `install.sh` or `uninstall.sh`. Only config files and CLI flags are supported. Move any previously exported values into a config file and pass `--config <path>`.
+> **⚠️ No ambient-environment-variable tier.** Exporting a shell variable has no effect on `install.sh` or `uninstall.sh`. Use a config file with `--config <path>` instead.
 >
-> **Exception — `PODMAN_SOCK`:** Read from the ambient environment before config-file sourcing as a narrow exception to allow overriding the Podman socket without a config file. Does not generalise to other variables.
+> **Exception — `PODMAN_SOCK`:** Accepted from the ambient environment before config-file sourcing, as a narrow exception. Does not generalise to other variables.
 
 ### Format
 
@@ -225,8 +225,8 @@ The new image is built at install time. Existing crews use the old image until n
 `install.sh` snapshots `academy/` (agents, skills, steering, policies, orders, mcp) and `crews/` from the repo into the data volume at install time. The transport container mounts these from the data volume — it has no runtime dependency on the repo checkout path.
 
 - **Edits under `academy/` or `crews/` take effect only after re-running `./install.sh`.** The transport reads the data-volume snapshot, not the live repo.
-- **Moving or deleting the repo after install does not break the transport** — content is fully self-contained in the data volume.
-- **Reinstalling is safe** — `install.sh` uses `rsync --delete` (or `rm -rf` + `cp -r` if rsync is absent) to keep the snapshot an exact mirror of the repo, removing stale files automatically.
+- **Moving or deleting the repo after install is safe** — content is fully self-contained in the data volume.
+- **Reinstalling is safe** — `install.sh` keeps the snapshot an exact mirror of the repo, removing stale files.
 
 ## MCP server catalogue
 
@@ -290,7 +290,7 @@ Behaviour:
 
 - **No `mcpServers` key (or empty array)** → no `mcp.json` written.
 - **Name with no matching catalogue file** → warning logged, entry skipped; remaining servers still written, crew setup continues.
-- **Entry with a `headers` field** → `poolable: false` added automatically when written into `mcp.json` (KiroCrew 0.5.0 must not pool auth-bearing HTTP servers).
+- **Entry with a `headers` field** → `poolable: false` added automatically (auth-bearing HTTP servers must not be pooled).
 
 ### Secret substitution (`${VAR}`)
 
@@ -411,6 +411,6 @@ kiro-cli mcp add --name ghostship \
 
 ### Known limitations
 
-- **Single-host only** — no horizontal scaling or HA. Running two transports against the same data directory is unsupported and will corrupt the registry.
+- **Single-host only** — no HA. Running two transports against the same data directory corrupts the registry.
 - **File transfer** — presigned URLs travel in plaintext when `GA_PORTAL_TLS_MODE=off`; use a non-`off` TLS mode or an external reverse proxy for remote deployments.
 - **Podman socket security** — restrict access to `DATA_DIR` and the Podman socket to the service account running the transport on shared hosts.

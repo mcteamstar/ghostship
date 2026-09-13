@@ -27,11 +27,11 @@ The built-in `spec-ops` loadout is designed for **Spec-Driven Development** usin
 
 ### Why Not...
 
-**Subagents?** Subagents are tied to your parent session and share your live workspace. Crew members are KiroCrew subagents running on a ghostship.
+**Subagents?** Subagents share your live workspace and session. Crew members are isolated KiroCrew subagents running on a ghostship with their own volumes.
 
-**Cloud Agents?** Cloud agents run on infrastructure outside your control. Ghostship crew images can be tailored to your needs within a security boundary you own, and can be hosted remotely like a private cloud agent.
+**Cloud Agents?** Cloud agents run on infrastructure outside your control. Ghostship images are customisable within a security boundary you own, and can be hosted remotely.
 
-**Agent Harnesses?** Ghostship is exactly the DIY orchestration layer for KiroCrew — parallelism, concurrency, and inter-agent communication — consumable by any agent over MCP.
+**Agent Harnesses?** Ghostship is exactly the DIY orchestration layer for KiroCrew — parallelism, concurrency, inter-agent communication — consumable by any agent over MCP.
 
 ## Install
 
@@ -52,7 +52,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts the `ga-transport` container, and starts `ga-portal` (Caddy) on `localhost:64057`. MCP, REST API, and file transfer all share this port. Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` when `GA_API_KEY` is set — see [docs/portal.md](docs/portal.md).
+Builds crew images, starts `ga-transport`, and starts `ga-portal` (Caddy) on `localhost:64057`. MCP, REST API, and file transfer share this port. Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` when `GA_API_KEY` is set — see [docs/portal.md](docs/portal.md).
 
 For a repeatable setup:
 ```bash
@@ -74,13 +74,13 @@ Add `--api-key <key>` if the remote transport requires a bearer token. Default U
 
 To uninstall: `ghostship uninstall`. After a reboot, `ghostship start` brings it back without reinstalling.
 
-**Updating `academy/` and `crews/`** — `./install.sh` snapshots these directories into the data volume. After editing files under either directory, re-run `./install.sh` for changes to take effect.
+**Updating `academy/` and `crews/`** — `./install.sh` snapshots these into the data volume. Re-run it after any edits.
 
 Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
 
 ### Customising and forking
 
-Run it as-is or make it your own. Once you add agent personas, skills, or new crew compositions, that configuration belongs in your own fork. See [docs/forks.md](docs/forks.md) for the fork model, visibility options, and keeping your fork current with upstream.
+See [docs/forks.md](docs/forks.md) for the fork model, visibility options, and keeping current with upstream.
 
 ### Connecting to a harness
 
@@ -122,7 +122,7 @@ For remote deployments, IAM Identity Center config, and TLS setup: [docs/configu
 
 ### Skills
 
-> **Strongly recommended:** install `ghostship-command` into your agent — it is the Admiral's fleet playbook. Without it you have the MCP tools but no guidance on using them effectively.
+> **Strongly recommended:** install `ghostship-command` — it is the Admiral's fleet playbook. Without it you have the MCP tools but no guidance on using them effectively.
 
 Skills follow the [Agent Skills](https://agentskills.io) standard and work in Claude Code, Kiro, and any harness that supports `SKILL.md`.
 
@@ -132,9 +132,9 @@ Skills follow the [Agent Skills](https://agentskills.io) standard and work in Cl
 | `ghostship-admin` | Install, configure, and connect a ghostship transport. |
 | `ghostship-capability` | Configure agent personas, skills, crew compositions, MCP catalogue. |
 
-**If you cloned the repo**, skills activate automatically under `.claude/skills/` (Claude Code) and `.kiro/skills/` (Kiro).
+**Cloned the repo:** skills activate automatically under `.claude/skills/` (Claude Code) and `.kiro/skills/` (Kiro).
 
-**Global install** (so your agent can use ghostship from any project):
+**Global install** (use ghostship from any project):
 ```bash
 # Claude Code
 ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.claude/skills/ghostship-command
@@ -143,7 +143,7 @@ ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.claude/skills/ghostshi
 ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.kiro/skills/ghostship-command
 ```
 
-The plugin install path (Claude Code plugin, Kiro Power) handles this automatically.
+The Claude Code plugin and Kiro Power installs handle this automatically.
 
 ## Ghost Academy
 
@@ -151,7 +151,7 @@ Every ghostship has access to the same crew curriculum: agent personas, skills, 
 
 ### Agents
 
-Six agent personas. The five worker personas split up the [OpenSpec](https://github.com/Fission-AI/OpenSpec) spec-driven workflow.
+Six personas. The five workers split the [OpenSpec](https://github.com/Fission-AI/OpenSpec) spec-driven workflow.
 
 | Agent | Name | Role |
 |:-:|:------|:-----|
@@ -192,7 +192,7 @@ Registered as `ghostship`:
 
 ### Route reference
 
-The transport serves an OpenAPI 3.1.0 schema at **`GET /openapi.json`** (no auth required), generated at startup from the live route table and MCP tool registry.
+The transport serves an OpenAPI 3.1.0 schema at **`GET /openapi.json`** (no auth required):
 
 ```bash
 curl -s http://localhost:64057/openapi.json | jq .paths

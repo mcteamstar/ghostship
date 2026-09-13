@@ -12,12 +12,7 @@ agent persona, write a skill, build a new composition, or wire in an MCP
 server — that configuration belongs to you. Fork or clone
 `mcteamstar/ghostship` and own it.
 
-This is the intended model, not a workaround. Your academy curriculum is as
-much a part of your product as your codebase. It should live somewhere you
-control, evolve at your pace, and be versioned alongside the rest of your
-work. The `ghostship-capability` skill covers everything you need: adding
-agent personas, skills, steering, orders, MCP servers, and building new
-compositions from scratch.
+The `ghostship-capability` skill covers everything you need: adding agent personas, skills, steering, orders, MCP servers, and building new compositions from scratch.
 
 ## Fork or clone — and choosing a visibility
 
@@ -38,35 +33,13 @@ cd ghostship.git
 git push --mirror <your-new-private-or-internal-repo-url>
 ```
 
-A clone is a plain copy, not a GitHub "fork" — there's no fork-network
-relationship, so you lose the built-in "compare across forks" PR UI back to
-upstream. Track upstream manually instead (see
-[Maintaining your fork or clone](#maintaining-your-fork-or-clone) below —
-the remote-based workflow there works identically either way).
+A clone has no GitHub fork-network relationship — track upstream manually instead (see [Maintaining your fork or clone](#maintaining-your-fork-or-clone)).
 
-**Private** — visible only to you and the people you explicitly invite.
-Right for solo operators, small teams, or anyone whose academy configuration
-is sensitive. Always a clone, never a real GitHub fork. Zero contribution
-path back upstream via GitHub's native PR UI, but that's fine — you're a
-consumer. Pull upstream patches on your own schedule.
+**Private** — visible only to you and your invitees. Right for solo operators and small teams, or anyone whose configuration is sensitive. Always a clone, never a real GitHub fork.
 
-**Internal** — visible to your whole organisation, but not the public.
-Right for companies where multiple teams use ghostship but the configuration
-is internal IP. Also a clone, not a fork. You can run a proper internal
-release cadence, let teams contribute their own compositions, and still pull
-upstream improvements.
+**Internal** — visible to your organisation, not the public. Right for companies where the configuration is internal IP. Clone, not a fork. Pull upstream improvements on your own schedule.
 
-**Public** — open to the world. This one *can* be a real GitHub fork, can
-send PRs upstream, and can be listed in the [Known Forks](#known-forks)
-table. Right for consultancies, platforms, or products built on ghostship
-where visibility is an asset. The upstream relationship becomes a two-way
-street: you benefit from core improvements and can contribute general-purpose
-fixes back.
-
-All three are equally valid ways to run ghostship. What changes is who can
-see your academy curriculum, whether you can contribute back upstream
-through GitHub's native PR flow, and — for private/internal — that you're
-cloning rather than forking to get there.
+**Public** — open to the world. Can be a real GitHub fork, can send PRs upstream, and can be listed in the [Known Forks](#known-forks) table. Right for consultancies or products built on ghostship where visibility is an asset.
 
 ## Maintaining your fork or clone
 

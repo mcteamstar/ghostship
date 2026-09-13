@@ -18,9 +18,9 @@ See [configuration.md](configuration.md#extending-the-crew-image) to add package
 
 ![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](images/docs-fleet-hierarchy.png)
 
-Every ghostship shares the same foundation: [`academy/agents/`](../academy/agents/), [`academy/skills/`](../academy/skills/), and [`academy/steering/`](../academy/steering/) — bind-mounted into transport and copied into every crew at `launch`, filtered by the crew type's manifest (`crews/<crew-type>/manifest.json`). Each manifest key (`agents`, `skills`, `steering`) is either `"*"` or an explicit array. The only crew type today, `spec-ops`, uses `"*"` for every key — the manifest is groundwork for a future second crew type, not a current restriction.
+Every ghostship shares the same foundation: [`academy/agents/`](../academy/agents/), [`academy/skills/`](../academy/skills/), and [`academy/steering/`](../academy/steering/) — bind-mounted into transport and copied into every crew at `launch`, filtered by the crew type's manifest (`crews/<crew-type>/manifest.json`). The current `spec-ops` type uses `"*"` for every key; the manifest structure supports narrower per-type selection.
 
-Development inside a ghostship follows [OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow — explore → propose → apply → archive — split across five worker personas: Spectre drives the front half (explore, propose, update-change); Ghost implements; Reaper syncs specs and archives. Raven is the sixth, coordination-only persona. See [agents.md](agents.md) and [Steering](#steering).
+Development inside a ghostship follows [OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow — explore → propose → apply → archive — split across five worker personas. See [agents.md](agents.md) and [Steering](#steering).
 
 ## Crew lifecycle
 
@@ -67,7 +67,7 @@ nuke(crew_id, confirm=True)
 
 ### Repository transfer
 
-See [configuration.md](../docs/configuration.md#git-repository-transfer) for bundle instructions. Create a bundle locally, call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle bytes to the returned URL. For extraction, call `evac(path="repo", ..., bundle=True)` and clone or fetch the downloaded bundle.
+See [configuration.md](configuration.md#git-repository-transfer) for bundle instructions. Create a bundle locally, call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle bytes to the returned URL. For extraction, call `evac(path="repo", ..., bundle=True)` and clone or fetch the downloaded bundle.
 
 ### Captain supervision
 
@@ -248,7 +248,7 @@ Policy injection failure is logged but never aborts launch.
 
 ## Networking
 
-Ghost Academy uses two static Podman networks, replacing the retired `ga-net`:
+Ghost Academy uses two static Podman networks:
 
 ```
   Internet / host
