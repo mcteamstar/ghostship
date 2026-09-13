@@ -1,0 +1,7 @@
+# ga-lighthouse dependencies (TRN-97).
+# Versions kept in sync with transport/requirements.txt to avoid image-layer
+# divergence and guarantee API compatibility. httpx2 (not httpx) — the
+# transport migrated to httpx2 in TRN-155.
+uvicorn>=0.31.1,<1.0.0
+starlette>=1.0.1,<2.0.0
+httpx2==2.12.0

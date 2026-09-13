@@ -79,6 +79,10 @@ GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
 GA_DASHBOARD_PORT_RANGE_SIZE=1024
+# Fleet observability (TRN-97): opt-in ga-lighthouse container. Default off —
+# no lighthouse service/route is emitted and the transport does not register
+# the /api/crews REST endpoints.
+GA_LIGHTHOUSE_ENABLED=false
 # ── Client-only install (TRN-115) ────────────────────────────────────────────
 # --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
 # transport WITHOUT running any container-infrastructure steps. --url selects
@@ -615,6 +619,14 @@ ${_PODMAN_CMD} build -t localhost/transport:latest \
   "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
+# ── ga-lighthouse image (TRN-97) ──────────────────────────────────────────────
+# Only built when the fleet-observability flag is enabled.
+if [[ "${GA_LIGHTHOUSE_ENABLED:-false}" == "true" ]]; then
+  echo "Building ga-lighthouse image..."
+  ${_PODMAN_CMD} build -t localhost/lighthouse:latest "${GHOSTSHIP_DIR}/lighthouse/" \
+    && echo "✓ ga-lighthouse image built" || { echo "✗ ga-lighthouse image build failed"; exit 1; }
+fi
+
 # ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
 
 ${_PODMAN_CMD} secret rm ga-api-key 2>/dev/null || true
@@ -737,6 +749,7 @@ services:
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
       GA_PREWARM_ENABLED: "${GA_PREWARM_ENABLED:-false}"
       GA_PREWARM_TTL_SECS: "${GA_PREWARM_TTL_SECS:-0}"
+      GA_LIGHTHOUSE_ENABLED: "${GA_LIGHTHOUSE_ENABLED:-false}"
       GA_ORDERS_DIR: "${GA_ORDERS_DIR:-}"
     secrets:
       - ga-transport-secret
@@ -757,6 +770,26 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
       - ${DATA_DIR}/caddy/initial-config.json:/config/initial-config.json:ro
       - ga-portal-data:/data
     command: ["caddy", "run", "--config", "/config/initial-config.json", "--resume"]
+$(if [[ "${GA_LIGHTHOUSE_ENABLED:-false}" == "true" ]]; then
+  printf '  ga-lighthouse:\n'
+  printf '    image: localhost/lighthouse:latest\n'
+  printf '    container_name: ga-lighthouse\n'
+  printf '    restart: always\n'
+  printf '    networks:\n'
+  printf '      - ga-portside\n'
+  printf '    environment:\n'
+  printf '      TRANSPORT_URL: "http://ga-transport:64057"\n'
+  printf '      GA_LIGHTHOUSE_PORT: "7474"\n'
+  printf '    secrets:\n'
+  printf '      - ga-transport-secret\n'
+  if [[ -n "${GA_API_KEY:-}" ]]; then
+    printf '      - ga-api-key\n'
+  fi
+  printf '    healthcheck:\n'
+  printf '      test: ["CMD", "curl", "-f", "http://localhost:7474/healthz"]\n'
+  printf '      interval: 30s\n'
+  printf '      retries: 3\n'
+fi)
 networks:
   ga-portside:
     external: true
@@ -844,7 +877,52 @@ AUTH_EOF
 )
 fi
 
-# Generate initial-config.json — main server only, no per-crew servers.
+# ── Lighthouse Caddy route (TRN-97) ───────────────────────────────────────────
+# Path-prefix /lighthouse(/*), stripped before forwarding to ga-lighthouse:7474.
+# When GA_API_KEY is set, a forward_auth step gates access via the dashboard's
+# gs_session cookie (same mechanism as per-crew dashboards). Empty when the flag
+# is off so no lighthouse route appears at all.
+if [[ "${GA_LIGHTHOUSE_ENABLED:-false}" == "true" ]]; then
+  if [[ -n "${GA_API_KEY:-}" ]]; then
+    _LIGHTHOUSE_ROUTE=$(cat <<LHEOF
+            {
+              "@id": "ga-lighthouse",
+              "match": [{"path": ["/lighthouse", "/lighthouse/*"]}],
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{"dial": "ga-transport:64057"}],
+                  "rewrite": {"method": "GET", "uri": "/dashboard/auth"},
+                  "headers": {"request": {"set": {
+                    "X-Forwarded-Method": ["{http.request.method}"],
+                    "X-Forwarded-Uri": ["{http.request.uri}"],
+                    "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"]
+                  }}},
+                  "handle_response": [{"match": {"status_code": [2]}, "routes": [{"handle": [{"handler": "vars"}]}]}]
+                },
+                {"handler": "rewrite", "uri_substring": [{"find": "/lighthouse", "replace": ""}]},
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-lighthouse:7474"}],
+                 "headers": {"request": {"set": {"X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"]}}}}
+              ]
+            },
+LHEOF
+)
+  else
+    _LIGHTHOUSE_ROUTE=$(cat <<LHEOF
+            {
+              "@id": "ga-lighthouse",
+              "match": [{"path": ["/lighthouse", "/lighthouse/*"]}],
+              "handle": [
+                {"handler": "rewrite", "uri_substring": [{"find": "/lighthouse", "replace": ""}]},
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-lighthouse:7474"}]}
+              ]
+            },
+LHEOF
+)
+  fi
+else
+  _LIGHTHOUSE_ROUTE=""
+fi
 cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
 {
   "admin": {"listen": "0.0.0.0:2019"},
@@ -856,6 +934,7 @@ cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
           ${_AUTO_HTTPS}
           "routes": [
 ${_AUTH_ROUTES}
+${_LIGHTHOUSE_ROUTE}
             {
               "@id": "ga-transport-misc",
               "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout"]}],
@@ -928,6 +1007,7 @@ fi
 _COMPOSE_ENV="${_COMPOSE_ENV:+${_COMPOSE_ENV} }PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose)"
 eval "${_COMPOSE_ENV} podman rm -f ga-transport" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman rm -f ga-portal" >/dev/null 2>&1 || true
+eval "${_COMPOSE_ENV} podman rm -f ga-lighthouse" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${DATA_DIR}/compose.yml\" up -d --force-recreate --remove-orphans"
 echo "✓ ga-transport container started"
 

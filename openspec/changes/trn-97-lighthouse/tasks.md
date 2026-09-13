@@ -8,7 +8,7 @@ the lighthouse container, then install/compose integration, then tests.
 
 ## Layer 1 — Transport: Config + New REST Endpoints
 
-### Task T1: Add `ga_lighthouse_enabled` to `Config`
+### [x] Task T1: Add `ga_lighthouse_enabled` to `Config`
 
 **File**: `transport/config.py`
 
@@ -32,7 +32,7 @@ Existing unit tests pass unchanged.
 
 ---
 
-### Task T2: Implement `GET /api/crews` endpoint in the transport
+### [x] Task T2: Implement `GET /api/crews` endpoint in the transport
 
 **File**: `transport/server.py`
 
@@ -66,7 +66,7 @@ returns `401`. When `GA_LIGHTHOUSE_ENABLED=false`, returns `404`.
 
 ---
 
-### Task T3: Implement `GET /api/crews/{crew_id}/mail` endpoint in the transport
+### [x] Task T3: Implement `GET /api/crews/{crew_id}/mail` endpoint in the transport
 
 **File**: `transport/server.py`
 
@@ -101,7 +101,7 @@ for unknown crew. Returns `503` for stopped crew. Returns `404` when
 
 ## Layer 2 — Lighthouse Container
 
-### Task T4: Create `lighthouse/` directory and `Containerfile`
+### [x] Task T4: Create `lighthouse/` directory and `Containerfile`
 
 **New files**:
 - `lighthouse/Containerfile`
@@ -122,7 +122,7 @@ connect to transport, which is expected in isolation).
 
 ---
 
-### Task T5: Implement `lighthouse/server.py`
+### [x] Task T5: Implement `lighthouse/server.py`
 
 **New file**: `lighthouse/server.py`
 
@@ -158,7 +158,7 @@ when the transport is absent).
 
 ---
 
-### Task T6: Implement `lighthouse/static/index.html`
+### [x] Task T6: Implement `lighthouse/static/index.html`
 
 **New file**: `lighthouse/static/index.html`
 
@@ -199,7 +199,7 @@ expands on badge click. No console errors in a modern browser.
 
 ## Layer 3 — Compose and Caddy Integration
 
-### Task T7: Add lighthouse block to compose generation in `install.sh`
+### [x] Task T7: Add lighthouse block to compose generation in `install.sh`
 
 **File**: `scripts/install.sh`
 
@@ -253,7 +253,7 @@ in its networks. Running without the flag produces no lighthouse block.
 
 ---
 
-### Task T8: Add lighthouse Caddy route to `initial-config.json` generation
+### [x] Task T8: Add lighthouse Caddy route to `initial-config.json` generation
 
 **File**: `scripts/install.sh`
 
@@ -314,7 +314,7 @@ is valid (use `python3 -m json.tool` or `jq .` to verify).
 
 ---
 
-### Task T9: Update `scripts/uninstall.sh` for lighthouse
+### [x] Task T9: Update `scripts/uninstall.sh` for lighthouse
 
 **File**: `scripts/uninstall.sh`
 
@@ -333,7 +333,7 @@ lighthouse.
 
 ## Layer 4 — Configuration Documentation
 
-### Task T10: Document `GA_LIGHTHOUSE_ENABLED` in `docs/configuration.md`
+### [x] Task T10: Document `GA_LIGHTHOUSE_ENABLED` in `docs/configuration.md`
 
 **File**: `docs/configuration.md`
 
@@ -357,7 +357,7 @@ reading the source.
 
 ## Layer 5 — Tests
 
-### Task T11: Unit tests for `GET /api/crews` and `GET /api/crews/{crew_id}/mail`
+### [x] Task T11: Unit tests for `GET /api/crews` and `GET /api/crews/{crew_id}/mail`
 
 **New file**: `tests/unit/test_lighthouse_routes.py`
 
@@ -385,7 +385,7 @@ tests/unit/test_lighthouse_config.py` exits 0.
 
 ---
 
-### Task T12: Integration test for `install.sh` lighthouse flag
+### [x] Task T12: Integration test for `install.sh` lighthouse flag
 
 **New file**: `tests/integration/test_install_lighthouse.sh`
 

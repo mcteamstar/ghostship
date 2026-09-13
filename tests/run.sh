@@ -71,6 +71,7 @@ run_integration() {
   for script in \
     "$REPO_DIR/tests/integration/test_install_config.sh" \
     "$REPO_DIR/tests/integration/test_install_cache_detection.sh" \
+    "$REPO_DIR/tests/integration/test_install_lighthouse.sh" \
     "$REPO_DIR/tests/integration/test_dedicated_transport.sh" \
     "$REPO_DIR/tests/integration/test_uninstall_auth_preservation.sh"; do
     printf '\n--- Integration: %s ---\n' "$(basename "$script")"

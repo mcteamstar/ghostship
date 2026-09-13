@@ -1458,6 +1458,91 @@ async def _handle_version_get(request: Request) -> Response:
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
 
+# ── Fleet observability REST endpoints (TRN-97) ───────────────────────────────
+# Both endpoints are gated by ``cfg.ga_lighthouse_enabled``: when the flag is
+# off (the default) they return 404, exactly as if the route did not exist.
+# Bearer auth (when GA_API_KEY is set) is enforced by BearerAuthMiddleware
+# before either handler is reached.
+
+
+async def _handle_api_crews_get(request: Request) -> Response:
+    """GET /api/crews — fleet registry + live agent state (TRN-97).
+
+    Returns the same JSON shape as the ``crews()`` MCP tool (via the shared
+    ``_build_fleet_state`` helper): a top-level ``crews`` array plus top-level
+    ``host_memory_available_gb``, ``active_crews`` and ``max_active_crews``.
+
+    404 when ``GA_LIGHTHOUSE_ENABLED`` is off.
+    """
+    if not cfg.ga_lighthouse_enabled:
+        return PlainTextResponse("Not found", status_code=404)
+    try:
+        state = await asyncio.to_thread(_build_fleet_state)
+    except RegistryCorruptError:
+        return JSONResponse(
+            {"error": "registry corrupt — crews.json.corrupt preserved for inspection"},
+            status_code=500,
+        )
+    return JSONResponse(state)
+
+
+async def _handle_api_crew_mail_get(request: Request) -> Response:
+    """GET /api/crews/{crew_id}/mail — per-persona mail summary for one crew (TRN-97).
+
+    404 when ``GA_LIGHTHOUSE_ENABLED`` is off, or when ``crew_id`` is unknown.
+    503 when the crew exists but its container is not running.
+
+    Response shape::
+
+        {"crew_id": "<id>",
+         "mailboxes": {"<persona>": {"unread": N, "subjects": ["...", ...]}}}
+
+    Up to 5 subjects per persona, most recent first.
+    """
+    if not cfg.ga_lighthouse_enabled:
+        return PlainTextResponse("Not found", status_code=404)
+
+    # Path: /api/crews/{crew_id}/mail
+    parts = request.scope["path"].lstrip("/").split("/")
+    if len(parts) != 4 or parts[0] != "api" or parts[1] != "crews" or parts[3] != "mail":
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id = parts[2]
+
+    try:
+        crew = _require_crew(crew_id)
+    except (KeyError, ValueError):
+        return PlainTextResponse("Not found", status_code=404)
+
+    container = crew.get("container")
+
+    def _skim() -> dict[str, list[dict]]:
+        podman = _get_podman()
+        if not podman.container_is_running(container):
+            raise RuntimeError("crew container not running")
+        return _skim_all_mailboxes(podman, container)
+
+    try:
+        skimmed = await asyncio.to_thread(_skim)
+    except RuntimeError:
+        return JSONResponse(
+            {"error": "crew container not running"}, status_code=503
+        )
+    except Exception:
+        # exec failure against a container we could not reach — treat as
+        # not running (the design maps a failed exec to 503).
+        return JSONResponse(
+            {"error": "crew container not running"}, status_code=503
+        )
+
+    mailboxes: dict[str, dict] = {}
+    for persona, messages in skimmed.items():
+        # messages: list of {"subject", "received_at"} — most recent first
+        subjects = [m.get("subject", "") for m in messages][:5]
+        mailboxes[persona] = {"unread": len(messages), "subjects": subjects}
+
+    return JSONResponse({"crew_id": crew_id, "mailboxes": mailboxes})
+
+
 # ── OpenAPI schema (TRN-129) ──────────────────────────────────────────────────
 # Generated once at startup (after all routes are defined) and cached here.
 # task 2.2: handler that returns the cached schema.
@@ -1677,18 +1762,13 @@ def _registry_guard(fn):
     return _wrapped
 
 
-@mcp.tool()
-@_registry_guard
-def crews() -> dict:
-    """Situational awareness — list all crews and what's running before deciding what to do next.
+def _build_fleet_state() -> dict:
+    """Build the fleet situational-awareness snapshot.
 
-    Shows crew_id, container, status, created_at, and last_task_at for each,
-    plus uptime_secs (seconds since the container started; present only for
-    running crews, null otherwise).
-    Also includes active agents (tasks) running inside each crew — each with
-    task_id, agent, done, and elapsed_secs. For live per-task detail (current
-    tool, latest output) use `pickup`, not this overview.
-    Also: list crews, show workspaces, what's running, sitrep.
+    Shared by the ``crews()`` MCP tool and the ``GET /api/crews`` REST route
+    (TRN-97) so the two never diverge. Returns a dict with a top-level
+    ``crews`` list plus top-level ``host_memory_available_gb``,
+    ``active_crews`` and ``max_active_crews``.
     """
     with _registry_lock:
         reg = _load_registry()
@@ -1827,6 +1907,22 @@ def crews() -> dict:
         "active_crews": active_crews,
         "max_active_crews": GA_MAX_ACTIVE_CREWS,
     }
+
+
+@mcp.tool()
+@_registry_guard
+def crews() -> dict:
+    """Situational awareness — list all crews and what's running before deciding what to do next.
+
+    Shows crew_id, container, status, created_at, and last_task_at for each,
+    plus uptime_secs (seconds since the container started; present only for
+    running crews, null otherwise).
+    Also includes active agents (tasks) running inside each crew — each with
+    task_id, agent, done, and elapsed_secs. For live per-task detail (current
+    tool, latest output) use `pickup`, not this overview.
+    Also: list crews, show workspaces, what's running, sitrep.
+    """
+    return _build_fleet_state()
 
 
 @mcp.resource(
@@ -3784,6 +3880,8 @@ if __name__ == "__main__":
         ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
         ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
         ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+        ("GET",  "/api/crews"): _handle_api_crews_get,
+        ("GET",  "/api/crews/*/mail"): _handle_api_crew_mail_get,
     }
     _openapi_schema_public_routes = {
         ("GET",  "/version"): _handle_version_get,
@@ -3817,6 +3915,10 @@ if __name__ == "__main__":
             ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
             ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+            # TRN-97: fleet observability REST endpoints (gated by
+            # cfg.ga_lighthouse_enabled inside the handlers → 404 when off).
+            ("GET",  "/api/crews"): _handle_api_crews_get,
+            ("GET",  "/api/crews/*/mail"): _handle_api_crew_mail_get,
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,
