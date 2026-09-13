@@ -1876,6 +1876,14 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                    (false unless configured). Pass False to force headless even
                    when GA_DASHBOARD_DEFAULT=true.
 
+                   MEMORY COST: dashboard=True causes dispatch() to auto-attach
+                   tasks to a session slot (slot="bridge"), which spawns an extra
+                   kiro-cli-chat process per task (~300-400 MB each). For
+                   autonomous/unattended work (SDD, batch jobs, background tasks)
+                   where you don't need browser visibility, pass dashboard=False
+                   to avoid this overhead. Use dashboard=True only when you
+                   actually intend to watch the crew in a browser.
+
     Returns crew_id and status once the gateway is ready (~60s).
     """
     # Resolve effective dashboard: explicit arg wins; None falls back to site default.
@@ -3242,6 +3250,14 @@ def dispatch(
             the same name share one session.
             When a slot resolves to a non-None value, the system pre-creates it
             via ``POST /api/chat/slots`` (409 treated as success; non-fatal).
+
+            MEMORY COST: each slot attachment spawns a kiro-cli-chat process
+            inside the crew container (~300-400 MB RSS). On crews launched with
+            dashboard=True, slot defaults to "bridge" automatically — meaning
+            every dispatch adds ~300-400 MB. For autonomous/unattended tasks
+            (SDD, batch jobs, Raven check-ins) where browser visibility is not
+            needed, pass slot=None explicitly to dispatch headless and avoid
+            this overhead.
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
