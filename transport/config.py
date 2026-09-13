@@ -26,6 +26,10 @@ import os
 from dataclasses import dataclass
 
 
+class ConfigError(ValueError):
+    """Raised when an environment variable cannot be parsed into its expected type."""
+
+
 def _env_bool_default_on(name: str) -> bool:
     """Truthy unless explicitly disabled (default: on)."""
     return os.environ.get(name, "1").strip() not in ("0", "false", "")
@@ -34,6 +38,28 @@ def _env_bool_default_on(name: str) -> bool:
 def _env_bool_default_off(name: str) -> bool:
     """Truthy only when explicitly enabled (default: off)."""
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: str) -> int:
+    """Read an integer env var, raising ConfigError with a clear message on failure."""
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        raise ConfigError(
+            f"Environment variable {name}={raw!r} cannot be parsed as an integer"
+        ) from None
+
+
+def _env_float(name: str, default: str) -> float:
+    """Read a float env var, raising ConfigError with a clear message on failure."""
+    raw = os.environ.get(name, default)
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        raise ConfigError(
+            f"Environment variable {name}={raw!r} cannot be parsed as a float"
+        ) from None
 
 
 _config_logger = logging.getLogger(__name__)
@@ -168,38 +194,28 @@ class Config:
         """
         return cls(
             host=os.environ.get("HOST", "0.0.0.0"),
-            port=int(os.environ.get("PORT", "64057")),
+            port=_env_int("PORT", "64057"),
             ga_host_url=os.environ.get("GA_HOST_URL", ""),
             transport_data_dir=os.environ.get("TRANSPORT_DATA_DIR", "/data"),
             podman_socket=os.environ.get(
                 "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
-            ga_max_crews=int(os.environ.get("GA_MAX_CREWS", "20")),
-            ga_max_active_crews=int(os.environ.get("GA_MAX_ACTIVE_CREWS", "3")),
-            ga_idle_timeout_secs=int(os.environ.get("GA_IDLE_TIMEOUT_SECS", "300")),
+            ga_max_crews=_env_int("GA_MAX_CREWS", "20"),
+            ga_max_active_crews=_env_int("GA_MAX_ACTIVE_CREWS", "3"),
+            ga_idle_timeout_secs=_env_int("GA_IDLE_TIMEOUT_SECS", "300"),
             ga_crew_agent=os.environ.get("GA_CREW_AGENT", "kiro"),
             kc_model_override=os.environ.get("KC_MODEL_OVERRIDE", ""),
             kc_model_default=os.environ.get("KC_MODEL_DEFAULT", ""),
-            ga_min_free_mem_gb=float(os.environ.get("GA_MIN_FREE_MEM_GB", "2.0")),
-            ga_spawn_min_memory_gb=float(
-                os.environ.get("GA_SPAWN_MIN_MEMORY_GB", "1.5")
-            ),
-            ga_resource_pressure_gb=float(
-                os.environ.get("GA_RESOURCE_PRESSURE_GB", "2.0")
-            ),
-            ga_resource_critical_gb=float(
-                os.environ.get("GA_RESOURCE_CRITICAL_GB", "1.0")
-            ),
-            ga_subagent_timeout_secs=int(
-                os.environ.get("GA_SUBAGENT_TIMEOUT_SECS", "3600")
-            ),
-            ga_subagent_max_turns=int(
-                os.environ.get("GA_SUBAGENT_MAX_TURNS", "200")
-            ),
+            ga_min_free_mem_gb=_env_float("GA_MIN_FREE_MEM_GB", "2.0"),
+            ga_spawn_min_memory_gb=_env_float("GA_SPAWN_MIN_MEMORY_GB", "1.5"),
+            ga_resource_pressure_gb=_env_float("GA_RESOURCE_PRESSURE_GB", "2.0"),
+            ga_resource_critical_gb=_env_float("GA_RESOURCE_CRITICAL_GB", "1.0"),
+            ga_subagent_timeout_secs=_env_int("GA_SUBAGENT_TIMEOUT_SECS", "3600"),
+            ga_subagent_max_turns=_env_int("GA_SUBAGENT_MAX_TURNS", "200"),
             ga_prewarm_enabled=_env_bool_default_off("GA_PREWARM_ENABLED"),
-            ga_prewarm_ttl_secs=int(os.environ.get("GA_PREWARM_TTL_SECS", "300")),
-            ga_dashboard_port_range_start=int(os.environ.get("GA_DASHBOARD_PORT_RANGE_START", "64058")),
+            ga_prewarm_ttl_secs=_env_int("GA_PREWARM_TTL_SECS", "300"),
+            ga_dashboard_port_range_start=_env_int("GA_DASHBOARD_PORT_RANGE_START", "64058"),
             ga_dashboard_port_range_size=1024,
             ga_dashboard_default=os.environ.get("GA_DASHBOARD_DEFAULT", "").lower() in ("1", "true", "yes"),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
@@ -212,7 +228,7 @@ class Config:
                 os.environ.get("GA_PORTAL_TLS_MODE", "off").strip()
             ),
             ga_portal_domain=os.environ.get("GA_PORTAL_DOMAIN", "").strip(),
-            ga_portal_session_ttl_secs=int(os.environ.get("GA_PORTAL_SESSION_TTL_SECS", "86400")),
+            ga_portal_session_ttl_secs=_env_int("GA_PORTAL_SESSION_TTL_SECS", "86400"),
             kiro_license=os.environ.get("KIRO_LICENSE", ""),
             kiro_identity_provider=os.environ.get("KIRO_IDENTITY_PROVIDER", ""),
             kiro_region=os.environ.get("KIRO_REGION", ""),
