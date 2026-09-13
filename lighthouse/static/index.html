@@ -150,6 +150,19 @@
       return API_KEY ? { "Authorization": `Bearer ${API_KEY}` } : {};
     }
 
+    // Escape any value before it is interpolated into innerHTML. crew_id is
+    // validated server-side (CREW_ID_RE), but agent/task_id/status/persona and
+    // mail subjects originate from crew gateways and mailbox headers — treat
+    // every interpolated value as untrusted (defense in depth against XSS).
+    function esc(v) {
+      return String(v == null ? "" : v)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
     async function fetchFleet() {
       const res = await fetch("api/crews", { headers: authHeaders() });
       if (!res.ok) throw new Error(`GET /api/crews → ${res.status}`);
@@ -212,21 +225,21 @@
         const status = crew.status || "unknown";
         const agents = crew.agents || [];
         const agentRows = agents.map(a =>
-          `<li><span class="agent-name">${a.agent || "?"}</span> · ${(a.task_id || "").slice(0, 8)} · ${fmtUptime(a.elapsed_secs)}${a.done ? " · done" : ""}</li>`
+          `<li><span class="agent-name">${esc(a.agent || "?")}</span> · ${esc((a.task_id || "").slice(0, 8))} · ${fmtUptime(a.elapsed_secs)}${a.done ? " · done" : ""}</li>`
         ).join("");
 
         const dashUrl = window.location.origin + "/crews/" + encodeURIComponent(crew.crew_id) + "/ui/";
 
         card.innerHTML = `
           <div class="card-head">
-            <span class="crew-id">${crew.crew_id}</span>
-            <span class="badge ${status}">${status}</span>
+            <span class="crew-id">${esc(crew.crew_id)}</span>
+            <span class="badge ${esc(status)}">${esc(status)}</span>
           </div>
           <p class="row">Tasks: <strong>${agents.length}</strong> · Uptime: <strong>${fmtUptime(crew.uptime_secs)}</strong></p>
           ${agentRows ? `<ul class="agents">${agentRows}</ul>` : ""}
           <div class="card-foot">
-            <button class="mail-badge" aria-label="Show mail for ${crew.crew_id}">✉ Mail</button>
-            <a class="dash-link" href="${dashUrl}">Open dashboard →</a>
+            <button class="mail-badge" aria-label="Show mail for ${esc(crew.crew_id)}">✉ Mail</button>
+            <a class="dash-link" href="${esc(dashUrl)}">Open dashboard →</a>
           </div>
           <div class="mail-panel" style="display:none"></div>
         `;
@@ -250,8 +263,8 @@
             return;
           }
           panel.innerHTML = Object.entries(mail.mailboxes).map(([persona, mb]) =>
-            `<div class="persona"><span>${persona} <strong>(${mb.unread || 0})</strong></span>` +
-            `<span class="subjects">${(mb.subjects || []).slice(0, 3).map(s => s.replace(/</g, "&lt;")).join("; ") || "—"}</span></div>`
+            `<div class="persona"><span>${esc(persona)} <strong>(${mb.unread || 0})</strong></span>` +
+            `<span class="subjects">${(mb.subjects || []).slice(0, 3).map(s => esc(s)).join("; ") || "—"}</span></div>`
           ).join("");
         }
 
