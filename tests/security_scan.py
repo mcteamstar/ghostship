@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Security CI checks for TRN-70 (secrets-management 1.4, input-validation 4.4).
+"""Security CI checks for secrets-management and input-validation.
 
 Two shift-left gates that fail the build on a regression:
 
@@ -49,7 +49,7 @@ SECRET_PATTERNS = [
 
 # f"...{var}..." or "..." + var inside a SQL keyword context.
 # Word-bounded so identifiers like `auto_update` don't match the bare
-# UPDATE keyword (TRN-134 review false positive on test_lifecycle.py).
+# UPDATE keyword (false positive on test_lifecycle.py).
 SQL_KEYWORDS = r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WHERE|VALUES)\b"
 UNSAFE_QUERY_PATTERNS = [
     (

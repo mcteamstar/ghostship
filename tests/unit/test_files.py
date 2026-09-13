@@ -1,6 +1,6 @@
 """Unit tests for ``transport.files`` — file/bundle signing + transfer handlers.
 
-TRN-85: migration target for classes whose function-under-test is defined in
+Migration target for classes whose function-under-test is defined in
 ``files.py`` (``_sign_file_url``, ``_sign_upload_url``, ``_verify_file_token``,
 ``_handle_file_get``, ``_handle_file_put``, ``_transfer_upload``,
 ``_TarMemberStream``, ``_ResponseChunkReader``) and the ``evac``/``supply``
@@ -512,9 +512,9 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
         return f"{parts.scheme}://{parts.netloc}"
 
     def test_sign_file_url_uses_ga_public_url_when_set(self) -> None:
-        # TRN-75: GA_HOST_URL is read once at startup into cfg.ga_host_url;
+        # GA_HOST_URL is read once at startup into cfg.ga_host_url;
         # patch the resolved config field rather than os.environ.
-        # TRN-71: _resolve_public_url_base moved to transport.files — patch its cfg.
+        # _resolve_public_url_base lives in transport.files — patch its cfg.
         with patch.object(files_mod.cfg, "ga_host_url", "https://academy.example.com"):
             url = server._sign_file_url("demo", "repo")
         self.assertTrue(url.startswith("https://academy.example.com/"), url)
@@ -536,7 +536,7 @@ class FileUrlBaseResolutionTests(unittest.TestCase):
         self.assertIn("/files/crew1/workspace/bundle.tar", url)
 
 
-# ── TRN-81: stopped-crew worker sidecar ───────────────────────────────────────
+# ── stopped-crew worker sidecar ───────────────────────────────────────
 
 from transport.podman import (  # noqa: E402
     WorkerCommandError,
@@ -831,7 +831,7 @@ class FileSecretPersistenceTests(unittest.TestCase):
 
 
 class BundleReseedForceTests(unittest.TestCase):
-    """TRN-109: supply force flag — pre-clone rm -rf and HMAC coverage."""
+    """supply force flag — pre-clone rm -rf and HMAC coverage."""
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -1017,7 +1017,7 @@ class BundleReseedForceTests(unittest.TestCase):
 
 
 class SafeWorkspacePathTests(unittest.TestCase):
-    """TRN-137: direct coverage for ``files._safe_workspace_path`` boundary logic."""
+    """Direct coverage for ``files._safe_workspace_path`` boundary logic."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -1070,7 +1070,7 @@ class SafeWorkspacePathTests(unittest.TestCase):
 
 
 class ValidateRefTests(unittest.TestCase):
-    """TRN-137: direct coverage for ``files._validate_ref``."""
+    """Direct coverage for ``files._validate_ref``."""
 
     def test_leading_dash_rejected(self) -> None:
         with self.assertRaises(ValueError):

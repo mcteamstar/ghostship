@@ -1,4 +1,4 @@
-"""transport/caddy.py — Caddy admin-API management and UI port pool (TRN-116).
+"""transport/caddy.py — Caddy admin-API management and UI port pool.
 
 Extracted from server.py to improve navigability.  This module owns:
 
@@ -20,7 +20,7 @@ The container deploys all transport/*.py files flat under /app, so both
 paths must remain importable.
 
 Runtime configuration (``port``, ``api_key``) is resolved by server.py and
-passed to a ``CaddyPortal`` instance's constructor (TRN-141), replacing the
+passed to a ``CaddyPortal`` instance's constructor, replacing the
 former ``_caddy.PORT = ...`` / ``_caddy.GA_API_KEY = ...`` post-import mutation.
 ``CaddyPortal`` owns UI-port allocation and the Caddy admin-API crew
 (de)registration; the module-level ``_allocate_dashboard_port`` /
@@ -56,20 +56,19 @@ logger = logging.getLogger("transport.server")
 _cfg = Config.from_env()
 
 # ── Runtime config (see module docstring) ─────────────────────────────────────
-# TRN-141: CaddyPortal (below) is the OOP owner of runtime config — server.py
-# constructs one instance after it resolves PORT/GA_API_KEY and calls the
-# instance methods. These module-level names remain as defaults so the module
-# stays importable/testable in isolation, and the module-level functions below
-# stay as thin wrappers over a lazily-built module-default CaddyPortal so
-# existing call sites and tests continue to work. The port-range constants are
-# pure cfg values and are read directly.
+# CaddyPortal (below) is the OOP owner of runtime config — server.py constructs
+# one instance after it resolves PORT/GA_API_KEY and calls the instance methods.
+# These module-level names remain as defaults so the module stays importable/
+# testable in isolation, and the module-level functions below stay as thin wrappers
+# over a lazily-built module-default CaddyPortal so existing call sites and tests
+# continue to work. The port-range constants are pure cfg values and are read directly.
 PORT: int = _cfg.port
 GA_API_KEY: str = ""
 GA_DASHBOARD_PORT_RANGE_START: int = _cfg.ga_dashboard_port_range_start
 GA_DASHBOARD_PORT_RANGE_SIZE: int = 1024
 
 
-# ── UI port pool (TRN-80) ─────────────────────────────────────────────────────
+# ── UI port pool ──────────────────────────────────────────────────────────────
 # Tracks which host ports in the UI port range are currently allocated to a
 # crew. Populated from crews.json at startup (see server.py __main__) and
 # mutated only inside _allocate_dashboard_port / _release_dashboard_port.
@@ -78,7 +77,7 @@ GA_DASHBOARD_PORT_RANGE_SIZE: int = 1024
 _dashboard_ports_in_use: set[int] = set()
 
 
-# ── CaddyPortal (TRN-141) ─────────────────────────────────────────────────────
+# ── CaddyPortal ───────────────────────────────────────────────────────────────
 
 class CaddyPortal:
     """Owns UI-port allocation and the Caddy admin-API crew (de)registration.
@@ -138,16 +137,13 @@ class CaddyPortal:
         """
         _transport_addr = f"ga-transport:{self._port}"
 
-        # TRN-102: Caddy routes dashboard traffic to the transport's UI proxy,
-        # which injects the session cookie. Rewrite the incoming path so it is
-        # prefixed with /crews/{crew_id}/ui — {http.request.uri.path} preserves
-        # the original path (and Caddy re-appends the query string
-        # automatically).
-        # TRN-107: every upstream request to ga-transport must carry the portal
-        # secret, read from the mounted Podman secret file — same placeholder
-        # install.sh uses for the static routes. Without this,
-        # TransportSecretMiddleware rejects the request with 401 before it ever
-        # reaches the UI-proxy or /dashboard/auth handlers.
+        # Caddy routes dashboard traffic to the transport's UI proxy, which injects
+        # the session cookie. Rewrite the incoming path so it is prefixed with
+        # /crews/{crew_id}/ui — {http.request.uri.path} preserves the original path
+        # (and Caddy re-appends the query string automatically). Every upstream
+        # request to ga-transport must carry the portal secret, read from the mounted
+        # Podman secret file. Without this, TransportSecretMiddleware rejects the
+        # request with 401 before it reaches the UI-proxy or /dashboard/auth handlers.
         _transport_token_header = {
             "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"],
         }
@@ -208,22 +204,22 @@ class CaddyPortal:
                 resp = httpx.put(url, json=server_obj, timeout=5.0)
                 if resp.status_code in (200, 201):
                     logger.info(
-                        "TRN-92: registered Caddy server crew-%s on port %d", crew_id, port
+                        "Registered Caddy server crew-%s on port %d", crew_id, port
                     )
                     return
                 # 409 Conflict means the @id already exists — idempotent success
                 if resp.status_code == 409:
                     logger.info(
-                        "TRN-92: Caddy server crew-%s already exists (409) — idempotent", crew_id
+                        "Caddy server crew-%s already exists (409) — idempotent", crew_id
                     )
                     return
                 logger.warning(
-                    "TRN-92: Caddy register crew-%s returned %d (attempt %d/%d): %s",
+                    "Caddy register crew-%s returned %d (attempt %d/%d): %s",
                     crew_id, resp.status_code, attempt + 1, max_retries, resp.text[:200],
                 )
             except Exception as exc:
                 logger.warning(
-                    "TRN-92: Caddy register crew-%s failed (attempt %d/%d): %s",
+                    "Caddy register crew-%s failed (attempt %d/%d): %s",
                     crew_id, attempt + 1, max_retries, exc,
                 )
             if attempt < max_retries - 1:
@@ -239,18 +235,18 @@ class CaddyPortal:
         try:
             resp = httpx.delete(url, timeout=5.0)
             if resp.status_code in (200, 204):
-                logger.info("TRN-92: deregistered Caddy server crew-%s", crew_id)
+                logger.info("Deregistered Caddy server crew-%s", crew_id)
             elif resp.status_code == 404:
                 logger.debug(
-                    "TRN-92: Caddy server crew-%s not found on deregister (404) — OK", crew_id
+                    "Caddy server crew-%s not found on deregister (404) — OK", crew_id
                 )
             else:
                 logger.warning(
-                    "TRN-92: Caddy deregister crew-%s returned %d: %s",
+                    "Caddy deregister crew-%s returned %d: %s",
                     crew_id, resp.status_code, resp.text[:200],
                 )
         except Exception as exc:
-            logger.warning("TRN-92: Caddy deregister crew-%s failed: %s", crew_id, exc)
+            logger.warning("Caddy deregister crew-%s failed: %s", crew_id, exc)
 
 
 # Module-default CaddyPortal — lazily built from the module globals so the
@@ -292,7 +288,7 @@ def _release_dashboard_port(port: int) -> None:
     _get_default_portal().release_port(port)
 
 
-# ── Caddy admin API helpers (TRN-92) ─────────────────────────────────────────
+# ── Caddy admin API helpers ────────────────────────────────────────────────────
 
 def _caddy_admin_url() -> str:
     """Return the Caddy admin API base URL."""
@@ -304,7 +300,7 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
 
     Builds an HTTP server object bound to *port* with ``@id: crew-{crew_id}``.
     The crew ``reverse_proxy`` dials ``ga-transport:{PORT}`` and rewrites the
-    incoming path to ``/crews/{crew_id}/ui/{original_path}`` (TRN-102). The
+    incoming path to ``/crews/{crew_id}/ui/{original_path}``. The
     transport's UI-proxy endpoint injects the ``mc_token_5476`` session cookie
     from ga-transport's own IP, satisfying the gateway's IP binding — Caddy no
     longer talks to crew gateways (``gs-*``) directly and no longer injects the
@@ -318,7 +314,7 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
     Must be called while holding ``_registry_lock``.
 
     ``crew_cookie`` is accepted for backward-compatible call sites but is no
-    longer used — the transport owns cookie injection (TRN-102).
+    longer used — the transport owns cookie injection.
     """
     _get_default_portal().register_crew(crew_id, port, crew_cookie=crew_cookie)
 

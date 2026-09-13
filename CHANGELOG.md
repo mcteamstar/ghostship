@@ -1,6 +1,35 @@
 # Changelog
 
-## v0.4.1
+## v0.5.0
+
+### KiroCrew 0.6.0
+
+Crew base image bumped from `0.6.0`. Login containers also updated. `KC_BASE_IMAGE` config knob removed — login containers always match the crew image version and are no longer separately configurable.
+
+### Dependency uplift
+
+- `mcp[cli]` 2.0.0 → 2.2.0
+- `croniter` 3.0.3 → 6.2.4 (transferred to pallets-eco)
+- `httpx-ws` (single-maintainer) replaced by `websockets>=13.0,<15.0` (python-websockets org, 5700 stars); `httpx` compat shim removed
+- `unittest-parallel` (single-maintainer) replaced by `pytest>=8.0.0,<9.0.0` + `pytest-xdist>=3.5.0,<4.0.0` (pytest-dev org)
+- New dependency provenance policy: runtime deps require organisational backing
+
+### Security fixes
+
+- `_mail_count()` in `captain.py` — mailbox path now passed as a positional `$1` arg to `sh -c` instead of being string-interpolated, eliminating a latent shell injection vector
+- CRLF injection in 301 redirect Location header — `host` and `path` components now stripped of control characters alongside the existing `qs` sanitisation
+
+### Config fixes
+
+- `GA_PORTAL_TLS_MODE` default corrected to `"off"` — was incorrectly defaulting to `"internal"` in `config.py` while all documentation and install scripts specified `"off"`
+
+### Test coverage
+
+- New tests for `cmd_status`, `cmd_stop`, `cmd_setup` ghostship CLI subcommands
+
+---
+
+
 
 ### Fixes
 

@@ -6,10 +6,8 @@ _require_crew), registry (indirectly via the crew lookup), config.
 
 Import-direction note: _handle_file_get / _handle_file_put need
 _ensure_crew_running and _require_crew from the orchestration layer
-(lifecycle.py, since TRN-71 step 5). lifecycle.py does not import files at
-module load time, so importing lifecycle here at module load is cycle-free
-(TRN-142 removed the former lazy _crew_helpers() resolver and its server.py
-fallback, which were dead code once step 5 completed).
+(lifecycle.py). lifecycle.py does not import files at module load time, so
+importing lifecycle here at module load is cycle-free.
 """
 
 from __future__ import annotations
@@ -62,7 +60,7 @@ except ModuleNotFoundError:
         _get_podman,
     )
 
-# Crew orchestration helpers live in lifecycle.py (since TRN-71 step 5).
+# Crew orchestration helpers live in lifecycle.py.
 # lifecycle.py does not import files at module load, so this is cycle-free.
 # The lifecycle MODULE is imported (rather than the two names) so call sites
 # resolve _ensure_crew_running / _require_crew through the live module object —
@@ -73,7 +71,7 @@ try:
 except ModuleNotFoundError:
     from transport import lifecycle as _lifecycle  # local dev
 
-# SCRIPTS_DIR canonical home is transport/constants.py (TRN-142).
+# SCRIPTS_DIR canonical home is transport/constants.py.
 # constants.py is a zero-dependency leaf, so importing it here is cycle-safe.
 try:
     from constants import SCRIPTS_DIR  # container: flat /app/
@@ -354,7 +352,7 @@ def _transfer_upload(
         raise
 
 
-# ── Stopped-crew worker helpers (TRN-81) ──────────────────────────────────────
+# ── Stopped-crew worker helpers ───────────────────────────────────────────────
 # These read files/bundles/diffs from a STOPPED crew's workspace volume by
 # spinning up a disposable worker container (see PodmanClient.worker_run) that
 # mounts the volume read-only. They never start the crew container and never
@@ -560,7 +558,7 @@ async def _handle_file_get(request: Request) -> Response:
     podman = _get_podman()
     ws = KIRO_WORKSPACE_ROOT
 
-    # ── Stopped-crew path (TRN-81) ────────────────────────────────────────────
+    # ── Stopped-crew path ─────────────────────────────────────────────────────
     # If the crew container is not running, serve the read via a disposable
     # worker container mounting the crew volume read-only. This does NOT wake
     # the crew container and does NOT update its idle timestamp (no _touch_crew,

@@ -6,9 +6,9 @@
 
 **Crew containers** — on-demand KiroCrew instances (`localhost/spec-ops:latest`), named `gs-<id>`. Each has a workspace volume (`gs-vol-<id>`) and a home volume (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join `ga-starboard` so transport can reach them by name (`http://gs-<id>:5476`). Isolated from `ga-portal` by network topology — see [Networking](#networking-trn-107-portsidestarboard-split).
 
-**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.5.0` (Debian 12, Python 3.12, git, curl). Adds Node.js 24 LTS and the `openspec` CLI. Built locally at install time as `localhost/spec-ops:latest` via three stages:
+**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.6.0` (Debian 12, Python 3.12, git, curl). Adds Node.js 24 LTS and the `openspec` CLI. Built locally at install time as `localhost/spec-ops:latest` via three stages:
 
-1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`. Extends `ghcr.io/kirodotdev/kirocrew:0.5.0`.
+1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`. Extends `ghcr.io/kirodotdev/kirocrew:0.6.0`.
 2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. Extends `base-admission`.
 3. **`base-graduation`** — pre-seeds the kiro-cli SQLite DB schema (`seed_kiro_db.py`) so auth injection works without migrations at every launch. Extends the `spec-ops` intermediate image.
 
@@ -18,9 +18,9 @@ See [configuration.md](configuration.md#extending-the-crew-image) to add package
 
 ![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](images/docs-fleet-hierarchy.png)
 
-Every ghostship shares the same foundation: [`academy/agents/`](../academy/agents/), [`academy/skills/`](../academy/skills/), and [`academy/steering/`](../academy/steering/) — bind-mounted into transport and copied into every crew at `launch`, filtered by the crew type's manifest (`crews/<crew-type>/manifest.json`). Each manifest key (`agents`, `skills`, `steering`) is either `"*"` or an explicit array. The only crew type today, `spec-ops`, uses `"*"` for every key — the manifest is groundwork for a future second crew type, not a current restriction.
+Every ghostship shares the same foundation: [`academy/agents/`](../academy/agents/), [`academy/skills/`](../academy/skills/), and [`academy/steering/`](../academy/steering/) — bind-mounted into transport and copied into every crew at `launch`, filtered by the crew type's manifest (`crews/<crew-type>/manifest.json`). The current `spec-ops` type uses `"*"` for every key; the manifest structure supports narrower per-type selection.
 
-Development inside a ghostship follows [OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow — explore → propose → apply → archive — split across five worker personas: Spectre drives the front half (explore, propose, update-change); Ghost implements; Reaper syncs specs and archives. Raven is the sixth, coordination-only persona. See [agents.md](agents.md) and [Steering](#steering).
+Development inside a ghostship follows [OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow — explore → propose → apply → archive — split across five worker personas. See [agents.md](agents.md) and [Steering](#steering).
 
 ## Crew lifecycle
 
@@ -45,6 +45,8 @@ launch(crew_id)
      spawn_min_memory_gb, resource_pressure_gb, resource_critical_gb,
      subagent_timeout_secs, subagent_max_turns, default_agent=ghost,
      reasoning_effort=max)
+     These thresholds govern KiroCrew's internal subagent admission; set
+     lower than GA_MIN_FREE_MEM_GB so the transport's outer memory gate fires first.
   8. Restart container (workers pick up auth + config)
   9. Wait for gateway ready again
   10. Copy manifest-selected agent JSONs from /agents bind-mount
@@ -67,7 +69,7 @@ nuke(crew_id, confirm=True)
 
 ### Repository transfer
 
-See [configuration.md](../docs/configuration.md#git-repository-transfer) for bundle instructions. Create a bundle locally, call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle bytes to the returned URL. For extraction, call `evac(path="repo", ..., bundle=True)` and clone or fetch the downloaded bundle.
+See [configuration.md](configuration.md#git-repository-transfer) for bundle instructions. Create a bundle locally, call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle bytes to the returned URL. For extraction, call `evac(path="repo", ..., bundle=True)` and clone or fetch the downloaded bundle.
 
 ### Captain supervision
 
@@ -98,6 +100,8 @@ Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. Without int
 ## Task retention and force-stop
 
 Every `dispatch` requests a retained run (`keep=true`), keeping each task's session data available for continuation after a forceful stop.
+
+**Dispatch model:** Tasks are dispatched via KiroCrew's `/api/spawn` endpoint — each runs as an isolated subagent process with its own working directory (`subagent_<task_id>/`). This is the minimal-overhead path: no persistent `kiro-cli-chat` session is attached, and the process exits when the task completes. Dashboard session slots (`slot=` on `dispatch`) attach a `kiro-cli-chat` session for browser visibility at the cost of ~300–400 MB RSS per slot. Slots are opt-in — the default is headless spawn. On crews launched with `dashboard=True`, the transport defaults `slot="bridge"` automatically, so all dispatches attach a session unless `slot=None` is passed explicitly.
 
 `steer(task_id, message, crew_id, force=False)` defaults to turn-boundary behaviour: a running task receives `/steer`; a completed task uses `/continue`. With `force=True` on a running task, transport calls `DELETE /api/spawn/{task_id}` then `POST /api/spawn/{task_id}/continue` and returns `force_redeployed`. A completed task follows the normal `/continue` path even with `force=True`.
 
@@ -248,7 +252,7 @@ Policy injection failure is logged but never aborts launch.
 
 ## Networking
 
-Ghost Academy uses two static Podman networks, replacing the retired `ga-net`:
+Ghost Academy uses two static Podman networks:
 
 ```
   Internet / host

@@ -1,4 +1,4 @@
-"""Unit tests for the verify-admiral-sig admission script (TRN-136).
+"""Unit tests for the verify-admiral-sig admission script.
 
 Exercises the Ed25519 verifier's exit codes: valid signature (0), signature
 mismatch (1), missing X-Admiral-Sig header (1), and absent public-key file (2).

@@ -1,6 +1,6 @@
 """Unit tests for ``transport.podman`` — container runtime + host-memory gate.
 
-TRN-85 migration target for classes whose function-under-test is defined in
+Migration target for classes whose function-under-test is defined in
 ``podman.py`` (``PodmanClient``, ``_get_podman``, ``_http``, ``_async_http``,
 ``_get_host_memory_gb``, ``_get_host_memory_gb_cached``, ``_wait_for_memory``).
 Patch via ``transport.podman``. Where a class drives an MCP tool (``crews``)
@@ -66,7 +66,7 @@ class CrewsMemoryFieldTests(unittest.TestCase):
 
     ``crews()`` is a server MCP tool; patch ``server._load_registry`` /
     ``server._get_podman`` at the call site (the lifecycle dual-patches from
-    TRN-71 were shadows and are dropped). The observed cache global lives in
+    The observed cache global lives in
     ``transport.podman`` — reset ``podman._host_memory_cache`` directly.
     """
 
@@ -171,7 +171,7 @@ class HostMemoryHelpersTests(unittest.TestCase):
 
 
 class PodmanSecretTests(unittest.TestCase):
-    """TRN-136: secret_create / secret_remove and the container_create secrets param.
+    """secret_create / secret_remove and the container_create secrets param.
 
     A real ``PodmanClient`` is constructed, then its ``_c`` (httpx client) and
     ``_req`` are replaced with fakes that record the HTTP calls so the tests
@@ -295,7 +295,7 @@ class PodmanSecretTests(unittest.TestCase):
         self.assertIn("CAP_SYS_ADMIN", captured["json"]["cap_drop"])
 
     def test_admiral_pubkey_path_is_outside_every_volume_mount(self) -> None:
-        """TRN-136: the secret target must not nest inside a volume dest.
+        """The secret target must not nest inside a volume dest.
 
         Podman creates a secret target's parent directories as root:root, so a
         target under a volume mount point leaves that directory unwritable to

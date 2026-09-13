@@ -25,8 +25,6 @@ skipped.
 Complete auth before calling `launch`. Any crew created before auth completes is
 unauthenticated and cannot be salvaged — nuke it.
 
-**Recommended flow: `POST /login` → open URL → confirm complete → `launch`.**
-
 **1. Install with identity provider settings**
 
 ```bash
@@ -208,10 +206,6 @@ HTTPS redirect is handled unconditionally by Caddy. Minimum TLS is 1.2.
 ---
 
 ## Using the CLI
-
-The `ghostship auth` subcommand group drives the device auth flow directly from
-the CLI — useful for re-authenticating after a token expires, switching
-identity, or on a fresh install without an agent client.
 
 ```bash
 # Start the device auth flow: prints an activation URL + code, then polls

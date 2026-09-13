@@ -1,4 +1,4 @@
-"""Canonical container-side infrastructure constants (TRN-142).
+"""Canonical container-side infrastructure constants.
 
 A zero-dependency leaf module: the single home for the infrastructure
 constants that were previously duplicated across lifecycle.py, server.py,
@@ -11,7 +11,7 @@ load-time cycle — without dragging in a heavyweight module just to reach a
 plain integer or string constant.
 
 Config fields and env-var names deliberately do NOT live here; they belong in
-config.py. See openspec/changes/trn-142-constants-and-lazy-import-cleanup/.
+config.py.
 """
 
 from __future__ import annotations
@@ -34,10 +34,10 @@ PERSONA_NAMES = ("ghost", "spectre", "banshee", "wraith", "reaper", "raven")
 
 # ── Container-side helper scripts ─────────────────────────────────────────────
 # Helper scripts baked into the crew image at /scripts/ by the Containerfile
-# (see transport/container_scripts/, TRN-74).
+# (see transport/container_scripts/).
 SCRIPTS_DIR = "/scripts"
 
-# ── Admiral public key (TRN-136) ──────────────────────────────────────────────
+# ── Admiral public key ────────────────────────────────────────────────────────
 # Mount point for the Admiral Ed25519 public key, delivered as a read-only
 # Podman secret at container_create time.
 #

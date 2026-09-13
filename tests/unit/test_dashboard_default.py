@@ -1,4 +1,4 @@
-"""Unit tests for TRN-148: GA_DASHBOARD_DEFAULT config flag.
+"""Unit tests for GA_DASHBOARD_DEFAULT config flag.
 
 Tests cover:
   4.1  GA_DASHBOARD_DEFAULT=false, no explicit arg → effective_dashboard is False

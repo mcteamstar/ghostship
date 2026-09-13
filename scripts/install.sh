@@ -79,7 +79,7 @@ GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
 GA_DASHBOARD_PORT_RANGE_SIZE=1024
-# ── Client-only install (TRN-115) ────────────────────────────────────────────
+# ── Client-only install ──────────────────────────────────────────────────────
 # --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
 # transport WITHOUT running any container-infrastructure steps. --url selects
 # which transport the client connects to (default matches the full-install
@@ -87,7 +87,7 @@ GA_DASHBOARD_PORT_RANGE_SIZE=1024
 CLIENT_ONLY=false
 CLIENT_ONLY_URL="http://localhost:64057/mcp"
 CLIENT_ONLY_API_KEY=""
-# ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
+# ── Caddy reverse proxy ───────────────────────────────────────────────────────
 # ga-portal (Caddy) is always installed; there is no opt-out.
 # Caddy listens on PORT (same port as the transport, resolved above).
 # Default: plain HTTP on 64057 — zero-config installs work at
@@ -116,8 +116,8 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: config file is not readable: $CONFIG_FILE" >&2
     exit 1
   fi
-  # Migration guard: GA_PORTAL_PORT was renamed to PORT in TRN-111.
-  # If the config file sets GA_PORTAL_PORT, warn and substitute to PORT before sourcing.
+  # Migration guard: if the config file sets GA_PORTAL_PORT, warn and substitute
+  # to PORT before sourcing.
   if grep -qE '^[[:space:]]*GA_PORTAL_PORT=' "$CONFIG_FILE" 2>/dev/null; then
     echo "⚠ Deprecated GA_PORTAL_PORT found in config — auto-migrating to PORT" >&2
     _MIGRATED_CONFIG="$(mktemp)"
@@ -167,7 +167,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Client-only early-exit (TRN-115) ─────────────────────────────────────────
+# ── Client-only early-exit ────────────────────────────────────────────────────
 # When --client-only is set, wire the ghostship CLI + agent harnesses to a
 # (usually remote) transport and skip ALL container-infrastructure steps:
 # Podman prerequisites, machine/network setup, image builds, compose up.
@@ -575,8 +575,8 @@ fi
 
 echo "Building localhost/base-admission:latest (admission) ..."
 # Copy container-side helper scripts into the admission build context so they
-# are baked into the crew image at /scripts/ (TRN-74). Uses a temp copy to
-# avoid polluting the source tree with generated files.
+# are baked into the crew image at /scripts/. Uses a temp copy to avoid
+# polluting the source tree with generated files.
 _ADMISSION_CTX="$(mktemp -d)"
 cp -r "$GHOSTSHIP_DIR/crews/_base/admission/." "$_ADMISSION_CTX/"
 mkdir -p "$_ADMISSION_CTX/container_scripts"
@@ -586,7 +586,7 @@ ${_PODMAN_CMD} build -t localhost/base-admission:latest \
   && echo "✓ admission image built" || { echo "✗ admission image build failed"; rm -rf "$_ADMISSION_CTX"; exit 1; }
 rm -rf "$_ADMISSION_CTX"
 
-# Worker image (TRN-81) — the transport's disposable utility unit for reading
+# Worker image — the transport's disposable utility unit for reading
 # files/bundles/diffs from STOPPED crew volumes without waking the crew. Based
 # on python:3.12.10-slim (shared with the transport image) plus git. Built
 # after base-admission and before the crew compositions.
@@ -625,7 +625,7 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
-# ── Podman secret for GA_TRANSPORT_SECRET (TRN-107) ─────────────────────────────
+# ── Podman secret for GA_TRANSPORT_SECRET ────────────────────────────────────────
 # Idempotent: only generate if the secret does not already exist. This ensures
 # the same secret is reused across reinstalls (Caddy and transport stay in sync).
 if ! ${_PODMAN_CMD} secret inspect ga-transport-secret >/dev/null 2>&1; then
@@ -772,7 +772,7 @@ COMPOSE_EOF
 
 echo "✓ compose.yml written to ${DATA_DIR}/compose.yml"
 
-# ── Generate Caddy initial-config.json (TRN-92 / TRN-103) ─────────────────────
+# ── Generate Caddy initial-config.json ──────────────────────────────────────────
 # ga-portal (Caddy) is always installed. This config bootstraps the main-port
 # server with Bearer-gated MCP/file routes and the dashboard-auth endpoints.
 # Per-crew dashboard servers are added at runtime via the Caddy admin API.
@@ -802,7 +802,7 @@ case "${GA_PORTAL_TLS_MODE:-off}" in
     ;;
 esac
 
-# The portal-token header injected on every upstream request (TRN-107).
+# The portal-token header injected on every upstream request.
 # Caddy reads the secret from the mounted Podman secret file using the
 # {file.<path>} placeholder (Caddy v2.7+).
 _PORTAL_TOKEN_HEADER='"headers": {"request": {"set": {"X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"]}}}'
@@ -899,7 +899,7 @@ fi
 # Kill any stale rootlessport process that may be holding the transport port
 # open from a previous (possibly interrupted) install. These survive container
 # removal and will cause compose up to fail with "address already in use".
-# ga-transport no longer binds a host port (Caddy is the external listener),
+# ga-transport does not bind a host port (Caddy is the external listener),
 # so only check for stale rootlessport on ga-portal's port (PORT).
 for _pid in $(pgrep -x rootlessport 2>/dev/null); do
   if ss -tlnp 2>/dev/null | grep -q "0.0.0.0:${PORT:-64057}.*pid=${_pid}"; then
@@ -966,7 +966,7 @@ else
   exit 1
 fi
 
-# TRN-103: ga-portal health check (Caddy is always installed)
+# ga-portal health check (Caddy is always installed)
 _caddy_ready=0
 _caddy_scheme="http"
 [[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
@@ -988,7 +988,7 @@ fi
 echo ""
 echo "=== Post-install ==="
 
-# ── Best-effort ga-net cleanup (TRN-107) ─────────────────────────────────────
+# ── Best-effort ga-net cleanup ────────────────────────────────────────────────
 # If ga-net exists and has no containers, remove it (migration complete).
 # This is a no-op on fresh installs. Silently skipped if the network still
 # has containers (migration will run at transport startup via _reconcile_registry).

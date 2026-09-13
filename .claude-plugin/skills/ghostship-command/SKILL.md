@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.4.1"
+  version: "0.5.0"
 ---
 
 # Ghostship Command
@@ -114,6 +114,16 @@ session cookie — the cookie is issued to any visitor who loads the page. Only
 use `dashboard=True` on deployments protected by Tailscale or a firewall. Do
 not enable it on any deployment reachable from the public internet.
 
+**Memory cost of `dashboard=True`:** when a dashboard is active, `dispatch`
+auto-routes tasks to the `"bridge"` session slot by default. Each slot
+attachment spawns a `kiro-cli-chat` process inside the container (~300–400 MB
+RSS). On a memory-constrained host this adds up fast — two dashboard crews
+each with an active Ghost task can consume ~800 MB in slot processes alone.
+**For autonomous/unattended work** (SDD, batch jobs, Raven check-ins) where
+browser visibility isn't needed, pass `dashboard=False` to launch headless and
+avoid this overhead entirely. Use `dashboard=True` only when you actually
+intend to watch the crew in a browser.
+
 ### 2. Seed the workspace — `supply`
 
 **A freshly launched crew's workspace is empty.** `launch` only seeds the
@@ -160,6 +170,21 @@ setting only: `steer` and `continue` cannot change an existing session's model.
 It outranks both the crew's per-agent model and `KC_MODEL_OVERRIDE` for this
 call, so `KC_MODEL_OVERRIDE` is not an absolute ceiling when a caller supplies
 `model=`.
+
+**Slot and memory cost:** each non-None slot spawns a `kiro-cli-chat` process
+(~300–400 MB RSS) inside the crew container. On dashboard crews the slot
+defaults to `"bridge"` — meaning every dispatch adds ~300–400 MB unless you
+override it. For autonomous tasks where browser visibility is not needed, pass
+`slot=None` explicitly to dispatch headless and avoid the overhead:
+
+```python
+dispatch(task="...", agent="ghost", crew_id="...", slot=None)   # headless — no slot process
+dispatch(task="...", agent="ghost", crew_id="...", slot="bridge")  # attaches to dashboard session
+```
+
+The rule of thumb: use `slot=None` for SDD, batch, Raven, and any
+long-running background work. Use `slot="bridge"` or `slot=True` only when
+you want to watch the task live in the browser dashboard.
 
 The dispatched agent has **no context beyond `task`** — no memory of this
 conversation, no idea what you're trying to accomplish beyond what you wrote.
@@ -419,6 +444,7 @@ git filter-repo --name-callback 'return b"Your Name"' \
 | Nuked a crew and lost work | Should have `evac`'d first — no undo |
 | Agent did wrong thing despite timeout steer | Used fresh `dispatch` instead of `steer` — lost full prior context |
 | Captain sending many duplicate admiral mails | Raven correctly reporting completion each cycle; Raven self-pauses on SDD template — check `captain status` for `paused`. For free-form orders, the dedup check prevents most repeats but a manual `captain(action="stop")` may be needed |
+| Host memory pressure / transport rejects new launches | Dashboard crews with active tasks each use ~300–400 MB per slot process (`kiro-cli-chat`). Use `dashboard=False` + `slot=None` for unattended SDD/batch work; reserve `dashboard=True` for crews you're actively watching in a browser |
 
 ## Worked example — captain autopilot (recommended for non-trivial work)
 

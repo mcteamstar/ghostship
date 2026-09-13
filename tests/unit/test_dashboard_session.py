@@ -208,7 +208,7 @@ class CaddyRoutesToTransportTests(unittest.TestCase):
         self.assertEqual(crew_proxy["rewrite"]["uri"],
                          "/crews/demo/ui{http.request.uri.path}")
         # No Cookie is injected by Caddy anymore — the transport handles it.
-        # TRN-107: the portal secret header is injected instead.
+        # The portal secret header is injected instead.
         self.assertNotIn("Cookie", crew_proxy["headers"]["request"]["set"])
         self.assertEqual(
             crew_proxy["headers"]["request"]["set"]["X-Transport-Token"],
@@ -230,7 +230,7 @@ class WsRelayEventDispatchTests(unittest.TestCase):
     not on raw bytes/str. upstream.receive() returns wsproto.events.Event
     objects (TextMessage, BytesMessage), never raw bytes or str.
 
-    Bug present before TRN-102 banshee fix: isinstance(data, (bytes, bytearray))
+    Regression: isinstance(data, (bytes, bytearray))
     always False -> every frame called str(data) -> event object stringified
     instead of .data extracted -> all WS traffic upstream-to-browser corrupted.
     """

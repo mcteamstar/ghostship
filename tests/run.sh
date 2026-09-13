@@ -108,24 +108,14 @@ for category in "${SELECTED_CATEGORIES[@]}"; do
   case "$category" in
     unit)
       run_category unit \
-        python3 -m unittest discover -s tests/unit -p "test_*.py" -t .
+        python3 -m pytest tests/unit
       ;;
     integration)
       run_category integration run_integration
       ;;
     e2e)
-      if python3 -c "import unittest_parallel" 2>/dev/null; then
-        USE_PARALLEL=1
-      else
-        USE_PARALLEL=0
-      fi
-      if [[ "$USE_PARALLEL" -eq 1 ]]; then
-        run_category e2e \
-          python3 -m unittest_parallel -s tests/e2e -p "test_*.py" -t .
-      else
-        run_category e2e \
-          python3 -m unittest discover -s tests/e2e -p "test_*.py" -t .
-      fi
+      run_category e2e \
+        python3 -m pytest tests/e2e -n auto
       ;;
   esac
 done

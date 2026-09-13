@@ -1,13 +1,13 @@
-mcp[cli]==2.0.0
+mcp[cli]==2.2.0
 httpx2==2.12.0
-httpx==0.28.1  # kept for httpx-ws compatibility until httpx-ws supports httpx2
-httpx-ws==0.7.0
-croniter==3.0.3
+websockets>=13.0,<15.0
+croniter==6.2.4
 # Declared explicitly — mcp[cli] pulls these as transitive deps but pinning
 # prevents silent breakage if mcp ever restructures its extras.
 starlette>=1.0.1,<2.0.0
 uvicorn>=0.31.1,<1.0.0
-unittest-parallel==1.8.6
+pytest>=8.0.0,<9.0.0  # test runner only
+pytest-xdist>=3.5.0,<4.0.0  # test runner only
 # TRN-136: captain.py imports cryptography directly for Ed25519 Admiral-mail
 # signing. Declared explicitly rather than relied on transitively (PyJWT[crypto]
 # happens to pull it today) so a change to that extra cannot silently break

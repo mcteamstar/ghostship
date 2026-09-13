@@ -7,7 +7,7 @@ with no migration wait and no restart cycle.
 ⚠️  Migration schema for KiroCrew 0.5.0 (10 rows, versions 0-9, max_version 9).
     Re-verified for the 0.5.0 base-image bump (TRN-113): the hard-coded seed
     still produces (count, max_version) = (10, 9). The exact kiro-cli version
-    shipped in ghcr.io/kirodotdev/kirocrew:0.5.0 and a live
+    shipped in ghcr.io/kirodotdev/kirocrew:0.6.0 and a live
     `SELECT COUNT(*), MAX(version) FROM migrations` comparison against that
     image must be confirmed on a host with podman before release — if the count
     or schema differ, add the new INSERT INTO migrations rows / CREATE TABLE

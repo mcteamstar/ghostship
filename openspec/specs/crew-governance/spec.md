@@ -222,14 +222,14 @@ need to declare it explicitly.
 - **THEN** the gateway respects the field and does not pool that server across
   connections, consistent with 0.4.0 behaviour
 
-### Requirement: Containerfiles pin to kirocrew:0.4.0
+### Requirement: Containerfiles pin to kirocrew:0.6.0
 
 All ghostship Containerfiles that reference the KiroCrew base image SHALL pin
-to `kirocrew:0.5.0`.
+to `kirocrew:0.6.0`.
 
 #### Scenario: Containerfile updated to 0.4.0 pin
 - **WHEN** a ghostship Containerfile is built after this change
-- **THEN** it resolves `FROM ghcr.io/kirodotdev/kirocrew:0.5.0` as the base
+- **THEN** it resolves `FROM ghcr.io/kirodotdev/kirocrew:0.6.0` as the base
   layer and the resulting image is compatible with the 0.5.0 governance API
 
 #### Scenario: Old pin triggers build failure

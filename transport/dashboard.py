@@ -1,4 +1,4 @@
-"""transport/dashboard.py — dashboard auth/session gate (TRN-141).
+"""transport/dashboard.py — dashboard auth/session gate.
 
 ``DashboardGate`` encapsulates the dashboard state cluster that previously
 lived as five module-level globals in ``server.py``
@@ -43,7 +43,7 @@ except ModuleNotFoundError:
 
 
 # Keep the original logger name — operators grep "transport.server" and tests
-# assert on it (same rationale as auth.py, TRN-116).
+# assert on it (same rationale as auth.py).
 logger = logging.getLogger("transport.server")
 
 
@@ -65,7 +65,7 @@ def _validate_next_url(url: str) -> str:
 
 
 class DashboardGate:
-    """Encapsulates dashboard auth/session state and its HTTP handlers (TRN-141).
+    """Encapsulates dashboard auth/session state and its HTTP handlers.
 
     Owns:
       - ``_throttle``    — brute-force protection for /dashboard/login.
@@ -89,21 +89,20 @@ class DashboardGate:
         # throttle window).
         self._throttle = _security.Throttle(max_failures=5, window_secs=900)
         self._sessions = _security.SessionStore(lifetime_secs=session_ttl_secs)
-        # TRN-122: single random token generated at construction and held for
-        # the process lifetime. Embedded in the GET /dashboard/login form and
-        # validated on every POST before the API-key check (design.md D1).
+        # Single random token generated at construction and held for the process
+        # lifetime. Embedded in the GET /dashboard/login form and validated on
+        # every POST before the API-key check (design.md D1).
         self._csrf_token: str = secrets.token_hex(32)
         self._api_key = api_key
         self._tls_mode = tls_mode
-        # TRN-101: the per-port uvicorn proxy pool was removed. Portal
-        # (ga-portal) is the sole dashboard proxy. Port→crew mapping is
+        # Portal (ga-portal) is the sole dashboard proxy. Port→crew mapping is
         # retained for forward_auth lookups by handle_auth.
         self._port_crew: dict[int, str] = {}  # port → crew_id
-        # TRN-123: guards all read-modify-write access to _port_crew, a mix of
-        # asyncio and startup contexts.
+        # Guards all read-modify-write access to _port_crew, a mix of asyncio
+        # and startup contexts.
         self._port_crew_lock = threading.Lock()
 
-    # ── Port registry (TRN-92 / TRN-101) ─────────────────────────────────────
+    # ── Port registry ─────────────────────────────────────────────────────────
 
     def register_port(self, crew_id: str, port: int) -> None:
         """Record the dashboard-port → crew_id mapping for forward_auth lookups."""
@@ -115,7 +114,7 @@ class DashboardGate:
         with self._port_crew_lock:
             self._port_crew.pop(int(port), None)
 
-    # ── Dashboard auth HTTP handlers (TRN-92) ─────────────────────────────────
+    # ── Dashboard auth HTTP handlers ──────────────────────────────────────────
 
     async def handle_login_post(self, request: Request) -> Response:
         """POST /dashboard/login — validate ga_api_key, issue gs_session cookie.
@@ -129,9 +128,9 @@ class DashboardGate:
             return Response(status_code=401)
 
         source = _request_source(request)
-        # TRN-138: the login throttle key must come from the actual ASGI
-        # connection IP (request.client.host), NOT X-Forwarded-For, which a
-        # client can spoof to evade or poison the brute-force lock (design D3).
+        # The login throttle key must come from the actual ASGI connection IP
+        # (request.client.host), NOT X-Forwarded-For, which a client can spoof
+        # to evade or poison the brute-force lock (design D3).
         # _request_source() prefers XFF and is retained only for audit context.
         client = getattr(request, "client", None)
         throttle_source = getattr(client, "host", None) if client is not None else None
@@ -143,11 +142,11 @@ class DashboardGate:
         try:
             form = await request.form()
             provided = str(form.get("ga_api_key", ""))
-            # TRN-122: read and validate CSRF token before touching the API-key
-            # path. Fail-fast on forged submissions (design.md D4).
+            # Read and validate CSRF token before touching the API-key path.
+            # Fail-fast on forged submissions (design.md D4).
             provided_csrf = str(form.get("csrf_token", ""))
-            # TRN-138: capture the submitted next URL so the server — not the
-            # client — is the source of truth for the post-login redirect target.
+            # Capture the submitted next URL so the server — not the client —
+            # is the source of truth for the post-login redirect target.
             next_url = _validate_next_url(str(form.get("next", "/")))
         except Exception:
             return Response(status_code=400)
@@ -164,14 +163,13 @@ class DashboardGate:
         token = self._sessions.issue()
         # Build Set-Cookie header manually — avoids starlette version
         # differences and is more explicit about the exact cookie attributes.
-        # The Secure flag is only set when the portal runs behind TLS
-        # (TRN-121); a plain-HTTP portal must not set Secure or the browser
-        # drops the cookie.
+        # The Secure flag is only set when the portal runs behind TLS;
+        # a plain-HTTP portal must not set Secure or the browser drops the cookie.
         secure_attr = "; Secure" if self._tls_mode != "off" else ""
         cookie_value = (
             f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"
         )
-        # TRN-138: return the server-sanitised next URL in the JSON body so the
+        # Return the server-sanitised next URL in the JSON body so the
         # login-form JS redirects from _validate_next_url() output rather than
         # from the raw submitted FormData field (open-redirect fix).
         return JSONResponse(
@@ -247,11 +245,11 @@ class DashboardGate:
         Validates the current ``gs_session`` cookie; returns 401 when it is
         missing/invalid. On a valid token, revokes it in the session store and
         responds with a ``Set-Cookie`` header that clears the cookie in the
-        browser (TRN-121).
+        browser.
         """
-        # TRN-138: logout is a state-changing POST — validate the CSRF token
-        # before any session check, matching the login POST pattern. Reject a
-        # missing or mismatched token with 403.
+        # Logout is a state-changing POST — validate the CSRF token before any
+        # session check, matching the login POST pattern. Reject a missing or
+        # mismatched token with 403.
         try:
             form = await request.form()
             provided_csrf = str(form.get("csrf_token", ""))
@@ -286,10 +284,9 @@ class DashboardGate:
         """
         next_url = _validate_next_url(request.query_params.get("next", "/"))
         next_url_escaped = _security.encode_html_attr(next_url)
-        # TRN-122: embed the CSRF token in the form so POST /dashboard/login can
-        # validate it. encode_html_attr applied for defence-in-depth (hex
-        # output is already safe, but the pattern matches next_url_escaped
-        # usage above).
+        # Embed the CSRF token in the form so POST /dashboard/login can validate
+        # it. encode_html_attr applied for defence-in-depth (hex output is already
+        # safe, but the pattern matches next_url_escaped usage above).
         csrf_token_escaped = _security.encode_html_attr(self._csrf_token)
         # Simple HTML login page — no external dependencies.
         html = f"""<!DOCTYPE html>
@@ -335,9 +332,9 @@ class DashboardGate:
     const fd = new FormData(f);
     const r = await fetch('/dashboard/login', {{method:'POST', body: fd}});
     if (r.ok) {{
-      // TRN-138: redirect to the server-sanitised next URL from the JSON
-      // response body, not the raw submitted FormData field, so the open-
-      // redirect guard in _validate_next_url() is always authoritative.
+      // Redirect to the server-sanitised next URL from the JSON response body,
+      // not the raw submitted FormData field, so the open-redirect guard in
+      // _validate_next_url() is always authoritative.
       let dest = '/';
       try {{ const data = await r.json(); dest = data.next || '/'; }} catch (_e) {{}}
       window.location.href = dest;

@@ -1,4 +1,4 @@
-"""Unit tests for transport/container_scripts/*.py (TRN-74).
+"""Unit tests for transport/container_scripts/*.py.
 
 These scripts run inside crew containers, but they are plain modules with no
 KiroCrew or Podman dependency, so they import and run directly here — no
@@ -87,7 +87,7 @@ class ReadAuthTests(unittest.TestCase):
 
     def test_empty_db_returns_empty_string(self) -> None:
         # A registration-only / empty auth_kv yields "" so the caller can treat
-        # it as "no auth" (aligns with the TRN-78 Bug 1 direction: an empty
+        # it as "no auth" (an empty
         # table must not read as a completed login).
         with tempfile.TemporaryDirectory() as td:
             db = os.path.join(td, "data.sqlite3")
@@ -232,7 +232,7 @@ class PatchModelsTests(unittest.TestCase):
 
 
 class InjectPolicyTests(unittest.TestCase):
-    """Unit tests for inject_policy.inject_policy() (TRN-53).
+    """Unit tests for inject_policy.inject_policy().
 
     The script runs inside a container, but it has no KiroCrew or Podman
     dependency so it imports and runs directly here.

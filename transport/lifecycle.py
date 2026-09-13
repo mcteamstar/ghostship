@@ -25,7 +25,7 @@ import tarfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -135,14 +135,13 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 cfg = Config.from_env()
 
-# TRN-62: when set, kiro-cli in the crew authenticates via this API key (injected
+# When set, kiro-cli in the crew authenticates via this API key (injected
 # as a container env var by server.launch) and the SQLite auth-row injection
 # (_inject_auth) is skipped. Unset (default) => device-code auth is injected.
 KIRO_API_KEY = cfg.kiro_api_key
 
-# TRN-143: login/auth machinery moved here from server.py. The reusable
-# kiro-cli auth blob lives under the transport data mount; the KIRO_* values
-# drive the interactive `kiro-cli login` device flow in _initiate_login.
+# The reusable kiro-cli auth blob lives under the transport data mount; the
+# KIRO_* values drive the interactive `kiro-cli login` device flow in _initiate_login.
 DATA_DIR = Path(cfg.transport_data_dir)
 GA_AUTH_FILE = "ga-kiro-auth"
 KIRO_LICENSE = cfg.kiro_license
@@ -160,9 +159,9 @@ KIRO_CREW_DIR = "/home/kirocrew/.kiro/crew"
 KIRO_MCP_JSON = "/home/kirocrew/.kiro/mcp.json"
 
 # ── Crew infrastructure constants ─────────────────────────────────────────────
-# Canonical home is transport/constants.py (TRN-142). These are re-exported here
-# (as pass-through imports) so existing callers of lifecycle.* — server.py and
-# the test suite — remain unaffected. SCRIPTS_DIR is invoked via
+# These constants are re-exported here (as pass-through imports) so existing
+# callers of lifecycle.* — server.py and the test suite — remain unaffected.
+# SCRIPTS_DIR is invoked via
 # `python3 <SCRIPTS_DIR>/<name>.py` inside crew containers.
 try:
     from constants import (  # container: flat /app/
@@ -191,7 +190,10 @@ GA_LOGIN_CONTAINER_PREFIX = "ga-login-"
 
 # ── Config-driven constants ───────────────────────────────────────────────────
 KC_IMAGE = cfg.kc_image
-KC_BASE_IMAGE = cfg.kc_base_image
+# Login containers use the upstream base image directly (not the locally-built
+# crew image) to avoid any risk from a tainted local build. This must match the
+# FROM pin in crews/_base/admission/Containerfile.
+KC_BASE_IMAGE = "ghcr.io/kirodotdev/kirocrew:0.6.0"
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 GA_CREW_AGENT = cfg.ga_crew_agent
@@ -233,33 +235,52 @@ def _secret_identifier(value: str) -> str:
 _startup_events: dict[str, threading.Event] = {}
 _startup_events_lock = threading.Lock()
 
-# TRN-152: Maps crew_id → (success, exc) recorded by the leader before it fires
+# Maps crew_id → (success, exc) recorded by the leader before it fires
 # the startup Event. Waiters read this after event.wait() and re-raise the
 # stored exception when success is False, instead of proceeding against a crew
 # that never started. Guarded by _startup_events_lock (same lifecycle as the
 # event it accompanies).
 _crew_restart_outcomes: dict[str, tuple[bool, Exception | None]] = {}
 
+# Generation counter — tracks restart cycle identity per crew.
+# Incremented when a new leader is elected; waiters capture the generation before
+# event.wait() and verify it is unchanged after waking, so a third concurrent caller
+# starting a new cycle cannot corrupt a prior waiter's outcome read.
+# Guarded by _startup_events_lock (same lifecycle as _startup_events).
+_startup_generation: dict[str, int] = {}
+
 # Per-crew recovery locks: prevent concurrent recovery races within
 # _crew_api_with_recovery.
 _recovery_locks: dict[str, threading.Lock] = {}
 _recovery_locks_lock = threading.Lock()
 
-# TRN-131: Per-crew ACP warm markers. Maps crew_id → warmed_at (monotonic
-# seconds) recording the last successful prewarm. Guarded by its own lock,
-# mirroring the _startup_events_lock / _task_timestamps_lock patterns. The
-# marker is advisory: a missed or stale marker at worst causes one extra
-# idempotent warm-up request, never real work.
+# Per-crew ACP warm markers. Maps crew_id → warmed_at (monotonic seconds)
+# recording the last successful prewarm. Guarded by its own lock, mirroring the
+# _startup_events_lock / _task_timestamps_lock patterns. The marker is advisory:
+# a missed or stale marker at worst causes one extra idempotent warm-up request,
+# never real work.
 _warm_markers: dict[str, float] = {}
 _warm_markers_lock = threading.Lock()
+
+# Bounded in-process memory: _task_timestamps completed entries are evicted once
+# their completed_at is older than _TASK_TIMESTAMP_TTL_SECS (env-overridable);
+# _warm_markers entries are evicted once older than _WARM_MARKER_TTL_SECS.
+# Both TTLs floor at one hour.
+_TASK_TIMESTAMP_TTL_SECS = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
+
+
+def _warm_marker_ttl_secs() -> float:
+    """Warm-marker TTL: twice the prewarm TTL, with a one-hour floor."""
+    return float(max(GA_PREWARM_TTL_SECS * 2 if GA_PREWARM_TTL_SECS > 0 else 3600, 3600))
+
 
 _SCHEDULE_MONITOR_INTERVAL = 30  # seconds
 
 
 # ── Composition registry ──────────────────────────────────────────────────────
 # COMPOSITION_REGISTRY, _load_composition_registry, _resolve_composition,
-# _resolve_manifest_path and _resolve_image were extracted to
-# transport/academy.py (TRN-86) and are imported at the top of this module.
+# _resolve_manifest_path and _resolve_image live in transport/academy.py
+# and are imported at the top of this module.
 
 
 # ── Crew URL / cookie / API helpers ──────────────────────────────────────────
@@ -587,36 +608,46 @@ def _ensure_crew_running(
         if crew_id in _startup_events:
             event = _startup_events[crew_id]
             is_leader = False
+            # Capture generation before releasing lock
+            _waiter_gen = _startup_generation.get(crew_id, 0)
         else:
             event = threading.Event()
             _startup_events[crew_id] = event
             is_leader = True
-            # TRN-152: a NEW restart cycle begins here — drop any outcome left
-            # by a PRIOR leader for this crew. The outcome map is never popped
-            # on completion (its read happens after event.set(), so it cannot
-            # be cleared in the leader's finally without racing the waiter), so
-            # a stale entry survives between cycles. If we did not clear it, a
-            # waiter whose event.wait() times out (leader still in flight, e.g.
-            # a 60s memory wait plus a 60s gateway wait exceeding the 45s wait
-            # window) would read the previous cycle's failure and raise an
-            # unrelated exception. Clearing at election makes the map hold at
-            # most one entry per crew AND guarantees a timed-out waiter sees
-            # None (→ explicit timeout error) rather than a stale outcome.
+            # Drop any outcome left by a PRIOR leader for this crew. The outcome
+            # map is never popped on completion (its read happens after event.set(),
+            # so it cannot be cleared in the leader's finally without racing the
+            # waiter), so a stale entry survives between cycles. If we did not clear
+            # it, a waiter whose event.wait() times out would read the previous
+            # cycle's failure and raise an unrelated exception. Clearing at election
+            # makes the map hold at most one entry per crew AND guarantees a
+            # timed-out waiter sees None (→ explicit timeout error) rather than a
+            # stale outcome.
             _crew_restart_outcomes.pop(crew_id, None)
+            # Increment generation for this new restart cycle
+            _startup_generation[crew_id] = _startup_generation.get(crew_id, 0) + 1
+            _waiter_gen = _startup_generation[crew_id]  # leader also captures (unused but symmetric)
 
     if not is_leader:
         # Another caller is already restarting — wait for it then return
         # the refreshed crew dict
         logger.info("Crew %s restart already in progress — waiting", crew_id)
         event.wait(timeout=45)
-        # TRN-152: read the outcome the leader recorded before firing the
-        # Event. If the leader's restart failed (memory gate, crew limit,
-        # gateway timeout, ...), propagate that exact exception instead of
-        # reading a stale "running" status and proceeding against a crew that
-        # never started. A missing entry means the leader timed out without
-        # recording — treat that as a failure too.
+        # Read the outcome the leader recorded before firing the Event. If the
+        # leader's restart failed (memory gate, crew limit, gateway timeout, ...),
+        # propagate that exact exception instead of reading a stale "running" status
+        # and proceeding against a crew that never started. A missing entry means the
+        # leader timed out without recording — treat that as a failure too.
+        # Check generation under lock before reading outcome.
         with _startup_events_lock:
             outcome = _crew_restart_outcomes.get(crew_id)
+            _current_gen = _startup_generation.get(crew_id, 0)
+        if _current_gen != _waiter_gen:
+            raise RuntimeError(
+                f"Crew {crew_id} restart (concurrent) failed -- restart cycle changed "
+                f"during wait (waited on gen {_waiter_gen}, current gen {_current_gen}); "
+                f"a new restart cycle started before outcome was read"
+            )
         if outcome is None:
             raise RuntimeError(
                 f"Crew {crew_id} restart (concurrent) failed -- leader did not "
@@ -636,9 +667,9 @@ def _ensure_crew_running(
         return crew_after
 
     # We are the leader — do the restart
-    # TRN-152: record a success/failure outcome for waiters before firing the
-    # Event. Default to failure so any exit path that is not an explicit
-    # success (an exception below) leaves waiters with a failure to propagate.
+    # Record a success/failure outcome for waiters before firing the Event.
+    # Default to failure so any exit path that is not an explicit success
+    # (an exception below) leaves waiters with a failure to propagate.
     _outcome: tuple[bool, Exception | None] = (
         False,
         RuntimeError(f"Crew {crew_id} restart (leader) failed"),
@@ -742,9 +773,8 @@ def _ensure_crew_running(
         _outcome = (True, None)
         return crew
     except Exception as exc:
-        # TRN-152: record the failure so waiters re-raise it instead of
-        # proceeding on stale "running" status, then re-raise for our own
-        # caller.
+        # Record the failure so waiters re-raise it instead of proceeding on
+        # stale "running" status, then re-raise for our own caller.
         _outcome = (False, exc)
         raise
     finally:
@@ -759,7 +789,7 @@ def _ensure_crew_running(
         event.set()
 
 
-# ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────────
+# ── ACP prewarm ─────────────────────────────────────────────────────
 
 # D1: the gateway surface used to fork the kiro-cli-chat session and complete
 # the ACP handshake WITHOUT enqueuing a real agent task. Pinned to a single
@@ -853,6 +883,14 @@ def _prewarm_crew(crew: dict, crew_id: str) -> dict:
 
     with _warm_markers_lock:
         _warm_markers[crew_id] = time.monotonic()
+        # Evict warm markers older than _WARM_MARKER_TTL_SECS (twice the prewarm
+        # TTL, 1h min) so _warm_markers does not accumulate entries for crews long
+        # gone.
+        _wm_ttl = _warm_marker_ttl_secs()
+        _wm_now = time.monotonic()
+        _expired_wm = [k for k, v in _warm_markers.items() if (_wm_now - v) > _wm_ttl]
+        for k in _expired_wm:
+            _warm_markers.pop(k, None)
     logger.info("Crew %s prewarmed (ACP session warm)", crew_id)
     return {"crew_id": crew_id, "status": "warmed"}
 
@@ -907,10 +945,9 @@ def _wait_gateway(url: str, timeout: int = 30) -> bool:
     return False
 
 
-# _load_crew_manifest, _manifest_selects and _substitute_env_vars were
-# extracted to transport/academy.py (TRN-86) and are imported at the top of
-# this module. _copy_agents/_copy_skills/_copy_steering below call them via
-# the imported names.
+# _load_crew_manifest, _manifest_selects and _substitute_env_vars live in
+# transport/academy.py and are imported at the top of this module.
+# _copy_agents/_copy_skills/_copy_steering below call them via the imported names.
 
 
 def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
@@ -1159,7 +1196,7 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
 
     Returns None while only the device-flow registration precursor row is
     present — that row exists from the moment the flow *starts*, so it is not
-    evidence the user has actually completed the grant (TRN-143 follow-up).
+    evidence the user has actually completed the grant.
     """
     extract = (
         "import sqlite3, json, base64; "
@@ -1200,12 +1237,11 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
         podman.volume_remove(home_volume)
     except Exception:
         pass
-    # TRN-136: remove the Admiral public-key Podman secret. Podman secrets live
-    # in a global namespace and must be explicitly removed or they leak across
-    # crew lifecycles. Derive the crew_id from the container name (gs-<crew_id>)
-    # so every launch-failure path and the nuke path (both route through here)
-    # clean it up. Best-effort — a launch that failed before secret_create just
-    # no-ops.
+    # Remove the Admiral public-key Podman secret. Podman secrets live in a global
+    # namespace and must be explicitly removed or they leak across crew lifecycles.
+    # Derive the crew_id from the container name (gs-<crew_id>) so every
+    # launch-failure path and the nuke path clean it up. Best-effort — a launch
+    # that failed before secret_create just no-ops.
     try:
         if container.startswith(CREW_CONTAINER_PREFIX):
             crew_id = container[len(CREW_CONTAINER_PREFIX):]
@@ -1488,7 +1524,7 @@ def _reconcile_registry() -> None:
                             **({} if not new_cookie else {"cookie": new_cookie}),
                         }
                         logger.info("Crew %s restored", cid)
-                        # TRN-29: Re-seed gateway schedules from registry
+                        # Re-seed gateway schedules from registry
                         restored_crew = dict(info)
                         if new_cookie:
                             restored_crew["cookie"] = new_cookie
@@ -1556,13 +1592,13 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     #   spawn_min_memory_gb: >= 0 (0 disables the spawn memory gate); no upper cap.
     #   resource_pressure_gb: >= 0; must be >= resource_critical_gb.
     #   resource_critical_gb: >= 0, and <= resource_pressure_gb.
-    #   subagent_timeout_secs: > 0. subagent_max_turns: >= 1 (UI cap 200).
+    #   subagent_timeout_secs: > 0. subagent_max_turns: >= 1 (UI cap 1000, raised in KiroCrew 0.6.0).
     #
     # Memory thresholds default to 0 (disabled). Inside a container, memory is
     # dynamically allocated by the host (balloon on Linux, Podman VM on macOS).
     # The container sees only allocated memory, not the full host headroom, so
     # any non-zero threshold causes premature throttling under real concurrent
-    # workloads. Setting to 0 lets the OS manage memory pressure. See TRN-117.
+    # workloads. Setting to 0 lets the OS manage memory pressure.
     #
     # dangerously_skip_permissions=True bypasses KiroCrew's per-operation
     # permission guard for the agent running inside this crew container. This is
@@ -1583,13 +1619,13 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "subagent_max_turns": GA_SUBAGENT_MAX_TURNS,
         # ``sandbox="off"`` disables the kiro-cli inner namespace sandbox.
         # The config key and value are not new — "off" has been valid since
-        # before 0.5.0. What changed in 0.5.0 is that sandbox="auto" (the
-        # default) now issues a MS_REMOUNT|MS_BIND|MS_RDONLY mount to seal
-        # credential directories read-only, and this call is fail-closed:
-        # kiro-cli calls sys.exit(rc=1) if the mount fails rather than
-        # continuing unsandboxed. Under Podman rootless the kernel denies the
-        # remount (errno EPERM — no seccomp allowance for MS_REMOUNT inside a
-        # user namespace), so every agent spawn failed with AcpRuntimeDead rc=1.
+        # before 0.5.0. sandbox="auto" (the default since 0.6.0, and present
+        # in fail-closed form since 0.5.0) issues a MS_REMOUNT|MS_BIND|MS_RDONLY
+        # mount to seal credential directories read-only; kiro-cli calls
+        # sys.exit(rc=1) if that mount fails (fail-closed). Under Podman rootless
+        # the kernel denies the remount (errno EPERM — no seccomp allowance for
+        # MS_REMOUNT inside a user namespace), so every agent spawn fails with
+        # AcpRuntimeDead rc=1 unless this is set to "off".
         # Setting "off" short-circuits detect_backend() to return "none", so the
         # namespace sandbox setup (and the failing mount) are never attempted.
         # The Podman container itself remains the OS-level isolation boundary.
@@ -1717,17 +1753,16 @@ def _finish_crew_setup(
             return {"error": f"Gateway did not recover for crew {crew_id}"}
 
     # depends on: gateway (pre-restart)
-    # TRN-62: when KIRO_API_KEY is set, kiro-cli authenticates via the injected
-    # env var, so the SQLite auth-row injection is skipped. auth_b64 is None on
-    # this path.
+    # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var,
+    # so the SQLite auth-row injection is skipped. auth_b64 is None on this path.
     if not KIRO_API_KEY:
         _inject_auth(podman, container, auth_b64)
 
     # depends on: container running (pre-restart); must be written before restart
     # so the secret is on the home volume before the post-restart gateway starts
     #
-    # TRN-136: the Admiral keypair is now generated in server.py BEFORE
-    # container_create — the private seed (``admiral_secret``, hex-encoded) has
+    # The Admiral keypair is generated in server.py before container_create —
+    # the private seed (``admiral_secret``, hex-encoded) has
     # already been persisted host-side via _write_crew_secret, and the public
     # key is mounted read-only as a Podman secret at .admiral_public_key. There
     # is no longer a container-exec injection step for the Admiral key; only the
@@ -1808,8 +1843,8 @@ def _finish_crew_setup(
             "composition": composition,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_used": time.time(),
-            # TRN-93: store non-reversible identifiers only — plaintext secrets
-            # are not needed after injection and must not persist in crews.json.
+            # Store non-reversible identifiers only — plaintext secrets are not
+            # needed after injection and must not persist in crews.json.
             "admiral_secret_id": _secret_identifier(admiral_secret),
             "crew_image_version": crew_image_version,
         }
@@ -1831,7 +1866,7 @@ def _finish_crew_setup(
     if policy_warning is not None:
         result["policy_warning"] = f"Policy injection failed — crew is ungoverned: {policy_warning}"
 
-    # ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────
+    # ── ACP prewarm ─────────────────────────────────────────────────
     # Fire-and-report: non-fatal. AcpProcessDied on the prewarm is acceptable —
     # it still expands the balloon. Errors are logged but never bubble up to the
     # caller so launch always succeeds even if prewarm fails.
@@ -1871,8 +1906,8 @@ def _start_login_container(podman: PodmanClient) -> str:
         "Networks": {GA_STARBOARD_NETWORK: {}},
         # Use the default gateway command — kirocrew-entrypoint seeds
         # ~/.kiro/crew/config.json which kiro-cli requires. The gateway will
-        # stall on AcpAuthRequired (no auth yet) and be killed by the 0.5.0
-        # loop watchdog after ~35s, but GET /login polls the auth DB
+        # stall on AcpAuthRequired (no auth yet) and the loop watchdog will
+        # recycle it after a timeout, but GET /login polls the auth DB
         # continuously and will catch a completed auth before that window.
         # No volumes — ephemeral writable layer only
     })
@@ -1896,7 +1931,7 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
     logger.info("Nuked login container %s", name)
 
 
-# ── kiro-cli auth file helpers (TRN-143) ──────────────────────────────────────
+# ── kiro-cli auth file helpers ──────────────────────────────────────
 
 def _auth_file_path() -> Path:
     """Return the reusable kiro-cli auth file under the data mount."""
@@ -1940,7 +1975,7 @@ def _write_auth_file(value: str, _path: Path | None = None) -> None:
     os.chmod(path, 0o600)
 
 
-# ── Login device-flow state (TRN-143) ─────────────────────────────────────────
+# ── Login device-flow state ─────────────────────────────────────────
 # _login_pending holds the in-progress login flow's state (or None when idle):
 #   container: str   — ephemeral ga-login-* container name
 #   state:     str   — "starting" | "started"
@@ -2154,7 +2189,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     return {"login_url": login_url, "code": login_code}
 
 
-# ── Schedule / idle monitors (TRN-116) ───────────────────────────────────────
+# ── Schedule / idle monitors ───────────────────────────────────────
 # _schedule_monitor, _idle_monitor, _cron_activity_since and _cron_has_enabled_job
 # were extracted to transport/monitors.py and are imported below so existing
 # call-sites (server starts the threads; tests patch lifecycle.*) keep resolving.
@@ -2165,7 +2200,7 @@ except ModuleNotFoundError:
 
 _schedule_monitor = _monitors._schedule_monitor
 _idle_monitor = _monitors._idle_monitor
-# ── Batch pickup (TRN-105) ────────────────────────────────────────────────────
+# ── Batch pickup ────────────────────────────────────────────────────
 # GA_PICKUP_MAX_POLL_SECS caps the wall time of one _pickup_batch call, mirroring
 # the single-task pickup internal cap (default 30 s). Read from env so operators
 # can tune it without a config-dataclass change.
@@ -2263,7 +2298,7 @@ def _pickup_batch(
                     update_batch_status(crew_id, batch_id, "complete")
                 except Exception as exc:  # best-effort; do not fail the pickup
                     logger.warning(
-                        "TRN-105: could not mark batch %s complete: %s",
+                        "Could not mark batch %s complete: %s",
                         batch_id, exc,
                     )
             return out
@@ -2286,15 +2321,15 @@ def _pickup_batch(
         time.sleep(min(_BATCH_POLL_INTERVAL_SECS, remaining))
 
 
-# ── Task timestamp tracking (TRN-89) ──────────────────────────────────────────
+# ── Task timestamp tracking ──────────────────────────────────────────
 # In-memory per-task created/started/completed timestamps. Written by the
 # dispatch tools (worker threads) and read-modified-written by the pickup
 # handlers (worker threads). Lives here alongside pickup/dispatch; server.py
 # imports these names so its dispatch tools share the same objects.
 _task_timestamps: dict[str, dict] = {}
-# TRN-123: guards all read-modify-write access to _task_timestamps. The dict is
-# written by dispatch (worker thread) and read-modified-written by pickup
-# handlers (worker threads); without this lock those accesses race.
+# Guards all read-modify-write access to _task_timestamps. The dict is written
+# by dispatch (worker thread) and read-modified-written by pickup handlers
+# (worker threads); without this lock those accesses race.
 _task_timestamps_lock = threading.Lock()
 
 
@@ -2307,7 +2342,7 @@ def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
                 reg["crews"][crew_id]["last_task_at"] = created_at
                 _save_registry(reg)
     except Exception as exc:
-        logger.warning("TRN-89: Could not update last_task_at for crew %s: %s", crew_id, exc)
+        logger.warning("Could not update last_task_at for crew %s: %s", crew_id, exc)
 
 
 def _dispatch_batch(
@@ -2317,7 +2352,7 @@ def _dispatch_batch(
     model: str | None,
     slot: str | bool | None = None,
 ) -> dict:
-    """Sequentially dispatch a batch of tasks; record a batch entry (TRN-105).
+    """Sequentially dispatch a batch of tasks; record a batch entry.
 
     Validation (size, agent, model) has already run in ``dispatch``. On the
     first CrewUnresponsiveError or unexpected failure the loop breaks and a
@@ -2476,7 +2511,7 @@ def _pickup_single(
         agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
         admiral_mail = mail_counts.get("admiral", 0)
 
-        # TRN-89 task 1: populate task timestamps
+        # Populate task timestamps
         now = datetime.now(timezone.utc)
         with _task_timestamps_lock:
             ts = _task_timestamps.get(task_id, {})
@@ -2485,10 +2520,23 @@ def _pickup_single(
                 ts["started_at"] = now.isoformat()
             if ts and done and ts.get("completed_at") is None:
                 ts["completed_at"] = now.isoformat()
-            # TRN-123: snapshot ts under the lock so the post-lock reads below
-            # see a stable copy rather than a live reference that a concurrent
-            # _pickup_single or _dispatch_batch could mutate after release.
+            # Snapshot ts under the lock so the post-lock reads below see a stable
+            # copy rather than a live reference that a concurrent _pickup_single
+            # or _dispatch_batch could mutate after release.
             ts = dict(ts)
+
+            # Evict completed-task timestamp entries older than TTL so
+            # _task_timestamps does not grow without bound over the process life.
+            _evict_cutoff = (
+                now - timedelta(seconds=_TASK_TIMESTAMP_TTL_SECS)
+            ).isoformat()
+            _to_evict = [
+                k
+                for k, v in _task_timestamps.items()
+                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
+            ]
+            for k in _to_evict:
+                _task_timestamps.pop(k, None)
 
         out: dict[str, Any] = {
             "task_id": r.get("id"),
@@ -2581,10 +2629,23 @@ def _pickup_list(
         }
         admiral_mail = mail_counts.get("admiral", 0)
 
-        # TRN-123: snapshot the timestamp entries for the listed agents under
-        # the lock, then build the response list from the snapshot so the
-        # comprehension does not read _task_timestamps concurrently with writes.
+        # Snapshot the timestamp entries for the listed agents under the lock,
+        # then build the response list from the snapshot so the comprehension
+        # does not read _task_timestamps concurrently with writes.
         with _task_timestamps_lock:
+            # Evict completed-task timestamp entries older than TTL first
+            # (reading _task_timestamps), then snapshot the survivors.
+            _evict_cutoff = (
+                datetime.now(timezone.utc)
+                - timedelta(seconds=_TASK_TIMESTAMP_TTL_SECS)
+            ).isoformat()
+            _to_evict = [
+                k
+                for k, v in _task_timestamps.items()
+                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
+            ]
+            for k in _to_evict:
+                _task_timestamps.pop(k, None)
             _ts_snapshot = {
                 a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
                 for a in agents
@@ -2601,7 +2662,7 @@ def _pickup_list(
                 "last_tool": a.get("last_tool", ""),
                 "outcome": a.get("outcome", ""),
                 "error": a.get("error", ""),
-                # TRN-89 task 1: include per-task timestamps (null if missing)
+                # Include per-task timestamps (null if missing)
                 "created_at": _ts_snapshot.get(a.get("id", ""), {}).get("created_at"),
                 "started_at": _ts_snapshot.get(a.get("id", ""), {}).get("started_at"),
                 "completed_at": _ts_snapshot.get(a.get("id", ""), {}).get("completed_at"),
@@ -2668,5 +2729,5 @@ _monitors.bind_lifecycle(
 
 
 # ── Academy validation ────────────────────────────────────────────────────────
-# _AGENTS_DIR and _validate_academy() were extracted to transport/academy.py
-# (TRN-86) and are imported at the top of this module.
+# _AGENTS_DIR and _validate_academy() live in transport/academy.py
+# and are imported at the top of this module.

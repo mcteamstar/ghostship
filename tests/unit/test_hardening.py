@@ -38,11 +38,11 @@ def _make_podman_mock(**kwargs):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TRN-136: Admiral public key is NOT injected via container-exec
+# Admiral public key is NOT injected via container-exec
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAdmiralKeyNotExecInjected(unittest.TestCase):
-    """TRN-136: the Admiral key is delivered as a read-only Podman secret at
+    """The Admiral key is delivered as a read-only Podman secret at
     container_create time, so _finish_crew_setup must NOT run any
     container-exec injection script for it."""
 
@@ -89,7 +89,7 @@ class TestAdmiralKeyNotExecInjected(unittest.TestCase):
         ]
         self.assertEqual(
             len(admiral_inject_calls), 0,
-            "TRN-136: admiral key must not be delivered via container_exec_stdin",
+            "admiral key must not be delivered via container_exec_stdin",
         )
 
 
@@ -492,12 +492,12 @@ class TestFileTransferAudit(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Admiral signing-secret file (TRN-93 Banshee fix)
+# Admiral signing-secret file
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAdmiralSigningSecretFile(unittest.TestCase):
     """The admiral private seed is persisted to a separate host-side file at
-    launch time (TRN-136: before container_create); captain reads it back so
+    launch time (before container_create); captain reads it back so
     standing orders are signed correctly."""
 
     def test_launch_writes_crew_secret_file(self) -> None:

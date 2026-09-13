@@ -1,6 +1,6 @@
-"""Unit tests for TRN-147 dispatch slot parameter.
+"""Unit tests for dispatch slot parameter.
 
-Replaces the TRN-133 ``mode`` tests. The ``mode`` parameter is gone; dispatch
+The ``mode`` parameter is gone; dispatch
 now takes ``slot: str | bool | None``:
 
   3.2  slot=None          — /api/spawn body has no parent_session, response "slot": null
