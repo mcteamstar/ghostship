@@ -153,6 +153,12 @@ class Config:
     ga_prewarm_enabled: bool = False
     ga_prewarm_ttl_secs: int = 300
 
+    # ── Fleet observability (TRN-97) ─────────────────────────────────────────
+    # Opt-in fleet dashboard container (ga-lighthouse). When False (default),
+    # the transport does NOT register the /api/crews or /api/crews/{id}/mail
+    # REST routes and no lighthouse service/route is emitted by install.sh.
+    ga_lighthouse_enabled: bool = False
+
     # ── Crew UI port allocation ───────────────────────────────────────────────
     # Dashboard access is provided exclusively by ga-portal (Caddy). The port
     # range config is retained because Portal still uses it via the transport's
@@ -283,6 +289,7 @@ class Config:
             ga_subagent_max_turns=_env_int("GA_SUBAGENT_MAX_TURNS", "200"),
             ga_prewarm_enabled=_env_bool_default_off("GA_PREWARM_ENABLED"),
             ga_prewarm_ttl_secs=_env_int("GA_PREWARM_TTL_SECS", "300"),
+            ga_lighthouse_enabled=_env_bool_default_off("GA_LIGHTHOUSE_ENABLED"),
             ga_dashboard_port_range_start=_env_int("GA_DASHBOARD_PORT_RANGE_START", "64058"),
             ga_dashboard_port_range_size=_env_int("GA_DASHBOARD_PORT_RANGE_SIZE", "1024"),
             ga_dashboard_default=os.environ.get("GA_DASHBOARD_DEFAULT", "").lower() in ("1", "true", "yes"),

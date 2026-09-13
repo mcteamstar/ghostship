@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ghostship Fleet</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2029;
+      --panel-2: #232b36;
+      --fg: #e6edf3;
+      --muted: #8b98a5;
+      --accent: #4fb0ff;
+      --ok: #3fb950;
+      --idle: #d29922;
+      --stopped: #6e7681;
+      --err: #f85149;
+      --border: #2d3540;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 1.5rem;
+      padding: 1rem 1.5rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+    header h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.02em; }
+    .metric { color: var(--muted); font-size: 0.85rem; }
+    .metric strong { color: var(--fg); }
+    #error-banner {
+      display: none;
+      margin: 0;
+      padding: 0.6rem 1.5rem;
+      background: rgba(248, 81, 73, 0.15);
+      color: var(--err);
+      border-bottom: 1px solid var(--err);
+      font-size: 0.85rem;
+    }
+    #error-banner.visible { display: block; }
+    #app {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+      padding: 1.5rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.6rem;
+    }
+    .crew-id { font-weight: 600; font-size: 1rem; }
+    .badge {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      background: var(--stopped);
+      color: #0f1419;
+      font-weight: 600;
+    }
+    .badge.active { background: var(--ok); }
+    .badge.idle { background: var(--idle); }
+    .badge.starting { background: var(--accent); }
+    .badge.stopped { background: var(--stopped); }
+    .row { color: var(--muted); font-size: 0.85rem; margin: 0.25rem 0; }
+    .row strong { color: var(--fg); font-weight: 500; }
+    .agents { margin: 0.4rem 0 0; padding: 0; list-style: none; }
+    .agents li { font-size: 0.82rem; color: var(--fg); padding: 0.1rem 0; }
+    .agents .agent-name { color: var(--accent); }
+    .card-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-top: 0.7rem;
+      padding-top: 0.6rem;
+      border-top: 1px solid var(--border);
+    }
+    .mail-badge {
+      background: var(--panel-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .mail-badge:hover { border-color: var(--accent); }
+    .mail-panel {
+      margin-top: 0.6rem;
+      background: var(--panel-2);
+      border-radius: 6px;
+      padding: 0.5rem 0.7rem;
+      font-size: 0.8rem;
+    }
+    .mail-panel .persona { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.15rem 0; }
+    .mail-panel .persona .subjects { color: var(--muted); text-align: right; }
+    a.dash-link { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
+    a.dash-link:hover { text-decoration: underline; }
+    .empty {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: var(--muted);
+      padding: 3rem 1rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>👻 Ghostship Fleet</h1>
+    <span class="metric">Crews: <strong id="m-active">–</strong> / <span id="m-max">–</span></span>
+    <span class="metric">Free memory: <strong id="m-mem">–</strong> GB</span>
+    <span class="metric" role="status" aria-live="polite">Updated: <strong id="m-updated">never</strong></span>
+  </header>
+  <p id="error-banner" role="alert"></p>
+  <main id="app"><div class="empty">Loading fleet…</div></main>
+
+  <script type="module">
+    // API key injected server-side by lighthouse/server.py (empty in open mode).
+    const API_KEY = "__API_KEY__";
+    const POLL_INTERVAL = 3000; // ms
+    const MAIL_TTL = 10000; // ms
+
+    const mailCache = new Map(); // crewId -> {ts, data}
+    const expanded = new Set();  // crewIds whose mail panel is open
+
+    function authHeaders() {
+      return API_KEY ? { "Authorization": `Bearer ${API_KEY}` } : {};
+    }
+
+    async function fetchFleet() {
+      const res = await fetch("api/crews", { headers: authHeaders() });
+      if (!res.ok) throw new Error(`GET /api/crews → ${res.status}`);
+      return res.json();
+    }
+
+    async function fetchMail(crewId) {
+      const cached = mailCache.get(crewId);
+      if (cached && (Date.now() - cached.ts) < MAIL_TTL) return cached.data;
+      const res = await fetch(`api/crews/${encodeURIComponent(crewId)}/mail`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`GET mail → ${res.status}`);
+      const data = await res.json();
+      mailCache.set(crewId, { ts: Date.now(), data });
+      return data;
+    }
+
+    function showError(msg) {
+      const el = document.getElementById("error-banner");
+      el.textContent = msg;
+      el.classList.add("visible");
+    }
+    function clearError() {
+      document.getElementById("error-banner").classList.remove("visible");
+    }
+
+    function fmtUptime(secs) {
+      if (secs == null) return "–";
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m`;
+      return `${secs}s`;
+    }
+
+    function totalUnread(mail) {
+      if (!mail || !mail.mailboxes) return 0;
+      return Object.values(mail.mailboxes).reduce((n, mb) => n + (mb.unread || 0), 0);
+    }
+
+    function render(data) {
+      const app = document.getElementById("app");
+      // header metrics
+      document.getElementById("m-active").textContent = data.active_crews ?? "–";
+      document.getElementById("m-max").textContent = data.max_active_crews ?? "–";
+      const mem = data.host_memory_available_gb;
+      document.getElementById("m-mem").textContent = (mem == null) ? "–" : mem.toFixed(1);
+      document.getElementById("m-updated").textContent = new Date().toLocaleTimeString();
+
+      const crews = (data.crews || []);
+      if (crews.length === 0) {
+        app.innerHTML = `<div class="empty">No crews found. Run <code>launch</code> to create one.</div>`;
+        return;
+      }
+
+      app.innerHTML = "";
+      for (const crew of crews) {
+        const card = document.createElement("section");
+        card.className = "card";
+
+        const status = crew.status || "unknown";
+        const agents = crew.agents || [];
+        const agentRows = agents.map(a =>
+          `<li><span class="agent-name">${a.agent || "?"}</span> · ${(a.task_id || "").slice(0, 8)} · ${fmtUptime(a.elapsed_secs)}${a.done ? " · done" : ""}</li>`
+        ).join("");
+
+        const dashUrl = window.location.origin + "/crews/" + encodeURIComponent(crew.crew_id) + "/ui/";
+
+        card.innerHTML = `
+          <div class="card-head">
+            <span class="crew-id">${crew.crew_id}</span>
+            <span class="badge ${status}">${status}</span>
+          </div>
+          <p class="row">Tasks: <strong>${agents.length}</strong> · Uptime: <strong>${fmtUptime(crew.uptime_secs)}</strong></p>
+          ${agentRows ? `<ul class="agents">${agentRows}</ul>` : ""}
+          <div class="card-foot">
+            <button class="mail-badge" aria-label="Show mail for ${crew.crew_id}">✉ Mail</button>
+            <a class="dash-link" href="${dashUrl}">Open dashboard →</a>
+          </div>
+          <div class="mail-panel" style="display:none"></div>
+        `;
+
+        const btn = card.querySelector(".mail-badge");
+        const panel = card.querySelector(".mail-panel");
+
+        async function refreshMailBadge() {
+          try {
+            const mail = await fetchMail(crew.crew_id);
+            btn.textContent = `✉ Mail (${totalUnread(mail)})`;
+            return mail;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function renderMailPanel(mail) {
+          if (!mail || !mail.mailboxes) {
+            panel.innerHTML = `<div class="persona">mail unavailable</div>`;
+            return;
+          }
+          panel.innerHTML = Object.entries(mail.mailboxes).map(([persona, mb]) =>
+            `<div class="persona"><span>${persona} <strong>(${mb.unread || 0})</strong></span>` +
+            `<span class="subjects">${(mb.subjects || []).slice(0, 3).map(s => s.replace(/</g, "&lt;")).join("; ") || "—"}</span></div>`
+          ).join("");
+        }
+
+        btn.addEventListener("click", async () => {
+          if (expanded.has(crew.crew_id)) {
+            expanded.delete(crew.crew_id);
+            panel.style.display = "none";
+            return;
+          }
+          expanded.add(crew.crew_id);
+          panel.style.display = "block";
+          const mail = await refreshMailBadge();
+          renderMailPanel(mail);
+        });
+
+        // If this crew's panel was open before the re-render, restore it.
+        if (expanded.has(crew.crew_id)) {
+          panel.style.display = "block";
+          fetchMail(crew.crew_id).then(m => { renderMailPanel(m); btn.textContent = `✉ Mail (${totalUnread(m)})`; }).catch(() => {});
+        }
+
+        app.appendChild(card);
+      }
+    }
+
+    async function tick() {
+      try {
+        const data = await fetchFleet();
+        clearError();
+        render(data);
+      } catch (e) {
+        // Do not clear existing cards on transient error — just show a banner.
+        showError(`Fleet fetch failed: ${e.message}`);
+      }
+    }
+
+    tick();
+    setInterval(tick, POLL_INTERVAL);
+  </script>
+</body>
+</html>

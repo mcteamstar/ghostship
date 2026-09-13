@@ -105,6 +105,14 @@
 # so a larger value has no effect beyond the cap. Only consulted when enabled.
 # GA_PREWARM_TTL_SECS=300
 
+# ── Fleet observability (TRN-97) ─────────────────────────────────────────────
+# Opt-in ga-lighthouse container: a read-only browser fleet dashboard served at
+# <portal-url>/lighthouse/ (crew cards, per-persona mail badges, host memory).
+# Default off — no lighthouse service/route is emitted and the transport does
+# not register the GET /api/crews or /api/crews/{id}/mail REST endpoints. Set
+# true (or 1/yes/on) to enable; install.sh builds the image automatically.
+# GA_LIGHTHOUSE_ENABLED=false
+
 # ── Memory gate ───────────────────────────────────────────────────────────────
 # Minimum free host memory (GB) required before launching a new crew.
 # Set to 0 to disable the gate entirely.

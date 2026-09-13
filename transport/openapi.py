@@ -39,6 +39,7 @@ _WILDCARD_PATH_MAP: dict[str, str] = {
     "/crews/*/ui":        "/crews/{crew_id}/ui",
     "/crews/*/api":       "/crews/{crew_id}/api",
     "/crews/*/dashboard": "/crews/{crew_id}/dashboard",
+    "/api/crews/*/mail":  "/api/crews/{crew_id}/mail",
 }
 
 # Methods that are surfaced in the schema for wildcard routes.
@@ -144,6 +145,8 @@ def _path_description(method: str, path: str, is_public: bool) -> str:
         ("GET",    "/crews/{crew_id}/api"):     "Proxy HTTP requests to a crew's MCP/API gateway",
         ("POST",   "/crews/{crew_id}/dashboard"): "Create or refresh a per-crew dashboard session",
         ("DELETE", "/crews/{crew_id}/dashboard"): "Destroy a per-crew dashboard session",
+        ("GET",    "/api/crews"):               "Fleet registry + live agent state (TRN-97 lighthouse)",
+        ("GET",    "/api/crews/{crew_id}/mail"): "Per-persona mail summary for one crew (TRN-97 lighthouse)",
         ("GET",    "/files/{crew_id}/{path}"):  "Download a file from a crew workspace (presigned-URL auth)",
         ("POST",   "/files/{crew_id}/{path}"):  "Upload a file to a crew workspace (presigned-URL auth)",
         ("POST",   "/mcp"):                     "MCP Streamable-HTTP endpoint (requires Bearer auth)",

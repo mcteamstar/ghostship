@@ -177,6 +177,15 @@ if [[ -f "$_COMPOSE_FILE" ]]; then
 else
   ${_PODMAN_CMD} rm -f ga-transport >/dev/null 2>&1 && echo "✓ ga-transport container removed" || echo "  (ga-transport was not running)"
 fi
+
+# ── Lighthouse (TRN-97) ───────────────────────────────────────────────────────
+# The compose-down path above already tears ga-lighthouse down when it is in
+# compose.yml. This gated block covers the fallback paths and removes the image,
+# and is a no-op when the fleet-observability flag was never enabled.
+if [[ "${GA_LIGHTHOUSE_ENABLED:-false}" == "true" ]]; then
+  ${_PODMAN_CMD} rm -f ga-lighthouse >/dev/null 2>&1 && echo "✓ ga-lighthouse container removed" || echo "  (ga-lighthouse was not running)"
+  ${_PODMAN_CMD} rmi -f localhost/lighthouse:latest >/dev/null 2>&1 && echo "✓ localhost/lighthouse:latest removed" || true
+fi
 ${_PODMAN_CMD} network rm ga-net >/dev/null 2>&1 && echo "✓ ga-net network removed" || echo "  (ga-net did not exist)"
 
 # ── Images ────────────────────────────────────────────────────────────────────

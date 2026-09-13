@@ -505,6 +505,19 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                     response = PlainTextResponse("Method Not Allowed", status_code=405)
                     await response(scope, receive, send)
                     return
+            # TRN-97: GET /api/crews/{crew_id}/mail (GA_API_KEY unset path)
+            if (
+                len(_parts) == 4
+                and _parts[0] == "api"
+                and _parts[1] == "crews"
+                and _parts[3] == "mail"
+            ):
+                mail_handler = self._routes.get(("GET", "/api/crews/*/mail"))
+                if mail_handler is not None:
+                    request = Request(scope, receive)
+                    response = await mail_handler(request)
+                    await response(scope, receive, send)
+                    return
             await self.app(scope, receive, send)
             return
 
@@ -621,6 +634,20 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                     return
             else:
                 response = PlainTextResponse("Method Not Allowed", status_code=405)
+                await response(scope, receive, send)
+                return
+
+        # TRN-97: GET /api/crews/{crew_id}/mail (keyed path — auth already passed above)
+        if (
+            len(path_parts) == 4
+            and path_parts[0] == "api"
+            and path_parts[1] == "crews"
+            and path_parts[3] == "mail"
+        ):
+            mail_handler = self._routes.get(("GET", "/api/crews/*/mail"))
+            if mail_handler is not None:
+                request = Request(scope, receive)
+                response = await mail_handler(request)
                 await response(scope, receive, send)
                 return
 
