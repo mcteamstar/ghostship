@@ -539,5 +539,193 @@ class DownloadRegressionTests(unittest.TestCase):
             self.assertNotIn(b"\x00\xff\x02", diff)
 
 
+class EvacUnpackSigningTests(unittest.TestCase):
+    """TRN-164: unpack flag is included in HMAC payload for GET tokens."""
+
+    def _extract_sig_and_params(self, url: str) -> tuple[str, dict]:
+        """Parse the query parameters and return (sig, remaining params dict)."""
+        from urllib.parse import urlsplit, parse_qs
+        parts = urlsplit(url)
+        params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+        sig = params.pop("sig")
+        return sig, params
+
+    def test_sign_file_url_with_unpack_includes_unpack_in_url(self) -> None:
+        """5.1(a) - Token signed with unpack=True must include 'unpack' in URL."""
+        import transport.files as _files
+
+        url_plain = _files._sign_file_url("crew1", "subagent_abc", unpack=False)
+        url_unpack = _files._sign_file_url("crew1", "subagent_abc", unpack=True)
+
+        sig_plain, params_plain = self._extract_sig_and_params(url_plain)
+        sig_unpack, params_unpack = self._extract_sig_and_params(url_unpack)
+
+        # Different signatures (different HMAC payloads)
+        self.assertNotEqual(sig_plain, sig_unpack)
+        # unpack=1 present in unpack URL, absent in plain URL
+        self.assertIn("unpack", params_unpack)
+        self.assertEqual(params_unpack["unpack"], "1")
+        self.assertNotIn("unpack", params_plain)
+
+    def test_sign_file_url_with_unpack_false_omits_unpack_from_url(self) -> None:
+        """5.1(b) - Token signed with unpack=False must NOT include 'unpack' in URL."""
+        import transport.files as _files
+
+        url = _files._sign_file_url("crew1", "output_dir", unpack=False)
+        self.assertNotIn("unpack=", url)
+
+    def test_verify_file_token_rejects_plain_token_presented_as_unpack(self) -> None:
+        """5.2(a) - A token signed with unpack=False is rejected when presented with unpack=True."""
+        import transport.files as _files
+        from urllib.parse import urlsplit, parse_qs
+
+        # Sign with unpack=False
+        url = _files._sign_file_url("crew1", "subagent_abc", unpack=False)
+        parts = urlsplit(url)
+        params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+
+        # Present the token as if unpack=True (replay attack)
+        result = _files._verify_file_token(
+            crew_id="crew1",
+            path="subagent_abc",
+            expires=params["expires"],
+            sig=params["sig"],
+            unpack=True,  # attacker adds unpack
+        )
+        self.assertFalse(result)
+
+    def test_verify_file_token_rejects_unpack_token_presented_as_plain(self) -> None:
+        """5.2(b) - A token signed with unpack=True is rejected when presented without unpack."""
+        import transport.files as _files
+        from urllib.parse import urlsplit, parse_qs
+
+        # Sign with unpack=True
+        url = _files._sign_file_url("crew1", "subagent_abc", unpack=True)
+        parts = urlsplit(url)
+        params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+
+        # Present the token without unpack (stripped from query)
+        result = _files._verify_file_token(
+            crew_id="crew1",
+            path="subagent_abc",
+            expires=params["expires"],
+            sig=params["sig"],
+            unpack=False,  # unpack stripped
+        )
+        self.assertFalse(result)
+
+    def test_verify_file_token_accepts_matching_unpack_token(self) -> None:
+        """5.2(c) - A token signed with unpack=True is accepted when presented with unpack=True."""
+        import transport.files as _files
+        from urllib.parse import urlsplit, parse_qs
+
+        url = _files._sign_file_url("crew1", "subagent_abc", unpack=True)
+        parts = urlsplit(url)
+        params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+
+        result = _files._verify_file_token(
+            crew_id="crew1",
+            path="subagent_abc",
+            expires=params["expires"],
+            sig=params["sig"],
+            unpack=True,
+        )
+        self.assertTrue(result)
+
+
+class HandleFileGetUnpackTests(unittest.IsolatedAsyncioTestCase):
+    """TRN-164: _handle_file_get unpack mode returns raw tar stream."""
+
+    def _build_unpack_request(self, path: str, also_bundle: bool = False) -> object:
+        """Build a fake Request with a validly-signed unpack token."""
+        import transport.files as _files
+        from urllib.parse import urlsplit, parse_qs
+
+        url = _files._sign_file_url("testcrew", path, unpack=True)
+        parts = urlsplit(url)
+        params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+        if also_bundle:
+            params["bundle"] = "1"
+
+        class FakeQueryParams:
+            def __init__(self, d: dict) -> None:
+                self._d = d
+
+            def get(self, key: str, default: str = "") -> str:
+                return self._d.get(key, default)
+
+        class FakeRequest:
+            path_params = {"crew_id": "testcrew", "path": path}
+            query_params = FakeQueryParams(params)
+
+        return FakeRequest()
+
+    async def test_unpack_running_crew_returns_raw_tar_with_correct_content_type(self) -> None:
+        """5.3 - _handle_file_get with unpack=True returns application/x-tar StreamingResponse."""
+        import transport.files as _files
+
+        raw_tar_chunks = [b"tar_chunk_1", b"tar_chunk_2"]
+
+        class FakeArchiveResponse:
+            status_code = 200
+
+            def iter_bytes(self):
+                yield from raw_tar_chunks
+
+            def close(self):
+                pass
+
+        def fake_archive_get(container: str, path: str) -> FakeArchiveResponse:
+            return FakeArchiveResponse()
+
+        def fake_is_running(container: str) -> bool:
+            return True
+
+        fake_podman = object.__new__(server.PodmanClient)
+        fake_podman.container_archive_get = fake_archive_get
+        fake_podman.container_is_running = fake_is_running
+
+        fake_crew = {"container": "gs-testcrew"}
+        req = self._build_unpack_request("subagent_abc")
+
+        with (
+            unittest.mock.patch.object(_files._lifecycle, "_require_crew", return_value=fake_crew),
+            unittest.mock.patch.object(_files._lifecycle, "_ensure_crew_running", return_value=fake_crew),
+            unittest.mock.patch.object(_files, "_get_podman", return_value=fake_podman),
+            unittest.mock.patch.object(_files, "KIRO_WORKSPACE_ROOT", "/workspace"),
+        ):
+            response = await _files._handle_file_get(req)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.media_type, "application/x-tar")
+
+    async def test_unpack_and_bundle_both_set_returns_400(self) -> None:
+        """5.4 - _handle_file_get with unpack=True AND bundle=True returns 400."""
+        import transport.files as _files
+        from urllib.parse import urlsplit, parse_qs
+
+        # Build a request with conflicting params (400 fires before token verification)
+        url = _files._sign_file_url("testcrew", "subagent_abc")
+        parts = urlsplit(url)
+        params = {k: v[0] for k, v in parse_qs(parts.query).items()}
+        params["unpack"] = "1"
+        params["bundle"] = "1"
+
+        class FakeQueryParams:
+            def __init__(self, d: dict) -> None:
+                self._d = d
+
+            def get(self, key: str, default: str = "") -> str:
+                return self._d.get(key, default)
+
+        class FakeRequest:
+            path_params = {"crew_id": "testcrew", "path": "subagent_abc"}
+            query_params = FakeQueryParams(params)
+
+        response = await _files._handle_file_get(FakeRequest())
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"unpack and bundle", response.body)
+
+
 if __name__ == "__main__":
     unittest.main()
