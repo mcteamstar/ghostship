@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 from typing import Any
 
@@ -725,6 +726,44 @@ class HandleFileGetUnpackTests(unittest.IsolatedAsyncioTestCase):
         response = await _files._handle_file_get(FakeRequest())
         self.assertEqual(response.status_code, 400)
         self.assertIn(b"unpack and bundle", response.body)
+
+    async def test_unpack_stopped_crew_returns_raw_tar_with_correct_content_type(self) -> None:
+        """Stopped-crew unpack path: _handle_file_get returns application/x-tar StreamingResponse."""
+        import transport.files as _files
+
+        raw_tar_chunks = [b"stopped_tar_chunk_1", b"stopped_tar_chunk_2"]
+
+        class FakeArchiveResponse:
+            status_code = 200
+
+            def iter_bytes(self):
+                yield from raw_tar_chunks
+
+            def close(self):
+                pass
+
+        def fake_archive_get(container: str, path: str) -> FakeArchiveResponse:
+            return FakeArchiveResponse()
+
+        def fake_is_running(container: str) -> bool:
+            return False  # crew is stopped
+
+        fake_podman = object.__new__(server.PodmanClient)
+        fake_podman.container_archive_get = fake_archive_get
+        fake_podman.container_is_running = fake_is_running
+
+        fake_crew = {"container": "gs-testcrew"}
+        req = self._build_unpack_request("subagent_abc")
+
+        with (
+            unittest.mock.patch.object(_files._lifecycle, "_require_crew", return_value=fake_crew),
+            unittest.mock.patch.object(_files, "_get_podman", return_value=fake_podman),
+            unittest.mock.patch.object(_files, "KIRO_WORKSPACE_ROOT", "/workspace"),
+        ):
+            response = await _files._handle_file_get(req)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.media_type, "application/x-tar")
 
 
 if __name__ == "__main__":

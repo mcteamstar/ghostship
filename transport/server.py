@@ -2275,6 +2275,9 @@ def evac(
                 Useful for evacuating multi-file output (generated reports,
                 build artefact trees, subagent working directories, etc.).
                 Example: curl -s "<url>" -o ./output.tar
+                Note: prefer a specific subdirectory (e.g. subagent_<id>/) over
+                the workspace root — large tars stream for the full URL TTL
+                (300 s) and callers should scope the path accordingly.
 
     Note: unpack and bundle cannot both be True.
     """
