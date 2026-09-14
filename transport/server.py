@@ -2250,8 +2250,9 @@ def evac(
     ref: str | None = None,
     crew_id: str | None = None,
     bundle: bool = False,
+    unpack: bool = False,
 ) -> dict:
-    """Step 5: extract results, diffs, or a git bundle — extract files, diffs, or git bundles from a crew workspace.
+    """Step 5: extract results, diffs, a git bundle, or a directory tar — extract files, diffs, git bundles, or directory trees from a crew workspace.
 
     Always evac before nuking — nuke is irreversible and the workspace is gone.
     Pairs with supply as the complete file exchange protocol for crew workspaces.
@@ -2263,12 +2264,26 @@ def evac(
 
     Args:
         path: File path relative to the workspace root, or a directory
-              containing a git repository when bundle=True.
+              containing a git repository when bundle=True, or a directory
+              to extract as a tar archive when unpack=True.
         ref: Optional git ref/range to diff against, or to bundle. With
              bundle=True and no ref, all reachable refs are bundled.
         crew_id: Which crew workspace to read from. Required.
         bundle: If True, return a git bundle instead of a file or diff.
+        unpack: If True, return a tar archive of the named directory instead
+                of a single file. The response Content-Type is application/x-tar.
+                Useful for evacuating multi-file output (generated reports,
+                build artefact trees, subagent working directories, etc.).
+                Example: curl -s "<url>" -o ./output.tar
+                Note: prefer a specific subdirectory (e.g. subagent_<id>/) over
+                the workspace root — large tars stream for the full URL TTL
+                (300 s) and callers should scope the path accordingly.
+
+    Note: unpack and bundle cannot both be True.
     """
+    if unpack and bundle:
+        return {"error": "unpack and bundle cannot both be True"}
+
     clean = path.lstrip("/")
     if not clean:
         return {"error": "path must not be empty"}
@@ -2280,12 +2295,13 @@ def evac(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    url = _sign_file_url(crew_id, clean, ref, bundle)
+    url = _sign_file_url(crew_id, clean, ref, bundle, unpack)
     _security.audit_auth_event(action="presign_evac", outcome="issued", source=None)
     result = {
         "crew_id": crew_id,
         "path": path,
         "bundle": bundle,
+        "unpack": unpack,
         "expires_secs": 300,
     }
     if ref:

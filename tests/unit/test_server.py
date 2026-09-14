@@ -3945,3 +3945,56 @@ class ResourceOrdersByNameTests(unittest.TestCase):
 
         self.assertIn("Not found", result)
         self.assertIn("nonexistent", result)
+
+
+class EvacUnpackMCPToolTests(unittest.TestCase):
+    """TRN-164: evac() MCP tool with unpack=True."""
+
+    def _make_fake_crew(self) -> dict:
+        return {"container": "gs-testcrew", "status": "running"}
+
+    def test_evac_unpack_true_returns_unpack_in_result_and_url(self) -> None:
+        """5.5 - evac(unpack=True) returns dict with 'unpack': True and URL contains '&unpack=1'."""
+        fake_crew = self._make_fake_crew()
+        with (
+            patch.object(server, "_require_crew", return_value=fake_crew),
+            patch.object(server, "_ensure_crew_running", return_value=fake_crew),
+        ):
+            result = server.evac(path="subagent_abc", crew_id="testcrew", unpack=True)
+
+        self.assertNotIn("error", result)
+        self.assertTrue(result.get("unpack"))
+        self.assertIn("&unpack=1", result["url"])
+        # Confirm bundle is False (default)
+        self.assertFalse(result.get("bundle"))
+
+    def test_evac_unpack_false_default_omits_unpack_from_url(self) -> None:
+        """5.5(b) - evac() without unpack has unpack=False and no &unpack=1 in URL."""
+        fake_crew = self._make_fake_crew()
+        with (
+            patch.object(server, "_require_crew", return_value=fake_crew),
+            patch.object(server, "_ensure_crew_running", return_value=fake_crew),
+        ):
+            result = server.evac(path="subagent_abc", crew_id="testcrew")
+
+        self.assertNotIn("error", result)
+        self.assertFalse(result.get("unpack"))
+        self.assertNotIn("&unpack=1", result["url"])
+
+    def test_evac_unpack_and_bundle_both_true_returns_error(self) -> None:
+        """5.6 - evac(unpack=True, bundle=True) returns error without presigning."""
+        fake_crew = self._make_fake_crew()
+        with (
+            patch.object(server, "_require_crew", return_value=fake_crew),
+            patch.object(server, "_ensure_crew_running", return_value=fake_crew),
+            patch.object(server, "_sign_file_url") as mock_sign,
+        ):
+            result = server.evac(
+                path="subagent_abc", crew_id="testcrew", unpack=True, bundle=True
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("unpack", result["error"])
+        self.assertIn("bundle", result["error"])
+        # _sign_file_url must NOT have been called
+        mock_sign.assert_not_called()
