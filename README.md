@@ -2,6 +2,8 @@
 
 *Launch Ghostships from the Ghost Academy and command the crew.*
 
+![Ghostship demo](docs/images/ghostship-demo.gif)
+
 A multi-agent orchestration system for [KiroCrew](https://github.com/kirodotdev/KiroCrew) over MCP.
 Customise agent personas, skills and steering, then send them out into the unknown.
 Runs locally and remotely on macOS or Linux using Podman.
