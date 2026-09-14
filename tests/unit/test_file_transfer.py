@@ -541,7 +541,7 @@ class DownloadRegressionTests(unittest.TestCase):
 
 
 class EvacUnpackSigningTests(unittest.TestCase):
-    """TRN-164: unpack flag is included in HMAC payload for GET tokens."""
+    """TRN-164: pack flag is included in HMAC payload for GET tokens."""
 
     def _extract_sig_and_params(self, url: str) -> tuple[str, dict]:
         """Parse the query parameters and return (sig, remaining params dict)."""
@@ -552,36 +552,36 @@ class EvacUnpackSigningTests(unittest.TestCase):
         return sig, params
 
     def test_sign_file_url_with_unpack_includes_unpack_in_url(self) -> None:
-        """5.1(a) - Token signed with unpack=True must include 'unpack' in URL."""
+        """5.1(a) - Token signed with pack=True must include 'pack' in URL."""
         import transport.files as _files
 
-        url_plain = _files._sign_file_url("crew1", "subagent_abc", unpack=False)
-        url_unpack = _files._sign_file_url("crew1", "subagent_abc", unpack=True)
+        url_plain = _files._sign_file_url("crew1", "subagent_abc", pack=False)
+        url_unpack = _files._sign_file_url("crew1", "subagent_abc", pack=True)
 
         sig_plain, params_plain = self._extract_sig_and_params(url_plain)
         sig_unpack, params_unpack = self._extract_sig_and_params(url_unpack)
 
         # Different signatures (different HMAC payloads)
         self.assertNotEqual(sig_plain, sig_unpack)
-        # unpack=1 present in unpack URL, absent in plain URL
-        self.assertIn("unpack", params_unpack)
-        self.assertEqual(params_unpack["unpack"], "1")
-        self.assertNotIn("unpack", params_plain)
+        # pack=1 present in unpack URL, absent in plain URL
+        self.assertIn("pack", params_unpack)
+        self.assertEqual(params_unpack["pack"], "1")
+        self.assertNotIn("pack", params_plain)
 
     def test_sign_file_url_with_unpack_false_omits_unpack_from_url(self) -> None:
-        """5.1(b) - Token signed with unpack=False must NOT include 'unpack' in URL."""
+        """5.1(b) - Token signed with pack=False must NOT include 'pack' in URL."""
         import transport.files as _files
 
-        url = _files._sign_file_url("crew1", "output_dir", unpack=False)
+        url = _files._sign_file_url("crew1", "output_dir", pack=False)
         self.assertNotIn("unpack=", url)
 
     def test_verify_file_token_rejects_plain_token_presented_as_unpack(self) -> None:
-        """5.2(a) - A token signed with unpack=False is rejected when presented with unpack=True."""
+        """5.2(a) - A token signed with pack=False is rejected when presented with unpack=True."""
         import transport.files as _files
         from urllib.parse import urlsplit, parse_qs
 
         # Sign with unpack=False
-        url = _files._sign_file_url("crew1", "subagent_abc", unpack=False)
+        url = _files._sign_file_url("crew1", "subagent_abc", pack=False)
         parts = urlsplit(url)
         params = {k: v[0] for k, v in parse_qs(parts.query).items()}
 
@@ -591,36 +591,36 @@ class EvacUnpackSigningTests(unittest.TestCase):
             path="subagent_abc",
             expires=params["expires"],
             sig=params["sig"],
-            unpack=True,  # attacker adds unpack
+            pack=True,  # attacker adds pack
         )
         self.assertFalse(result)
 
     def test_verify_file_token_rejects_unpack_token_presented_as_plain(self) -> None:
-        """5.2(b) - A token signed with unpack=True is rejected when presented without unpack."""
+        """5.2(b) - A token signed with pack=True is rejected when presented without pack."""
         import transport.files as _files
         from urllib.parse import urlsplit, parse_qs
 
         # Sign with unpack=True
-        url = _files._sign_file_url("crew1", "subagent_abc", unpack=True)
+        url = _files._sign_file_url("crew1", "subagent_abc", pack=True)
         parts = urlsplit(url)
         params = {k: v[0] for k, v in parse_qs(parts.query).items()}
 
-        # Present the token without unpack (stripped from query)
+        # Present the token without pack (stripped from query)
         result = _files._verify_file_token(
             crew_id="crew1",
             path="subagent_abc",
             expires=params["expires"],
             sig=params["sig"],
-            unpack=False,  # unpack stripped
+            pack=False,  # pack stripped
         )
         self.assertFalse(result)
 
     def test_verify_file_token_accepts_matching_unpack_token(self) -> None:
-        """5.2(c) - A token signed with unpack=True is accepted when presented with unpack=True."""
+        """5.2(c) - A token signed with pack=True is accepted when presented with unpack=True."""
         import transport.files as _files
         from urllib.parse import urlsplit, parse_qs
 
-        url = _files._sign_file_url("crew1", "subagent_abc", unpack=True)
+        url = _files._sign_file_url("crew1", "subagent_abc", pack=True)
         parts = urlsplit(url)
         params = {k: v[0] for k, v in parse_qs(parts.query).items()}
 
@@ -629,7 +629,7 @@ class EvacUnpackSigningTests(unittest.TestCase):
             path="subagent_abc",
             expires=params["expires"],
             sig=params["sig"],
-            unpack=True,
+            pack=True,
         )
         self.assertTrue(result)
 
@@ -642,7 +642,7 @@ class HandleFileGetUnpackTests(unittest.IsolatedAsyncioTestCase):
         import transport.files as _files
         from urllib.parse import urlsplit, parse_qs
 
-        url = _files._sign_file_url("testcrew", path, unpack=True)
+        url = _files._sign_file_url("testcrew", path, pack=True)
         parts = urlsplit(url)
         params = {k: v[0] for k, v in parse_qs(parts.query).items()}
         if also_bundle:
@@ -709,7 +709,7 @@ class HandleFileGetUnpackTests(unittest.IsolatedAsyncioTestCase):
         url = _files._sign_file_url("testcrew", "subagent_abc")
         parts = urlsplit(url)
         params = {k: v[0] for k, v in parse_qs(parts.query).items()}
-        params["unpack"] = "1"
+        params["pack"] = "1"
         params["bundle"] = "1"
 
         class FakeQueryParams:
@@ -725,7 +725,7 @@ class HandleFileGetUnpackTests(unittest.IsolatedAsyncioTestCase):
 
         response = await _files._handle_file_get(FakeRequest())
         self.assertEqual(response.status_code, 400)
-        self.assertIn(b"unpack and bundle", response.body)
+        self.assertIn(b"pack and bundle", response.body)
 
     async def test_unpack_stopped_crew_returns_raw_tar_with_correct_content_type(self) -> None:
         """Stopped-crew unpack path: _handle_file_get returns application/x-tar StreamingResponse."""

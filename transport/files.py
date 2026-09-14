@@ -163,11 +163,11 @@ def _sign_file_url(
     path: str,
     ref: str | None = None,
     bundle: bool = False,
-    unpack: bool = False,
+    pack: bool = False,
 ) -> str:
     """Return a short-lived presigned URL for a crew workspace file or bundle."""
     expires = int(time.time()) + 300
-    flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and bundle) or (f == "unpack" and unpack)))
+    flags = ":".join(sorted(f for f in ["bundle", "pack"] if (f == "bundle" and bundle) or (f == "pack" and pack)))
     payload = f"{crew_id}:{path}:{expires}:GET:{ref or ''}:{flags}"
     sig = hmac.new(_FILE_SECRET.encode(), payload.encode(), digestmod=hashlib.sha256).hexdigest()
     base = _resolve_public_url_base()
@@ -176,8 +176,8 @@ def _sign_file_url(
         url += f"&ref={quote(ref, safe='/')}"
     if bundle:
         url += "&bundle=1"
-    if unpack:
-        url += "&unpack=1"
+    if pack:
+        url += "&pack=1"
     return url
 
 
@@ -190,7 +190,7 @@ def _verify_file_token(
     bundle: bool = False,
     mode: str | None = None,
     force: bool = False,
-    unpack: bool = False,
+    pack: bool = False,
 ) -> bool:
     """Verify a presigned file URL token. Returns False if invalid or expired."""
     try:
@@ -202,7 +202,7 @@ def _verify_file_token(
         _security.audit_auth_event(action="verify_file_token", outcome="expired", source=None)
         return False
     # Unified payload format: {crew_id}:{path}:{expires}:{method}:{ref}:{flags}
-    # flags is a sorted colon-joined set of active boolean options (bundle, force, unpack).
+    # flags is a sorted colon-joined set of active boolean options (bundle, force, unpack for POST; bundle, pack for GET).
     # mode=None means GET (download); mode is a string ("", "unpack", "bundle") for POST (upload).
     if mode is not None:
         # Upload (POST) path — reconstruct flags the same way _sign_upload_url does
@@ -210,7 +210,7 @@ def _verify_file_token(
         payload = f"{crew_id}:{path}:{exp}:POST::{flags}"
     else:
         # Download (GET) path
-        flags = ":".join(sorted(f for f in ["bundle", "unpack"] if (f == "bundle" and bundle) or (f == "unpack" and unpack)))
+        flags = ":".join(sorted(f for f in ["bundle", "pack"] if (f == "bundle" and bundle) or (f == "pack" and pack)))
         payload = f"{crew_id}:{path}:{exp}:GET:{ref or ''}:{flags}"
     expected = hmac.new(_FILE_SECRET.encode(), payload.encode(), digestmod=hashlib.sha256).hexdigest()
     if hmac.compare_digest(expected, sig):
@@ -522,24 +522,24 @@ async def _handle_file_get(request: Request) -> Response:
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac> — stream file
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&ref=HEAD — diff
     GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&bundle=1 — git bundle
-    GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&unpack=1 — directory tar
+    GET /files/{crew_id}/{path}?expires=<ts>&sig=<hmac>&pack=1 — directory tar
     Token is short-lived (300, default 5 min).
     """
     crew_id = request.path_params.get("crew_id", "")
     path = request.path_params.get("path", "")
     ref = request.query_params.get("ref")
     bundle = request.query_params.get("bundle", "0") in ("1", "true", "yes")
-    unpack = request.query_params.get("unpack", "0") in ("1", "true", "yes")
+    pack = request.query_params.get("pack", "0") in ("1", "true", "yes")
     expires = request.query_params.get("expires", "")
     sig = request.query_params.get("sig", "")
 
     if not CREW_ID_RE.fullmatch(crew_id):
         return PlainTextResponse("Invalid crew_id", status_code=400)
 
-    if unpack and bundle:
-        return PlainTextResponse("unpack and bundle cannot both be enabled", status_code=400)
+    if pack and bundle:
+        return PlainTextResponse("pack and bundle cannot both be enabled", status_code=400)
 
-    if not _verify_file_token(crew_id, path, expires, sig, ref, bundle, unpack=unpack):
+    if not _verify_file_token(crew_id, path, expires, sig, ref, bundle, pack=pack):
         return PlainTextResponse("Forbidden", status_code=403)
 
     # SEC-01: validate ref before any git invocation
@@ -591,7 +591,7 @@ async def _handle_file_get(request: Request) -> Response:
                     podman, crew_id, "repo", ref, pathspec=repo_pathspec
                 )
                 return PlainTextResponse(out, media_type="text/plain")
-            if unpack:
+            if pack:
                 # Directory extraction from a stopped crew: use the Podman archive
                 # API directly (same path as stopped-crew plain-file evac). The
                 # Podman archive API operates on both running and stopped containers
@@ -705,7 +705,7 @@ async def _handle_file_get(request: Request) -> Response:
                 ["git", "-C", os.path.join(ws, "repo"), "diff", ref, "--", repo_path],
             )
             return PlainTextResponse(out, media_type="text/plain")
-        if unpack:
+        if pack:
             archive_response = podman.container_archive_get(
                 crew["container"], f"{ws}/{clean}"
             )
