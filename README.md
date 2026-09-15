@@ -56,15 +56,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts the transport and Caddy proxy on `localhost:64057`. Then wire it into your agent harness:
-
-```bash
-ghostship setup
-```
-
-This registers the MCP server and installs skill symlinks for detected harnesses (kiro-cli, Claude Code, opencode). It is idempotent — safe to re-run.
-
-Before your first `launch`, authenticate:
+Builds crew images, starts the transport and Caddy proxy on `localhost:64057`. Then [connect your harness](#connecting-to-a-harness) and authenticate:
 
 ```bash
 ghostship auth login
@@ -82,7 +74,7 @@ https://github.com/mcteamstar/ghostship
 ```
 The `ghostship-admin` skill walks you through the rest.
 
-**kiro-cli / Claude Code / opencode:** run `ghostship setup` after `./install.sh` — it handles everything automatically.
+**kiro-cli / Claude Code / opencode:** run `ghostship setup` after `./install.sh` — it registers the MCP server and installs skill symlinks automatically.
 
 For manual wiring, keyed deployments, and remote transports: [docs/configuration.md](docs/configuration.md).
 
