@@ -1,6 +1,6 @@
 ![Ghostship](docs/images/ghostship.png)
 
-*Launch Ghostships from the Ghost Academy and command the crew.*
+*Launch Ghostships and command the crew.*
 
 A multi-agent orchestration system for [KiroCrew](https://github.com/kirodotdev/KiroCrew) over MCP.
 Customise agent personas, skills and steering, then send them out into the unknown.
@@ -13,25 +13,29 @@ Runs locally and remotely on macOS or Linux using Podman.
 claude plugin marketplace add mcteamstar/ghostship
 claude plugin install ghostship@ghostship
 ```
-Use `/ghostship-admin` for guided local setup, `/ghostship-capability` to customise the academy, and `/ghostship-command` to drive the fleet. See [Install](#install) below for full steps.
+Use `/ghostship-admin` for guided local setup, `/ghostship-command` to drive the fleet, and `/ghostship-capability` to customise agents and crews. See [Install](#install) below for full steps.
 
 ## Why Ghostship?
 
-KiroCrew is built for long-horizon multi-agent tasks, but running it on your desktop gives you one instance, directly on your filesystem, with limited isolation between crewmates.
+KiroCrew is built for long-lived agent sessions, but running it on your desktop gives you one instance, directly on your filesystem, with limited isolation between crewmates.
 
-Ghostship runs each crew in its own container with a dedicated Podman volume. Each ship is a durable workspace — summoned once (`launch`), reusable across many features, idle-managed when not in use, and cleanly destroyable (`nuke`) at any time.
+Ghostship runs each crew in its own container with a dedicated Podman volume. Each ship is a durable workspace, summoned once (`launch`), reusable across many features, idle-managed when not in use, and cleanly destroyable (`nuke`) at any time.
 
 As **Admiral**, command your crews over MCP from any agent. Delegate to the crew's **Captain** or be the captain yourself. All ships in your *fleet* run side-by-side without colliding and can be tailored to your tactical needs.
 
-The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Agents default to `gpt-5.6-luna` — configurable and overridable (see [docs/configuration.md](docs/configuration.md)).
+The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Agents default to `gpt-5.6-luna` (configurable and overridable; see [docs/configuration.md](docs/configuration.md)).
+
+![Ghostship demo: launch three crews, close the session, come back later, pick up results, nuke](docs/images/demo.gif)
+
+*KiroCrew inside of KiroCrew via Ghostship (sped up)*
 
 ### Why Not...
 
-**Subagents?** Subagents share your live workspace and session. Crew members are isolated KiroCrew subagents running on a ghostship with their own volumes.
+**Subagents?** Subagents die with the session that spawned them. Crew members run in their own container and volume: launch a crew, close the session, come back later and pick up the results.
 
-**Cloud Agents?** Cloud agents run on infrastructure outside your control. Ghostship images are customisable within a security boundary you own, and can be hosted remotely.
+**Cloud Agents?** Cloud agents run on infrastructure outside your control. Ghostship images are yours: customisable within a security boundary you own, hostable remotely.
 
-**Agent Harnesses?** Ghostship is exactly the DIY orchestration layer for KiroCrew — parallelism, concurrency, inter-agent communication — consumable by any agent over MCP.
+**Agent Harnesses?** Ghostship is the DIY orchestration layer for KiroCrew: parallelism, concurrency, and inter-agent messaging, consumable by any agent over MCP.
 
 ## Install
 
@@ -189,11 +193,3 @@ Registered as `ghostship`:
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, remote deployment, extending the crew image
 - [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions, auth upgrade paths
 - [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
-
-### Route reference
-
-The transport serves an OpenAPI 3.1.0 schema at **`GET /openapi.json`** (no auth required):
-
-```bash
-curl -s http://localhost:64057/openapi.json | jq .paths
-```
