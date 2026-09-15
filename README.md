@@ -56,15 +56,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts the transport and Caddy proxy on `localhost:64057`. Then [connect your harness](#connecting-to-a-harness) and authenticate:
-
-```bash
-ghostship auth login
-```
-
-Full install options — API keys, client-only installs, remote deployments, repeatable config: [docs/configuration.md](docs/configuration.md).
-
-### Connecting to a harness
+Builds crew images, starts the transport and Caddy proxy on `localhost:64057`. Then connect your harness:
 
 **Kiro (via Power):**
 
@@ -76,7 +68,13 @@ The `ghostship-admin` skill walks you through the rest.
 
 **kiro-cli / Claude Code / opencode:** run `ghostship setup` after `./install.sh` — it registers the MCP server and installs skill symlinks automatically.
 
-For manual wiring, keyed deployments, and remote transports: [docs/configuration.md](docs/configuration.md).
+Then authenticate:
+
+```bash
+ghostship auth login
+```
+
+Full install options — API keys, client-only installs, remote deployments, repeatable config: [docs/configuration.md](docs/configuration.md).
 
 ### Skills
 
