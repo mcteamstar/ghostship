@@ -8,7 +8,7 @@ Runs locally and remotely on macOS or Linux using Podman.
 
 [![tests](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml/badge.svg)](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml)
 
-**Fastest path (Claude Code):**
+**Quick Install (Claude Code):**
 ```bash
 claude plugin marketplace add mcteamstar/ghostship
 claude plugin install ghostship@ghostship
