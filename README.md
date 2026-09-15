@@ -1,6 +1,6 @@
 ![Ghostship](docs/images/ghostship.png)
 
-*Launch Ghostships from the Ghost Academy and command the crew.*
+*Launch Ghostships and command the crew.*
 
 A multi-agent orchestration system for [KiroCrew](https://github.com/kirodotdev/KiroCrew) over MCP.
 Customise agent personas, skills and steering, then send them out into the unknown.
@@ -8,30 +8,34 @@ Runs locally and remotely on macOS or Linux using Podman.
 
 [![tests](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml/badge.svg)](https://github.com/mcteamstar/ghostship/actions/workflows/test.yml)
 
-**Quick install (Claude Code plugin):**
+**Fastest path (Claude Code):**
 ```bash
 claude plugin marketplace add mcteamstar/ghostship
 claude plugin install ghostship@ghostship
 ```
-Use `/ghostship-admin` for guided local setup, `/ghostship-capability` to customise the academy, and `/ghostship-command` to drive the fleet. See [Install](#install) below for full steps.
+Use `/ghostship-admin` for guided local setup, `/ghostship-command` to drive the fleet, and `/ghostship-capability` to customise agents and crews. See [Install](#install) below for full steps.
 
 ## Why Ghostship?
 
-KiroCrew is built for long-horizon multi-agent tasks, but running it on your desktop gives you one instance, directly on your filesystem, with limited isolation between crewmates.
+KiroCrew is built for long-lived agent sessions, but running it on your desktop gives you one instance, directly on your filesystem, with limited isolation between crewmates.
 
-Ghostship runs each crew in its own container with a dedicated Podman volume. Each ship is a durable workspace — summoned once (`launch`), reusable across many features, idle-managed when not in use, and cleanly destroyable (`nuke`) at any time.
+Ghostship runs each crew in its own container with a dedicated Podman volume. Each ship is a durable workspace, summoned once (`launch`), reusable across many features, idle-managed when not in use, and cleanly destroyable (`nuke`) at any time.
 
 As **Admiral**, command your crews over MCP from any agent. Delegate to the crew's **Captain** or be the captain yourself. All ships in your *fleet* run side-by-side without colliding and can be tailored to your tactical needs.
 
-The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Agents default to `gpt-5.6-luna` — configurable and overridable (see [docs/configuration.md](docs/configuration.md)).
+The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Agents default to `gpt-5.6-luna` (configurable and overridable; see [docs/configuration.md](docs/configuration.md)).
+
+![Ghostship demo: launch three crews, close the session, come back later, pick up results, nuke](docs/images/demo.gif)
+
+*KiroCrew inside of KiroCrew via Ghostship (sped up)*
 
 ### Why Not...
 
-**Subagents?** Subagents share your live workspace and session. Crew members are isolated KiroCrew subagents running on a ghostship with their own volumes.
+**Subagents?** Subagents die with the session that spawned them. Crew members run in their own container and volume: launch a crew, close the session, come back later and pick up the results.
 
-**Cloud Agents?** Cloud agents run on infrastructure outside your control. Ghostship images are customisable within a security boundary you own, and can be hosted remotely.
+**Cloud Agents?** Cloud agents run on infrastructure outside your control. Ghostship images are yours: customisable within a security boundary you own, hostable remotely.
 
-**Agent Harnesses?** Ghostship is exactly the DIY orchestration layer for KiroCrew — parallelism, concurrency, inter-agent communication — consumable by any agent over MCP.
+**Agent Harnesses?** Ghostship is the DIY orchestration layer for KiroCrew: parallelism, concurrency, and inter-agent messaging, consumable by any agent over MCP.
 
 ## Install
 
@@ -52,41 +56,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts `ga-transport`, and starts `ga-portal` (Caddy) on `localhost:64057`. MCP, REST API, and file transfer share this port. Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` when `GA_API_KEY` is set — see [docs/portal.md](docs/portal.md).
-
-For a repeatable setup:
-```bash
-cp config/ghostship.conf.example config/ghostship.conf
-# edit config/ghostship.conf, then:
-./install.sh --config config/ghostship.conf
-```
-
-**API key** — locks the endpoint for any non-local deployment:
-```bash
-./install.sh --api-key <key>
-```
-
-**Client-only install** — connects to an already-running (usually remote) transport; skips all container infrastructure:
-```bash
-./install.sh --client-only --url https://academy.example.com/mcp
-```
-Add `--api-key <key>` if the remote transport requires a bearer token. Default URL: `http://localhost:64057/mcp`. See [Client-only install](docs/configuration.md#client-only-install).
-
-To uninstall: `ghostship uninstall`. After a reboot, `ghostship start` brings it back without reinstalling.
-
-**Updating `academy/` and `crews/`** — `./install.sh` snapshots these into the data volume. Re-run it after any edits.
-
-Full install options and environment variables: [docs/configuration.md](docs/configuration.md).
-
-### Customising and forking
-
-See [docs/forks.md](docs/forks.md) for the fork model, visibility options, and keeping current with upstream.
-
-### Connecting to a harness
-
-Before your first `launch`, complete the device auth flow — run `ghostship auth login`, or open the URL returned by `POST /login` or by calling `launch` without auth. See [docs/auth.md](docs/auth.md) for the walkthrough.
-
-> **Shortcut:** `ghostship setup` automatically registers the MCP server and installs skill symlinks for detected agent clients (kiro-cli, Claude Code, opencode). Run it after `./install.sh`. It is idempotent — safe to re-run.
+Builds crew images, starts the transport and Caddy proxy on `localhost:64057`. Then connect your harness:
 
 **Kiro (via Power):**
 
@@ -94,31 +64,17 @@ Install the ghostship power from the Powers panel → Add Custom Power → Impor
 ```
 https://github.com/mcteamstar/ghostship
 ```
-The `ghostship-admin` skill walks you through the rest — Podman, `./install.sh`, auth, and connecting. See `.claude-plugin/PACKAGING.md` for keyed and remote installs.
+The `ghostship-admin` skill walks you through the rest.
 
-**kiro-cli:**
+**kiro-cli / Claude Code / opencode:** run `ghostship setup` after `./install.sh` — it registers the MCP server and installs skill symlinks automatically.
+
+Then authenticate:
+
 ```bash
-# Without API key:
-kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp --scope global
-
-# With API key:
-kiro-cli mcp add --name ghostship --url http://localhost:64057/mcp \
-  --headers '{"Authorization": "Bearer ${GHOSTSHIP_API_KEY}"}' --scope global
+ghostship auth login
 ```
 
-**Claude Code (plugin):** see the quick install command at the top of this README. It installs the three skills plus an unauthenticated connection to `http://localhost:64057/mcp`.
-
-**Claude Code (manual, keyed, or remote)** — add to `~/.claude.json`'s `mcpServers`:
-```json
-"ghostship": {
-  "type": "http",
-  "url": "http://localhost:64057/mcp",
-  "headers": { "Authorization": "Bearer ${GHOSTSHIP_API_KEY}" }
-}
-```
-Omit `headers` if API-key auth is disabled.
-
-For remote deployments, IAM Identity Center config, and TLS setup: [docs/configuration.md](docs/configuration.md) and [docs/auth.md](docs/auth.md).
+Full install options — API keys, client-only installs, remote deployments, repeatable config: [docs/configuration.md](docs/configuration.md).
 
 ### Skills
 
@@ -132,9 +88,8 @@ Skills follow the [Agent Skills](https://agentskills.io) standard and work in Cl
 | `ghostship-admin` | Install, configure, and connect a ghostship transport. |
 | `ghostship-capability` | Configure agent personas, skills, crew compositions, MCP catalogue. |
 
-**Cloned the repo:** skills activate automatically under `.claude/skills/` (Claude Code) and `.kiro/skills/` (Kiro).
+The Claude Code plugin and Kiro Power installs handle skill wiring automatically. To install globally from a clone:
 
-**Global install** (use ghostship from any project):
 ```bash
 # Claude Code
 ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.claude/skills/ghostship-command
@@ -142,8 +97,6 @@ ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.claude/skills/ghostshi
 # Kiro
 ln -s "$(pwd)/.claude-plugin/skills/ghostship-command" ~/.kiro/skills/ghostship-command
 ```
-
-The Claude Code plugin and Kiro Power installs handle this automatically.
 
 ## Ghost Academy
 
@@ -173,7 +126,7 @@ Registered as `ghostship`:
 | <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
 | <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`). `dashboard=True` allocates a port and returns a `dashboard_url`; default follows `GA_DASHBOARD_DEFAULT` (headless if unset). |
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace. |
-| <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, or git bundle from a crew's workspace. |
+| <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, git bundle, or directory tar (`pack=True`) from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
 | <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order. Built-in templates: `sdd` (drives named OpenSpec changes through the Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a name or comma-separated list) and `independent-review` (four concurrent reviewers — Wraith for docs, three Banshees for security/quality/test-coverage — mailing a consolidated report to the Admiral). |
 | <img src="docs/images/tool-schedule.png" width="256"> | `schedule` | Book, cancel, or list recurring tasks. `action="create"` with `cron`, `interval`, or `delay`; `action="cancel"` by job_id; `action="list"` returns all active jobs. |
@@ -189,11 +142,3 @@ Registered as `ghostship`:
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, remote deployment, extending the crew image
 - [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions, auth upgrade paths
 - [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
-
-### Route reference
-
-The transport serves an OpenAPI 3.1.0 schema at **`GET /openapi.json`** (no auth required):
-
-```bash
-curl -s http://localhost:64057/openapi.json | jq .paths
-```

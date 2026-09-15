@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.1
+
+### evac pack=True
+
+`evac` gains a `pack: bool = False` parameter. When `True`, the presigned URL streams a tar archive of the named directory instead of a single file — the complement of `supply(unpack=True)`. Useful for evacuating multi-file output directories, generated reports, or any non-git subtree from a crew workspace.
+
+```bash
+# Extract a directory
+curl -s "$(evac path=subagent_output pack=True)" -o output.tar
+```
+
+### Documentation refresh and demo
+
+README pitch tightened and a demo GIF added showing the full lifecycle: launch three crews, close the session, come back later, pick up results, nuke.
+
+---
+
 ## v0.5.0
 
 ### KiroCrew 0.6.0

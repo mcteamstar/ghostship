@@ -52,6 +52,18 @@ The system SHALL detect a stopped crew container on the next `dispatch`, `pickup
 - **WHEN** a second call for the same crew arrives while a restart triggered by an earlier call is still in progress
 - **THEN** the second caller waits for the in-progress restart to finish and then uses the refreshed crew record, rather than triggering a second concurrent restart
 
+#### Scenario: Third concurrent caller does not corrupt prior waiters' outcome reads
+
+- **GIVEN** a crew restart is in progress (leader A, waiter B)
+- **WHEN** caller C arrives after the leader fires the event but before waiter B reads the outcome, and C is elected as the new leader for a fresh restart cycle
+- **THEN** B detects the generation change and raises a RuntimeError rather than reading A's outcome as if it were valid for C's cycle
+- **AND** B does not proceed against a crew whose state is indeterminate
+
+#### Scenario: Generation stable — normal two-caller restart is unaffected
+
+- **WHEN** exactly a leader and one waiter complete a restart cycle without any third caller
+- **THEN** the generation counter does not change between the waiter's capture and its post-wait read, and the waiter proceeds normally using the leader's outcome
+
 #### Scenario: deliver() returns a URL after restarting the crew
 - **WHEN** the `deliver` tool is called for a crew whose container is currently stopped
 - **THEN** the tool call itself performs the provisional start, exec patch, final restart, and single gateway wait before signing and returning the upload URL, and the later file POST retains its own recovery check

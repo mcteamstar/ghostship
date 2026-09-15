@@ -227,9 +227,31 @@ runtime.
   post-restart gateway startup window, before KiroCrew 0.5.0 makes that
   directory write-protected at runtime
 
-### Requirement: Headless crew config overrides
+### Requirement: Concurrent restart outcome reads are generation-stable
 
-The `_patch_crew_config` function SHALL write a full set of headless-optimised
+The restart serialization mechanism uses a per-crew `threading.Event` to wake waiters after the leader records an outcome. The transport SHALL maintain a `_startup_generation: dict[str, int]` map (guarded by `_startup_events_lock`, with the same lifecycle as `_startup_events`) that records the current generation number for each crew. When a new leader is elected for `crew_id`, the generation counter for that crew SHALL be incremented (or initialized to 0 on first use). A waiter SHALL capture the generation before calling `event.wait()`. After `event.wait()` returns, the waiter SHALL re-read the generation under `_startup_events_lock`. If the generation has changed, a new restart cycle has started; the waiter SHALL NOT read `_crew_restart_outcomes` for the old cycle but instead SHALL treat the wait as a timeout (raise a RuntimeError indicating concurrent restart cycle confusion) or retry `_ensure_crew_running` from the top.
+
+#### Scenario: Two waiters, leader fails — both see the failure
+
+- **WHEN** two callers arrive after a leader has been elected for `crew_id`
+- **AND** the leader's restart fails
+- **THEN** both waiters read `success=False` from `_crew_restart_outcomes` and raise the stored exception
+- This is the existing TRN-152 behavior; the generation counter SHALL NOT break it.
+
+#### Scenario: Third caller arrives mid-cycle, pops the event before waiters read
+
+- **GIVEN** callers A (leader) and B (waiter) are mid-restart for `crew_id`
+- **WHEN** a third caller C arrives immediately after A fires the event and pops `_startup_events[crew_id]`, and C becomes the new leader for a fresh restart cycle
+- **THEN** B, waking from `event.wait()`, observes that `_startup_generation[crew_id]` has changed from the value it captured before waiting
+- **AND** B does NOT read `_crew_restart_outcomes` for A's cycle
+- **AND** B raises a RuntimeError or retries, rather than proceeding against a crew that may or may not be running
+
+#### Scenario: Normal two-caller case is unaffected
+
+- **WHEN** exactly two callers arrive (leader + one waiter) and the leader succeeds
+- **THEN** the waiter reads `success=True` from `_crew_restart_outcomes` and returns normally; the generation counter is incremented but does not change between the waiter's capture and its post-wait read
+
+### Requirement: Headless crew config overrides
 overrides into each crew's `config.local.json` at launch, covering not just the
 `agent` section but also `stt`, `session`, `telemetry`, and top-level keys.
 
@@ -689,6 +711,30 @@ The transport default of 200 is within the 0.6.0 ceiling. Operators who wish to 
 #### Scenario: GA_SUBAGENT_MAX_TURNS above 1000 behaviour
 - **WHEN** `GA_SUBAGENT_MAX_TURNS=2000`
 - **THEN** the transport writes 2000 to the config; KiroCrew 0.6.0 may clamp or reject this at runtime. Operators should stay within the documented ceiling.
+
+### Requirement: Bounded in-process memory for task timestamp tracking
+
+The transport process SHALL evict completed-task timestamp entries from the in-process `_task_timestamps` store once an entry's `completed_at` timestamp is more than `_TASK_TIMESTAMP_TTL_SECS` (default 3600 seconds) in the past. Eviction SHALL be performed inside the `_task_timestamps_lock` section on each `_pickup_single` and `_pickup_list` call, after updating the timestamps for the current task. The eviction scan SHALL visit only completed entries (those with a non-null `completed_at`). The TTL SHOULD be configurable via an environment variable `GA_TASK_TIMESTAMP_TTL_SECS`.
+
+The transport process SHALL evict stale warm-marker entries from the in-process `_warm_markers` store. Any entry whose recorded monotonic timestamp is more than `_WARM_MARKER_TTL_SECS` seconds old SHALL be removed during the existing `_warm_markers_lock`-guarded section of `_prewarm_crew`. `_WARM_MARKER_TTL_SECS` SHALL default to `max(GA_PREWARM_TTL_SECS * 2, 3600)` — at least one hour regardless of the prewarm TTL configuration.
+
+#### Scenario: Completed task entries are evicted after TTL
+
+- **GIVEN** a transport process that has dispatched many tasks over several hours
+- **WHEN** `_pickup_single` or `_pickup_list` is called for a task
+- **THEN** any entries in `_task_timestamps` whose `completed_at` is more than `_TASK_TIMESTAMP_TTL_SECS` seconds in the past are removed from the map before the call returns
+
+#### Scenario: Active task entries are not evicted
+
+- **GIVEN** a task that is still running (no `completed_at`)
+- **WHEN** eviction runs
+- **THEN** that task's timestamp entry is retained
+
+#### Scenario: Warm markers are evicted after TTL
+
+- **GIVEN** a transport process that has prewarmed crews over several hours
+- **WHEN** `_prewarm_crew` is called for any crew
+- **THEN** any `_warm_markers` entries older than `_WARM_MARKER_TTL_SECS` are removed from the map
 
 ### Requirement: Active crew limit enforced before restart
 
