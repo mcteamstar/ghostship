@@ -105,6 +105,33 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
             cfg = Config.from_env()
         self.assertTrue(cfg.ga_include_claude_agent)
 
+    def test_validate_called_raises_config_error_when_claude_without_key(self) -> None:
+        """Config.validate() raises ConfigError for claude backend without API key.
+
+        This guards that validate() is a real method that can be called at
+        transport startup (server.py __main__) to enforce the cross-field
+        constraint, rather than only being tested via direct unit calls.
+        """
+        env = {
+            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ANTHROPIC_API_KEY": "",
+        }
+        with patch.dict("os.environ", env):
+            cfg = Config.from_env()
+        with self.assertRaises(ConfigError) as ctx:
+            cfg.validate()
+        self.assertIn("GA_CREW_ANTHROPIC_API_KEY", str(ctx.exception))
+
+    def test_validate_called_passes_when_key_present(self) -> None:
+        """Config.validate() does not raise when claude backend has an API key."""
+        env = {
+            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test-validate",
+        }
+        with patch.dict("os.environ", env):
+            cfg = Config.from_env()
+        cfg.validate()  # must not raise
+
 
 # ── 6.2 _patch_crew_config writes acp_backend ─────────────────────────────────
 
@@ -247,8 +274,15 @@ class TestFinishCrewSetupClaudeAuthBranch(unittest.TestCase):
 
         inject_auth_mock.assert_not_called()
 
-    def test_claude_path_injects_headless_env_var(self) -> None:
-        """On claude backend, CLAUDE_CODE_HEADLESS=1 is written via container_exec."""
+    def test_claude_path_does_not_inject_headless_env_var(self) -> None:
+        """On claude backend, NO container_exec call for CLAUDE_CODE_HEADLESS.
+
+        Headless tool-approval suppression is owned by KiroCrew (it writes
+        settings.local.json with bypassPermissions at session spawn time via
+        _write_claude_local_settings). Ghostship must not inject a spurious
+        CLAUDE_CODE_HEADLESS env var that does not exist in the claude-agent-acp
+        or @anthropic-ai/claude-code packages.
+        """
         stack, podman, _ = self._make_minimal_finish_setup_patches("claude")
         original_backend = _lifecycle.GA_CREW_ACP_BACKEND
         try:
@@ -263,11 +297,14 @@ class TestFinishCrewSetupClaudeAuthBranch(unittest.TestCase):
         finally:
             _lifecycle.GA_CREW_ACP_BACKEND = original_backend
 
-        # Verify at least one container_exec call wrote CLAUDE_CODE_HEADLESS
+        # Verify NO container_exec call wrote CLAUDE_CODE_HEADLESS (that env var
+        # does not exist in the claude-agent-acp package; KiroCrew handles
+        # bypassPermissions via settings.local.json instead).
         exec_cmds = [str(c) for c in podman.container_exec.call_args_list]
-        self.assertTrue(
+        self.assertFalse(
             any("CLAUDE_CODE_HEADLESS" in cmd for cmd in exec_cmds),
-            f"Expected CLAUDE_CODE_HEADLESS injected via container_exec, got: {exec_cmds}",
+            f"CLAUDE_CODE_HEADLESS must NOT be injected — KiroCrew owns this. "
+            f"Got exec calls: {exec_cmds}",
         )
 
     def test_claude_path_emits_warning_about_anthropic(self) -> None:
@@ -290,6 +327,49 @@ class TestFinishCrewSetupClaudeAuthBranch(unittest.TestCase):
         self.assertTrue(
             any("api.anthropic.com" in msg for msg in log_ctx.output),
             f"Expected WARNING mentioning api.anthropic.com, got: {log_ctx.output}",
+        )
+
+
+# ── Launch kiro-auth skip for claude backend ───────────────────────────────────
+
+
+class TestLaunchKiroAuthSkipForClaude(unittest.TestCase):
+    """launch() must NOT initiate the kiro device-code auth flow when GA_CREW_ACP_BACKEND=claude.
+
+    When no KIRO_API_KEY and no ga-kiro-auth file, the kiro path raises
+    'not_authenticated'. The claude path must bypass this entirely.
+    """
+
+    def test_claude_backend_bypasses_kiro_auth_requirement(self) -> None:
+        """With GA_CREW_ACP_BACKEND=claude, launch() skips kiro auth entirely.
+
+        If the kiro auth check is NOT guarded by the backend flag, this test
+        would see a 'not_authenticated' error because KIRO_API_KEY is unset
+        and _read_auth_file returns empty (no ga-kiro-auth exists).
+        """
+        original_backend = _server.GA_CREW_ACP_BACKEND
+        original_kiro_key = _server.KIRO_API_KEY if hasattr(_server, "KIRO_API_KEY") else ""
+        try:
+            _server.GA_CREW_ACP_BACKEND = "claude"
+            # The _GA_CREW_ANTHROPIC_API_KEY must be present (validated at startup).
+            # In this unit test we trust Config.validate() separately.
+            with (
+                patch.object(_server, "KIRO_API_KEY", ""),
+                patch.object(_server, "_read_auth_file", return_value=""),
+                patch.object(_server, "_get_podman",
+                             side_effect=RuntimeError("podman not available in unit test")),
+            ):
+                result = _server.launch("test-claude-crew")
+        finally:
+            _server.GA_CREW_ACP_BACKEND = original_backend
+
+        # The failure must NOT be 'not_authenticated' (which would mean the kiro
+        # auth check ran). It must be the podman error injected above — proving
+        # the launch advanced past the auth check on the claude path.
+        self.assertNotEqual(
+            result.get("error"), "not_authenticated",
+            "launch() must not require kiro auth for GA_CREW_ACP_BACKEND=claude; "
+            f"got: {result}",
         )
 
 

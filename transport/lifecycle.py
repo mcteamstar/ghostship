@@ -1772,10 +1772,14 @@ def _finish_crew_setup(
     #
     # claude path: skip all kiro-cli auth injection; ANTHROPIC_API_KEY was
     # already injected as a container env var at container_create time (see
-    # launch() in server.py). CLAUDE_CODE_HEADLESS=1 is injected here via
-    # container_exec to suppress interactive approval prompts in the Claude
-    # Code ACP server — the env var is written into the container's running
-    # environment so every subsequent process inherits it.
+    # launch() in server.py).
+    #
+    # Headless tool-approval suppression (claude path): KiroCrew's AcpClient
+    # writes <work_dir>/.claude/settings.local.json with
+    # permissions.defaultMode="bypassPermissions" at session spawn time
+    # (_write_claude_local_settings), driven by dangerously_skip_permissions=True
+    # already set in _patch_crew_config. No ghostship-side env var injection is
+    # needed — the suppression is owned by KiroCrew.
     if GA_CREW_ACP_BACKEND == "claude":
         # Task 3.4: warn at launch time that api.anthropic.com is required.
         logger.warning(
@@ -1783,24 +1787,6 @@ def _finish_crew_setup(
             "api.anthropic.com to function",
             crew_id,
         )
-        # Task 3.3: CLAUDE_CODE_HEADLESS=1 suppresses interactive tool-approval
-        # prompts in the claude-agent-acp runtime. Injected here rather than at
-        # container_create time so the warning above fires exactly once at launch
-        # (not on every idle-stop recovery restart).
-        # The env var is written to /etc/environment so it persists across
-        # container stop/start cycles without needing re-injection.
-        try:
-            podman.container_exec(
-                container,
-                ["sh", "-c", "echo 'CLAUDE_CODE_HEADLESS=1' >> /etc/environment"],
-            )
-            logger.info(
-                "Injected CLAUDE_CODE_HEADLESS=1 into crew container %s", container
-            )
-        except Exception as e:
-            logger.warning(
-                "Could not inject CLAUDE_CODE_HEADLESS into %s: %s", container, e
-            )
     else:
         # kiro path: inject auth rows (or skip when KIRO_API_KEY is set).
         if not KIRO_API_KEY:

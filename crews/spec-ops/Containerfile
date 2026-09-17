@@ -33,17 +33,23 @@ RUN apt-get update -qq && \
 RUN npm install -g @fission-ai/openspec@1.9.0
 
 # Claude Code toolchain — optional, controlled by the INCLUDE_CLAUDE_AGENT
-# build arg (default: false). When true, installs:
-#   @anthropic-ai/claude-code@0.2.93  — the claude-agent-acp server
-#   (the `claude` CLI is bundled inside @anthropic-ai/claude-code)
+# build arg (default: false). When true, installs TWO packages:
+#   @agentclientprotocol/claude-agent-acp@0.79.0  — the ACP server binary
+#     (the `claude-agent-acp` binary that KiroCrew's AcpClient spawns for
+#     acp_backend="claude" sessions)
+#   @anthropic-ai/claude-code@0.2.93  — the `claude` CLI binary
+#     (required by claude-agent-acp via CLAUDE_CODE_EXECUTABLE; the ACP
+#     server delegates model turns to the Claude Agent SDK which needs this)
 #
-# Headless tool-approval suppression: claude-agent-acp respects the
-# CLAUDE_CODE_HEADLESS=1 environment variable to suppress interactive prompts
-# and auto-approve tool calls without user confirmation. This env var is
-# injected into crew containers at creation time when the Claude backend is
-# selected (see lifecycle.py _finish_crew_setup).
+# Headless tool-approval suppression: KiroCrew writes
+# <work_dir>/.claude/settings.local.json with permissions.defaultMode set to
+# "bypassPermissions" at session spawn time (see kiro_crew/acp/client.py
+# _write_claude_local_settings). No environment variable override is needed
+# from the ghostship side — KiroCrew handles it automatically via the
+# dangerously_skip_permissions config key already set in _patch_crew_config.
 ARG INCLUDE_CLAUDE_AGENT=false
 RUN if [ "${INCLUDE_CLAUDE_AGENT}" = "true" ]; then \
+      npm install -g @agentclientprotocol/claude-agent-acp@0.79.0 && \
       npm install -g @anthropic-ai/claude-code@0.2.93; \
     fi
 

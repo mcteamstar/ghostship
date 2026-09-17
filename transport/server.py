@@ -1922,26 +1922,31 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         return {"error": str(e)}
 
     # ── Auth check — before registry write to avoid orphaned entries ──────────
-    # When KIRO_API_KEY is set, kiro-cli authenticates via the env var
-    # injected into the crew container; the device-code flow, the ga-kiro-auth
-    # file, and auth_b64 injection are all skipped.
-    auth_b64: str | None = _read_auth_file() or None
-    if not KIRO_API_KEY and not auth_b64:
-        result = _initiate_login(podman)
-        if result.get("login_pending"):
+    # When GA_CREW_ACP_BACKEND=claude, all kiro-cli auth (device-code flow,
+    # ga-kiro-auth file, auth_b64 injection) is skipped entirely.
+    # ANTHROPIC_API_KEY is injected at container_create time instead.
+    #
+    # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var;
+    # the device-code flow and auth_b64 injection are also skipped on that path.
+    auth_b64: str | None = None
+    if GA_CREW_ACP_BACKEND != "claude":
+        auth_b64 = _read_auth_file() or None
+        if not KIRO_API_KEY and not auth_b64:
+            result = _initiate_login(podman)
+            if result.get("login_pending"):
+                return {
+                    "error": "not_authenticated",
+                    "login_pending": True,
+                    "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                }
+            if "error" in result:
+                return {"error": result["error"]}
             return {
                 "error": "not_authenticated",
-                "login_pending": True,
-                "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                "login_url": result.get("login_url"),
+                "code": result.get("code"),
+                "instructions": "Open login_url to authenticate, then call launch again.",
             }
-        if "error" in result:
-            return {"error": result["error"]}
-        return {
-            "error": "not_authenticated",
-            "login_url": result.get("login_url"),
-            "code": result.get("code"),
-            "instructions": "Open login_url to authenticate, then call launch again.",
-        }
 
     with _registry_lock:
         reg = _load_registry()
@@ -3769,6 +3774,16 @@ health_routes = [
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Validate cross-field config constraints before doing anything else.
+    # Raises ConfigError (a ValueError subclass) if GA_CREW_ACP_BACKEND=claude
+    # and GA_CREW_ANTHROPIC_API_KEY is unset — surfaces the misconfiguration
+    # immediately at startup rather than at the first launch() call.
+    try:
+        cfg.validate()
+    except Exception as _cfg_err:
+        logger.error("Transport startup aborted — config error: %s", _cfg_err)
+        raise SystemExit(1) from _cfg_err
+
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
     _reconcile_registry()
