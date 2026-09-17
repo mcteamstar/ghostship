@@ -70,6 +70,9 @@ GA_SUBAGENT_MAX_TURNS=200
 GA_BATCH_MAX_TASKS=20
 GA_PICKUP_MAX_POLL_SECS=30
 GA_CREW_AGENT=kiro
+GA_INCLUDE_CLAUDE_AGENT=false
+GA_CREW_ACP_BACKEND=kiro
+GA_CREW_ANTHROPIC_API_KEY=""
 GA_MIN_FREE_MEM_GB=2.0
 GA_SPAWN_MIN_MEMORY_GB=1.5
 GA_RESOURCE_PRESSURE_GB=2.0
@@ -600,6 +603,7 @@ echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}-spec-ops" \
+  $(if [[ "${GA_INCLUDE_CLAUDE_AGENT:-false}" == "true" ]]; then echo "--build-arg INCLUDE_CLAUDE_AGENT=true"; fi) \
   "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && ${_PODMAN_CMD} build -t localhost/spec-ops:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
@@ -707,6 +711,9 @@ services:
       GA_BATCH_MAX_TASKS: "${GA_BATCH_MAX_TASKS:-20}"
       GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
+      GA_CREW_ACP_BACKEND: "${GA_CREW_ACP_BACKEND:-kiro}"
+      GA_CREW_ANTHROPIC_API_KEY: "${GA_CREW_ANTHROPIC_API_KEY:-}"
+      GA_INCLUDE_CLAUDE_AGENT: "${GA_INCLUDE_CLAUDE_AGENT:-false}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
       KIRO_LICENSE: "${KIRO_LICENSE:-}"

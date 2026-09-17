@@ -66,6 +66,28 @@ _config_logger = logging.getLogger(__name__)
 
 
 _CADDY_TLS_MODES: frozenset[str] = frozenset({"internal", "tailscale", "acme", "off"})
+_ACP_BACKEND_VALUES: frozenset[str] = frozenset({"kiro", "claude"})
+
+
+def _validate_acp_backend(value: str) -> str:
+    """Validate GA_CREW_ACP_BACKEND against the two allowed values.
+
+    On an unrecognised value, raises ConfigError immediately (startup failure).
+    """
+    if value in _ACP_BACKEND_VALUES:
+        return value
+    raise ConfigError(
+        f"GA_CREW_ACP_BACKEND={value!r} is not one of {sorted(_ACP_BACKEND_VALUES)}; "
+        "must be 'kiro' or 'claude'"
+    )
+
+
+def _validate_claude_api_key(backend: str, key: str) -> None:
+    """Raise ConfigError if Claude backend is selected but no API key is set."""
+    if backend == "claude" and not key:
+        raise ConfigError(
+            "GA_CREW_ACP_BACKEND=claude requires GA_CREW_ANTHROPIC_API_KEY to be set"
+        )
 
 
 def _validate_caddy_tls_mode(value: str, default: str = "off") -> str:
@@ -170,6 +192,25 @@ class Config:
     # name collision. Unset (default) means only built-in templates are used.
     ga_orders_dir: str = ""
 
+    # ── ACP backend selection ─────────────────────────────────────────────────
+    # GA_CREW_ACP_BACKEND: which ACP runtime to use inside crew containers.
+    # Valid values: "kiro" (default), "claude".
+    # "kiro" uses the KiroCrew-native kiro-cli agent (existing behaviour).
+    # "claude" uses the Claude Code ACP backend (requires INCLUDE_CLAUDE_AGENT
+    # image and GA_CREW_ANTHROPIC_API_KEY; bypasses per-call kiro approval gate).
+    ga_crew_acp_backend: str = "kiro"
+
+    # GA_CREW_ANTHROPIC_API_KEY: Anthropic API key injected into crew containers
+    # when GA_CREW_ACP_BACKEND=claude. Required when backend is "claude".
+    # Validated at startup — transport exits with ConfigError if
+    # GA_CREW_ACP_BACKEND=claude but this is unset.
+    ga_crew_anthropic_api_key: str = ""
+
+    # GA_INCLUDE_CLAUDE_AGENT: whether the spec-ops image was built with
+    # INCLUDE_CLAUDE_AGENT=true. Boolean (default false). Used by install.sh to
+    # pass --build-arg INCLUDE_CLAUDE_AGENT=true at image build time.
+    ga_include_claude_agent: bool = False
+
     # ── kiro-cli identity ────────────────────────────────────────────────────
     kiro_license: str = ""
     kiro_identity_provider: str = ""
@@ -234,4 +275,17 @@ class Config:
             kiro_region=os.environ.get("KIRO_REGION", ""),
             kiro_api_key=os.environ.get("KIRO_API_KEY", ""),
             ga_orders_dir=os.environ.get("GA_ORDERS_DIR", ""),
+            ga_crew_acp_backend=_validate_acp_backend(
+                os.environ.get("GA_CREW_ACP_BACKEND", "kiro").strip().lower()
+            ),
+            ga_crew_anthropic_api_key=os.environ.get("GA_CREW_ANTHROPIC_API_KEY", ""),
+            ga_include_claude_agent=_env_bool_default_off("GA_INCLUDE_CLAUDE_AGENT"),
         )
+
+    def validate(self) -> None:
+        """Run cross-field validation that cannot be expressed as a per-field default.
+
+        Called once after from_env() during transport startup. Raises ConfigError
+        if GA_CREW_ACP_BACKEND=claude but GA_CREW_ANTHROPIC_API_KEY is unset.
+        """
+        _validate_claude_api_key(self.ga_crew_acp_backend, self.ga_crew_anthropic_api_key)

@@ -208,6 +208,13 @@ GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 GA_PREWARM_ENABLED = cfg.ga_prewarm_enabled
 GA_PREWARM_TTL_SECS = cfg.ga_prewarm_ttl_secs
 
+# ACP backend selection — controls whether kiro or Claude Code runs inside crew containers.
+# "kiro" (default): kiro-cli auth injection path (existing behaviour).
+# "claude": skip kiro auth, inject ANTHROPIC_API_KEY + CLAUDE_CODE_HEADLESS=1.
+GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
+GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
+GA_INCLUDE_CLAUDE_AGENT = cfg.ga_include_claude_agent
+
 # The effective crew session idle timeout. Spec-ops crews are patched with a
 # fixed ``session.timeout_secs = 300`` override (see _patch_crew_config); a
 # warm marker must never claim a session is warm past the point the idle reaper
@@ -1631,6 +1638,11 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         # The Podman container itself remains the OS-level isolation boundary.
         "sandbox": "off",
     }
+    # When GA_CREW_ACP_BACKEND=claude, write acp_backend into the crew config so
+    # the gateway routes agent spawns through the Claude Code ACP runtime rather
+    # than the kiro-cli runtime.
+    if GA_CREW_ACP_BACKEND == "claude":
+        agent_overrides["acp_backend"] = "claude"
     # KC_MODEL_DEFAULT sets agent.default_model — a global fallback that applies
     # when no per-agent model field overrides it. Precedence (high→low):
     #   KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
@@ -1753,10 +1765,46 @@ def _finish_crew_setup(
             return {"error": f"Gateway did not recover for crew {crew_id}"}
 
     # depends on: gateway (pre-restart)
-    # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var,
-    # so the SQLite auth-row injection is skipped. auth_b64 is None on this path.
-    if not KIRO_API_KEY:
-        _inject_auth(podman, container, auth_b64)
+    # Backend branch: kiro (default) vs claude.
+    #
+    # kiro path: inject kiro-cli auth rows into the crew's SQLite DB, unless
+    # KIRO_API_KEY is set (API-key path skips the DB injection entirely).
+    #
+    # claude path: skip all kiro-cli auth injection; ANTHROPIC_API_KEY was
+    # already injected as a container env var at container_create time (see
+    # launch() in server.py). CLAUDE_CODE_HEADLESS=1 is injected here via
+    # container_exec to suppress interactive approval prompts in the Claude
+    # Code ACP server — the env var is written into the container's running
+    # environment so every subsequent process inherits it.
+    if GA_CREW_ACP_BACKEND == "claude":
+        # Task 3.4: warn at launch time that api.anthropic.com is required.
+        logger.warning(
+            "GA_CREW_ACP_BACKEND=claude: crew %s requires outbound access to "
+            "api.anthropic.com to function",
+            crew_id,
+        )
+        # Task 3.3: CLAUDE_CODE_HEADLESS=1 suppresses interactive tool-approval
+        # prompts in the claude-agent-acp runtime. Injected here rather than at
+        # container_create time so the warning above fires exactly once at launch
+        # (not on every idle-stop recovery restart).
+        # The env var is written to /etc/environment so it persists across
+        # container stop/start cycles without needing re-injection.
+        try:
+            podman.container_exec(
+                container,
+                ["sh", "-c", "echo 'CLAUDE_CODE_HEADLESS=1' >> /etc/environment"],
+            )
+            logger.info(
+                "Injected CLAUDE_CODE_HEADLESS=1 into crew container %s", container
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not inject CLAUDE_CODE_HEADLESS into %s: %s", container, e
+            )
+    else:
+        # kiro path: inject auth rows (or skip when KIRO_API_KEY is set).
+        if not KIRO_API_KEY:
+            _inject_auth(podman, container, auth_b64)
 
     # depends on: container running (pre-restart); must be written before restart
     # so the secret is on the home volume before the post-restart gateway starts
@@ -1847,6 +1895,9 @@ def _finish_crew_setup(
             # needed after injection and must not persist in crews.json.
             "admiral_secret_id": _secret_identifier(admiral_secret),
             "crew_image_version": crew_image_version,
+            # ACP backend used for this crew — "kiro" (default) or "claude".
+            # Persisted so crews() can surface it per crew without re-reading config.
+            "acp_backend": GA_CREW_ACP_BACKEND,
         }
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version

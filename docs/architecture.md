@@ -252,6 +252,18 @@ Policy injection failure is logged but never aborts launch.
 - The Admiral private key never enters the container, so the agent cannot forge an Admiral standing order. The agent can read `policy_signing_key` from `admission_policy.json` and could forge a policy signature — see [auth.md](auth.md) for the threat model.
 - Policy is set once at launch. To change policy, nuke and relaunch.
 
+### Claude backend governance gap (TRN-167)
+
+When `GA_CREW_ACP_BACKEND=claude`, the Claude Code ACP server (`claude-agent-acp`) runs inside each crew container instead of `kiro-cli`. This changes the trust model in one important way:
+
+- **KiroCrew's per-call tool approval gate is bypassed.** kiro-cli normally blocks individual tool calls until they are approved by the approval policy (or automatically approved under `dangerously_skip_permissions=true`). `claude-agent-acp` does not route through this gate; all tool calls are executed without a KiroCrew-level checkpoint. Headless auto-approval is achieved via the `CLAUDE_CODE_HEADLESS=1` environment variable injected into crew containers at launch.
+
+- **The signed security policy ceiling is still enforced.** The operator governance policy (`academy/policies/default.json` or a custom template) is HMAC-signed and injected as `security_policy.json` + `admission_policy.json` into every crew at setup time, regardless of backend. The gateway enforces this ceiling and a tampered policy causes a signature mismatch at startup. Crew containers built without `GA_INCLUDE_CLAUDE_AGENT=true` will not have `claude-agent-acp` installed and will fail to spawn agents.
+
+### Claude backend external network requirement (TRN-167)
+
+Crews running with `GA_CREW_ACP_BACKEND=claude` require outbound HTTPS access to **`api.anthropic.com`**. The transport emits a `WARNING`-level log entry naming this host at every `launch()` call when the Claude backend is selected. Deployments with egress firewalls must add `api.anthropic.com:443` to their allow list before launching Claude-backend crews.
+
 ## Networking
 
 Ghost Academy uses two static Podman networks:

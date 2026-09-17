@@ -32,5 +32,20 @@ RUN apt-get update -qq && \
 # file's `metadata.generatedBy`) — bumping the skills means bumping this too.
 RUN npm install -g @fission-ai/openspec@1.9.0
 
+# Claude Code toolchain — optional, controlled by the INCLUDE_CLAUDE_AGENT
+# build arg (default: false). When true, installs:
+#   @anthropic-ai/claude-code@0.2.93  — the claude-agent-acp server
+#   (the `claude` CLI is bundled inside @anthropic-ai/claude-code)
+#
+# Headless tool-approval suppression: claude-agent-acp respects the
+# CLAUDE_CODE_HEADLESS=1 environment variable to suppress interactive prompts
+# and auto-approve tool calls without user confirmation. This env var is
+# injected into crew containers at creation time when the Claude backend is
+# selected (see lifecycle.py _finish_crew_setup).
+ARG INCLUDE_CLAUDE_AGENT=false
+RUN if [ "${INCLUDE_CLAUDE_AGENT}" = "true" ]; then \
+      npm install -g @anthropic-ai/claude-code@0.2.93; \
+    fi
+
 ARG VERSION=0.0.0-dev
 LABEL org.ghostship.version=$VERSION

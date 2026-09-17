@@ -145,6 +145,24 @@
 # non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
 # GA_CREW_AGENT=kiro
 
+# ── Claude Code ACP backend (TRN-167) ────────────────────────────────────────
+# Set GA_CREW_ACP_BACKEND=claude to use the Claude Code ACP runtime inside crews
+# instead of the default kiro-cli runtime. Also requires:
+#   1. GA_INCLUDE_CLAUDE_AGENT=true — set before running install.sh so the
+#      spec-ops image is built with @anthropic-ai/claude-code installed.
+#   2. GA_CREW_ANTHROPIC_API_KEY — Anthropic API key for crew containers.
+#      Transport exits at startup with ConfigError if this is unset when
+#      GA_CREW_ACP_BACKEND=claude.
+#
+# NOTE: The KiroCrew per-call tool approval gate is bypassed when
+# GA_CREW_ACP_BACKEND=claude. The signed security policy ceiling (academy/
+# policies/default.json) is still enforced. Outbound access to
+# api.anthropic.com is required for Claude-backend crews.
+#
+# GA_CREW_ACP_BACKEND=kiro
+# GA_INCLUDE_CLAUDE_AGENT=false
+# GA_CREW_ANTHROPIC_API_KEY=""
+
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────
 # Path to a directory of operator-managed standing-order template .md files.
 # When set and the directory exists, its templates are merged with the built-in

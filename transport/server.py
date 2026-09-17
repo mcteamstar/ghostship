@@ -447,6 +447,17 @@ GA_DASHBOARD_PORT_RANGE_SIZE = cfg.ga_dashboard_port_range_size
 GA_GIT_AUTHOR_NAME = os.environ.get("GA_GIT_AUTHOR_NAME", "").strip()
 GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 
+# ── ACP backend ───────────────────────────────────────────────────────────────
+# Controls the ACP runtime used inside crew containers.
+# "kiro" (default): kiro-cli auth injection (existing behaviour).
+# "claude": skip kiro auth, inject ANTHROPIC_API_KEY from GA_CREW_ANTHROPIC_API_KEY.
+GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
+_GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
+# Register the Anthropic API key with the redaction filter so it is never
+# written to logs when the Claude backend is active.
+if _GA_CREW_ANTHROPIC_API_KEY:
+    _security.register_secret(_GA_CREW_ANTHROPIC_API_KEY)
+
 # ── Transport security ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
 # security headers so protection does not depend solely on edge config. These
@@ -1736,6 +1747,9 @@ def crews() -> dict:
             "last_task_at": info.get("last_task_at"),
             "gateway_healthy": gateway_healthy,
             "crew_image_version": info.get("crew_image_version", "unknown"),
+            # acp_backend: "kiro" (default) or "claude". Defaults to "kiro" for
+            # pre-TRN-167 registry entries that do not have the field.
+            "acp_backend": info.get("acp_backend", "kiro"),
             "agents": [],
         }
         # Derive dashboard_url from stored dashboard_port (None if no port assigned).
@@ -1982,6 +1996,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # entirely unaffected when KIRO_API_KEY is unset.
         if KIRO_API_KEY:
             container_env["KIRO_API_KEY"] = KIRO_API_KEY
+        # When the Claude ACP backend is selected, inject ANTHROPIC_API_KEY into
+        # the crew container so claude-agent-acp can authenticate against
+        # api.anthropic.com. The kiro auth path is skipped for Claude-backend crews
+        # (handled in _finish_crew_setup). Only set when non-empty — validated at
+        # startup by Config.validate() so we can trust it is present here.
+        if GA_CREW_ACP_BACKEND == "claude" and _GA_CREW_ANTHROPIC_API_KEY:
+            container_env["ANTHROPIC_API_KEY"] = _GA_CREW_ANTHROPIC_API_KEY
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
             container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL
