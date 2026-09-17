@@ -413,6 +413,15 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
         """Pass presigned-URL /files/ requests to the file app (bypasses API key).
 
         Returns True if the file app handled the request.
+
+        NOTE: The Bearer API-key check is intentionally bypassed for ALL
+        ``/files/`` requests here.  Presigned URLs (``evac``/``supply``) are
+        self-authenticating via their ``sig`` + ``expires`` query parameters;
+        the presigned token verifier inside the file app is the sole auth gate
+        for these requests.  Do NOT add a Bearer check here — an external
+        caller fetching a presigned URL will not have the API key, and that is
+        by design.  See ``docs/architecture.md`` and the ``file-transfer-security``
+        spec for the security contract.
         """
         if self._file_app and scope["path"].startswith("/files/"):
             await self._file_app(scope, receive, send)
