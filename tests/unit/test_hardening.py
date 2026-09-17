@@ -807,6 +807,52 @@ class TestInstallShPodmanSecret(unittest.TestCase):
         # Verify plain env var pass is gone
         self.assertNotIn('-e "GA_API_KEY=${GA_API_KEY:-}"', content)
 
+    def test_install_script_has_presigned_caddy_route(self):
+        """install.sh generates a Caddy route that exempts /files/*?sig= from Bearer auth.
+
+        TRN-169 regression guard: the ga-transport-files-presigned route MUST
+        appear in the GA_API_KEY branch of the install.sh Caddy config, and it
+        MUST come before the Bearer-gated ga-transport-files route so that Caddy
+        matches it first (Caddy uses first-match routing).
+        """
+        import re
+
+        install_path = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
+        if not install_path.exists():
+            self.skipTest("scripts/install.sh not found relative to test")
+
+        content = install_path.read_text()
+
+        # Route must exist
+        self.assertIn("ga-transport-files-presigned", content,
+                      "install.sh must define the ga-transport-files-presigned Caddy route")
+        # Must match /files/* with a 'sig' query param
+        self.assertIn('"query": {"sig":', content,
+                      "presigned route must use a Caddy query matcher on 'sig'")
+
+        # Route order: presigned bypass must appear before the Bearer-gated files route.
+        presigned_pos = content.index("ga-transport-files-presigned")
+        bearer_files_pos = content.index('"@id": "ga-transport-files"')
+        self.assertLess(
+            presigned_pos, bearer_files_pos,
+            "ga-transport-files-presigned must be defined before ga-transport-files "
+            "in install.sh so Caddy matches presigned requests first",
+        )
+
+        # Route must NOT add any forward_auth or Authorization header check
+        # Extract only the presigned route block and verify it has no Bearer requirement
+        presigned_block_match = re.search(
+            r'"@id": "ga-transport-files-presigned".*?(?="@id")',
+            content,
+            re.DOTALL,
+        )
+        if presigned_block_match:
+            block = presigned_block_match.group(0)
+            self.assertNotIn("forward_auth", block,
+                             "presigned route must not use forward_auth")
+            self.assertNotIn('"Authorization"', block,
+                             "presigned route must not require an Authorization header")
+
 
 if __name__ == "__main__":
     unittest.main()
