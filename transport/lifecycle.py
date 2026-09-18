@@ -213,6 +213,7 @@ GA_PREWARM_TTL_SECS = cfg.ga_prewarm_ttl_secs
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY + CLAUDE_CODE_HEADLESS=1.
 GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
 GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
+GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
 GA_INCLUDE_CLAUDE_AGENT = cfg.ga_include_claude_agent
 
 # The effective crew session idle timeout. Spec-ops crews are patched with a
@@ -1781,11 +1782,14 @@ def _finish_crew_setup(
     # already set in _patch_crew_config. No ghostship-side env var injection is
     # needed — the suppression is owned by KiroCrew.
     if GA_CREW_ACP_BACKEND == "claude":
-        # Task 3.4: warn at launch time that api.anthropic.com is required.
+        # Task 3.4: warn at launch time that outbound access is required.
+        # Use the override endpoint when set, otherwise api.anthropic.com.
+        _effective_endpoint = GA_CREW_ANTHROPIC_BASE_URL or "api.anthropic.com"
         logger.warning(
             "GA_CREW_ACP_BACKEND=claude: crew %s requires outbound access to "
-            "api.anthropic.com to function",
+            "%s to function",
             crew_id,
+            _effective_endpoint,
         )
     else:
         # kiro path: inject auth rows (or skip when KIRO_API_KEY is set).

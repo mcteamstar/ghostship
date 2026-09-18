@@ -162,6 +162,7 @@
 # GA_CREW_ACP_BACKEND=kiro
 # GA_INCLUDE_CLAUDE_AGENT=false
 # GA_CREW_ANTHROPIC_API_KEY=""
+# GA_CREW_ANTHROPIC_BASE_URL=""
 
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────
 # Path to a directory of operator-managed standing-order template .md files.

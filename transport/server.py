@@ -453,6 +453,7 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY from GA_CREW_ANTHROPIC_API_KEY.
 GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
 _GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
+_GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
 # Register the Anthropic API key with the redaction filter so it is never
 # written to logs when the Claude backend is active.
 if _GA_CREW_ANTHROPIC_API_KEY:
@@ -2008,6 +2009,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # startup by Config.validate() so we can trust it is present here.
         if GA_CREW_ACP_BACKEND == "claude" and _GA_CREW_ANTHROPIC_API_KEY:
             container_env["ANTHROPIC_API_KEY"] = _GA_CREW_ANTHROPIC_API_KEY
+            if _GA_CREW_ANTHROPIC_BASE_URL:
+                container_env["ANTHROPIC_BASE_URL"] = _GA_CREW_ANTHROPIC_BASE_URL
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
             container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL
