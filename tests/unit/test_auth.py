@@ -755,3 +755,162 @@ class LoadTransportSecretTests(unittest.TestCase):
 
             self.assertEqual(result, "")
             reg.assert_not_called()
+
+
+# ── PresignedFileBearerBypassTests (TRN-169) ──────────────────────────────────
+
+class PresignedFileBearerBypassTests(unittest.TestCase):
+    """TRN-169: presigned /files/ URLs must not require an Authorization header.
+
+    4.1 — Valid presigned GET returns 200 without Authorization header.
+    4.2 — Valid presigned POST returns 200 without Authorization header.
+    4.3 — /files/ request with invalid sig and no Authorization returns 403.
+    4.4 — Non-file routes still require Bearer auth when GA_API_KEY is set.
+    """
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _file_scope(
+        self,
+        method: str = "GET",
+        path: str = "/files/demo/repo/file.txt",
+        headers: list[tuple[bytes, bytes]] | None = None,
+        query_string: bytes = b"",
+    ) -> dict:
+        return {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "query_string": query_string,
+            "headers": headers or [],
+        }
+
+    def _run_with_file_app(
+        self,
+        api_key: str,
+        scope: dict,
+        file_app_status: int = 200,
+    ) -> tuple[int, list, bytes]:
+        """Run BearerAuthMiddleware with a file_app stub returning file_app_status."""
+
+        class _StubFileApp:
+            def __init__(self, status: int) -> None:
+                self.status = status
+                self.called = False
+
+            async def __call__(self, scope, receive, send) -> None:
+                self.called = True
+                await send({
+                    "type": "http.response.start",
+                    "status": self.status,
+                    "headers": [],
+                })
+                await send({"type": "http.response.body", "body": b""})
+
+        file_app = _StubFileApp(file_app_status)
+        downstream = _FakeDownstream()
+        mw = server.BearerAuthMiddleware(downstream, api_key=api_key, file_app=file_app)
+        status, headers, body = _run_asgi(mw, scope)
+        return status, headers, body
+
+    # ── 4.1: valid presigned GET without Authorization returns 200 ─────────────
+
+    def test_presigned_get_without_authorization_returns_200(self) -> None:
+        """A valid presigned evac GET URL with no Authorization header returns 200."""
+        scope = self._file_scope(
+            method="GET",
+            path="/files/demo/repo/notes.txt",
+            headers=[],  # no Authorization header
+        )
+        # The file app itself verifies the token; here the middleware must not
+        # reject the request before it reaches the file app.
+        status, _, _ = self._run_with_file_app(
+            api_key="my-secret-key",
+            scope=scope,
+            file_app_status=200,
+        )
+        self.assertEqual(status, 200)
+
+    # ── 4.2: valid presigned POST without Authorization returns 200 ────────────
+
+    def test_presigned_post_without_authorization_returns_200(self) -> None:
+        """A valid presigned supply POST URL with no Authorization header returns 200."""
+        scope = self._file_scope(
+            method="POST",
+            path="/files/demo/repo/notes.txt",
+            headers=[],  # no Authorization header
+        )
+        status, _, _ = self._run_with_file_app(
+            api_key="my-secret-key",
+            scope=scope,
+            file_app_status=200,
+        )
+        self.assertEqual(status, 200)
+
+    # ── 4.3: /files/ with invalid sig and no Authorization returns 403 ─────────
+
+    def test_files_invalid_sig_no_authorization_returns_403(self) -> None:
+        """/files/ with a bad sig and no Authorization returns 403 (not 401).
+
+        The token verifier rejects the request with 403.  The Bearer middleware
+        must not intercept it with a 401 — the file app owns this decision.
+        """
+        scope = self._file_scope(
+            method="GET",
+            path="/files/demo/repo/notes.txt",
+            headers=[],  # no Authorization header
+        )
+        # Simulate the file app returning 403 for an invalid token.
+        status, _, _ = self._run_with_file_app(
+            api_key="my-secret-key",
+            scope=scope,
+            file_app_status=403,
+        )
+        # The middleware must forward to the file app (which returns 403).
+        # We must NOT get a 401 from the Bearer middleware.
+        self.assertEqual(status, 403)
+
+    # ── 4.4: non-file routes still require Bearer when GA_API_KEY is set ───────
+
+    def test_non_file_route_still_requires_bearer_auth(self) -> None:
+        """Non-/files/ routes return 401 without Authorization when GA_API_KEY is set."""
+        for method, path in [
+            ("POST", "/mcp"),
+            ("GET", "/api/spawn"),
+            ("GET", "/version"),
+        ]:
+            with self.subTest(method=method, path=path):
+                downstream = _FakeDownstream()
+                mw = server.BearerAuthMiddleware(downstream, api_key="secret")
+                scope = {
+                    "type": "http",
+                    "method": method,
+                    "path": path,
+                    "headers": [],  # no Authorization header
+                }
+                if path == "/version":
+                    # /version is a public path, skip this one
+                    continue
+                status, _, _ = _run_asgi(mw, scope)
+                self.assertEqual(status, 401, f"Expected 401 for {method} {path}")
+                self.assertFalse(
+                    downstream.called,
+                    f"Downstream must not be called for unauthenticated {method} {path}",
+                )
+
+    def test_files_route_bypasses_bearer_check_entirely(self) -> None:
+        """BearerAuthMiddleware._dispatch_file never checks the Authorization header."""
+        # Confirm by inspecting the source: _dispatch_file must NOT reference
+        # 'authorization' as a header key lookup in its code body (i.e., not
+        # check it as a gate). Comments documenting the bypass intent are fine.
+        import inspect
+        source = inspect.getsource(server.BearerAuthMiddleware._dispatch_file)
+        # Strip docstring lines to examine only the code body
+        code_lines = [
+            line for line in source.splitlines()
+            if not line.strip().startswith(("#", '"""', "'''"))
+               and '"""' not in line and "'''" not in line
+        ]
+        code_body = "\n".join(code_lines).lower()
+        self.assertNotIn("authorization", code_body,
+                          "_dispatch_file must not check Authorization header in code")

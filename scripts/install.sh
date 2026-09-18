@@ -816,6 +816,11 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             },
             {
+              "@id": "ga-transport-files-presigned",
+              "match": [{"path": ["/files/*"], "query": {"sig": ["*"]}}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
+            },
+            {
               "@id": "ga-transport-files",
               "match": [{"path": ["/files/*"], "header": {"Authorization": ["Bearer {file./run/secrets/ga-api-key}"]}}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]

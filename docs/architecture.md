@@ -71,6 +71,8 @@ nuke(crew_id, confirm=True)
 
 See [configuration.md](configuration.md#git-repository-transfer) for bundle instructions. Create a bundle locally, call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle bytes to the returned URL. For extraction, call `evac(path="repo", ..., bundle=True)` and clone or fetch the downloaded bundle.
 
+**Presigned URLs are self-authenticating.** URLs returned by `evac` and `supply` include a short-lived HMAC token (`sig` + `expires` query parameters) that encodes the crew, path, operation, and expiry. Any HTTP client (including bare `curl` or a browser) can use these URLs **without** an `Authorization: Bearer` header — the token is the credential. Both Caddy (the reverse proxy) and the Python transport's `BearerAuthMiddleware` are configured to exempt `/files/` requests that carry a `sig` parameter from the Bearer check; the presigned token verifier is the sole auth gate. An invalid or expired `sig` returns HTTP 403, not 401.
+
 ### Captain supervision
 
 The manual persona sequence is the default. To opt in: call `captain(crew_id, action="order", message="<standing order>", interval=<n>)` or supply a cron expression. Transport appends the order to `captain@localhost` and creates a recurring `/api/crons` job that dispatches Raven. When `interval` is set, Raven is dispatched immediately by default — `fire_immediately=False` suppresses this.
