@@ -1798,11 +1798,6 @@ async def _handle_claude_logout_post(request: Request) -> Response:
             status_code=409,
         )
 
-    _security.audit_auth_event(
-        action="logout", outcome="success", account="claude",
-        source=_request_source(request), emit=logger.info,
-    )
-
     try:
         podman = _get_podman()
     except Exception as e:
@@ -1815,6 +1810,12 @@ async def _handle_claude_logout_post(request: Request) -> Response:
         logger.info("Deleted ga-claude-auth")
     except Exception as e:
         logger.warning("Could not delete ga-claude-auth: %s", e)
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="claude",
+        source=_request_source(request), emit=logger.info,
+    )
 
     # Wipe ~/.claude/ from all running Claude-backend crews
     with _registry_lock:

@@ -2130,6 +2130,13 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
     Reads the host-side ga-claude-auth file (a tar of ~/.claude/) and untars it
     into /home/kirocrew/.claude/ inside the crew container, matching the path
     that the claude-agent-acp server reads for OAuth credentials.
+
+    Injection strategy: split the base64-encoded archive into fixed-width lines
+    and write each line via a separate container_exec echo, then pipe the
+    assembled file through ``base64 -d | tar -xf -``.  This avoids both the
+    ARG_MAX ceiling (Linux typically ~2 MB per argv entry) and any shell quoting
+    issues that arise from embedding the raw base64 string in an f-string passed
+    to ``sh -c``.
     """
     import base64 as _b64
     auth_path = _claude_auth_file_path()
@@ -2139,14 +2146,29 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
     # Ensure the target directory exists in the container
     podman.container_exec(container, ["mkdir", "-p", "/home/kirocrew/.claude"])
 
-    # Base64-encode the tar archive and pipe it through base64 -d | tar -xf -
-    # inside the container to avoid any shell quoting or size issues with stdin.
+    # Encode the archive and write it in chunks to a temp file inside the
+    # container, then decode and untar.  Each chunk is a small, safe exec.
     tar_bytes = auth_path.read_bytes()
     tar_b64 = _b64.b64encode(tar_bytes).decode()
-    podman.container_exec(container, [
-        "sh", "-c",
-        f"printf '%s' '{tar_b64}' | base64 -d | tar -xf - -C /home/kirocrew/.claude/",
-    ])
+
+    # Write base64 in 4 KB chunks using echo >> to a temp file.
+    # 4 KB is well under any reasonable ARG_MAX.
+    CHUNK = 4096
+    tmp = "/tmp/_ga_claude_auth.b64"
+    # Start fresh (truncate)
+    podman.container_exec(container, ["sh", "-c", f"> {tmp}"])
+    for i in range(0, len(tar_b64), CHUNK):
+        chunk = tar_b64[i : i + CHUNK]
+        # printf is used here to avoid echo interpreting backslashes; the chunk
+        # contains only base64 alphabet characters [A-Za-z0-9+/=] so no quoting
+        # or shell-injection is possible.
+        podman.container_exec(container, ["sh", "-c", f"printf '%s' '{chunk}' >> {tmp}"])
+
+    # Decode and untar, then remove the temp file
+    podman.container_exec(
+        container,
+        ["sh", "-c", f"base64 -d < {tmp} | tar -xf - -C /home/kirocrew/.claude/ && rm -f {tmp}"],
+    )
     logger.info("Injected Claude OAuth credentials into crew container %s", container)
 
 
@@ -2590,21 +2612,17 @@ def _poll_claude_login_container(podman: "PodmanClient", container: str) -> byte
         )
         if not result or not result.strip():
             return None
-        # Tar the whole ~/.claude/ directory
-        import subprocess as _sp
-        tar_result = podman._req(
-            "POST",
-            f"/libpod/containers/{container}/export",
-            params={"path": "/home/kirocrew/.claude/"},
-            stream=True,
-        )
-        # Fallback: use container_exec to produce tar bytes via base64
+        # Tar ~/.claude/ inside the container and retrieve the archive via base64.
+        # container_exec returns stdout as a string, so base64 is the transport.
+        # Note: the dead _req("POST", ".../export") call that was here before was
+        # removed (TRN-170 Banshee fix F1) — it was never consumed and would
+        # silently fail on large archives; the exec+base64 path is the only path.
+        import base64 as _b64
         tar_b64_result = podman.container_exec(
             container,
             ["sh", "-c", "tar -cf - -C /home/kirocrew/.claude/ . 2>/dev/null | base64"],
         )
         if tar_b64_result and tar_b64_result.strip():
-            import base64 as _b64
             return _b64.b64decode(tar_b64_result.strip())
     except Exception as e:
         logger.warning("Error polling Claude login container: %s", e)
