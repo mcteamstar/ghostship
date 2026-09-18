@@ -211,6 +211,13 @@ class Config:
     # launch() returns not_authenticated with a login URL (TRN-170).
     ga_crew_anthropic_api_key: str = ""
 
+    # GA_CREW_ANTHROPIC_BASE_URL: optional Anthropic-compatible endpoint URL
+    # injected as ANTHROPIC_BASE_URL into Claude-backend crew containers.
+    # When set, allows operators to redirect crew traffic to a local LLM
+    # proxy (litellm, OpenRouter, LM Studio, etc.) without image changes.
+    # Has no effect when GA_CREW_ACP_BACKEND != "claude". Default: unset.
+    ga_crew_anthropic_base_url: str = ""
+
     # GA_INCLUDE_CLAUDE_AGENT: whether the spec-ops image was built with
     # INCLUDE_CLAUDE_AGENT=true. Boolean (default false). Used by install.sh to
     # pass --build-arg INCLUDE_CLAUDE_AGENT=true at image build time.
@@ -284,6 +291,7 @@ class Config:
                 os.environ.get("GA_CREW_ACP_BACKEND", "kiro").strip().lower()
             ),
             ga_crew_anthropic_api_key=os.environ.get("GA_CREW_ANTHROPIC_API_KEY", ""),
+            ga_crew_anthropic_base_url=os.environ.get("GA_CREW_ANTHROPIC_BASE_URL", "").strip(),
             ga_include_claude_agent=_env_bool_default_off("GA_INCLUDE_CLAUDE_AGENT"),
         )
 
