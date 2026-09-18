@@ -7,6 +7,9 @@ Covers:
       ANTHROPIC_BASE_URL absent from container_env.
 - 4.3 GA_CREW_ANTHROPIC_BASE_URL set with kiro backend →
       ANTHROPIC_BASE_URL absent from container_env (kiro is unaffected).
+- 4.4 Lifecycle WARNING log names effective endpoint:
+      api.anthropic.com when GA_CREW_ANTHROPIC_BASE_URL is unset;
+      the configured URL when it is set.
 """
 
 from __future__ import annotations
@@ -193,6 +196,102 @@ class TestConfigAnthropicBaseUrl(unittest.TestCase):
         with patch.dict("os.environ", clean, clear=True):
             cfg = Config.from_env()
         self.assertEqual(cfg.ga_crew_anthropic_base_url, "")
+
+
+# ── 4.4 Lifecycle WARNING names the effective endpoint ────────────────────────
+
+
+class TestLifecycleWarningEffectiveEndpoint(unittest.TestCase):
+    """4.4: _finish_crew_setup WARNING names the effective endpoint.
+
+    Design requirement (design.md D3): "When GA_CREW_ANTHROPIC_BASE_URL is set,
+    the warning should name the override instead."
+    Delta spec: "The WARNING log entry … SHALL name the effective endpoint:
+    api.anthropic.com when GA_CREW_ANTHROPIC_BASE_URL is unset, or the configured
+    URL when it is set."
+    """
+
+    def _run_finish(self, *, base_url: str) -> list[str]:
+        """Drive _finish_crew_setup with claude backend and given base_url.
+        Returns the list of WARNING log output strings."""
+        import contextlib
+
+        podman = Mock()
+        podman.container_exec.return_value = "ready"
+        podman.container_exec_checked = Mock(return_value="injected")
+        podman.container_inspect.return_value = {
+            "Config": {"Labels": {"org.ghostship.version": "test-version"}},
+            "State": {"StartedAt": "2026-01-01T00:00:00Z"},
+        }
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(_lifecycle, "_wait_gateway", return_value=True))
+        stack.enter_context(patch.object(_lifecycle, "_inject_auth"))
+        stack.enter_context(patch.object(_lifecycle, "_patch_crew_config"))
+        stack.enter_context(patch.object(_lifecycle, "_copy_agents"))
+        stack.enter_context(patch.object(_lifecycle, "_copy_skills"))
+        stack.enter_context(patch.object(_lifecycle, "_copy_steering"))
+        stack.enter_context(patch.object(_lifecycle, "_seed_openspec_store"))
+        stack.enter_context(patch.object(_lifecycle, "_patch_models"))
+        stack.enter_context(
+            patch.object(_lifecycle, "_mint_cookie", return_value="test-cookie")
+        )
+        stack.enter_context(
+            patch.object(_lifecycle, "_inject_policy", return_value="v1")
+        )
+        stack.enter_context(
+            patch.object(
+                _lifecycle, "_load_registry",
+                return_value={"crews": {"test-crew": {}}},
+            )
+        )
+        stack.enter_context(patch.object(_lifecycle, "_save_registry"))
+        stack.enter_context(patch.object(_lifecycle, "_cleanup_crew"))
+
+        original_backend = _lifecycle.GA_CREW_ACP_BACKEND
+        original_base_url = _lifecycle.GA_CREW_ANTHROPIC_BASE_URL
+        log_output: list[str] = []
+        try:
+            _lifecycle.GA_CREW_ACP_BACKEND = "claude"
+            _lifecycle.GA_CREW_ANTHROPIC_BASE_URL = base_url
+            with stack:
+                with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+                    _lifecycle._finish_crew_setup(
+                        podman, "test-crew", "gs-test-crew",
+                        "gs-vol-test", "gs-home-test",
+                        None,
+                        admiral_secret="a" * 64,
+                    )
+            log_output = log_ctx.output
+        finally:
+            _lifecycle.GA_CREW_ACP_BACKEND = original_backend
+            _lifecycle.GA_CREW_ANTHROPIC_BASE_URL = original_base_url
+        return log_output
+
+    def test_warning_names_default_endpoint_when_base_url_unset(self) -> None:
+        """When GA_CREW_ANTHROPIC_BASE_URL is unset, WARNING names api.anthropic.com."""
+        log_output = self._run_finish(base_url="")
+        self.assertTrue(
+            any("api.anthropic.com" in msg for msg in log_output),
+            f"Expected WARNING mentioning api.anthropic.com when base_url is unset, "
+            f"got: {log_output}",
+        )
+
+    def test_warning_names_override_endpoint_when_base_url_set(self) -> None:
+        """When GA_CREW_ANTHROPIC_BASE_URL is set, WARNING names the override URL."""
+        override_url = "http://localhost:11434/v1"
+        log_output = self._run_finish(base_url=override_url)
+        self.assertTrue(
+            any(override_url in msg for msg in log_output),
+            f"Expected WARNING mentioning '{override_url}' when base_url is set, "
+            f"got: {log_output}",
+        )
+        # The default endpoint must NOT appear when the override is active.
+        self.assertFalse(
+            any("api.anthropic.com" in msg for msg in log_output),
+            f"WARNING must NOT mention api.anthropic.com when the override URL is set, "
+            f"got: {log_output}",
+        )
 
 
 if __name__ == "__main__":
