@@ -187,6 +187,8 @@ except ModuleNotFoundError:
     )
 
 GA_LOGIN_CONTAINER_PREFIX = "ga-login-"
+GA_CLAUDE_LOGIN_CONTAINER_PREFIX = "ga-claude-login-"
+GA_CLAUDE_AUTH_FILE = "ga-claude-auth"
 
 # ── Config-driven constants ───────────────────────────────────────────────────
 KC_IMAGE = cfg.kc_image
@@ -1475,6 +1477,9 @@ def _reconcile_registry() -> None:
             if cname.lstrip("/").startswith(GA_LOGIN_CONTAINER_PREFIX):
                 logger.info("Sweeping orphaned login container on startup: %s", cname)
                 _nuke_login_container(podman, cname.lstrip("/"))
+            elif cname.lstrip("/").startswith(GA_CLAUDE_LOGIN_CONTAINER_PREFIX):
+                logger.info("Sweeping orphaned Claude login container on startup: %s", cname)
+                _nuke_claude_login_container(podman, cname.lstrip("/"))
     except Exception as e:
         logger.warning("Login container sweep failed: %s", e)
     # Snapshot the registry under the lock, then release it before the
@@ -1787,6 +1792,23 @@ def _finish_crew_setup(
             "api.anthropic.com to function",
             crew_id,
         )
+        # Task 3.2: API key path (env var injected at container_create) takes
+        # precedence over OAuth path. If no API key, inject OAuth credentials
+        # from ga-claude-auth into the crew container's ~/.claude/ directory.
+        if not GA_CREW_ANTHROPIC_API_KEY and _claude_auth_exists():
+            try:
+                _inject_claude_auth(podman, container)
+            except Exception as e:
+                logger.warning(
+                    "Claude OAuth auth injection failed for crew %s: %s — crew may be "
+                    "unable to authenticate against api.anthropic.com",
+                    crew_id, e,
+                )
+        # If GA_CREW_ANTHROPIC_API_KEY is set, the env var was already injected
+        # at container_create time (server.py launch()); nothing more to do here.
+        # If neither API key nor ga-claude-auth is present, this path is
+        # unreachable: launch() blocks before reaching _finish_crew_setup
+        # when no Claude credential is available (task 3.3).
     else:
         # kiro path: inject auth rows (or skip when KIRO_API_KEY is set).
         if not KIRO_API_KEY:
@@ -1968,6 +1990,60 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
     logger.info("Nuked login container %s", name)
 
 
+# ── Claude login container helpers ────────────────────────────────────────────
+
+
+def _start_claude_login_container(podman: PodmanClient) -> str:
+    """Create and start an ephemeral ga-claude-login-<token> container.
+
+    Uses KC_IMAGE (the local spec-ops image built with INCLUDE_CLAUDE_AGENT=true)
+    because the ``claude`` CLI is only present in that image.  Fails with a clear
+    error if the image is not found or does not have ``claude`` installed.
+    Returns the container name.
+    """
+    # Verify the spec-ops image has `claude` available before starting.
+    # We do a quick inspection check; the actual binary check happens after
+    # container start in _initiate_claude_login.
+    token = secrets.token_hex(8)
+    name = f"{GA_CLAUDE_LOGIN_CONTAINER_PREFIX}{token}"
+    podman.network_create(GA_STARBOARD_NETWORK)
+    try:
+        podman._req("POST", "/libpod/containers/create", json={
+            "name": name,
+            "image": KC_IMAGE,
+            "netns": {"nsmode": "bridge"},
+            "Networks": {GA_STARBOARD_NETWORK: {}},
+            # No volumes — ephemeral writable layer only.
+            # The container runs the gateway entrypoint like the kiro login
+            # container, which seeds ~/.kiro/crew/config.json. The gateway
+            # will stall on AcpAuthRequired but that's fine — we only need
+            # the container running long enough to exec `claude auth login`.
+        })
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to create Claude login container from image {KC_IMAGE!r}: {e}. "
+            "Ensure the spec-ops image was built with GA_INCLUDE_CLAUDE_AGENT=true."
+        ) from e
+    podman.container_start(name)
+    logger.info("Started ephemeral Claude login container %s", name)
+    return name
+
+
+def _nuke_claude_login_container(podman: PodmanClient, name: str) -> None:
+    """Best-effort stop and remove a ga-claude-login-* container."""
+    if not name.startswith(GA_CLAUDE_LOGIN_CONTAINER_PREFIX):
+        raise RuntimeError(f"Refusing to nuke non-Claude-login container: {name!r}")
+    try:
+        podman.container_stop(name)
+    except Exception:
+        pass
+    try:
+        podman.container_remove(name)
+    except Exception:
+        pass
+    logger.info("Nuked Claude login container %s", name)
+
+
 # ── kiro-cli auth file helpers ──────────────────────────────────────
 
 def _auth_file_path() -> Path:
@@ -2010,6 +2086,90 @@ def _write_auth_file(value: str, _path: Path | None = None) -> None:
         if fd != -1:
             os.close(fd)
     os.chmod(path, 0o600)
+
+
+# ── Claude OAuth auth file helpers ────────────────────────────────────────────
+
+
+def _claude_auth_file_path() -> Path:
+    """Return the Claude OAuth credential tar archive path under the data mount."""
+    return DATA_DIR / GA_CLAUDE_AUTH_FILE
+
+
+def _claude_auth_exists() -> bool:
+    """Return True if the ga-claude-auth credential archive exists and is non-empty."""
+    p = _claude_auth_file_path()
+    return p.is_file() and p.stat().st_size > 0
+
+
+def _write_claude_auth_file(data: bytes, _path: Path | None = None) -> None:
+    """Persist the Claude OAuth tar archive (mode 0600).
+
+    _path: override the default path (for testing only).
+    """
+    path = _path if _path is not None else _claude_auth_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, "wb")
+        fd = -1
+        with f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if fd != -1:
+            os.close(fd)
+    os.chmod(path, 0o600)
+
+
+def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
+    """Inject the ga-claude-auth tar archive into container's ~/.claude/.
+
+    Reads the host-side ga-claude-auth file (a tar of ~/.claude/) and untars it
+    into /home/kirocrew/.claude/ inside the crew container, matching the path
+    that the claude-agent-acp server reads for OAuth credentials.
+
+    Injection strategy: split the base64-encoded archive into fixed-width lines
+    and write each line via a separate container_exec echo, then pipe the
+    assembled file through ``base64 -d | tar -xf -``.  This avoids both the
+    ARG_MAX ceiling (Linux typically ~2 MB per argv entry) and any shell quoting
+    issues that arise from embedding the raw base64 string in an f-string passed
+    to ``sh -c``.
+    """
+    import base64 as _b64
+    auth_path = _claude_auth_file_path()
+    if not auth_path.is_file():
+        raise RuntimeError("ga-claude-auth not found — Claude login required first")
+
+    # Ensure the target directory exists in the container
+    podman.container_exec(container, ["mkdir", "-p", "/home/kirocrew/.claude"])
+
+    # Encode the archive and write it in chunks to a temp file inside the
+    # container, then decode and untar.  Each chunk is a small, safe exec.
+    tar_bytes = auth_path.read_bytes()
+    tar_b64 = _b64.b64encode(tar_bytes).decode()
+
+    # Write base64 in 4 KB chunks using echo >> to a temp file.
+    # 4 KB is well under any reasonable ARG_MAX.
+    CHUNK = 4096
+    tmp = "/tmp/_ga_claude_auth.b64"
+    # Start fresh (truncate)
+    podman.container_exec(container, ["sh", "-c", f"> {tmp}"])
+    for i in range(0, len(tar_b64), CHUNK):
+        chunk = tar_b64[i : i + CHUNK]
+        # printf is used here to avoid echo interpreting backslashes; the chunk
+        # contains only base64 alphabet characters [A-Za-z0-9+/=] so no quoting
+        # or shell-injection is possible.
+        podman.container_exec(container, ["sh", "-c", f"printf '%s' '{chunk}' >> {tmp}"])
+
+    # Decode and untar, then remove the temp file
+    podman.container_exec(
+        container,
+        ["sh", "-c", f"base64 -d < {tmp} | tar -xf - -C /home/kirocrew/.claude/ && rm -f {tmp}"],
+    )
+    logger.info("Injected Claude OAuth credentials into crew container %s", container)
 
 
 # ── Login device-flow state ─────────────────────────────────────────
@@ -2224,6 +2384,249 @@ def _initiate_login(podman: "PodmanClient") -> dict:
 
     logger.info("Login flow started in %s, URL extracted", container)
     return {"login_url": login_url, "code": login_code}
+
+
+# ── Claude OAuth device-flow state ────────────────────────────────────────────
+# _claude_login_pending mirrors _login_pending:
+#   container:  str   — ephemeral ga-claude-login-* container name
+#   state:      str   — "starting" | "started"
+#   exec_id:    str   — Podman exec session id (informational)
+#   started_at: float — time.time() when the flow started
+_claude_login_pending: dict | None = None
+_claude_login_pending_lock = threading.Lock()
+
+
+def _initiate_claude_login(podman: "PodmanClient") -> dict:
+    """Start a Claude OAuth device-code flow and return the login URL.
+
+    Mirrors _initiate_login: acquires _claude_login_pending_lock, applies
+    TOCTOU-safe guards, starts the ephemeral ga-claude-login-* container from
+    KC_IMAGE (spec-ops with INCLUDE_CLAUDE_AGENT=true), runs ``claude auth login``
+    via container_exec_pty_stdin, reads the 45-second PTY stream with select(),
+    extracts the verification URL, drains the PTY in background, stores pending
+    state in _claude_login_pending.
+
+    URL regex note (task 1.2): ``claude auth login`` prints a line of the form:
+        Please open the following URL in your browser:
+        https://claude.ai/auth/login?...
+    or via Anthropic's device-code flow:
+        https://console.anthropic.com/...?code=...
+    We match both with a broad URL pattern and fall back to any https:// line
+    containing 'anthropic' or 'claude.ai'. The regex is documented here so it
+    is easy to update if the CLI changes its output format.
+
+    Returns one of:
+      {"login_url": str, "code": str | None}  — flow started successfully
+      {"login_pending": True}                 — a flow is already in progress
+      {"error": str}                          — hard failure
+    """
+    global _claude_login_pending
+    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
+    with _claude_login_pending_lock:
+        if _claude_login_pending is not None:
+            return {"login_pending": True}
+        # Lightweight sentinel to prevent concurrent starts
+        _claude_login_pending = {
+            "container": None,
+            "started_at": time.time(),
+            "state": "starting",
+        }
+
+    # ── Phase: start Claude login container ──────────────────────────────────
+    try:
+        container = _start_claude_login_container(podman)
+    except Exception as e:
+        logger.error("Failed to start Claude login container: %s", e)
+        with _claude_login_pending_lock:
+            _claude_login_pending = None
+        return {"error": str(e)}
+
+    # Update sentinel with real container name
+    with _claude_login_pending_lock:
+        _claude_login_pending = {
+            "container": container,
+            "started_at": _claude_login_pending["started_at"] if _claude_login_pending else time.time(),
+            "state": "started",
+        }
+
+    # ── Phase: wait for claude CLI ────────────────────────────────────────────
+    # Poll briefly for the claude binary to be accessible in the container.
+    for _ in range(10):
+        try:
+            check = podman.container_exec(container, ["which", "claude"])
+            if "claude" in check:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        _nuke_claude_login_container(podman, container)
+        with _claude_login_pending_lock:
+            _claude_login_pending = None
+        return {
+            "error": (
+                f"'claude' CLI not found in image {KC_IMAGE!r}. "
+                "Ensure the spec-ops image was built with GA_INCLUDE_CLAUDE_AGENT=true."
+            )
+        }
+
+    # ── Phase: PTY exec ───────────────────────────────────────────────────────
+    # claude auth login opens a browser-based device-code flow and prints a URL.
+    # PTY URL extraction note (task 1.2): the URL pattern for claude auth login
+    # is one of:
+    #   "Open the following URL in your browser: https://..."
+    #   "https://claude.ai/..." or "https://console.anthropic.com/..."
+    # We match with re.search(r'https?://\S+', text) and accept the first URL
+    # that looks like an Anthropic/Claude auth URL. A generic fallback accepts
+    # any https:// URL if no more specific match is found within 45 seconds.
+    cmd = ["claude", "auth", "login"]
+    try:
+        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
+    except Exception as e:
+        _nuke_claude_login_container(podman, container)
+        with _claude_login_pending_lock:
+            _claude_login_pending = None
+        return {"error": f"Failed to start claude auth login: {e}"}
+
+    pty_sock.setblocking(False)
+
+    # ── Phase: PTY read loop ──────────────────────────────────────────────────
+    # Read PTY output for up to 45 seconds, answering any interactive prompts
+    # and extracting the verification URL.
+    deadline = time.time() + 45.0
+    collected = bytearray()
+    login_url: str | None = None
+    login_code: str | None = None
+
+    try:
+        while time.time() < deadline:
+            ready, _, _ = select.select([pty_sock], [], [], 0.1)
+            if ready:
+                try:
+                    chunk = pty_sock.recv(4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                collected.extend(chunk)
+                text = collected.decode("utf-8", errors="replace")
+
+                # Answer a "Continue?" or "Yes/No" prompt if present
+                if re.search(r'\?\s*$', text.rstrip()) and not login_url:
+                    try:
+                        pty_sock.sendall(b"\n")
+                    except Exception:
+                        pass
+
+                # URL extraction: match Anthropic/Claude auth URLs first, then
+                # fall back to any https:// URL in the output.
+                #
+                # Task 1.2 URL regex: ``claude auth login`` outputs a line like:
+                #   "Please open the following URL in your browser:"
+                #   followed by (or on the same line as) the URL.
+                url_match = re.search(
+                    r'https?://(?:claude\.ai|console\.anthropic\.com|auth\.anthropic\.com)\S*',
+                    text,
+                )
+                if not url_match:
+                    # Generic fallback: any https URL after "URL" or "browser"
+                    url_match = re.search(
+                        r'(?:URL|browser)[:\s]+(https?://\S+)',
+                        text,
+                        re.IGNORECASE,
+                    )
+                if not url_match:
+                    # Last-resort: any https URL in the output
+                    url_match = re.search(r'(https?://\S{20,})', text)
+                if url_match:
+                    login_url = url_match.group(0 if url_match.lastindex is None else 1).rstrip(").,")
+                    # Extract code if present in URL query string
+                    code_match = re.search(r'[?&]code=([A-Za-z0-9_-]+)', login_url)
+                    if code_match:
+                        login_code = code_match.group(1)
+                    break
+    except Exception as e:
+        logger.warning("PTY read error during Claude login: %s", e)
+
+    if not login_url:
+        raw_output = collected.decode("utf-8", errors="replace")
+        try:
+            pty_sock.close()
+        except Exception:
+            pass
+        _nuke_claude_login_container(podman, container)
+        with _claude_login_pending_lock:
+            _claude_login_pending = None
+        return {
+            "error": (
+                f"claude auth login did not produce a login URL within 45s.\n"
+                f"Output:\n{raw_output}"
+            )
+        }
+
+    # ── Phase: drain thread + finalise ────────────────────────────────────────
+    pty_sock.setblocking(True)
+
+    def _drain_pty() -> None:
+        try:
+            while True:
+                chunk = pty_sock.recv(4096)
+                if not chunk:
+                    break
+        except Exception:
+            pass
+        finally:
+            try:
+                pty_sock.close()
+            except Exception:
+                pass
+
+    drain_thread = threading.Thread(
+        target=_drain_pty, daemon=True, name=f"pty-drain-{container}"
+    )
+    drain_thread.start()
+
+    with _claude_login_pending_lock:
+        if _claude_login_pending is not None:
+            _claude_login_pending["exec_id"] = exec_id
+
+    logger.info("Claude login flow started in %s, URL extracted", container)
+    return {"login_url": login_url, "code": login_code}
+
+
+def _poll_claude_login_container(podman: "PodmanClient", container: str) -> bytes | None:
+    """Poll container for completed ~/.claude/ credentials.
+
+    Checks whether ~/.claude/ inside the container contains a non-empty
+    credentials file. If present, tars the entire ~/.claude/ directory and
+    returns the raw tar bytes. Returns None if credentials are not yet present.
+
+    On completion (task 1.5): the caller writes the tar to ga-claude-auth
+    (mode 0600) and nukes the login container.
+    """
+    try:
+        # Check for any file in ~/.claude/ with content
+        result = podman.container_exec(
+            container,
+            ["sh", "-c", "find /home/kirocrew/.claude/ -type f -size +0 2>/dev/null | head -1"],
+        )
+        if not result or not result.strip():
+            return None
+        # Tar ~/.claude/ inside the container and retrieve the archive via base64.
+        # container_exec returns stdout as a string, so base64 is the transport.
+        # Note: the dead _req("POST", ".../export") call that was here before was
+        # removed (TRN-170 Banshee fix F1) — it was never consumed and would
+        # silently fail on large archives; the exec+base64 path is the only path.
+        import base64 as _b64
+        tar_b64_result = podman.container_exec(
+            container,
+            ["sh", "-c", "tar -cf - -C /home/kirocrew/.claude/ . 2>/dev/null | base64"],
+        )
+        if tar_b64_result and tar_b64_result.strip():
+            return _b64.b64decode(tar_b64_result.strip())
+    except Exception as e:
+        logger.warning("Error polling Claude login container: %s", e)
+    return None
 
 
 # ── Schedule / idle monitors ───────────────────────────────────────

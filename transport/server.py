@@ -598,6 +598,7 @@ try:
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
+        GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -624,13 +625,20 @@ try:
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
+        _inject_claude_auth,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
+        _nuke_claude_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
+        _claude_auth_file_path,
+        _claude_auth_exists,
+        _write_claude_auth_file,
         _initiate_login,
+        _initiate_claude_login,
+        _poll_claude_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -653,6 +661,7 @@ try:
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
+        _start_claude_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
@@ -666,6 +675,7 @@ except ModuleNotFoundError:
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
+        GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -692,13 +702,20 @@ except ModuleNotFoundError:
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
+        _inject_claude_auth,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
+        _nuke_claude_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
+        _claude_auth_file_path,
+        _claude_auth_exists,
+        _write_claude_auth_file,
         _initiate_login,
+        _initiate_claude_login,
+        _poll_claude_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -721,6 +738,7 @@ except ModuleNotFoundError:
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
+        _start_claude_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
@@ -1663,6 +1681,159 @@ async def _handle_logout_post(request: Request) -> Response:
     return JSONResponse({"status": "logged_out"})
 
 
+# ── Claude OAuth login/logout endpoints ────────────────────────────────────────
+
+
+async def _handle_claude_login_post(request: Request) -> Response:
+    """POST /login/claude — initiate Claude OAuth device-code flow.
+
+    Three-state machine guard:
+      - 409 if ga-claude-auth already exists (already authenticated)
+      - 409 if a Claude login flow is already in progress
+      - Calls _initiate_claude_login, returns {"login_url", "code"}
+
+    Requires GA_CREW_ACP_BACKEND=claude; returns 400 otherwise.
+    """
+    if GA_CREW_ACP_BACKEND != "claude":
+        return PlainTextResponse(
+            "GA_CREW_ACP_BACKEND must be 'claude' to use POST /login/claude.",
+            status_code=400,
+        )
+
+    with _lifecycle._claude_login_pending_lock:
+        if _claude_auth_exists():
+            return PlainTextResponse(
+                "Already authenticated. POST /logout/claude first.",
+                status_code=409,
+            )
+        if _lifecycle._claude_login_pending is not None:
+            return PlainTextResponse(
+                "Claude login already in progress. Poll GET /login/claude for status.",
+                status_code=409,
+            )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _initiate_claude_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Claude login already in progress. Poll GET /login/claude for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_claude_login_get(request: Request) -> Response:
+    """GET /login/claude — poll whether the Claude OAuth flow has completed.
+
+    Returns {"status": "pending", "login_url": ...} while waiting.
+    On completion: tars ~/.claude/ from the login container, writes ga-claude-auth
+    (mode 0600), nukes the login container, clears _claude_login_pending, and
+    returns {"status": "complete"}.
+    Returns 404 if no Claude login flow is in progress.
+    """
+    with _lifecycle._claude_login_pending_lock:
+        pending = _lifecycle._claude_login_pending
+
+    if pending is None:
+        return PlainTextResponse("No Claude login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Poll the login container for completed ~/.claude/ credentials (task 1.5)
+    tar_bytes = _poll_claude_login_container(podman, pending["container"])
+    if not tar_bytes:
+        return JSONResponse({
+            "status": "pending",
+            "login_url": pending.get("login_url"),
+        })
+
+    # ── Auth complete — write ga-claude-auth ──────────────────────────────────
+    try:
+        _write_claude_auth_file(tar_bytes)
+        logger.info("ga-claude-auth written after Claude login completion")
+    except Exception as e:
+        logger.warning("Could not write Claude auth file: %s", e)
+
+    # Nuke temp container and clear pending state (guarded)
+    _nuke_claude_login_container(podman, pending["container"])
+    with _lifecycle._claude_login_pending_lock:
+        if (
+            _lifecycle._claude_login_pending is not None
+            and _lifecycle._claude_login_pending.get("container") == pending["container"]
+        ):
+            _lifecycle._claude_login_pending = None
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="claude",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_claude_logout_post(request: Request) -> Response:
+    """POST /logout/claude — de-authenticate Claude OAuth.
+
+    Deletes ga-claude-auth and wipes ~/.claude/ from every running
+    Claude-backend crew. Returns 409 if not currently authenticated via OAuth.
+    """
+    if not _claude_auth_exists():
+        return PlainTextResponse(
+            "Not authenticated via Claude OAuth (ga-claude-auth not found).",
+            status_code=409,
+        )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Delete ga-claude-auth
+    auth_path = _claude_auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-claude-auth")
+    except Exception as e:
+        logger.warning("Could not delete ga-claude-auth: %s", e)
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="claude",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe ~/.claude/ from all running Claude-backend crews
+    with _registry_lock:
+        reg = _load_registry()
+    for cid, info in reg["crews"].items():
+        if info.get("status") == "running" and info.get("acp_backend") == "claude":
+            try:
+                podman.container_exec(
+                    info["container"],
+                    ["sh", "-c", "rm -rf /home/kirocrew/.claude/"],
+                )
+                logger.info("Wiped ~/.claude/ from crew %s", cid)
+            except Exception as e:
+                logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
+
+    return JSONResponse({"status": "logged_out"})
+
+
 # ── MCP tools: workspace ─────────────────────────────────────────────────────
 
 
@@ -1924,7 +2095,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
     # ── Auth check — before registry write to avoid orphaned entries ──────────
     # When GA_CREW_ACP_BACKEND=claude, all kiro-cli auth (device-code flow,
     # ga-kiro-auth file, auth_b64 injection) is skipped entirely.
-    # ANTHROPIC_API_KEY is injected at container_create time instead.
+    # ANTHROPIC_API_KEY is injected at container_create time (API key path) or
+    # ~/.claude/ is injected via _inject_claude_auth in _finish_crew_setup (OAuth).
     #
     # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var;
     # the device-code flow and auth_b64 injection are also skipped on that path.
@@ -1946,6 +2118,26 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "login_url": result.get("login_url"),
                 "code": result.get("code"),
                 "instructions": "Open login_url to authenticate, then call launch again.",
+            }
+    else:
+        # Task 3.3: Claude backend — require either API key or OAuth credential.
+        # If neither is present, initiate the Claude login flow and return
+        # not_authenticated with the login URL (identical behaviour to kiro path).
+        if not _GA_CREW_ANTHROPIC_API_KEY and not _claude_auth_exists():
+            result = _initiate_claude_login(podman)
+            if result.get("login_pending"):
+                return {
+                    "error": "not_authenticated",
+                    "login_pending": True,
+                    "instructions": "Claude login already in progress. Poll GET /login/claude, then call launch again.",
+                }
+            if "error" in result:
+                return {"error": result["error"]}
+            return {
+                "error": "not_authenticated",
+                "login_url": result.get("login_url"),
+                "code": result.get("code"),
+                "instructions": "Open login_url to authenticate with Claude, then call launch again.",
             }
 
     with _registry_lock:
@@ -3823,6 +4015,9 @@ if __name__ == "__main__":
         ("POST", "/login"): _handle_login_post,
         ("GET",  "/login"): _handle_login_get,
         ("POST", "/logout"): _handle_logout_post,
+        ("POST", "/login/claude"): _handle_claude_login_post,
+        ("GET",  "/login/claude"): _handle_claude_login_get,
+        ("POST", "/logout/claude"): _handle_claude_logout_post,
         ("GET",  "/health"): _handle_health,
         ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
@@ -3855,6 +4050,9 @@ if __name__ == "__main__":
             ("POST", "/login"): _handle_login_post,
             ("GET",  "/login"): _handle_login_get,
             ("POST", "/logout"): _handle_logout_post,
+            ("POST", "/login/claude"): _handle_claude_login_post,
+            ("GET",  "/login/claude"): _handle_claude_login_get,
+            ("POST", "/logout/claude"): _handle_claude_logout_post,
             ("GET",  "/health"): _handle_health,
             # Crew proxy routes — pattern keys used by BearerAuthMiddleware dispatch
             ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,

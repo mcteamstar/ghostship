@@ -145,14 +145,20 @@
 # non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
 # GA_CREW_AGENT=kiro
 
-# ── Claude Code ACP backend (TRN-167) ────────────────────────────────────────
+# ── Claude Code ACP backend (TRN-167, TRN-170) ───────────────────────────────
 # Set GA_CREW_ACP_BACKEND=claude to use the Claude Code ACP runtime inside crews
 # instead of the default kiro-cli runtime. Also requires:
 #   1. GA_INCLUDE_CLAUDE_AGENT=true — set before running install.sh so the
 #      spec-ops image is built with @anthropic-ai/claude-code installed.
-#   2. GA_CREW_ANTHROPIC_API_KEY — Anthropic API key for crew containers.
-#      Transport exits at startup with ConfigError if this is unset when
-#      GA_CREW_ACP_BACKEND=claude.
+#   2. A Claude credential — one of:
+#      a. GA_CREW_ANTHROPIC_API_KEY — Anthropic pay-per-token API key (TRN-167).
+#         When set, takes precedence over OAuth credentials.
+#      b. Claude OAuth login via POST /login/claude (TRN-170). Requires a
+#         Claude Pro/Max subscription. Authenticate by calling POST /login/claude
+#         and completing the browser flow; credentials are stored in ga-claude-auth
+#         and injected automatically into new crew containers.
+#      If neither is present at launch time, launch() returns not_authenticated
+#      with a login URL. GA_CREW_ANTHROPIC_API_KEY is optional from TRN-170.
 #
 # NOTE: The KiroCrew per-call tool approval gate is bypassed when
 # GA_CREW_ACP_BACKEND=claude. The signed security policy ceiling (academy/
@@ -161,7 +167,7 @@
 #
 # GA_CREW_ACP_BACKEND=kiro
 # GA_INCLUDE_CLAUDE_AGENT=false
-# GA_CREW_ANTHROPIC_API_KEY=""
+# GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
 
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────
 # Path to a directory of operator-managed standing-order template .md files.

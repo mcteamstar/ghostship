@@ -61,7 +61,28 @@ The system SHALL direct the device auth flow at a configured identity provider w
 
 When `KIRO_API_KEY` is set, the system SHALL skip the device-code auth flow entirely and inject the key as an env var into crew containers. The device-code path SHALL remain the default when `KIRO_API_KEY` is unset.
 
-When `GA_CREW_ACP_BACKEND=claude` is set, the system SHALL skip all kiro-cli auth injection entirely (no device flow, no `ga-kiro-auth`, no `KIRO_API_KEY` injection) and SHALL instead inject `ANTHROPIC_API_KEY` from `GA_CREW_ANTHROPIC_API_KEY` into the crew container as an environment variable.
+When `GA_CREW_ACP_BACKEND=claude` is set, the system SHALL skip all kiro-cli auth injection entirely (no device flow, no `ga-kiro-auth`, no `KIRO_API_KEY` injection). The system SHALL authenticate the Claude backend using one of two paths, checked in order:
+
+1. **API key path**: If `GA_CREW_ANTHROPIC_API_KEY` is set, inject it as `ANTHROPIC_API_KEY` into the crew container environment.
+2. **OAuth path**: If `ga-claude-auth` exists and is non-empty, inject the Claude OAuth credential into the crew container's `~/.claude/` directory.
+
+If `GA_CREW_ACP_BACKEND=claude` and neither credential is available, `launch` SHALL return `not_authenticated` with a `login_url` pointing to the Claude device-code flow (initiated automatically), rather than a hard error.
+
+#### Scenario: Claude backend — API key takes precedence over OAuth credential
+- **WHEN** `GA_CREW_ACP_BACKEND=claude`, `GA_CREW_ANTHROPIC_API_KEY` is set, and `ga-claude-auth` also exists
+- **THEN** `ANTHROPIC_API_KEY` is injected as an env var; the OAuth credential file is not injected; kiro auth is skipped entirely
+
+#### Scenario: Claude backend — OAuth credential injected when no API key
+- **WHEN** `GA_CREW_ACP_BACKEND=claude`, `GA_CREW_ANTHROPIC_API_KEY` is unset, and `ga-claude-auth` exists and is non-empty
+- **THEN** the Claude credential from `ga-claude-auth` is injected into the crew container's `~/.claude/`; no `ANTHROPIC_API_KEY` env var is set; kiro auth is skipped
+
+#### Scenario: Claude backend — neither credential present triggers OAuth login flow
+- **WHEN** `GA_CREW_ACP_BACKEND=claude`, `GA_CREW_ANTHROPIC_API_KEY` is unset, and `ga-claude-auth` does not exist or is empty
+- **THEN** `launch` returns `{"error": "not_authenticated", "login_url": "<url>", "code": "<code>", "instructions": "Open login_url to authenticate Claude, then call launch again."}` and does NOT create the crew container
+
+#### Scenario: Claude backend — no kiro auth state required
+- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ga-kiro-auth` does not exist
+- **THEN** `launch` proceeds without requiring kiro auth state; absence of kiro-cli auth is not an error when the Claude backend is selected
 
 #### Scenario: Identity provider configured
 
@@ -78,11 +99,10 @@ When `GA_CREW_ACP_BACKEND=claude` is set, the system SHALL skip all kiro-cli aut
 - **WHEN** `KIRO_API_KEY` is set in the transport environment and `launch` is called
 - **THEN** the system does NOT call `_initiate_login()`, does NOT require `ga-kiro-auth` to exist, and does NOT inject `auth_b64` rows into the crew's SQLite DB
 - **THEN** `KIRO_API_KEY` is passed as an env var to the crew container at creation time
-- **THEN** kiro-cli inside the crew authenticates via the env var without a device-code exchange
 
 #### Scenario: KIRO_API_KEY unset — device flow unchanged
 
-- **WHEN** `KIRO_API_KEY` is unset
+- **WHEN** `KIRO_API_KEY` is unset and `GA_CREW_ACP_BACKEND` is `kiro`
 - **THEN** all existing device-code auth behaviour is unchanged — `ga-kiro-auth`, `_initiate_login()`, and `inject_auth.py` are used as before
 
 #### Scenario: Claude backend — Anthropic API key injected, kiro auth skipped
@@ -90,11 +110,6 @@ When `GA_CREW_ACP_BACKEND=claude` is set, the system SHALL skip all kiro-cli aut
 - **WHEN** `GA_CREW_ACP_BACKEND=claude` and `GA_CREW_ANTHROPIC_API_KEY` is set and `launch` is called
 - **THEN** the system does NOT call `_initiate_login()`, does NOT read `ga-kiro-auth`, and does NOT inject kiro-cli auth rows
 - **THEN** `ANTHROPIC_API_KEY` is set to the value of `GA_CREW_ANTHROPIC_API_KEY` in the crew container's environment at creation time
-
-#### Scenario: Claude backend — no kiro auth state required
-
-- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ga-kiro-auth` does not exist
-- **THEN** `launch` proceeds without the auth_required state; absence of kiro-cli auth is not an error when the Claude backend is selected
 
 ### Requirement: Crew secrets not persisted in plaintext after injection
 

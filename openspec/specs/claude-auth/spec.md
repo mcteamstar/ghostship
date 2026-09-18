@@ -1,8 +1,10 @@
+# claude-auth Specification
+
 ## Purpose
 
 Defines the Claude Code OAuth device-code login flow, credential storage, injection into crew containers, and logout — a parallel auth state machine to the existing kiro-cli auth path, enabling Claude Pro/Max subscription users to run Claude-backend crews without an Anthropic API key.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Claude auth state machine
 
