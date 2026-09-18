@@ -66,5 +66,8 @@ When `GA_CREW_ACP_BACKEND=claude` and `ga-claude-auth` exists, the transport SHA
 
 ### Requirement: Orphaned Claude login containers cleaned up on startup
 
+When the transport starts and one or more containers named `ga-claude-login-*` exist, they SHALL be stopped and removed during `_reconcile_registry` before any other operations.
+
+#### Scenario: Orphaned login containers removed on startup
 - **WHEN** the transport starts and one or more containers named `ga-claude-login-*` exist
 - **THEN** those containers are stopped and removed during `_reconcile_registry` before any other operations
