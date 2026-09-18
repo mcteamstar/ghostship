@@ -83,11 +83,15 @@ def _validate_acp_backend(value: str) -> str:
 
 
 def _validate_claude_api_key(backend: str, key: str) -> None:
-    """Raise ConfigError if Claude backend is selected but no API key is set."""
-    if backend == "claude" and not key:
-        raise ConfigError(
-            "GA_CREW_ACP_BACKEND=claude requires GA_CREW_ANTHROPIC_API_KEY to be set"
-        )
+    """No-op: GA_CREW_ANTHROPIC_API_KEY is no longer required at startup.
+
+    TRN-170: Claude OAuth is an alternative to the API key. Startup validation
+    is removed; launch() enforces the credential requirement lazily — if neither
+    GA_CREW_ANTHROPIC_API_KEY nor ga-claude-auth is present, launch returns
+    not_authenticated with a login URL rather than failing at startup.
+
+    This function is retained for call-site compatibility but is now a no-op.
+    """
 
 
 def _validate_caddy_tls_mode(value: str, default: str = "off") -> str:
@@ -201,9 +205,10 @@ class Config:
     ga_crew_acp_backend: str = "kiro"
 
     # GA_CREW_ANTHROPIC_API_KEY: Anthropic API key injected into crew containers
-    # when GA_CREW_ACP_BACKEND=claude. Required when backend is "claude".
-    # Validated at startup — transport exits with ConfigError if
-    # GA_CREW_ACP_BACKEND=claude but this is unset.
+    # when GA_CREW_ACP_BACKEND=claude. Optional when using Claude OAuth login
+    # (ga-claude-auth). When set, takes precedence over OAuth credentials.
+    # When neither API key nor OAuth credentials are present at launch time,
+    # launch() returns not_authenticated with a login URL (TRN-170).
     ga_crew_anthropic_api_key: str = ""
 
     # GA_INCLUDE_CLAUDE_AGENT: whether the spec-ops image was built with
@@ -285,7 +290,10 @@ class Config:
     def validate(self) -> None:
         """Run cross-field validation that cannot be expressed as a per-field default.
 
-        Called once after from_env() during transport startup. Raises ConfigError
-        if GA_CREW_ACP_BACKEND=claude but GA_CREW_ANTHROPIC_API_KEY is unset.
+        Called once after from_env() during transport startup.
+        TRN-170: GA_CREW_ANTHROPIC_API_KEY is no longer required at startup when
+        GA_CREW_ACP_BACKEND=claude — Claude OAuth (ga-claude-auth) is a valid
+        alternative. Credential enforcement is now lazy: launch() blocks and
+        initiates the Claude login flow if neither credential is present.
         """
         _validate_claude_api_key(self.ga_crew_acp_backend, self.ga_crew_anthropic_api_key)

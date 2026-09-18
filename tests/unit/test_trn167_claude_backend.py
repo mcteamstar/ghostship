@@ -72,18 +72,21 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
             cfg = Config.from_env()
         self.assertEqual(cfg.ga_crew_acp_backend, "kiro")
 
-    def test_claude_without_api_key_fails_validate(self) -> None:
-        """GA_CREW_ACP_BACKEND=claude + no API key raises ConfigError on validate()."""
+    def test_claude_without_api_key_no_longer_fails_validate(self) -> None:
+        """TRN-170: GA_CREW_ACP_BACKEND=claude + no API key no longer raises ConfigError.
+
+        Config.validate() is now a no-op — the credential requirement is enforced
+        lazily at launch() time so operators can start the transport before
+        authenticating via Claude OAuth.
+        """
         env = {
             "GA_CREW_ACP_BACKEND": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
-        with self.assertRaises(ConfigError) as ctx:
-            cfg.validate()
-        self.assertIn("GA_CREW_ANTHROPIC_API_KEY", str(ctx.exception))
-        self.assertIn("GA_CREW_ACP_BACKEND", str(ctx.exception))
+        # Must NOT raise — TRN-170 relaxes the startup validation.
+        cfg.validate()
 
     def test_kiro_backend_validate_passes_without_api_key(self) -> None:
         """validate() does not raise for kiro backend even without an Anthropic key."""
@@ -105,12 +108,13 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
             cfg = Config.from_env()
         self.assertTrue(cfg.ga_include_claude_agent)
 
-    def test_validate_called_raises_config_error_when_claude_without_key(self) -> None:
-        """Config.validate() raises ConfigError for claude backend without API key.
+    def test_validate_called_no_longer_raises_when_claude_without_key(self) -> None:
+        """TRN-170: Config.validate() is now a no-op for missing API key.
 
-        This guards that validate() is a real method that can be called at
-        transport startup (server.py __main__) to enforce the cross-field
-        constraint, rather than only being tested via direct unit calls.
+        The startup ConfigError for GA_CREW_ACP_BACKEND=claude without API key
+        was removed in TRN-170 — the transport can start before Claude OAuth
+        authentication completes. The credential requirement is enforced lazily
+        at launch() time instead.
         """
         env = {
             "GA_CREW_ACP_BACKEND": "claude",
@@ -118,9 +122,8 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
-        with self.assertRaises(ConfigError) as ctx:
-            cfg.validate()
-        self.assertIn("GA_CREW_ANTHROPIC_API_KEY", str(ctx.exception))
+        # Must NOT raise — TRN-170 relaxation.
+        cfg.validate()
 
     def test_validate_called_passes_when_key_present(self) -> None:
         """Config.validate() does not raise when claude backend has an API key."""

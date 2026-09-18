@@ -107,7 +107,99 @@ UNAUTHENTICATED  ──[POST /login]──►  PENDING  ──[GET /login → co
 
 ---
 
-## MCP API-key authentication (`GA_API_KEY`)
+## Claude OAuth login (TRN-170)
+
+`ga-claude-auth` is a tar archive of `~/.claude/` (the credential directory written
+by the `claude` CLI), stored at `DATA_DIR/ga-claude-auth` (mode `0600`).
+
+This path is an alternative to `GA_CREW_ANTHROPIC_API_KEY` for operators with a
+Claude Pro/Max subscription who prefer not to maintain a separate API-tier account.
+
+### Prerequisites
+
+1. Build the spec-ops image with `GA_INCLUDE_CLAUDE_AGENT=true` so the `claude` CLI
+   is installed in the image.
+2. Set `GA_CREW_ACP_BACKEND=claude` in your `ghostship.conf`.
+
+### Authenticate
+
+**1. Trigger the Claude login flow**
+
+```bash
+curl -sX POST http://localhost:64057/login/claude | jq
+```
+
+```json
+{
+  "status": "pending",
+  "login_url": "https://claude.ai/auth/login?...",
+  "code": null
+}
+```
+
+**2. Open the URL in your browser** and approve the OAuth request using your
+Claude account (Pro or Max).
+
+**3. Confirm completion**
+
+```bash
+curl -s http://localhost:64057/login/claude | jq .status
+# → "complete"
+```
+
+**4. Launch** — the transport is ready. Each new crew will receive `~/.claude/`
+injected at setup time.
+
+### Re-authenticate
+
+Claude OAuth tokens may expire. To refresh:
+
+```bash
+# Clear the old credential
+curl -sX POST http://localhost:64057/logout/claude
+
+# Start a fresh login flow
+curl -sX POST http://localhost:64057/login/claude | jq
+```
+
+### Logout
+
+```bash
+curl -sX POST http://localhost:64057/logout/claude
+```
+
+This deletes `ga-claude-auth` and runs `rm -rf ~/.claude/` inside every running
+Claude-backend crew. Existing crew sessions become unauthenticated; relaunch them
+after logging in again.
+
+### Credential precedence
+
+When both `GA_CREW_ANTHROPIC_API_KEY` and `ga-claude-auth` are present, the API key
+takes precedence. OAuth credentials are only used when the API key is unset.
+
+### Claude OAuth API
+
+Three HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
+`GA_API_KEY` is set. Only meaningful when `GA_CREW_ACP_BACKEND=claude`.
+
+```
+UNAUTHENTICATED  ──[POST /login/claude]──►  PENDING  ──[GET /login/claude → complete]──►  AUTHENTICATED
+                                                                                               │
+               ◄──────────────────────────────────────[POST /logout/claude]────────────────────┘
+```
+
+**`POST /login/claude`** — starts the Claude OAuth device-code flow inside an
+ephemeral `ga-claude-login-*` container. Returns `{"status": "pending", "login_url": "..."}`.
+Returns 409 if already authenticated or flow in progress.
+
+**`GET /login/claude`** — polls completion. On success writes `ga-claude-auth` and
+returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
+Returns 404 if no flow is in progress.
+
+**`POST /logout/claude`** — deletes `ga-claude-auth` and wipes `~/.claude/` from
+every running Claude-backend crew. Returns 409 if not authenticated via OAuth.
+
+---
 
 An optional static bearer credential protecting the MCP endpoint.
 
