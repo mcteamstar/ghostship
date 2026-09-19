@@ -68,6 +68,13 @@ When `GA_CREW_ACP_BACKEND=claude` is set, the system SHALL skip all kiro-cli aut
 
 If `GA_CREW_ACP_BACKEND=claude` and neither credential is available, `launch` SHALL return `not_authenticated` with a `login_url` pointing to the Claude device-code flow (initiated automatically), rather than a hard error.
 
+When `GA_CREW_ACP_BACKEND=codex` is set, the system SHALL likewise skip all kiro-cli auth injection entirely (no device flow, no `ga-kiro-auth`, no `KIRO_API_KEY` injection). The system SHALL authenticate the Codex backend using one of two paths, checked in order:
+
+1. **API key path**: If `GA_CREW_OPENAI_API_KEY` is set, inject it as `OPENAI_API_KEY` into the crew container environment.
+2. **OAuth path**: If `ga-codex-auth` exists and is non-empty, inject the Codex OAuth credential (a tar of `~/.codex/`) into the crew container's `~/.codex/` directory.
+
+If `GA_CREW_ACP_BACKEND=codex` and neither credential is available, `launch` SHALL return `not_authenticated` with a `login_url` pointing to the Codex login flow (initiated automatically), rather than a hard error.
+
 #### Scenario: Claude backend — API key takes precedence over OAuth credential
 - **WHEN** `GA_CREW_ACP_BACKEND=claude`, `GA_CREW_ANTHROPIC_API_KEY` is set, and `ga-claude-auth` also exists
 - **THEN** `ANTHROPIC_API_KEY` is injected as an env var; the OAuth credential file is not injected; kiro auth is skipped entirely
@@ -83,6 +90,22 @@ If `GA_CREW_ACP_BACKEND=claude` and neither credential is available, `launch` SH
 #### Scenario: Claude backend — no kiro auth state required
 - **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ga-kiro-auth` does not exist
 - **THEN** `launch` proceeds without requiring kiro auth state; absence of kiro-cli auth is not an error when the Claude backend is selected
+
+#### Scenario: Codex backend — API key takes precedence over OAuth credential
+- **WHEN** `GA_CREW_ACP_BACKEND=codex`, `GA_CREW_OPENAI_API_KEY` is set, and `ga-codex-auth` also exists
+- **THEN** `OPENAI_API_KEY` is injected as an env var; the OAuth credential archive is not injected; kiro auth is skipped entirely
+
+#### Scenario: Codex backend — OAuth credential injected when no API key
+- **WHEN** `GA_CREW_ACP_BACKEND=codex`, `GA_CREW_OPENAI_API_KEY` is unset, and `ga-codex-auth` exists and is non-empty
+- **THEN** the Codex credential from `ga-codex-auth` is injected into the crew container's `~/.codex/`; no `OPENAI_API_KEY` env var is set; kiro auth is skipped
+
+#### Scenario: Codex backend — neither credential present triggers login flow
+- **WHEN** `GA_CREW_ACP_BACKEND=codex`, `GA_CREW_OPENAI_API_KEY` is unset, and `ga-codex-auth` does not exist or is empty
+- **THEN** `launch` returns `{"error": "not_authenticated", "login_url": "<url>", "instructions": "Open login_url to authenticate Codex, then call launch again."}` and does NOT create the crew container
+
+#### Scenario: Codex backend — no kiro auth state required
+- **WHEN** `GA_CREW_ACP_BACKEND=codex` and `ga-kiro-auth` does not exist
+- **THEN** `launch` proceeds without requiring kiro auth state; absence of kiro-cli auth is not an error when the Codex backend is selected
 
 #### Scenario: Identity provider configured
 
