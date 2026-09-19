@@ -189,6 +189,8 @@ except ModuleNotFoundError:
 GA_LOGIN_CONTAINER_PREFIX = "ga-login-"
 GA_CLAUDE_LOGIN_CONTAINER_PREFIX = "ga-claude-login-"
 GA_CLAUDE_AUTH_FILE = "ga-claude-auth"
+GA_CODEX_LOGIN_CONTAINER_PREFIX = "ga-codex-login-"
+GA_CODEX_AUTH_FILE = "ga-codex-auth"
 
 # ── Config-driven constants ───────────────────────────────────────────────────
 KC_IMAGE = cfg.kc_image
@@ -210,13 +212,17 @@ GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 GA_PREWARM_ENABLED = cfg.ga_prewarm_enabled
 GA_PREWARM_TTL_SECS = cfg.ga_prewarm_ttl_secs
 
-# ACP backend selection — controls whether kiro or Claude Code runs inside crew containers.
+# ACP backend selection — controls whether kiro, Claude Code, or Codex runs inside crew containers.
 # "kiro" (default): kiro-cli auth injection path (existing behaviour).
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY + CLAUDE_CODE_HEADLESS=1.
+# "codex": skip kiro auth, inject OPENAI_API_KEY (or the ga-codex-auth archive).
 GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
 GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
 GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
 GA_INCLUDE_CLAUDE_AGENT = cfg.ga_include_claude_agent
+GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
+GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
+GA_INCLUDE_CODEX_AGENT = cfg.ga_include_codex_agent
 
 # The effective crew session idle timeout. Spec-ops crews are patched with a
 # fixed ``session.timeout_secs = 300`` override (see _patch_crew_config); a
@@ -1481,6 +1487,9 @@ def _reconcile_registry() -> None:
             elif cname.lstrip("/").startswith(GA_CLAUDE_LOGIN_CONTAINER_PREFIX):
                 logger.info("Sweeping orphaned Claude login container on startup: %s", cname)
                 _nuke_claude_login_container(podman, cname.lstrip("/"))
+            elif cname.lstrip("/").startswith(GA_CODEX_LOGIN_CONTAINER_PREFIX):
+                logger.info("Sweeping orphaned Codex login container on startup: %s", cname)
+                _nuke_codex_login_container(podman, cname.lstrip("/"))
     except Exception as e:
         logger.warning("Login container sweep failed: %s", e)
     # Snapshot the registry under the lock, then release it before the
@@ -1649,6 +1658,11 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     # than the kiro-cli runtime.
     if GA_CREW_ACP_BACKEND == "claude":
         agent_overrides["acp_backend"] = "claude"
+    # When GA_CREW_ACP_BACKEND=codex, route agent spawns through the Codex ACP
+    # runtime. codex-acp advertises a verified read-only mode at session/new, so
+    # ghostship's per-call kiro approval gate does not apply (see crew-governance).
+    elif GA_CREW_ACP_BACKEND == "codex":
+        agent_overrides["acp_backend"] = "codex"
     # KC_MODEL_DEFAULT sets agent.default_model — a global fallback that applies
     # when no per-agent model field overrides it. Precedence (high→low):
     #   KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
@@ -1813,6 +1827,41 @@ def _finish_crew_setup(
         # If neither API key nor ga-claude-auth is present, this path is
         # unreachable: launch() blocks before reaching _finish_crew_setup
         # when no Claude credential is available (task 3.3).
+    elif GA_CREW_ACP_BACKEND == "codex":
+        # codex path: skip all kiro-cli auth injection. OPENAI_API_KEY and
+        # OPENAI_BASE_URL were already injected as container env vars at
+        # container_create time (see launch() in server.py). codex-acp
+        # advertises a verified read-only mode, so no ghostship-side
+        # approval-suppression env var is needed (see crew-governance).
+        #
+        # Task 3.5: warn at launch time that outbound access to the effective
+        # OpenAI endpoint is required. Use GA_CREW_OPENAI_BASE_URL when set,
+        # otherwise api.openai.com.
+        _effective_endpoint = GA_CREW_OPENAI_BASE_URL or "api.openai.com"
+        logger.warning(
+            "GA_CREW_ACP_BACKEND=codex: crew %s requires outbound access to "
+            "%s to function",
+            crew_id,
+            _effective_endpoint,
+        )
+        # Task 3.3: API key path (OPENAI_API_KEY env var injected at
+        # container_create) takes precedence over OAuth path. If no API key,
+        # inject OAuth credentials from ga-codex-auth into the crew container's
+        # ~/.codex/ directory (the path codex-acp reads).
+        if not GA_CREW_OPENAI_API_KEY and _codex_auth_exists():
+            try:
+                _inject_codex_auth(podman, container)
+            except Exception as e:
+                logger.warning(
+                    "Codex OAuth auth injection failed for crew %s: %s — crew may be "
+                    "unable to authenticate against api.openai.com",
+                    crew_id, e,
+                )
+        # If GA_CREW_OPENAI_API_KEY is set, the env var was already injected
+        # at container_create time (server.py launch()); nothing more to do here.
+        # If neither API key nor ga-codex-auth is present, this path is
+        # unreachable: launch() blocks before reaching _finish_crew_setup
+        # when no Codex credential is available (task 3.3).
     else:
         # kiro path: inject auth rows (or skip when KIRO_API_KEY is set).
         if not KIRO_API_KEY:
@@ -2630,6 +2679,354 @@ def _poll_claude_login_container(podman: "PodmanClient", container: str) -> byte
             return _b64.b64decode(tar_b64_result.strip())
     except Exception as e:
         logger.warning("Error polling Claude login container: %s", e)
+    return None
+
+
+# ── Codex login container helpers ─────────────────────────────────────────────
+
+
+def _start_codex_login_container(podman: PodmanClient) -> str:
+    """Create and start an ephemeral ga-codex-login-<token> container.
+
+    Uses KC_IMAGE (the local spec-ops image built with INCLUDE_CODEX_AGENT=true)
+    because the ``codex-acp`` adapter is only present in that image. Fails with a
+    clear error naming GA_INCLUDE_CODEX_AGENT=true if the image cannot start.
+    The actual adapter-binary check happens after start in _initiate_codex_login.
+    Returns the container name.
+    """
+    token = secrets.token_hex(8)
+    name = f"{GA_CODEX_LOGIN_CONTAINER_PREFIX}{token}"
+    podman.network_create(GA_STARBOARD_NETWORK)
+    try:
+        podman._req("POST", "/libpod/containers/create", json={
+            "name": name,
+            "image": KC_IMAGE,
+            "netns": {"nsmode": "bridge"},
+            "Networks": {GA_STARBOARD_NETWORK: {}},
+            # No volumes — ephemeral writable layer only. The container runs the
+            # gateway entrypoint like the kiro/claude login containers; the
+            # gateway stalls on AcpAuthRequired but that's fine — we only need
+            # the container running long enough to exec the codex login flow.
+        })
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to create Codex login container from image {KC_IMAGE!r}: {e}. "
+            "Ensure the spec-ops image was built with GA_INCLUDE_CODEX_AGENT=true."
+        ) from e
+    podman.container_start(name)
+    logger.info("Started ephemeral Codex login container %s", name)
+    return name
+
+
+def _nuke_codex_login_container(podman: PodmanClient, name: str) -> None:
+    """Best-effort stop and remove a ga-codex-login-* container."""
+    if not name.startswith(GA_CODEX_LOGIN_CONTAINER_PREFIX):
+        raise RuntimeError(f"Refusing to nuke non-Codex-login container: {name!r}")
+    try:
+        podman.container_stop(name)
+    except Exception:
+        pass
+    try:
+        podman.container_remove(name)
+    except Exception:
+        pass
+    logger.info("Nuked Codex login container %s", name)
+
+
+# ── Codex OAuth auth file helpers ─────────────────────────────────────────────
+
+
+def _codex_auth_file_path() -> Path:
+    """Return the Codex OAuth credential tar archive path under the data mount."""
+    return DATA_DIR / GA_CODEX_AUTH_FILE
+
+
+def _codex_auth_exists() -> bool:
+    """Return True if the ga-codex-auth credential archive exists and is non-empty."""
+    p = _codex_auth_file_path()
+    return p.is_file() and p.stat().st_size > 0
+
+
+def _write_codex_auth_file(data: bytes, _path: Path | None = None) -> None:
+    """Persist the Codex OAuth tar archive (mode 0600).
+
+    _path: override the default path (for testing only).
+    """
+    path = _path if _path is not None else _codex_auth_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, "wb")
+        fd = -1
+        with f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if fd != -1:
+            os.close(fd)
+    os.chmod(path, 0o600)
+
+
+def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
+    """Inject the ga-codex-auth tar archive into container's ~/.codex/.
+
+    Reads the host-side ga-codex-auth file (a tar of ~/.codex/, holding
+    auth.json) and untars it into /home/kirocrew/.codex/ inside the crew
+    container, matching the path that codex-acp reads for OAuth credentials
+    (relocatable via CODEX_HOME, but ghostship uses the default location).
+
+    Injection strategy mirrors _inject_claude_auth: split the base64-encoded
+    archive into fixed-width lines written via separate container_exec calls to
+    stay under ARG_MAX, then pipe the assembled file through
+    ``base64 -d | tar -xf -``. The chunk alphabet is base64 [A-Za-z0-9+/=] only,
+    so no shell quoting/injection is possible.
+    """
+    import base64 as _b64
+    auth_path = _codex_auth_file_path()
+    if not auth_path.is_file():
+        raise RuntimeError("ga-codex-auth not found — Codex login required first")
+
+    # Ensure the target directory exists in the container
+    podman.container_exec(container, ["mkdir", "-p", "/home/kirocrew/.codex"])
+
+    tar_bytes = auth_path.read_bytes()
+    tar_b64 = _b64.b64encode(tar_bytes).decode()
+
+    CHUNK = 4096
+    tmp = "/tmp/_ga_codex_auth.b64"
+    podman.container_exec(container, ["sh", "-c", f"> {tmp}"])
+    for i in range(0, len(tar_b64), CHUNK):
+        chunk = tar_b64[i : i + CHUNK]
+        podman.container_exec(container, ["sh", "-c", f"printf '%s' '{chunk}' >> {tmp}"])
+
+    podman.container_exec(
+        container,
+        ["sh", "-c", f"base64 -d < {tmp} | tar -xf - -C /home/kirocrew/.codex/ && rm -f {tmp}"],
+    )
+    logger.info("Injected Codex OAuth credentials into crew container %s", container)
+
+
+# ── Codex OAuth device-flow state ─────────────────────────────────────────────
+# _codex_login_pending mirrors _claude_login_pending:
+#   container:  str   — ephemeral ga-codex-login-* container name
+#   state:      str   — "starting" | "started"
+#   exec_id:    str   — Podman exec session id (informational)
+#   started_at: float — time.time() when the flow started
+_codex_login_pending: dict | None = None
+_codex_login_pending_lock = threading.Lock()
+
+
+def _initiate_codex_login(podman: "PodmanClient") -> dict:
+    """Start a Codex OAuth/device login flow and return the login URL.
+
+    Mirrors _initiate_claude_login: acquires _codex_login_pending_lock, applies
+    TOCTOU-safe guards, starts the ephemeral ga-codex-login-* container from
+    KC_IMAGE (spec-ops with INCLUDE_CODEX_AGENT=true), runs the codex-acp login
+    command via container_exec_pty_stdin, reads the 45-second PTY stream with
+    select(), extracts the verification URL, drains the PTY in background, and
+    stores pending state in _codex_login_pending.
+
+    Login-flow shape note (design Open Questions / task 1.2): the exact codex-acp
+    login UX (device-code vs browser sign-in, and whether a short code is
+    surfaced alongside the login_url) is confirmed against the adapter at
+    implementation time. The command is ``codex-acp login`` (headless), and the
+    URL regex accepts an OpenAI/ChatGPT auth URL first, then any https URL after
+    a "URL"/"browser" cue, then any long https URL as a last resort. The
+    codex-auth spec explicitly permits a code-less login_url response, so a
+    missing code is not an error.
+
+    Returns one of:
+      {"login_url": str, "code": str | None}  — flow started successfully
+      {"login_pending": True}                 — a flow is already in progress
+      {"error": str}                          — hard failure
+    """
+    global _codex_login_pending
+    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
+    with _codex_login_pending_lock:
+        if _codex_login_pending is not None:
+            return {"login_pending": True}
+        _codex_login_pending = {
+            "container": None,
+            "started_at": time.time(),
+            "state": "starting",
+        }
+
+    # ── Phase: start Codex login container ────────────────────────────────────
+    try:
+        container = _start_codex_login_container(podman)
+    except Exception as e:
+        logger.error("Failed to start Codex login container: %s", e)
+        with _codex_login_pending_lock:
+            _codex_login_pending = None
+        return {"error": str(e)}
+
+    with _codex_login_pending_lock:
+        _codex_login_pending = {
+            "container": container,
+            "started_at": _codex_login_pending["started_at"] if _codex_login_pending else time.time(),
+            "state": "started",
+        }
+
+    # ── Phase: wait for codex-acp adapter (task 3.6) ──────────────────────────
+    # Poll briefly for the codex-acp binary. Its absence means the image was
+    # not built with INCLUDE_CODEX_AGENT=true — fail with an actionable error.
+    for _ in range(10):
+        try:
+            check = podman.container_exec(container, ["which", "codex-acp"])
+            if "codex-acp" in check:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        _nuke_codex_login_container(podman, container)
+        with _codex_login_pending_lock:
+            _codex_login_pending = None
+        return {
+            "error": (
+                f"'codex-acp' adapter not found in image {KC_IMAGE!r}. "
+                "Ensure the spec-ops image was built with GA_INCLUDE_CODEX_AGENT=true."
+            )
+        }
+
+    # ── Phase: PTY exec ───────────────────────────────────────────────────────
+    cmd = ["codex-acp", "login"]
+    try:
+        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
+    except Exception as e:
+        _nuke_codex_login_container(podman, container)
+        with _codex_login_pending_lock:
+            _codex_login_pending = None
+        return {"error": f"Failed to start codex-acp login: {e}"}
+
+    pty_sock.setblocking(False)
+
+    # ── Phase: PTY read loop ──────────────────────────────────────────────────
+    deadline = time.time() + 45.0
+    collected = bytearray()
+    login_url: str | None = None
+    login_code: str | None = None
+
+    try:
+        while time.time() < deadline:
+            ready, _, _ = select.select([pty_sock], [], [], 0.1)
+            if ready:
+                try:
+                    chunk = pty_sock.recv(4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                collected.extend(chunk)
+                text = collected.decode("utf-8", errors="replace")
+
+                # Answer a generic yes/no or "Continue?" prompt if present
+                if re.search(r'\?\s*$', text.rstrip()) and not login_url:
+                    try:
+                        pty_sock.sendall(b"\n")
+                    except Exception:
+                        pass
+
+                # URL extraction: OpenAI/ChatGPT auth URLs first, then any
+                # https URL after a "URL"/"browser" cue, then any long https URL.
+                url_match = re.search(
+                    r'https?://(?:auth\.openai\.com|platform\.openai\.com|chatgpt\.com|chat\.openai\.com)\S*',
+                    text,
+                )
+                if not url_match:
+                    url_match = re.search(
+                        r'(?:URL|browser)[:\s]+(https?://\S+)',
+                        text,
+                        re.IGNORECASE,
+                    )
+                if not url_match:
+                    url_match = re.search(r'(https?://\S{20,})', text)
+                if url_match:
+                    login_url = url_match.group(0 if url_match.lastindex is None else 1).rstrip(").,")
+                    # A code may or may not be present (spec permits code-less).
+                    code_match = re.search(r'[?&]user_code=([A-Za-z0-9_-]+)', login_url)
+                    if not code_match:
+                        code_match = re.search(r'[Cc]ode[:\s]+([A-Z0-9-]{4,})', text)
+                    if code_match:
+                        login_code = code_match.group(1)
+                    break
+    except Exception as e:
+        logger.warning("PTY read error during Codex login: %s", e)
+
+    if not login_url:
+        raw_output = collected.decode("utf-8", errors="replace")
+        try:
+            pty_sock.close()
+        except Exception:
+            pass
+        _nuke_codex_login_container(podman, container)
+        with _codex_login_pending_lock:
+            _codex_login_pending = None
+        return {
+            "error": (
+                f"codex-acp login did not produce a login URL within 45s.\n"
+                f"Output:\n{raw_output}"
+            )
+        }
+
+    # ── Phase: drain thread + finalise ────────────────────────────────────────
+    pty_sock.setblocking(True)
+
+    def _drain_pty() -> None:
+        try:
+            while True:
+                chunk = pty_sock.recv(4096)
+                if not chunk:
+                    break
+        except Exception:
+            pass
+        finally:
+            try:
+                pty_sock.close()
+            except Exception:
+                pass
+
+    drain_thread = threading.Thread(
+        target=_drain_pty, daemon=True, name=f"pty-drain-{container}"
+    )
+    drain_thread.start()
+
+    with _codex_login_pending_lock:
+        if _codex_login_pending is not None:
+            _codex_login_pending["exec_id"] = exec_id
+
+    logger.info("Codex login flow started in %s, URL extracted", container)
+    return {"login_url": login_url, "code": login_code}
+
+
+def _poll_codex_login_container(podman: "PodmanClient", container: str) -> bytes | None:
+    """Poll container for completed ~/.codex/ credentials.
+
+    Checks whether ~/.codex/ inside the container contains a non-empty file
+    (auth.json). If present, tars the entire ~/.codex/ directory and returns the
+    raw tar bytes. Returns None if credentials are not yet present.
+
+    On completion: the caller writes the tar to ga-codex-auth (mode 0600) and
+    nukes the login container.
+    """
+    try:
+        result = podman.container_exec(
+            container,
+            ["sh", "-c", "find /home/kirocrew/.codex/ -type f -size +0 2>/dev/null | head -1"],
+        )
+        if not result or not result.strip():
+            return None
+        import base64 as _b64
+        tar_b64_result = podman.container_exec(
+            container,
+            ["sh", "-c", "tar -cf - -C /home/kirocrew/.codex/ . 2>/dev/null | base64"],
+        )
+        if tar_b64_result and tar_b64_result.strip():
+            return _b64.b64decode(tar_b64_result.strip())
+    except Exception as e:
+        logger.warning("Error polling Codex login container: %s", e)
     return None
 
 

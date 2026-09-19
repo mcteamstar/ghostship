@@ -66,11 +66,11 @@ _config_logger = logging.getLogger(__name__)
 
 
 _CADDY_TLS_MODES: frozenset[str] = frozenset({"internal", "tailscale", "acme", "off"})
-_ACP_BACKEND_VALUES: frozenset[str] = frozenset({"kiro", "claude"})
+_ACP_BACKEND_VALUES: frozenset[str] = frozenset({"kiro", "claude", "codex"})
 
 
 def _validate_acp_backend(value: str) -> str:
-    """Validate GA_CREW_ACP_BACKEND against the two allowed values.
+    """Validate GA_CREW_ACP_BACKEND against the allowed values.
 
     On an unrecognised value, raises ConfigError immediately (startup failure).
     """
@@ -78,7 +78,7 @@ def _validate_acp_backend(value: str) -> str:
         return value
     raise ConfigError(
         f"GA_CREW_ACP_BACKEND={value!r} is not one of {sorted(_ACP_BACKEND_VALUES)}; "
-        "must be 'kiro' or 'claude'"
+        "must be 'kiro', 'claude', or 'codex'"
     )
 
 
@@ -198,10 +198,13 @@ class Config:
 
     # ── ACP backend selection ─────────────────────────────────────────────────
     # GA_CREW_ACP_BACKEND: which ACP runtime to use inside crew containers.
-    # Valid values: "kiro" (default), "claude".
+    # Valid values: "kiro" (default), "claude", "codex".
     # "kiro" uses the KiroCrew-native kiro-cli agent (existing behaviour).
     # "claude" uses the Claude Code ACP backend (requires INCLUDE_CLAUDE_AGENT
     # image and GA_CREW_ANTHROPIC_API_KEY; bypasses per-call kiro approval gate).
+    # "codex" uses the Codex ACP backend (requires INCLUDE_CODEX_AGENT image and
+    # either GA_CREW_OPENAI_API_KEY or an OAuth ga-codex-auth credential; runs
+    # under codex-acp's verified read-only mode, bypassing the approval gate).
     ga_crew_acp_backend: str = "kiro"
 
     # GA_CREW_ANTHROPIC_API_KEY: Anthropic API key injected into crew containers
@@ -222,6 +225,25 @@ class Config:
     # INCLUDE_CLAUDE_AGENT=true. Boolean (default false). Used by install.sh to
     # pass --build-arg INCLUDE_CLAUDE_AGENT=true at image build time.
     ga_include_claude_agent: bool = False
+
+    # GA_CREW_OPENAI_API_KEY: OpenAI API key injected as OPENAI_API_KEY into crew
+    # containers when GA_CREW_ACP_BACKEND=codex. Optional when using Codex OAuth
+    # login (ga-codex-auth). When set, takes precedence over OAuth credentials.
+    # When neither API key nor OAuth credentials are present at launch time,
+    # launch() returns not_authenticated with a login URL (TRN-172, mirrors
+    # the TRN-170 Claude model).
+    ga_crew_openai_api_key: str = ""
+
+    # GA_CREW_OPENAI_BASE_URL: optional OpenAI-compatible endpoint URL injected
+    # as OPENAI_BASE_URL into Codex-backend crew containers. When set, redirects
+    # crew traffic to an OpenAI-compatible endpoint without image changes.
+    # Has no effect when GA_CREW_ACP_BACKEND != "codex". Default: unset.
+    ga_crew_openai_base_url: str = ""
+
+    # GA_INCLUDE_CODEX_AGENT: whether the spec-ops image was built with
+    # INCLUDE_CODEX_AGENT=true. Boolean (default false). Used by install.sh to
+    # pass --build-arg INCLUDE_CODEX_AGENT=true at image build time.
+    ga_include_codex_agent: bool = False
 
     # ── kiro-cli identity ────────────────────────────────────────────────────
     kiro_license: str = ""
@@ -293,6 +315,9 @@ class Config:
             ga_crew_anthropic_api_key=os.environ.get("GA_CREW_ANTHROPIC_API_KEY", ""),
             ga_crew_anthropic_base_url=os.environ.get("GA_CREW_ANTHROPIC_BASE_URL", "").strip(),
             ga_include_claude_agent=_env_bool_default_off("GA_INCLUDE_CLAUDE_AGENT"),
+            ga_crew_openai_api_key=os.environ.get("GA_CREW_OPENAI_API_KEY", ""),
+            ga_crew_openai_base_url=os.environ.get("GA_CREW_OPENAI_BASE_URL", "").strip(),
+            ga_include_codex_agent=_env_bool_default_off("GA_INCLUDE_CODEX_AGENT"),
         )
 
     def validate(self) -> None:
@@ -303,5 +328,10 @@ class Config:
         GA_CREW_ACP_BACKEND=claude — Claude OAuth (ga-claude-auth) is a valid
         alternative. Credential enforcement is now lazy: launch() blocks and
         initiates the Claude login flow if neither credential is present.
+        TRN-172: GA_CREW_ACP_BACKEND=codex is likewise NOT validated for a
+        credential at startup — neither GA_CREW_OPENAI_API_KEY nor ga-codex-auth
+        is required here. launch() enforces the requirement lazily and initiates
+        the Codex login flow when neither is present. No startup check is added
+        for codex, so this method remains a no-op for it.
         """
         _validate_claude_api_key(self.ga_crew_acp_backend, self.ga_crew_anthropic_api_key)

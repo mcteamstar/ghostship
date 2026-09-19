@@ -451,6 +451,7 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 # Controls the ACP runtime used inside crew containers.
 # "kiro" (default): kiro-cli auth injection (existing behaviour).
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY from GA_CREW_ANTHROPIC_API_KEY.
+# "codex": skip kiro auth, inject OPENAI_API_KEY from GA_CREW_OPENAI_API_KEY.
 GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
 _GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
 _GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
@@ -458,6 +459,12 @@ _GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
 # written to logs when the Claude backend is active.
 if _GA_CREW_ANTHROPIC_API_KEY:
     _security.register_secret(_GA_CREW_ANTHROPIC_API_KEY)
+_GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
+_GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
+# Register the OpenAI API key with the redaction filter so it is never written
+# to logs when the Codex backend is active.
+if _GA_CREW_OPENAI_API_KEY:
+    _security.register_secret(_GA_CREW_OPENAI_API_KEY)
 
 # ── Transport security ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
@@ -600,6 +607,7 @@ try:
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
         GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
+        GA_CODEX_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -627,19 +635,26 @@ try:
         _idle_monitor,
         _inject_auth,
         _inject_claude_auth,
+        _inject_codex_auth,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
         _nuke_claude_login_container,
+        _nuke_codex_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
         _claude_auth_file_path,
         _claude_auth_exists,
         _write_claude_auth_file,
+        _codex_auth_file_path,
+        _codex_auth_exists,
+        _write_codex_auth_file,
         _initiate_login,
         _initiate_claude_login,
+        _initiate_codex_login,
         _poll_claude_login_container,
+        _poll_codex_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -663,6 +678,7 @@ try:
         _seed_openspec_store,
         _start_login_container,
         _start_claude_login_container,
+        _start_codex_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
@@ -677,6 +693,7 @@ except ModuleNotFoundError:
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
         GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
+        GA_CODEX_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -704,19 +721,26 @@ except ModuleNotFoundError:
         _idle_monitor,
         _inject_auth,
         _inject_claude_auth,
+        _inject_codex_auth,
         _inject_policy,
         _mint_cookie,
         _nuke_login_container,
         _nuke_claude_login_container,
+        _nuke_codex_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
         _claude_auth_file_path,
         _claude_auth_exists,
         _write_claude_auth_file,
+        _codex_auth_file_path,
+        _codex_auth_exists,
+        _write_codex_auth_file,
         _initiate_login,
         _initiate_claude_login,
+        _initiate_codex_login,
         _poll_claude_login_container,
+        _poll_codex_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -740,6 +764,7 @@ except ModuleNotFoundError:
         _seed_openspec_store,
         _start_login_container,
         _start_claude_login_container,
+        _start_codex_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
@@ -1835,6 +1860,159 @@ async def _handle_claude_logout_post(request: Request) -> Response:
     return JSONResponse({"status": "logged_out"})
 
 
+# ── Codex OAuth login/logout endpoints ──────────────────────────────────────────
+
+
+async def _handle_codex_login_post(request: Request) -> Response:
+    """POST /login/codex — initiate Codex OAuth/device login flow.
+
+    Three-state machine guard (mirrors POST /login/claude):
+      - 409 if ga-codex-auth already exists (already authenticated)
+      - 409 if a Codex login flow is already in progress
+      - Calls _initiate_codex_login, returns {"login_url", "code"}
+
+    Requires GA_CREW_ACP_BACKEND=codex; returns 400 otherwise.
+    """
+    if GA_CREW_ACP_BACKEND != "codex":
+        return PlainTextResponse(
+            "GA_CREW_ACP_BACKEND must be 'codex' to use POST /login/codex.",
+            status_code=400,
+        )
+
+    with _lifecycle._codex_login_pending_lock:
+        if _codex_auth_exists():
+            return PlainTextResponse(
+                "Already authenticated. POST /logout/codex first.",
+                status_code=409,
+            )
+        if _lifecycle._codex_login_pending is not None:
+            return PlainTextResponse(
+                "Codex login already in progress. Poll GET /login/codex for status.",
+                status_code=409,
+            )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _initiate_codex_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Codex login already in progress. Poll GET /login/codex for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_codex_login_get(request: Request) -> Response:
+    """GET /login/codex — poll whether the Codex OAuth flow has completed.
+
+    Returns {"status": "pending", "login_url": ...} while waiting.
+    On completion: tars ~/.codex/ from the login container, writes ga-codex-auth
+    (mode 0600), nukes the login container, clears _codex_login_pending, and
+    returns {"status": "complete"}.
+    Returns 404 if no Codex login flow is in progress.
+    """
+    with _lifecycle._codex_login_pending_lock:
+        pending = _lifecycle._codex_login_pending
+
+    if pending is None:
+        return PlainTextResponse("No Codex login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Poll the login container for completed ~/.codex/ credentials.
+    tar_bytes = _poll_codex_login_container(podman, pending["container"])
+    if not tar_bytes:
+        return JSONResponse({
+            "status": "pending",
+            "login_url": pending.get("login_url"),
+        })
+
+    # ── Auth complete — write ga-codex-auth ───────────────────────────────────
+    try:
+        _write_codex_auth_file(tar_bytes)
+        logger.info("ga-codex-auth written after Codex login completion")
+    except Exception as e:
+        logger.warning("Could not write Codex auth file: %s", e)
+
+    # Nuke temp container and clear pending state (guarded)
+    _nuke_codex_login_container(podman, pending["container"])
+    with _lifecycle._codex_login_pending_lock:
+        if (
+            _lifecycle._codex_login_pending is not None
+            and _lifecycle._codex_login_pending.get("container") == pending["container"]
+        ):
+            _lifecycle._codex_login_pending = None
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="codex",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_codex_logout_post(request: Request) -> Response:
+    """POST /logout/codex — de-authenticate Codex OAuth.
+
+    Deletes ga-codex-auth and wipes ~/.codex/ from every running Codex-backend
+    crew. Returns 409 if not currently authenticated via OAuth.
+    """
+    if not _codex_auth_exists():
+        return PlainTextResponse(
+            "Not authenticated via Codex OAuth (ga-codex-auth not found).",
+            status_code=409,
+        )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Delete ga-codex-auth
+    auth_path = _codex_auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-codex-auth")
+    except Exception as e:
+        logger.warning("Could not delete ga-codex-auth: %s", e)
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="codex",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe ~/.codex/ from all running Codex-backend crews
+    with _registry_lock:
+        reg = _load_registry()
+    for cid, info in reg["crews"].items():
+        if info.get("status") == "running" and info.get("acp_backend") == "codex":
+            try:
+                podman.container_exec(
+                    info["container"],
+                    ["sh", "-c", "rm -rf /home/kirocrew/.codex/"],
+                )
+                logger.info("Wiped ~/.codex/ from crew %s", cid)
+            except Exception as e:
+                logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
+
+    return JSONResponse({"status": "logged_out"})
+
+
 # ── MCP tools: workspace ─────────────────────────────────────────────────────
 
 
@@ -2102,25 +2280,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
     # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var;
     # the device-code flow and auth_b64 injection are also skipped on that path.
     auth_b64: str | None = None
-    if GA_CREW_ACP_BACKEND != "claude":
-        auth_b64 = _read_auth_file() or None
-        if not KIRO_API_KEY and not auth_b64:
-            result = _initiate_login(podman)
-            if result.get("login_pending"):
-                return {
-                    "error": "not_authenticated",
-                    "login_pending": True,
-                    "instructions": "Login already in progress. Poll GET /login, then call launch again.",
-                }
-            if "error" in result:
-                return {"error": result["error"]}
-            return {
-                "error": "not_authenticated",
-                "login_url": result.get("login_url"),
-                "code": result.get("code"),
-                "instructions": "Open login_url to authenticate, then call launch again.",
-            }
-    else:
+    if GA_CREW_ACP_BACKEND == "claude":
         # Task 3.3: Claude backend — require either API key or OAuth credential.
         # If neither is present, initiate the Claude login flow and return
         # not_authenticated with the login URL (identical behaviour to kiro path).
@@ -2139,6 +2299,47 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "login_url": result.get("login_url"),
                 "code": result.get("code"),
                 "instructions": "Open login_url to authenticate with Claude, then call launch again.",
+            }
+    elif GA_CREW_ACP_BACKEND == "codex":
+        # Task 3.3: Codex backend — require either GA_CREW_OPENAI_API_KEY or a
+        # non-empty ga-codex-auth OAuth credential. If neither is present,
+        # initiate the Codex login flow and return not_authenticated with the
+        # login URL (mirrors the Claude path). OPENAI_API_KEY/OPENAI_BASE_URL are
+        # injected at container_create time; ~/.codex/ is injected via
+        # _inject_codex_auth in _finish_crew_setup on the OAuth path.
+        if not _GA_CREW_OPENAI_API_KEY and not _codex_auth_exists():
+            result = _initiate_codex_login(podman)
+            if result.get("login_pending"):
+                return {
+                    "error": "not_authenticated",
+                    "login_pending": True,
+                    "instructions": "Codex login already in progress. Poll GET /login/codex, then call launch again.",
+                }
+            if "error" in result:
+                return {"error": result["error"]}
+            return {
+                "error": "not_authenticated",
+                "login_url": result.get("login_url"),
+                "code": result.get("code"),
+                "instructions": "Open login_url to authenticate with Codex, then call launch again.",
+            }
+    else:
+        auth_b64 = _read_auth_file() or None
+        if not KIRO_API_KEY and not auth_b64:
+            result = _initiate_login(podman)
+            if result.get("login_pending"):
+                return {
+                    "error": "not_authenticated",
+                    "login_pending": True,
+                    "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                }
+            if "error" in result:
+                return {"error": result["error"]}
+            return {
+                "error": "not_authenticated",
+                "login_url": result.get("login_url"),
+                "code": result.get("code"),
+                "instructions": "Open login_url to authenticate, then call launch again.",
             }
 
     with _registry_lock:
@@ -2203,6 +2404,18 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             container_env["ANTHROPIC_API_KEY"] = _GA_CREW_ANTHROPIC_API_KEY
             if _GA_CREW_ANTHROPIC_BASE_URL:
                 container_env["ANTHROPIC_BASE_URL"] = _GA_CREW_ANTHROPIC_BASE_URL
+        # When the Codex ACP backend is selected, inject OPENAI_API_KEY into the
+        # crew container so codex-acp can authenticate against api.openai.com
+        # (API-key path). The kiro auth path is skipped for Codex-backend crews
+        # (handled in _finish_crew_setup); the OAuth path injects ~/.codex/
+        # instead. OPENAI_BASE_URL is injected whenever the backend is codex and
+        # the value is set, independent of the API key (task 3.4) — it redirects
+        # both the API-key and OAuth paths to an OpenAI-compatible endpoint.
+        if GA_CREW_ACP_BACKEND == "codex":
+            if _GA_CREW_OPENAI_API_KEY:
+                container_env["OPENAI_API_KEY"] = _GA_CREW_OPENAI_API_KEY
+            if _GA_CREW_OPENAI_BASE_URL:
+                container_env["OPENAI_BASE_URL"] = _GA_CREW_OPENAI_BASE_URL
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
             container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL
@@ -4021,6 +4234,9 @@ if __name__ == "__main__":
         ("POST", "/login/claude"): _handle_claude_login_post,
         ("GET",  "/login/claude"): _handle_claude_login_get,
         ("POST", "/logout/claude"): _handle_claude_logout_post,
+        ("POST", "/login/codex"): _handle_codex_login_post,
+        ("GET",  "/login/codex"): _handle_codex_login_get,
+        ("POST", "/logout/codex"): _handle_codex_logout_post,
         ("GET",  "/health"): _handle_health,
         ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
@@ -4056,6 +4272,9 @@ if __name__ == "__main__":
             ("POST", "/login/claude"): _handle_claude_login_post,
             ("GET",  "/login/claude"): _handle_claude_login_get,
             ("POST", "/logout/claude"): _handle_claude_logout_post,
+            ("POST", "/login/codex"): _handle_codex_login_post,
+            ("GET",  "/login/codex"): _handle_codex_login_get,
+            ("POST", "/logout/codex"): _handle_codex_logout_post,
             ("GET",  "/health"): _handle_health,
             # Crew proxy routes — pattern keys used by BearerAuthMiddleware dispatch
             ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,

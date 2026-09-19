@@ -264,6 +264,20 @@ When `GA_CREW_ACP_BACKEND=claude`, the Claude Code ACP server (`claude-agent-acp
 
 Crews running with `GA_CREW_ACP_BACKEND=claude` require outbound HTTPS access to **`api.anthropic.com`**. The transport emits a `WARNING`-level log entry naming this host at every `launch()` call when the Claude backend is selected. Deployments with egress firewalls must add `api.anthropic.com:443` to their allow list before launching Claude-backend crews.
 
+### Codex backend governance model (TRN-172)
+
+When `GA_CREW_ACP_BACKEND=codex`, the Codex ACP adapter (`codex-acp`) runs inside each crew container instead of `kiro-cli`. Its trust model parallels the Claude backend but rests on a different mechanism:
+
+- **KiroCrew's per-call tool approval gate is bypassed** — but by design, not by an approval-suppression flag. KiroCrew verifies at `session/new` that the codex session advertises `mode=read-only` before the first prompt; the read-only mode is the mechanism, so there is no ghostship-side approval-suppression environment variable to inject (unlike the Claude backend's `CLAUDE_CODE_HEADLESS=1`). ghostship's job is simply not to fight this — the per-call kiro approval gate does not apply to a codex session.
+
+- **The signed security policy ceiling is still enforced.** As with every backend, the HMAC-signed operator governance policy is injected as `security_policy.json` + `admission_policy.json` into every crew at setup time and enforced at the gateway; a tampered policy causes a signature mismatch at startup. Crew containers built without `GA_INCLUDE_CODEX_AGENT=true` will not have `codex-acp` installed and will fail to spawn agents.
+
+- **The ACP-v1 read-visibility gap is compensated, not fixed.** ghostship's sensitive-path read block cannot see reads the codex adapter performs. This gap is closed by KiroCrew's OS-boundary credential mask (`adapter_hidden_credential_dirs`), which covers `~/.codex/auth.json` — this is KiroCrew's control at the OS boundary, not something ghostship re-implements. ghostship does not weaken the container's standard credential-tier confinement.
+
+### Codex backend external network requirement (TRN-172)
+
+Crews running with `GA_CREW_ACP_BACKEND=codex` require outbound HTTPS access to **`api.openai.com`** (or the endpoint configured via `GA_CREW_OPENAI_BASE_URL`). The transport emits a `WARNING`-level log entry naming the effective endpoint at every `launch()` call when the Codex backend is selected. Deployments with egress firewalls must add `api.openai.com:443` (or the configured base URL's host) to their allow list before launching Codex-backend crews.
+
 ## Networking
 
 Ghost Academy uses two static Podman networks:

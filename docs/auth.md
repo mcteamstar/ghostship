@@ -201,6 +201,105 @@ every running Claude-backend crew. Returns 409 if not authenticated via OAuth.
 
 ---
 
+## Codex OAuth login (TRN-172)
+
+`ga-codex-auth` is a tar archive of `~/.codex/` (the credential directory holding
+`auth.json`, written by the Codex login flow), stored at `DATA_DIR/ga-codex-auth`
+(mode `0600`).
+
+This path is an alternative to `GA_CREW_OPENAI_API_KEY` for operators with a
+ChatGPT subscription who prefer not to maintain a separate API-tier account.
+
+### Prerequisites
+
+1. Build the spec-ops image with `GA_INCLUDE_CODEX_AGENT=true` so the `codex-acp`
+   adapter is installed in the image (ONE package — it ships its own Codex binary).
+2. Set `GA_CREW_ACP_BACKEND=codex` in your `ghostship.conf`.
+
+### Authenticate
+
+**1. Trigger the Codex login flow**
+
+```bash
+curl -sX POST http://localhost:64057/login/codex | jq
+```
+
+```json
+{
+  "status": "pending",
+  "login_url": "https://auth.openai.com/...",
+  "code": null
+}
+```
+
+The `code` field may be `null` — the Codex login flow can surface a browser-based
+sign-in with no separate device code.
+
+**2. Open the URL in your browser** and approve the request using your OpenAI /
+ChatGPT account.
+
+**3. Confirm completion**
+
+```bash
+curl -s http://localhost:64057/login/codex | jq .status
+# → "complete"
+```
+
+**4. Launch** — the transport is ready. Each new crew will receive `~/.codex/`
+injected at setup time.
+
+### Re-authenticate
+
+Codex OAuth tokens may expire. To refresh:
+
+```bash
+# Clear the old credential
+curl -sX POST http://localhost:64057/logout/codex
+
+# Start a fresh login flow
+curl -sX POST http://localhost:64057/login/codex | jq
+```
+
+### Logout
+
+```bash
+curl -sX POST http://localhost:64057/logout/codex
+```
+
+This deletes `ga-codex-auth` and runs `rm -rf ~/.codex/` inside every running
+Codex-backend crew. Existing crew sessions become unauthenticated; relaunch them
+after logging in again.
+
+### Credential precedence
+
+When both `GA_CREW_OPENAI_API_KEY` and `ga-codex-auth` are present, the API key
+takes precedence. OAuth credentials are only used when the API key is unset.
+
+### Codex OAuth API
+
+Three HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
+`GA_API_KEY` is set. Only meaningful when `GA_CREW_ACP_BACKEND=codex`.
+
+```
+UNAUTHENTICATED  ──[POST /login/codex]──►  PENDING  ──[GET /login/codex → complete]──►  AUTHENTICATED
+                                                                                              │
+              ◄──────────────────────────────────────[POST /logout/codex]────────────────────┘
+```
+
+**`POST /login/codex`** — starts the Codex OAuth login flow inside an ephemeral
+`ga-codex-login-*` container. Returns `{"status": "pending", "login_url": "..."}`.
+Returns 409 if already authenticated or a flow is in progress, and 400 if
+`GA_CREW_ACP_BACKEND != "codex"`.
+
+**`GET /login/codex`** — polls completion. On success writes `ga-codex-auth` and
+returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
+Returns 404 if no flow is in progress.
+
+**`POST /logout/codex`** — deletes `ga-codex-auth` and wipes `~/.codex/` from
+every running Codex-backend crew. Returns 409 if not authenticated via OAuth.
+
+---
+
 An optional static bearer credential protecting the MCP endpoint.
 
 ```bash

@@ -170,6 +170,35 @@
 # GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
 # GA_CREW_ANTHROPIC_BASE_URL=""
 
+# ── Codex ACP backend (TRN-172) ──────────────────────────────────────────────
+# Set GA_CREW_ACP_BACKEND=codex to use the Codex ACP runtime inside crews
+# instead of the default kiro-cli runtime. Also requires:
+#   1. GA_INCLUDE_CODEX_AGENT=true — set before running install.sh so the
+#      spec-ops image is built with @agentclientprotocol/codex-acp installed.
+#      This is ONE npm package: the adapter ships its own compatible Codex
+#      binary, so there is no separate `codex` CLI.
+#   2. An OpenAI credential — one of:
+#      a. GA_CREW_OPENAI_API_KEY — OpenAI pay-per-token API key. When set,
+#         takes precedence over OAuth credentials.
+#      b. Codex OAuth login via POST /login/codex. Requires a ChatGPT
+#         subscription. Authenticate by calling POST /login/codex and completing
+#         the browser flow; credentials are stored in ga-codex-auth and injected
+#         automatically into new crew containers.
+#      If neither is present at launch time, launch() returns not_authenticated
+#      with a login URL. GA_CREW_OPENAI_API_KEY is optional (OAuth is an
+#      alternative).
+#
+# NOTE: The KiroCrew per-call tool approval gate is bypassed when
+# GA_CREW_ACP_BACKEND=codex — codex-acp runs under a verified read-only ACP
+# mode instead. The signed security policy ceiling (academy/policies/
+# default.json) is still enforced. Outbound access to api.openai.com (or the
+# GA_CREW_OPENAI_BASE_URL endpoint when set) is required for Codex-backend crews.
+#
+# GA_CREW_ACP_BACKEND=kiro
+# GA_INCLUDE_CODEX_AGENT=false
+# GA_CREW_OPENAI_API_KEY=""   # optional when using Codex OAuth login
+# GA_CREW_OPENAI_BASE_URL=""
+
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────
 # Path to a directory of operator-managed standing-order template .md files.
 # When set and the directory exists, its templates are merged with the built-in

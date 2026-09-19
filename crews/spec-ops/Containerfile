@@ -53,5 +53,33 @@ RUN if [ "${INCLUDE_CLAUDE_AGENT}" = "true" ]; then \
       npm install -g @anthropic-ai/claude-code@0.2.93; \
     fi
 
+# Codex toolchain — optional, controlled by the INCLUDE_CODEX_AGENT build arg
+# (default: false). When true, installs ONE package:
+#   @agentclientprotocol/codex-acp@1.12.0 — the ACP server binary that
+#     KiroCrew's AcpClient spawns for acp_backend="codex" sessions.
+#
+# Unlike Claude (which needs both claude-agent-acp AND the separate `claude`
+# CLI), codex-acp is a SINGLE component: the adapter ships its own compatible
+# Codex binary, so there is no second `codex` CLI to install and no CODEX_PATH
+# wiring — resolution honours a CODEX_ACP_BIN override if one is ever needed.
+#
+# Login / headless behaviour (task 1.2): codex-acp reads its credentials from
+#   ~/.codex/auth.json  (relocatable via the CODEX_HOME env var).
+# Two auth paths are supported:
+#   - API key: the OPENAI_API_KEY env var (injected at crew-container creation
+#     from GA_CREW_OPENAI_API_KEY) authenticates without any login flow.
+#   - OAuth (ChatGPT subscription): a device / browser sign-in that writes
+#     ~/.codex/auth.json. ghostship drives this in an ephemeral
+#     ga-codex-login-* container (spec-ops image), captures the resulting
+#     ~/.codex/ as the ga-codex-auth tar, and untars it into the crew
+#     container's ~/.codex/ at launch. The login flow surfaces a login_url
+#     (a device code may or may not accompany it — the codex-auth spec permits
+#     a code-less response), extracted from the login container's PTY output.
+# OPENAI_BASE_URL redirects codex-acp to an OpenAI-compatible endpoint.
+ARG INCLUDE_CODEX_AGENT=false
+RUN if [ "${INCLUDE_CODEX_AGENT}" = "true" ]; then \
+      npm install -g @agentclientprotocol/codex-acp@1.12.0; \
+    fi
+
 ARG VERSION=0.0.0-dev
 LABEL org.ghostship.version=$VERSION
