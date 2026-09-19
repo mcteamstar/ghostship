@@ -577,10 +577,12 @@ class TestHandleCodexLogoutPost(unittest.TestCase):
     def _run(self, request: Mock = None) -> object:
         return asyncio.run(server._handle_codex_logout_post(request or Mock()))
 
-    def test_returns_409_when_not_authenticated(self) -> None:
+    def test_returns_200_when_not_authenticated(self) -> None:
+        """Logout is idempotent — returns 200 even when ga-codex-auth is absent."""
         with patch.object(server, "_codex_auth_exists", return_value=False):
             response = self._run()
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body)["status"], "logged_out")
 
     def test_deletes_auth_file_and_wipes_codex_crews(self) -> None:
         podman = Mock()

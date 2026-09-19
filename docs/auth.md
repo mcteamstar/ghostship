@@ -296,7 +296,8 @@ returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
 Returns 404 if no flow is in progress.
 
 **`POST /logout/codex`** — deletes `ga-codex-auth` and wipes `~/.codex/` from
-every running Codex-backend crew. Returns 409 if not authenticated via OAuth.
+every running Codex-backend crew. Idempotent: returns 200 even when already
+unauthenticated (nothing to clear).
 
 ---
 

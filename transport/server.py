@@ -1969,13 +1969,11 @@ async def _handle_codex_logout_post(request: Request) -> Response:
     """POST /logout/codex — de-authenticate Codex OAuth.
 
     Deletes ga-codex-auth and wipes ~/.codex/ from every running Codex-backend
-    crew. Returns 409 if not currently authenticated via OAuth.
+    crew. Idempotent: returns HTTP 200 even when already unauthenticated (no
+    ga-codex-auth to clear), matching the codex-auth spec requirement.
     """
     if not _codex_auth_exists():
-        return PlainTextResponse(
-            "Not authenticated via Codex OAuth (ga-codex-auth not found).",
-            status_code=409,
-        )
+        return JSONResponse({"status": "logged_out"})
 
     try:
         podman = _get_podman()
@@ -2097,7 +2095,7 @@ def crews() -> dict:
             "last_task_at": info.get("last_task_at"),
             "gateway_healthy": gateway_healthy,
             "crew_image_version": info.get("crew_image_version", "unknown"),
-            # acp_backend: "kiro" (default) or "claude". Defaults to "kiro" for
+            # acp_backend: "kiro" (default), "claude", or "codex". Defaults to "kiro" for
             # pre-TRN-167 registry entries that do not have the field.
             "acp_backend": info.get("acp_backend", "kiro"),
             "agents": [],
