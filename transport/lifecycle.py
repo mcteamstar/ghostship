@@ -2328,10 +2328,11 @@ def _initiate_login(podman: "PodmanClient") -> dict:
         re.compile(r"Open this URL[:\s]+(https?://\S+)"),
         re.compile(r"(https?://\S+user_code=\S+)"),
     ]
-    # Primary code extraction: user_code= query param in the URL.
-    # Fallback: a "Code: XXXX" line that appears before the URL in the output.
-    _kiro_code_re = re.compile(r"user_code=([A-Z0-9-]{4,})")
-    _kiro_code_re2 = re.compile(r"[Cc]ode[:\s]+([A-Z0-9-]{4,})")
+    # Code extraction: prefer user_code= query param in the URL; fall back to a
+    # "Code: XXXX" line printed by kiro-cli before the URL.  A combined pattern
+    # handles both cases — the helper tries it against the URL first, then the
+    # full accumulated text, so the original priority is preserved.
+    _kiro_code_re = re.compile(r"(?:user_code=|[Cc]ode[:\s]+)([A-Z0-9-]{4,})")
 
     login_url, login_code = _run_pty_login_flow(
         pty_sock=pty_sock,
@@ -2340,12 +2341,6 @@ def _initiate_login(podman: "PodmanClient") -> dict:
         code_pattern=_kiro_code_re,
         deadline_secs=45.0,
     )
-    # Fallback: if user_code= wasn't in the URL, try the "Code: NNN" pattern
-    # against the URL string itself (rare, but matches the original behaviour).
-    if login_url and not login_code:
-        cm2 = _kiro_code_re2.search(login_url)
-        if cm2:
-            login_code = cm2.group(1)
 
     if not login_url:
         try:
@@ -2475,8 +2470,12 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
     # ── Phase: PTY read loop ──────────────────────────────────────────────────
     # Prompt patterns: answer a "Continue?" / "Yes/No" / bare "?" prompt with
     # a newline.  URL patterns: Anthropic/Claude auth URLs first, then generic.
+    # NOTE: no re.MULTILINE — $ must match only at the end of the entire
+    # accumulated text (after rstrip equivalence via select-loop framing), which
+    # mirrors the original guard: only answer when '?' is the last meaningful
+    # character, not merely when some earlier line happened to end with '?'.
     claude_prompt_patterns = [
-        (re.compile(r"\?\s*$", re.MULTILINE), b"\n"),
+        (re.compile(r"\?\s*$"), b"\n"),
     ]
     claude_url_patterns = [
         re.compile(
@@ -2777,8 +2776,10 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
     # ── Phase: PTY read loop ──────────────────────────────────────────────────
     # Prompt patterns: answer a generic yes/no or "Continue?" prompt with a
     # newline.  URL patterns: OpenAI/ChatGPT auth URLs first, then generic.
+    # NOTE: no re.MULTILINE — $ must match only at the end of the entire
+    # accumulated text, mirroring the original guard (see claude comment above).
     codex_prompt_patterns = [
-        (re.compile(r"\?\s*$", re.MULTILINE), b"\n"),
+        (re.compile(r"\?\s*$"), b"\n"),
     ]
     codex_url_patterns = [
         re.compile(
@@ -2788,10 +2789,10 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
         re.compile(r"(https?://\S{20,})"),
     ]
     # Code is optional for Codex — spec permits a code-less login_url.
-    # Use two separate single-group patterns: the helper tries code_pattern
-    # against the URL, so pass the user_code= URL param pattern here; the
-    # Code: text fallback is run manually after the helper returns if needed.
-    codex_code_pattern = re.compile(r"[?&]user_code=([A-Za-z0-9_-]+)")
+    # Combined pattern: prefer user_code= query param in the URL; fall back to a
+    # "Code: XXXX" line in the output text.  The helper searches URL first, then
+    # full accumulated text, preserving original priority.
+    codex_code_pattern = re.compile(r"(?:[?&]user_code=|[Cc]ode[:\s]+)([A-Za-z0-9_-]{4,})")
 
     login_url, login_code = _run_pty_login_flow(
         pty_sock=pty_sock,
