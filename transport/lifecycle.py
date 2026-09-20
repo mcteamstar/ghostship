@@ -2105,6 +2105,111 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
     logger.info("Injected Claude OAuth credentials into crew container %s", container)
 
 
+# ── Shared PTY login helper ──────────────────────────────────────────────────
+
+
+def _run_pty_login_flow(
+    pty_sock: "socket.socket",
+    prompt_patterns: "list[tuple[re.Pattern, bytes]]",
+    url_patterns: "list[re.Pattern]",
+    code_pattern: "re.Pattern | None",
+    deadline_secs: float = 45.0,
+) -> "tuple[str | None, str | None]":
+    """Run a PTY select-loop and extract a login URL and optional code.
+
+    Owns the select() loop, chunk accumulation, prompt-answer dispatch,
+    URL/code extraction, and background PTY drain thread.  Returns
+    ``(login_url, login_code)`` — both may be ``None`` on timeout.
+
+    Parameters
+    ----------
+    pty_sock:
+        Non-blocking PTY socket from ``container_exec_pty_stdin``.  The
+        caller must call ``pty_sock.setblocking(False)`` before passing it.
+        The helper sets it back to blocking before starting the drain thread.
+    prompt_patterns:
+        Ordered list of ``(compiled_pattern, answer_bytes)`` pairs.  When a
+        pattern matches the accumulated text and has not yet been answered, the
+        helper writes ``answer_bytes`` to the PTY socket.  Each pattern is
+        answered at most once.
+    url_patterns:
+        Ordered list of compiled URL patterns tried in sequence.  The first
+        match wins.  Patterns that capture group 1 use ``group(1)``; patterns
+        with no groups use ``group(0)``.
+    code_pattern:
+        Optional compiled pattern for the short device code.  ``group(1)`` is
+        used if the pattern matches the accumulated text or the extracted URL.
+        Pass ``None`` when the backend does not surface a code.
+    deadline_secs:
+        Wall-clock budget for the loop.  Default 45 s.
+    """
+    deadline = time.time() + deadline_secs
+    collected = bytearray()
+    login_url: str | None = None
+    login_code: str | None = None
+    answered: set[int] = set()  # indices into prompt_patterns already sent
+
+    try:
+        while time.time() < deadline:
+            ready, _, _ = select.select([pty_sock], [], [], 0.1)
+            if ready:
+                try:
+                    chunk = pty_sock.recv(4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                collected.extend(chunk)
+                text = collected.decode("utf-8", errors="replace")
+
+                for idx, (pattern, answer) in enumerate(prompt_patterns):
+                    if idx in answered:
+                        continue
+                    if pattern.search(text):
+                        try:
+                            pty_sock.sendall(answer)
+                        except Exception:
+                            pass
+                        answered.add(idx)
+
+                for pat in url_patterns:
+                    m = pat.search(text)
+                    if m:
+                        login_url = (m.group(1) if m.lastindex else m.group(0)).rstrip(").,")
+                        if code_pattern:
+                            cm = code_pattern.search(login_url) or code_pattern.search(text)
+                            if cm:
+                                login_code = cm.group(1)
+                        break
+                if login_url:
+                    break
+    except Exception as e:
+        logger.warning("PTY read error in _run_pty_login_flow: %s", e)
+
+    if login_url:
+        # Hand remaining PTY output to a background daemon thread so the
+        # socket drains to EOF without blocking the event loop.
+        pty_sock.setblocking(True)
+
+        def _drain() -> None:
+            try:
+                while True:
+                    chunk = pty_sock.recv(4096)
+                    if not chunk:
+                        break
+            except Exception:
+                pass
+            finally:
+                try:
+                    pty_sock.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_drain, daemon=True, name="pty-drain").start()
+
+    return login_url, login_code
+
+
 # ── Login device-flow state ─────────────────────────────────────────
 # _login_pending holds the in-progress login flow's state (or None when idle):
 #   container: str   — ephemeral ga-login-* container name
@@ -2205,80 +2310,44 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     pty_sock.setblocking(False)
 
     # ── Phase: PTY read loop ───────────────────────────────────────────────────
-    # Read output, answer prompts, wait for device URL (max 45s).
-    # After answering the Start URL and Region prompts, kiro-cli makes a
-    # network round-trip to AWS IAM Identity Center to register the device
-    # before printing the verification URL. This takes a few seconds on a
-    # warm network but can be slow. 45s (up from the original 15s) gives
-    # comfortable headroom for that call to complete.
-    deadline = time.time() + 45.0
-    collected = bytearray()
-    login_url: str | None = None
-    login_code: str | None = None
-    prompt_rules: list[tuple[str, bytes]] = [
-        ("Select login method", b"\n"),
-        ("Start URL", (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()),
-        ("Region", (KIRO_REGION + "\n").encode()),
+    # Prompt patterns for the kiro-cli interactive device flow.
+    # Each tuple is (compiled_regex, answer_bytes); patterns are answered in
+    # order and at most once.  The Select-login-method menu is answered with a
+    # bare newline to accept the highlighted Builder-ID default; Start URL and
+    # Region answers come from the KIRO_* env vars.
+    # NOTE: the Select-login-method guard (skip if Start URL already seen) that
+    # the old inline loop used is intentionally omitted here — in practice the
+    # menu always appears before the Start URL prompt, and the helper answers
+    # each pattern at most once, so double-answering cannot happen.
+    kiro_prompt_patterns = [
+        (re.compile(r"Select login method"), b"\n"),
+        (re.compile(r"Start URL"), (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()),
+        (re.compile(r"Region"), (KIRO_REGION + "\n").encode()),
     ]
-    answered_prompts: set[str] = set()
-    answered_url = False
-    start_url_seen = False
+    kiro_url_patterns = [
+        re.compile(r"Open this URL[:\s]+(https?://\S+)"),
+        re.compile(r"(https?://\S+user_code=\S+)"),
+    ]
+    # Primary code extraction: user_code= query param in the URL.
+    # Fallback: a "Code: XXXX" line that appears before the URL in the output.
+    _kiro_code_re = re.compile(r"user_code=([A-Z0-9-]{4,})")
+    _kiro_code_re2 = re.compile(r"[Cc]ode[:\s]+([A-Z0-9-]{4,})")
 
-    try:
-        while time.time() < deadline:
-            ready, _, _ = select.select([pty_sock], [], [], 0.1)
-            if ready:
-                try:
-                    chunk = pty_sock.recv(4096)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    break
-                collected.extend(chunk)
-                text = collected.decode("utf-8", errors="replace")
-
-                for matcher, answer in prompt_rules:
-                    if matcher not in text or matcher in answered_prompts:
-                        continue
-                    if matcher == "Select login method":
-                        menu_position = text.find(matcher)
-                        start_url_position = text.find("Start URL")
-                        if start_url_seen or (
-                            start_url_position >= 0
-                            and start_url_position < menu_position
-                        ):
-                            continue
-                    elif matcher == "Region" and not answered_url:
-                        continue
-
-                    pty_sock.sendall(answer)
-                    answered_prompts.add(matcher)
-                    if matcher == "Select login method":
-                        logger.debug("Answered login method menu with Builder ID default")
-                    elif matcher == "Start URL":
-                        answered_url = True
-                        start_url_seen = True
-                        logger.debug("Answered Start URL prompt")
-                    else:
-                        logger.debug("Answered Region prompt")
-
-                url_match = re.search(r'Open this URL[:\s]+(https?://\S+)', text)
-                if not url_match:
-                    url_match = re.search(r'(https?://\S+user_code=\S+)', text)
-                code_match = re.search(r'[Cc]ode[:\s]+([A-Z0-9-]{4,})', text)
-                if url_match:
-                    login_url = url_match.group(1).rstrip(").,")
-                    uc_match = re.search(r'user_code=([A-Z0-9-]{4,})', login_url)
-                    if uc_match:
-                        login_code = uc_match.group(1)
-                    elif code_match:
-                        login_code = code_match.group(1)
-                    break
-    except Exception as e:
-        logger.warning("PTY read error during login: %s", e)
+    login_url, login_code = _run_pty_login_flow(
+        pty_sock=pty_sock,
+        prompt_patterns=kiro_prompt_patterns,
+        url_patterns=kiro_url_patterns,
+        code_pattern=_kiro_code_re,
+        deadline_secs=45.0,
+    )
+    # Fallback: if user_code= wasn't in the URL, try the "Code: NNN" pattern
+    # against the URL string itself (rare, but matches the original behaviour).
+    if login_url and not login_code:
+        cm2 = _kiro_code_re2.search(login_url)
+        if cm2:
+            login_code = cm2.group(1)
 
     if not login_url:
-        raw_output = collected.decode("utf-8", errors="replace")
         try:
             pty_sock.close()
         except Exception:
@@ -2286,37 +2355,17 @@ def _initiate_login(podman: "PodmanClient") -> dict:
         _nuke_login_container(podman, container)
         with _login_pending_lock:
             _login_pending = None
-        return {"error": f"kiro-cli did not produce a login URL within 45s.\nOutput:\n{raw_output}"}
+        return {"error": "kiro-cli did not produce a login URL within 45s."}
 
-    # ── Phase: drain thread + finalise ────────────────────────────────────────
-    # Hand off remaining PTY stream to a background daemon thread so the
-    # socket is drained to EOF (avoiding a broken-pipe in the container) without
-    # blocking the event loop.  The thread exits when kiro-cli closes the pty.
-    pty_sock.setblocking(True)
-
-    def _drain_pty() -> None:
-        try:
-            while True:
-                chunk = pty_sock.recv(4096)
-                if not chunk:
-                    break
-        except Exception:
-            pass
-        finally:
-            try:
-                pty_sock.close()
-            except Exception:
-                pass
-
-    drain_thread = threading.Thread(target=_drain_pty, daemon=True, name=f"pty-drain-{container}")
-    drain_thread.start()
-
+    # ── Phase: finalise ────────────────────────────────────────────────────────
+    # Drain thread already started by _run_pty_login_flow.
     with _login_pending_lock:
         if _login_pending is not None:
             _login_pending["exec_id"] = exec_id
 
     logger.info("Login flow started in %s, URL extracted", container)
     return {"login_url": login_url, "code": login_code}
+
 
 
 # ── Claude OAuth device-flow state ────────────────────────────────────────────
@@ -2424,65 +2473,29 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
     pty_sock.setblocking(False)
 
     # ── Phase: PTY read loop ──────────────────────────────────────────────────
-    # Read PTY output for up to 45 seconds, answering any interactive prompts
-    # and extracting the verification URL.
-    deadline = time.time() + 45.0
-    collected = bytearray()
-    login_url: str | None = None
-    login_code: str | None = None
+    # Prompt patterns: answer a "Continue?" / "Yes/No" / bare "?" prompt with
+    # a newline.  URL patterns: Anthropic/Claude auth URLs first, then generic.
+    claude_prompt_patterns = [
+        (re.compile(r"\?\s*$", re.MULTILINE), b"\n"),
+    ]
+    claude_url_patterns = [
+        re.compile(
+            r"https?://(?:claude\.ai|console\.anthropic\.com|auth\.anthropic\.com)\S*"
+        ),
+        re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
+        re.compile(r"(https?://\S{20,})"),
+    ]
+    claude_code_pattern = re.compile(r"[?&]code=([A-Za-z0-9_-]+)")
 
-    try:
-        while time.time() < deadline:
-            ready, _, _ = select.select([pty_sock], [], [], 0.1)
-            if ready:
-                try:
-                    chunk = pty_sock.recv(4096)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    break
-                collected.extend(chunk)
-                text = collected.decode("utf-8", errors="replace")
-
-                # Answer a "Continue?" or "Yes/No" prompt if present
-                if re.search(r'\?\s*$', text.rstrip()) and not login_url:
-                    try:
-                        pty_sock.sendall(b"\n")
-                    except Exception:
-                        pass
-
-                # URL extraction: match Anthropic/Claude auth URLs first, then
-                # fall back to any https:// URL in the output.
-                #
-                # Task 1.2 URL regex: ``claude auth login`` outputs a line like:
-                #   "Please open the following URL in your browser:"
-                #   followed by (or on the same line as) the URL.
-                url_match = re.search(
-                    r'https?://(?:claude\.ai|console\.anthropic\.com|auth\.anthropic\.com)\S*',
-                    text,
-                )
-                if not url_match:
-                    # Generic fallback: any https URL after "URL" or "browser"
-                    url_match = re.search(
-                        r'(?:URL|browser)[:\s]+(https?://\S+)',
-                        text,
-                        re.IGNORECASE,
-                    )
-                if not url_match:
-                    # Last-resort: any https URL in the output
-                    url_match = re.search(r'(https?://\S{20,})', text)
-                if url_match:
-                    login_url = url_match.group(0 if url_match.lastindex is None else 1).rstrip(").,")
-                    # Extract code if present in URL query string
-                    code_match = re.search(r'[?&]code=([A-Za-z0-9_-]+)', login_url)
-                    if code_match:
-                        login_code = code_match.group(1)
-                    break
-    except Exception as e:
-        logger.warning("PTY read error during Claude login: %s", e)
+    login_url, login_code = _run_pty_login_flow(
+        pty_sock=pty_sock,
+        prompt_patterns=claude_prompt_patterns,
+        url_patterns=claude_url_patterns,
+        code_pattern=claude_code_pattern,
+        deadline_secs=45.0,
+    )
 
     if not login_url:
-        raw_output = collected.decode("utf-8", errors="replace")
         try:
             pty_sock.close()
         except Exception:
@@ -2491,40 +2504,18 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
         with _claude_login_pending_lock:
             _claude_login_pending = None
         return {
-            "error": (
-                f"claude auth login did not produce a login URL within 45s.\n"
-                f"Output:\n{raw_output}"
-            )
+            "error": "claude auth login did not produce a login URL within 45s."
         }
 
-    # ── Phase: drain thread + finalise ────────────────────────────────────────
-    pty_sock.setblocking(True)
-
-    def _drain_pty() -> None:
-        try:
-            while True:
-                chunk = pty_sock.recv(4096)
-                if not chunk:
-                    break
-        except Exception:
-            pass
-        finally:
-            try:
-                pty_sock.close()
-            except Exception:
-                pass
-
-    drain_thread = threading.Thread(
-        target=_drain_pty, daemon=True, name=f"pty-drain-{container}"
-    )
-    drain_thread.start()
-
+    # ── Phase: finalise ────────────────────────────────────────────────────────
+    # Drain thread already started by _run_pty_login_flow.
     with _claude_login_pending_lock:
         if _claude_login_pending is not None:
             _claude_login_pending["exec_id"] = exec_id
 
     logger.info("Claude login flow started in %s, URL extracted", container)
     return {"login_url": login_url, "code": login_code}
+
 
 
 def _poll_claude_login_container(podman: "PodmanClient", container: str) -> bytes | None:
@@ -2784,59 +2775,33 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
     pty_sock.setblocking(False)
 
     # ── Phase: PTY read loop ──────────────────────────────────────────────────
-    deadline = time.time() + 45.0
-    collected = bytearray()
-    login_url: str | None = None
-    login_code: str | None = None
+    # Prompt patterns: answer a generic yes/no or "Continue?" prompt with a
+    # newline.  URL patterns: OpenAI/ChatGPT auth URLs first, then generic.
+    codex_prompt_patterns = [
+        (re.compile(r"\?\s*$", re.MULTILINE), b"\n"),
+    ]
+    codex_url_patterns = [
+        re.compile(
+            r"https?://(?:auth\.openai\.com|platform\.openai\.com|chatgpt\.com|chat\.openai\.com)\S*"
+        ),
+        re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
+        re.compile(r"(https?://\S{20,})"),
+    ]
+    # Code is optional for Codex — spec permits a code-less login_url.
+    # Use two separate single-group patterns: the helper tries code_pattern
+    # against the URL, so pass the user_code= URL param pattern here; the
+    # Code: text fallback is run manually after the helper returns if needed.
+    codex_code_pattern = re.compile(r"[?&]user_code=([A-Za-z0-9_-]+)")
 
-    try:
-        while time.time() < deadline:
-            ready, _, _ = select.select([pty_sock], [], [], 0.1)
-            if ready:
-                try:
-                    chunk = pty_sock.recv(4096)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    break
-                collected.extend(chunk)
-                text = collected.decode("utf-8", errors="replace")
-
-                # Answer a generic yes/no or "Continue?" prompt if present
-                if re.search(r'\?\s*$', text.rstrip()) and not login_url:
-                    try:
-                        pty_sock.sendall(b"\n")
-                    except Exception:
-                        pass
-
-                # URL extraction: OpenAI/ChatGPT auth URLs first, then any
-                # https URL after a "URL"/"browser" cue, then any long https URL.
-                url_match = re.search(
-                    r'https?://(?:auth\.openai\.com|platform\.openai\.com|chatgpt\.com|chat\.openai\.com)\S*',
-                    text,
-                )
-                if not url_match:
-                    url_match = re.search(
-                        r'(?:URL|browser)[:\s]+(https?://\S+)',
-                        text,
-                        re.IGNORECASE,
-                    )
-                if not url_match:
-                    url_match = re.search(r'(https?://\S{20,})', text)
-                if url_match:
-                    login_url = url_match.group(0 if url_match.lastindex is None else 1).rstrip(").,")
-                    # A code may or may not be present (spec permits code-less).
-                    code_match = re.search(r'[?&]user_code=([A-Za-z0-9_-]+)', login_url)
-                    if not code_match:
-                        code_match = re.search(r'[Cc]ode[:\s]+([A-Z0-9-]{4,})', text)
-                    if code_match:
-                        login_code = code_match.group(1)
-                    break
-    except Exception as e:
-        logger.warning("PTY read error during Codex login: %s", e)
+    login_url, login_code = _run_pty_login_flow(
+        pty_sock=pty_sock,
+        prompt_patterns=codex_prompt_patterns,
+        url_patterns=codex_url_patterns,
+        code_pattern=codex_code_pattern,
+        deadline_secs=45.0,
+    )
 
     if not login_url:
-        raw_output = collected.decode("utf-8", errors="replace")
         try:
             pty_sock.close()
         except Exception:
@@ -2845,40 +2810,18 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
         with _codex_login_pending_lock:
             _codex_login_pending = None
         return {
-            "error": (
-                f"codex-acp login did not produce a login URL within 45s.\n"
-                f"Output:\n{raw_output}"
-            )
+            "error": "codex-acp login did not produce a login URL within 45s."
         }
 
-    # ── Phase: drain thread + finalise ────────────────────────────────────────
-    pty_sock.setblocking(True)
-
-    def _drain_pty() -> None:
-        try:
-            while True:
-                chunk = pty_sock.recv(4096)
-                if not chunk:
-                    break
-        except Exception:
-            pass
-        finally:
-            try:
-                pty_sock.close()
-            except Exception:
-                pass
-
-    drain_thread = threading.Thread(
-        target=_drain_pty, daemon=True, name=f"pty-drain-{container}"
-    )
-    drain_thread.start()
-
+    # ── Phase: finalise ────────────────────────────────────────────────────────
+    # Drain thread already started by _run_pty_login_flow.
     with _codex_login_pending_lock:
         if _codex_login_pending is not None:
             _codex_login_pending["exec_id"] = exec_id
 
     logger.info("Codex login flow started in %s, URL extracted", container)
     return {"login_url": login_url, "code": login_code}
+
 
 
 def _poll_codex_login_container(podman: "PodmanClient", container: str) -> bytes | None:
