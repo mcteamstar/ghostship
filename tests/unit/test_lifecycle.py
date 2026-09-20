@@ -4,7 +4,7 @@ Migration target for classes whose function-under-test is defined in
 ``lifecycle.py`` (``_ensure_crew_running``, ``_finish_crew_setup``,
 ``_crew_api_with_recovery``, ``_crew_api``, ``_probe_gateway``,
 ``_patch_crew_config``, ``_copy_agents``, ``_copy_skills``, ``_inject_policy``,
-``_inject_git_identity``, ``_mint_cookie``, ``_reconcile_registry``,
+``_mint_cookie``, ``_reconcile_registry``,
 ``_reseed_crew_schedules``, ``_nuke_login_container``) — **not** the academy
 functions (those go to ``test_academy.py``).
 

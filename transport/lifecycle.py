@@ -1711,9 +1711,6 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
-def _inject_git_identity(podman: PodmanClient, container: str) -> None:
-    """No-op — kept as signature only; see call site for explanation."""
-
 
 def _inject_policy(
     podman: PodmanClient,
@@ -1895,13 +1892,6 @@ def _finish_crew_setup(
     _copy_steering(podman, container, composition_entry)
     # depends on: gateway (post-restart)
     _seed_openspec_store(podman, container)
-
-    # Git identity vars (GIT_AUTHOR_NAME/EMAIL/GIT_COMMITTER_NAME/EMAIL) are
-    # injected at container_create time via the env= dict in launch(), so they
-    # are in the gateway's process env from startup and inherited by every
-    # kiro-cli child.  Container stop/start cycles preserve the create-time
-    # env, so idle-stop recovery also works correctly.  _inject_git_identity
-    # was a no-op stub kept for call-site symmetry; it has been removed.
 
     # depends on: policy_signing_key (already generated above), filesystem
     policy_version = None
