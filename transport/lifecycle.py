@@ -197,7 +197,6 @@ KC_IMAGE = cfg.kc_image
 # Login containers use the upstream base image directly (not the locally-built
 # crew image) to avoid any risk from a tainted local build. This must match the
 # FROM pin in crews/_base/admission/Containerfile.
-KC_BASE_IMAGE = "ghcr.io/kirodotdev/kirocrew:0.6.0"
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 GA_CREW_AGENT = cfg.ga_crew_agent
@@ -2002,7 +2001,7 @@ def _finish_crew_setup(
 def _start_login_container(podman: PodmanClient) -> str:
     """Create and start an ephemeral ga-login-<token> container.
 
-    Uses KC_BASE_IMAGE (upstream kirocrew) rather than the local crew image —
+    Uses cfg.kc_base_image (upstream kirocrew) rather than the local crew image —
     the login container only needs kiro-cli, and using the upstream image avoids
     any risk from a tainted local build. No volumes — kiro-cli DB lives in the
     container's ephemeral writable layer. The container is NOT registered in the
@@ -2013,7 +2012,7 @@ def _start_login_container(podman: PodmanClient) -> str:
     podman.network_create(GA_STARBOARD_NETWORK)
     podman._req("POST", "/libpod/containers/create", json={
         "name": name,
-        "image": KC_BASE_IMAGE,
+        "image": cfg.kc_base_image,
         "netns": {"nsmode": "bridge"},
         "Networks": {GA_STARBOARD_NETWORK: {}},
         # Use the default gateway command — kirocrew-entrypoint seeds

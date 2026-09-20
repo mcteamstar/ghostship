@@ -127,6 +127,30 @@ class TestConfigEnvValidValues(unittest.TestCase):
                 Config.from_env()
 
 
+class TestConfigKcBaseImage(unittest.TestCase):
+    """Config.from_env() respects KC_BASE_IMAGE env var."""
+
+    def test_default_value(self):
+        """kc_base_image defaults to the pinned upstream image."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "KC_BASE_IMAGE"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, "ghcr.io/kirodotdev/kirocrew:0.6.0")
+
+    def test_custom_value_respected(self):
+        """KC_BASE_IMAGE env var overrides the default."""
+        with patch.dict("os.environ", {"KC_BASE_IMAGE": "custom:latest"}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, "custom:latest")
+
+    def test_empty_string_allowed(self):
+        """An empty KC_BASE_IMAGE is passed through as-is."""
+        with patch.dict("os.environ", {"KC_BASE_IMAGE": ""}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, "")
+
+
 class TestConfigTLSDefault(unittest.TestCase):
     """GA_PORTAL_TLS_MODE default is 'off'."""
 
