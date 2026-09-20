@@ -3012,6 +3012,7 @@ class GitIdentityInjectionTests(unittest.TestCase):
         self.assertNotIn("GIT_AUTHOR_NAME", env)
         self.assertNotIn("GIT_COMMITTER_NAME", env)
 
+
 class Trn89TaskTimestampTests(unittest.TestCase):
     """Task 1 — task lifecycle timestamps in dispatch and pickup."""
 

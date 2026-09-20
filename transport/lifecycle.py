@@ -1711,7 +1711,6 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
-
 def _inject_policy(
     podman: PodmanClient,
     container: str,
