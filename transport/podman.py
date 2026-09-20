@@ -830,9 +830,9 @@ class PodmanClient(ContainerRuntime):
         """Connect a container to a network (idempotent — ignores 'already connected' errors).
 
         Wraps ``POST /libpod/networks/{network}/connect``.
-        Raises on non-409 HTTP errors or connection failures so callers such as
-        _migrate_crew_network can detect and log migration failures rather than
-        silently continuing with a broken network state.
+        Raises on non-409 HTTP errors or connection failures so callers can
+        detect and log failures rather than silently continuing with a broken
+        network state.
         """
         r = self._c.post(
             f"/libpod/networks/{network}/connect",
@@ -862,7 +862,7 @@ class PodmanClient(ContainerRuntime):
             raise
 
     def network_rm(self, name: str) -> None:
-        """Remove a network (best-effort — used for ga-net cleanup after migration)."""
+        """Remove a network (best-effort)."""
         try:
             r = self._c.delete(f"/libpod/networks/{name}")
             if r.status_code not in (200, 204):
