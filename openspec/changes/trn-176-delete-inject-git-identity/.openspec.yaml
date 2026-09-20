@@ -1,3 +1,4 @@
 schema: spec-driven
 created: 2026-09-20
 ticket: TRN-176
+skip_specs: true
