@@ -1389,85 +1389,10 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
             logger.warning("Failed to re-seed job %s on crew %s: %s", sched.get("name"), crew_id, e)
 
 
-def _migrate_crew_network(podman: "PodmanClient", crew_id: str, container: str) -> bool:
-    """Migrate a crew container from ga-net to ga-starboard.
-
-    Returns True if migration was performed or not needed, False if migration
-    failed (the crew will be marked stopped by the caller).
-
-    Algorithm (D3 from design.md):
-    1. If already on ga-starboard — no-op (skip).
-    2. If on ga-net:
-       a. Connect ga-transport to ga-starboard (idempotent).
-       b. Stop container.
-       c. Disconnect container from ga-net (best-effort).
-       d. Connect container to ga-starboard.
-       e. Start → wait → refresh cookie.
-    """
-    try:
-        nets = podman.container_networks(container)
-    except Exception as e:
-        logger.warning("Could not read networks for crew %s: %s", crew_id, e)
-        return True  # unknown state — don't block startup
-
-    if GA_STARBOARD_NETWORK in nets:
-        # Already migrated — nothing to do.
-        return True
-
-    if "ga-net" not in nets:
-        # Neither on old nor new network — unusual but not an error; leave alone.
-        logger.info("Crew %s (%s) is not on ga-net or ga-starboard; skipping migration", crew_id, container)
-        return True
-
-    logger.info("Migrating crew %s (%s) from ga-net to %s", crew_id, container, GA_STARBOARD_NETWORK)
-    try:
-        # Step a: ensure ga-transport is on starboard (idempotent).
-        podman.network_connect("ga-transport", GA_STARBOARD_NETWORK)
-
-        # Step b: stop container.
-        podman.container_stop(container)
-
-        # Step c: disconnect from ga-net (best-effort).
-        podman.network_disconnect(container, "ga-net")
-
-        # Step d: connect to ga-starboard.
-        podman.network_connect(container, GA_STARBOARD_NETWORK)
-
-        # Step e: start and wait for gateway.
-        podman.container_start(container)
-        crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-        if not _wait_gateway(crew_url, timeout=60):
-            logger.warning("Crew %s gateway not ready after migration", crew_id)
-            return False
-
-        # Step f: refresh cookie so the first request after migration does not
-        # hit a 401 from a stale token.  Mirrors the same pattern used in
-        # _ensure_crew_running and _reconcile_registry.
-        new_cookie = _mint_cookie(podman, container, crew_url)
-        if new_cookie:
-            with _registry_lock:
-                reg = _load_registry()
-                if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["cookie"] = new_cookie
-                    reg["crews"][crew_id]["status"] = "running"
-                    _save_registry(reg)
-            logger.info("Crew %s migrated to %s successfully (cookie refreshed)", crew_id, GA_STARBOARD_NETWORK)
-        else:
-            logger.warning(
-                "Crew %s migrated to %s but cookie refresh failed — stale cookie may cause 401",
-                crew_id, GA_STARBOARD_NETWORK,
-            )
-        return True
-    except Exception as e:
-        logger.warning("Migration failed for crew %s: %s", crew_id, e)
-        return False
-
-
 def _reconcile_registry() -> None:
     """On startup: restart stopped crew containers, remove truly gone ones.
     Also sweeps any orphaned ga-login-* containers left over from a transport
     restart that occurred mid-login flow.
-    Migrates any crew containers still on ga-net to ga-starboard (D3).
     """
     try:
         podman = _get_podman()
@@ -1507,20 +1432,6 @@ def _reconcile_registry() -> None:
             logger.info("Removing gone crew from registry: %s", cid)
             to_remove.append(cid)
         else:
-            # ── Network migration (D3): move from ga-net to ga-starboard ─────
-            # Run migration before the restart loop so the container is on the
-            # right network when it starts.
-            try:
-                migrated = _migrate_crew_network(podman, cid, container)
-                if not migrated:
-                    logger.warning("Network migration failed for crew %s — marking stopped", cid)
-                    updates[cid] = {"status": "stopped"}
-                    continue
-            except Exception as e:
-                logger.warning("Unexpected error during migration for crew %s: %s", cid, e)
-                updates[cid] = {"status": "stopped"}
-                continue
-
             if not podman.container_is_running(container):
                 # Container exists but stopped (e.g. VM reboot) — restart it
                 logger.info("Restarting stopped crew on startup: %s", cid)
@@ -1570,25 +1481,6 @@ def _reconcile_registry() -> None:
                 reg["crews"][cid].update(fields)
         _save_registry(reg)
     logger.info("Registry reconciled. Live crews: %s", list(reg["crews"].keys()))
-
-    # ── Best-effort ga-net removal after migration ────────────────────────────
-    # If all crews have been migrated away from ga-net, clean it up.
-    try:
-        all_containers_after = podman._req("GET", "/libpod/containers/json", params={"all": "true"})
-        ga_net_containers = [
-            c for c in all_containers_after
-            if "ga-net" in (c.get("Networks") or {})
-        ]
-        if not ga_net_containers:
-            podman.network_rm("ga-net")
-            logger.info("ga-net removed — all crews migrated to %s", GA_STARBOARD_NETWORK)
-        else:
-            logger.info(
-                "ga-net still has %d container(s) — not removing",
-                len(ga_net_containers),
-            )
-    except Exception as e:
-        logger.warning("Best-effort ga-net removal failed: %s", e)
 
 
 def _patch_crew_config(podman: PodmanClient, container: str) -> None:
