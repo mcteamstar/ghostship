@@ -2395,8 +2395,9 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # When the Claude ACP backend is selected, inject ANTHROPIC_API_KEY into
         # the crew container so claude-agent-acp can authenticate against
         # api.anthropic.com. The kiro auth path is skipped for Claude-backend crews
-        # (handled in _finish_crew_setup). Only set when non-empty — validated at
-        # startup by Config.validate() so we can trust it is present here.
+        # (handled in _finish_crew_setup). Only set when non-empty — the key is
+        # optional (Claude OAuth is an alternative), so we guard on its presence
+        # here rather than relying on any startup validation.
         if GA_CREW_ACP_BACKEND == "claude" and _GA_CREW_ANTHROPIC_API_KEY:
             container_env["ANTHROPIC_API_KEY"] = _GA_CREW_ANTHROPIC_API_KEY
             if _GA_CREW_ANTHROPIC_BASE_URL:
