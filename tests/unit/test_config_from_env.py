@@ -48,6 +48,9 @@ class TestConfigEnvIntErrors(unittest.TestCase):
     def test_ga_dashboard_port_range_start_invalid(self):
         self._assert_config_error("GA_DASHBOARD_PORT_RANGE_START", "high")
 
+    def test_ga_dashboard_port_range_size_invalid(self):
+        self._assert_config_error("GA_DASHBOARD_PORT_RANGE_SIZE", "big")
+
     def test_ga_portal_session_ttl_secs_invalid(self):
         self._assert_config_error("GA_PORTAL_SESSION_TTL_SECS", "never")
 
@@ -100,6 +103,20 @@ class TestConfigEnvValidValues(unittest.TestCase):
         self.assertAlmostEqual(cfg.ga_min_free_mem_gb, 3.5)
         self.assertAlmostEqual(cfg.ga_resource_pressure_gb, 1.0)
 
+    def test_ga_dashboard_port_range_size_configured(self):
+        """GA_DASHBOARD_PORT_RANGE_SIZE env var overrides the default."""
+        with patch.dict("os.environ", {"GA_DASHBOARD_PORT_RANGE_SIZE": "50"}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_dashboard_port_range_size, 50)
+
+    def test_ga_dashboard_port_range_size_default(self):
+        """GA_DASHBOARD_PORT_RANGE_SIZE defaults to 1024 when unset."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "GA_DASHBOARD_PORT_RANGE_SIZE"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_dashboard_port_range_size, 1024)
+
     def test_defaults_when_unset(self):
         """Config.from_env() with no relevant env vars uses field defaults."""
         # Clear all numeric vars to ensure defaults apply
@@ -109,6 +126,7 @@ class TestConfigEnvValidValues(unittest.TestCase):
             "GA_MIN_FREE_MEM_GB", "GA_SPAWN_MIN_MEMORY_GB",
             "GA_RESOURCE_PRESSURE_GB", "GA_RESOURCE_CRITICAL_GB",
             "GA_PREWARM_TTL_SECS", "GA_DASHBOARD_PORT_RANGE_START",
+            "GA_DASHBOARD_PORT_RANGE_SIZE",
             "GA_PORTAL_SESSION_TTL_SECS",
         ]
         clean_env = {k: v for k, v in __import__("os").environ.items()

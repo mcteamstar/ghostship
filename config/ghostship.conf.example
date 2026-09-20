@@ -250,7 +250,7 @@
 # portal replaces the per-port proxy. See docs/dashboard-proxy.md.
 #
 # GA_DASHBOARD_PORT_RANGE_START=64058
-# GA_DASHBOARD_PORT_RANGE_SIZE=1024  # Fixed — not configurable
+# GA_DASHBOARD_PORT_RANGE_SIZE=1024  # Number of ports in the range (default 1024)
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch()
 
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────

@@ -284,7 +284,7 @@ class Config:
             ga_prewarm_enabled=_env_bool_default_off("GA_PREWARM_ENABLED"),
             ga_prewarm_ttl_secs=_env_int("GA_PREWARM_TTL_SECS", "300"),
             ga_dashboard_port_range_start=_env_int("GA_DASHBOARD_PORT_RANGE_START", "64058"),
-            ga_dashboard_port_range_size=1024,
+            ga_dashboard_port_range_size=_env_int("GA_DASHBOARD_PORT_RANGE_SIZE", "1024"),
             ga_dashboard_default=os.environ.get("GA_DASHBOARD_DEFAULT", "").lower() in ("1", "true", "yes"),
             ga_tls_min_version=os.environ.get("GA_TLS_MIN_VERSION", "1.2").strip(),
             ga_tls_certfile=os.environ.get("GA_TLS_CERTFILE", "").strip(),
