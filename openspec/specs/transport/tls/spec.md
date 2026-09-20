@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Auto-provisions TLS certificates via Caddy for every environment — local/private (internal CA), Tailscale (`.ts.net` trusted certs), public internet (ACME), and plain HTTP (off) — driven by a single mode variable, replacing the manual `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` path.
+Auto-provisions TLS certificates via Caddy for every environment — local/private (internal CA), Tailscale (`.ts.net` trusted certs), public internet (ACME), and plain HTTP (off) — driven by a single mode variable.
 
 ## Requirements
 
 ### Requirement: Four-value TLS mode selection
-When `GA_PORTAL_ENABLED=true`, `install.sh` SHALL read `GA_PORTAL_TLS_MODE` (values: `internal`, `tailscale`, `acme`, `off`; default: `internal`) and bake the appropriate TLS configuration into `initial-config.json`. TLS SHALL apply to every listener Caddy owns — the main port and every per-crew dashboard port. The transport SHALL NOT restart to activate or change TLS; TLS is owned entirely by Caddy.
+`install.sh` SHALL read `GA_PORTAL_TLS_MODE` (values: `internal`, `tailscale`, `acme`, `off`; default: `internal`) and bake the appropriate TLS configuration into `initial-config.json`. TLS SHALL apply to every listener Caddy owns — the main port and every per-crew dashboard port. The transport SHALL NOT restart to activate or change TLS; TLS is owned entirely by Caddy.
 
 #### Scenario: Internal CA mode (default)
 - **WHEN** `GA_PORTAL_TLS_MODE=internal`
@@ -37,10 +37,3 @@ When `GA_PORTAL_TLS_MODE=internal`, the install output SHALL print the path to C
 #### Scenario: ghostship status reports the CA path
 - **WHEN** `ghostship status` runs with `GA_PORTAL_TLS_MODE=internal`
 - **THEN** its output includes the root CA certificate path
-
-### Requirement: Direct TLS fallback unaffected
-When `GA_PORTAL_ENABLED=false`, the existing `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` direct TLS termination path in the transport SHALL remain functional and SHALL NOT be deprecated by this change.
-
-#### Scenario: Direct TLS still works without Caddy
-- **WHEN** `GA_PORTAL_ENABLED=false` and `GA_TLS_CERTFILE`/`GA_TLS_KEYFILE` are set
-- **THEN** the transport serves HTTPS directly as before
