@@ -4180,9 +4180,7 @@ health_routes = [
 
 if __name__ == "__main__":
     # Validate cross-field config constraints before doing anything else.
-    # Raises ConfigError (a ValueError subclass) if GA_CREW_ACP_BACKEND=claude
-    # and GA_CREW_ANTHROPIC_API_KEY is unset — surfaces the misconfiguration
-    # immediately at startup rather than at the first launch() call.
+    # No-op — credential validation is lazy (deferred to launch())
     try:
         cfg.validate()
     except Exception as _cfg_err:

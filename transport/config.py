@@ -82,18 +82,6 @@ def _validate_acp_backend(value: str) -> str:
     )
 
 
-def _validate_claude_api_key(backend: str, key: str) -> None:
-    """No-op: GA_CREW_ANTHROPIC_API_KEY is no longer required at startup.
-
-    TRN-170: Claude OAuth is an alternative to the API key. Startup validation
-    is removed; launch() enforces the credential requirement lazily — if neither
-    GA_CREW_ANTHROPIC_API_KEY nor ga-claude-auth is present, launch returns
-    not_authenticated with a login URL rather than failing at startup.
-
-    This function is retained for call-site compatibility but is now a no-op.
-    """
-
-
 def _validate_caddy_tls_mode(value: str, default: str = "off") -> str:
     """Validate GA_PORTAL_TLS_MODE against the four allowed values.
 
@@ -326,17 +314,5 @@ class Config:
         )
 
     def validate(self) -> None:
-        """Run cross-field validation that cannot be expressed as a per-field default.
-
-        Called once after from_env() during transport startup.
-        TRN-170: GA_CREW_ANTHROPIC_API_KEY is no longer required at startup when
-        GA_CREW_ACP_BACKEND=claude — Claude OAuth (ga-claude-auth) is a valid
-        alternative. Credential enforcement is now lazy: launch() blocks and
-        initiates the Claude login flow if neither credential is present.
-        TRN-172: GA_CREW_ACP_BACKEND=codex is likewise NOT validated for a
-        credential at startup — neither GA_CREW_OPENAI_API_KEY nor ga-codex-auth
-        is required here. launch() enforces the requirement lazily and initiates
-        the Codex login flow when neither is present. No startup check is added
-        for codex, so this method remains a no-op for it.
-        """
-        _validate_claude_api_key(self.ga_crew_acp_backend, self.ga_crew_anthropic_api_key)
+        """No-op. Retained for call-site compatibility. Credential validation is lazy — deferred to launch() time."""
+        pass
