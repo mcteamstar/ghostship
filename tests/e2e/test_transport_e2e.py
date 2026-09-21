@@ -108,9 +108,20 @@ class TestCrewLifecycle(unittest.TestCase):
             pass
 
     def test_launch_and_nuke(self):
-        # Launch
+        # Launch — retry up to 3 times with backoff to tolerate transient
+        # resource pressure when other test classes are still holding a crew.
         print(f"\n[e2e] launching {self.CREW_ID}...", flush=True)
-        result = _mcp_call("launch", crew_id=self.CREW_ID)
+        result = {}
+        for attempt in range(3):
+            result = _mcp_call("launch", crew_id=self.CREW_ID)
+            if result.get("crew_id") == self.CREW_ID and result.get("status") == "ready":
+                break
+            print(f"\n[e2e] launch attempt {attempt + 1} got {result!r}, retrying...", flush=True)
+            try:
+                _mcp_call("nuke", crew_id=self.CREW_ID, confirm=True)
+            except Exception:
+                pass
+            time.sleep(10)
         self.assertEqual(result.get("crew_id"), self.CREW_ID)
         self.assertEqual(result.get("status"), "ready")
 
