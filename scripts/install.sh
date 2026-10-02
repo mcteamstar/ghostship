@@ -960,9 +960,16 @@ echo "=== Health check ==="
 _max_wait=90
 _interval=3
 _ready=0
-# Transport has no host port (Caddy is the external listener). Probe via
-# podman exec so we don't need a host-side binding.
+_caddy_scheme="http"
+[[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
+# Two probe methods tried each iteration:
+#   1. podman exec into ga-transport — works locally; may fail on remote deploys
+#      due to variable expansion differences in the SSH non-interactive shell.
+#   2. curl via Caddy on the host port — works on remote deploys; only succeeds
+#      once both ga-transport and ga-portal are up.
+# Either passing is sufficient — the transport is ready.
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
+  # Method 1: container-internal probe
   if ${_PODMAN_CMD} exec ga-transport python3 -c "
 import urllib.request, os
 secret = open('/run/secrets/ga-transport-secret').read().strip() if os.path.exists('/run/secrets/ga-transport-secret') else ''
@@ -972,34 +979,20 @@ urllib.request.urlopen(req)
     _ready=1
     break
   fi
+  # Method 2: curl via Caddy (fallback for remote/SSH deploys)
+  if curl -sk "${_caddy_scheme}://127.0.0.1:${PORT:-64057}/health" >/dev/null 2>&1; then
+    _ready=1
+    break
+  fi
   sleep "$_interval"
 done
 if [[ "$_ready" == "1" ]]; then
-  echo "✓ Transport is ready (container-internal health check passed)"
+  echo "✓ Transport is ready"
 else
   echo "✗ Transport did not become ready within ${_max_wait}s" >&2
   echo "  Last 20 lines of container logs:" >&2
   ${_PODMAN_CMD} logs ga-transport --tail 20 >&2
   exit 1
-fi
-
-# ga-portal health check (Caddy is always installed)
-_caddy_ready=0
-_caddy_scheme="http"
-[[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
-for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sk "${_caddy_scheme}://127.0.0.1:${PORT:-64057}/health" >/dev/null 2>&1; then
-    _caddy_ready=1
-    break
-  fi
-  sleep "$_interval"
-done
-if [[ "$_caddy_ready" == "1" ]]; then
-  echo "✓ Caddy is ready"
-else
-  echo "⚠ Caddy (ga-portal) did not respond on port ${PORT:-64057} within ${_max_wait}s"
-  echo "  Check: ${_PODMAN_CMD} logs ga-portal --tail 20"
-  echo "  This is non-fatal — Caddy may still be pulling or starting."
 fi
 
 echo ""
