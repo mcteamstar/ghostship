@@ -154,7 +154,7 @@ class TestConfigKcBaseImage(unittest.TestCase):
                if k != "KC_BASE_IMAGE"}
         with patch.dict("os.environ", env, clear=True):
             cfg = Config.from_env()
-        self.assertEqual(cfg.kc_base_image, "ghcr.io/kirodotdev/kirocrew:0.6.0")
+        self.assertEqual(cfg.kc_base_image, "ghcr.io/kirodotdev/kirocrew:0.7.2")
 
     def test_custom_value_respected(self):
         """KC_BASE_IMAGE env var overrides the default."""
