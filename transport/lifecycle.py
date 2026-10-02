@@ -1626,6 +1626,14 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
+# Default set of enrolled Ghostship persona slugs used for dispatch slot routing.
+# Dispatch needs a fast answer at call time (no container access), so this list
+# covers the standard spec-ops composition. Custom agents added to other
+# compositions are enrolled at launch but won't auto-route via member slots
+# unless explicitly passed as slot="member-<slug>" — that's tracked in TRN-187.
+_GHOSTSHIP_PERSONAS = frozenset(["ghost", "spectre", "banshee", "wraith", "reaper", "raven"])
+
+
 def _deployed_agent_names(podman: PodmanClient, container: str) -> list[str]:
     """Return the list of agent JSON filenames deployed in this crew container."""
     try:
