@@ -1638,10 +1638,9 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
-# Default set of enrolled Ghostship persona slugs used for dispatch slot routing.
-# Dispatch needs a fast answer at call time (no container access), so this list
-# covers the standard spec-ops composition. Crews launched after TRN-187 store
-# enrolled_agents in the registry and that takes precedence.
+# Default set of enrolled Ghostship persona slugs — fallback only for the
+# transition period while old crews (pre-TRN-187) have no enrolled_agents
+# in the registry. Remove once all crews have been relaunched.
 _GHOSTSHIP_PERSONAS = frozenset(["ghost", "spectre", "banshee", "wraith", "reaper", "raven"])
 
 
@@ -1654,17 +1653,16 @@ def _resolve_dispatch_slot(
 
     Returns (effective_slot, parent_session).
 
-    For enrolled persona agents with no explicit slot: routes to
-    ``member-<slug>`` (attested, dashboard-visible as a named member thread).
-    For other agents with no explicit slot: ``"bridge"`` if the crew has a
-    dashboard port, else ``None`` (headless).
+    For enrolled agents with no explicit slot: routes to their member DM slot
+    (``parent_session="dashboard:member-<slug>"``), echoing ``"<slug>"`` as the
+    slot name. For unenrolled agents with no explicit slot: ``"bridge"`` if the
+    crew has a dashboard port, else ``None`` (headless).
     Explicit ``slot`` values are always honoured — caller opted in.
     """
-    enrolled: frozenset[str] = frozenset(
-        crew.get("enrolled_agents") or []
-    ) or _GHOSTSHIP_PERSONAS
+    enrolled: frozenset[str] = frozenset(crew.get("enrolled_agents") or [])
     if slot is None and agent in enrolled:
-        return None, f"dashboard:member-{agent}"
+        # Echo the agent name (clean) not "member-<agent>" (implementation detail).
+        return agent, f"dashboard:member-{agent}"
     if slot is None:
         if crew.get("dashboard_port"):
             return "bridge", "dashboard:bridge"
@@ -1673,13 +1671,13 @@ def _resolve_dispatch_slot(
         slug = uuid.uuid4().hex[:8]
         if agent in enrolled:
             logger.warning(
-                "dispatch: slot=True for enrolled persona %r bypasses attestation", agent
+                "dispatch: slot=True for enrolled agent %r bypasses attestation", agent
             )
         return True, f"dashboard:{slug}"
     # Explicit string slot
-    if agent in enrolled and slot not in (f"member-{agent}",):
+    if agent in enrolled and slot != agent:
         logger.warning(
-            "dispatch: explicit slot=%r for enrolled persona %r bypasses attestation", slot, agent
+            "dispatch: explicit slot=%r for enrolled agent %r bypasses attestation", slot, agent
         )
     return slot, f"dashboard:{slot}"
 

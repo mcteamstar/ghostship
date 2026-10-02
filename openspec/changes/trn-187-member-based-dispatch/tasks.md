@@ -7,9 +7,9 @@
 
 ## 2. Extract _resolve_dispatch_slot helper
 
-- [ ] 2.1 In `transport/lifecycle.py`, implement `_resolve_dispatch_slot(agent, slot, crew)` → `(effective_slot, parent_session)` as described in design.md
-- [ ] 2.2 Update `_dispatch_tasks()` in `lifecycle.py` to use `_resolve_dispatch_slot()` — remove the inline slot resolution and per-task `_GHOSTSHIP_PERSONAS` check
-- [ ] 2.3 Update `dispatch()` in `server.py` to use `_resolve_dispatch_slot()` — remove the inline slot resolution and per-task `_GHOSTSHIP_PERSONAS` check
+- [ ] 2.1 In `transport/lifecycle.py`, implement `_resolve_dispatch_slot(agent, slot, crew)` — enrolled agents route to member DM slot (echoing agent name), unenrolled get bridge/headless; no `_GHOSTSHIP_PERSONAS` fallback
+- [ ] 2.2 Update `_dispatch_batch()` in `lifecycle.py` to use `_resolve_dispatch_slot()` — remove inline slot resolution
+- [ ] 2.3 Update `dispatch()` in `server.py` to use `_resolve_dispatch_slot()` — remove inline slot resolution; remove `_GHOSTSHIP_PERSONAS` import
 
 ## 3. Update dispatch() slot param documentation
 
@@ -19,9 +19,10 @@
 
 ## 4. Tests
 
-- [ ] 4.1 Add/update unit tests for `_resolve_dispatch_slot`: persona agent with no slot → member slot; non-persona agent on dashboard crew → bridge; explicit slot → respected; enrolled_agents registry fallback
-- [ ] 4.2 Add test: crew with `enrolled_agents` in registry routes custom agent to member slot
-- [ ] 4.3 Add test: crew without `enrolled_agents` falls back to `_GHOSTSHIP_PERSONAS`
+- [ ] 4.1 Add `enrolled_agents` to crew fixtures in `test_dispatch_slot.py` and `test_server.py`
+- [ ] 4.2 Update slot assertions: enrolled agent + no slot → agent name (e.g. `"ghost"`), not `"member-ghost"`
+- [ ] 4.3 Add test: unenrolled agent (no `enrolled_agents` key) on dashboard crew → `"bridge"`
+- [ ] 4.4 Add test: unenrolled agent on non-dashboard crew → `None` (headless)
 
 ## 5. Validation — Admiral validates (requires deploy + live crew)
 

@@ -630,7 +630,6 @@ try:
         _cron_has_enabled_job,
         _ensure_crew_running,
         _finish_crew_setup,
-        _GHOSTSHIP_PERSONAS,
         _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
@@ -718,7 +717,6 @@ except ModuleNotFoundError:
         _cron_has_enabled_job,
         _ensure_crew_running,
         _finish_crew_setup,
-        _GHOSTSHIP_PERSONAS,
         _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
@@ -3710,20 +3708,20 @@ def dispatch(
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
         slot: Dashboard session routing for this dispatch. One of:
-            ``None`` (default) — for enrolled Ghostship personas (ghost,
-            spectre, banshee, wraith, reaper, raven), routes into the agent's
+            ``None`` (default) — for enrolled agents, routes into the agent's
             member DM slot (``parent_session="dashboard:member-<slug>"``),
-            which is attested and visible in the dashboard as a named member
-            thread. For other agents, resolves to ``"bridge"`` if a dashboard
-            is active, else ``None`` (headless).
+            which is attested and visible in the dashboard as a named thread.
+            The echoed slot name is the agent name (e.g. ``"ghost"``). For
+            unenrolled agents, resolves to ``"bridge"`` if a dashboard is
+            active, else ``None`` (headless).
             ``"bridge"`` — tasks attach to the crew's shared ``"bridge"``
-            session. Note: bridge sessions are NOT attested — persona agents
+            session. Note: bridge sessions are NOT attested — enrolled agents
             dispatched here cannot make downstream spawn calls.
             ``True`` — auto-generate a unique slot name (``uuid4().hex[:8]``)
             per task; each task gets its own dedicated visible session. Note:
-            UUID slots are NOT attested for persona agents.
-            ``"member-<slug>"`` — equivalent to the default for enrolled
-            personas; explicitly routes into the named member DM slot.
+            UUID slots are NOT attested for enrolled agents.
+            ``"<agent-name>"`` — equivalent to the default for enrolled agents;
+            explicitly routes into the named member DM slot.
             ``"<name>"`` — attach to the named slot
             (``parent_session="dashboard:<name>"``); multiple dispatches with
             the same name share one session.

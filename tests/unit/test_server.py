@@ -441,7 +441,7 @@ class ModelOverrideTests(unittest.TestCase):
         ensure.assert_not_called()
         gateway.assert_not_called()
 class TaskOrchestrationTests(unittest.TestCase):
-    CREW = {"container": "gs-demo"}
+    CREW = {"container": "gs-demo", "enrolled_agents": ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]}
 
     def _steer_with_api(self, responses: list[dict], *, force: bool) -> tuple[dict, Mock]:
         with (

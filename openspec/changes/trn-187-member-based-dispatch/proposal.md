@@ -17,10 +17,11 @@ TRN-186 added a targeted fix; TRN-187 makes the architecture coherent.
   enrolled member DM slot (`member-<slug>`) instead of `bridge` or headless.
   Explicit `slot` values are still respected but log a warning if they bypass
   attestation (e.g. `slot="bridge"`, `slot=True` for persona agents).
-- **Remove** `slot="bridge"` auto-default for persona agents on dashboard crews —
-  bridge has no attestation and silently breaks spawning.
-- **Remove** `slot=True` (per-task UUID slots) for persona agents — UUID slots
-  are not member DM slots and also lack attestation.
+- **Remove** `_GHOSTSHIP_PERSONAS` hardcoded fallback — no backwards compatibility
+  with pre-TRN-186 crews needed.
+- **Simplify** slot naming: enrolled agents echo their agent name as the slot
+  (e.g. `"ghost"`) not `"member-ghost"` — the `member-` prefix is an internal
+  KiroCrew implementation detail, not user-facing.
 - **Extend** member enrollment (`_enroll_crew_members`) to cover all agents in
   the composition manifest dynamically — not just the 6 hardcoded spec-ops personas.
 - **Update** `dispatch()` MCP tool documentation: clarify that persona agents

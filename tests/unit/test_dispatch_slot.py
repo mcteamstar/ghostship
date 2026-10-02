@@ -33,9 +33,9 @@ _TRUE_SLOT_PS_RE = re.compile(r"^dashboard:[0-9a-f]{8}$")
 _TRUE_SLOT_NAME_RE = re.compile(r"^[0-9a-f]{8}$")
 
 # Crew fixture without dashboard (headless default)
-_CREW_NO_DASH = {"container": "gs-demo"}
+_CREW_NO_DASH = {"container": "gs-demo", "enrolled_agents": ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]}
 # Crew fixture with active dashboard (bridge default)
-_CREW_WITH_DASH = {"container": "gs-demo", "dashboard_port": 64058}
+_CREW_WITH_DASH = {"container": "gs-demo", "dashboard_port": 64058, "enrolled_agents": ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]}
 
 
 class DispatchSlotNoneTests(unittest.TestCase):
@@ -52,7 +52,7 @@ class DispatchSlotNoneTests(unittest.TestCase):
             result = server.dispatch("do work", agent="ghost", crew_id="demo", slot=None)
 
         self.assertEqual(result["task_id"], "task-1")
-        self.assertEqual(result["slot"], "member-ghost")
+        self.assertEqual(result["slot"], "ghost")
         body = api.call_args.kwargs["json"]
         self.assertEqual(body.get("parent_session"), "dashboard:member-ghost")
 
@@ -154,14 +154,14 @@ class DispatchSlotDefaultResolutionTests(unittest.TestCase):
     def test_dashboard_port_set_defaults_to_member_slot(self) -> None:
         """3.7 — dashboard_port present, persona agent → member DM slot (attested)."""
         result, api = self._dispatch_no_slot(_CREW_WITH_DASH)
-        self.assertEqual(result["slot"], "member-ghost")
+        self.assertEqual(result["slot"], "ghost")
         body = api.call_args.kwargs["json"]
         self.assertEqual(body["parent_session"], "dashboard:member-ghost")
 
     def test_no_dashboard_port_defaults_to_member_slot(self) -> None:
         """3.8 — no dashboard_port, persona agent → member DM slot (attested)."""
         result, api = self._dispatch_no_slot(_CREW_NO_DASH)
-        self.assertEqual(result["slot"], "member-ghost")
+        self.assertEqual(result["slot"], "ghost")
         body = api.call_args.kwargs["json"]
         self.assertEqual(body["parent_session"], "dashboard:member-ghost")
 
