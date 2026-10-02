@@ -957,8 +957,8 @@ fi
 sleep 1  # brief pause before first probe attempt
 echo ""
 echo "=== Health check ==="
-_max_wait=30
-_interval=2
+_max_wait=90
+_interval=3
 _ready=0
 # Transport has no host port (Caddy is the external listener). Probe via
 # podman exec so we don't need a host-side binding.
