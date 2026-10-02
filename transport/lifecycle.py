@@ -3101,8 +3101,14 @@ def _dispatch_batch(
         return {"error": str(e)}
 
     # Resolve effective slot: explicit arg > live dashboard check.
+    # For Ghostship personas with no explicit slot, always use the member DM
+    # slot — even on dashboard crews where the default would be "bridge".
+    # Bridge has no session attestation; member-<slug> does.
     if slot is None:
-        effective_slot: str | bool | None = "bridge" if crew.get("dashboard_port") else None
+        if agent in _GHOSTSHIP_PERSONAS:
+            effective_slot: str | bool | None = None  # member auto-route below
+        else:
+            effective_slot = "bridge" if crew.get("dashboard_port") else None
     else:
         effective_slot = slot
 
