@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.6.0
+
+### KiroCrew 0.6.0 → 0.7.2 upgrade (TRN-166, TRN-173)
+
+Crew base image bumped from `0.6.0` to `0.7.2`. KiroCrew 0.7.x tightened the spawn security model — internal spawns now require attested session identities, and several schema and config changes were needed:
+
+- `seed_kiro_db.py` updated for kiro-cli 2.24.0: 6 migration rows (versions 0–5), `state.value` changed from `BLOB` to `TEXT`, and removed `conversations`, `conversations_v2`, and `extracted_kas_versions` tables that no longer exist in 0.7.2.
+- `KC_BASE_IMAGE` wired through `install.sh` as a build-arg — single source of truth, no more separate config knob per build step.
+- Transport/Caddy readiness timeout increased to 90s; health probe gains an exec+curl fallback for remote deployments.
+- Auth polling fix: `launch` now polls the auth DB when login is pending — no longer requires `GET /login` to unblock the wait loop.
+
+### Captain-driven spawning restored (TRN-185, TRN-186, TRN-187)
+
+KiroCrew 0.7.0's attestation requirement broke the full Captain workflow (SDD, independent-review) — headless Raven tasks had no session identity and `/api/spawn` returned `member_identity_unavailable`. Fixed end-to-end:
+
+- **Persona enrollment (TRN-186)** — `_patch_crew_config()` now writes a `config.agents` section for all 6 composition personas at crew launch. `_enroll_crew_members()` calls `POST /api/members/{slug}/thread` for each agent after gateway-ready, creating a DM binding and a member session identity. `enrolled_agents` is persisted in the crew registry across all three launch paths (fresh, stale-config restart, reboot recovery).
+
+- **Member-based dispatch (TRN-187)** — `_resolve_dispatch_slot()` is the new unified helper for both single and batch dispatch. Enrolled persona agents automatically route into their `member-<slug>` parent session (attested identity), echoed back to the caller as the clean agent name (e.g. `"ghost"`, not `"member-ghost"`). Crews without `enrolled_agents` fall back to the previous bridge/headless behaviour.
+
+- **Raven attestation** — Raven's spawn curl updated to send `X-Session-Key: $KIRO_SESSION_ID`. Both `spec-driven-development.md` and `independent-review.md` order templates updated to match.
+
+### Dashboard auth hardening
+
+Bearer auth removed from crew UI paths (`/crews/*/ui`, WebSocket). `Caddy` forward-auth (`gs_session` cookie) is now the sole gate for dashboard access — bearer tokens are no longer needed or accepted on those paths. `_dispatch_public_route` in `auth.py` gains glob pattern matching to support the `/crews/*/ui` path shape.
+
+### New ACP backends
+
+- **Claude Code (TRN-167)** — Claude Code ACP backend support. Crew containers can now run Claude Code as the underlying agent runtime alongside kiro-cli.
+- **Codex (TRN-172)** — Codex ACP backend. `POST /logout/codex` returns 200 when already unauthenticated (idempotent).
+- **Claude subscription OAuth (TRN-170)** — OAuth login flow for Claude subscription accounts. Three Banshee review fixes applied post-implementation.
+- **Anthropic endpoint override (TRN-171)** — `GA_ANTHROPIC_BASE_URL` / per-agent override for custom Anthropic-compatible endpoints.
+
+### Codebase cleanup (TRN-174, TRN-175, TRN-176, TRN-177, TRN-178, TRN-179, TRN-180)
+
+- `KC_BASE_IMAGE` moved from module-level constant to `cfg.kc_base_image` (TRN-174)
+- `_validate_claude_api_key` deleted; `Config.validate()` is now a no-op (TRN-175)
+- Dead `inject-git-identity` code removed (TRN-176)
+- Stale `ga-net` migration shim and docstring references removed (TRN-177)
+- PTY login flow extracted to `_run_pty_login_flow` helper (TRN-178)
+- Dead `GA_PORTAL_ENABLED` branches removed from dashboard-auth and TLS specs (TRN-179)
+- `GA_DASHBOARD_PORT_RANGE_SIZE` env var wired into config (TRN-180)
+
+### Fixes
+
+- **Presigned URL auth (TRN-169)** — `/files/?sig=` paths now exempt from Caddy bearer check; previously a presigned download through the Caddy proxy was incorrectly rejected with 401.
+
+---
+
 ## v0.5.1
 
 ### evac pack=True
