@@ -26,9 +26,9 @@
 
 ## 5. Validation — Admiral validates (requires deploy + live crew)
 
-- [ ] 5.1 Run `bash tests/run.sh --unit` — all non-slow tests pass
-- [ ] 5.2 Deploy to academy, launch a crew with `dashboard=True`, dispatch a persona — confirm `slot: "<agent-name>"` (not `"member-<agent>"`, not `"bridge"`) in response
-- [ ] 5.3 Dispatch a persona from Raven via curl with `X-Session-Key: $KIRO_SESSION_ID` — confirm HTTP 200
+- [x] 5.1 Run `bash tests/run.sh --unit` — all non-slow tests pass
+- [x] 5.2 Deploy to academy, launch a crew with `dashboard=True`, dispatch a persona — confirm `slot: "<agent-name>"` (not `"member-<agent>"`, not `"bridge"`) in response
+- [x] 5.3 Dispatch a persona from Raven via curl with `X-Session-Key: $KIRO_SESSION_ID` — confirm HTTP 200
 
 ## 6. Commit
 
