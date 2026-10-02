@@ -398,6 +398,8 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
         """Serve a registered public route without any authentication check.
 
         Returns True if a public route handled the request.
+        Supports exact path keys and ``/crews/*/ui`` wildcard pattern
+        (crew UI paths are gated by Caddy's gs_session forward-auth, not bearer).
         """
         from starlette.requests import Request
 
@@ -407,6 +409,18 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             response = await public_handler(request)
             await response(scope, receive, send)
             return True
+
+        # Pattern match for /crews/{id}/ui[/{path}] — gated by Caddy forward-auth.
+        _path = scope["path"]
+        _parts = _path.lstrip("/").split("/")
+        if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":
+            ui_handler = self._public_routes.get(("GET", "/crews/*/ui"))
+            if ui_handler is not None:
+                request = Request(scope, receive)
+                response = await ui_handler(request)
+                await response(scope, receive, send)
+                return True
+
         return False
 
     async def _dispatch_file(self, scope, receive, send) -> bool:
