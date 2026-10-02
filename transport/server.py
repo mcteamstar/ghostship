@@ -630,6 +630,7 @@ try:
         _cron_has_enabled_job,
         _ensure_crew_running,
         _finish_crew_setup,
+        _GHOSTSHIP_PERSONAS,
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
@@ -716,6 +717,7 @@ except ModuleNotFoundError:
         _cron_has_enabled_job,
         _ensure_crew_running,
         _finish_crew_setup,
+        _GHOSTSHIP_PERSONAS,
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
@@ -3752,10 +3754,14 @@ def dispatch(
         return {"error": str(e)}
 
     # Resolve effective slot: explicit arg > live dashboard check.
-    # slot=None (default) → "bridge" if dashboard active, else None (headless).
-    # A string or True is taken as-is.
+    # For enrolled Ghostship personas, always route to the member DM slot —
+    # even on dashboard crews where the default would be "bridge". Bridge has
+    # no session attestation; member-<slug> does (TRN-186).
     if slot is None:
-        effective_slot: str | bool | None = "bridge" if crew.get("dashboard_port") else None
+        if agent in _GHOSTSHIP_PERSONAS:
+            effective_slot: str | bool | None = None  # member auto-route below
+        else:
+            effective_slot = "bridge" if crew.get("dashboard_port") else None
     else:
         effective_slot = slot
 
@@ -3786,6 +3792,10 @@ def dispatch(
             _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
         except Exception:
             pass  # non-fatal
+    elif effective_slot is None and agent in _GHOSTSHIP_PERSONAS:
+        # Route enrolled personas into their member DM slot for attestation.
+        resolved_slot_name = f"member-{agent}"
+        body["parent_session"] = f"dashboard:member-{agent}"
 
     try:
         result = _crew_api_with_recovery(
