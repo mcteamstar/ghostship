@@ -4297,12 +4297,10 @@ if __name__ == "__main__":
             ("POST", "/logout/codex"): _handle_codex_logout_post,
             ("GET",  "/health"): _handle_health,
             # Crew proxy routes — pattern keys used by BearerAuthMiddleware dispatch
-            ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
             ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
             ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
             ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
-            ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,
@@ -4311,6 +4309,11 @@ if __name__ == "__main__":
             ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
             ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
             ("GET",  "/openapi.json"): _handle_openapi_get,  # public, no auth
+            # Crew UI paths — protected by Caddy's gs_session forward-auth,
+            # not by bearer token. The transport never sees these requests
+            # without Caddy's forward-auth check having passed first.
+            ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
+            ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all
