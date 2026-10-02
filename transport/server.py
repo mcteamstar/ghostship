@@ -2323,21 +2323,42 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
     else:
         auth_b64 = _read_auth_file() or None
         if not KIRO_API_KEY and not auth_b64:
-            result = _initiate_login(podman)
-            if result.get("login_pending"):
+            # If a login is already in progress, poll the DB before giving up —
+            # the user may have just completed the device flow but GET /login
+            # hasn't been called yet to write the auth file.
+            with _lifecycle._login_pending_lock:
+                pending = _lifecycle._login_pending
+            if pending is not None:
+                try:
+                    auth_b64 = _read_auth_from_crew(podman, pending["container"]) or None
+                    if auth_b64:
+                        _write_auth_file(auth_b64)
+                        _nuke_login_container(podman, pending["container"])
+                        with _lifecycle._login_pending_lock:
+                            if (
+                                _lifecycle._login_pending is not None
+                                and _lifecycle._login_pending.get("container") == pending["container"]
+                            ):
+                                _lifecycle._login_pending = None
+                        logger.info("Auth completed via launch poll — login container cleaned up")
+                except Exception as e:
+                    logger.warning("Auth poll in launch failed: %s", e)
+            if not auth_b64:
+                result = _initiate_login(podman)
+                if result.get("login_pending"):
+                    return {
+                        "error": "not_authenticated",
+                        "login_pending": True,
+                        "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                    }
+                if "error" in result:
+                    return {"error": result["error"]}
                 return {
                     "error": "not_authenticated",
-                    "login_pending": True,
-                    "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                    "login_url": result.get("login_url"),
+                    "code": result.get("code"),
+                    "instructions": "Open login_url to authenticate, then call launch again.",
                 }
-            if "error" in result:
-                return {"error": result["error"]}
-            return {
-                "error": "not_authenticated",
-                "login_url": result.get("login_url"),
-                "code": result.get("code"),
-                "instructions": "Open login_url to authenticate, then call launch again.",
-            }
 
     with _registry_lock:
         reg = _load_registry()
