@@ -181,20 +181,36 @@ class CaddyPortal:
             ],
         }
 
-        handles = (
+        # The HTTP catch-all route keeps the existing forward_auth-then-proxy
+        # behaviour (or proxy-only when no API key is configured).
+        http_handles = (
             [forward_auth_handler, crew_proxy_handler]
             if self._api_key
             else [crew_proxy_handler]
         )
 
+        # TRN-189: WebSocket upgrades (Connection: Upgrade) must bypass
+        # forward_auth. Caddy's handle_response-based forward_auth fires its
+        # subrequest as a plain HTTP GET and discards the upgrade, so the WS
+        # handshake silently fails. A dedicated route matched on the
+        # Connection: Upgrade header proxies straight to the transport UI proxy
+        # (no forward_auth). This route is ordered BEFORE the catch-all so
+        # upgrades never fall through to the forward_auth path. No auth
+        # regression: reaching this port at all required the gs_session that
+        # forward_auth validated on the SPA's initial HTTP load, and the WS
+        # inherits that authenticated browser context.
+        ws_route = {
+            "match": [{"header": {"Connection": ["Upgrade"]}}],
+            "handle": [crew_proxy_handler],
+        }
+        http_route = {
+            "handle": http_handles,
+        }
+
         server_obj = {
             "@id": f"crew-{crew_id}",
             "listen": [f":{port}"],
-            "routes": [
-                {
-                    "handle": handles,
-                }
-            ],
+            "routes": [ws_route, http_route],
         }
 
         url = f"{_caddy_admin_url()}/config/apps/http/servers/crew-{crew_id}"
