@@ -3119,6 +3119,9 @@ def _dispatch_batch(
         if model is not None:
             body["model"] = model
         # Inject parent_session per task based on the effective slot.
+        # When no explicit slot is set but the agent is an enrolled Ghostship
+        # persona, route into its member DM slot so the gateway stamps
+        # KIROCREW_STUB_SESSION_TOKEN — required for spawn_run attestation.
         task_slot_name: str | None = None
         if effective_slot is True:
             task_slot_name = uuid.uuid4().hex[:8]
@@ -3130,6 +3133,8 @@ def _dispatch_batch(
                 pass
         elif shared_parent_session is not None:
             body["parent_session"] = shared_parent_session
+        elif effective_slot is None and agent in _GHOSTSHIP_PERSONAS:
+            body["parent_session"] = f"dashboard:member-{agent}"
 
         try:
             result = _crew_api_with_recovery(
