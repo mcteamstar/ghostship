@@ -784,7 +784,7 @@ def _ensure_crew_running(
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
-        _enroll_crew_members(podman, crew, crew_id)
+        _enroll_crew_members(crew, crew_id)
         _touch_crew(crew_id)
         _outcome = (True, None)
         return crew
@@ -1461,7 +1461,7 @@ def _reconcile_registry() -> None:
                         restored_crew = dict(info)
                         if new_cookie:
                             restored_crew["cookie"] = new_cookie
-                        _enroll_crew_members(podman, restored_crew, cid)
+                        _enroll_crew_members(restored_crew, cid)
                         try:
                             _reseed_crew_schedules(restored_crew, cid, info)
                         except Exception as e:
@@ -1623,7 +1623,7 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
 _GHOSTSHIP_PERSONAS = ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]
 
 
-def _enroll_crew_members(podman: PodmanClient, crew: dict, crew_id: str) -> None:
+def _enroll_crew_members(crew: dict, crew_id: str) -> None:
     """Create member DM thread bindings for all 6 Ghostship personas.
 
     Calls POST /api/members/{slug}/thread for each persona via the transport's
@@ -1645,7 +1645,7 @@ def _enroll_crew_members(podman: PodmanClient, crew: dict, crew_id: str) -> None
     """
     for slug in _GHOSTSHIP_PERSONAS:
         try:
-            _crew_api_with_recovery(podman, crew, crew_id, "POST", f"/api/members/{slug}/thread")
+            _crew_api_with_recovery(crew, crew_id, "POST", f"/api/members/{slug}/thread")
             logger.info("Member DM thread enrolled for %s on crew %s", slug, crew_id)
         except Exception as e:
             logger.warning("Member enrollment failed for %s on crew %s: %s", slug, crew_id, e)
@@ -1894,7 +1894,7 @@ def _finish_crew_setup(
         reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 
-    _enroll_crew_members(podman, crew_entry, crew_id)
+    _enroll_crew_members(crew_entry, crew_id)
     logger.info("Crew %s ready", crew_id)
     result = {
         "crew_id": crew_id,
