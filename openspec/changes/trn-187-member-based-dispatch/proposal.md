@@ -18,18 +18,16 @@ TRN-186 added a targeted fix; TRN-187 makes the architecture coherent.
   Explicit `slot` values are still respected but log a warning if they bypass
   attestation (e.g. `slot="bridge"`, `slot=True` for persona agents).
 - **Remove** `_GHOSTSHIP_PERSONAS` hardcoded fallback — no backwards compatibility
-  with pre-TRN-186 crews needed.
+  with pre-TRN-186 crews needed. Any crew without `enrolled_agents` in the
+  registry gets bridge/headless for all agents.
 - **Simplify** slot naming: enrolled agents echo their agent name as the slot
-  (e.g. `"ghost"`) not `"member-ghost"` — the `member-` prefix is an internal
-  KiroCrew implementation detail, not user-facing.
+  (e.g. `"ghost"`) not `"member-ghost"` — the `member-` prefix is a KiroCrew
+  internal detail, not user-facing.
 - **Extend** member enrollment (`_enroll_crew_members`) to cover all agents in
-  the composition manifest dynamically — not just the 6 hardcoded spec-ops personas.
-- **Update** `dispatch()` MCP tool documentation: clarify that persona agents
-  always route via member slots; `slot` controls only non-persona or explicit
-  overrides.
-- **Update** `_GHOSTSHIP_PERSONAS` to be derived from the active crew's enrolled
-  members at dispatch time rather than a hardcoded module-level frozenset, so
-  custom compositions work without code changes.
+  the composition manifest dynamically — not just a hardcoded list.
+- **Update** `dispatch()` MCP tool documentation: enrolled agents default to
+  their agent name as slot (attested member DM slot); explicit slot bypasses
+  attestation with a warning.
 
 ## Capabilities
 
@@ -48,9 +46,8 @@ TRN-186 added a targeted fix; TRN-187 makes the architecture coherent.
 
 ## Impact
 
-- `transport/server.py` — `dispatch()` slot resolution and parent_session injection
-- `transport/lifecycle.py` — `_dispatch_tasks()`, `_enroll_crew_members()`,
-  `_GHOSTSHIP_PERSONAS`, `_patch_crew_config()` agents dict
-- `transport/` tests — slot routing tests need updating
-- Ghostship MCP tool docs (`dispatch` tool description) — `slot` param semantics
+- `transport/server.py` — `dispatch()` uses `_resolve_dispatch_slot()`; slot docstring updated; `_GHOSTSHIP_PERSONAS` import removed
+- `transport/lifecycle.py` — `enrolled_agents` persisted in registry; `_resolve_dispatch_slot()` helper; `_dispatch_batch()` simplified; `_GHOSTSHIP_PERSONAS` removed from routing
+- `transport/` tests — fixtures get `enrolled_agents`; slot assertions updated for agent-name echo
+- `.claude-plugin/skills/ghostship-command/SKILL.md` — slot param description updated
 - No changes to KiroCrew, order templates, or agent specs

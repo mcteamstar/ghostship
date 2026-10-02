@@ -166,6 +166,36 @@ class DispatchSlotDefaultResolutionTests(unittest.TestCase):
         self.assertEqual(body["parent_session"], "dashboard:member-ghost")
 
 
+class DispatchSlotUnenrolledTests(unittest.TestCase):
+    """4.3/4.4 — unenrolled agents (no enrolled_agents key) fall back to bridge/headless."""
+
+    _CREW_NO_DASH_UNENROLLED = {"container": "gs-demo"}
+    _CREW_WITH_DASH_UNENROLLED = {"container": "gs-demo", "dashboard_port": 64058}
+
+    def _dispatch_unenrolled(self, crew: dict) -> tuple[dict, object]:
+        with (
+            patch.object(server, "_require_crew", return_value=crew),
+            patch.object(server, "_ensure_crew_running", return_value=crew),
+            patch.object(lifecycle, "_crew_api", return_value={"id": "task-u"}) as api,
+        ):
+            result = server.dispatch("do work", agent="ghost", crew_id="demo")
+        return result, api
+
+    def test_unenrolled_dashboard_crew_defaults_to_bridge(self) -> None:
+        """4.3 — unenrolled agent on dashboard crew → bridge (no attestation)."""
+        result, api = self._dispatch_unenrolled(self._CREW_WITH_DASH_UNENROLLED)
+        self.assertEqual(result["slot"], "bridge")
+        body = api.call_args.kwargs["json"]
+        self.assertEqual(body["parent_session"], "dashboard:bridge")
+
+    def test_unenrolled_non_dashboard_crew_is_headless(self) -> None:
+        """4.4 — unenrolled agent on non-dashboard crew → headless (no parent_session)."""
+        result, api = self._dispatch_unenrolled(self._CREW_NO_DASH_UNENROLLED)
+        self.assertIsNone(result["slot"])
+        body = api.call_args.kwargs["json"]
+        self.assertNotIn("parent_session", body)
+
+
 class DispatchSlotBatchTrueTests(unittest.TestCase):
     """3.9 — batch with slot=True gives each task a distinct parent_session."""
 
