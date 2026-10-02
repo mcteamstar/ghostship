@@ -784,7 +784,7 @@ def _ensure_crew_running(
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
-        _enroll_crew_members(crew, crew_id)
+        _enroll_crew_members(crew, crew_id, _deployed_agent_names(podman, crew["container"]))
         _touch_crew(crew_id)
         _outcome = (True, None)
         return crew
@@ -1461,7 +1461,7 @@ def _reconcile_registry() -> None:
                         restored_crew = dict(info)
                         if new_cookie:
                             restored_crew["cookie"] = new_cookie
-                        _enroll_crew_members(restored_crew, cid)
+                        _enroll_crew_members(restored_crew, cid, _deployed_agent_names(podman, container))
                         try:
                             _reseed_crew_schedules(restored_crew, cid, info)
                         except Exception as e:
@@ -1485,7 +1485,7 @@ def _reconcile_registry() -> None:
     logger.info("Registry reconciled. Live crews: %s", list(reg["crews"].keys()))
 
 
-def _patch_crew_config(podman: PodmanClient, container: str) -> None:
+def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> None:
     """Patch KiroCrew config while the container is running.
 
     The stopped-crew recovery path calls this immediately after a provisional
@@ -1578,6 +1578,10 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
     #                                  healthy sessions)
     #   telemetry.beacon_enabled = false — suppress outbound beacon on server
     #   auto_update = false        — prevent version drift in a pinned container
+    # Resolve which agents this composition deploys so config.agents entries
+    # are generated dynamically rather than hardcoded.
+    manifest_agents = _load_crew_manifest(composition_entry).get("agents", "*")
+
     full_overrides: dict[str, Any] = {
         "agent": agent_overrides,
         "stt": {"enabled": False},
@@ -1592,19 +1596,21 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         # default 2h (7200s) limit introduced in KiroCrew 0.7.0. Set to 4h so
         # multi-persona orchestration sessions are not cut off mid-flight.
         "orchestrator": {"max_plan_duration_seconds": 14400},
-        # Register Ghostship's 6 personas as named KiroCrew crew members so
-        # they receive KIROCREW_STUB_SESSION_TOKEN in their MCP server env.
-        # This enables spawn_run to carry X-Session-Token → passes attestation.
-        # memory_store: "default" means all personas share the crew's global
-        # memory store (no per-persona private V2 store needed for spawning).
+        # Register deployed agent files as named KiroCrew crew members so
+        # their sessions are treated as member DM threads (token-stamped).
+        # Derived from the Academy /agents directory (bind-mounted) filtered
+        # by the composition manifest — same source _copy_agents uses — so any
+        # composition's agents are enrolled, not just a hardcoded list.
         # Deep-merged over config.json — the "default" agent entry is preserved.
         "agents": {
-            "ghost":   {"kiro_agent": "ghost",   "memory_store": "default", "session_control": True, "member_dispatch": True},
-            "spectre": {"kiro_agent": "spectre", "memory_store": "default", "session_control": True, "member_dispatch": True},
-            "banshee": {"kiro_agent": "banshee", "memory_store": "default", "session_control": True, "member_dispatch": True},
-            "wraith":  {"kiro_agent": "wraith",  "memory_store": "default", "session_control": True, "member_dispatch": True},
-            "reaper":  {"kiro_agent": "reaper",  "memory_store": "default", "session_control": True, "member_dispatch": True},
-            "raven":   {"kiro_agent": "raven",   "memory_store": "default", "session_control": True, "member_dispatch": True},
+            af.stem: {
+                "kiro_agent": af.stem,
+                "memory_store": "default",
+                "session_control": True,
+                "member_dispatch": True,
+            }
+            for af in Path("/agents").glob("*.json")
+            if _manifest_selects(manifest_agents, af.name)
         },
     }
 
@@ -1620,30 +1626,34 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
-_GHOSTSHIP_PERSONAS = ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]
+def _deployed_agent_names(podman: PodmanClient, container: str) -> list[str]:
+    """Return the list of agent JSON filenames deployed in this crew container."""
+    try:
+        out = podman.container_exec(container, ["ls", KIRO_AGENTS_DIR])
+        return [n.strip() for n in out.splitlines() if n.strip().endswith(".json")]
+    except Exception as e:
+        logger.warning("Could not list deployed agents for %s: %s", container, e)
+        return []
 
 
-def _enroll_crew_members(crew: dict, crew_id: str) -> None:
-    """Create member DM thread bindings for all 6 Ghostship personas.
+def _enroll_crew_members(crew: dict, crew_id: str, agent_names: list[str]) -> None:
+    """Create member DM thread bindings for all agents deployed in this crew.
 
-    Calls POST /api/members/{slug}/thread for each persona via the transport's
-    owner dashboard cookie. This endpoint is idempotent (get-or-create): it
-    writes dm.json binding the slug to the crew member name and slot key.
+    Calls POST /api/members/{slug}/thread for each agent name (derived from
+    the copied agent JSON filenames, e.g. ["ghost.json", "raven.json"] →
+    slugs ["ghost", "raven"]). Idempotent get-or-create.
 
-    Once the binding exists, sessions opened on that slot are treated as member
-    DM threads. The gateway then stamps KIROCREW_STUB_SESSION_TOKEN into the
-    session's MCP server env, which is what enables spawn_run to carry
-    X-Session-Token and pass attestation (session_key_is_attested).
+    Once the binding exists, sessions opened on that slot are treated as
+    member DM threads. The gateway stamps KIROCREW_STUB_SESSION_TOKEN into
+    the session's MCP server env AND the session's $KIRO_SESSION_ID becomes
+    an attested key — allowing POST /api/spawn with X-Session-Key to pass
+    session_key_is_attested().
 
-    Must be called after _patch_crew_config (so config.agents entries exist
-    for the gateway to resolve the slug → member name mapping) and after
-    gateway-ready (so the cookie is fresh and the API is reachable).
-
-    Failures are logged but non-fatal — the crew still launches; persona
-    spawning will fall back to the member_identity_unavailable failure mode
-    for any unenrolled persona.
+    Must be called after _patch_crew_config and after gateway-ready.
+    Failures are logged but non-fatal.
     """
-    for slug in _GHOSTSHIP_PERSONAS:
+    slugs = [n.removesuffix(".json") for n in agent_names if n.endswith(".json")]
+    for slug in slugs:
         try:
             _crew_api_with_recovery(crew, crew_id, "POST", f"/api/members/{slug}/thread")
             logger.info("Member DM thread enrolled for %s on crew %s", slug, crew_id)
@@ -1814,7 +1824,7 @@ def _finish_crew_setup(
     policy_signing_key = secrets.token_hex(32)
 
     # depends on: gateway (pre-restart); gateway seeds config on first start
-    _patch_crew_config(podman, container)
+    _patch_crew_config(podman, container, composition_entry)
 
     # depends on: auth + admiral_secret + config all committed before workers start
     podman.container_stop(container)
@@ -1824,7 +1834,7 @@ def _finish_crew_setup(
         return {"error": f"Gateway did not recover after auth restart for crew {crew_id}"}
 
     # depends on: gateway (post-restart)
-    _copy_agents(podman, container, composition_entry)
+    copied_agents = _copy_agents(podman, container, composition_entry)
     # depends on: gateway (post-restart)
     _copy_skills(podman, container, composition_entry)
     # depends on: gateway (post-restart)
@@ -1894,7 +1904,7 @@ def _finish_crew_setup(
         reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 
-    _enroll_crew_members(crew_entry, crew_id)
+    _enroll_crew_members(crew_entry, crew_id, copied_agents)
     logger.info("Crew %s ready", crew_id)
     result = {
         "crew_id": crew_id,
