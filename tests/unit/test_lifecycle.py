@@ -2120,18 +2120,27 @@ class PatchCrewConfigTests(unittest.TestCase):
         return _json.loads(base64.b64decode(overrides_b64).decode())
 
     def test_patch_crew_config_sets_sandbox_off(self) -> None:
-        """sandbox must be 'off' -- without it every agent spawn fails under
-        rootless Podman because kiro-cli 0.5.0+ is fail-closed on the
-        MS_REMOUNT inside a user namespace.
+        """sandbox_allow_unsandboxed_exec must be True -- under Podman rootless
+        the kernel denies the MS_REMOUNT bind mount that kiro-cli 0.7.0+
+        requires to seal credential directories (EPERM inside a user namespace).
+        KiroCrew 0.7.0 replaced the broad ``sandbox: "off"`` with the more
+        targeted ``sandbox_allow_unsandboxed_exec: true`` escape hatch, which
+        skips only the failing bind-mount step while keeping other guards.
 
         The full_overrides dict nests agent keys under
         ``full_overrides["agent"]`` rather than at the top level."""
         overrides = self._call_patch_crew_config()
         agent = overrides.get("agent", {})
-        self.assertEqual(
-            agent.get("sandbox"),
-            "off",
-            f"Expected agent.sandbox='off' but got: {agent.get('sandbox')!r}",
+        self.assertIs(
+            agent.get("sandbox_allow_unsandboxed_exec"),
+            True,
+            f"Expected agent.sandbox_allow_unsandboxed_exec=True but got: "
+            f"{agent.get('sandbox_allow_unsandboxed_exec')!r}",
+        )
+        self.assertNotIn(
+            "sandbox",
+            agent,
+            "agent.sandbox should not be set — use sandbox_allow_unsandboxed_exec instead",
         )
 
     def test_patch_crew_config_sets_dangerously_skip_permissions(self) -> None:
@@ -2223,6 +2232,29 @@ class PatchCrewConfigTests(unittest.TestCase):
             overrides.get("auto_update"),
             False,
             f"Expected auto_update=False but got: {overrides.get('auto_update')!r}",
+        )
+
+    def test_patch_crew_config_sets_orchestrator_max_plan_duration(self) -> None:
+        """orchestrator.max_plan_duration_seconds must be >= 14400 (4h).
+
+        KiroCrew 0.7.0 introduced a default 2h (7200s) cap on plan duration.
+        Multi-persona SDD runs (Spectre → Ghost → Banshee → Reaper) can exceed
+        2h on large codebases, so we raise the ceiling to 4h at crew setup."""
+        overrides = self._call_patch_crew_config()
+        orchestrator = overrides.get("orchestrator", {})
+        self.assertIsNotNone(
+            orchestrator,
+            "Expected 'orchestrator' section in full_overrides but it was absent",
+        )
+        duration = orchestrator.get("max_plan_duration_seconds")
+        self.assertIsNotNone(
+            duration,
+            "Expected orchestrator.max_plan_duration_seconds to be set",
+        )
+        self.assertGreaterEqual(
+            duration,
+            14400,
+            f"Expected orchestrator.max_plan_duration_seconds >= 14400 but got: {duration!r}",
         )
 
 

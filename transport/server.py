@@ -2917,6 +2917,11 @@ def _captain_do_order(
                 "name": _CAPTAIN_CHECKIN_JOB_NAME,
                 "message": _CAPTAIN_CHECKIN_TASK,
                 "agent": "raven",
+                # Raven patrol is a low-cost polling cron — it reads mailboxes,
+                # assesses OpenSpec status, and dispatches worker personas without
+                # needing the full context bundle. minimal_context reduces token
+                # cost from ~55k to ~200 tokens per wake (KiroCrew 0.7.0+).
+                "minimal_context": True,
             }
             if cron:
                 body["cron"] = cron

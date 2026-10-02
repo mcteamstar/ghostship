@@ -1530,19 +1530,16 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         "reasoning_effort": "max",
         "subagent_timeout_secs": GA_SUBAGENT_TIMEOUT_SECS,
         "subagent_max_turns": GA_SUBAGENT_MAX_TURNS,
-        # ``sandbox="off"`` disables the kiro-cli inner namespace sandbox.
-        # The config key and value are not new — "off" has been valid since
-        # before 0.5.0. sandbox="auto" (the default since 0.6.0, and present
-        # in fail-closed form since 0.5.0) issues a MS_REMOUNT|MS_BIND|MS_RDONLY
-        # mount to seal credential directories read-only; kiro-cli calls
-        # sys.exit(rc=1) if that mount fails (fail-closed). Under Podman rootless
-        # the kernel denies the remount (errno EPERM — no seccomp allowance for
-        # MS_REMOUNT inside a user namespace), so every agent spawn fails with
-        # AcpRuntimeDead rc=1 unless this is set to "off".
-        # Setting "off" short-circuits detect_backend() to return "none", so the
-        # namespace sandbox setup (and the failing mount) are never attempted.
-        # The Podman container itself remains the OS-level isolation boundary.
-        "sandbox": "off",
+        # ``sandbox_allow_unsandboxed_exec=True`` is the correct rootless escape
+        # hatch introduced in KiroCrew 0.7.0. Podman rootless cannot perform
+        # user-namespace bind mounts (errno EPERM), so we must opt out of the
+        # inner namespace sandbox. In 0.7.0 the text-based credential gate was
+        # removed — bind masks are now the only fence — so the prior ``sandbox:
+        # "off"`` left no protection. ``sandbox_allow_unsandboxed_exec: true``
+        # is the explicit opt-in for hosts that cannot sandbox: it skips only
+        # the failing bind-mount step while keeping all other credential guards
+        # in place. The Podman container itself remains the OS-level boundary.
+        "sandbox_allow_unsandboxed_exec": True,
     }
     # When GA_CREW_ACP_BACKEND=claude, write acp_backend into the crew config so
     # the gateway routes agent spawns through the Claude Code ACP runtime rather
@@ -1589,6 +1586,10 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         },
         "telemetry": {"beacon_enabled": False},
         "auto_update": False,
+        # Long SDD runs (Spectre → Ghost → Banshee → Reaper) can exceed the
+        # default 2h (7200s) limit introduced in KiroCrew 0.7.0. Set to 4h so
+        # multi-persona orchestration sessions are not cut off mid-flight.
+        "orchestrator": {"max_plan_duration_seconds": 14400},
     }
 
     overrides_b64 = base64.b64encode(json.dumps(full_overrides).encode()).decode()

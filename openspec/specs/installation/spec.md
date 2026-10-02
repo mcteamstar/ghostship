@@ -475,3 +475,23 @@ The installed version SHALL be pinned (an exact version tag, not a floating rang
 #### Scenario: Config docs cover all new Codex env vars
 - **WHEN** an operator reads `docs/configuration.md`
 - **THEN** they find documented entries for `GA_INCLUDE_CODEX_AGENT`, the `"codex"` value of `GA_CREW_ACP_BACKEND`, `GA_CREW_OPENAI_API_KEY`, and `GA_CREW_OPENAI_BASE_URL`, each with its default, valid values, and any dependencies between them
+
+
+### Requirement: KiroCrew 0.7.x crew config options
+
+The crew config patch applied by the transport SHALL use `sandbox_allow_unsandboxed_exec: true` instead of `sandbox: "off"` for Podman rootless compatibility. It SHALL set `orchestrator.max_plan_duration_seconds` to a value above 7200 to accommodate long SDD runs. The Captain check-in cron SHALL include `minimal_context: true` to reduce token cost on low-overhead Raven patrols.
+
+#### Scenario: sandbox_allow_unsandboxed_exec set in crew config
+
+- **WHEN** the transport applies the crew config patch via `_patch_crew_config`
+- **THEN** `config.local.json` inside the crew contains `agent.sandbox_allow_unsandboxed_exec = true` and does NOT contain `agent.sandbox = "off"`
+
+#### Scenario: orchestrator.max_plan_duration_seconds set above 7200
+
+- **WHEN** the transport applies the crew config patch
+- **THEN** `config.local.json` inside the crew contains `orchestrator.max_plan_duration_seconds >= 14400` so that multi-persona SDD orchestration sessions are not cut off by the 0.7.0 default 2h limit
+
+#### Scenario: Raven patrol cron uses minimal_context
+
+- **WHEN** the transport creates the Captain check-in (Raven patrol) cron via the `/api/crons` endpoint
+- **THEN** the cron body includes `minimal_context: true`, reducing per-wake token cost from ~55k to ~200 tokens
