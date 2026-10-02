@@ -1590,6 +1590,20 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         # default 2h (7200s) limit introduced in KiroCrew 0.7.0. Set to 4h so
         # multi-persona orchestration sessions are not cut off mid-flight.
         "orchestrator": {"max_plan_duration_seconds": 14400},
+        # Register Ghostship's 6 personas as named KiroCrew crew members so
+        # they receive KIROCREW_STUB_SESSION_TOKEN in their MCP server env.
+        # This enables spawn_run to carry X-Session-Token → passes attestation.
+        # memory_store: "default" means all personas share the crew's global
+        # memory store (no per-persona private V2 store needed for spawning).
+        # Deep-merged over config.json — the "default" agent entry is preserved.
+        "agents": {
+            "ghost":   {"kiro_agent": "ghost",   "memory_store": "default", "session_control": True, "member_dispatch": True},
+            "spectre": {"kiro_agent": "spectre", "memory_store": "default", "session_control": True, "member_dispatch": True},
+            "banshee": {"kiro_agent": "banshee", "memory_store": "default", "session_control": True, "member_dispatch": True},
+            "wraith":  {"kiro_agent": "wraith",  "memory_store": "default", "session_control": True, "member_dispatch": True},
+            "reaper":  {"kiro_agent": "reaper",  "memory_store": "default", "session_control": True, "member_dispatch": True},
+            "raven":   {"kiro_agent": "raven",   "memory_store": "default", "session_control": True, "member_dispatch": True},
+        },
     }
 
     overrides_b64 = base64.b64encode(json.dumps(full_overrides).encode()).decode()

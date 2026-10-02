@@ -1,97 +1,141 @@
 # Design: TRN-186 Crew member registration
 
+## Background: how attestation actually works
+
+The research investigation (5 Wraith angles + consolidation, see
+`research/trn-186-consolidated-architecture.md`) confirmed the exact token
+flow and corrected several assumptions in the initial design.
+
+**Transport auth path:** The transport uses cookie auth (`mc_token_5476`),
+not `X-Internal-Secret`. It is a dashboard-owner caller, not an internal caller.
+This means the transport cannot directly obtain a session token — it has no
+`KIROCREW_STUB_SESSION_TOKEN` in its environment.
+
+**Why Raven's current spawns fail — confirmed chain:**
+1. Transport dispatches Raven via cookie auth → gateway does not stamp
+   `KIROCREW_STUB_SESSION_TOKEN` into Raven's MCP process env
+2. Raven calls curl `/api/spawn` → `KIROCREW_STUB_SESSION_TOKEN` absent →
+   `X-Session-Token` empty → `session_key_is_attested()` returns False → 409
+
+**Why `spawn_run` works where curl doesn't:**
+`mcp_tools/spawn.py` → `mcp_core._post()` → `_session_token_header()` reads
+`KIROCREW_STUB_SESSION_TOKEN` from the MCP process env and sends it as
+`X-Session-Token` alongside `X-Session-Key` and `X-Internal-Secret`. The MCP
+server process has the token in its env (stamped at session start by the
+gateway). Curl run from the shell tool inherits the same env, but curl would
+also need to construct `X-Session-Key` via HMAC lookup — `spawn_run` handles
+all of this transparently.
+
+**Critical unknown:** Does `config.agents` registration alone (no full
+`member_id` enrollment) cause the gateway to stamp `KIROCREW_STUB_SESSION_TOKEN`
+into the spawned process env? If not, a `_enroll_crew_members()` step is needed
+after gateway-ready (Phase 2b). The PoC (task 1.x) answers this definitively.
+
+---
+
 ## 1. config.agents entries
 
-`_patch_crew_config` will add this to `full_overrides` in `lifecycle.py`:
+`_patch_crew_config` adds this to `full_overrides` in `lifecycle.py`:
 
 ```python
 "agents": {
-    "ghost":   {"kiro_agent": "ghost",   "memory_store": "default", "model": "", "session_control": True, "member_dispatch": True},
-    "spectre": {"kiro_agent": "spectre", "memory_store": "default", "model": "", "session_control": True, "member_dispatch": True},
-    "banshee": {"kiro_agent": "banshee", "memory_store": "default", "model": "", "session_control": True, "member_dispatch": True},
-    "wraith":  {"kiro_agent": "wraith",  "memory_store": "default", "model": "", "session_control": True, "member_dispatch": True},
-    "reaper":  {"kiro_agent": "reaper",  "memory_store": "default", "model": "", "session_control": True, "member_dispatch": True},
-    "raven":   {"kiro_agent": "raven",   "memory_store": "default", "model": "", "session_control": True, "member_dispatch": True},
+    "ghost":   {"kiro_agent": "ghost",   "memory_store": "default", "session_control": True, "member_dispatch": True},
+    "spectre": {"kiro_agent": "spectre", "memory_store": "default", "session_control": True, "member_dispatch": True},
+    "banshee": {"kiro_agent": "banshee", "memory_store": "default", "session_control": True, "member_dispatch": True},
+    "wraith":  {"kiro_agent": "wraith",  "memory_store": "default", "session_control": True, "member_dispatch": True},
+    "reaper":  {"kiro_agent": "reaper",  "memory_store": "default", "session_control": True, "member_dispatch": True},
+    "raven":   {"kiro_agent": "raven",   "memory_store": "default", "session_control": True, "member_dispatch": True},
 }
 ```
 
-`kiro_agent` must match the filename in `/agents/` (without `.json`).
-KiroCrew's config loader reads agent specs from that directory keyed by name.
+`kiro_agent` matches the filename in `/agents/` (without `.json`). The gateway
+resolves agent specs from that directory keyed by name.
 
-## 2. spawn_run tool usage
+`config.local.json` is deep-merged over `config.json` by the gateway — the
+existing `"default"` agent entry is preserved. No clobbering risk.
 
-The `spawn_run` MCP tool signature (from KiroCrew's mcp_core.py):
+## 2. Optional: _enroll_crew_members() — Phase 2b
+
+If the PoC shows that `config.agents` alone does not cause the gateway to stamp
+`KIROCREW_STUB_SESSION_TOKEN` on the spawned process, add a post-gateway-ready
+enrollment step. This call is idempotent — `POST /api/agents` checks for an
+existing entry before creating.
+
+```python
+def _enroll_crew_members(podman: PodmanClient, crew: dict) -> None:
+    """Fully enroll each persona: allocates member_id + DM slot."""
+    for name in ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]:
+        try:
+            _crew_api(crew, "POST", "/api/agents", json={
+                "name": name,
+                "kiro_agent": name,
+                "memory_store": "default",
+            })
+        except Exception as e:
+            logger.warning("Member enrollment for %s failed: %s", name, e)
 ```
-spawn_run(task: str, agent: str = "", model: str = "", crew: str = "", ...)
+
+Called after `_wait_for_gateway_ready()` in the launch path.
+
+## 3. spawn_run tool usage
+
+The `spawn_run` MCP tool (from `mcp_tools/spawn.py`):
+```
+spawn_run(task: str, agent: str = "", model: str = "", ...)
 ```
 
-`agent` accepts a key from `config.agents`. So Raven dispatching Banshee becomes:
+`agent` accepts a key from `config.agents`. Raven dispatching Banshee:
 ```
 spawn_run(agent="banshee", task="REVIEW security <intent_id> <change> ...")
 ```
 
-This is attested because:
-1. Raven runs as a crew member → has `member_session_key`
-2. `KIROCREW_STUB_SESSION_TOKEN` is published to Raven's MCP server env
-3. `spawn_run` calls `/api/spawn` with `X-Session-Token` from env → passes `session_key_is_attested`
+Attestation chain:
+1. Raven's MCP server process has `KIROCREW_STUB_SESSION_TOKEN` in env
+2. `spawn_run` → `mcp_core._post()` → `_session_token_header()` reads it
+3. `/api/spawn` receives `X-Session-Token` + `X-Session-Key` + `X-Internal-Secret`
+4. `session_key_is_attested()` returns True → spawn proceeds
 
-## 3. Order template changes
+## 4. Order template changes
 
 ### spec-driven-development.md
-Replace the dispatch section. Current pattern:
-```bash
-SECRET=$(cat /home/kirocrew/.kiro/crew/.local_secret)
-curl -s -X POST http://localhost:5476/api/spawn \
-  -H "X-Internal-Secret: $SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"task": "SDD dispatch <intent_id> ...", "agent": "spectre", "parent_session": "..."}'
-```
-
-New pattern — instruct Raven to use the `spawn_run` tool directly:
+Remove all `curl -X POST .../api/spawn -H "X-Internal-Secret: ..."` dispatch
+blocks. Replace with `spawn_run` tool call instructions:
 ```
 Use the spawn_run tool: spawn_run(agent="spectre", task="SDD dispatch <intent_id> <change> ...")
 ```
 
-Remove all curl-based spawn instructions. Remove `X-Internal-Secret` references
-from dispatch sections. Keep the intent marker mail pattern (that uses shell/maildeliver,
-which is fine).
+Keep the intent-UUID idempotency pattern (maildeliver to Raven's mailbox before
+dispatching) — that is unaffected.
 
 ### independent-review.md
-Same replacement: `spawn_run(agent="wraith", task="REVIEW docs ...")` etc.
-
-## 4. Raven agent spec
-
-Add `spawn_run` to `allowedTools` in `academy/agents/raven.json`:
-```json
-"allowedTools": ["read", "grep", "glob", "shell", "spawn_run"]
+Same pattern:
+```
+spawn_run(agent="wraith", task="REVIEW docs <change> ...")
+spawn_run(agent="banshee", task="REVIEW security <change> ...")
 ```
 
-Update the prompt dispatch section: remove the curl-based `/api/spawn` instructions,
-replace with `spawn_run` tool call instructions.
+## 5. Raven agent spec
 
-## 5. Captain dispatch of Raven
+`academy/agents/raven.json`:
+- Add `"spawn_run"` to `allowedTools`
+- Remove curl-based `/api/spawn` dispatch instructions from prompt
+- Replace with `spawn_run` tool call instructions
+- Keep all REST API references for status/steer/continue — those don't
+  require attestation and still use `X-Internal-Secret` via curl fine
 
-The Captain's standing order currently dispatches Raven via the transport's
-external `POST /api/spawn`. That external dispatch still works (transport is
-attested). No change needed here — the Captain → transport → Raven path is fine.
-The fix is only needed for Raven → personas (the internal spawn chain).
+## 6. Captain dispatch of Raven — no change needed
 
-## Open questions
+The Captain dispatches Raven via the transport's external path. That path uses
+cookie auth and works. The transport → Raven spawn is not the broken step.
+The broken step is Raven → personas. No change to Captain order templates for
+the dispatch mechanism itself.
 
-1. Does `config.agents` in `config.local.json` merge with or replace the gateway's
-   own `config.agents` entries? Need to verify deep-merge behaviour doesn't
-   clobber the `default` agent entry.
-2. Does `kiro_agent` in `config.agents` accept a path or just a name? Verify
-   KiroCrew resolves it from the `/agents/` directory correctly.
-3. Does Raven need to be dispatched as a member DM session (not headless) for
-   `member_session_key` to be set? Or is registration in `config.agents` enough?
-   The Wraith research says the member DM thread is what sets `member_session_key`.
-   This may require the Captain to use the member DM path.
+## 7. What does NOT change
 
-## Risk: open question 3
-
-If Raven still needs to be dispatched via a member DM session (not headless),
-the Captain order template also needs updating to use the DM path. This is the
-most uncertain part. Recommend testing with a minimal proof-of-concept first:
-register one persona as a crew member and test if a headless dispatch of it
-gets an attested session.
+- Transport cookie-based auth (still correct for all lifecycle operations)
+- Intent-UUID idempotency pattern in order templates
+- Agent spec content (personality, capabilities) except `allowedTools` for raven
+- The 5 other `academy/agents/` JSON files
+- The attestation mechanism itself (no KiroCrew fork changes needed)
+- Status/steer/continue REST calls from Raven (curl with X-Internal-Secret is
+  fine for read operations — only spawn requires attestation)
