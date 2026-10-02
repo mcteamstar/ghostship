@@ -13,10 +13,11 @@
 # This is a build dependency, not a launchable composition — it is NOT
 # listed in crews/registry.json.
 #
-# Pinned to 0.7.2 semver tag — deterministic, conventionally stable.
-# When upstream releases a newer version, update this line and run install.sh
-# to rebuild.
-FROM ghcr.io/kirodotdev/kirocrew:0.7.2
+# Pinned semver tag — driven by KC_BASE_IMAGE build-arg from install.sh,
+# which reads it from ghostship.conf (KC_BASE_IMAGE env var).
+# Default here matches the config default so plain `podman build` still works.
+ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.7.2
+FROM ${KC_BASE_IMAGE}
 
 USER root
 
