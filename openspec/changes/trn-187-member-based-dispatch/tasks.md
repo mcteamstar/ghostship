@@ -15,6 +15,7 @@
 
 - [ ] 3.1 Update the `slot` parameter docstring in `server.py`'s `dispatch()` to document: persona agents default to their member DM slot; `slot="bridge"` bypasses attestation; `slot="member-<slug>"` is the explicit equivalent
 - [ ] 3.2 Update the `dispatch` tool description in the MCP tool registration to reflect new slot semantics
+- [ ] 3.3 Update the `dispatch` tool description in `.claude-plugin/skills/ghostship-command/SKILL.md` — the slot semantics change is Admiral-visible
 
 ## 4. Tests
 
@@ -22,7 +23,7 @@
 - [ ] 4.2 Add test: crew with `enrolled_agents` in registry routes custom agent to member slot
 - [ ] 4.3 Add test: crew without `enrolled_agents` falls back to `_GHOSTSHIP_PERSONAS`
 
-## 5. Validation
+## 5. Validation — Admiral validates (requires deploy + live crew)
 
 - [ ] 5.1 Run `bash tests/run.sh --unit` — all non-slow tests pass
 - [ ] 5.2 Deploy to academy, launch a crew with `dashboard=True`, dispatch a persona — confirm `slot: "member-<persona>"` in response

@@ -631,6 +631,7 @@ try:
         _ensure_crew_running,
         _finish_crew_setup,
         _GHOSTSHIP_PERSONAS,
+        _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
@@ -718,6 +719,7 @@ except ModuleNotFoundError:
         _ensure_crew_running,
         _finish_crew_setup,
         _GHOSTSHIP_PERSONAS,
+        _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
         _inject_auth,
@@ -3708,14 +3710,20 @@ def dispatch(
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
         slot: Dashboard session routing for this dispatch. One of:
-            ``None`` (default) — resolved at dispatch time from the crew's
-            ``dashboard_port``: ``"bridge"`` if a dashboard is active,
-            ``None`` (headless, no ``parent_session``) otherwise.
+            ``None`` (default) — for enrolled Ghostship personas (ghost,
+            spectre, banshee, wraith, reaper, raven), routes into the agent's
+            member DM slot (``parent_session="dashboard:member-<slug>"``),
+            which is attested and visible in the dashboard as a named member
+            thread. For other agents, resolves to ``"bridge"`` if a dashboard
+            is active, else ``None`` (headless).
             ``"bridge"`` — tasks attach to the crew's shared ``"bridge"``
-            session (``parent_session="dashboard:bridge"``); one command post
-            for the crew.
+            session. Note: bridge sessions are NOT attested — persona agents
+            dispatched here cannot make downstream spawn calls.
             ``True`` — auto-generate a unique slot name (``uuid4().hex[:8]``)
-            per task; each task gets its own dedicated visible session.
+            per task; each task gets its own dedicated visible session. Note:
+            UUID slots are NOT attested for persona agents.
+            ``"member-<slug>"`` — equivalent to the default for enrolled
+            personas; explicitly routes into the named member DM slot.
             ``"<name>"`` — attach to the named slot
             (``parent_session="dashboard:<name>"``); multiple dispatches with
             the same name share one session.
@@ -3753,49 +3761,31 @@ def dispatch(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    # Resolve effective slot: explicit arg > live dashboard check.
-    # For enrolled Ghostship personas, always route to the member DM slot —
-    # even on dashboard crews where the default would be "bridge". Bridge has
-    # no session attestation; member-<slug> does (TRN-186).
-    if slot is None:
-        if agent in _GHOSTSHIP_PERSONAS:
-            effective_slot: str | bool | None = None  # member auto-route below
-        else:
-            effective_slot = "bridge" if crew.get("dashboard_port") else None
-    else:
-        effective_slot = slot
+    effective_slot, parent_session = _resolve_dispatch_slot(agent, slot, crew)
 
     body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
     if model is not None:
         body["model"] = model
 
-    # Build parent_session from the effective slot and pre-create the dashboard
-    # session slot so it appears in the Sessions list. POST /api/chat/slots
-    # {"name": "<slot>"} materialises a visible session; a 409 means the slot
-    # already exists — treat as success. Non-fatal — parent_session routing
-    # still works via the dashboard: prefix even if slot creation fails.
-    parent_session: str | None = None
     resolved_slot_name: str | None = None
     if effective_slot is True:
-        resolved_slot_name = uuid.uuid4().hex[:8]
-        parent_session = f"dashboard:{resolved_slot_name}"
-        body["parent_session"] = parent_session
+        resolved_slot_name = parent_session.removeprefix("dashboard:") if parent_session else uuid.uuid4().hex[:8]
+        body["parent_session"] = f"dashboard:{resolved_slot_name}"
         try:
             _crew_api(crew, "POST", "/api/chat/slots", json={"name": resolved_slot_name})
         except Exception:
-            pass  # non-fatal
+            pass
     elif isinstance(effective_slot, str):
         resolved_slot_name = effective_slot
-        parent_session = f"dashboard:{effective_slot}"
-        body["parent_session"] = parent_session
+        body["parent_session"] = parent_session or f"dashboard:{effective_slot}"
         try:
             _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
         except Exception:
-            pass  # non-fatal
-    elif effective_slot is None and agent in _GHOSTSHIP_PERSONAS:
-        # Route enrolled personas into their member DM slot for attestation.
-        resolved_slot_name = f"member-{agent}"
-        body["parent_session"] = f"dashboard:member-{agent}"
+            pass
+    elif parent_session:
+        # Member DM auto-route (effective_slot is None)
+        resolved_slot_name = parent_session.removeprefix("dashboard:")
+        body["parent_session"] = parent_session
 
     try:
         result = _crew_api_with_recovery(

@@ -13,10 +13,10 @@ TRN-186 added a targeted fix; TRN-187 makes the architecture coherent.
 ## What Changes
 
 - **BREAKING** `slot` parameter semantics change for Ghostship persona agents:
-  instead of routing to a dashboard chat slot, persona agents are always
-  dispatched into their enrolled member DM slot (`member-<slug>`), regardless
-  of the `slot` argument. The `slot` argument is retained for non-persona agents
-  (e.g. custom agents) and for explicit overrides.
+  when no explicit slot is given, persona agents are dispatched into their
+  enrolled member DM slot (`member-<slug>`) instead of `bridge` or headless.
+  Explicit `slot` values are still respected but log a warning if they bypass
+  attestation (e.g. `slot="bridge"`, `slot=True` for persona agents).
 - **Remove** `slot="bridge"` auto-default for persona agents on dashboard crews —
   bridge has no attestation and silently breaks spawning.
 - **Remove** `slot=True` (per-task UUID slots) for persona agents — UUID slots

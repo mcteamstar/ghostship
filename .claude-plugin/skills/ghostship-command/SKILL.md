@@ -171,20 +171,26 @@ It outranks both the crew's per-agent model and `KC_MODEL_OVERRIDE` for this
 call, so `KC_MODEL_OVERRIDE` is not an absolute ceiling when a caller supplies
 `model=`.
 
-**Slot and memory cost:** each non-None slot spawns a `kiro-cli-chat` process
-(~300–400 MB RSS) inside the crew container. On dashboard crews the slot
-defaults to `"bridge"` — meaning every dispatch adds ~300–400 MB unless you
-override it. For autonomous tasks where browser visibility is not needed, pass
-`slot=None` explicitly to dispatch headless and avoid the overhead:
+**Slot and member routing:** Ghostship persona agents (ghost, spectre, banshee,
+wraith, reaper, raven) are enrolled as named crew members at launch. When
+dispatched with `slot=None` (the default), they automatically route into their
+member DM slot (`member-<slug>`), which is both attested (enables downstream
+spawning) and visible in the dashboard as a named member thread. No overhead
+unless the crew has a dashboard.
+
+Non-persona agents still default to `"bridge"` on dashboard crews. Passing
+an explicit `slot="bridge"` or `slot=True` for a persona agent is accepted but
+bypasses attestation — those agents cannot make downstream spawn calls.
 
 ```python
-dispatch(task="...", agent="ghost", crew_id="...", slot=None)   # headless — no slot process
-dispatch(task="...", agent="ghost", crew_id="...", slot="bridge")  # attaches to dashboard session
+dispatch(task="...", agent="ghost", crew_id="...")              # → member-ghost (attested)
+dispatch(task="...", agent="ghost", crew_id="...", slot=None)   # same — explicit headless override
+dispatch(task="...", agent="ghost", crew_id="...", slot="bridge")  # bridge (not attested)
 ```
 
-The rule of thumb: use `slot=None` for SDD, batch, Raven, and any
-long-running background work. Use `slot="bridge"` or `slot=True` only when
-you want to watch the task live in the browser dashboard.
+The rule of thumb: omit `slot` for persona agents — they handle routing
+automatically. Only set an explicit slot when you specifically want bridge or
+per-task UUID sessions (non-persona agents, or when you know what you're doing).
 
 The dispatched agent has **no context beyond `task`** — no memory of this
 conversation, no idea what you're trying to accomplish beyond what you wrote.

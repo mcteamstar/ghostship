@@ -52,9 +52,9 @@ class DispatchSlotNoneTests(unittest.TestCase):
             result = server.dispatch("do work", agent="ghost", crew_id="demo", slot=None)
 
         self.assertEqual(result["task_id"], "task-1")
-        self.assertIsNone(result["slot"])
+        self.assertEqual(result["slot"], "member-ghost")
         body = api.call_args.kwargs["json"]
-        self.assertNotIn("parent_session", body)
+        self.assertEqual(body.get("parent_session"), "dashboard:member-ghost")
 
 
 class DispatchSlotBridgeTests(unittest.TestCase):
@@ -151,19 +151,19 @@ class DispatchSlotDefaultResolutionTests(unittest.TestCase):
             result = server.dispatch("do work", agent="ghost", crew_id="demo")
         return result, api
 
-    def test_dashboard_port_set_defaults_to_bridge(self) -> None:
-        """3.7 — dashboard_port present → effective slot "bridge"."""
+    def test_dashboard_port_set_defaults_to_member_slot(self) -> None:
+        """3.7 — dashboard_port present, persona agent → member DM slot (attested)."""
         result, api = self._dispatch_no_slot(_CREW_WITH_DASH)
-        self.assertEqual(result["slot"], "bridge")
+        self.assertEqual(result["slot"], "member-ghost")
         body = api.call_args.kwargs["json"]
-        self.assertEqual(body["parent_session"], "dashboard:bridge")
+        self.assertEqual(body["parent_session"], "dashboard:member-ghost")
 
-    def test_no_dashboard_port_defaults_to_null(self) -> None:
-        """3.8 — no dashboard_port → effective slot null (headless)."""
+    def test_no_dashboard_port_defaults_to_member_slot(self) -> None:
+        """3.8 — no dashboard_port, persona agent → member DM slot (attested)."""
         result, api = self._dispatch_no_slot(_CREW_NO_DASH)
-        self.assertIsNone(result["slot"])
+        self.assertEqual(result["slot"], "member-ghost")
         body = api.call_args.kwargs["json"]
-        self.assertNotIn("parent_session", body)
+        self.assertEqual(body["parent_session"], "dashboard:member-ghost")
 
 
 class DispatchSlotBatchTrueTests(unittest.TestCase):

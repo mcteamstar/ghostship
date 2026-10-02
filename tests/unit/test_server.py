@@ -465,7 +465,8 @@ class TaskOrchestrationTests(unittest.TestCase):
             self.CREW,
             "POST",
             "/api/spawn",
-            json={"task": "do work", "agent": "ghost", "keep": True},
+            json={"task": "do work", "agent": "ghost", "keep": True,
+                  "parent_session": "dashboard:member-ghost"},
         )
 
     def test_force_steer_deletes_before_continuing_a_running_task(self) -> None:

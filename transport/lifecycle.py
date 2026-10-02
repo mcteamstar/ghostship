@@ -784,7 +784,15 @@ def _ensure_crew_running(
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
-        _enroll_crew_members(crew, crew_id, _deployed_agent_names(podman, crew["container"]))
+        deployed = _deployed_agent_names(podman, crew["container"])
+        _enroll_crew_members(crew, crew_id, deployed)
+        with _registry_lock:
+            reg = _load_registry()
+            if crew_id in reg["crews"]:
+                reg["crews"][crew_id]["enrolled_agents"] = [
+                    n.removesuffix(".json") for n in deployed
+                ]
+                _save_registry(reg)
         _touch_crew(crew_id)
         _outcome = (True, None)
         return crew
@@ -1461,7 +1469,11 @@ def _reconcile_registry() -> None:
                         restored_crew = dict(info)
                         if new_cookie:
                             restored_crew["cookie"] = new_cookie
-                        _enroll_crew_members(restored_crew, cid, _deployed_agent_names(podman, container))
+                        deployed = _deployed_agent_names(podman, container)
+                        _enroll_crew_members(restored_crew, cid, deployed)
+                        updates[cid]["enrolled_agents"] = [
+                            n.removesuffix(".json") for n in deployed
+                        ]
                         try:
                             _reseed_crew_schedules(restored_crew, cid, info)
                         except Exception as e:
@@ -1628,10 +1640,48 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
 
 # Default set of enrolled Ghostship persona slugs used for dispatch slot routing.
 # Dispatch needs a fast answer at call time (no container access), so this list
-# covers the standard spec-ops composition. Custom agents added to other
-# compositions are enrolled at launch but won't auto-route via member slots
-# unless explicitly passed as slot="member-<slug>" — that's tracked in TRN-187.
+# covers the standard spec-ops composition. Crews launched after TRN-187 store
+# enrolled_agents in the registry and that takes precedence.
 _GHOSTSHIP_PERSONAS = frozenset(["ghost", "spectre", "banshee", "wraith", "reaper", "raven"])
+
+
+def _resolve_dispatch_slot(
+    agent: str,
+    slot: str | bool | None,
+    crew: dict,
+) -> tuple[str | bool | None, str | None]:
+    """Resolve the effective slot and parent_session for a dispatch.
+
+    Returns (effective_slot, parent_session).
+
+    For enrolled persona agents with no explicit slot: routes to
+    ``member-<slug>`` (attested, dashboard-visible as a named member thread).
+    For other agents with no explicit slot: ``"bridge"`` if the crew has a
+    dashboard port, else ``None`` (headless).
+    Explicit ``slot`` values are always honoured — caller opted in.
+    """
+    enrolled: frozenset[str] = frozenset(
+        crew.get("enrolled_agents") or []
+    ) or _GHOSTSHIP_PERSONAS
+    if slot is None and agent in enrolled:
+        return None, f"dashboard:member-{agent}"
+    if slot is None:
+        if crew.get("dashboard_port"):
+            return "bridge", "dashboard:bridge"
+        return None, None
+    if slot is True:
+        slug = uuid.uuid4().hex[:8]
+        if agent in enrolled:
+            logger.warning(
+                "dispatch: slot=True for enrolled persona %r bypasses attestation", agent
+            )
+        return True, f"dashboard:{slug}"
+    # Explicit string slot
+    if agent in enrolled and slot not in (f"member-{agent}",):
+        logger.warning(
+            "dispatch: explicit slot=%r for enrolled persona %r bypasses attestation", slot, agent
+        )
+    return slot, f"dashboard:{slot}"
 
 
 def _deployed_agent_names(podman: PodmanClient, container: str) -> list[str]:
@@ -1905,6 +1955,9 @@ def _finish_crew_setup(
             # ACP backend used for this crew — "kiro" (default) or "claude".
             # Persisted so crews() can surface it per crew without re-reading config.
             "acp_backend": GA_CREW_ACP_BACKEND,
+            # Enrolled agent slugs — used by dispatch slot routing to auto-route
+            # to member DM slots. Populated from _copy_agents at launch.
+            "enrolled_agents": [n.removesuffix(".json") for n in copied_agents],
         }
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
@@ -3108,28 +3161,22 @@ def _dispatch_batch(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    # Resolve effective slot: explicit arg > live dashboard check.
-    # For Ghostship personas with no explicit slot, always use the member DM
-    # slot — even on dashboard crews where the default would be "bridge".
-    # Bridge has no session attestation; member-<slug> does.
-    if slot is None:
-        if agent in _GHOSTSHIP_PERSONAS:
-            effective_slot: str | bool | None = None  # member auto-route below
-        else:
-            effective_slot = "bridge" if crew.get("dashboard_port") else None
-    else:
-        effective_slot = slot
+    # Resolve effective slot and shared parent_session using the unified helper.
+    effective_slot, resolved_parent_session = _resolve_dispatch_slot(agent, slot, crew)
 
     # For a string slot, all tasks share the same parent_session; pre-create
     # the dashboard session slot once before the loop (409 = already exists,
     # treat as success). Non-fatal.
     shared_parent_session: str | None = None
-    if isinstance(effective_slot, str):
-        shared_parent_session = f"dashboard:{effective_slot}"
+    if isinstance(effective_slot, str) and resolved_parent_session:
+        shared_parent_session = resolved_parent_session
         try:
             _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
         except Exception:
             pass
+    elif effective_slot is None and resolved_parent_session:
+        # Member DM slot auto-route — shared across all tasks in the batch.
+        shared_parent_session = resolved_parent_session
 
     batch_id = str(uuid.uuid4())
     task_ids: list[str] = []
@@ -3142,23 +3189,18 @@ def _dispatch_batch(
         body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
         if model is not None:
             body["model"] = model
-        # Inject parent_session per task based on the effective slot.
-        # When no explicit slot is set but the agent is an enrolled Ghostship
-        # persona, route into its member DM slot so the gateway stamps
-        # KIROCREW_STUB_SESSION_TOKEN — required for spawn_run attestation.
         task_slot_name: str | None = None
         if effective_slot is True:
-            task_slot_name = uuid.uuid4().hex[:8]
+            # Per-task UUID slot from _resolve_dispatch_slot; generate fresh per task.
+            _, ps = _resolve_dispatch_slot(agent, True, crew)
+            task_slot_name = ps.removeprefix("dashboard:") if ps else uuid.uuid4().hex[:8]
             body["parent_session"] = f"dashboard:{task_slot_name}"
-            # Pre-create the per-task session slot. Non-fatal.
             try:
                 _crew_api(crew, "POST", "/api/chat/slots", json={"name": task_slot_name})
             except Exception:
                 pass
         elif shared_parent_session is not None:
             body["parent_session"] = shared_parent_session
-        elif effective_slot is None and agent in _GHOSTSHIP_PERSONAS:
-            body["parent_session"] = f"dashboard:member-{agent}"
 
         try:
             result = _crew_api_with_recovery(
