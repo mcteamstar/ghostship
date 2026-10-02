@@ -784,7 +784,8 @@ def _ensure_crew_running(
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
-            _touch_crew(crew_id)
+        _enroll_crew_members(podman, crew, crew_id)
+        _touch_crew(crew_id)
         _outcome = (True, None)
         return crew
     except Exception as exc:
@@ -1460,6 +1461,7 @@ def _reconcile_registry() -> None:
                         restored_crew = dict(info)
                         if new_cookie:
                             restored_crew["cookie"] = new_cookie
+                        _enroll_crew_members(podman, restored_crew, cid)
                         try:
                             _reseed_crew_schedules(restored_crew, cid, info)
                         except Exception as e:
@@ -1616,6 +1618,37 @@ def _patch_crew_config(podman: PodmanClient, container: str) -> None:
         logger.info("Config patch for %s: %s", container, result.strip())
     except Exception as e:
         logger.warning("Config patch failed for %s: %s", container, e)
+
+
+_GHOSTSHIP_PERSONAS = ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]
+
+
+def _enroll_crew_members(podman: PodmanClient, crew: dict, crew_id: str) -> None:
+    """Create member DM thread bindings for all 6 Ghostship personas.
+
+    Calls POST /api/members/{slug}/thread for each persona via the transport's
+    owner dashboard cookie. This endpoint is idempotent (get-or-create): it
+    writes dm.json binding the slug to the crew member name and slot key.
+
+    Once the binding exists, sessions opened on that slot are treated as member
+    DM threads. The gateway then stamps KIROCREW_STUB_SESSION_TOKEN into the
+    session's MCP server env, which is what enables spawn_run to carry
+    X-Session-Token and pass attestation (session_key_is_attested).
+
+    Must be called after _patch_crew_config (so config.agents entries exist
+    for the gateway to resolve the slug → member name mapping) and after
+    gateway-ready (so the cookie is fresh and the API is reachable).
+
+    Failures are logged but non-fatal — the crew still launches; persona
+    spawning will fall back to the member_identity_unavailable failure mode
+    for any unenrolled persona.
+    """
+    for slug in _GHOSTSHIP_PERSONAS:
+        try:
+            _crew_api_with_recovery(podman, crew, crew_id, "POST", f"/api/members/{slug}/thread")
+            logger.info("Member DM thread enrolled for %s on crew %s", slug, crew_id)
+        except Exception as e:
+            logger.warning("Member enrollment failed for %s on crew %s: %s", slug, crew_id, e)
 
 
 def _inject_policy(
@@ -1861,6 +1894,7 @@ def _finish_crew_setup(
         reg["crews"][crew_id] = crew_entry
         _save_registry(reg)
 
+    _enroll_crew_members(podman, crew_entry, crew_id)
     logger.info("Crew %s ready", crew_id)
     result = {
         "crew_id": crew_id,

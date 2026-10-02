@@ -12,7 +12,7 @@ Run an independent multi-angle review. Each reviewer works directly from the cod
 
 ## Dispatch phase
 
-On the first check-in, dispatch all four reviewers concurrently. Use the standard intent/idempotency protocol for each dispatch — write a pending intent marker to `raven@localhost` before calling `/api/spawn`, then confirm with the spawn task ID.
+On the first check-in, dispatch all four reviewers concurrently. Use the standard intent/idempotency protocol for each dispatch — write a pending intent marker to `raven@localhost` before calling `spawn_run`, then confirm with the spawn task ID returned by `spawn_run`.
 
 Use distinct task description prefixes so three concurrent Banshee tasks can be tracked without false-positive duplicate detection:
 
