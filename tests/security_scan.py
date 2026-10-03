@@ -22,7 +22,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 # Directories/files never scanned (fixtures, docs, this scanner, VCS).
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".github"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".github", ".venv"}
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".lock"}
 
 # Placeholder markers that make a match a non-secret by construction.

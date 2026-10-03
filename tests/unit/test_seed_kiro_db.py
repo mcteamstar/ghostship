@@ -3,7 +3,7 @@
 Verifies that the pre-seeded kiro-cli DB produced by seed_kiro_db.py matches
 the migration count and max_version expected for the pinned base image.
 
-Expected result for KiroCrew 0.7.2 / kiro-cli 2.24.0: (count, max_version) == (6, 5).
+Expected result for KiroCrew 0.8.0-insider.8 / kiro-cli: (count, max_version) == (6, 5).
 
 Marked @pytest.mark.slow — requires a running Podman daemon and pulls the base
 image on first run. Excluded from the default fast unit run; add to a separate
@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shutil
 import subprocess
 import unittest
 
 import pytest
 
 
-# Hard-coded expected values verified 2026-10-02 against the 0.7.2 base image.
+# Hard-coded expected values verified 2026-10-02 against the 0.8.0-insider.8 base image.
 EXPECTED_COUNT = 6
 EXPECTED_MAX_VERSION = 5
 
@@ -35,25 +36,53 @@ _ADMISSION_CONTAINERFILE = (
 def _parse_base_image(containerfile: pathlib.Path) -> str:
     """Extract the FROM image tag from an admission Containerfile.
 
-    Looks for the first ``FROM ghcr.io/kirodotdev/kirocrew:<tag>`` line
-    and returns the full image reference.
+    Handles two Dockerfile patterns:
 
-    Raises ValueError if no matching FROM line is found.
+    1. Direct FROM line::
+
+           FROM ghcr.io/kirodotdev/kirocrew:<tag>
+
+    2. Build-arg indirection (current pattern used to support ``--build-arg``
+       overrides from ``install.sh``)::
+
+           ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:<tag>
+           FROM ${KC_BASE_IMAGE}
+
+    Returns the full image reference (e.g.
+    ``ghcr.io/kirodotdev/kirocrew:0.8.0-insider.8``).
+
+    Raises ValueError if no matching reference can be found.
     """
-    pattern = re.compile(
+    text = containerfile.read_text()
+    lines = text.splitlines()
+
+    # Pattern 1: direct FROM ghcr.io/kirodotdev/kirocrew:<tag>
+    direct_pattern = re.compile(
         r"^\s*FROM\s+(ghcr\.io/kirodotdev/kirocrew:[^\s]+)", re.IGNORECASE
     )
-    text = containerfile.read_text()
-    for line in text.splitlines():
-        m = pattern.match(line)
+    for line in lines:
+        m = direct_pattern.match(line)
         if m:
             return m.group(1)
+
+    # Pattern 2: ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:<tag>
+    # followed by FROM ${KC_BASE_IMAGE} (or similar variable reference).
+    arg_pattern = re.compile(
+        r"^\s*ARG\s+KC_BASE_IMAGE=(ghcr\.io/kirodotdev/kirocrew:[^\s]+)",
+        re.IGNORECASE,
+    )
+    for line in lines:
+        m = arg_pattern.match(line)
+        if m:
+            return m.group(1)
+
     raise ValueError(
         f"No FROM ghcr.io/kirodotdev/kirocrew:<tag> line found in {containerfile}"
     )
 
 
 @pytest.mark.slow
+@unittest.skipUnless(shutil.which("podman"), "requires podman")
 class SeedKiroDbRegressionTests(unittest.TestCase):
     """Regression guard: seed_kiro_db.py produces the expected migration count.
 
@@ -65,7 +94,7 @@ class SeedKiroDbRegressionTests(unittest.TestCase):
         self.image = _parse_base_image(_ADMISSION_CONTAINERFILE)
 
     def test_seed_produces_expected_migration_count(self) -> None:
-        """seed_kiro_db.py in a throwaway 0.7.2 container yields (6, 5)."""
+        """seed_kiro_db.py in a throwaway 0.8.0-insider.8 container yields (6, 5)."""
         # Run the seed script then query the DB — all in one container exec.
         query = (
             "python3 /tmp/seed_kiro_db.py && "

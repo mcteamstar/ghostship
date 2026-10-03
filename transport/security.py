@@ -454,7 +454,9 @@ def encode_url_component(value: str) -> str:
 
 # ── Security response headers (transport-security) ────────────────────────────
 
-# CSP intentionally starts in report-only during staged rollout (task 3.2/3.5).
+# CSP defaults to report-only when csp_report_only=True (the parameter default).
+# In production server.py passes csp_enforce=True → csp_report_only=False, so
+# the Content-Security-Policy header is enforced, not report-only, at runtime.
 DEFAULT_CSP = "default-src 'self'; frame-ancestors 'none'; object-src 'none'"
 DEFAULT_HSTS = "max-age=63072000; includeSubDomains"
 

@@ -108,7 +108,7 @@ for category in "${SELECTED_CATEGORIES[@]}"; do
   case "$category" in
     unit)
       run_category unit \
-        python3 -m pytest tests/unit
+        python3 -m pytest tests/unit -m "not slow"
       ;;
     integration)
       run_category integration run_integration
