@@ -1,38 +1,32 @@
 # TRN-191 Tasks
 
-## 1. Fix `_patch_crew_config` in `transport/lifecycle.py`
+## 1. Fix WS dispatch in `transport/auth.py`
 
-- [ ] 1.1 Confirm `CREW_CONTAINER_PREFIX` and `CREW_GATEWAY_PORT` are reachable
-  in `lifecycle.py` (module-level constants in `server.py`); import them or
-  pass the composed value in rather than re-declaring literals
-- [ ] 1.2 In `_patch_crew_config`, add `dashboard.url` to the config patch dict:
-  ```python
-  "dashboard": {"url": f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"}
-  ```
-- [ ] 1.3 Verify deep-merge precedence: confirm `config.local.json` overrides
-  `config.json` (local-over-base), so unconditionally setting `dashboard.url`
-  here is correct and no "only if unset" guard is needed
+- [x] 1.1 `BearerAuthMiddleware.__call__`: look up WS handler in `_public_routes`
+  first, falling back to `_routes` — the handler is registered in public_routes
+  (Caddy's gs_session is the gate, not bearer)
+- [x] 1.2 Add unit test asserting WS handler from `public_routes` is invoked
+  (not downstream): `test_ws_crew_ui_dispatches_from_public_routes`
 
-## 2. Update dashboard-proxy spec
+## 2. Fix upstream WS Origin header in `transport/server.py`
 
-- [ ] 2.1 Ensure the delta at
-  `openspec/changes/trn-191-ws-dashboard-url-origin/specs/transport/dashboard-proxy/spec.md`
-  documents the new requirement: patched `config.local.json` carries
-  `dashboard.url`; the gateway's `allowed_origins` includes
-  `http://gs-{crew_id}:5476`; the proxied WS `Origin` is accepted (101); the
-  external-origin exclusion still holds
+- [x] 2.1 Change `crew_origin` from `http://gs-{crew_id}:5476` to
+  `http://localhost:{CREW_GATEWAY_PORT}` — always in the gateway's
+  `allowed_origins` regardless of config
 
-## 3. Tests
+## 3. Revert ineffective v1 approach
 
-- [ ] 3.1 Add a unit test asserting `_patch_crew_config` output includes
-  `dashboard.url` == `http://gs-{crew_id}:5476` (exact string match)
-- [ ] 3.2 Run the full unit test suite and confirm it passes
+- [x] 3.1 Remove `dashboard.url` from `_patch_crew_config` in `lifecycle.py`
+  (KiroCrew ignores it without token auth middleware active)
+- [x] 3.2 Remove stale `test_trn191_dashboard_url_origin.py` test file
 
-## 4. Deploy and validate
+## 4. Update specs
 
-- [ ] 4.1 Deploy the updated transport to academy
-- [ ] 4.2 Launch a new crew with `dashboard=True`
-- [ ] 4.3 Open the dashboard in a browser; confirm WS connects — devtools shows
-  `101 Switching Protocols` on `ws://host:port/api/ws` (not 403)
-- [ ] 4.4 Confirm the sessions list loads and live updates work
-- [ ] 4.5 Confirm the import modal can be dismissed normally
+- [x] 4.1 Update `openspec/specs/transport/dashboard-proxy/spec.md` WS scenario
+  to document the correct Origin value and dispatch path
+
+## 5. Deploy and validate
+
+- [x] 5.1 Deploy to academy
+- [x] 5.2 Launch authenticated crew with dashboard=True
+- [x] 5.3 Browser confirms 101 on ws://{host}:{port}/api/ws, sessions list loads

@@ -1,59 +1,52 @@
-# TRN-191 — WebSocket 403: set dashboard.url in crew config so gateway allows proxied WS origin
+# TRN-191 — WebSocket 403: fix WS dispatch and upstream Origin header
 
 ## Problem
 
-After TRN-189 (Caddy WS forward_auth fix), WebSocket upgrades now reach the
-KiroCrew gateway but are rejected with 403: `WebSocket origin not allowed`.
-HTTP requests through the same cookie-injection path return 200 — the failure
-is WS-specific.
+After TRN-189 (Caddy WS forward_auth fix), WebSocket upgrades still returned
+403 through the dashboard. Two bugs remained:
 
-## Root cause
+1. `BearerAuthMiddleware` in `auth.py` dispatched WS upgrades for
+   `/crews/*/ui` paths by looking up the handler in `_routes` — the
+   bearer-protected dict. The WS handler is registered in `_public_routes`
+   (gated by Caddy's `gs_session`, not bearer). Handler was always `None` →
+   fell through to downstream → 403. This was the root cause.
 
-KiroCrew's WS handler calls `_check_ws_origin` → `check_origin(request,
-require=True)`, which validates the `Origin` header against
-`app["allowed_origins"]`. That set is built at gateway startup from
-`dashboard.url` in the crew config.
+2. The transport's WS proxy sent `Origin: http://gs-{crew_id}:5476`
+   (the container hostname). KiroCrew's `build_allowed_origins()` always
+   includes `http://localhost:{port}` and `http://127.0.0.1:{port}`
+   unconditionally, but only adds `dashboard_url` origins when token auth
+   middleware is active — which Ghostship's gateway does not use. So the
+   container hostname origin was always rejected.
 
-Ghostship does not set `dashboard.url` in `config.local.json` at crew launch —
-it is left as the KiroCrew default (empty string). With no configured URL,
-`build_allowed_origins` falls back to loopback-only:
+## Fix
 
-```
-{"http://localhost:5476", "http://127.0.0.1:5476"}
-```
-
-The transport's WS proxy injects `Origin: http://gs-{crew_id}:5476` on the
-upstream handshake (the internal container hostname). This is neither a
-loopback address nor in the allowed set → 403.
-
-## Proposed fix
-
-In `_patch_crew_config` (`transport/lifecycle.py`), add `dashboard.url` to the
-`config.local.json` patch so the gateway knows its own hostname:
+**`transport/auth.py` — `BearerAuthMiddleware.__call__`:**
+Check `_public_routes` first when looking up the WS handler:
 
 ```python
-"dashboard": {"url": f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"}
+ws_handler = self._public_routes.get(
+    ("WS", "/crews/*/ui")
+) or self._routes.get(("WS", "/crews/*/ui"))
 ```
 
-KiroCrew deep-merges `config.local.json` over `config.json` on every start, so
-this takes effect without any restart logic changes. The gateway will then
-include `http://gs-{crew_id}:5476` in its allowed origins — exactly what the
-transport sends as `Origin`.
+**`transport/server.py` — `_handle_crew_ui_ws_proxy`:**
+Send `Origin: http://localhost:{CREW_GATEWAY_PORT}` instead of the container
+hostname — always in the gateway's allowed set:
 
-## Scope
+```python
+crew_origin = f"http://localhost:{CREW_GATEWAY_PORT}"
+```
 
-- `transport/lifecycle.py` — `_patch_crew_config`: add `dashboard.url` to the
-  config patch dict
-- `openspec/specs/transport/dashboard-proxy/spec.md` — add/update the WS
-  scenario to document this requirement
-- Tests: add a unit test asserting `_patch_crew_config` includes
-  `dashboard.url` in the patched config
+## What was NOT the fix
+
+Setting `dashboard.url` in `config.local.json` (the v1 approach) had no
+effect. KiroCrew only adds `dashboard_url` to `allowed_origins` when token
+auth middleware is active (a security invariant in `server.py:6094`). Ghostship
+runs without token auth. The v1 `dashboard.url` patch was reverted.
 
 ## Impact
 
-- Fixes: KiroCrew dashboard WS connection (101 instead of 403), unlocking the
-  sessions list, live task updates, and import modal dismissal
-- No security regression: `dashboard.url` is the gateway's own origin; the
-  allowed set still excludes all external/attacker origins
+- Fixes: KiroCrew dashboard WS connection (101 instead of 403)
+- Sessions list loads, live task updates work, import modal dismissable
 - No API or MCP tool changes
-- Prerequisite: TRN-189 (merged)
+- Prerequisites: TRN-189

@@ -52,8 +52,10 @@ The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the tra
 #### Scenario: WebSocket connections are proxied correctly
 
 - **WHEN** the KiroCrew SPA opens a WebSocket connection through the dashboard port
+- **THEN** `BearerAuthMiddleware` dispatches the WS upgrade to the handler registered in `public_routes` (no bearer check — Caddy's `gs_session` is the gate)
 - **THEN** the transport proxy endpoint upgrades the connection and bidirectionally relays frames between the browser and `gs-{crew_id}:5476`
-- **THEN** the upstream WebSocket handshake carries both `Cookie: mc_token_5476=<crew_token>` and `Origin: http://gs-{crew_id}:{CREW_GATEWAY_PORT}` — the gateway validates both
+- **THEN** the upstream WebSocket handshake carries `Cookie: mc_token_5476=<crew_token>` and `Origin: http://localhost:{CREW_GATEWAY_PORT}` — the loopback origin is always in the gateway's `allowed_origins` set regardless of config
+- **THEN** the gateway responds `101 Switching Protocols`
 
 #### Scenario: Token expiry is handled transparently
 
