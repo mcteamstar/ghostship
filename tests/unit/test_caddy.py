@@ -105,8 +105,12 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(payload["@id"], "crew-alpha")
         self.assertIn(":64058", payload["listen"])
 
+        # TRN-189: two routes — a WS-upgrade route first, then the HTTP
+        # catch-all. The HTTP catch-all is the last route.
+        self.assertEqual(len(payload["routes"]), 2)
+        http_route = payload["routes"][-1]
         # No GA_API_KEY in tests → only the crew reverse_proxy handler (no forward_auth).
-        handles = payload["routes"][0]["handle"]
+        handles = http_route["handle"]
         self.assertEqual(len(handles), 1)
         crew_proxy = handles[0]
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
@@ -133,7 +137,8 @@ class CaddyRegisterCrewTests(unittest.TestCase):
             server._caddy_register_crew("alpha", 64058, crew_cookie="test-token")
 
         payload: dict = mock_put.call_args.kwargs["json"]
-        handles = payload["routes"][0]["handle"]
+        http_route = payload["routes"][-1]
+        handles = http_route["handle"]
         self.assertEqual(len(handles), 2)
         fwd_auth = handles[0]
         self.assertEqual(fwd_auth["handler"], "reverse_proxy")
@@ -148,6 +153,65 @@ class CaddyRegisterCrewTests(unittest.TestCase):
         self.assertEqual(crew_proxy["handler"], "reverse_proxy")
         # Crew proxy upstreams the transport, not the crew gateway.
         self.assertEqual(crew_proxy["upstreams"][0]["dial"], f"ga-transport:{server.PORT}")
+
+    def test_register_with_api_key_has_ws_route_without_forward_auth(self) -> None:
+        """TRN-189: WS-upgrade route exists, precedes the HTTP catch-all, and omits forward_auth."""
+        mock_resp = self._make_response(200)
+        mock_put = Mock(return_value=mock_resp)
+
+        with patch.object(server._caddy, "GA_API_KEY", "some-key"), \
+             patch.object(server.httpx, "put", mock_put):
+            server._caddy_register_crew("alpha", 64058, crew_cookie="test-token")
+
+        payload: dict = mock_put.call_args.kwargs["json"]
+        routes = payload["routes"]
+        self.assertEqual(len(routes), 2)
+
+        # Route 0 is the WS-upgrade route: Connection: Upgrade matcher,
+        # reverse_proxy only, no forward_auth (no dashboard/auth rewrite).
+        ws_route = routes[0]
+        self.assertEqual(ws_route["match"], [{"header": {"Connection": ["Upgrade"]}}])
+        ws_handles = ws_route["handle"]
+        self.assertEqual(len(ws_handles), 1)
+        self.assertEqual(ws_handles[0]["handler"], "reverse_proxy")
+        self.assertNotIn("dashboard/auth", ws_handles[0].get("rewrite", {}).get("uri", ""))
+        self.assertNotIn("handle_response", ws_handles[0])
+        # WS route carries the transport token and the /crews/{id}/ui rewrite.
+        self.assertEqual(
+            ws_handles[0]["headers"]["request"]["set"]["X-Transport-Token"],
+            ["{file./run/secrets/ga-transport-secret}"],
+        )
+        self.assertIn("/crews/alpha/ui", ws_handles[0]["rewrite"]["uri"])
+
+        # Route 1 is the HTTP catch-all: no matcher, forward_auth first.
+        http_route = routes[1]
+        self.assertNotIn("match", http_route)
+        http_handles = http_route["handle"]
+        self.assertEqual(len(http_handles), 2)
+        self.assertIn("dashboard/auth", http_handles[0]["rewrite"]["uri"])
+        self.assertIn("handle_response", http_handles[0])
+
+    def test_register_without_api_key_still_has_ws_route(self) -> None:
+        """TRN-189: WS route is present even when GA_API_KEY is unset; both routes are proxy-only."""
+        mock_resp = self._make_response(200)
+        mock_put = Mock(return_value=mock_resp)
+
+        with patch.object(server.httpx, "put", mock_put):
+            server._caddy_register_crew("alpha", 64058, crew_cookie="test-token")
+
+        payload: dict = mock_put.call_args.kwargs["json"]
+        routes = payload["routes"]
+        self.assertEqual(len(routes), 2)
+
+        ws_route, http_route = routes
+        self.assertEqual(ws_route["match"], [{"header": {"Connection": ["Upgrade"]}}])
+        self.assertEqual(len(ws_route["handle"]), 1)
+        self.assertEqual(ws_route["handle"][0]["handler"], "reverse_proxy")
+
+        # No API key → HTTP catch-all is proxy-only (no forward_auth).
+        self.assertNotIn("match", http_route)
+        self.assertEqual(len(http_route["handle"]), 1)
+        self.assertNotIn("handle_response", http_route["handle"][0])
 
     def test_register_treats_409_as_idempotent(self) -> None:
         """409 Conflict (existing @id) is treated as success — no retry, no exception."""

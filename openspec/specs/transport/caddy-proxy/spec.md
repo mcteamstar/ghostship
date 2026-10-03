@@ -85,3 +85,14 @@ No Caddy route SHALL forward a request to `ga-transport` without this header. Th
 - **WHEN** `install.sh` writes the Caddy `initial-config.json`
 - **THEN** every `reverse_proxy` handler targeting `ga-transport` includes `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}`
 - **THEN** per-crew dashboard servers registered via `_caddy_register_crew` also include this header
+
+### Requirement: WebSocket upgrades bypass forward_auth on the dashboard port
+
+The per-crew Caddy dashboard server registered via `_caddy_register_crew` SHALL expose two routes: a WebSocket-upgrade route and an HTTP catch-all route, in that order. The WebSocket route SHALL be matched by the `Connection: Upgrade` request header and SHALL proxy directly to the transport UI proxy WITHOUT the `forward_auth` handler, so the upgrade handshake is preserved. The HTTP catch-all route (no matcher) SHALL retain the existing `forward_auth`-then-`reverse_proxy` behaviour (or `reverse_proxy` only when no API key is configured). Both routes SHALL inject the `X-Transport-Token` header and dial `ga-transport:{PORT}` with the `/crews/{crew_id}/ui/{path}` rewrite. Ordering the WebSocket route first guarantees upgrade requests never fall through to the `forward_auth` path. This introduces no authentication regression: the dashboard port is only reachable after the SPA's initial HTTP page load, which was gated by `forward_auth`; the WebSocket connection inherits that authenticated browser context.
+
+#### Scenario: SPA WebSocket connection bypasses forward_auth and is upgraded
+
+- **WHEN** the KiroCrew SPA opens a WebSocket connection (`Connection: Upgrade`) through a crew's dashboard port
+- **THEN** the Caddy server object has a route matching `{"header": {"Connection": ["Upgrade"]}}` that does not contain the `forward_auth` handler and proxies directly to the transport UI proxy
+- **THEN** the WebSocket route precedes the HTTP catch-all route in the server object's `routes` list
+- **THEN** the WS connection is successfully upgraded (HTTP 101 Switching Protocols)
