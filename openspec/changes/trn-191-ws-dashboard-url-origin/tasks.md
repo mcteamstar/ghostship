@@ -2,38 +2,37 @@
 
 ## 1. Fix `_patch_crew_config` in `transport/lifecycle.py`
 
-- [ ] 1.1 Locate the config patch dict in `_patch_crew_config` and add:
+- [ ] 1.1 Confirm `CREW_CONTAINER_PREFIX` and `CREW_GATEWAY_PORT` are reachable
+  in `lifecycle.py` (module-level constants in `server.py`); import them or
+  pass the composed value in rather than re-declaring literals
+- [ ] 1.2 In `_patch_crew_config`, add `dashboard.url` to the config patch dict:
   ```python
   "dashboard": {"url": f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"}
   ```
-- [ ] 1.2 Confirm `CREW_CONTAINER_PREFIX` and `CREW_GATEWAY_PORT` are accessible
-  in that function (they are module-level constants in `server.py`; check if
-  `lifecycle.py` already imports or defines them, or pass the value in)
-- [ ] 1.3 Verify the deep-merge behaviour: `config.local.json` must not
-  overwrite `dashboard.url` if one already exists — confirm KiroCrew's
-  deep-merge semantics (local overrides base, so setting it here is correct)
+- [ ] 1.3 Verify deep-merge precedence: confirm `config.local.json` overrides
+  `config.json` (local-over-base), so unconditionally setting `dashboard.url`
+  here is correct and no "only if unset" guard is needed
 
 ## 2. Update dashboard-proxy spec
 
-- [ ] 2.1 Add/update scenario in
-  `openspec/specs/transport/dashboard-proxy/spec.md`:
-  - **WHEN** a crew is launched
-  - **THEN** `config.local.json` contains `dashboard.url` set to
-    `http://gs-{crew_id}:5476`
-  - **THEN** the gateway's `allowed_origins` includes that origin
-  - **THEN** the transport's WS proxy `Origin` header is accepted (101)
+- [ ] 2.1 Ensure the delta at
+  `openspec/changes/trn-191-ws-dashboard-url-origin/specs/transport/dashboard-proxy/spec.md`
+  documents the new requirement: patched `config.local.json` carries
+  `dashboard.url`; the gateway's `allowed_origins` includes
+  `http://gs-{crew_id}:5476`; the proxied WS `Origin` is accepted (101); the
+  external-origin exclusion still holds
 
 ## 3. Tests
 
-- [ ] 3.1 Add unit test asserting `_patch_crew_config` output includes
-  `dashboard.url` = `http://gs-{crew_id}:5476`
-- [ ] 3.2 Run full unit test suite and confirm pass
+- [ ] 3.1 Add a unit test asserting `_patch_crew_config` output includes
+  `dashboard.url` == `http://gs-{crew_id}:5476` (exact string match)
+- [ ] 3.2 Run the full unit test suite and confirm it passes
 
 ## 4. Deploy and validate
 
-- [ ] 4.1 Deploy updated transport to academy
+- [ ] 4.1 Deploy the updated transport to academy
 - [ ] 4.2 Launch a new crew with `dashboard=True`
-- [ ] 4.3 Open dashboard in browser — confirm WS connects (browser devtools
-  shows 101 Switching Protocols on `ws://host:port/api/ws`)
-- [ ] 4.4 Confirm sessions list loads and live updates work
-- [ ] 4.5 Confirm import modal can be dismissed normally
+- [ ] 4.3 Open the dashboard in a browser; confirm WS connects — devtools shows
+  `101 Switching Protocols` on `ws://host:port/api/ws` (not 403)
+- [ ] 4.4 Confirm the sessions list loads and live updates work
+- [ ] 4.5 Confirm the import modal can be dismissed normally
