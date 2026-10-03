@@ -115,7 +115,7 @@ for category in "${SELECTED_CATEGORIES[@]}"; do
       ;;
     e2e)
       run_category e2e \
-        python3 -m pytest tests/e2e -n auto
+        python3 -m pytest tests/e2e -n 2 --dist loadfile
       ;;
   esac
 done
