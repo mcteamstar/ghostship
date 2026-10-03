@@ -7,7 +7,17 @@ Define the contract for atomic multi-task dispatch and blocking multi-task picku
 
 ### Requirement: Batch dispatch returns a batch_id and per-task IDs
 
-The system SHALL accept `tasks: list[str]` as an alternative to `task: str` on the `dispatch` tool. When `tasks` is provided, the system SHALL dispatch each task sequentially against the named `crew_id`, collect the resulting `task_id` per task, record the batch in the transport registry, and return a `batch_id` and `task_ids` list. The `task` and `tasks` parameters SHALL be mutually exclusive; the system SHALL return an error if both are supplied. The minimum batch size SHALL be 2; the maximum SHALL be capped by `GA_BATCH_MAX_TASKS` (default 20). Each task in the batch uses the same `agent` and optional `model` override as a single-task dispatch.
+The system SHALL accept `tasks: list[str]` as an alternative to `task: str` on
+the `dispatch` tool. When `tasks` is provided, the system SHALL dispatch each
+task sequentially against the named `crew_id`, collect the resulting `task_id`
+per task, record the batch in the transport registry, and return a `batch_id`
+and `task_ids` list. The `task` and `tasks` parameters SHALL be mutually
+exclusive; the system SHALL return an error if both are supplied. The minimum
+batch size SHALL be 2; the maximum SHALL be capped by `GA_BATCH_MAX_TASKS`
+(default 20). Each task in the batch uses the same `agent`, optional `model`
+override, and `slot` (either `None` or `False`) as a single-task dispatch. The
+response SHALL NOT include a `task_slots` field; per-task UUID slot names are
+not generated for batch dispatch.
 
 #### Scenario: Batch dispatch — all tasks start
 

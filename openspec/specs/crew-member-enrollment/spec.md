@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change trn-187-member-based-dispatch. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Agent enrollment at crew launch
 
 Every agent deployed into a crew at launch time SHALL be enrolled as a named
@@ -35,19 +37,29 @@ Enrolled persona agents dispatched via the `dispatch()` MCP tool SHALL be
 routed into their member DM slot (`parent_session="dashboard:member-{slug}"`)
 rather than a generic chat slot. This gives the agent an attested session
 identity. The slot returned to the caller SHALL echo the clean agent name (e.g.
-`"ghost"`, not `"member-ghost"`). Crews without `enrolled_agents` SHALL fall
-back to the previous bridge/headless behaviour.
+`"ghost"`, not `"member-ghost"`). Crews without `enrolled_agents` SHALL route
+unenrolled agents to headless dispatch (no `parent_session`). The `slot`
+parameter on `dispatch` SHALL accept only `None` (the default) or `False`;
+string slot names and `True` (UUID auto-generation) are no longer accepted
+values.
 
 #### Scenario: Enrolled agent dispatch uses member slot
 
 - **WHEN** `dispatch(agent="ghost", crew_id=...)` is called on a crew with
-  `enrolled_agents` containing `"ghost"`
+  `enrolled_agents` containing `"ghost"` and `slot` is omitted
 - **THEN** the spawned task uses `parent_session="dashboard:member-ghost"`
 - **THEN** the returned slot echoes `"ghost"`
 
 #### Scenario: Unenrolled agent falls back to bridge/headless
 
 - **WHEN** `dispatch(agent="custom", crew_id=...)` is called on a crew whose
-  `enrolled_agents` does not contain `"custom"`
-- **THEN** the task routes to the bridge slot (if dashboard crew) or headless
+  `enrolled_agents` does not contain `"custom"` and `slot` is omitted
+- **THEN** the task is dispatched headless with no `parent_session`
+- **THEN** the returned slot is `null`
 
+#### Scenario: Explicit headless overrides member slot
+
+- **WHEN** `dispatch(agent="ghost", slot=False, crew_id=...)` is called on a
+  crew with `enrolled_agents` containing `"ghost"`
+- **THEN** the task is dispatched headless with no `parent_session`
+- **THEN** the returned slot is `null`
