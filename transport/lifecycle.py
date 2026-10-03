@@ -1596,6 +1596,21 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
 
     full_overrides: dict[str, Any] = {
         "agent": agent_overrides,
+        # TRN-191: set the gateway's own origin so its allowed_origins set
+        # (built at startup from dashboard.url) includes the internal container
+        # hostname. The transport's WS proxy injects
+        # ``Origin: http://{container}:{CREW_GATEWAY_PORT}`` on the upstream
+        # handshake (server.py); without this the gateway falls back to
+        # loopback-only origins and rejects the proxied WS upgrade with
+        # ``403 WebSocket origin not allowed``. ``container`` is
+        # ``gs-{crew_id}`` so this value is byte-identical to the injected
+        # Origin — any drift (scheme/port) re-triggers the 403. config.local
+        # overrides config.json via the deep-merge on every start, and
+        # Ghostship owns this file, so setting it unconditionally is correct
+        # (no "only if unset" guard needed — the base never sets it). This is
+        # the gateway's own internal origin, reachable only from ga-net, so no
+        # external/attacker origin becomes allowed.
+        "dashboard": {"url": f"http://{container}:{CREW_GATEWAY_PORT}"},
         "stt": {"enabled": False},
         "session": {
             "eager_spawn": False,
