@@ -2245,13 +2245,14 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                    (false unless configured). Pass False to force headless even
                    when GA_DASHBOARD_DEFAULT=true.
 
-                   MEMORY COST: dashboard=True causes dispatch() to auto-attach
-                   tasks to a session slot (slot="bridge"), which spawns an extra
-                   kiro-cli-chat process per task (~300-400 MB each). For
-                   autonomous/unattended work (SDD, batch jobs, background tasks)
-                   where you don't need browser visibility, pass dashboard=False
-                   to avoid this overhead. Use dashboard=True only when you
-                   actually intend to watch the crew in a browser.
+                   MEMORY COST: dashboard=True makes the dashboard URL available
+                   but does not by itself add memory per dispatch. Each dispatch()
+                   to an enrolled agent spawns a kiro-cli-chat session process
+                   (~250-300 MB RSS). For autonomous/unattended work (SDD, batch
+                   jobs, background tasks) where you don't need browser visibility,
+                   pass slot=False on individual dispatches to run headless and
+                   avoid this overhead. Use dashboard=True only when you actually
+                   intend to watch the crew in a browser.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """
@@ -3697,9 +3698,7 @@ def dispatch(
         "agent", "slot", "created_at"}``. ``slot`` echoes the resolved slot
         name, or ``None`` when headless.
         Batch (all started): ``{"batch_id", "task_ids", "crew_id",
-        "status": "dispatched", "agent", "slot", "created_at"}``. For
-        ``slot=True``, also includes ``"task_slots"`` mapping each task_id to
-        its generated slot name.
+        "status": "dispatched", "agent", "slot", "created_at"}``.
         Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
         the ``task_ids`` assigned so far, and an ``error`` field naming the
         failure. Tasks that never received a ``task_id`` are the lost members.
@@ -3714,34 +3713,18 @@ def dispatch(
             steer/continue operations.
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
-        slot: Dashboard session routing for this dispatch. One of:
-            ``None`` (default) — for enrolled agents, routes into the agent's
-            member DM slot (``parent_session="dashboard:member-<slug>"``),
-            which is attested and visible in the dashboard as a named thread.
-            The echoed slot name is the agent name (e.g. ``"ghost"``). For
-            unenrolled agents, resolves to ``"bridge"`` if a dashboard is
-            active, else ``None`` (headless).
-            ``"bridge"`` — tasks attach to the crew's shared ``"bridge"``
-            session. Note: bridge sessions are NOT attested — enrolled agents
-            dispatched here cannot make downstream spawn calls.
-            ``True`` — auto-generate a unique slot name (``uuid4().hex[:8]``)
-            per task; each task gets its own dedicated visible session. Note:
-            UUID slots are NOT attested for enrolled agents.
-            ``"<agent-name>"`` — equivalent to the default for enrolled agents;
-            explicitly routes into the named member DM slot.
-            ``"<name>"`` — attach to the named slot
-            (``parent_session="dashboard:<name>"``); multiple dispatches with
-            the same name share one session.
-            When a slot resolves to a non-None value, the system pre-creates it
-            via ``POST /api/chat/slots`` (409 treated as success; non-fatal).
-
-            MEMORY COST: each slot attachment spawns a kiro-cli-chat process
-            inside the crew container (~300-400 MB RSS). On crews launched with
-            dashboard=True, slot defaults to "bridge" automatically — meaning
-            every dispatch adds ~300-400 MB. For autonomous/unattended tasks
-            (SDD, batch jobs, Raven check-ins) where browser visibility is not
-            needed, pass slot=None explicitly to dispatch headless and avoid
-            this overhead.
+        slot: Session routing for this dispatch. Two modes:
+            ``None`` (default) — routes enrolled agents into their member DM
+            slot (``parent_session="dashboard:member-<slug>"``). The session
+            is attested, visible in the dashboard sessions list, and the agent
+            can make downstream spawn calls. The echoed slot name is the agent
+            name (e.g. ``"ghost"``). Use this for all SDD lifecycle agents and
+            any task that needs to orchestrate sub-agents.
+            ``False`` — explicit headless. No session is created, saving
+            ~250 MB RSS vs the member slot path. The agent is still attested
+            via member enrollment but cannot spawn sub-agents (no session
+            identity to attest against). Use for leaf tasks: Raven check-ins,
+            simple queries, batch jobs where browser visibility is not needed.
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
