@@ -1638,12 +1638,6 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
-# Default set of enrolled Ghostship persona slugs — fallback only for the
-# transition period while old crews (pre-TRN-187) have no enrolled_agents
-# in the registry. Remove once all crews have been relaunched.
-_GHOSTSHIP_PERSONAS = frozenset(["ghost", "spectre", "banshee", "wraith", "reaper", "raven"])
-
-
 def _resolve_dispatch_slot(
     agent: str,
     slot: bool | None,
@@ -1663,7 +1657,9 @@ def _resolve_dispatch_slot(
       ``(None, None)``.
 
     ``True`` is not a valid value under the current type annotation; a caller
-    passing it falls through to the ``slot=None`` default path.
+    passing it receives headless dispatch (``(None, None)``) — it does NOT
+    fall through to the member-slot path, because the member-slot guard checks
+    ``slot is None`` explicitly.
     """
     enrolled: frozenset[str] = frozenset(crew.get("enrolled_agents") or [])
     if slot is None and agent in enrolled:

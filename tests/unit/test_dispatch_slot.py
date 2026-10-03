@@ -117,6 +117,10 @@ class DispatchSlotUnenrolledTests(unittest.TestCase):
 
     _CREW_NO_DASH_UNENROLLED = {"container": "gs-demo"}
     _CREW_WITH_DASH_UNENROLLED = {"container": "gs-demo", "dashboard_port": 64058}
+    # enrolled_agents present but as an empty list
+    _CREW_ENROLLED_EMPTY = {"container": "gs-demo", "enrolled_agents": []}
+    # enrolled_agents present but does not include the dispatched agent
+    _CREW_ENROLLED_OTHER = {"container": "gs-demo", "enrolled_agents": ["spectre", "raven"]}
 
     def _dispatch_unenrolled(self, crew: dict) -> tuple[dict, object]:
         with (
@@ -137,6 +141,41 @@ class DispatchSlotUnenrolledTests(unittest.TestCase):
     def test_unenrolled_non_dashboard_crew_is_headless(self) -> None:
         """Unenrolled agent on a non-dashboard crew → headless."""
         result, api = self._dispatch_unenrolled(self._CREW_NO_DASH_UNENROLLED)
+        self.assertIsNone(result["slot"])
+        body = api.call_args.kwargs["json"]
+        self.assertNotIn("parent_session", body)
+
+    def test_enrolled_agents_empty_list_is_headless(self) -> None:
+        """enrolled_agents=[] (empty list) treats the agent as unenrolled → headless."""
+        result, api = self._dispatch_unenrolled(self._CREW_ENROLLED_EMPTY)
+        self.assertIsNone(result["slot"])
+        body = api.call_args.kwargs["json"]
+        self.assertNotIn("parent_session", body)
+
+    def test_agent_not_in_enrolled_list_is_headless(self) -> None:
+        """Agent not present in enrolled_agents list → headless, not member slot."""
+        result, api = self._dispatch_unenrolled(self._CREW_ENROLLED_OTHER)
+        self.assertIsNone(result["slot"])
+        body = api.call_args.kwargs["json"]
+        self.assertNotIn("parent_session", body)
+
+
+class DispatchSlotTrueTests(unittest.TestCase):
+    """slot=True is not a valid value; a caller passing it receives headless
+    dispatch (falls through to the return-None-None branch), NOT the member
+    slot — the guard is 'slot is None', so True does not match."""
+
+    def test_slot_true_enrolled_is_headless(self) -> None:
+        """slot=True for an enrolled agent → headless (not member slot)."""
+        with (
+            patch.object(server, "_require_crew", return_value=_CREW_NO_DASH),
+            patch.object(server, "_ensure_crew_running", return_value=_CREW_NO_DASH),
+            patch.object(
+                lifecycle, "_crew_api", return_value={"id": "task-true"}
+            ) as api,
+        ):
+            result = server.dispatch("do work", agent="ghost", crew_id="demo", slot=True)
+
         self.assertIsNone(result["slot"])
         body = api.call_args.kwargs["json"]
         self.assertNotIn("parent_session", body)

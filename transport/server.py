@@ -2244,14 +2244,14 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                    (false unless configured). Pass False to force headless even
                    when GA_DASHBOARD_DEFAULT=true.
 
-                   MEMORY COST: dashboard=True makes the dashboard URL available
-                   but does not by itself add memory per dispatch. Each dispatch()
-                   to an enrolled agent spawns a kiro-cli-chat session process
-                   (~250-300 MB RSS). For autonomous/unattended work (SDD, batch
-                   jobs, background tasks) where you don't need browser visibility,
-                   pass slot=False on individual dispatches to run headless and
-                   avoid this overhead. Use dashboard=True only when you actually
-                   intend to watch the crew in a browser.
+                   MEMORY COST: when dashboard=True, dispatching enrolled persona
+                   agents with the default slot (slot=None) routes them into
+                   their member DM slot, which spawns a kiro-cli-chat process
+                   per task (~300-400 MB each). For autonomous/unattended work
+                   (SDD, batch jobs, background tasks) where you don't need
+                   browser visibility, pass dashboard=False (or dispatch with
+                   slot=False) to avoid this overhead. Use dashboard=True only
+                   when you actually intend to watch the crew in a browser.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """
