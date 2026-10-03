@@ -1646,40 +1646,31 @@ _GHOSTSHIP_PERSONAS = frozenset(["ghost", "spectre", "banshee", "wraith", "reape
 
 def _resolve_dispatch_slot(
     agent: str,
-    slot: str | bool | None,
+    slot: bool | None,
     crew: dict,
-) -> tuple[str | bool | None, str | None]:
+) -> tuple[str | None, str | None]:
     """Resolve the effective slot and parent_session for a dispatch.
 
     Returns (effective_slot, parent_session).
 
-    For enrolled agents with no explicit slot: routes to their member DM slot
-    (``parent_session="dashboard:member-<slug>"``), echoing ``"<slug>"`` as the
-    slot name. For unenrolled agents with no explicit slot: ``"bridge"`` if the
-    crew has a dashboard port, else ``None`` (headless).
-    Explicit ``slot`` values are always honoured — caller opted in.
+    Two modes:
+
+    - ``slot=None`` (default): let the system decide. An enrolled agent routes
+      to its member DM slot (``parent_session="dashboard:member-<slug>"``),
+      echoing ``"<slug>"`` as the slot name. An unenrolled agent routes headless
+      (``(None, None)``) — no session is created.
+    - ``slot=False``: explicit headless, regardless of enrollment —
+      ``(None, None)``.
+
+    ``True`` is not a valid value under the current type annotation; a caller
+    passing it falls through to the ``slot=None`` default path.
     """
     enrolled: frozenset[str] = frozenset(crew.get("enrolled_agents") or [])
     if slot is None and agent in enrolled:
         # Echo the agent name (clean) not "member-<agent>" (implementation detail).
         return agent, f"dashboard:member-{agent}"
-    if slot is None:
-        if crew.get("dashboard_port"):
-            return "bridge", "dashboard:bridge"
-        return None, None
-    if slot is True:
-        slug = uuid.uuid4().hex[:8]
-        if agent in enrolled:
-            logger.warning(
-                "dispatch: slot=True for enrolled agent %r bypasses attestation", agent
-            )
-        return True, f"dashboard:{slug}"
-    # Explicit string slot
-    if agent in enrolled and slot != agent:
-        logger.warning(
-            "dispatch: explicit slot=%r for enrolled agent %r bypasses attestation", slot, agent
-        )
-    return slot, f"dashboard:{slot}"
+    # slot=None for an unenrolled agent, or slot=False for anyone → headless.
+    return None, None
 
 
 def _deployed_agent_names(podman: PodmanClient, container: str) -> list[str]:
@@ -3133,7 +3124,7 @@ def _dispatch_batch(
     agent: str,
     crew_id: str | None,
     model: str | None,
-    slot: str | bool | None = None,
+    slot: bool | None = None,
 ) -> dict:
     """Sequentially dispatch a batch of tasks; record a batch entry.
 
@@ -3141,11 +3132,11 @@ def _dispatch_batch(
     first CrewUnresponsiveError or unexpected failure the loop breaks and a
     ``partial`` batch is recorded with the task_ids assigned so far.
 
-    ``slot`` follows the same semantics as single-task dispatch: explicit arg
-    (``True`` / ``"<name>"``) > default resolution (``"bridge"`` if the crew
-    has an active dashboard, else ``None`` for headless). For a string slot all
-    tasks in the batch share one ``parent_session``. For ``slot=True`` each
-    task gets a distinct UUID-suffixed slot.
+    ``slot`` follows the same two-mode semantics as single-task dispatch:
+    ``None`` (default) routes an enrolled agent to its shared member DM slot and
+    an unenrolled agent headless; ``False`` is explicit headless for everyone.
+    All tasks in the batch share the one resolved slot (member or headless);
+    per-task slot names are not generated.
     """
     # Size validation (task 2.3).
     max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
@@ -3160,25 +3151,12 @@ def _dispatch_batch(
         return {"error": str(e)}
 
     # Resolve effective slot and shared parent_session using the unified helper.
-    effective_slot, resolved_parent_session = _resolve_dispatch_slot(agent, slot, crew)
-
-    # For a string slot, all tasks share the same parent_session; pre-create
-    # the dashboard session slot once before the loop (409 = already exists,
-    # treat as success). Non-fatal.
-    shared_parent_session: str | None = None
-    if isinstance(effective_slot, str) and resolved_parent_session:
-        shared_parent_session = resolved_parent_session
-        try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
-        except Exception:
-            pass
-    elif effective_slot is None and resolved_parent_session:
-        # Member DM slot auto-route — shared across all tasks in the batch.
-        shared_parent_session = resolved_parent_session
+    # effective_slot is either the agent name (member slot) or None (headless);
+    # all tasks in the batch share the one resolved parent_session.
+    effective_slot, shared_parent_session = _resolve_dispatch_slot(agent, slot, crew)
 
     batch_id = str(uuid.uuid4())
     task_ids: list[str] = []
-    task_slots: dict[str, str] = {}  # task_id -> slot name (for slot=True)
     now = datetime.now(timezone.utc)
     created_at = now.isoformat()
     dispatch_error: str | None = None
@@ -3187,17 +3165,7 @@ def _dispatch_batch(
         body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
         if model is not None:
             body["model"] = model
-        task_slot_name: str | None = None
-        if effective_slot is True:
-            # Per-task UUID slot from _resolve_dispatch_slot; generate fresh per task.
-            _, ps = _resolve_dispatch_slot(agent, True, crew)
-            task_slot_name = ps.removeprefix("dashboard:") if ps else uuid.uuid4().hex[:8]
-            body["parent_session"] = f"dashboard:{task_slot_name}"
-            try:
-                _crew_api(crew, "POST", "/api/chat/slots", json={"name": task_slot_name})
-            except Exception:
-                pass
-        elif shared_parent_session is not None:
+        if shared_parent_session is not None:
             body["parent_session"] = shared_parent_session
 
         try:
@@ -3212,9 +3180,6 @@ def _dispatch_batch(
             dispatch_error = "spawn returned no task id"
             break
         task_ids.append(tid)
-        # Record per-task slot name for slot=True
-        if effective_slot is True and task_slot_name is not None:
-            task_slots[tid] = task_slot_name
         # Per-task timestamp + last_task_at, using this task's response time.
         task_created = datetime.now(timezone.utc).isoformat()
         with _task_timestamps_lock:
@@ -3225,8 +3190,8 @@ def _dispatch_batch(
             }
         _record_last_task_at(crew_id, task_created)
 
-    # Echo the effective slot: the string name, True (auto-per-task), or None.
-    response_slot: str | bool | None = effective_slot
+    # Echo the effective slot: the agent name (member slot) or None (headless).
+    response_slot: str | None = effective_slot
 
     if dispatch_error is None:
         # Task 2.5: full success.
@@ -3240,9 +3205,6 @@ def _dispatch_batch(
             "slot": response_slot,
             "created_at": created_at,
         }
-        # For slot=True, include per-task slot names.
-        if effective_slot is True and task_slots:
-            response["task_slots"] = task_slots
         return response
 
     # Task 2.6: partial failure. Record what was started; surface the error.
@@ -3257,8 +3219,6 @@ def _dispatch_batch(
         "created_at": created_at,
         "error": dispatch_error,
     }
-    if effective_slot is True and task_slots:
-        response["task_slots"] = task_slots
     return response
 
 

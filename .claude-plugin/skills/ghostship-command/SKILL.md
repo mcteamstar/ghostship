@@ -114,15 +114,15 @@ session cookie — the cookie is issued to any visitor who loads the page. Only
 use `dashboard=True` on deployments protected by Tailscale or a firewall. Do
 not enable it on any deployment reachable from the public internet.
 
-**Memory cost of `dashboard=True`:** when a dashboard is active, `dispatch`
-auto-routes tasks to the `"bridge"` session slot by default. Each slot
+**Memory cost of slot attachment:** an enrolled persona dispatched with the
+default `slot=None` routes into its attested member DM slot. Each slot
 attachment spawns a `kiro-cli-chat` process inside the container (~300–400 MB
-RSS). On a memory-constrained host this adds up fast — two dashboard crews
-each with an active Ghost task can consume ~800 MB in slot processes alone.
+RSS). On a memory-constrained host this adds up fast — two crews each with an
+active Ghost task can consume ~800 MB in slot processes alone.
 **For autonomous/unattended work** (SDD, batch jobs, Raven check-ins) where
-browser visibility isn't needed, pass `dashboard=False` to launch headless and
-avoid this overhead entirely. Use `dashboard=True` only when you actually
-intend to watch the crew in a browser.
+dashboard visibility isn't needed, pass `slot=False` to dispatch headless and
+avoid this overhead entirely. Use the default member slot only when you
+actually intend to watch the agent's thread in a dashboard.
 
 ### 2. Seed the workspace — `supply`
 
@@ -175,22 +175,30 @@ call, so `KC_MODEL_OVERRIDE` is not an absolute ceiling when a caller supplies
 wraith, reaper, raven) are enrolled as named crew members at launch. When
 dispatched with `slot=None` (the default), they automatically route into their
 member DM slot (`member-<slug>`), which is both attested (enables downstream
-spawning) and visible in the dashboard as a named member thread. No overhead
-unless the crew has a dashboard.
+spawning) and visible in the dashboard as a named member thread.
 
-Non-persona agents still default to `"bridge"` on dashboard crews. Passing
-an explicit `slot="bridge"` or `slot=True` for a persona agent is accepted but
-bypasses attestation — those agents cannot make downstream spawn calls.
+`slot` has two modes only — `None` (the default) and `False`:
+
+- `slot=None` — let the system decide. Enrolled personas route into their
+  attested member DM slot (above). An unenrolled/non-persona agent dispatches
+  headless (no session is created).
+- `slot=False` — explicit headless for anyone, regardless of enrollment: no
+  session is created, saving the ~300–400 MB slot process.
+
+`slot=True` (per-task UUID slots) and arbitrary string slot names
+(`slot="bridge"`, `slot="myname"`) are no longer accepted — the member slot
+covers every legitimate slotted-dispatch case, and the member slot is
+pre-created at enrollment time, so dispatch performs no slot pre-creation.
 
 ```python
-dispatch(task="...", agent="ghost", crew_id="...")              # → member-ghost (attested)
-dispatch(task="...", agent="ghost", crew_id="...", slot=None)   # same — explicit headless override
-dispatch(task="...", agent="ghost", crew_id="...", slot="bridge")  # bridge (not attested)
+dispatch(task="...", agent="ghost", crew_id="...")              # → member-ghost (attested, default)
+dispatch(task="...", agent="ghost", crew_id="...", slot=None)   # same as default
+dispatch(task="...", agent="ghost", crew_id="...", slot=False)  # headless (no session)
 ```
 
 The rule of thumb: omit `slot` for persona agents — they handle routing
-automatically. Only set an explicit slot when you specifically want bridge or
-per-task UUID sessions (non-persona agents, or when you know what you're doing).
+automatically into their attested member slot. Pass `slot=False` only when you
+want a headless dispatch with no dashboard session and no slot process.
 
 The dispatched agent has **no context beyond `task`** — no memory of this
 conversation, no idea what you're trying to accomplish beyond what you wrote.
@@ -450,7 +458,7 @@ git filter-repo --name-callback 'return b"Your Name"' \
 | Nuked a crew and lost work | Should have `evac`'d first — no undo |
 | Agent did wrong thing despite timeout steer | Used fresh `dispatch` instead of `steer` — lost full prior context |
 | Captain sending many duplicate admiral mails | Raven correctly reporting completion each cycle; Raven self-pauses on SDD template — check `captain status` for `paused`. For free-form orders, the dedup check prevents most repeats but a manual `captain(action="stop")` may be needed |
-| Host memory pressure / transport rejects new launches | Dashboard crews with active tasks each use ~300–400 MB per slot process (`kiro-cli-chat`). Use `dashboard=False` + `slot=None` for unattended SDD/batch work; reserve `dashboard=True` for crews you're actively watching in a browser |
+| Host memory pressure / transport rejects new launches | Crews with active tasks each use ~300–400 MB per slot process (`kiro-cli-chat`). Use `slot=False` for unattended SDD/batch work to dispatch headless with no slot process; reserve the default member slot for crews you're actively watching in a dashboard |
 
 ## Worked example — captain autopilot (recommended for non-trivial work)
 

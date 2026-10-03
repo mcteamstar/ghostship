@@ -1,47 +1,43 @@
-"""Unit tests for dispatch slot parameter.
+"""Unit tests for the dispatch slot parameter.
 
-The ``mode`` parameter is gone; dispatch
-now takes ``slot: str | bool | None``:
+After TRN-192 the ``slot`` parameter has two modes only (``slot: bool | None``):
 
-  3.2  slot=None          — /api/spawn body has no parent_session, response "slot": null
-  3.3  slot="bridge"      — body parent_session="dashboard:bridge", response "slot": "bridge"
-  3.4  slot=True          — body parent_session matches ^dashboard:[0-9a-f]{8}$,
-                            response "slot" carries that 8-hex name
-  3.5  two slot=True       — distinct parent_session values
-  3.6  slot="custom-name"  — body parent_session="dashboard:custom-name"
-  3.7  no slot + dashboard_port set  — effective slot "bridge"
-  3.8  no slot + no dashboard_port    — effective slot null (headless)
-  3.9  batch slot=True     — each task gets a distinct parent_session
-  3.10 batch slot="shared" — all tasks get parent_session="dashboard:shared"
+  slot=None  — let the system decide:
+                 enrolled agent   → member DM slot
+                                    (parent_session="dashboard:member-<slug>",
+                                     response "slot" echoes the agent name)
+                 unenrolled agent → headless (no parent_session, "slot": null)
+  slot=False — explicit headless, regardless of enrollment
+               (no parent_session, "slot": null)
+
+``slot=True`` (UUID auto-generation) and arbitrary string slot names
+(e.g. "bridge", "custom-name") are no longer accepted values — member slots
+cover all legitimate slotted-dispatch use cases, and member slots are
+pre-created at enrollment time so no dispatch-time slot pre-creation occurs.
 
 Note: dispatch() reaches the crew via _crew_api_with_recovery, which delegates
-to _crew_api on its first attempt. Slot pre-creation calls _crew_api directly
-and happens before the spawn, so patching lifecycle._crew_api intercepts both;
-the spawn is always the LAST _crew_api call, hence api.call_args is the spawn.
+to _crew_api on its first attempt. There is no longer any slot pre-creation
+call, so the spawn is the only _crew_api call and api.call_args is the spawn.
 """
 
 from __future__ import annotations
 
-import re
 import unittest
 from unittest.mock import patch
 
 from tests.unit.helpers import lifecycle, server  # noqa: F401
 
 
-_TRUE_SLOT_PS_RE = re.compile(r"^dashboard:[0-9a-f]{8}$")
-_TRUE_SLOT_NAME_RE = re.compile(r"^[0-9a-f]{8}$")
-
 # Crew fixture without dashboard (headless default)
 _CREW_NO_DASH = {"container": "gs-demo", "enrolled_agents": ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]}
-# Crew fixture with active dashboard (bridge default)
+# Crew fixture with active dashboard — member routing is independent of this now
 _CREW_WITH_DASH = {"container": "gs-demo", "dashboard_port": 64058, "enrolled_agents": ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]}
 
 
 class DispatchSlotNoneTests(unittest.TestCase):
-    """3.2 — slot=None sends no parent_session and echoes null."""
+    """slot=None routes an enrolled agent to its member DM slot."""
 
-    def test_slot_none_no_parent_session(self) -> None:
+    def test_slot_none_enrolled_uses_member_slot(self) -> None:
         with (
             patch.object(server, "_require_crew", return_value=_CREW_NO_DASH),
             patch.object(server, "_ensure_crew_running", return_value=_CREW_NO_DASH),
@@ -57,90 +53,41 @@ class DispatchSlotNoneTests(unittest.TestCase):
         self.assertEqual(body.get("parent_session"), "dashboard:member-ghost")
 
 
-class DispatchSlotBridgeTests(unittest.TestCase):
-    """3.3 — slot="bridge" attaches to dashboard:bridge and echoes "bridge"."""
+class DispatchSlotFalseTests(unittest.TestCase):
+    """slot=False is explicit headless even for an enrolled agent."""
 
-    def test_slot_bridge_parent_session(self) -> None:
+    def test_slot_false_enrolled_is_headless(self) -> None:
         with (
             patch.object(server, "_require_crew", return_value=_CREW_NO_DASH),
             patch.object(server, "_ensure_crew_running", return_value=_CREW_NO_DASH),
             patch.object(
-                lifecycle, "_crew_api", return_value={"id": "task-3"}
+                lifecycle, "_crew_api", return_value={"id": "task-2"}
             ) as api,
         ):
-            result = server.dispatch("do work", agent="ghost", crew_id="demo", slot="bridge")
+            result = server.dispatch("do work", agent="ghost", crew_id="demo", slot=False)
 
-        self.assertEqual(result["slot"], "bridge")
+        self.assertIsNone(result["slot"])
         body = api.call_args.kwargs["json"]
-        self.assertEqual(body["parent_session"], "dashboard:bridge")
+        self.assertNotIn("parent_session", body)
 
-
-class DispatchSlotTrueTests(unittest.TestCase):
-    """3.4 — slot=True generates an 8-hex slot; body + response agree."""
-
-    def test_slot_true_body_and_response(self) -> None:
+    def test_slot_false_dashboard_crew_is_headless(self) -> None:
         with (
-            patch.object(server, "_require_crew", return_value=_CREW_NO_DASH),
-            patch.object(server, "_ensure_crew_running", return_value=_CREW_NO_DASH),
+            patch.object(server, "_require_crew", return_value=_CREW_WITH_DASH),
+            patch.object(server, "_ensure_crew_running", return_value=_CREW_WITH_DASH),
             patch.object(
-                lifecycle, "_crew_api", return_value={"id": "task-4"}
+                lifecycle, "_crew_api", return_value={"id": "task-2b"}
             ) as api,
         ):
-            result = server.dispatch("do work", agent="ghost", crew_id="demo", slot=True)
+            result = server.dispatch("do work", agent="ghost", crew_id="demo", slot=False)
 
-        slot_name = result["slot"]
-        self.assertIsNotNone(slot_name)
-        self.assertRegex(slot_name, _TRUE_SLOT_NAME_RE)
+        self.assertIsNone(result["slot"])
         body = api.call_args.kwargs["json"]
-        self.assertRegex(body["parent_session"], _TRUE_SLOT_PS_RE)
-        # response slot name is the suffix of the body's parent_session
-        self.assertEqual(body["parent_session"], f"dashboard:{slot_name}")
-
-
-class DispatchSlotTrueUniquenessTests(unittest.TestCase):
-    """3.5 — two slot=True dispatches produce distinct parent_session values."""
-
-    def test_two_slot_true_dispatches_distinct(self) -> None:
-        sessions = []
-        for tid in ("task-a", "task-b"):
-            with (
-                patch.object(server, "_require_crew", return_value=_CREW_NO_DASH),
-                patch.object(server, "_ensure_crew_running", return_value=_CREW_NO_DASH),
-                patch.object(
-                    lifecycle, "_crew_api", return_value={"id": tid}
-                ) as api,
-            ):
-                server.dispatch("do work", agent="ghost", crew_id="demo", slot=True)
-                sessions.append(api.call_args.kwargs["json"]["parent_session"])
-
-        self.assertEqual(len(sessions), 2)
-        self.assertNotEqual(sessions[0], sessions[1])
-        for ps in sessions:
-            self.assertRegex(ps, _TRUE_SLOT_PS_RE)
-
-
-class DispatchSlotCustomNameTests(unittest.TestCase):
-    """3.6 — slot="custom-name" → parent_session="dashboard:custom-name"."""
-
-    def test_slot_custom_name(self) -> None:
-        with (
-            patch.object(server, "_require_crew", return_value=_CREW_NO_DASH),
-            patch.object(server, "_ensure_crew_running", return_value=_CREW_NO_DASH),
-            patch.object(
-                lifecycle, "_crew_api", return_value={"id": "task-c"}
-            ) as api,
-        ):
-            result = server.dispatch(
-                "do work", agent="ghost", crew_id="demo", slot="custom-name"
-            )
-
-        self.assertEqual(result["slot"], "custom-name")
-        body = api.call_args.kwargs["json"]
-        self.assertEqual(body["parent_session"], "dashboard:custom-name")
+        self.assertNotIn("parent_session", body)
 
 
 class DispatchSlotDefaultResolutionTests(unittest.TestCase):
-    """3.7 / 3.8 — default slot derived from dashboard_port at dispatch time."""
+    """Default (slot omitted) routes enrolled agents to the member DM slot,
+    independent of whether the crew has a dashboard_port."""
 
     def _dispatch_no_slot(self, crew: dict) -> tuple[dict, object]:
         with (
@@ -152,14 +99,12 @@ class DispatchSlotDefaultResolutionTests(unittest.TestCase):
         return result, api
 
     def test_dashboard_port_set_defaults_to_member_slot(self) -> None:
-        """3.7 — dashboard_port present, persona agent → member DM slot (attested)."""
         result, api = self._dispatch_no_slot(_CREW_WITH_DASH)
         self.assertEqual(result["slot"], "ghost")
         body = api.call_args.kwargs["json"]
         self.assertEqual(body["parent_session"], "dashboard:member-ghost")
 
     def test_no_dashboard_port_defaults_to_member_slot(self) -> None:
-        """3.8 — no dashboard_port, persona agent → member DM slot (attested)."""
         result, api = self._dispatch_no_slot(_CREW_NO_DASH)
         self.assertEqual(result["slot"], "ghost")
         body = api.call_args.kwargs["json"]
@@ -167,7 +112,8 @@ class DispatchSlotDefaultResolutionTests(unittest.TestCase):
 
 
 class DispatchSlotUnenrolledTests(unittest.TestCase):
-    """4.3/4.4 — unenrolled agents (no enrolled_agents key) fall back to bridge/headless."""
+    """Unenrolled agents (no enrolled_agents key) dispatch headless regardless
+    of dashboard_port — the bridge fallback is removed."""
 
     _CREW_NO_DASH_UNENROLLED = {"container": "gs-demo"}
     _CREW_WITH_DASH_UNENROLLED = {"container": "gs-demo", "dashboard_port": 64058}
@@ -181,25 +127,26 @@ class DispatchSlotUnenrolledTests(unittest.TestCase):
             result = server.dispatch("do work", agent="ghost", crew_id="demo")
         return result, api
 
-    def test_unenrolled_dashboard_crew_defaults_to_bridge(self) -> None:
-        """4.3 — unenrolled agent on dashboard crew → bridge (no attestation)."""
+    def test_unenrolled_dashboard_crew_is_headless(self) -> None:
+        """Unenrolled agent on a dashboard crew → headless (bridge removed)."""
         result, api = self._dispatch_unenrolled(self._CREW_WITH_DASH_UNENROLLED)
-        self.assertEqual(result["slot"], "bridge")
+        self.assertIsNone(result["slot"])
         body = api.call_args.kwargs["json"]
-        self.assertEqual(body["parent_session"], "dashboard:bridge")
+        self.assertNotIn("parent_session", body)
 
     def test_unenrolled_non_dashboard_crew_is_headless(self) -> None:
-        """4.4 — unenrolled agent on non-dashboard crew → headless (no parent_session)."""
+        """Unenrolled agent on a non-dashboard crew → headless."""
         result, api = self._dispatch_unenrolled(self._CREW_NO_DASH_UNENROLLED)
         self.assertIsNone(result["slot"])
         body = api.call_args.kwargs["json"]
         self.assertNotIn("parent_session", body)
 
 
-class DispatchSlotBatchTrueTests(unittest.TestCase):
-    """3.9 — batch with slot=True gives each task a distinct parent_session."""
+class DispatchSlotBatchMemberTests(unittest.TestCase):
+    """Batch with slot omitted gives every task the shared member DM slot;
+    no task_slots field is emitted."""
 
-    def test_batch_slot_true_distinct(self) -> None:
+    def test_batch_member_slot_shared(self) -> None:
         spawn_responses = [{"id": f"t{i}"} for i in range(3)]
         call_idx = {"n": 0}
 
@@ -220,31 +167,24 @@ class DispatchSlotBatchTrueTests(unittest.TestCase):
                 tasks=["task A", "task B", "task C"],
                 agent="ghost",
                 crew_id="demo",
-                slot=True,
             )
 
         self.assertNotIn("error", result)
-        self.assertTrue(result["slot"] is True)
+        self.assertEqual(result["slot"], "ghost")
+        self.assertNotIn("task_slots", result)
         all_ps = [
             call.kwargs["json"].get("parent_session")
             for call in api.call_args_list
         ]
         self.assertEqual(len(all_ps), 3)
         for ps in all_ps:
-            self.assertIsNotNone(ps)
-            self.assertRegex(ps, _TRUE_SLOT_PS_RE)
-        self.assertEqual(len(set(all_ps)), 3)
-        # task_slots maps each task_id to its slot name
-        self.assertIn("task_slots", result)
-        self.assertEqual(len(result["task_slots"]), 3)
-        for tid, name in result["task_slots"].items():
-            self.assertRegex(name, _TRUE_SLOT_NAME_RE)
+            self.assertEqual(ps, "dashboard:member-ghost")
 
 
-class DispatchSlotBatchNamedTests(unittest.TestCase):
-    """3.10 — batch with slot="shared" gives all tasks the same parent_session."""
+class DispatchSlotBatchHeadlessTests(unittest.TestCase):
+    """Batch with slot=False dispatches every task headless; no task_slots."""
 
-    def test_batch_named_slot_shared(self) -> None:
+    def test_batch_headless_no_parent_session(self) -> None:
         spawn_responses = [{"id": f"t{i}"} for i in range(2)]
         call_idx = {"n": 0}
 
@@ -265,18 +205,14 @@ class DispatchSlotBatchNamedTests(unittest.TestCase):
                 tasks=["task A", "task B"],
                 agent="ghost",
                 crew_id="demo",
-                slot="shared",
+                slot=False,
             )
 
         self.assertNotIn("error", result)
-        self.assertEqual(result["slot"], "shared")
-        all_ps = [
-            call.kwargs["json"].get("parent_session")
-            for call in api.call_args_list
-        ]
-        self.assertEqual(len(all_ps), 2)
-        self.assertEqual(all_ps[0], "dashboard:shared")
-        self.assertEqual(all_ps[1], "dashboard:shared")
+        self.assertIsNone(result["slot"])
+        self.assertNotIn("task_slots", result)
+        for call in api.call_args_list:
+            self.assertNotIn("parent_session", call.kwargs["json"])
 
 
 if __name__ == "__main__":

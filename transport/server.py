@@ -65,7 +65,6 @@ import re
 import secrets
 import time
 import threading
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -3664,7 +3663,7 @@ def dispatch(
     crew_id: str | None = None,
     model: str | None = None,
     tasks: list[str] | None = None,
-    slot: str | bool | None = None,
+    slot: bool | None = None,
 ) -> dict:
     """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
 
@@ -3713,18 +3712,25 @@ def dispatch(
             steer/continue operations.
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
-        slot: Session routing for this dispatch. Two modes:
-            ``None`` (default) — routes enrolled agents into their member DM
-            slot (``parent_session="dashboard:member-<slug>"``). The session
-            is attested, visible in the dashboard sessions list, and the agent
-            can make downstream spawn calls. The echoed slot name is the agent
-            name (e.g. ``"ghost"``). Use this for all SDD lifecycle agents and
-            any task that needs to orchestrate sub-agents.
-            ``False`` — explicit headless. No session is created, saving
-            ~250 MB RSS vs the member slot path. The agent is still attested
-            via member enrollment but cannot spawn sub-agents (no session
-            identity to attest against). Use for leaf tasks: Raven check-ins,
-            simple queries, batch jobs where browser visibility is not needed.
+        slot: Dashboard session routing for this dispatch. One of:
+            ``None`` (default) — let the system decide. For enrolled agents,
+            routes into the agent's member DM slot
+            (``parent_session="dashboard:member-<slug>"``), which is attested
+            and visible in the dashboard as a named thread; the echoed slot
+            name is the agent name (e.g. ``"ghost"``). For unenrolled agents,
+            dispatches headless (no session created, echoed slot ``None``).
+            ``False`` — explicit headless, regardless of enrollment: no session
+            is created and the echoed slot is ``None``.
+            ``True`` and arbitrary string slot names are no longer accepted —
+            member slots cover all legitimate slotted-dispatch use cases. A
+            member DM slot is pre-created at enrollment time, so no dispatch-time
+            slot pre-creation is performed.
+
+            MEMORY COST: a member-slot attachment spawns a kiro-cli-chat process
+            inside the crew container (~300-400 MB RSS). For autonomous or
+            unattended tasks (SDD, batch jobs, Raven check-ins) where dashboard
+            visibility is not needed, pass ``slot=False`` to dispatch headless
+            and avoid this overhead.
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
@@ -3756,23 +3762,12 @@ def dispatch(
         body["model"] = model
 
     resolved_slot_name: str | None = None
-    if effective_slot is True:
-        resolved_slot_name = parent_session.removeprefix("dashboard:") if parent_session else uuid.uuid4().hex[:8]
-        body["parent_session"] = f"dashboard:{resolved_slot_name}"
-        try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": resolved_slot_name})
-        except Exception:
-            pass
-    elif isinstance(effective_slot, str):
+    if parent_session:
+        # Member DM auto-route (effective_slot is the agent name). The member
+        # slot is pre-created at enrollment time, so no dispatch-time
+        # slot pre-creation is needed. Headless dispatch leaves parent_session
+        # unset (effective_slot is None).
         resolved_slot_name = effective_slot
-        body["parent_session"] = parent_session or f"dashboard:{effective_slot}"
-        try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
-        except Exception:
-            pass
-    elif parent_session:
-        # Member DM auto-route (effective_slot is None)
-        resolved_slot_name = parent_session.removeprefix("dashboard:")
         body["parent_session"] = parent_session
 
     try:
