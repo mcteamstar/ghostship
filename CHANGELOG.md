@@ -42,6 +42,37 @@ Bearer auth removed from crew UI paths (`/crews/*/ui`, WebSocket). `Caddy` forwa
 - Dead `GA_PORTAL_ENABLED` branches removed from dashboard-auth and TLS specs (TRN-179)
 - `GA_DASHBOARD_PORT_RANGE_SIZE` env var wired into config (TRN-180)
 
+### Dashboard WebSocket fixed (TRN-189, TRN-191)
+
+Two bugs prevented the KiroCrew dashboard from establishing a WebSocket connection through the Caddy proxy:
+
+- **Caddy WS forward_auth bypass (TRN-189)** — WebSocket upgrade requests were hitting the forward_auth gate and being rejected with 401. Caddy crew server config now emits two routes per crew: a WS upgrade route (no forward_auth) and an HTTP catch-all (with forward_auth). WebSocket sessions connect without authentication friction.
+
+- **WS origin + auth.py dispatch (TRN-191)** — Three-bug chain: `BearerAuthMiddleware.__call__` was looking up the WS handler in `_routes` instead of `_public_routes`, so the handler was always `None` → 403. The transport WS proxy was sending `Origin: http://gs-{crew_id}:5476` but the gateway only accepts loopback; changed to `http://localhost:{CREW_GATEWAY_PORT}`. Together these fixes make `101 Switching Protocols` reliable — Ghost sessions stream live and sub-agents spawn correctly through the dashboard.
+
+### Dispatch slot model simplified (TRN-192)
+
+With member-based dispatch (TRN-186/187) working correctly, the `slot` parameter on `dispatch()` has been reduced from four modes to two:
+
+- **`slot=None` (default)** — enrolled persona agents route into their attested member DM slot (`member-<slug>`), visible in the dashboard sessions list and able to make downstream spawn calls. Unenrolled agents dispatch headless.
+- **`slot=False`** — explicit headless, regardless of enrollment. No session is created, saving ~250 MB RSS per dispatch.
+
+`slot=True` (UUID auto-generation), `slot="bridge"`, and arbitrary named slots are removed. They were not attested (breaking downstream spawning for enrolled agents), cost the same memory as member slots, and offered no advantage now that member slots provide browser visibility for free. The bridge fallback for unenrolled agents on dashboard crews is also removed — unenrolled agents always dispatch headless.
+
+`_resolve_dispatch_slot` in `lifecycle.py` is now three lines. `slot_pre_create` calls (which POSTed to `/api/chat/slots` before dispatch) are removed — member DM slots are pre-created at enrollment time. The `task_slots` field is removed from batch dispatch responses.
+
+### Dashboard login redesign (TRN-190)
+
+`GET /dashboard/login` rewritten with Ghostship's visual identity:
+
+- Purple primary button (`#7c3aed`, hover `#6d28d9`) replacing the previous green
+- Floating ghost emoji hero (👻) with CSS `translateY` animation above the form title
+- Show/hide toggle on the API key field (inline SVG eye icon, vanilla JS)
+- Shake animation on the error paragraph for failed login attempts
+- Card widened to 360px with tightened label/field spacing
+- Accessibility: `aria-hidden` on decorative elements, `role="alert"` on the error paragraph
+- All CSS/JS inline — no external dependencies
+
 ### Fixes
 
 - **Presigned URL auth (TRN-169)** — `/files/?sig=` paths now exempt from Caddy bearer check; previously a presigned download through the Caddy proxy was incorrectly rejected with 401.
