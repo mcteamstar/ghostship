@@ -1199,8 +1199,15 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
 
     # Forward the client's requested subprotocols and inject the session cookie
     # and the internal crew origin (required by KiroCrew's WS origin check).
+    # TRN-191: send "http://localhost:{port}" rather than the container hostname
+    # (http://gs-{crew_id}:5476). KiroCrew's build_allowed_origins() always
+    # includes http://localhost:{port} and http://127.0.0.1:{port} regardless
+    # of config, but only adds dashboard.url when token auth middleware is
+    # active — which Ghostship's gateway does not use. The Origin header is
+    # only checked for WS CSRF; the actual IP-binding uses the TCP connection
+    # peer, not the Origin value, so sending localhost is safe.
     subprotocols = ws.scope.get("subprotocols") or []
-    crew_origin = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+    crew_origin = f"http://localhost:{CREW_GATEWAY_PORT}"
     handshake_headers = {
         "Cookie": _crew_cookie(crew),
         "Origin": crew_origin,
