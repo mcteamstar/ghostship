@@ -288,7 +288,7 @@ class DashboardGate:
         # it. encode_html_attr applied for defence-in-depth (hex output is already
         # safe, but the pattern matches next_url_escaped usage above).
         csrf_token_escaped = _security.encode_html_attr(self._csrf_token)
-        # Simple HTML login page — no external dependencies.
+        # Simple HTML login page — no external dependencies. All CSS/JS inline.
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -300,33 +300,86 @@ class DashboardGate:
          justify-content: center; min-height: 100vh; margin: 0;
          background: #0f0f0f; color: #e8e8e8; }}
   .card {{ background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
-           padding: 2rem; width: 320px; }}
-  h1 {{ font-size: 1.2rem; margin: 0 0 1.5rem; }}
-  label {{ display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.4rem; }}
-  input {{ width: 100%; box-sizing: border-box; padding: 0.6rem;
+           padding: 2rem; width: 360px; box-sizing: border-box; }}
+  .hero {{ text-align: center; font-size: 3.5rem; line-height: 1;
+           margin: 0 0 0.5rem; animation: float 3s ease-in-out infinite; }}
+  h1 {{ font-size: 1.2rem; margin: 0 0 1.75rem; text-align: center; }}
+  label {{ display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.5rem; }}
+  .field {{ margin-bottom: 1.1rem; }}
+  input {{ width: 100%; box-sizing: border-box; padding: 0.65rem 0.7rem;
            background: #0f0f0f; border: 1px solid #444; border-radius: 4px;
            color: #e8e8e8; font-size: 1rem; }}
-  button {{ margin-top: 1rem; width: 100%; padding: 0.7rem;
-            background: #2d6a4f; border: none; border-radius: 4px;
+  input:focus {{ outline: none; border-color: #7c3aed; }}
+  .pw-wrap {{ position: relative; }}
+  .pw-wrap input {{ padding-right: 2.75rem; }}
+  .toggle {{ position: absolute; top: 50%; right: 0.5rem; transform: translateY(-50%);
+             width: 2rem; height: 2rem; padding: 0; margin: 0; display: flex;
+             align-items: center; justify-content: center; background: none;
+             border: none; cursor: pointer; color: #888; }}
+  .toggle:hover {{ color: #ccc; }}
+  .toggle svg {{ width: 1.2rem; height: 1.2rem; display: block; }}
+  button[type="submit"] {{ margin-top: 0.4rem; width: 100%; padding: 0.7rem;
+            background: #7c3aed; border: none; border-radius: 4px;
             color: #fff; font-size: 1rem; cursor: pointer; }}
-  button:hover {{ background: #3a8a65; }}
+  button[type="submit"]:hover {{ background: #6d28d9; }}
   .err {{ color: #e07070; font-size: 0.85rem; margin-top: 0.8rem; display: none; }}
+  .err.show {{ display: block; }}
+  .err.shake {{ animation: shake 0.4s ease-in-out; }}
+  @keyframes float {{
+    0%   {{ transform: translateY(-6px); }}
+    50%  {{ transform: translateY(6px); }}
+    100% {{ transform: translateY(-6px); }}
+  }}
+  @keyframes shake {{
+    0%, 100% {{ transform: translateX(0); }}
+    20%      {{ transform: translateX(-6px); }}
+    40%      {{ transform: translateX(6px); }}
+    60%      {{ transform: translateX(-4px); }}
+    80%      {{ transform: translateX(4px); }}
+  }}
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>👻 Ghost Academy</h1>
+  <div class="hero">👻</div>
+  <h1>Ghost Academy</h1>
   <form id="f" method="post" action="/dashboard/login">
     <input type="hidden" name="next" value="{next_url_escaped}">
     <input type="hidden" name="csrf_token" value="{csrf_token_escaped}">
-    <label for="k">API Key</label>
-    <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
+    <div class="field">
+      <label for="k">API Key</label>
+      <div class="pw-wrap">
+        <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
+        <button type="button" id="toggle" class="toggle" aria-label="Show API key">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+        </button>
+      </div>
+    </div>
     <button type="submit">Sign in</button>
     <p class="err" id="err">Invalid API key.</p>
   </form>
 </div>
 <script>
   const f = document.getElementById('f');
+  const err = document.getElementById('err');
+  const key = document.getElementById('k');
+  const toggle = document.getElementById('toggle');
+
+  // Password show/hide toggle — switches input type between password and text.
+  toggle.addEventListener('click', () => {{
+    const showing = key.type === 'text';
+    key.type = showing ? 'password' : 'text';
+    toggle.setAttribute('aria-label', showing ? 'Show API key' : 'Hide API key');
+  }});
+
+  // Re-trigger the shake on each subsequent failure: strip the class once the
+  // animation ends so adding it again restarts it.
+  err.addEventListener('animationend', () => {{ err.classList.remove('shake'); }});
+
   f.addEventListener('submit', async e => {{
     e.preventDefault();
     const fd = new FormData(f);
@@ -339,7 +392,8 @@ class DashboardGate:
       try {{ const data = await r.json(); dest = data.next || '/'; }} catch (_e) {{}}
       window.location.href = dest;
     }} else {{
-      document.getElementById('err').style.display = 'block';
+      err.classList.add('show');
+      err.classList.add('shake');
     }}
   }});
 </script>
