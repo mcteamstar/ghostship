@@ -341,7 +341,7 @@ class DashboardGate:
 </head>
 <body>
 <div class="card">
-  <div class="hero">👻</div>
+  <div class="hero" aria-hidden="true">👻</div>
   <h1>Ghost Academy</h1>
   <form id="f" method="post" action="/dashboard/login">
     <input type="hidden" name="next" value="{next_url_escaped}">
@@ -352,6 +352,7 @@ class DashboardGate:
         <input type="password" id="k" name="ga_api_key" autocomplete="current-password" required>
         <button type="button" id="toggle" class="toggle" aria-label="Show API key">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               aria-hidden="true"
                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
             <circle cx="12" cy="12" r="3"></circle>
@@ -360,7 +361,7 @@ class DashboardGate:
       </div>
     </div>
     <button type="submit">Sign in</button>
-    <p class="err" id="err">Invalid API key.</p>
+    <p class="err" id="err" role="alert">Invalid API key.</p>
   </form>
 </div>
 <script>

@@ -3945,3 +3945,158 @@ class EvacUnpackMCPToolTests(unittest.TestCase):
         self.assertIn("bundle", result["error"])
         # _sign_file_url must NOT have been called
         mock_sign.assert_not_called()
+
+
+# ── TRN-190: DashboardGate.handle_login_get HTML structure ───────────────────
+
+
+class Trn190LoginGetHtmlTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for DashboardGate.handle_login_get HTML structure (trn-190).
+
+    Covers the three scenarios from the spec:
+      1. Login page loads with required visual elements and structure
+      2. Password visibility toggle wiring (aria-label, hidden fields intact)
+      3. Shake animation structure for failed-login feedback
+    """
+
+    async def _get_html(self, next_param: str = "") -> str:
+        req = _FormRequest(query_params={"next": next_param} if next_param else {})
+        resp = await server._dashboard_gate.handle_login_get(req)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/html", resp.media_type)
+        return bytes(resp.body).decode()
+
+    # ── Scenario 1: Login page loads ─────────────────────────────────────────
+
+    async def test_login_get_returns_200_text_html(self) -> None:
+        """Page loads with 200 text/html response."""
+        req = _FormRequest()
+        resp = await server._dashboard_gate.handle_login_get(req)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/html", resp.media_type)
+
+    async def test_login_get_has_ghost_emoji_hero(self) -> None:
+        """Page contains the ghost emoji hero element."""
+        html = await self._get_html()
+        self.assertIn("👻", html)
+        self.assertIn('class="hero"', html)
+
+    async def test_login_get_hero_is_aria_hidden(self) -> None:
+        """Decorative hero element is aria-hidden to screen readers."""
+        html = await self._get_html()
+        self.assertIn('aria-hidden="true"', html)
+
+    async def test_login_get_submit_button_is_purple(self) -> None:
+        """Submit button background uses Ghostship purple (#7c3aed)."""
+        html = await self._get_html()
+        self.assertIn("#7c3aed", html)
+
+    async def test_login_get_no_green_button(self) -> None:
+        """Old green button colour (#2d6a4f) is absent."""
+        html = await self._get_html()
+        self.assertNotIn("#2d6a4f", html)
+
+    async def test_login_get_card_width_360px(self) -> None:
+        """Card is 360px wide as specified."""
+        html = await self._get_html()
+        self.assertIn("360px", html)
+
+    async def test_login_get_float_animation_present(self) -> None:
+        """Float keyframes animate the ghost emoji continuously."""
+        html = await self._get_html()
+        self.assertIn("@keyframes float", html)
+        self.assertIn("translateY(-6px)", html)
+        self.assertIn("translateY(6px)", html)
+        self.assertIn("3s ease-in-out infinite", html)
+
+    async def test_login_get_no_external_dependencies(self) -> None:
+        """No CDN or external URLs in the page."""
+        html = await self._get_html()
+        self.assertNotIn("cdn.", html.lower())
+        self.assertNotIn("googleapis.com", html.lower())
+
+    # ── Scenario 2: Password visibility toggle ────────────────────────────────
+
+    async def test_login_get_password_field_present(self) -> None:
+        """API key input renders as a password field by default."""
+        html = await self._get_html()
+        self.assertIn('type="password"', html)
+        self.assertIn('name="ga_api_key"', html)
+
+    async def test_login_get_toggle_button_type_button(self) -> None:
+        """Show/hide toggle is a <button type=button> (does not submit form)."""
+        html = await self._get_html()
+        self.assertIn('type="button"', html)
+
+    async def test_login_get_toggle_has_aria_label(self) -> None:
+        """Toggle button has an initial accessible aria-label."""
+        html = await self._get_html()
+        self.assertIn('aria-label="Show API key"', html)
+
+    async def test_login_get_toggle_svg_is_aria_hidden(self) -> None:
+        """SVG eye icon inside the labeled button is aria-hidden (decorative)."""
+        html = await self._get_html()
+        # The SVG must carry aria-hidden so screen readers don't double-announce.
+        import re
+        svg_match = re.search(r'<svg[^>]*>', html)
+        self.assertIsNotNone(svg_match)
+        self.assertIn('aria-hidden="true"', svg_match.group(0))
+
+    async def test_login_get_toggle_js_switches_aria_label(self) -> None:
+        """JS toggle listener updates aria-label to Hide API key when showing."""
+        html = await self._get_html()
+        self.assertIn("Hide API key", html)
+
+    async def test_login_get_hidden_fields_preserved(self) -> None:
+        """Required hidden fields next and csrf_token are present."""
+        html = await self._get_html()
+        self.assertIn('name="next"', html)
+        self.assertIn('name="csrf_token"', html)
+
+    async def test_login_get_next_param_embedded(self) -> None:
+        """A safe ?next= value is embedded in the hidden next field."""
+        html = await self._get_html(next_param="/dashboard/crews")
+        self.assertIn("/dashboard/crews", html)
+
+    async def test_login_get_unsafe_next_param_sanitised(self) -> None:
+        """An unsafe ?next= value (open redirect) is replaced with /."""
+        html = await self._get_html(next_param="//evil.com")
+        self.assertNotIn("//evil.com", html)
+
+    async def test_login_get_async_fetch_submit_present(self) -> None:
+        """Async fetch submit handler is present."""
+        html = await self._get_html()
+        self.assertIn("fetch(", html)
+
+    async def test_login_get_redirect_from_json_body(self) -> None:
+        """Post-login redirect uses the JSON response body, not raw form data."""
+        html = await self._get_html()
+        self.assertIn(".json()", html)
+
+    # ── Scenario 3: Shake animation on failed login ───────────────────────────
+
+    async def test_login_get_shake_keyframes_present(self) -> None:
+        """Shake keyframes are defined in the style block."""
+        html = await self._get_html()
+        self.assertIn("@keyframes shake", html)
+
+    async def test_login_get_error_paragraph_role_alert(self) -> None:
+        """Error paragraph has role=alert so screen readers announce it."""
+        html = await self._get_html()
+        self.assertIn('role="alert"', html)
+
+    async def test_login_get_shake_class_added_on_error(self) -> None:
+        """JS adds .shake class to error element on a failed login response."""
+        html = await self._get_html()
+        self.assertIn("classList.add('shake')", html)
+
+    async def test_login_get_shake_removed_on_animationend(self) -> None:
+        """animationend listener removes .shake so the animation re-triggers."""
+        html = await self._get_html()
+        self.assertIn("animationend", html)
+        self.assertIn("classList.remove('shake')", html)
+
+    async def test_login_get_error_show_class_added_on_error(self) -> None:
+        """JS adds .show class to reveal the error paragraph on failure."""
+        html = await self._get_html()
+        self.assertIn("classList.add('show')", html)
