@@ -220,6 +220,45 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
             status, _, _ = _run_asgi(mw, _http_scope(headers))
             self.assertEqual(status, 401, f"Expected 401 for headers={headers}")
             self.assertFalse(downstream.called, f"Downstream called for headers={headers}")
+
+    def test_ws_crew_ui_dispatches_from_public_routes(self) -> None:
+        """TRN-189/191: WS upgrade for /crews/*/ui MUST be dispatched from
+        public_routes, not routes. The handler is registered in public_routes
+        (no bearer auth) so it was silently None when looked up in _routes,
+        causing every WS upgrade to fall through to the downstream app and
+        return 403."""
+        import asyncio
+
+        ws_handled: list[str] = []
+
+        async def fake_ws_handler(scope, receive, send):
+            ws_handled.append(scope["path"])
+
+        downstream = _FakeDownstream()
+        mw = server.BearerAuthMiddleware(
+            downstream,
+            api_key="key",
+            routes={},
+            public_routes={("WS", "/crews/*/ui"): fake_ws_handler},
+        )
+
+        async def _recv():
+            return {}
+
+        async def _send(_msg):
+            pass
+
+        ws_scope = {
+            "type": "websocket",
+            "path": "/crews/test-crew/ui/api/ws",
+            "headers": [],
+        }
+
+        asyncio.run(mw(ws_scope, _recv, _send))
+        self.assertEqual(ws_handled, ["/crews/test-crew/ui/api/ws"],
+                         "WS handler from public_routes was not invoked")
+        self.assertFalse(downstream.called,
+                         "WS upgrade fell through to downstream instead of public_routes handler")
 class TestTrn38SecurityHardening(unittest.TestCase):
     """Tests for security hardening changes."""
 

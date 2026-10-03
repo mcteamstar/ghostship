@@ -371,7 +371,11 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 and _ws_parts[2] == "ui"
             ):
                 # Delegate to the registered ws_proxy handler if present.
-                ws_handler = self._routes.get(("WS", "/crews/*/ui"))
+                # The WS handler lives in public_routes (no bearer auth needed —
+                # Caddy's gs_session forward-auth is the gate). Check both dicts.
+                ws_handler = self._public_routes.get(
+                    ("WS", "/crews/*/ui")
+                ) or self._routes.get(("WS", "/crews/*/ui"))
                 if ws_handler is not None:
                     await ws_handler(scope, receive, send)
                     return
