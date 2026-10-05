@@ -2,6 +2,10 @@
 
 ## v0.6.0
 
+### Breaking changes
+
+- **Removed `prewarm` MCP tool and `POST /crews/{crew_id}/prewarm` REST route (TRN-194)** — the explicit prewarm surface is gone. Callers of `prewarm(crew_id=...)` will receive a tool-not-found error; `POST /crews/{id}/prewarm` returns 404. Warming now happens automatically as a background side-effect of `supply` and `schedule` — no operator action is required.
+
 ### KiroCrew 0.6.0 → 0.7.2 upgrade (TRN-166, TRN-173)
 
 Crew base image bumped from `0.6.0` to `0.7.2`. KiroCrew 0.7.x tightened the spawn security model — internal spawns now require attested session identities, and several schema and config changes were needed:
@@ -153,7 +157,7 @@ Crew base image bumped from `0.6.0`. Login containers also updated. `KC_BASE_IMA
   - `slot="<name>"` — attach to a named slot
   - The slot is pre-created via `POST /api/chat/slots` before dispatch (409 treated as success).
 
-- **Auto-prewarm at launch (TRN-131)** — `_prewarm_crew()` fires at the end of `_finish_crew_setup`, sending a no-op canary dispatch to warm the KiroCrew process pool before the first real task arrives. Non-fatal — a prewarm failure is logged but does not fail the launch. `pre_warm_status` in the launch response. New env vars: `GA_PREWARM_ENABLED`, `GA_PREWARM_TTL_SECS`.
+- **Auto-prewarm at launch (TRN-131)** — `_prewarm_crew()` fires at the end of `_finish_crew_setup`, sending `GET /api/ready` to warm the ACP session before the first real task arrives. Non-fatal — a prewarm failure is logged but does not fail the launch. `pre_warm_status` in the launch response. New env vars: `GA_PREWARM_ENABLED`, `GA_PREWARM_TTL_SECS`.
 
 - **Docs infographics + tool docstrings (TRN-66)** — 3 new infographic PNGs (architecture, usage flow, fleet hierarchy). All 10 `server.py` MCP tool docstrings updated with workflow framing. README and docs reduced by ~30% via a targeted clarity pass.
 

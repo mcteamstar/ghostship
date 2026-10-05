@@ -169,6 +169,32 @@ class TestConfigKcBaseImage(unittest.TestCase):
         self.assertEqual(cfg.kc_base_image, "")
 
 
+class TestConfigPrewarmDefaults(unittest.TestCase):
+    """GA_PREWARM_ENABLED defaults to False and GA_PREWARM_TTL_SECS defaults to 300."""
+
+    def test_ga_prewarm_enabled_default_off(self) -> None:
+        """GA_PREWARM_ENABLED is False when unset — the demote invariant."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "GA_PREWARM_ENABLED"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertIs(cfg.ga_prewarm_enabled, False)
+
+    def test_ga_prewarm_enabled_on_when_explicitly_set(self) -> None:
+        """GA_PREWARM_ENABLED=1 enables prewarm."""
+        with patch.dict("os.environ", {"GA_PREWARM_ENABLED": "1"}):
+            cfg = Config.from_env()
+        self.assertIs(cfg.ga_prewarm_enabled, True)
+
+    def test_ga_prewarm_ttl_secs_default(self) -> None:
+        """GA_PREWARM_TTL_SECS defaults to 300 when unset."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "GA_PREWARM_TTL_SECS"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_prewarm_ttl_secs, 300)
+
+
 class TestConfigTLSDefault(unittest.TestCase):
     """GA_PORTAL_TLS_MODE default is 'off'."""
 

@@ -919,19 +919,6 @@ def _prewarm_crew(crew: dict, crew_id: str) -> dict:
     return {"crew_id": crew_id, "status": "warmed"}
 
 
-def prewarm(crew_id: str | None) -> dict:
-    """Public prewarm entry point shared by the MCP tool and REST endpoint.
-
-    Resolves the crew (2.7: an unknown crew_id returns an error and performs no
-    start or fork) then delegates to _prewarm_crew.
-    """
-    try:
-        crew = _require_crew(crew_id)
-    except (ValueError, KeyError) as e:
-        return {"error": str(e)}
-    return _prewarm_crew(crew, crew_id)
-
-
 # ── Launch helpers ────────────────────────────────────────────────────────────
 
 

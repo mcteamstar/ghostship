@@ -665,7 +665,6 @@ try:
         _task_timestamps_lock,
         _probe_gateway,
         _prewarm_crew,
-        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -752,7 +751,6 @@ except ModuleNotFoundError:
         _task_timestamps_lock,
         _probe_gateway,
         _prewarm_crew,
-        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -1483,36 +1481,6 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         crew_id, existing_port,
     )
     return JSONResponse({"dashboard_url": None})
-
-
-async def _handle_crew_prewarm_post(request: Request) -> Response:
-    """POST /crews/{crew_id}/prewarm — pre-establish the crew's ACP session.
-
-    Thin REST wrapper over the ``prewarm`` MCP tool. Behaves identically for a
-    given crew: it warms the crew's session ahead of an expected dispatch,
-    respecting the enable flag and the memory / active-crew gates, and returns
-    ``{"crew_id", "status"}`` with status in ``warmed | already_warm | disabled
-    | blocked:<gate> | error:<msg>``.
-
-    Auth: gated by the same ``GA_API_KEY`` Bearer auth as the other crew REST
-    endpoints (enforced by BearerAuthMiddleware, which never dispatches to this
-    handler without a valid key). Returns 404 for an unknown crew.
-    """
-    # Parse + require only (auto_wake=False) — _prewarm_crew owns the start/gate
-    # path via _ensure_crew_running, exactly like the dashboard handler.
-    resolved = await _resolve_crew_for_proxy(request.scope["path"], auto_wake=False)
-    if isinstance(resolved, Response):
-        return resolved
-    crew_id, _sub, crew = resolved
-
-    result = await asyncio.to_thread(_prewarm_crew, crew, crew_id)
-    if "error" in result:
-        return JSONResponse(result, status_code=404)
-    logger.info(
-        "POST /crews/%s/prewarm — status=%s",
-        crew_id, result.get("status"),
-    )
-    return JSONResponse(result)
 
 
 async def _handle_version_get(request: Request) -> Response:
@@ -2603,6 +2571,24 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         return {"error": f"Launch failed: {e}"}
 
 
+def _bg_prewarm(crew: dict, crew_id: str) -> None:
+    """Fire-and-forget background prewarm. Non-fatal.
+
+    Starts a daemon thread that calls _prewarm_crew; any exception is caught
+    and logged at WARNING so that the calling tool is never blocked or failed
+    by a prewarm error.  _prewarm_crew owns the GA_PREWARM_ENABLED gate and
+    returns early when disabled, so no guard is needed here.
+    """
+    def _run() -> None:
+        try:
+            _prewarm_crew(crew, crew_id)
+        except Exception as exc:
+            logger.warning(
+                "Background prewarm for %s failed (non-fatal): %s", crew_id, exc
+            )
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @mcp.tool()
 @_registry_guard
 def supply(
@@ -2672,7 +2658,7 @@ def supply(
         return {"error": "Invalid path — no traversal allowed"}
 
     try:
-        _ensure_crew_running(_require_crew(crew_id), crew_id)
+        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
@@ -2692,6 +2678,7 @@ def supply(
         curl_example = f'curl -X POST "{url}" --data-binary @./your-file'
 
     _security.audit_auth_event(action="presign_supply", outcome="issued", source=None)
+    _bg_prewarm(crew, crew_id)
     return {
         "crew_id": crew_id,
         "path": clean,
@@ -3461,6 +3448,7 @@ def schedule(
         except Exception as exc:
             logger.warning("Could not persist one-shot schedule entry: %s", exc)
 
+        _bg_prewarm(crew, crew_id)
         return {
             "job_id": r.get("id"),
             "crew_id": crew_id,
@@ -3500,6 +3488,8 @@ def schedule(
             _save_registry(reg)
     except Exception as exc:
         logger.warning("Could not persist schedule entry: %s", exc)
+
+    _bg_prewarm(crew, crew_id)
 
     # Resolve fire_immediately default: True for interval, False for cron
     should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
@@ -3804,34 +3794,6 @@ def dispatch(
         "created_at": created_at,
     }
     return response
-
-
-@mcp.tool()
-@_registry_guard
-def prewarm(crew_id: str | None = None) -> dict:
-    """Pre-establish a crew's ACP session ahead of an expected dispatch.
-
-    Warms the crew's ``kiro-cli-chat`` session — forking the session process and
-    completing the ACP handshake — so a subsequent ``dispatch`` on that crew does
-    not pay session cold-start latency. Returns promptly; it never blocks on a
-    real task and never dispatches real agent work, sends mail, or writes specs.
-
-    Opt-in and operator-bounded: prewarm does nothing unless
-    ``GA_PREWARM_ENABLED=true``. It respects the same memory
-    (``GA_MIN_FREE_MEM_GB``) and active-crew (``GA_MAX_ACTIVE_CREWS``) gates that
-    gate a real dispatch, and a warmed-but-unused session is still reaped by the
-    crew's ``session.timeout_secs`` idle timer.
-    Also: warm, preheat, pre-fork session.
-
-    Args:
-        crew_id: Which crew to warm. Required — use launch first.
-
-    Returns:
-        ``{"crew_id", "status"}`` where status is one of ``warmed`` |
-        ``already_warm`` | ``disabled`` | ``blocked:<gate>`` | ``error:<msg>``.
-        An unknown crew_id returns ``{"error": ...}`` and performs no start/fork.
-    """
-    return prewarm_impl(crew_id)
 
 
 # _record_last_task_at and _dispatch_batch live in transport.lifecycle next to
@@ -4247,7 +4209,6 @@ if __name__ == "__main__":
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
         ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
         ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
-        ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
         ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
     }
     _openapi_schema_public_routes = {
@@ -4285,7 +4246,6 @@ if __name__ == "__main__":
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
             ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
             ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
-            ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,

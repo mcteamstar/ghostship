@@ -357,7 +357,6 @@ class TestFinishCrewSetupClaudeBranch(unittest.TestCase):
             patch.object(_lifecycle, "_registry_lock", threading.Lock()),
             patch.object(_lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(_lifecycle, "_save_registry"),
-            patch.object(_lifecycle, "GA_PREWARM_ENABLED", False),
         ):
             return _lifecycle._finish_crew_setup(
                 podman,
