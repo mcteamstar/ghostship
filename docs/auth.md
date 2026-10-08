@@ -123,7 +123,7 @@ Claude Pro/Max subscription who prefer not to maintain a separate API-tier accou
 
 ### Authenticate
 
-**1. Trigger the Claude login flow**
+**1. Start the login flow**
 
 ```bash
 curl -sX POST http://localhost:64057/login/claude | jq
@@ -132,22 +132,42 @@ curl -sX POST http://localhost:64057/login/claude | jq
 ```json
 {
   "status": "pending",
-  "login_url": "https://claude.ai/auth/login?...",
+  "login_url": "https://claude.com/cai/oauth/authorize?...",
   "code": null
 }
 ```
 
-**2. Open the URL in your browser** and approve the OAuth request using your
-Claude account (Pro or Max).
+**2. Approve in your browser.** Open `login_url` and sign in with your Claude
+account (Pro or Max). After approval, the browser shows a code of the form
+`<code>#<state>`. Copy it.
 
-**3. Confirm completion**
+**3. Submit the code** (the second step, required for Claude):
+
+```bash
+curl -sX POST http://localhost:64057/login/claude/code \
+  -H 'Content-Type: application/json' \
+  -d '{"code": "<code>#<state>"}'
+# → 202 {"status": "submitted"}
+```
+
+The transport writes the code to the CLI and the token exchange runs. Submit it
+once; a second submission returns 409. The code is never logged.
+
+**4. Confirm completion**
 
 ```bash
 curl -s http://localhost:64057/login/claude | jq .status
-# → "complete"
+# → "pending" until the credential is saved, then "complete"
 ```
 
-**4. Launch** — the transport is ready. Each new crew will receive `~/.claude/`
+Completion means `~/.claude/.credentials.json` exists and is non-empty inside the
+login container. Other files, such as the `backups/` directory, do not count.
+
+If the exchange does not finish within 120 seconds of submitting the code, the
+poll returns `410` with `{"status": "expired"}`, the login container is removed,
+and the audit log records a failed login. Start again from step 1.
+
+**5. Launch** — the transport is ready. Each new crew will receive `~/.claude/`
 injected at setup time.
 
 ### Re-authenticate
@@ -179,22 +199,28 @@ takes precedence. OAuth credentials are only used when the API key is unset.
 
 ### Claude OAuth API
 
-Three HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
+Four HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
 `GA_API_KEY` is set. Only meaningful when `GA_CREW_ACP_BACKEND=claude`.
 
 ```
-UNAUTHENTICATED  ──[POST /login/claude]──►  PENDING  ──[GET /login/claude → complete]──►  AUTHENTICATED
+UNAUTHENTICATED  ──[POST /login/claude]──►  PENDING  ──[POST /login/claude/code]──►  CODE SUBMITTED  ──[GET /login/claude → complete]──►  AUTHENTICATED
                                                                                                │
                ◄──────────────────────────────────────[POST /logout/claude]────────────────────┘
 ```
 
-**`POST /login/claude`** — starts the Claude OAuth device-code flow inside an
-ephemeral `ga-claude-login-*` container. Returns `{"status": "pending", "login_url": "..."}`.
+**`POST /login/claude`** — starts the Claude OAuth authorisation flow inside an
+ephemeral `ga-claude-login-*` container. Returns `{"login_url": "...", "code": null}`.
 Returns 409 if already authenticated or flow in progress.
+
+**`POST /login/claude/code`** — body `{"code": "<code>#<state>"}`, the value the browser
+shows after approval. Writes it to the CLI and returns 202. Returns 404 if no flow
+is awaiting a code, 409 if a code was already submitted, and 400 for a malformed body.
+The code is never logged.
 
 **`GET /login/claude`** — polls completion. On success writes `ga-claude-auth` and
 returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
-Returns 404 if no flow is in progress.
+Returns 404 if no flow is in progress, and 410 `{"status": "expired"}` when a
+submitted code did not complete within 120 seconds.
 
 **`POST /logout/claude`** — deletes `ga-claude-auth` and wipes `~/.claude/` from
 every running Claude-backend crew. Returns 409 if not authenticated via OAuth.

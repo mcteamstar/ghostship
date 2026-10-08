@@ -1755,7 +1755,23 @@ async def _handle_claude_login_get(request: Request) -> Response:
     except Exception as e:
         return PlainTextResponse(str(e), status_code=500)
 
-    # Poll the login container for completed ~/.claude/ credentials (task 1.5)
+    # A submitted code that never completed the exchange abandons the flow.
+    if _lifecycle._claude_login_code_expired(pending):
+        _nuke_claude_login_container(podman, pending["container"])
+        with _lifecycle._claude_login_pending_lock:
+            if (
+                _lifecycle._claude_login_pending is not None
+                and _lifecycle._claude_login_pending.get("container") == pending["container"]
+            ):
+                _lifecycle._claude_login_pending = None
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="claude",
+            source=_request_source(request),
+            emit=logger.info,
+        )
+        return JSONResponse({"status": "expired"}, status_code=410)
+
+    # Poll the login container for the completed Claude credential.
     tar_bytes = _poll_claude_login_container(podman, pending["container"])
     if not tar_bytes:
         return JSONResponse({
@@ -1785,6 +1801,45 @@ async def _handle_claude_login_get(request: Request) -> Response:
         emit=logger.info,
     )
     return JSONResponse({"status": "complete"})
+
+
+async def _handle_claude_login_code_post(request: Request) -> Response:
+    """POST /login/claude/code — deliver the pasted Claude authorisation code.
+
+    Body: {"code": "<code>"}. The code is written to the pending login's PTY so
+    the CLI can complete the token exchange. Poll GET /login/claude afterwards.
+
+    Returns 202 once the code is written, 400 for a malformed body, 404 when no
+    flow is awaiting a code, 409 when a code was already submitted, and 500 when
+    the PTY closed before the write. The code is never logged or echoed.
+    Requires GA_CREW_ACP_BACKEND=claude; returns 400 otherwise.
+    """
+    if GA_CREW_ACP_BACKEND != "claude":
+        return JSONResponse(
+            {"error": "GA_CREW_ACP_BACKEND must be 'claude' to use POST /login/claude/code."},
+            status_code=400,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
+    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(code, str) or not code.strip():
+        return JSONResponse({"error": "'code' must be a non-empty string."}, status_code=400)
+
+    result = _lifecycle._submit_claude_login_code(code.strip())
+    error = result.get("error")
+    if error == "no_pending":
+        return JSONResponse({"error": "No Claude login is awaiting a code."}, status_code=404)
+    if error == "already_submitted":
+        return JSONResponse(
+            {"error": "A code was already submitted; poll GET /login/claude."},
+            status_code=409,
+        )
+    if error:
+        return JSONResponse({"error": "The login session closed before the code was written."},
+                            status_code=500)
+    return JSONResponse({"status": "submitted"}, status_code=202)
 
 
 async def _handle_claude_logout_post(request: Request) -> Response:
@@ -4200,6 +4255,7 @@ if __name__ == "__main__":
         ("POST", "/logout"): _handle_logout_post,
         ("POST", "/login/claude"): _handle_claude_login_post,
         ("GET",  "/login/claude"): _handle_claude_login_get,
+        ("POST", "/login/claude/code"): _handle_claude_login_code_post,
         ("POST", "/logout/claude"): _handle_claude_logout_post,
         ("POST", "/login/codex"): _handle_codex_login_post,
         ("GET",  "/login/codex"): _handle_codex_login_get,
@@ -4237,6 +4293,7 @@ if __name__ == "__main__":
             ("POST", "/logout"): _handle_logout_post,
             ("POST", "/login/claude"): _handle_claude_login_post,
             ("GET",  "/login/claude"): _handle_claude_login_get,
+            ("POST", "/login/claude/code"): _handle_claude_login_code_post,
             ("POST", "/logout/claude"): _handle_claude_logout_post,
             ("POST", "/login/codex"): _handle_codex_login_post,
             ("GET",  "/login/codex"): _handle_codex_login_get,

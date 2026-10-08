@@ -37,7 +37,7 @@ RUN npm install -g @fission-ai/openspec@1.9.0
 #   @agentclientprotocol/claude-agent-acp@0.79.0  — the ACP server binary
 #     (the `claude-agent-acp` binary that KiroCrew's AcpClient spawns for
 #     acp_backend="claude" sessions)
-#   @anthropic-ai/claude-code@0.2.93  — the `claude` CLI binary
+#   @anthropic-ai/claude-code@2.1.293  — the `claude` CLI binary
 #     (required by claude-agent-acp via CLAUDE_CODE_EXECUTABLE; the ACP
 #     server delegates model turns to the Claude Agent SDK which needs this)
 #
@@ -50,7 +50,7 @@ RUN npm install -g @fission-ai/openspec@1.9.0
 ARG INCLUDE_CLAUDE_AGENT=false
 RUN if [ "${INCLUDE_CLAUDE_AGENT}" = "true" ]; then \
       npm install -g @agentclientprotocol/claude-agent-acp@0.79.0 && \
-      npm install -g @anthropic-ai/claude-code@0.2.93; \
+      npm install -g @anthropic-ai/claude-code@2.1.293; \
     fi
 
 # Codex toolchain — optional, controlled by the INCLUDE_CODEX_AGENT build arg

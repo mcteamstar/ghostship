@@ -2199,6 +2199,25 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
 
 # ── Shared PTY login helper ──────────────────────────────────────────────────
 
+# Terminal control sequences the CLI may wrap around printed text: CSI (colour,
+# cursor), OSC (including OSC-8 hyperlinks, terminated by BEL or ESC \), and a
+# bare BEL. Stripped before URL and code patterns run, so the returned URL is
+# exactly the text the CLI printed.
+_TERMINAL_SEQUENCE_RE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|\x1b\[[0-9;?]*[ -/]*[@-~]"
+    r"|\x07"
+)
+# An escape sequence still arriving at the end of the buffer. URL matching waits
+# for its terminator, otherwise a URL inside an unterminated OSC-8 link could be
+# returned truncated.
+_OPEN_SEQUENCE_RE = re.compile(r"\x1b$|\x1b\[[0-9;?]*[ -/]*$|\x1b\][^\x07\x1b]*$")
+
+
+def _strip_terminal_sequences(text: str) -> str:
+    """Remove terminal control sequences and BEL from PTY output text."""
+    return _TERMINAL_SEQUENCE_RE.sub("", text)
+
 
 def _run_pty_login_flow(
     pty_sock: "socket.socket",
@@ -2252,7 +2271,9 @@ def _run_pty_login_flow(
                 if not chunk:
                     break
                 collected.extend(chunk)
-                text = collected.decode("utf-8", errors="replace")
+                raw_text = collected.decode("utf-8", errors="replace")
+                text = _strip_terminal_sequences(raw_text)
+                url_ready = not _OPEN_SEQUENCE_RE.search(raw_text)
 
                 for idx, (pattern, answer) in enumerate(prompt_patterns):
                     if idx in answered:
@@ -2264,7 +2285,7 @@ def _run_pty_login_flow(
                             pass
                         answered.add(idx)
 
-                for pat in url_patterns:
+                for pat in url_patterns if url_ready else ():
                     m = pat.search(text)
                     if m:
                         login_url = (m.group(1) if m.lastindex else m.group(0)).rstrip(").,")
@@ -2576,13 +2597,14 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
         re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
         re.compile(r"(https?://\S{20,})"),
     ]
-    claude_code_pattern = re.compile(r"[?&]code=([A-Za-z0-9_-]+)")
-
-    login_url, login_code = _run_pty_login_flow(
+    # No code is extracted from the URL: its `code=true` parameter is a flag, not
+    # the authorisation code. The user's code is shown in the browser after
+    # approval and pasted back through POST /login/claude/code.
+    login_url, _ = _run_pty_login_flow(
         pty_sock=pty_sock,
         prompt_patterns=claude_prompt_patterns,
         url_patterns=claude_url_patterns,
-        code_pattern=claude_code_pattern,
+        code_pattern=None,
         deadline_secs=45.0,
     )
 
@@ -2599,46 +2621,129 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
         }
 
     # ── Phase: finalise ────────────────────────────────────────────────────────
-    # Drain thread already started by _run_pty_login_flow.
+    # The drain thread started by _run_pty_login_flow keeps reading so the CLI
+    # never blocks on a full PTY buffer. The socket stays writable so
+    # _submit_claude_login_code can deliver the pasted code.
     with _claude_login_pending_lock:
         if _claude_login_pending is not None:
-            _claude_login_pending["exec_id"] = exec_id
+            _claude_login_pending.update(
+                exec_id=exec_id,
+                login_url=login_url,
+                pty_sock=pty_sock,
+                state="awaiting_code",
+            )
 
     logger.info("Claude login flow started in %s, URL extracted", container)
-    return {"login_url": login_url, "code": login_code}
+    return {"login_url": login_url, "code": None}
 
+
+# How long a submitted code may take to complete the exchange before the flow is
+# abandoned. The exchange is a single network round-trip, so this is generous.
+CLAUDE_LOGIN_CODE_DEADLINE_SECS = 120.0
+
+
+def _submit_claude_login_code(code: str) -> dict:
+    """Write the user's pasted authorisation code to the pending login's PTY.
+
+    Returns one of:
+      {"ok": True}                 — code written; the exchange is in progress
+      {"error": "no_pending"}      — no Claude login flow is awaiting a code
+      {"error": "already_submitted"} — a code was already written for this flow
+      {"error": "pty_write_failed"}  — the PTY closed before the code was written
+
+    The code is never logged or returned.
+    """
+    with _claude_login_pending_lock:
+        pending = _claude_login_pending
+        if pending is None or pending.get("state") not in ("awaiting_code", "code_submitted"):
+            return {"error": "no_pending"}
+        if pending["state"] == "code_submitted":
+            return {"error": "already_submitted"}
+        sock = pending.get("pty_sock")
+        if sock is None:
+            return {"error": "no_pending"}
+        try:
+            sock.sendall((code + "\n").encode())
+        except Exception as e:
+            logger.warning("Could not write Claude login code to PTY: %s", type(e).__name__)
+            return {"error": "pty_write_failed"}
+        pending["state"] = "code_submitted"
+        pending["code_submitted_at"] = time.time()
+    return {"ok": True}
+
+
+def _claude_login_code_expired(pending: dict) -> bool:
+    """True when a submitted code has not completed the exchange within the deadline."""
+    submitted_at = pending.get("code_submitted_at")
+    return (
+        pending.get("state") == "code_submitted"
+        and submitted_at is not None
+        and time.time() - submitted_at > CLAUDE_LOGIN_CODE_DEADLINE_SECS
+    )
+
+
+
+CLAUDE_CREDENTIAL_FILE = ".credentials.json"
+_CLAUDE_CONFIG_DIR_IN_CONTAINER = "/home/kirocrew/.claude"
+
+
+def _archive_has_claude_credential(tar_bytes: bytes) -> bool:
+    """True when the archive contains a non-empty CLAUDE_CREDENTIAL_FILE.
+
+    Other members (such as backups/ or .claude.json) do not count as completion.
+    """
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tf:
+            for member in tf.getmembers():
+                if (
+                    member.isfile()
+                    and os.path.basename(member.name) == CLAUDE_CREDENTIAL_FILE
+                    and member.size > 0
+                ):
+                    return True
+    except tarfile.TarError:
+        return False
+    return False
 
 
 def _poll_claude_login_container(podman: "PodmanClient", container: str) -> bytes | None:
-    """Poll container for completed ~/.claude/ credentials.
+    """Poll container for completed Claude credentials.
 
-    Checks whether ~/.claude/ inside the container contains a non-empty
-    credentials file. If present, tars the entire ~/.claude/ directory and
-    returns the raw tar bytes. Returns None if credentials are not yet present.
+    Completion is the CLI's credential file (~/.claude/.credentials.json) being
+    present and non-empty. Only then is ~/.claude/ tarred and returned, so the
+    crews receive the same directory layout the CLI wrote. Returns None when the
+    credential is not yet present, or when the archive would not contain it.
 
-    On completion (task 1.5): the caller writes the tar to ga-claude-auth
-    (mode 0600) and nukes the login container.
+    The caller writes the tar to ga-claude-auth (mode 0600) and nukes the login
+    container. Any other file under ~/.claude/ (such as backups/) is not evidence
+    of login: the earlier any-file check matched a config backup and reported a
+    login that never happened.
     """
     try:
-        # Check for any file in ~/.claude/ with content
-        result = podman.container_exec(
+        check = podman.container_exec(
             container,
-            ["sh", "-c", "find /home/kirocrew/.claude/ -type f -size +0 2>/dev/null | head -1"],
+            [
+                "sh", "-c",
+                f"test -s {_CLAUDE_CONFIG_DIR_IN_CONTAINER}/{CLAUDE_CREDENTIAL_FILE} && echo present",
+            ],
         )
-        if not result or not result.strip():
+        if not check or "present" not in check:
             return None
-        # Tar ~/.claude/ inside the container and retrieve the archive via base64.
         # container_exec returns stdout as a string, so base64 is the transport.
-        # Note: the dead _req("POST", ".../export") call that was here before was
-        # removed (TRN-170 Banshee fix F1) — it was never consumed and would
-        # silently fail on large archives; the exec+base64 path is the only path.
-        import base64 as _b64
         tar_b64_result = podman.container_exec(
             container,
-            ["sh", "-c", "tar -cf - -C /home/kirocrew/.claude/ . 2>/dev/null | base64"],
+            [
+                "sh", "-c",
+                f"tar -cf - -C {_CLAUDE_CONFIG_DIR_IN_CONTAINER}/ . 2>/dev/null | base64",
+            ],
         )
-        if tar_b64_result and tar_b64_result.strip():
-            return _b64.b64decode(tar_b64_result.strip())
+        if not tar_b64_result or not tar_b64_result.strip():
+            return None
+        tar_bytes = base64.b64decode(tar_b64_result.strip())
+        if not _archive_has_claude_credential(tar_bytes):
+            logger.warning("Claude login archive did not contain %s; not completing", CLAUDE_CREDENTIAL_FILE)
+            return None
+        return tar_bytes
     except Exception as e:
         logger.warning("Error polling Claude login container: %s", e)
     return None
