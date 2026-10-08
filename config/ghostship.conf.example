@@ -148,10 +148,11 @@
 #   2. A Claude credential — one of:
 #      a. GA_CREW_ANTHROPIC_API_KEY — Anthropic pay-per-token API key (TRN-167).
 #         When set, takes precedence over OAuth credentials.
-#      b. Claude OAuth login via POST /login/claude (TRN-170). Requires a
-#         Claude Pro/Max subscription. Authenticate by calling POST /login/claude
-#         and completing the browser flow; credentials are stored in ga-claude-auth
-#         and injected automatically into new crew containers.
+#      b. Claude OAuth login (TRN-170). Requires a Claude Pro/Max subscription.
+#         Two steps: POST /login/claude returns a login_url; approve it in the
+#         browser, then POST the pasted <code>#<state> to /login/claude/code.
+#         Poll GET /login/claude until it returns "complete". Credentials are
+#         stored in ga-claude-auth and injected into new crew containers.
 #      If neither is present at launch time, launch() returns not_authenticated
 #      with a login URL. GA_CREW_ANTHROPIC_API_KEY is optional from TRN-170.
 #
@@ -160,10 +161,20 @@
 # policies/default.json) is still enforced. Outbound access to
 # api.anthropic.com is required for Claude-backend crews.
 #
+# Opt-in: the Claude backend is off by default. Enable it with BOTH settings:
+#   GA_INCLUDE_CLAUDE_AGENT=true   (image build) and GA_CREW_ACP_BACKEND=claude
+# With GA_CREW_ACP_BACKEND=claude but GA_INCLUDE_CLAUDE_AGENT unset or false, the
+# transport refuses login and launch with a message naming the missing setting.
+#
 # GA_CREW_ACP_BACKEND=kiro
 # GA_INCLUDE_CLAUDE_AGENT=false
 # GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
 # GA_CREW_ANTHROPIC_BASE_URL=""
+#
+# Model override (applies to all agents; a dispatch(model=...) call still wins).
+# Use a model id the organisation permits. On Claude, claude-haiku-5-5 is known
+# to work; the default persona model may be restricted.
+# KC_MODEL_OVERRIDE="claude-haiku-5-5"
 
 # ── Codex ACP backend (TRN-172) ──────────────────────────────────────────────
 # Set GA_CREW_ACP_BACKEND=codex to use the Codex ACP runtime inside crews

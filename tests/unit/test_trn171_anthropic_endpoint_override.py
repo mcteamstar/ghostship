@@ -87,6 +87,13 @@ def _launch_and_capture_env(
 class TestAnthropicBaseUrlClaudeBackendSet(unittest.TestCase):
     """4.1: GA_CREW_ANTHROPIC_BASE_URL set with Claude backend → ANTHROPIC_BASE_URL
     present in the container_env passed to container_create."""
+    def setUp(self):
+        super().setUp()
+        # Claude is opt-in: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(_server.cfg, "ga_include_claude_agent", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
     def test_anthropic_base_url_injected_when_set(self) -> None:
         """ANTHROPIC_BASE_URL is present when backend=claude and base URL is set."""
@@ -119,6 +126,13 @@ class TestAnthropicBaseUrlClaudeBackendSet(unittest.TestCase):
 class TestAnthropicBaseUrlClaudeBackendUnset(unittest.TestCase):
     """4.2: GA_CREW_ANTHROPIC_BASE_URL unset with Claude backend → ANTHROPIC_BASE_URL
     absent from container_env (default behaviour preserved)."""
+    def setUp(self):
+        super().setUp()
+        # Claude is opt-in: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(_server.cfg, "ga_include_claude_agent", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
     def test_anthropic_base_url_absent_when_unset(self) -> None:
         """ANTHROPIC_BASE_URL is NOT injected when GA_CREW_ANTHROPIC_BASE_URL is empty."""

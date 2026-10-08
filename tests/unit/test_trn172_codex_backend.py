@@ -279,6 +279,8 @@ class TestLaunchCodexEnvInjection(unittest.TestCase):
             patch.object(server, "_GA_CREW_OPENAI_BASE_URL", base_url),
             patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", anthropic_key),
             patch.object(server, "_GA_CREW_ANTHROPIC_BASE_URL", anthropic_base),
+            # Claude is opt-in; the claude-backend case must enable it to reach launch.
+            patch.object(server.cfg, "ga_include_claude_agent", True),
             patch.object(server, "KIRO_API_KEY", ""),
             patch.object(server, "_codex_auth_exists", return_value=True),
             patch.object(server, "_claude_auth_exists", return_value=True),

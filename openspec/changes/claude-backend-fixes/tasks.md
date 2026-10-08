@@ -25,9 +25,18 @@
 
 - [x] 4.1 Update `crews/spec-ops/Containerfile` to `@anthropic-ai/claude-code@2.1.293` and `docs/configuration.md` to match. Remove the temporary `make`/`g++` install if the new CLI's build does not need it, and confirm the image still builds.
 - [x] 4.2 Run one Claude-backend crew task on the rebuilt image, to confirm the ACP adaptor works with 2.1.293. Record the result before the pin is accepted.
-- [~] 4.3 Run the full unit suite (`tests/run.sh --unit`), including the kiro login tests. Result: 1171 passed, 2 failed. The 2 failures (`test_dashboard_session.py` WsRelayEventDispatchTests) reference `server._WsBytesMessage`, which is absent from the committed `transport/server.py`, so they predate this change and are not fixed here.
+- [x] 4.3 Run the full unit suite (`tests/run.sh --unit`), including the kiro login tests. Result: 1175 passed, 0 failed.
 
 ## 5. Docs
 
 - [x] 5.1 Update `docs/auth.md` with the two-step Claude login (start, then submit the code), and the completion behaviour.
 - [x] 5.2 Update the `GA_INCLUDE_CLAUDE_AGENT` row in `docs/configuration.md` if the pin text differs from 4.1.
+
+## 6. Follow-up issues from the first working run
+
+- [x] 6.1 Haiku model override: `KC_MODEL_OVERRIDE=claude-haiku-5-5` set in local config. Verified with a fresh crew: `HAIKU_SMOKE_OK` with no fallback warning.
+- [x] 6.2 Approval deadline: a login never approved expires after 900s (410, container removed, audit failure). Spec scenario added.
+- [x] 6.3 Opt-in: Claude requires `GA_INCLUDE_CLAUDE_AGENT=true` plus `GA_CREW_ACP_BACKEND=claude`. `POST /login/claude` returns 400 and `launch` returns `claude_backend_not_enabled` otherwise. Kiro remains the default. Documented in `config/ghostship.conf.example`.
+- [x] 6.4 Stale dashboard relay tests (`_WsBytesMessage`, removed in 0.5.0) rewritten to the current str/bytes contract. Note: they mirror the relay logic, not the nested closure.
+- [x] 6.5 Launch instructions now include the paste-back step.
+

@@ -76,6 +76,10 @@ After `POST /login/claude` returns a login URL, the user completes the browser a
 - **WHEN** a code was submitted and `GET /login/claude` is polled more than 120 seconds later with no credential written
 - **THEN** the transport removes the login container, clears the pending state, records `action=login outcome=failure` in the audit log, and returns HTTP 410 with `{"status": "expired"}`
 
+#### Scenario: Login never approved expires
+- **WHEN** no code has been submitted and `GET /login/claude` is polled more than 900 seconds after the flow started
+- **THEN** the transport removes the login container, clears the pending state, records `action=login outcome=failure` in the audit log, and returns HTTP 410 with `{"status": "expired"}`
+
 #### Scenario: Code never appears in logs
 - **WHEN** `POST /login/claude/code` is called with a valid code
 - **THEN** no log line, audit entry, or response body contains the submitted code
@@ -91,3 +95,20 @@ The transport SHALL treat a Claude login as complete only when the credential fi
 #### Scenario: Audit log records success only on a verified credential
 - **WHEN** a Claude login completes and `ga-claude-auth` is written
 - **THEN** the audit log entry `action=login outcome=success` is written at that point and not earlier
+
+### Requirement: Claude backend is opt-in
+
+The Claude backend SHALL be used only when the operator sets `GA_CREW_ACP_BACKEND=claude` and `GA_INCLUDE_CLAUDE_AGENT=true`. Kiro remains the default. When the Claude backend is selected without `GA_INCLUDE_CLAUDE_AGENT=true`, `POST /login/claude` SHALL return HTTP 400 naming `GA_INCLUDE_CLAUDE_AGENT`, and `launch` SHALL return `claude_backend_not_enabled` with the same remedy, without starting any login flow or container.
+
+#### Scenario: Login refused when the image lacks the Claude CLI
+- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `GA_INCLUDE_CLAUDE_AGENT` is false, and `POST /login/claude` is called
+- **THEN** the transport returns HTTP 400 with a message naming `GA_INCLUDE_CLAUDE_AGENT`, and no login container is created
+
+#### Scenario: Launch refused when the image lacks the Claude CLI
+- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `GA_INCLUDE_CLAUDE_AGENT` is false, and `launch` is called
+- **THEN** `launch` returns `claude_backend_not_enabled` with the remedy, and no login flow is started
+
+#### Scenario: Kiro is the default backend
+- **WHEN** `GA_CREW_ACP_BACKEND` is unset
+- **THEN** crews launch on kiro and no Claude login or opt-in check applies
+

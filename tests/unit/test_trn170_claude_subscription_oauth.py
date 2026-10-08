@@ -76,7 +76,6 @@ class TestValidateNoLongerRaisesWithoutApiKey(unittest.TestCase):
 
 class TestHandleClaudeLoginPost(unittest.TestCase):
     """6.1: POST /login/claude state machine."""
-
     def _run(self, request: Mock = None) -> object:
         if request is None:
             request = Mock()
@@ -86,6 +85,10 @@ class TestHandleClaudeLoginPost(unittest.TestCase):
         # Ensure clean state
         with _lifecycle._claude_login_pending_lock:
             _lifecycle._claude_login_pending = None
+        # Claude is opt-in: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(server.cfg, "ga_include_claude_agent", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         with _lifecycle._claude_login_pending_lock:
@@ -425,6 +428,13 @@ class TestFinishCrewSetupClaudeBranch(unittest.TestCase):
 
 class TestLaunchClaudeBackendNoCredentials(unittest.TestCase):
     """6.5: launch() with Claude backend and no credentials calls _initiate_claude_login."""
+    def setUp(self):
+        super().setUp()
+        # Claude is opt-in: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(server.cfg, "ga_include_claude_agent", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
     def _run_launch(self, crew_id: str = "test") -> dict:
         return _lifecycle.launch(crew_id)  # type: ignore[attr-defined]

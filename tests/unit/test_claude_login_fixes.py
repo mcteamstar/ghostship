@@ -145,6 +145,14 @@ class TestSubmitClaudeLoginCode(unittest.TestCase):
             logging.getLogger(__name__).info("sentinel")
         self.assertNotIn("SECRET-CODE", "\n".join(logs.output))
 
+    def test_unapproved_login_expires_after_approval_deadline(self):
+        now = time.time()
+        deadline = _lifecycle.CLAUDE_LOGIN_APPROVAL_DEADLINE_SECS
+        self.assertFalse(_lifecycle._claude_login_code_expired(
+            {"state": "awaiting_code", "started_at": now - deadline + 60}))
+        self.assertTrue(_lifecycle._claude_login_code_expired(
+            {"state": "awaiting_code", "started_at": now - deadline - 1}))
+
     def test_expiry_check(self):
         now = time.time()
         self.assertFalse(_lifecycle._claude_login_code_expired(
@@ -237,6 +245,20 @@ class TestExpiredCodeOnPoll(unittest.TestCase):
         poll.assert_not_called()
         self.assertEqual(audit.call_args.kwargs["outcome"], "failure")
         self.assertIsNone(_lifecycle._claude_login_pending)
+
+
+class TestClaudeOptIn(unittest.TestCase):
+    """Claude is opt-in: the login endpoint refuses unless the image includes the CLI."""
+
+    def test_login_refused_when_image_not_built_for_claude(self):
+        from unittest.mock import Mock as _Mock
+        with patch.object(server, "GA_CREW_ACP_BACKEND", "claude"), \
+             patch.object(server.cfg, "ga_include_claude_agent", False), \
+             patch.object(server, "_initiate_claude_login") as initiate:
+            response = asyncio.run(server._handle_claude_login_post(_Mock()))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"GA_INCLUDE_CLAUDE_AGENT", response.body)
+        initiate.assert_not_called()
 
 
 if __name__ == "__main__":

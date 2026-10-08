@@ -1685,6 +1685,13 @@ async def _handle_logout_post(request: Request) -> Response:
 # ── Claude OAuth login/logout endpoints ────────────────────────────────────────
 
 
+CLAUDE_OPT_IN_ERROR = (
+    "Claude backend is not enabled on this transport. Set GA_INCLUDE_CLAUDE_AGENT=true "
+    "and rebuild the spec-ops image (install.sh or ghostship install), then restart. "
+    "Kiro remains the default backend."
+)
+
+
 async def _handle_claude_login_post(request: Request) -> Response:
     """POST /login/claude — initiate Claude OAuth device-code flow.
 
@@ -1700,6 +1707,8 @@ async def _handle_claude_login_post(request: Request) -> Response:
             "GA_CREW_ACP_BACKEND must be 'claude' to use POST /login/claude.",
             status_code=400,
         )
+    if not cfg.ga_include_claude_agent:
+        return PlainTextResponse(CLAUDE_OPT_IN_ERROR, status_code=400)
 
     with _lifecycle._claude_login_pending_lock:
         if _claude_auth_exists():
@@ -2313,6 +2322,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # Task 3.3: Claude backend — require either API key or OAuth credential.
         # If neither is present, initiate the Claude login flow and return
         # not_authenticated with the login URL (identical behaviour to kiro path).
+        if not cfg.ga_include_claude_agent:
+            return {"error": "claude_backend_not_enabled", "instructions": CLAUDE_OPT_IN_ERROR}
         if not _GA_CREW_ANTHROPIC_API_KEY and not _claude_auth_exists():
             result = _initiate_claude_login(podman)
             if result.get("login_pending"):
@@ -2327,7 +2338,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "error": "not_authenticated",
                 "login_url": result.get("login_url"),
                 "code": result.get("code"),
-                "instructions": "Open login_url to authenticate with Claude, then call launch again.",
+                "instructions": "Open login_url, approve, then POST the pasted code to /login/claude/code, poll GET /login/claude until complete, then call launch again.",
             }
     elif GA_CREW_ACP_BACKEND == "codex":
         # Task 3.3: Codex backend — require either GA_CREW_OPENAI_API_KEY or a

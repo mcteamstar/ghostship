@@ -2672,14 +2672,28 @@ def _submit_claude_login_code(code: str) -> dict:
     return {"ok": True}
 
 
+# How long a login may wait for the user to approve in the browser and paste the
+# code. Without this, an abandoned flow keeps its login container running until
+# the transport restarts.
+CLAUDE_LOGIN_APPROVAL_DEADLINE_SECS = 900.0
+
+
 def _claude_login_code_expired(pending: dict) -> bool:
-    """True when a submitted code has not completed the exchange within the deadline."""
-    submitted_at = pending.get("code_submitted_at")
-    return (
-        pending.get("state") == "code_submitted"
-        and submitted_at is not None
-        and time.time() - submitted_at > CLAUDE_LOGIN_CODE_DEADLINE_SECS
-    )
+    """True when a Claude login has exceeded its deadline.
+
+    Two windows: the user must submit a code within CLAUDE_LOGIN_APPROVAL_DEADLINE_SECS
+    of the flow starting, and a submitted code must complete the exchange within
+    CLAUDE_LOGIN_CODE_DEADLINE_SECS.
+    """
+    now = time.time()
+    state = pending.get("state")
+    if state == "awaiting_code":
+        started_at = pending.get("started_at")
+        return started_at is not None and now - started_at > CLAUDE_LOGIN_APPROVAL_DEADLINE_SECS
+    if state == "code_submitted":
+        submitted_at = pending.get("code_submitted_at")
+        return submitted_at is not None and now - submitted_at > CLAUDE_LOGIN_CODE_DEADLINE_SECS
+    return False
 
 
 

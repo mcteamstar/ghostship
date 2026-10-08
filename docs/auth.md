@@ -163,7 +163,7 @@ curl -s http://localhost:64057/login/claude | jq .status
 Completion means `~/.claude/.credentials.json` exists and is non-empty inside the
 login container. Other files, such as the `backups/` directory, do not count.
 
-If the exchange does not finish within 120 seconds of submitting the code, the
+If no code is submitted within 15 minutes of starting the login, the poll also returns `410`. If the exchange does not finish within 120 seconds of submitting the code, the
 poll returns `410` with `{"status": "expired"}`, the login container is removed,
 and the audit log records a failed login. Start again from step 1.
 
