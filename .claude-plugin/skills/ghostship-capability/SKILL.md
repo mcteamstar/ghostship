@@ -228,7 +228,7 @@ RUN apt-get install -y my-tool
 Or start from the KiroCrew base directly:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew:0.7.2
+FROM ghcr.io/kirodotdev/kirocrew:0.8.0
 # Install mail stack, kiro-cli, openspec, any extra tools...
 ```
 

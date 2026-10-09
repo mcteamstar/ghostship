@@ -856,3 +856,52 @@ class TestInstallShPodmanSecret(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# install.sh Caddy public route covers every login/logout route
+# ---------------------------------------------------------------------------
+
+class InstallCaddyAuthRouteTests(unittest.TestCase):
+    """Every transport login/logout route must be proxied by the Caddy public route.
+
+    Regression guard: the public route matched "/login*" but only the exact
+    path "/logout", so POST /logout/claude and /logout/codex never reached the
+    transport and Caddy answered them with an empty 200.
+    """
+
+    AUTH_ROUTES = (
+        "/login",
+        "/logout",
+        "/login/claude",
+        "/login/claude/code",
+        "/logout/claude",
+        "/login/codex",
+        "/logout/codex",
+    )
+
+    def test_public_route_matches_every_auth_route(self):
+        import fnmatch
+        import json
+        import re
+
+        install_path = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
+        if not install_path.exists():
+            self.skipTest("scripts/install.sh not found relative to test")
+
+        content = install_path.read_text()
+        # Every Caddy path matcher list that serves the login routes.
+        path_lists = [
+            json.loads(m.group(1))
+            for m in re.finditer(r'"path": (\[[^\]]*"/login"[^\]]*\])', content)
+        ]
+        self.assertTrue(path_lists, "install.sh must define a Caddy route for /login")
+
+        for patterns in path_lists:
+            for route in self.AUTH_ROUTES:
+                with self.subTest(route=route, patterns=patterns):
+                    # Caddy path matchers: '*' is a wildcard, otherwise exact.
+                    self.assertTrue(
+                        any(fnmatch.fnmatchcase(route, p) for p in patterns),
+                        f"{route} is not proxied to the transport by {patterns}",
+                    )
