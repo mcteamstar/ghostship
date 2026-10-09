@@ -160,6 +160,9 @@ def _schedule_monitor() -> None:
                 for sched in schedules:
                     if not sched.get("enabled", True):
                         continue
+                    # Captain entries are driven by _captain_monitor, not here
+                    if sched.get("type") == "captain":
+                        continue
                     next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
                     if next_fire > now:
                         continue
@@ -540,3 +543,104 @@ def _idle_monitor() -> None:
             # Never let one bad iteration end idle reaping for the process.
             logger.exception("Idle monitor iteration failed; retrying next interval")
 
+
+
+# ── Captain monitor ───────────────────────────────────────────────────────────
+
+_CAPTAIN_MONITOR_INTERVAL: int = 30  # seconds between scans when no entry is due
+
+
+def _captain_monitor() -> None:
+    """Background thread: drive Captain dispatch+steer check-ins.
+
+    Runs as a daemon thread — exits automatically when the process exits.
+    Scans the registry every _CAPTAIN_MONITOR_INTERVAL seconds (or sooner
+    when an entry is due) and fires ``_steer_captain_checkin`` for each
+    enabled captain entry whose ``next_fire_at`` has passed.
+
+    Captain entries (type == "captain") are managed entirely by the transport
+    registry; there is no gateway cron job for Captain.  This loop is the
+    replacement for the gateway cron timer.
+    """
+    # Import here to avoid circular import (same pattern as _schedule_monitor).
+    # These are injected via bind_lifecycle() for _crew_api_with_recovery and
+    # _ensure_crew_running.  For _steer_captain_checkin and
+    # _dispatch_captain_checkin we import from server at call time (they are
+    # defined there, not in lifecycle) to avoid a module-load cycle.
+    while True:
+        try:
+            with _registry_lock:
+                reg = _load_registry()
+                crew_items = list(reg["crews"].items())
+
+            now = time.time()
+            next_wakeup = now + _CAPTAIN_MONITOR_INTERVAL
+
+            for crew_id, info in crew_items:
+                schedules = info.get("schedules", [])
+                for sched in schedules:
+                    if sched.get("type") != "captain":
+                        continue
+                    if not sched.get("enabled", True):
+                        continue
+                    next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
+                    # Track earliest upcoming fire for sleep duration
+                    if next_fire > now and next_fire < next_wakeup:
+                        next_wakeup = next_fire
+                    if next_fire > now:
+                        continue
+
+                    # Entry is due — wake the crew and steer/dispatch
+                    try:
+                        crew = _ensure_crew_running(info, crew_id)
+                    except Exception as e:
+                        logger.warning(
+                            "Captain monitor: crew %s won't start for check-in: %s",
+                            crew_id, e,
+                        )
+                        _advance_next_fire_at(sched)
+                        with _registry_lock:
+                            reg2 = _load_registry()
+                            for s in _get_crew_schedules(reg2, crew_id):
+                                if s.get("type") == "captain":
+                                    s["next_fire_at"] = sched["next_fire_at"]
+                                    break
+                            _save_registry(reg2)
+                        continue
+
+                    # Import _steer_captain_checkin from server at call time
+                    # to avoid a module-load cycle (server imports monitors).
+                    try:
+                        try:
+                            from server import (  # container: flat /app/
+                                _steer_captain_checkin,
+                                _dispatch_captain_checkin,
+                            )
+                        except ModuleNotFoundError:
+                            from transport.server import (  # local dev  # type: ignore[no-redef]
+                                _steer_captain_checkin,
+                                _dispatch_captain_checkin,
+                            )
+                        _steer_captain_checkin(crew, crew_id)
+                    except Exception as e:
+                        logger.error(
+                            "Captain monitor: check-in failed for crew %s: %s",
+                            crew_id, e,
+                        )
+
+                    # Advance next_fire_at in registry
+                    _advance_next_fire_at(sched)
+                    with _registry_lock:
+                        reg3 = _load_registry()
+                        for s in _get_crew_schedules(reg3, crew_id):
+                            if s.get("type") == "captain":
+                                s["next_fire_at"] = sched["next_fire_at"]
+                                break
+                        _save_registry(reg3)
+
+        except Exception:
+            logger.exception("Captain monitor iteration failed; retrying next interval")
+
+        # Sleep until the next due entry, or _CAPTAIN_MONITOR_INTERVAL
+        sleep_secs = max(1.0, next_wakeup - time.time())
+        time.sleep(sleep_secs)

@@ -96,11 +96,19 @@ def _get_crew_schedules(reg: dict, crew_id: str) -> list:
 
 
 def _upsert_crew_schedule(reg: dict, crew_id: str, job: dict) -> None:
-    """Insert or update a schedule entry by job_id."""
+    """Insert or update a schedule entry by job_id (or type for captain entries)."""
     crew_entry = reg.get("crews", {}).get(crew_id)
     if crew_entry is None:
         return
     schedules = crew_entry.setdefault("schedules", [])
+    # Captain entries are matched by type, not job_id (they have no gateway job_id)
+    if job.get("type") == "captain":
+        for i, existing in enumerate(schedules):
+            if existing.get("type") == "captain":
+                schedules[i] = job
+                return
+        schedules.append(job)
+        return
     job_id = job.get("job_id")
     for i, existing in enumerate(schedules):
         if existing.get("job_id") == job_id:

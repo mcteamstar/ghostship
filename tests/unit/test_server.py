@@ -349,20 +349,22 @@ class ModelOverrideTests(unittest.TestCase):
         api.assert_not_called()
 
     def _captain_create_body(self, **kwargs: object) -> dict:
-        registry = {"crews": {"demo": {"schedules": []}}}
+        # New model: captain uses dispatch+steer, not cron.
+        # Returns the spawn body sent to /api/spawn.
+        registry = {"crews": {"demo": {"schedules": [], "enrolled_agents": ["raven"]}}}
         podman = Mock()
+        spawn_calls = []
 
         def api(_crew: dict, _crew_id: str, method: str, path: str, **_kwargs: object) -> dict:
-            if method == "GET" and path == "/api/crons":
-                return {"jobs": []}
-            if method == "POST" and path == "/api/crons":
-                return {"id": "captain-job", "enabled": True}
-            return {"id": "immediate-task"}
+            if method == "POST" and "/api/spawn" in path:
+                spawn_calls.append(_kwargs.get("json", {}))
+                return {"id": "task-1"}
+            return {}
 
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api) as gateway,
+            patch.object(server, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=registry),
@@ -373,47 +375,41 @@ class ModelOverrideTests(unittest.TestCase):
                 "order",
                 message="hold",
                 interval=120,
-                fire_immediately=False,
+                fire_immediately=True,  # trigger spawn so we can inspect the body
                 **kwargs,
             )
 
         self.assertEqual(result["status"], "ordered")
-        cron_calls = [
-            call for call in gateway.call_args_list
-            if call.args[2:] == ("POST", "/api/crons")
-        ]
-        self.assertEqual(len(cron_calls), 1)
-        return cron_calls[0].kwargs["json"]
+        # Should have called POST /api/spawn with member-raven slot
+        self.assertEqual(len(spawn_calls), 1)
+        return spawn_calls[0]
 
     def test_captain_new_job_forwards_model(self) -> None:
         body = self._captain_create_body(model="claude-opus-5")
         self.assertEqual(body["model"], "claude-opus-5")
+        self.assertEqual(body["parent_session"], "dashboard:member-raven")
 
     def test_captain_new_job_omits_model_when_unset(self) -> None:
         body = self._captain_create_body()
         self.assertNotIn("model", body)
 
     def test_captain_resume_ignores_model_without_creating_job(self) -> None:
-        existing = {
-            "id": "paused-job",
-            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
-            "agent": "raven",
-            "enabled": False,
+        # Resume: existing captain entry, no immediate dispatch unless fire_immediately=True
+        existing_entry = {
+            "type": "captain",
+            "name": "captain",
+            "enabled": True,
+            "interval_secs": 300,
+            "next_fire_at": 9999999999.0,
+            "current_task_id": "task-existing",
+            "model": None,
         }
-        registry = {"crews": {"demo": {"schedules": []}}}
+        registry = {"crews": {"demo": {"schedules": [existing_entry], "enrolled_agents": ["raven"]}}}
         podman = Mock()
-
-        def api(_crew: dict, _crew_id: str, method: str, path: str, **_kwargs: object) -> dict:
-            if method == "GET" and path == "/api/crons":
-                return {"jobs": [existing]}
-            if method == "POST" and path.endswith("/enable"):
-                return {"ok": True}
-            raise AssertionError(f"unexpected gateway call: {method} {path}")
 
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api) as gateway,
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=registry),
@@ -423,8 +419,9 @@ class ModelOverrideTests(unittest.TestCase):
                 "demo", "order", message="resume", model="claude-opus-5"
             )
 
-        self.assertEqual(result["job_id"], "paused-job")
-        self.assertTrue(all(call.args[2:] != ("POST", "/api/crons") for call in gateway.call_args_list))
+        self.assertEqual(result["status"], "ordered")
+        # No cron created (dispatch+steer model)
+        self.assertIsNone(result["job_id"])
 
     def test_captain_resume_rejects_invalid_model_without_resuming(self) -> None:
         with (

@@ -1346,6 +1346,84 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
     for sched in schedules:
         if not sched.get("enabled", True):
             continue
+
+        # ── Captain entries use dispatch+steer, not gateway crons ─────────────
+        if sched.get("type") == "captain":
+            current_task_id = sched.get("current_task_id")
+            if not current_task_id:
+                # No task yet — dispatch immediately
+                try:
+                    try:
+                        from server import _dispatch_captain_checkin  # container
+                    except ModuleNotFoundError:
+                        from transport.server import _dispatch_captain_checkin  # type: ignore[no-redef]
+                    new_task_id = _dispatch_captain_checkin(
+                        crew, crew_id, model=sched.get("model")
+                    )
+                    with _registry_lock:
+                        reg2 = _load_registry()
+                        for s in _get_crew_schedules(reg2, crew_id):
+                            if s.get("type") == "captain":
+                                s["current_task_id"] = new_task_id
+                                break
+                        _save_registry(reg2)
+                    logger.info(
+                        "Re-seeded captain check-in for crew %s (new task %s)",
+                        crew_id, new_task_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to re-seed captain check-in for crew %s: %s",
+                        crew_id, e,
+                    )
+            else:
+                # Has a task_id — verify liveness
+                try:
+                    task_info = _crew_api(crew, "GET", f"/api/spawn/{current_task_id}")
+                    # Task exists — leave it; the captain monitor will steer it
+                    logger.debug(
+                        "Captain check-in task %s still live for crew %s",
+                        current_task_id, crew_id,
+                    )
+                except Exception as e:
+                    err_str = str(e)
+                    if "conversation_gone" in err_str or "404" in err_str or "not found" in err_str:
+                        # Session gone after container restart — re-dispatch
+                        logger.info(
+                            "Captain check-in task %s gone for crew %s — re-dispatching",
+                            current_task_id, crew_id,
+                        )
+                        try:
+                            try:
+                                from server import _dispatch_captain_checkin  # container
+                            except ModuleNotFoundError:
+                                from transport.server import _dispatch_captain_checkin  # type: ignore[no-redef]
+                            new_task_id = _dispatch_captain_checkin(
+                                crew, crew_id, model=sched.get("model")
+                            )
+                            with _registry_lock:
+                                reg2 = _load_registry()
+                                for s in _get_crew_schedules(reg2, crew_id):
+                                    if s.get("type") == "captain":
+                                        s["current_task_id"] = new_task_id
+                                        break
+                                _save_registry(reg2)
+                            logger.info(
+                                "Re-dispatched captain check-in for crew %s (new task %s)",
+                                crew_id, new_task_id,
+                            )
+                        except Exception as e2:
+                            logger.warning(
+                                "Failed to re-dispatch captain check-in for crew %s: %s",
+                                crew_id, e2,
+                            )
+                    else:
+                        logger.warning(
+                            "Could not check captain task liveness for crew %s: %s",
+                            crew_id, e,
+                        )
+            continue  # Captain entries handled above — skip the cron reseed path
+
         job_id = sched.get("job_id")
         if job_id in gateway_ids:
             continue  # Already exists in gateway
@@ -3093,6 +3171,7 @@ except ModuleNotFoundError:
 
 _schedule_monitor = _monitors._schedule_monitor
 _idle_monitor = _monitors._idle_monitor
+_captain_monitor = _monitors._captain_monitor
 # ── Batch pickup ────────────────────────────────────────────────────
 # GA_PICKUP_MAX_POLL_SECS caps the wall time of one _pickup_batch call, mirroring
 # the single-task pickup internal cap (default 30 s). Read from env so operators

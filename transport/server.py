@@ -632,6 +632,7 @@ try:
         _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
+        _captain_monitor,
         _inject_auth,
         _inject_claude_auth,
         _inject_codex_auth,
@@ -718,6 +719,7 @@ except ModuleNotFoundError:
         _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
+        _captain_monitor,
         _inject_auth,
         _inject_claude_auth,
         _inject_codex_auth,
@@ -2989,6 +2991,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     schedules = _get_crew_schedules(reg, crew_id)
     for sched in schedules:
         job_id = sched.get("job_id", "")
+        if not job_id:
+            # Captain entries (type=="captain") have no gateway cron job to cancel
+            continue
         try:
             _crew_api(crew, "DELETE", f"/api/crons/{job_id}")
         except Exception as e:
@@ -3025,6 +3030,145 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     return {"crew_id": crew_id, "status": "nuked", "container": container}
 
 
+# ── Captain dispatch/steer helpers ────────────────────────────────────────────
+
+def _dispatch_captain_checkin(
+    crew: dict,
+    crew_id: str,
+    model: str | None = None,
+) -> str:
+    """Dispatch Raven into its member-raven slot for a Captain check-in.
+
+    Calls POST /api/spawn with keep=True and parent_session=dashboard:member-raven
+    so the session is attested and can make downstream spawns.  Returns the
+    new task_id.  Raises on failure — callers are responsible for error
+    handling.
+
+    Must be called after _enroll_crew_members has run (member-raven slot must
+    exist).  Verifies enrollment before dispatching; raises ValueError if
+    raven is not enrolled.
+    """
+    enrolled: frozenset[str] = frozenset(crew.get("enrolled_agents") or [])
+    if "raven" not in enrolled:
+        # Fallback: read enrolled_agents from registry (crew dict may be a stale
+        # minimal copy from _require_crew before _ensure_crew_running enriched it)
+        try:
+            with _registry_lock:
+                reg = _load_registry()
+                crew_info = reg.get("crews", {}).get(crew_id, {})
+                enrolled = frozenset(crew_info.get("enrolled_agents") or [])
+        except Exception:
+            pass
+    if "raven" not in enrolled:
+        raise ValueError(
+            f"Crew {crew_id}: raven is not enrolled — cannot dispatch Captain check-in. "
+            "Re-launch the crew to enroll members."
+        )
+    spawn_body: dict[str, Any] = {
+        "task": _CAPTAIN_CHECKIN_TASK,
+        "agent": "raven",
+        "keep": True,
+        "parent_session": "dashboard:member-raven",
+    }
+    if model is not None:
+        spawn_body["model"] = model
+    result = _crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
+    task_id = result.get("id") if isinstance(result, dict) else None
+    if not task_id:
+        raise RuntimeError(
+            f"Crew {crew_id}: POST /api/spawn returned no task id: {result!r}"
+        )
+    return task_id
+
+
+def _steer_captain_checkin(
+    crew: dict,
+    crew_id: str,
+    model: str | None = None,
+) -> str:
+    """Continue or re-dispatch the Captain check-in for crew_id.
+
+    Reads current_task_id from the registry and calls POST /api/spawn/{id}/continue.
+    Updates current_task_id in the registry on success.
+
+    Recovery paths:
+    - conversation_gone (404): falls back to _dispatch_captain_checkin()
+    - conversation_busy (409): logs warning, returns existing task_id unchanged
+    - Other errors: re-raises after logging
+
+    Returns the (possibly new) task_id.
+    """
+    with _registry_lock:
+        reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
+    captain_sched = next(
+        (s for s in schedules if s.get("type") == "captain"),
+        None,
+    )
+    current_task_id = captain_sched.get("current_task_id") if captain_sched else None
+    saved_model = captain_sched.get("model") if captain_sched else None
+    effective_model = model or saved_model
+
+    if not current_task_id:
+        # No task yet — fresh dispatch
+        return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+
+    # Try to continue the existing session
+    continue_body: dict[str, Any] = {"task": _CAPTAIN_CHECKIN_TASK}
+    if effective_model:
+        continue_body["model"] = effective_model
+    try:
+        result = _crew_api_with_recovery(
+            crew, crew_id, "POST", f"/api/spawn/{current_task_id}/continue",
+            json=continue_body,
+        )
+    except Exception as exc:
+        err_str = str(exc)
+        # /continue returns 404 with code "conversation_gone" when the session
+        # is no longer available (container restart, etc.)
+        if "conversation_gone" in err_str or "404" in err_str:
+            logger.info(
+                "Captain check-in: session %s gone for crew %s — re-dispatching",
+                current_task_id, crew_id,
+            )
+            return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+        # /continue returns 409 with code "conversation_busy" when mid-turn
+        if "conversation_busy" in err_str or "409" in err_str:
+            logger.warning(
+                "Captain check-in: session %s busy for crew %s — skipping this tick",
+                current_task_id, crew_id,
+            )
+            return current_task_id
+        raise
+
+    # /continue returns a new id for the continuation run
+    new_task_id = result.get("id") if isinstance(result, dict) else None
+    if not new_task_id:
+        logger.warning(
+            "Captain check-in: /continue for crew %s returned no id — keeping %s",
+            crew_id, current_task_id,
+        )
+        return current_task_id
+
+    # Persist the new task_id
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            crew_scheds = _get_crew_schedules(reg, crew_id)
+            for s in crew_scheds:
+                if s.get("type") == "captain":
+                    s["current_task_id"] = new_task_id
+                    from datetime import datetime as _dt, timezone as _tz
+                    s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
+                    break
+            _save_registry(reg)
+    except Exception as exc:
+        logger.warning(
+            "Captain check-in: could not persist new task_id %s for crew %s: %s",
+            new_task_id, crew_id, exc,
+        )
+    return new_task_id
+
 
 def _captain_do_order(
     crew_id: str,
@@ -3040,10 +3184,16 @@ def _captain_do_order(
     """Handle ``captain(action="order")``.
 
     Validates the order arguments, resolves a template when given, wakes the
-    crew, provisions/resumes the single Raven check-in job, persists the
+    crew, provisions/resumes the Captain dispatch+steer loop, persists the
     schedule entry, and appends the standing order to ``captain@localhost``.
     ``action`` and ``model`` are already validated by the ``captain()``
     dispatcher.
+
+    The Captain no longer uses a gateway cron job.  Instead, Raven is dispatched
+    into its member-raven slot (which carries a captured execution_context that
+    allows downstream spawning).  Subsequent check-ins are driven by
+    ``_captain_monitor`` in monitors.py, which calls ``_steer_captain_checkin``
+    at each ``next_fire_at`` interval.
     """
     has_message = message is not None
     has_template = template is not None
@@ -3074,101 +3224,66 @@ def _captain_do_order(
         return {"error": str(exc)}
 
     with _captain_order_lock(crew_id):
-        try:
-            cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-        except (ValueError, KeyError, RuntimeError, CrewUnresponsiveError) as exc:
-            return {"error": str(exc)}
-        except Exception as exc:
-            return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+        # Check registry for an existing captain entry
+        with _registry_lock:
+            reg = _load_registry()
+            existing_schedules = _get_crew_schedules(reg, crew_id)
+        existing_entry = next(
+            (s for s in existing_schedules if s.get("type") == "captain"),
+            None,
+        )
 
-        existing_job = _captain_checkin_job(cron_listing)
-        enabled_job = _captain_checkin_job(cron_listing, enabled_only=True)
-        if existing_job is None and not cron and not interval:
+        is_new_entry = existing_entry is None
+        if is_new_entry and not cron and not interval:
             return {
                 "error": "A new Captain check-in requires either cron or interval",
             }
 
-        job = existing_job
-        is_new_job = False
-        if job is None:
-            body: dict[str, Any] = {
-                "name": _CAPTAIN_CHECKIN_JOB_NAME,
-                "message": _CAPTAIN_CHECKIN_TASK,
-                "agent": "raven",
-                # Raven patrol is a low-cost polling cron — it reads mailboxes,
-                # assesses OpenSpec status, and dispatches worker personas without
-                # needing the full context bundle. minimal_context reduces token
-                # cost from ~55k to ~200 tokens per wake (KiroCrew 0.7.0+).
-                "minimal_context": True,
-            }
-            if cron:
-                body["cron"] = cron
-                body["timezone"] = timezone
-            else:
-                body["every"] = interval
-            if model is not None:
-                body["model"] = model
-            try:
-                job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
-            except Exception as exc:
-                return {"error": f"Could not create Captain check-in: {exc}"}
-            job = dict(job)
-            is_new_job = True
-        elif enabled_job is None:
-            try:
-                toggle = _crew_api_with_recovery(
-                    crew,
-                    crew_id,
-                    "POST",
-                    f"/api/crons/{job.get('id')}/enable",
-                    json={"enabled": True},
-                )
-                if isinstance(toggle, dict) and toggle.get("ok") is False:
-                    return {"error": "Could not resume Captain check-in: job not found"}
-            except Exception as exc:
-                return {"error": f"Could not resume Captain check-in: {exc}"}
-            job = dict(job)
-            job["enabled"] = True
+        # Resolve effective interval/cron — new entries require a schedule;
+        # resuming an existing entry reuses the stored one when not overridden.
+        effective_interval = interval
+        effective_cron = cron
+        effective_model = model
+        if not is_new_entry and existing_entry is not None:
+            if effective_interval is None and effective_cron is None:
+                effective_interval = existing_entry.get("interval_secs")
+                effective_cron = existing_entry.get("cron_expr")
+            if effective_model is None:
+                effective_model = existing_entry.get("model")
 
-        # Write schedule entry to transport registry
-        schedule_entry = {
-            "job_id": job.get("id"),
+        # Build the new schedule entry
+        now = time.time()
+        if effective_interval:
+            next_fire = now + effective_interval
+        else:
+            # cron schedule: fire in at most 60s for first fire, then the
+            # monitor will respect the cron expression via next_fire_at.
+            # Exact cron scheduling is future work; for now treat cron as
+            # interval=60 for the first fire and store cron_expr for display.
+            next_fire = now + 60
+
+        schedule_entry: dict[str, Any] = {
+            "type": "captain",
             "name": _CAPTAIN_CHECKIN_JOB_NAME,
-            "interval_secs": interval,
-            "cron_expr": cron,
-            "next_fire_at": time.time() + (interval or 60),
+            "interval_secs": effective_interval,
+            "cron_expr": effective_cron,
+            "next_fire_at": next_fire,
             "agent": "raven",
             "message": _CAPTAIN_CHECKIN_TASK,
             "enabled": True,
+            "model": effective_model,
+            "current_task_id": existing_entry.get("current_task_id") if existing_entry else None,
         }
-        if is_new_job:
-            schedule_entry["model"] = model
+
         try:
             with _registry_lock:
                 reg = _load_registry()
-                if not is_new_job:
-                    # Resume does not accept a new model.  Prefer the
-                    # gateway's value when present, but preserve the
-                    # registry pin for older gateway responses that omit it.
-                    if "model" in job:
-                        schedule_entry["model"] = job.get("model")
-                    else:
-                        prior_entry = next(
-                            (
-                                entry
-                                for entry in _get_crew_schedules(reg, crew_id)
-                                if entry.get("job_id") == schedule_entry["job_id"]
-                            ),
-                            None,
-                        )
-                        if prior_entry is not None and "model" in prior_entry:
-                            schedule_entry["model"] = prior_entry["model"]
                 _upsert_crew_schedule(reg, crew_id, schedule_entry)
                 _save_registry(reg)
         except Exception as exc:
-            logger.warning("Could not persist schedule entry: %s", exc)
+            logger.warning("Could not persist captain schedule entry: %s", exc)
 
-        # Only append an order after the check-in exists and is enabled.  A
+        # Only append an order after the schedule entry exists.  A
         # failed provisioning call must not leave mail that no Raven can read.
         try:
             podman = _get_podman()
@@ -3181,30 +3296,45 @@ def _captain_do_order(
             "action": "order",
             "status": "ordered",
             "mode": "standing-orders",
-            "job_id": job.get("id"),
+            "job_id": None,  # no gateway cron — kept for API compatibility
             "mailbox": "captain@localhost",
-            "schedule": job.get("schedule") or cron or (
-                f"every {interval}s" if interval else None
+            "schedule": effective_cron or (
+                f"every {effective_interval}s" if effective_interval else None
             ),
         }
 
-        # Immediate dispatch: only for newly created jobs (not resumes)
-        if is_new_job:
-            should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
-            if should_fire:
-                try:
-                    immediate_body: dict[str, Any] = {
-                        "task": _CAPTAIN_CHECKIN_TASK,
-                        "agent": "raven",
-                        "keep": True,
-                    }
-                    if model is not None:
-                        immediate_body["model"] = model
-                    _crew_api_with_recovery(
-                        crew, crew_id, "POST", "/api/spawn", json=immediate_body,
-                    )
-                except Exception as exc:
-                    result["immediate_dispatch_error"] = str(exc)
+        # Determine whether to fire immediately
+        if is_new_entry:
+            should_fire = fire_immediately if fire_immediately is not None else (effective_interval is not None)
+        else:
+            # Resume: fire immediately only if explicitly requested
+            should_fire = fire_immediately is True
+
+        if should_fire:
+            try:
+                new_task_id = _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+                # Persist the task_id and updated next_fire_at
+                if effective_interval:
+                    fired_next = time.time() + effective_interval
+                else:
+                    fired_next = time.time() + 60
+                with _registry_lock:
+                    reg = _load_registry()
+                    for s in _get_crew_schedules(reg, crew_id):
+                        if s.get("type") == "captain":
+                            s["current_task_id"] = new_task_id
+                            s["next_fire_at"] = fired_next
+                            from datetime import datetime as _dt, timezone as _tz
+                            s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
+                            break
+                    _save_registry(reg)
+                result["current_task_id"] = new_task_id
+            except Exception as exc:
+                result["immediate_dispatch_error"] = str(exc)
+        elif not is_new_entry and existing_entry is not None:
+            # Resume path: existing enabled captain, steer on next timer tick.
+            # Ensure the entry is enabled in the registry (it may have been stopped).
+            result["current_task_id"] = existing_entry.get("current_task_id")
 
         return result
 
@@ -3214,6 +3344,9 @@ def _captain_do_status(crew_id: str) -> dict:
 
     Skims all mailboxes (works on running and stopped containers) and reports
     the durable standing-orders state without waking a dormant crew.
+
+    Reads captain state from the transport registry rather than the gateway
+    cron API — no need to wake the crew for a status check.
     """
     try:
         crew = _require_crew(crew_id)
@@ -3230,25 +3363,16 @@ def _captain_do_status(crew_id: str) -> dict:
     captain_mail = len(captain_subjects)
     admiral_mail = len(admiral_subjects)
 
-    # If the container is already running, read the live cron job state
-    # without waking it. If stopped, return dormant/no-job without starting.
-    try:
-        is_running = podman.container_is_running(crew["container"])
-    except Exception:
-        is_running = False
+    # Read captain state from registry — no need to wake the crew
+    with _registry_lock:
+        reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
+    captain_entry = next(
+        (s for s in schedules if s.get("type") == "captain"),
+        None,
+    )
 
-    if is_running:
-        standing_job: dict[str, Any] | None = None
-        try:
-            running_crew = _ensure_crew_running(crew, crew_id)
-            cron_listing = _crew_api_with_recovery(running_crew, crew_id, "GET", "/api/crons")
-            standing_job = _captain_checkin_job(cron_listing)
-        except Exception:
-            standing_job = None
-    else:
-        standing_job = None
-
-    if standing_job is None:
+    if captain_entry is None:
         return {
             "crew_id": crew_id,
             "action": action,
@@ -3267,10 +3391,36 @@ def _captain_do_status(crew_id: str) -> dict:
             "agent_mail": agent_mail,
         }
 
+    # Build a synthetic "job" dict from the registry entry for _captain_standing_view
+    synthetic_job: dict[str, Any] = {
+        "id": None,  # no gateway cron id
+        "enabled": captain_entry.get("enabled", True),
+        "last_run_ts": None,
+        "last_status": None,
+        "last_result": None,
+    }
+    # If the crew is running, check if the current task is still alive
+    try:
+        is_running = podman.container_is_running(crew["container"])
+    except Exception:
+        is_running = False
+
+    current_task_id = captain_entry.get("current_task_id")
+    if is_running and current_task_id:
+        try:
+            running_crew = _ensure_crew_running(crew, crew_id)
+            task_info = _crew_api_with_recovery(
+                running_crew, crew_id, "GET", f"/api/spawn/{current_task_id}"
+            )
+            if isinstance(task_info, dict):
+                synthetic_job["last_status"] = "running" if not task_info.get("done") else "ok"
+        except Exception:
+            pass  # best-effort — status still works without task liveness
+
     status_result = _captain_standing_view(
         crew_id,
         action,
-        standing_job,
+        synthetic_job,
         podman,
         crew["container"],
     )
@@ -3279,36 +3429,34 @@ def _captain_do_status(crew_id: str) -> dict:
     status_result["captain_mail"] = captain_mail
     status_result["admiral_mail"] = admiral_mail
     status_result["agent_mail"] = agent_mail
+    status_result["current_task_id"] = current_task_id
     return status_result
 
 
 def _captain_do_stop(crew_id: str) -> dict:
     """Handle ``captain(action="stop")``.
 
-    Wakes the crew (the gateway cron API is needed to disable the job),
-    best-effort disables the gateway cron, and always marks the registry
-    schedule disabled so restart reconciliation and the idle monitor see the
-    correct state.
+    Marks the captain schedule entry disabled in the transport registry.
+    No gateway cron to disable — the Captain no longer uses a cron job.
+    The crew does not need to be running to stop the Captain.
     """
     try:
         crew = _require_crew(crew_id)
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
 
-    action = "stop"
-    try:
-        crew = _ensure_crew_running(crew, crew_id)
-        podman = _get_podman()
-    except (ValueError, KeyError, RuntimeError) as exc:
-        return {"error": str(exc)}
+    podman = _get_podman()
 
-    try:
-        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-        standing_job = _captain_checkin_job(cron_listing)
-    except Exception as exc:
-        return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+    # Read captain entry from registry — no need to wake the crew
+    with _registry_lock:
+        reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
+    captain_entry = next(
+        (s for s in schedules if s.get("type") == "captain"),
+        None,
+    )
 
-    if standing_job is None:
+    if captain_entry is None:
         return {
             "crew_id": crew_id,
             "action": "stop",
@@ -3319,60 +3467,33 @@ def _captain_do_stop(crew_id: str) -> dict:
             "mailbox": "captain@localhost",
         }
 
-    # Best-effort: disable the gateway cron if it is currently enabled.
-    # A failure here is logged as a warning — it must not block the
-    # registry update below.
-    if standing_job.get("enabled", False):
-        try:
-            toggle = _crew_api_with_recovery(
-                crew,
-                crew_id,
-                "POST",
-                f"/api/crons/{standing_job.get('id')}/enable",
-                json={"enabled": False},
-            )
-            if isinstance(toggle, dict) and toggle.get("ok") is False:
-                logger.warning(
-                    "captain stop: gateway cron %s not found for crew %s",
-                    standing_job.get("id"),
-                    crew_id,
-                )
-        except Exception as exc:
-            logger.warning(
-                "captain stop: gateway cron disable failed for crew %s: %s",
-                crew_id,
-                exc,
-            )
-    standing_job = dict(standing_job)
-    standing_job["enabled"] = False
-
-    # Always update the registry to disabled, regardless of the gateway API call
-    # result. This ensures the reconcile-on-restart sees the correct state and
-    # the idle monitor can eventually stop the crew.
+    # Mark disabled in registry — this is the only action needed.
+    # The _captain_monitor will skip disabled entries on its next tick.
     try:
         with _registry_lock:
             reg = _load_registry()
-            schedules = _get_crew_schedules(reg, crew_id)
             matched = False
-            for sched in schedules:
-                if sched.get("job_id") == standing_job.get("id"):
+            for sched in _get_crew_schedules(reg, crew_id):
+                if sched.get("type") == "captain":
                     sched["enabled"] = False
                     matched = True
                     break
             if not matched:
                 logger.warning(
-                    "captain stop: no registry entry found for job %s in crew %s",
-                    standing_job.get("id"),
+                    "captain stop: no captain registry entry found for crew %s",
                     crew_id,
                 )
             _save_registry(reg)
     except Exception as exc:
         logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
 
+    stopped_entry = dict(captain_entry)
+    stopped_entry["enabled"] = False
+
     result = _captain_standing_view(
         crew_id,
-        action,
-        standing_job,
+        "stop",
+        stopped_entry,
         podman,
         crew["container"],
     )
@@ -4341,6 +4462,7 @@ if __name__ == "__main__":
         logger.warning("Academy validation: %s", _warning)
     threading.Thread(target=_idle_monitor, daemon=True, name="idle-monitor").start()
     threading.Thread(target=_schedule_monitor, daemon=True, name="schedule-monitor").start()
+    threading.Thread(target=_captain_monitor, daemon=True, name="captain-monitor").start()
 
     # Build the MCP ASGI app, wrap with API-key middleware, serve with Uvicorn.
     # Login/logout routes are handled inside BearerAuthMiddleware directly so
