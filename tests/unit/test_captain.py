@@ -238,7 +238,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertIn("/api/spawn/{task_id}/continue", resolved_body)
         self.assertIn("pause your own check-in job", resolved_body)
         self.assertIn("the only one in this crew", resolved_body)
-        self.assertIn("never let its value show up anywhere", resolved_body)
+        self.assertIn("never let either secret value show up anywhere", resolved_body)
         self.assertNotIn("captain-check-in", resolved_body)
         self.assertNotIn("external `captain(..., action=\"stop\")` operation", resolved_body)
 
