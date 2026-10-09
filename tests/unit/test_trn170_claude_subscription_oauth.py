@@ -43,7 +43,7 @@ class TestValidateNoLongerRaisesWithoutApiKey(unittest.TestCase):
     def test_validate_no_raise_for_claude_without_key(self) -> None:
         """Config.validate() must NOT raise ConfigError when claude backend has no API key."""
         env = {
-            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
@@ -54,7 +54,7 @@ class TestValidateNoLongerRaisesWithoutApiKey(unittest.TestCase):
     def test_validate_still_passes_with_api_key(self) -> None:
         """validate() still passes (trivially) when API key is provided."""
         env = {
-            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test",
         }
         with patch.dict("os.environ", env):
@@ -85,8 +85,8 @@ class TestHandleClaudeLoginPost(unittest.TestCase):
         # Ensure clean state
         with _lifecycle._claude_login_pending_lock:
             _lifecycle._claude_login_pending = None
-        # Claude is opt-in: these tests exercise the Claude path, so enable it.
-        patcher = patch.object(server.cfg, "ga_include_claude_agent", True)
+        # Claude is opt-in via GA_AGENT_BACKENDS: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -140,10 +140,11 @@ class TestHandleClaudeLoginPost(unittest.TestCase):
         self.assertIn("in progress", response.body.decode())
 
     def test_returns_400_when_not_claude_backend(self) -> None:
-        """POST /login/claude returns 400 when GA_CREW_ACP_BACKEND != claude."""
-        with patch.object(server, "GA_CREW_ACP_BACKEND", "kiro"):
+        """TRN-202: refused when claude is not enabled, not when it merely isn't the default."""
+        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})):
             response = self._run()
         self.assertEqual(response.status_code, 400)
+        self.assertIn("GA_AGENT_BACKENDS", response.body.decode())
 
     def test_returns_500_on_initiate_error(self) -> None:
         """POST /login/claude returns 500 when _initiate_claude_login reports an error."""
@@ -430,8 +431,8 @@ class TestLaunchClaudeBackendNoCredentials(unittest.TestCase):
     """6.5: launch() with Claude backend and no credentials calls _initiate_claude_login."""
     def setUp(self):
         super().setUp()
-        # Claude is opt-in: these tests exercise the Claude path, so enable it.
-        patcher = patch.object(server.cfg, "ga_include_claude_agent", True)
+        # Claude is opt-in via GA_AGENT_BACKENDS: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
         patcher.start()
         self.addCleanup(patcher.stop)
 

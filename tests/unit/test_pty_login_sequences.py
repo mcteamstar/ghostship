@@ -1,4 +1,4 @@
-"""Unit tests for claude-backend-fixes task 2: terminal-sequence handling in the
+"""Unit tests for trn-202-claude-backend-fixes task 2: terminal-sequence handling in the
 shared PTY login helper (_run_pty_login_flow).
 
 Covers:

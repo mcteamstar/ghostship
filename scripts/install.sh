@@ -70,8 +70,9 @@ GA_SUBAGENT_MAX_TURNS=200
 GA_BATCH_MAX_TASKS=20
 GA_PICKUP_MAX_POLL_SECS=30
 GA_CREW_AGENT=kiro
-GA_INCLUDE_CLAUDE_AGENT=false
-GA_INCLUDE_CODEX_AGENT=false
+# Optional agent backends to enable, comma-separated (claude, codex). Kiro is
+# always enabled. Drives the image toolchains and the transport (TRN-202).
+GA_AGENT_BACKENDS=""
 GA_CREW_ACP_BACKEND=kiro
 GA_CREW_ANTHROPIC_API_KEY=""
 GA_MIN_FREE_MEM_GB=2.0
@@ -171,6 +172,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── Agent backends (TRN-202) ─────────────────────────────────────────────────
+# The retired GA_INCLUDE_*_AGENT flags are a config error in every mode,
+# including --client-only. The toolchain and default checks need a build, so
+# they run after the client-only exit below.
+# shellcheck source=lib/agent_backends.sh
+source "$GHOSTSHIP_DIR/scripts/lib/agent_backends.sh"
+agent_backends_reject_retired || exit 1
+
 # ── Client-only early-exit ────────────────────────────────────────────────────
 # When --client-only is set, wire the ghostship CLI + agent harnesses to a
 # (usually remote) transport and skip ALL container-infrastructure steps:
@@ -197,6 +206,15 @@ if [[ "$CLIENT_ONLY" == "true" ]]; then
 
   exit 0
 fi
+
+# Normalise GA_AGENT_BACKENDS once; the same value drives the image build
+# (AGENT_TOOLCHAINS) and the transport environment. Fail before any build on
+# an unknown name or a default backend that isn't enabled, so a bad config
+# doesn't cost a full build and a restart loop.
+AGENT_TOOLCHAINS="$(agent_backends_normalise "$GA_AGENT_BACKENDS")"
+agent_backends_validate "$AGENT_TOOLCHAINS" "$GHOSTSHIP_DIR/crews/spec-ops/toolchains" || exit 1
+agent_backends_check_default "$GA_CREW_ACP_BACKEND" "$AGENT_TOOLCHAINS" || exit 1
+echo "✓ Agent backends: kiro${AGENT_TOOLCHAINS:+,$AGENT_TOOLCHAINS} (default: ${GA_CREW_ACP_BACKEND})"
 
 if [[ -z "${KIRO_IDENTITY_PROVIDER:-}" && -t 0 ]]; then
   read -rp "kiro-cli identity provider URL (blank = default Builder ID login): " KIRO_IDENTITY_PROVIDER
@@ -570,6 +588,13 @@ fi
 
 _CREW_BUILD_FLAGS=()
 if ${_PODMAN_CMD} image exists localhost/spec-ops:latest 2>/dev/null; then
+  # A changed toolchain list must not reuse a cached toolchain layer.
+  _baked_toolchains="$(${_PODMAN_CMD} inspect localhost/spec-ops:latest --format '{{ index .Labels "org.ghostship.toolchains" }}' 2>/dev/null || true)"
+  [[ "$_baked_toolchains" == "<no value>" ]] && _baked_toolchains=""
+  if [[ "$_baked_toolchains" != "$AGENT_TOOLCHAINS" ]]; then
+    echo "  Agent toolchains changed ('${_baked_toolchains}' -> '${AGENT_TOOLCHAINS}') -- forcing a clean rebuild."
+    _CREW_BUILD_FLAGS=(--no-cache)
+  fi
   _baked_crew_version="$(${_PODMAN_CMD} inspect localhost/spec-ops:latest --format '{{ index .Labels "org.ghostship.version" }}' 2>/dev/null || true)"
   if [[ "$_baked_crew_version" != "${VERSION}-spec-ops" ]]; then
     echo "  Detected stale localhost/spec-ops:latest version ('$_baked_crew_version' != '${VERSION}-spec-ops') -- forcing a clean rebuild."
@@ -605,8 +630,7 @@ echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}-spec-ops" \
-  $(if [[ "${GA_INCLUDE_CLAUDE_AGENT:-false}" == "true" ]]; then echo "--build-arg INCLUDE_CLAUDE_AGENT=true"; fi) \
-  $(if [[ "${GA_INCLUDE_CODEX_AGENT:-false}" == "true" ]]; then echo "--build-arg INCLUDE_CODEX_AGENT=true"; fi) \
+  --build-arg AGENT_TOOLCHAINS="${AGENT_TOOLCHAINS}" \
   "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && ${_PODMAN_CMD} build -t localhost/spec-ops:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
@@ -717,10 +741,9 @@ services:
       GA_CREW_ACP_BACKEND: "${GA_CREW_ACP_BACKEND:-kiro}"
       GA_CREW_ANTHROPIC_API_KEY: "${GA_CREW_ANTHROPIC_API_KEY:-}"
       GA_CREW_ANTHROPIC_BASE_URL: "${GA_CREW_ANTHROPIC_BASE_URL:-}"
-      GA_INCLUDE_CLAUDE_AGENT: "${GA_INCLUDE_CLAUDE_AGENT:-false}"
+      GA_AGENT_BACKENDS: "${AGENT_TOOLCHAINS}"
       GA_CREW_OPENAI_API_KEY: "${GA_CREW_OPENAI_API_KEY:-}"
       GA_CREW_OPENAI_BASE_URL: "${GA_CREW_OPENAI_BASE_URL:-}"
-      GA_INCLUDE_CODEX_AGENT: "${GA_INCLUDE_CODEX_AGENT:-false}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
       KIRO_LICENSE: "${KIRO_LICENSE:-}"

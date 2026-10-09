@@ -4,6 +4,7 @@
 
 ### Breaking changes
 
+- **Retired `GA_INCLUDE_CLAUDE_AGENT` and `GA_INCLUDE_CODEX_AGENT` (TRN-202)** — agent backends are now enabled with one list, `GA_AGENT_BACKENDS` (for example `GA_AGENT_BACKENDS=claude,codex`; kiro is always available and is the default when unset). `install.sh` derives the image toolchains from this list. If either retired variable is set, the transport and `install.sh` fail at startup with a message naming `GA_AGENT_BACKENDS`. Migrate by replacing `GA_INCLUDE_CLAUDE_AGENT=true` with `GA_AGENT_BACKENDS=claude` and `GA_INCLUDE_CODEX_AGENT=true` with `GA_AGENT_BACKENDS=codex` (or list both).
 - **Removed `prewarm` MCP tool and `POST /crews/{crew_id}/prewarm` REST route (TRN-194)** — the explicit prewarm surface is gone. Callers of `prewarm(crew_id=...)` will receive a tool-not-found error; `POST /crews/{id}/prewarm` returns 404. Warming now happens automatically as a background side-effect of `supply` and `schedule` — no operator action is required.
 
 ### KiroCrew 0.6.0 → 0.7.2 upgrade (TRN-166, TRN-173)

@@ -117,9 +117,12 @@ Claude Pro/Max subscription who prefer not to maintain a separate API-tier accou
 
 ### Prerequisites
 
-1. Build the spec-ops image with `GA_INCLUDE_CLAUDE_AGENT=true` so the `claude` CLI
-   is installed in the image.
-2. Set `GA_CREW_ACP_BACKEND=claude` in your `ghostship.conf`.
+1. Enable the Claude backend: add `claude` to `GA_AGENT_BACKENDS` in your
+   `ghostship.conf` and re-run `ghostship install`, which builds the `claude` CLI
+   into the crew image.
+2. To make Claude the default for new crews, also set `GA_CREW_ACP_BACKEND=claude`.
+   Login works whenever `claude` is enabled, even while another backend is the
+   default.
 
 ### Authenticate
 
@@ -200,7 +203,7 @@ takes precedence. OAuth credentials are only used when the API key is unset.
 ### Claude OAuth API
 
 Four HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
-`GA_API_KEY` is set. Only meaningful when `GA_CREW_ACP_BACKEND=claude`.
+`GA_API_KEY` is set. Available only while `claude` is in `GA_AGENT_BACKENDS`; otherwise `POST /login/claude` and `POST /login/claude/code` return 400 naming `GA_AGENT_BACKENDS`. Logout always works.
 
 ```
 UNAUTHENTICATED  ──[POST /login/claude]──►  PENDING  ──[POST /login/claude/code]──►  CODE SUBMITTED  ──[GET /login/claude → complete]──►  AUTHENTICATED
@@ -238,9 +241,12 @@ ChatGPT subscription who prefer not to maintain a separate API-tier account.
 
 ### Prerequisites
 
-1. Build the spec-ops image with `GA_INCLUDE_CODEX_AGENT=true` so the `codex-acp`
-   adapter is installed in the image (ONE package — it ships its own Codex binary).
-2. Set `GA_CREW_ACP_BACKEND=codex` in your `ghostship.conf`.
+1. Enable the Codex backend: add `codex` to `GA_AGENT_BACKENDS` in your
+   `ghostship.conf` and re-run `ghostship install`, which builds the `codex-acp`
+   adapter into the crew image (ONE package — it ships its own Codex binary).
+2. To make Codex the default for new crews, also set `GA_CREW_ACP_BACKEND=codex`.
+   Login works whenever `codex` is enabled, even while another backend is the
+   default.
 
 ### Authenticate
 
@@ -304,7 +310,7 @@ takes precedence. OAuth credentials are only used when the API key is unset.
 ### Codex OAuth API
 
 Three HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
-`GA_API_KEY` is set. Only meaningful when `GA_CREW_ACP_BACKEND=codex`.
+`GA_API_KEY` is set. Available only while `codex` is in `GA_AGENT_BACKENDS`; otherwise `POST /login/codex` returns 400 naming `GA_AGENT_BACKENDS`. Logout always works.
 
 ```
 UNAUTHENTICATED  ──[POST /login/codex]──►  PENDING  ──[GET /login/codex → complete]──►  AUTHENTICATED

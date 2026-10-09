@@ -218,10 +218,8 @@ GA_PREWARM_TTL_SECS = cfg.ga_prewarm_ttl_secs
 GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
 GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
 GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
-GA_INCLUDE_CLAUDE_AGENT = cfg.ga_include_claude_agent
 GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
 GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
-GA_INCLUDE_CODEX_AGENT = cfg.ga_include_codex_agent
 
 # The effective crew session idle timeout. Spec-ops crews are patched with a
 # fixed ``session.timeout_secs = 300`` override (see _patch_crew_config); a
@@ -2021,7 +2019,7 @@ def _nuke_login_container(podman: PodmanClient, name: str) -> None:
 def _start_claude_login_container(podman: PodmanClient) -> str:
     """Create and start an ephemeral ga-claude-login-<token> container.
 
-    Uses KC_IMAGE (the local spec-ops image built with INCLUDE_CLAUDE_AGENT=true)
+    Uses KC_IMAGE (the local spec-ops image built with the claude toolchain)
     because the ``claude`` CLI is only present in that image.  Fails with a clear
     error if the image is not found or does not have ``claude`` installed.
     Returns the container name.
@@ -2047,7 +2045,7 @@ def _start_claude_login_container(podman: PodmanClient) -> str:
     except Exception as e:
         raise RuntimeError(
             f"Failed to create Claude login container from image {KC_IMAGE!r}: {e}. "
-            "Ensure the spec-ops image was built with GA_INCLUDE_CLAUDE_AGENT=true."
+            "Enable claude in GA_AGENT_BACKENDS and re-run `ghostship install`."
         ) from e
     podman.container_start(name)
     logger.info("Started ephemeral Claude login container %s", name)
@@ -2491,7 +2489,7 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
 
     Mirrors _initiate_login: acquires _claude_login_pending_lock, applies
     TOCTOU-safe guards, starts the ephemeral ga-claude-login-* container from
-    KC_IMAGE (spec-ops with INCLUDE_CLAUDE_AGENT=true), runs ``claude auth login``
+    KC_IMAGE (spec-ops with the claude toolchain), runs ``claude auth login``
     via container_exec_pty_stdin, reads the 45-second PTY stream with select(),
     extracts the verification URL, drains the PTY in background, stores pending
     state in _claude_login_pending.
@@ -2556,7 +2554,7 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
         return {
             "error": (
                 f"'claude' CLI not found in image {KC_IMAGE!r}. "
-                "Ensure the spec-ops image was built with GA_INCLUDE_CLAUDE_AGENT=true."
+                "Enable claude in GA_AGENT_BACKENDS and re-run `ghostship install`."
             )
         }
 
@@ -2769,9 +2767,9 @@ def _poll_claude_login_container(podman: "PodmanClient", container: str) -> byte
 def _start_codex_login_container(podman: PodmanClient) -> str:
     """Create and start an ephemeral ga-codex-login-<token> container.
 
-    Uses KC_IMAGE (the local spec-ops image built with INCLUDE_CODEX_AGENT=true)
+    Uses KC_IMAGE (the local spec-ops image built with the codex toolchain)
     because the ``codex-acp`` adapter is only present in that image. Fails with a
-    clear error naming GA_INCLUDE_CODEX_AGENT=true if the image cannot start.
+    clear error naming GA_AGENT_BACKENDS if the image cannot start.
     The actual adapter-binary check happens after start in _initiate_codex_login.
     Returns the container name.
     """
@@ -2792,7 +2790,7 @@ def _start_codex_login_container(podman: PodmanClient) -> str:
     except Exception as e:
         raise RuntimeError(
             f"Failed to create Codex login container from image {KC_IMAGE!r}: {e}. "
-            "Ensure the spec-ops image was built with GA_INCLUDE_CODEX_AGENT=true."
+            "Enable codex in GA_AGENT_BACKENDS and re-run `ghostship install`."
         ) from e
     podman.container_start(name)
     logger.info("Started ephemeral Codex login container %s", name)
@@ -2904,7 +2902,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
 
     Mirrors _initiate_claude_login: acquires _codex_login_pending_lock, applies
     TOCTOU-safe guards, starts the ephemeral ga-codex-login-* container from
-    KC_IMAGE (spec-ops with INCLUDE_CODEX_AGENT=true), runs the codex-acp login
+    KC_IMAGE (spec-ops with the codex toolchain), runs the codex-acp login
     command via container_exec_pty_stdin, reads the 45-second PTY stream with
     select(), extracts the verification URL, drains the PTY in background, and
     stores pending state in _codex_login_pending.
@@ -2952,7 +2950,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
 
     # ── Phase: wait for codex-acp adapter (task 3.6) ──────────────────────────
     # Poll briefly for the codex-acp binary. Its absence means the image was
-    # not built with INCLUDE_CODEX_AGENT=true — fail with an actionable error.
+    # not built with the codex toolchain — fail with an actionable error.
     for _ in range(10):
         try:
             check = podman.container_exec(container, ["which", "codex-acp"])
@@ -2968,7 +2966,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
         return {
             "error": (
                 f"'codex-acp' adapter not found in image {KC_IMAGE!r}. "
-                "Ensure the spec-ops image was built with GA_INCLUDE_CODEX_AGENT=true."
+                "Enable codex in GA_AGENT_BACKENDS and re-run `ghostship install`."
             )
         }
 

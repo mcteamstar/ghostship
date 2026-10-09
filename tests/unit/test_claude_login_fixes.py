@@ -1,6 +1,6 @@
-"""Unit tests for claude-backend-fixes section 3: the Claude OAuth login flow.
+"""Unit tests for trn-202-claude-backend-fixes section 3: the Claude OAuth login flow.
 
-Covers the scenarios in openspec/changes/claude-backend-fixes/specs/claude-auth:
+Covers the scenarios in openspec/changes/trn-202-claude-backend-fixes/specs/claude-auth:
 - Paste-back: POST /login/claude/code writes the code to the PTY (202), and
   rejects a missing flow (404), a malformed body (400) and a repeat (409).
   The code is never logged.
@@ -184,6 +184,9 @@ class TestCodeEndpoint(unittest.TestCase):
         self._backend = server.GA_CREW_ACP_BACKEND
         server.GA_CREW_ACP_BACKEND = "claude"
         self.addCleanup(setattr, server, "GA_CREW_ACP_BACKEND", self._backend)
+        patcher = patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _call(self, request):
         return asyncio.run(server._handle_claude_login_code_post(request))
@@ -201,9 +204,22 @@ class TestCodeEndpoint(unittest.TestCase):
             self._call(_FakeRequest(body={"code": "abc#def"})).status_code, 404)
 
     def test_wrong_backend_returns_400(self):
+        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})):
+            self.assertEqual(
+                self._call(_FakeRequest(body={"code": "abc#def"})).status_code, 400)
+
+    def test_disabled_backend_checked_before_body(self):
+        """agent-backends: the membership check runs before body validation."""
+        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})):
+            response = self._call(_FakeRequest(raises=True))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"GA_AGENT_BACKENDS", response.body)
+
+    def test_enabled_but_not_default_accepts_code(self):
+        """agent-backends: claude login works while kiro is the default backend."""
         server.GA_CREW_ACP_BACKEND = "kiro"
         self.assertEqual(
-            self._call(_FakeRequest(body={"code": "abc#def"})).status_code, 400)
+            self._call(_FakeRequest(body={"code": "abc#def"})).status_code, 404)
 
     def test_valid_code_returns_202_and_response_does_not_echo_code(self):
         helper_end, writer_end = socket.socketpair()
@@ -248,16 +264,15 @@ class TestExpiredCodeOnPoll(unittest.TestCase):
 
 
 class TestClaudeOptIn(unittest.TestCase):
-    """Claude is opt-in: the login endpoint refuses unless the image includes the CLI."""
+    """Claude is opt-in: the login endpoint refuses unless claude is in GA_AGENT_BACKENDS."""
 
     def test_login_refused_when_image_not_built_for_claude(self):
         from unittest.mock import Mock as _Mock
-        with patch.object(server, "GA_CREW_ACP_BACKEND", "claude"), \
-             patch.object(server.cfg, "ga_include_claude_agent", False), \
+        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})), \
              patch.object(server, "_initiate_claude_login") as initiate:
             response = asyncio.run(server._handle_claude_login_post(_Mock()))
         self.assertEqual(response.status_code, 400)
-        self.assertIn(b"GA_INCLUDE_CLAUDE_AGENT", response.body)
+        self.assertIn(b"GA_AGENT_BACKENDS", response.body)
         initiate.assert_not_called()
 
 

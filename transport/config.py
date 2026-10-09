@@ -82,6 +82,95 @@ def _validate_acp_backend(value: str) -> str:
     )
 
 
+# Kiro is bundled in every KiroCrew image, so it is always enabled and never a
+# build arg. The others are optional backends, enabled by GA_AGENT_BACKENDS.
+_ALWAYS_ENABLED_BACKEND = "kiro"
+_RETIRED_BACKEND_FLAGS: tuple[str, ...] = ("GA_INCLUDE_CLAUDE_AGENT", "GA_INCLUDE_CODEX_AGENT")
+_REINSTALL_HINT = "Re-run `ghostship install` after changing these settings."
+
+
+def parse_agent_backends(raw: str) -> tuple[str, ...]:
+    """Normalise GA_AGENT_BACKENDS into the optional backends it enables.
+
+    Splits on commas, trims, lowercases, and drops empty entries, duplicates
+    and kiro (always enabled). Returns the remaining names in first-listed
+    order. scripts/lib/agent_backends.sh applies the same rules on the
+    install side; the parity test keeps them in step.
+
+    Raises ConfigError for a name outside _ACP_BACKEND_VALUES.
+    """
+    optional: list[str] = []
+    for entry in raw.split(","):
+        name = entry.strip().lower()
+        if not name or name == _ALWAYS_ENABLED_BACKEND or name in optional:
+            continue
+        if name not in _ACP_BACKEND_VALUES:
+            raise ConfigError(
+                f"GA_AGENT_BACKENDS contains unknown backend {name!r}; "
+                f"valid names are {sorted(_ACP_BACKEND_VALUES)}"
+            )
+        optional.append(name)
+    return tuple(optional)
+
+
+def _reject_retired_backend_flags() -> None:
+    """Fail on GA_INCLUDE_*_AGENT, replaced by GA_AGENT_BACKENDS (TRN-202).
+
+    Present with any non-empty value counts, including "false": a stale flag
+    must never look like it enabled something.
+    """
+    for name in _RETIRED_BACKEND_FLAGS:
+        if os.environ.get(name, "").strip():
+            raise ConfigError(
+                f"{name} is retired. Enable backends with GA_AGENT_BACKENDS "
+                f"(for example GA_AGENT_BACKENDS=claude) instead. {_REINSTALL_HINT}"
+            )
+
+
+def _validate_default_backend(default: str, enabled: frozenset[str]) -> str:
+    """Require GA_CREW_ACP_BACKEND to be an enabled backend."""
+    if default in enabled:
+        return default
+    raise ConfigError(
+        f"GA_CREW_ACP_BACKEND={default!r} is not enabled: add it to GA_AGENT_BACKENDS "
+        f"(enabled: {sorted(enabled)}). {_REINSTALL_HINT}"
+    )
+
+
+# Settings that only apply to one optional backend, for the inert-setting
+# warnings. Kiro's settings are never inert because kiro is always enabled.
+_BACKEND_SETTINGS: dict[str, tuple[str, ...]] = {
+    "claude": ("GA_CREW_ANTHROPIC_API_KEY", "GA_CREW_ANTHROPIC_BASE_URL"),
+    "codex": ("GA_CREW_OPENAI_API_KEY", "GA_CREW_OPENAI_BASE_URL"),
+}
+_BACKEND_CREDENTIAL_FILES: dict[str, str] = {
+    "claude": "ga-claude-auth",
+    "codex": "ga-codex-auth",
+}
+
+
+def inert_backend_settings(cfg: "Config", stored_credentials: frozenset[str]) -> list[str]:
+    """Names of settings and stored credentials that belong to a disabled backend.
+
+    Pure: the caller supplies which credential files exist. Returns names only,
+    never values, so the result is safe to log.
+    """
+    values = {
+        "GA_CREW_ANTHROPIC_API_KEY": cfg.ga_crew_anthropic_api_key,
+        "GA_CREW_ANTHROPIC_BASE_URL": cfg.ga_crew_anthropic_base_url,
+        "GA_CREW_OPENAI_API_KEY": cfg.ga_crew_openai_api_key,
+        "GA_CREW_OPENAI_BASE_URL": cfg.ga_crew_openai_base_url,
+    }
+    inert: list[str] = []
+    for backend, settings in _BACKEND_SETTINGS.items():
+        if backend in cfg.ga_agent_backends:
+            continue
+        inert.extend(name for name in settings if values[name])
+        if _BACKEND_CREDENTIAL_FILES[backend] in stored_credentials:
+            inert.append(_BACKEND_CREDENTIAL_FILES[backend])
+    return inert
+
+
 def _validate_caddy_tls_mode(value: str, default: str = "off") -> str:
     """Validate GA_PORTAL_TLS_MODE against the four allowed values.
 
@@ -189,14 +278,19 @@ class Config:
     ga_orders_dir: str = ""
 
     # ── ACP backend selection ─────────────────────────────────────────────────
-    # GA_CREW_ACP_BACKEND: which ACP runtime to use inside crew containers.
-    # Valid values: "kiro" (default), "claude", "codex".
+    # GA_AGENT_BACKENDS: comma-separated optional backends to enable ("claude",
+    # "codex"). Kiro is always enabled. Drives the image toolchains at install
+    # time and which backends the transport accepts. Default: kiro only.
+    ga_agent_backends: frozenset[str] = frozenset({"kiro"})
+
+    # GA_CREW_ACP_BACKEND: the default ACP runtime for new crews. Must be an
+    # enabled backend. Valid values: "kiro" (default), "claude", "codex".
     # "kiro" uses the KiroCrew-native kiro-cli agent (existing behaviour).
-    # "claude" uses the Claude Code ACP backend (requires INCLUDE_CLAUDE_AGENT
-    # image and GA_CREW_ANTHROPIC_API_KEY; bypasses per-call kiro approval gate).
-    # "codex" uses the Codex ACP backend (requires INCLUDE_CODEX_AGENT image and
-    # either GA_CREW_OPENAI_API_KEY or an OAuth ga-codex-auth credential; runs
-    # under codex-acp's verified read-only mode, bypassing the approval gate).
+    # "claude" uses the Claude Code ACP backend (credential: GA_CREW_ANTHROPIC_API_KEY
+    # or ga-claude-auth; bypasses the per-call kiro approval gate).
+    # "codex" uses the Codex ACP backend (credential: GA_CREW_OPENAI_API_KEY or
+    # ga-codex-auth; runs under codex-acp's verified read-only mode, bypassing
+    # the approval gate).
     ga_crew_acp_backend: str = "kiro"
 
     # GA_CREW_ANTHROPIC_API_KEY: Anthropic API key injected into crew containers
@@ -213,11 +307,6 @@ class Config:
     # Has no effect when GA_CREW_ACP_BACKEND != "claude". Default: unset.
     ga_crew_anthropic_base_url: str = ""
 
-    # GA_INCLUDE_CLAUDE_AGENT: whether the spec-ops image was built with
-    # INCLUDE_CLAUDE_AGENT=true. Boolean (default false). Used by install.sh to
-    # pass --build-arg INCLUDE_CLAUDE_AGENT=true at image build time.
-    ga_include_claude_agent: bool = False
-
     # GA_CREW_OPENAI_API_KEY: OpenAI API key injected as OPENAI_API_KEY into crew
     # containers when GA_CREW_ACP_BACKEND=codex. Optional when using Codex OAuth
     # login (ga-codex-auth). When set, takes precedence over OAuth credentials.
@@ -231,11 +320,6 @@ class Config:
     # crew traffic to an OpenAI-compatible endpoint without image changes.
     # Has no effect when GA_CREW_ACP_BACKEND != "codex". Default: unset.
     ga_crew_openai_base_url: str = ""
-
-    # GA_INCLUDE_CODEX_AGENT: whether the spec-ops image was built with
-    # INCLUDE_CODEX_AGENT=true. Boolean (default false). Used by install.sh to
-    # pass --build-arg INCLUDE_CODEX_AGENT=true at image build time.
-    ga_include_codex_agent: bool = False
 
     # ── kiro-cli identity ────────────────────────────────────────────────────
     kiro_license: str = ""
@@ -259,6 +343,17 @@ class Config:
         This is the ONLY place the transport reads runtime config from the
         environment. Defaults here MUST match the field defaults above.
         """
+        # Backend checks run first and in this order: a retired flag gets its
+        # own message rather than a downstream error, and the default backend
+        # is checked against the parsed set.
+        _reject_retired_backend_flags()
+        agent_backends = frozenset(
+            (_ALWAYS_ENABLED_BACKEND,) + parse_agent_backends(os.environ.get("GA_AGENT_BACKENDS", ""))
+        )
+        default_backend = _validate_default_backend(
+            _validate_acp_backend(os.environ.get("GA_CREW_ACP_BACKEND", "kiro").strip().lower()),
+            agent_backends,
+        )
         return cls(
             host=os.environ.get("HOST", "0.0.0.0"),
             port=_env_int("PORT", "64057"),
@@ -302,15 +397,12 @@ class Config:
             kiro_region=os.environ.get("KIRO_REGION", ""),
             kiro_api_key=os.environ.get("KIRO_API_KEY", ""),
             ga_orders_dir=os.environ.get("GA_ORDERS_DIR", ""),
-            ga_crew_acp_backend=_validate_acp_backend(
-                os.environ.get("GA_CREW_ACP_BACKEND", "kiro").strip().lower()
-            ),
+            ga_agent_backends=agent_backends,
+            ga_crew_acp_backend=default_backend,
             ga_crew_anthropic_api_key=os.environ.get("GA_CREW_ANTHROPIC_API_KEY", ""),
             ga_crew_anthropic_base_url=os.environ.get("GA_CREW_ANTHROPIC_BASE_URL", "").strip(),
-            ga_include_claude_agent=_env_bool_default_off("GA_INCLUDE_CLAUDE_AGENT"),
             ga_crew_openai_api_key=os.environ.get("GA_CREW_OPENAI_API_KEY", ""),
             ga_crew_openai_base_url=os.environ.get("GA_CREW_OPENAI_BASE_URL", "").strip(),
-            ga_include_codex_agent=_env_bool_default_off("GA_INCLUDE_CODEX_AGENT"),
         )
 
     def validate(self) -> None:

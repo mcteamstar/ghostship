@@ -159,12 +159,12 @@ except ModuleNotFoundError:
     )
 
 try:
-    from config import Config  # container: both files flat in /app
+    from config import Config, inert_backend_settings  # container: both files flat in /app
 except ImportError:
     # Local dev: transport/ is a package dir, and a bare `import config` can
     # resolve to the repo-root config/ namespace package (which has no Config),
     # raising ImportError rather than ModuleNotFoundError — fall back either way.
-    from transport.config import Config
+    from transport.config import Config, inert_backend_settings
 
 try:
     from registry import (  # container: flat /app/
@@ -1685,11 +1685,37 @@ async def _handle_logout_post(request: Request) -> Response:
 # ── Claude OAuth login/logout endpoints ────────────────────────────────────────
 
 
-CLAUDE_OPT_IN_ERROR = (
-    "Claude backend is not enabled on this transport. Set GA_INCLUDE_CLAUDE_AGENT=true "
-    "and rebuild the spec-ops image (install.sh or ghostship install), then restart. "
-    "Kiro remains the default backend."
-)
+def _warn_inert_backend_settings() -> list[str]:
+    """Log one warning per setting that belongs to a disabled backend.
+
+    Called once from the startup path, not from Config (which loads in several
+    modules and does no file reads). Names only; values are never logged.
+    """
+    stored = frozenset(
+        name for name, present in (
+            ("ga-claude-auth", _claude_auth_exists()),
+            ("ga-codex-auth", _codex_auth_exists()),
+        ) if present
+    )
+    inert = inert_backend_settings(cfg, stored)
+    for name in inert:
+        logger.warning(
+            "%s is set but its backend is not in GA_AGENT_BACKENDS; it has no effect.", name
+        )
+    return inert
+
+
+def _backend_enabled(backend: str) -> bool:
+    """True when ``backend`` is enabled. Kiro always is (bundled in every crew
+    image); the others must be listed in GA_AGENT_BACKENDS."""
+    return backend == "kiro" or backend in cfg.ga_agent_backends
+
+
+def _backend_not_enabled_message(backend: str) -> str:
+    return (
+        f"The {backend} backend is not enabled on this transport. Add {backend} to "
+        f"GA_AGENT_BACKENDS in ghostship.conf, then re-run `ghostship install`."
+    )
 
 
 async def _handle_claude_login_post(request: Request) -> Response:
@@ -1700,15 +1726,11 @@ async def _handle_claude_login_post(request: Request) -> Response:
       - 409 if a Claude login flow is already in progress
       - Calls _initiate_claude_login, returns {"login_url", "code"}
 
-    Requires GA_CREW_ACP_BACKEND=claude; returns 400 otherwise.
+    Requires claude to be an enabled backend (GA_AGENT_BACKENDS), whether or
+    not it is the default; returns 400 otherwise.
     """
-    if GA_CREW_ACP_BACKEND != "claude":
-        return PlainTextResponse(
-            "GA_CREW_ACP_BACKEND must be 'claude' to use POST /login/claude.",
-            status_code=400,
-        )
-    if not cfg.ga_include_claude_agent:
-        return PlainTextResponse(CLAUDE_OPT_IN_ERROR, status_code=400)
+    if not _backend_enabled("claude"):
+        return PlainTextResponse(_backend_not_enabled_message("claude"), status_code=400)
 
     with _lifecycle._claude_login_pending_lock:
         if _claude_auth_exists():
@@ -1821,13 +1843,11 @@ async def _handle_claude_login_code_post(request: Request) -> Response:
     Returns 202 once the code is written, 400 for a malformed body, 404 when no
     flow is awaiting a code, 409 when a code was already submitted, and 500 when
     the PTY closed before the write. The code is never logged or echoed.
-    Requires GA_CREW_ACP_BACKEND=claude; returns 400 otherwise.
+    Requires claude to be an enabled backend; returns 400 otherwise. That check
+    runs before the body is parsed or the pending flow is looked up.
     """
-    if GA_CREW_ACP_BACKEND != "claude":
-        return JSONResponse(
-            {"error": "GA_CREW_ACP_BACKEND must be 'claude' to use POST /login/claude/code."},
-            status_code=400,
-        )
+    if not _backend_enabled("claude"):
+        return JSONResponse({"error": _backend_not_enabled_message("claude")}, status_code=400)
     try:
         body = await request.json()
     except Exception:
@@ -1910,13 +1930,11 @@ async def _handle_codex_login_post(request: Request) -> Response:
       - 409 if a Codex login flow is already in progress
       - Calls _initiate_codex_login, returns {"login_url", "code"}
 
-    Requires GA_CREW_ACP_BACKEND=codex; returns 400 otherwise.
+    Requires codex to be an enabled backend (GA_AGENT_BACKENDS), whether or
+    not it is the default; returns 400 otherwise.
     """
-    if GA_CREW_ACP_BACKEND != "codex":
-        return PlainTextResponse(
-            "GA_CREW_ACP_BACKEND must be 'codex' to use POST /login/codex.",
-            status_code=400,
-        )
+    if not _backend_enabled("codex"):
+        return PlainTextResponse(_backend_not_enabled_message("codex"), status_code=400)
 
     with _lifecycle._codex_login_pending_lock:
         if _codex_auth_exists():
@@ -2318,12 +2336,18 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
     # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var;
     # the device-code flow and auth_b64 injection are also skipped on that path.
     auth_b64: str | None = None
+    # Defensive: startup already rejects a default backend outside the enabled
+    # set, so configuration can't reach this. It becomes a real path once a
+    # crew can pick its own backend (per-session selection).
+    if not _backend_enabled(GA_CREW_ACP_BACKEND):
+        return {
+            "error": "backend_not_enabled",
+            "instructions": _backend_not_enabled_message(GA_CREW_ACP_BACKEND),
+        }
     if GA_CREW_ACP_BACKEND == "claude":
         # Task 3.3: Claude backend — require either API key or OAuth credential.
         # If neither is present, initiate the Claude login flow and return
         # not_authenticated with the login URL (identical behaviour to kiro path).
-        if not cfg.ga_include_claude_agent:
-            return {"error": "claude_backend_not_enabled", "instructions": CLAUDE_OPT_IN_ERROR}
         if not _GA_CREW_ANTHROPIC_API_KEY and not _claude_auth_exists():
             result = _initiate_claude_login(podman)
             if result.get("login_pending"):
@@ -4227,6 +4251,9 @@ if __name__ == "__main__":
 
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
+    logger.info("Agent backends enabled: %s (default: %s)",
+                ", ".join(sorted(cfg.ga_agent_backends)), GA_CREW_ACP_BACKEND)
+    _warn_inert_backend_settings()
     _reconcile_registry()
     # Restore UI port allocations from persisted registry so restarts
     # don't re-allocate ports already claimed by existing crews.

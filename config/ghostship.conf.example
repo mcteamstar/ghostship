@@ -140,11 +140,29 @@
 # non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
 # GA_CREW_AGENT=kiro
 
+# ── Agent backends (TRN-202) ─────────────────────────────────────────────────
+# GA_AGENT_BACKENDS: comma-separated optional backends to enable — "claude",
+# "codex", or both. Kiro is always enabled (bundled in every crew image), so
+# listing it is optional. Default: unset, which means kiro only.
+#   - install.sh builds one toolchain per listed backend into the crew image
+#     (crews/spec-ops/toolchains/<name>.sh).
+#   - The transport accepts login (POST /login/claude, /login/codex) only for
+#     enabled backends, whether or not the backend is the default.
+# GA_CREW_ACP_BACKEND: the default backend for new crews — "kiro" (default),
+# "claude" or "codex". It must be enabled: a default outside GA_AGENT_BACKENDS
+# stops install.sh and the transport with an error naming both settings.
+# Re-run `ghostship install` after changing either setting; a restart alone
+# doesn't rebuild the image or update the transport.
+# Retired: GA_INCLUDE_CLAUDE_AGENT and GA_INCLUDE_CODEX_AGENT. Setting either
+# (to any value) is an error; use GA_AGENT_BACKENDS instead.
+#
+# GA_AGENT_BACKENDS=""            # e.g. "claude", "codex" or "claude,codex"
+# GA_CREW_ACP_BACKEND=kiro
+
 # ── Claude Code ACP backend (TRN-167, TRN-170) ───────────────────────────────
-# Set GA_CREW_ACP_BACKEND=claude to use the Claude Code ACP runtime inside crews
-# instead of the default kiro-cli runtime. Also requires:
-#   1. GA_INCLUDE_CLAUDE_AGENT=true — set before running install.sh so the
-#      spec-ops image is built with @anthropic-ai/claude-code installed.
+# To use the Claude Code ACP runtime inside crews:
+#   1. Enable it: GA_AGENT_BACKENDS=claude (see Agent backends above). Set
+#      GA_CREW_ACP_BACKEND=claude to make it the default for new crews.
 #   2. A Claude credential — one of:
 #      a. GA_CREW_ANTHROPIC_API_KEY — Anthropic pay-per-token API key (TRN-167).
 #         When set, takes precedence over OAuth credentials.
@@ -161,13 +179,9 @@
 # policies/default.json) is still enforced. Outbound access to
 # api.anthropic.com is required for Claude-backend crews.
 #
-# Opt-in: the Claude backend is off by default. Enable it with BOTH settings:
-#   GA_INCLUDE_CLAUDE_AGENT=true   (image build) and GA_CREW_ACP_BACKEND=claude
-# With GA_CREW_ACP_BACKEND=claude but GA_INCLUDE_CLAUDE_AGENT unset or false, the
-# transport refuses login and launch with a message naming the missing setting.
+# The Anthropic settings below take effect only while claude is enabled; with
+# claude disabled the transport logs each one as having no effect.
 #
-# GA_CREW_ACP_BACKEND=kiro
-# GA_INCLUDE_CLAUDE_AGENT=false
 # GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
 # GA_CREW_ANTHROPIC_BASE_URL=""
 #
@@ -177,12 +191,12 @@
 # KC_MODEL_OVERRIDE="claude-haiku-5-5"
 
 # ── Codex ACP backend (TRN-172) ──────────────────────────────────────────────
-# Set GA_CREW_ACP_BACKEND=codex to use the Codex ACP runtime inside crews
-# instead of the default kiro-cli runtime. Also requires:
-#   1. GA_INCLUDE_CODEX_AGENT=true — set before running install.sh so the
-#      spec-ops image is built with @agentclientprotocol/codex-acp installed.
-#      This is ONE npm package: the adapter ships its own compatible Codex
-#      binary, so there is no separate `codex` CLI.
+# To use the Codex ACP runtime inside crews:
+#   1. Enable it: GA_AGENT_BACKENDS=codex (see Agent backends above). Set
+#      GA_CREW_ACP_BACKEND=codex to make it the default for new crews. The
+#      toolchain is ONE npm package, @agentclientprotocol/codex-acp: the
+#      adapter ships its own compatible Codex binary, so there is no separate
+#      `codex` CLI.
 #   2. An OpenAI credential — one of:
 #      a. GA_CREW_OPENAI_API_KEY — OpenAI pay-per-token API key. When set,
 #         takes precedence over OAuth credentials.
@@ -200,8 +214,9 @@
 # default.json) is still enforced. Outbound access to api.openai.com (or the
 # GA_CREW_OPENAI_BASE_URL endpoint when set) is required for Codex-backend crews.
 #
-# GA_CREW_ACP_BACKEND=kiro
-# GA_INCLUDE_CODEX_AGENT=false
+# The OpenAI settings below take effect only while codex is enabled; with codex
+# disabled the transport logs each one as having no effect.
+#
 # GA_CREW_OPENAI_API_KEY=""   # optional when using Codex OAuth login
 # GA_CREW_OPENAI_BASE_URL=""
 

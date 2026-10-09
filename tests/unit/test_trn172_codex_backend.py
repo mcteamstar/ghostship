@@ -42,13 +42,13 @@ class TestCodexBackendConfigValidation(unittest.TestCase):
     """GA_CREW_ACP_BACKEND=codex accepted; unknown value errors; codex lazy."""
 
     def test_codex_backend_is_valid(self) -> None:
-        with patch.dict("os.environ", {"GA_CREW_ACP_BACKEND": "codex"}):
+        with patch.dict("os.environ", {"GA_CREW_ACP_BACKEND": "codex", "GA_AGENT_BACKENDS": "codex"}):
             cfg = Config.from_env()
         self.assertEqual(cfg.ga_crew_acp_backend, "codex")
 
     def test_codex_backend_valid_with_api_key(self) -> None:
         env = {
-            "GA_CREW_ACP_BACKEND": "codex",
+            "GA_CREW_ACP_BACKEND": "codex", "GA_AGENT_BACKENDS": "codex",
             "GA_CREW_OPENAI_API_KEY": "sk-openai-test123",
         }
         with patch.dict("os.environ", env):
@@ -70,7 +70,7 @@ class TestCodexBackendConfigValidation(unittest.TestCase):
         Credential enforcement is lazy (launch-time), matching the TRN-170 model.
         """
         env = {
-            "GA_CREW_ACP_BACKEND": "codex",
+            "GA_CREW_ACP_BACKEND": "codex", "GA_AGENT_BACKENDS": "codex",
             "GA_CREW_OPENAI_API_KEY": "",
         }
         with patch.dict("os.environ", env):
@@ -82,17 +82,13 @@ class TestCodexBackendConfigValidation(unittest.TestCase):
             cfg = Config.from_env()
         self.assertEqual(cfg.ga_crew_openai_base_url, "https://proxy.local/v1")
 
-    def test_ga_include_codex_agent_bool_default_off(self) -> None:
-        clean = {k: v for k, v in __import__("os").environ.items()
-                 if k not in ("GA_INCLUDE_CODEX_AGENT",)}
-        with patch.dict("os.environ", clean, clear=True):
-            cfg = Config.from_env()
-        self.assertFalse(cfg.ga_include_codex_agent)
-
-    def test_ga_include_codex_agent_true(self) -> None:
+    def test_retired_include_codex_flag_rejected(self) -> None:
+        """TRN-202: GA_INCLUDE_CODEX_AGENT is retired in favour of GA_AGENT_BACKENDS."""
         with patch.dict("os.environ", {"GA_INCLUDE_CODEX_AGENT": "true"}):
-            cfg = Config.from_env()
-        self.assertTrue(cfg.ga_include_codex_agent)
+            with self.assertRaises(ConfigError) as ctx:
+                Config.from_env()
+        self.assertIn("GA_INCLUDE_CODEX_AGENT", str(ctx.exception))
+        self.assertIn("GA_AGENT_BACKENDS", str(ctx.exception))
 
 
 # ── 7.2 _patch_crew_config writes acp_backend: "codex" ────────────────────────
@@ -279,8 +275,8 @@ class TestLaunchCodexEnvInjection(unittest.TestCase):
             patch.object(server, "_GA_CREW_OPENAI_BASE_URL", base_url),
             patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", anthropic_key),
             patch.object(server, "_GA_CREW_ANTHROPIC_BASE_URL", anthropic_base),
-            # Claude is opt-in; the claude-backend case must enable it to reach launch.
-            patch.object(server.cfg, "ga_include_claude_agent", True),
+            # Backends are opt-in via GA_AGENT_BACKENDS; enable all so each case reaches launch.
+            patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro", "claude", "codex"})),
             patch.object(server, "KIRO_API_KEY", ""),
             patch.object(server, "_codex_auth_exists", return_value=True),
             patch.object(server, "_claude_auth_exists", return_value=True),
@@ -329,6 +325,12 @@ class TestLaunchCodexEnvInjection(unittest.TestCase):
 
 
 class TestLaunchCodexBackendNoCredentials(unittest.TestCase):
+
+    def setUp(self) -> None:
+        # Codex is opt-in via GA_AGENT_BACKENDS: enable it for these tests.
+        patcher = patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro", "codex"}))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _call_launch(self, crew_id: str = "test-crew") -> dict:
         return server.launch(crew_id)
@@ -439,6 +441,10 @@ class TestHandleCodexLoginPost(unittest.TestCase):
     def setUp(self) -> None:
         with _lifecycle._codex_login_pending_lock:
             _lifecycle._codex_login_pending = None
+        # Codex is opt-in via GA_AGENT_BACKENDS: enable it for these tests.
+        patcher = patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro", "codex"}))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         with _lifecycle._codex_login_pending_lock:
@@ -485,9 +491,11 @@ class TestHandleCodexLoginPost(unittest.TestCase):
         self.assertIn("in progress", response.body.decode())
 
     def test_returns_400_when_not_codex_backend(self) -> None:
-        with patch.object(server, "GA_CREW_ACP_BACKEND", "kiro"):
+        """TRN-202: refused when codex is not enabled, not when it merely isn't the default."""
+        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})):
             response = self._run()
         self.assertEqual(response.status_code, 400)
+        self.assertIn("GA_AGENT_BACKENDS", response.body.decode())
 
     def test_returns_500_on_initiate_error(self) -> None:
         with (

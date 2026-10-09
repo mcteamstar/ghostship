@@ -89,8 +89,8 @@ class TestAnthropicBaseUrlClaudeBackendSet(unittest.TestCase):
     present in the container_env passed to container_create."""
     def setUp(self):
         super().setUp()
-        # Claude is opt-in: these tests exercise the Claude path, so enable it.
-        patcher = patch.object(_server.cfg, "ga_include_claude_agent", True)
+        # Claude is opt-in via GA_AGENT_BACKENDS: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(_server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -128,8 +128,8 @@ class TestAnthropicBaseUrlClaudeBackendUnset(unittest.TestCase):
     absent from container_env (default behaviour preserved)."""
     def setUp(self):
         super().setUp()
-        # Claude is opt-in: these tests exercise the Claude path, so enable it.
-        patcher = patch.object(_server.cfg, "ga_include_claude_agent", True)
+        # Claude is opt-in via GA_AGENT_BACKENDS: these tests exercise the Claude path, so enable it.
+        patcher = patch.object(_server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
         patcher.start()
         self.addCleanup(patcher.stop)
 

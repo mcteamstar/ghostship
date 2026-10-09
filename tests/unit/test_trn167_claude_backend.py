@@ -57,7 +57,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
 
     def test_claude_backend_is_valid_with_key(self) -> None:
         env = {
-            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test123",
         }
         with patch.dict("os.environ", env):
@@ -80,7 +80,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
         authenticating via Claude OAuth.
         """
         env = {
-            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
@@ -95,18 +95,13 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
             cfg = Config.from_env()
         cfg.validate()  # must not raise
 
-    def test_ga_include_claude_agent_bool_default_off(self) -> None:
-        """GA_INCLUDE_CLAUDE_AGENT defaults to False."""
-        clean = {k: v for k, v in __import__("os").environ.items()
-                 if k not in ("GA_INCLUDE_CLAUDE_AGENT",)}
-        with patch.dict("os.environ", clean, clear=True):
-            cfg = Config.from_env()
-        self.assertFalse(cfg.ga_include_claude_agent)
-
-    def test_ga_include_claude_agent_true(self) -> None:
+    def test_retired_include_claude_flag_rejected(self) -> None:
+        """TRN-202: GA_INCLUDE_CLAUDE_AGENT is retired in favour of GA_AGENT_BACKENDS."""
         with patch.dict("os.environ", {"GA_INCLUDE_CLAUDE_AGENT": "true"}):
-            cfg = Config.from_env()
-        self.assertTrue(cfg.ga_include_claude_agent)
+            with self.assertRaises(ConfigError) as ctx:
+                Config.from_env()
+        self.assertIn("GA_INCLUDE_CLAUDE_AGENT", str(ctx.exception))
+        self.assertIn("GA_AGENT_BACKENDS", str(ctx.exception))
 
     def test_validate_called_no_longer_raises_when_claude_without_key(self) -> None:
         """TRN-170: Config.validate() is now a no-op for missing API key.
@@ -117,7 +112,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
         at launch() time instead.
         """
         env = {
-            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
@@ -128,7 +123,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
     def test_validate_called_passes_when_key_present(self) -> None:
         """Config.validate() does not raise when claude backend has an API key."""
         env = {
-            "GA_CREW_ACP_BACKEND": "claude",
+            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test-validate",
         }
         with patch.dict("os.environ", env):
