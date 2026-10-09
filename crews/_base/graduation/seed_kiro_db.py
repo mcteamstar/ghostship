@@ -4,8 +4,8 @@ Baked into the crew image at build time so kiro-cli finds the DB already
 initialised — transport only needs to INSERT auth_kv rows at launch,
 with no migration wait and no restart cycle.
 
-⚠️  Migration schema for KiroCrew 0.7.2 / kiro-cli 2.24.0 (6 rows, versions 0-5, max_version 5).
-    Verified 2026-10-02 against ghcr.io/kirodotdev/kirocrew:0.7.2: result (6, 5).
+⚠️  Migration schema for KiroCrew 0.8.0 / kiro-cli 2.27.1 (6 rows, versions 0-5, max_version 5).
+    Verified 2026-10-09 against ghcr.io/kirodotdev/kirocrew:0.8.0: result (6, 5).
     Tables: migrations, history, state (value TEXT), auth_kv.
     Removed vs 0.5.0 seed: conversations, conversations_v2 (+2 indexes), extracted_kas_versions.
     When updating the FROM pin to a newer kirocrew version, re-verify:

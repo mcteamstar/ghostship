@@ -16,7 +16,7 @@
 # Pinned semver tag — driven by KC_BASE_IMAGE build-arg from install.sh,
 # which reads it from ghostship.conf (KC_BASE_IMAGE env var).
 # Default here matches the config default so plain `podman build` still works.
-ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.8.0-insider.8
+ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.8.0
 FROM ${KC_BASE_IMAGE}
 
 USER root

@@ -133,7 +133,7 @@
 # Upstream base image used for ephemeral containers that only need kiro-cli
 # (e.g. login containers). Must match the FROM pin in
 # crews/_base/admission/Containerfile.
-# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.8.0-insider.8
+# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.8.0
 
 # ── Crew agent ────────────────────────────────────────────────────────────────
 # KiroCrew agent name written to config.local.json inside each crew. Must be
