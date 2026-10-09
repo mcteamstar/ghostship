@@ -21,7 +21,7 @@ import unittest
 import pytest
 
 
-# Hard-coded expected values verified 2026-10-02 against the 0.8.0-insider.8 base image.
+# Hard-coded expected values verified 2026-10-09 against the 0.8.0 base image.
 EXPECTED_COUNT = 6
 EXPECTED_MAX_VERSION = 5
 
@@ -49,7 +49,7 @@ def _parse_base_image(containerfile: pathlib.Path) -> str:
            FROM ${KC_BASE_IMAGE}
 
     Returns the full image reference (e.g.
-    ``ghcr.io/kirodotdev/kirocrew:0.8.0-insider.8``).
+    ``ghcr.io/kirodotdev/kirocrew:0.8.0``).
 
     Raises ValueError if no matching reference can be found.
     """
