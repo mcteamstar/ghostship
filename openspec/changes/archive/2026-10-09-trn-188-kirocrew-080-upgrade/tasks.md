@@ -4,7 +4,7 @@
 
 - [ ] 1.1 Monitor `kirodotdev/KiroCrew` for the 0.8.0 stable tag; update `mcteamstar/KiroCrew` fork once it lands
 - [ ] 1.2 Diff `v0.8.0-insider.8` → `v0.8.0` CHANGELOG and source: identify any breaking changes affecting Ghostship's feature surface (spawn API, member enrollment, session attestation, config schema, migration count)
-- [ ] 1.3 Check `seed_kiro_db.py` migration count against 0.8.0 stable — run `python3 -c "from seed_kiro_db import EXPECTED_MIGRATION_COUNT; print(EXPECTED_MIGRATION_COUNT)"` against a fresh 0.8.0 container
+- [x] 1.3 Check `seed_kiro_db.py` migration count against 0.8.0 stable — run `python3 -c "from seed_kiro_db import EXPECTED_MIGRATION_COUNT; print(EXPECTED_MIGRATION_COUNT)"` against a fresh 0.8.0 container
 - [ ] 1.4 Document findings in `research/trn-188-kirocrew-080-changelog.md`
 
 ## 2. Validation — test TRN-186/187 fixes on 0.8.0 stable
@@ -16,11 +16,11 @@
 
 ## 3. Implementation — bump KC_BASE_IMAGE
 
-- [ ] 3.1 Update `crews/_base/admission/Containerfile` ARG default to `ghcr.io/kirodotdev/kirocrew:0.8.0`
-- [ ] 3.2 Update `transport/config.py` `kc_base_image` default
-- [ ] 3.3 Update `config/ghostship.conf.example`
-- [ ] 3.4 Update `tests/unit/test_config_from_env.py` version assertion
-- [ ] 3.5 If migration count changed: update `seed_kiro_db.py` and its test
+- [x] 3.1 Update `crews/_base/admission/Containerfile` ARG default to `ghcr.io/kirodotdev/kirocrew:0.8.0`
+- [x] 3.2 Update `transport/config.py` `kc_base_image` default
+- [x] 3.3 Update `config/ghostship.conf.example`
+- [x] 3.4 Update `tests/unit/test_config_from_env.py` version assertion
+- [x] 3.5 If migration count changed: update `seed_kiro_db.py` and its test
 
 ## 4. Deploy and validate on academy
 

@@ -3,7 +3,7 @@
 Verifies that the pre-seeded kiro-cli DB produced by seed_kiro_db.py matches
 the migration count and max_version expected for the pinned base image.
 
-Expected result for KiroCrew 0.8.0-insider.8 / kiro-cli: (count, max_version) == (6, 5).
+Expected result for KiroCrew 0.8.0 / kiro-cli 2.27.1: (count, max_version) == (6, 5).
 
 Marked @pytest.mark.slow — requires a running Podman daemon and pulls the base
 image on first run. Excluded from the default fast unit run; add to a separate
@@ -21,7 +21,7 @@ import unittest
 import pytest
 
 
-# Hard-coded expected values verified 2026-10-02 against the 0.8.0-insider.8 base image.
+# Hard-coded expected values verified 2026-10-09 against the 0.8.0 base image.
 EXPECTED_COUNT = 6
 EXPECTED_MAX_VERSION = 5
 
@@ -49,7 +49,7 @@ def _parse_base_image(containerfile: pathlib.Path) -> str:
            FROM ${KC_BASE_IMAGE}
 
     Returns the full image reference (e.g.
-    ``ghcr.io/kirodotdev/kirocrew:0.8.0-insider.8``).
+    ``ghcr.io/kirodotdev/kirocrew:0.8.0``).
 
     Raises ValueError if no matching reference can be found.
     """
@@ -94,7 +94,7 @@ class SeedKiroDbRegressionTests(unittest.TestCase):
         self.image = _parse_base_image(_ADMISSION_CONTAINERFILE)
 
     def test_seed_produces_expected_migration_count(self) -> None:
-        """seed_kiro_db.py in a throwaway 0.8.0-insider.8 container yields (6, 5)."""
+        """seed_kiro_db.py in a throwaway 0.8.0 container yields (6, 5)."""
         # Run the seed script then query the DB — all in one container exec.
         query = (
             "python3 /tmp/seed_kiro_db.py && "
