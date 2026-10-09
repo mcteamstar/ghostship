@@ -8,7 +8,7 @@ Defines the Codex/OpenAI login flow, credential storage, injection into crew con
 
 ### Requirement: Codex auth state machine
 
-The Ghost Academy SHALL maintain a Codex auth state machine with exactly three states — unauthenticated, pending, and authenticated — determined by the presence and content of `DATA_DIR/ga-codex-auth`. Transitions are: unauthenticated → pending via `POST /login/codex`; pending → authenticated via `GET /login/codex` completing; authenticated → unauthenticated via `POST /logout/codex`. No other transitions are valid. This state machine is independent of the kiro and Claude auth state machines.
+The Ghost Academy SHALL maintain a Codex auth state machine with exactly three states — unauthenticated, pending, and authenticated — determined by the presence and content of `DATA_DIR/ga-codex-auth`. Transitions are: unauthenticated → pending via `POST /login/codex`; pending → authenticated via `GET /login/codex` completing; authenticated → unauthenticated via `POST /logout/codex`. No other transitions are valid. This state machine is independent of the kiro and Claude auth state machines. `POST /login/codex` SHALL be available whenever codex is an enabled backend, whether or not it is the default.
 
 #### Scenario: POST /login/codex starts device flow when unauthenticated
 - **WHEN** `POST /login/codex` is called and `ga-codex-auth` does not exist or is empty
@@ -23,8 +23,8 @@ The Ghost Academy SHALL maintain a Codex auth state machine with exactly three s
 - **THEN** the transport returns HTTP 409 indicating a flow is in progress and `GET /login/codex` should be polled
 
 #### Scenario: POST /login/codex rejected when backend is not codex
-- **WHEN** `POST /login/codex` is called and `GA_CREW_ACP_BACKEND != "codex"`
-- **THEN** the transport returns an error indicating `GA_CREW_ACP_BACKEND` must be `"codex"` to use `POST /login/codex`; no login container is started
+- **WHEN** `POST /login/codex` is called and codex is not an enabled backend in `GA_AGENT_BACKENDS`
+- **THEN** the transport returns HTTP 400 naming `GA_AGENT_BACKENDS` and the `ghostship install` re-run; no login container is started
 
 #### Scenario: GET /login/codex returns pending while user has not approved
 - **WHEN** `GET /login/codex` is polled and the user has not yet completed the login
@@ -36,15 +36,19 @@ The Ghost Academy SHALL maintain a Codex auth state machine with exactly three s
 
 ### Requirement: Codex login uses an ephemeral login container
 
-The transport SHALL run the Codex login inside an ephemeral `ga-codex-login-<token>` container built from the spec-ops image (which carries the `codex-acp` adapter only when built with `INCLUDE_CODEX_AGENT=true`), so the login flow never runs on the host and its credential output can be captured from a known path.
+The transport SHALL run the Codex login inside an ephemeral `ga-codex-login-<token>` container built from the spec-ops image (which carries the `codex-acp` adapter only when codex is an enabled backend in `GA_AGENT_BACKENDS`), so the login flow never runs on the host and its credential output can be captured from a known path. Codex login SHALL be available whenever codex is enabled, including when it is not the default backend.
 
 #### Scenario: Login container requires the Codex-enabled image
-- **WHEN** `POST /login/codex` is called and the spec-ops image was not built with `INCLUDE_CODEX_AGENT=true` (the Codex adapter is absent)
-- **THEN** the transport returns an error naming `GA_INCLUDE_CODEX_AGENT=true` as the prerequisite; no persistent credential is written
+- **WHEN** `POST /login/codex` is called and codex is not an enabled backend
+- **THEN** the transport returns HTTP 400 naming `GA_AGENT_BACKENDS` and the `ghostship install` re-run as the remedy; no login container is created and no credential is written
 
 #### Scenario: Login container is removed after the flow ends
 - **WHEN** a Codex login flow completes, fails, or is abandoned
 - **THEN** the `ga-codex-login-<token>` container is stopped and removed (best-effort), leaving no long-lived login container
+
+#### Scenario: Codex login available while another backend is the default
+- **WHEN** codex is an enabled backend, `GA_CREW_ACP_BACKEND` is unset, and `POST /login/codex` is called
+- **THEN** the Codex login flow starts
 
 ### Requirement: Codex credential is injected into crew containers at launch
 
