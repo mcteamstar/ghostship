@@ -1685,7 +1685,7 @@ async def _handle_logout_post(request: Request) -> Response:
 # ── Claude OAuth login/logout endpoints ────────────────────────────────────────
 
 
-def _warn_inert_backend_settings() -> list[str]:
+def _warn_inert_backend_settings() -> None:
     """Log one warning per setting that belongs to a disabled backend.
 
     Called once from the startup path, not from Config (which loads in several
@@ -1697,12 +1697,10 @@ def _warn_inert_backend_settings() -> list[str]:
             ("ga-codex-auth", _codex_auth_exists()),
         ) if present
     )
-    inert = inert_backend_settings(cfg, stored)
-    for name in inert:
+    for name in inert_backend_settings(cfg, stored):
         logger.warning(
             "%s is set but its backend is not in GA_AGENT_BACKENDS; it has no effect.", name
         )
-    return inert
 
 
 def _backend_enabled(backend: str) -> bool:

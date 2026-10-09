@@ -179,8 +179,10 @@
 # policies/default.json) is still enforced. Outbound access to
 # api.anthropic.com is required for Claude-backend crews.
 #
-# The Anthropic settings below take effect only while claude is enabled; with
-# claude disabled the transport logs each one as having no effect.
+# The Anthropic settings below are used by crews running on claude, which today
+# means claude must also be the default (GA_CREW_ACP_BACKEND=claude). With claude
+# enabled but not the default they are accepted but unused. With claude
+# disabled the transport logs each one as having no effect.
 #
 # GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
 # GA_CREW_ANTHROPIC_BASE_URL=""
@@ -214,8 +216,10 @@
 # default.json) is still enforced. Outbound access to api.openai.com (or the
 # GA_CREW_OPENAI_BASE_URL endpoint when set) is required for Codex-backend crews.
 #
-# The OpenAI settings below take effect only while codex is enabled; with codex
-# disabled the transport logs each one as having no effect.
+# The OpenAI settings below are used by crews running on codex, which today
+# means codex must also be the default (GA_CREW_ACP_BACKEND=codex). With codex
+# enabled but not the default they are accepted but unused. With codex disabled
+# the transport logs each one as having no effect.
 #
 # GA_CREW_OPENAI_API_KEY=""   # optional when using Codex OAuth login
 # GA_CREW_OPENAI_BASE_URL=""

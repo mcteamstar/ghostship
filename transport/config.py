@@ -155,17 +155,12 @@ def inert_backend_settings(cfg: "Config", stored_credentials: frozenset[str]) ->
     Pure: the caller supplies which credential files exist. Returns names only,
     never values, so the result is safe to log.
     """
-    values = {
-        "GA_CREW_ANTHROPIC_API_KEY": cfg.ga_crew_anthropic_api_key,
-        "GA_CREW_ANTHROPIC_BASE_URL": cfg.ga_crew_anthropic_base_url,
-        "GA_CREW_OPENAI_API_KEY": cfg.ga_crew_openai_api_key,
-        "GA_CREW_OPENAI_BASE_URL": cfg.ga_crew_openai_base_url,
-    }
     inert: list[str] = []
     for backend, settings in _BACKEND_SETTINGS.items():
         if backend in cfg.ga_agent_backends:
             continue
-        inert.extend(name for name in settings if values[name])
+        # Config field names mirror env var names lowercased (see module docstring).
+        inert.extend(name for name in settings if getattr(cfg, name.lower()))
         if _BACKEND_CREDENTIAL_FILES[backend] in stored_credentials:
             inert.append(_BACKEND_CREDENTIAL_FILES[backend])
     return inert

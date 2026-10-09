@@ -43,7 +43,7 @@ ARG AGENT_TOOLCHAINS=""
 COPY toolchains/ /tmp/toolchains/
 RUN set -e; \
     for name in $(echo "${AGENT_TOOLCHAINS}" | tr ',' ' '); do \
-      case "$name" in ''|*[!a-z0-9-]*) echo "Invalid agent toolchain name: '$name'" >&2; exit 1;; esac; \
+      case "$name" in ''|[!a-z]*|*[!a-z0-9-]*) echo "Invalid agent toolchain name: '$name'" >&2; exit 1;; esac; \
       echo "Installing agent toolchain: $name"; \
       sh "/tmp/toolchains/$name.sh" || { echo "Agent toolchain failed: $name" >&2; exit 1; }; \
     done; \

@@ -88,6 +88,31 @@ class TestBackendsMatchToolchains(unittest.TestCase):
                          {p.stem for p in TOOLCHAINS.glob("*.sh")})
 
 
+class TestShellRobustness(unittest.TestCase):
+    """Review fixes: no globbing, trimmed default, typo gets the right message."""
+
+    def test_glob_characters_are_not_expanded(self):
+        # Run from the repo root, which has files a '*' could expand to.
+        result = subprocess.run(
+            ["bash", "-c", f'source "{LIB}"; agent_backends_normalise "claude,*"'],
+            capture_output=True, text=True, timeout=30, cwd=str(REPO),
+        )
+        self.assertEqual(result.stdout, "claude,*")
+        self.assertNotEqual(
+            _shell("agent_backends_validate", result.stdout, str(TOOLCHAINS)).returncode, 0
+        )
+
+    def test_default_is_trimmed_like_the_transport(self):
+        self.assertEqual(
+            _shell("agent_backends_check_default", " Claude ", "claude", str(TOOLCHAINS)).returncode, 0
+        )
+
+    def test_typo_in_default_is_reported_as_unknown(self):
+        result = _shell("agent_backends_check_default", "claud", "claude", str(TOOLCHAINS))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a known backend", result.stderr)
+
+
 class TestShellDefaultAndRetired(unittest.TestCase):
     def test_default_outside_set_rejected(self):
         result = _shell("agent_backends_check_default", "codex", "claude")

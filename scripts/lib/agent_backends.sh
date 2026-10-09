@@ -12,9 +12,10 @@
 
 # Print the normalised optional backends, comma-separated, first-listed order.
 agent_backends_normalise() {
-  local raw="${1:-}" entry name out=""
-  local IFS=','
-  for entry in $raw; do
+  local raw="${1:-}" entry name out="" entries=()
+  # read -a splits without pathname expansion, so '*' or '?' stay literal.
+  IFS=',' read -r -a entries <<< "$raw"
+  for entry in ${entries[@]+"${entries[@]}"}; do
     name="$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     [[ -z "$name" || "$name" == "kiro" ]] && continue
     case ",$out," in *",$name,"*) continue ;; esac
@@ -38,10 +39,10 @@ agent_backends_available() {
 # Names must match ^[a-z][a-z0-9-]*$ and be a script basename, so a path-like
 # name can never select a script outside the toolchains directory.
 agent_backends_validate() {
-  local list="$1" dir="$2" available name
+  local list="$1" dir="$2" available name names=()
   available="$(agent_backends_available "$dir")"
-  local IFS=','
-  for name in $list; do
+  IFS=',' read -r -a names <<< "$list"
+  for name in ${names[@]+"${names[@]}"}; do
     if [[ ! "$name" =~ ^[a-z][a-z0-9-]*$ ]] || [[ ",$available," != *",$name,"* ]]; then
       echo "✗ GA_AGENT_BACKENDS contains unknown backend '$name'. Available: kiro${available:+,$available}." >&2
       return 1
@@ -50,10 +51,20 @@ agent_backends_validate() {
 }
 
 # Require the default backend to be kiro or a member of the normalised list.
+# Trims and lowercases like the transport. $3 (optional) is the toolchains
+# directory, used to tell a typo from a backend that just isn't enabled.
 agent_backends_check_default() {
-  local default="${1:-kiro}" list="$2"
-  default="$(printf '%s' "$default" | tr '[:upper:]' '[:lower:]')"
+  local default="${1:-kiro}" list="$2" dir="${3:-}" available
+  default="$(printf '%s' "$default" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  [[ -z "$default" ]] && default="kiro"
   [[ "$default" == "kiro" || ",$list," == *",$default,"* ]] && return 0
+  if [[ -n "$dir" ]]; then
+    available="$(agent_backends_available "$dir")"
+    if [[ ",$available," != *",$default,"* ]]; then
+      echo "✗ GA_CREW_ACP_BACKEND='$default' is not a known backend. Valid: kiro${available:+,$available}." >&2
+      return 1
+    fi
+  fi
   echo "✗ GA_CREW_ACP_BACKEND='$default' is not enabled. Add it to GA_AGENT_BACKENDS (enabled: kiro${list:+,$list}), then re-run ghostship install." >&2
   return 1
 }

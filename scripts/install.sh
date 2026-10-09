@@ -213,7 +213,7 @@ fi
 # doesn't cost a full build and a restart loop.
 AGENT_TOOLCHAINS="$(agent_backends_normalise "$GA_AGENT_BACKENDS")"
 agent_backends_validate "$AGENT_TOOLCHAINS" "$GHOSTSHIP_DIR/crews/spec-ops/toolchains" || exit 1
-agent_backends_check_default "$GA_CREW_ACP_BACKEND" "$AGENT_TOOLCHAINS" || exit 1
+agent_backends_check_default "$GA_CREW_ACP_BACKEND" "$AGENT_TOOLCHAINS" "$GHOSTSHIP_DIR/crews/spec-ops/toolchains" || exit 1
 echo "✓ Agent backends: kiro${AGENT_TOOLCHAINS:+,$AGENT_TOOLCHAINS} (default: ${GA_CREW_ACP_BACKEND})"
 
 if [[ -z "${KIRO_IDENTITY_PROVIDER:-}" && -t 0 ]]; then
@@ -468,6 +468,17 @@ UNIT_EOF
 fi
 
 mkdir -p "$DATA_DIR"
+
+# compose.yml files written before TRN-202 always set the retired
+# GA_INCLUDE_*_AGENT flags (to "false"), which the new transport rejects at
+# startup. compose.yml is regenerated only after the images are built, so a
+# failed upgrade would leave the new transport image booting against the old
+# file and crash-looping. Strip the retired entries up front.
+if [[ -f "${DATA_DIR}/compose.yml" ]] && grep -qE 'GA_INCLUDE_(CLAUDE|CODEX)_AGENT' "${DATA_DIR}/compose.yml"; then
+  sed -i.bak -e '/GA_INCLUDE_CLAUDE_AGENT:/d' -e '/GA_INCLUDE_CODEX_AGENT:/d' "${DATA_DIR}/compose.yml" \
+    && rm -f "${DATA_DIR}/compose.yml.bak" \
+    && echo "✓ Removed retired GA_INCLUDE_* entries from existing compose.yml"
+fi
 
 # ga-kiro-auth persists as a plain file under DATA_DIR (ga-kiro-auth),
 # written directly by transport itself once a login completes — install.sh
