@@ -622,7 +622,7 @@ cp -r "$GHOSTSHIP_DIR/crews/_base/admission/." "$_ADMISSION_CTX/"
 mkdir -p "$_ADMISSION_CTX/container_scripts"
 cp "$GHOSTSHIP_DIR/transport/container_scripts/"*.py "$_ADMISSION_CTX/container_scripts/"
 ${_PODMAN_CMD} build -t localhost/base-admission:latest \
-  --build-arg KC_BASE_IMAGE="${KC_BASE_IMAGE:-ghcr.io/kirodotdev/kirocrew:0.7.2}" \
+  ${KC_BASE_IMAGE:+--build-arg KC_BASE_IMAGE="${KC_BASE_IMAGE}"} \
   "$_ADMISSION_CTX/" \
   && echo "✓ admission image built" || { echo "✗ admission image build failed"; rm -rf "$_ADMISSION_CTX"; exit 1; }
 rm -rf "$_ADMISSION_CTX"
