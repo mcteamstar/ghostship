@@ -1168,7 +1168,7 @@ def _mint_cookie(podman: PodmanClient, container: str, crew_url: str) -> str | N
         )
         m = re.search(r'token=([A-Za-z0-9._-]+)', raw)
         if not m:
-            logger.error("Could not parse token from: %s", raw[:200])
+            logger.error("Could not parse a token from `kirocrew token` output (%d bytes; output not logged)", len(raw))
             return None
         token = m.group(1)
 
@@ -2699,23 +2699,28 @@ CLAUDE_CREDENTIAL_FILE = ".credentials.json"
 _CLAUDE_CONFIG_DIR_IN_CONTAINER = "/home/kirocrew/.claude"
 
 
-def _archive_has_claude_credential(tar_bytes: bytes) -> bool:
-    """True when the archive contains a non-empty CLAUDE_CREDENTIAL_FILE.
-
-    Other members (such as backups/ or .claude.json) do not count as completion.
-    """
+def _archive_has_file(tar_bytes: bytes, filename: str) -> bool:
+    """True when the archive contains a non-empty regular file named ``filename``."""
     try:
         with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tf:
             for member in tf.getmembers():
                 if (
                     member.isfile()
-                    and os.path.basename(member.name) == CLAUDE_CREDENTIAL_FILE
+                    and os.path.basename(member.name) == filename
                     and member.size > 0
                 ):
                     return True
     except tarfile.TarError:
         return False
     return False
+
+
+def _archive_has_claude_credential(tar_bytes: bytes) -> bool:
+    """True when the archive contains a non-empty CLAUDE_CREDENTIAL_FILE.
+
+    Other members (such as backups/ or .claude.json) do not count as completion.
+    """
+    return _archive_has_file(tar_bytes, CLAUDE_CREDENTIAL_FILE)
 
 
 def _poll_claude_login_container(podman: "PodmanClient", container: str) -> bytes | None:
@@ -3034,30 +3039,44 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
 
 
 
-def _poll_codex_login_container(podman: "PodmanClient", container: str) -> bytes | None:
-    """Poll container for completed ~/.codex/ credentials.
+CODEX_CREDENTIAL_FILE = "auth.json"
+_CODEX_CONFIG_DIR_IN_CONTAINER = "/home/kirocrew/.codex"
 
-    Checks whether ~/.codex/ inside the container contains a non-empty file
-    (auth.json). If present, tars the entire ~/.codex/ directory and returns the
-    raw tar bytes. Returns None if credentials are not yet present.
+
+def _poll_codex_login_container(podman: "PodmanClient", container: str) -> bytes | None:
+    """Poll container for completed Codex credentials.
+
+    Completion is codex-acp's credential file (~/.codex/auth.json) being present
+    and non-empty. Only then is ~/.codex/ tarred and returned. Any other file
+    (such as config.toml) is not evidence of login: an any-file check would
+    store an archive with no credential and then report "Already authenticated".
+    Returns None when the credential is not yet present, or when the archive
+    would not contain it.
 
     On completion: the caller writes the tar to ga-codex-auth (mode 0600) and
     nukes the login container.
     """
     try:
-        result = podman.container_exec(
+        check = podman.container_exec(
             container,
-            ["sh", "-c", "find /home/kirocrew/.codex/ -type f -size +0 2>/dev/null | head -1"],
+            [
+                "sh", "-c",
+                f"test -s {_CODEX_CONFIG_DIR_IN_CONTAINER}/{CODEX_CREDENTIAL_FILE} && echo present",
+            ],
         )
-        if not result or not result.strip():
+        if not check or "present" not in check:
             return None
-        import base64 as _b64
         tar_b64_result = podman.container_exec(
             container,
-            ["sh", "-c", "tar -cf - -C /home/kirocrew/.codex/ . 2>/dev/null | base64"],
+            ["sh", "-c", f"tar -cf - -C {_CODEX_CONFIG_DIR_IN_CONTAINER}/ . 2>/dev/null | base64"],
         )
-        if tar_b64_result and tar_b64_result.strip():
-            return _b64.b64decode(tar_b64_result.strip())
+        if not tar_b64_result or not tar_b64_result.strip():
+            return None
+        tar_bytes = base64.b64decode(tar_b64_result.strip())
+        if not _archive_has_file(tar_bytes, CODEX_CREDENTIAL_FILE):
+            logger.warning("Codex login archive did not contain %s; not completing", CODEX_CREDENTIAL_FILE)
+            return None
+        return tar_bytes
     except Exception as e:
         logger.warning("Error polling Codex login container: %s", e)
     return None

@@ -1572,3 +1572,64 @@ class DispatchFireAfterTests(unittest.TestCase):
             )
 
         self.assertEqual(result, {"error": "delay must be >= 1"})
+
+
+class IdleMonitorResilienceTests(unittest.TestCase):
+    """0.6.0 review fixes: the reaper survives errors and records skip reasons."""
+
+    def _crew(self, cid: str) -> dict:
+        return {"container": f"gs-{cid}", "cookie": "c", "last_used": 0, "status": "running"}
+
+    def _run_loop(self, podman, registry_side_effect, http_responses, iterations: int = 1):
+        calls = [0]
+
+        def fake_sleep(secs: float) -> None:
+            calls[0] += 1
+            if calls[0] > iterations:
+                raise StopIteration()
+
+        with (
+            patch.object(monitors, "_get_podman", return_value=podman),
+            patch.object(monitors, "_http", FakeHTTP(list(http_responses), default=FakeResponse(200, json_data={"agents": []}))),
+            patch.object(monitors, "_touch_crew"),
+            patch.object(monitors, "_load_registry", side_effect=registry_side_effect),
+            patch.object(monitors, "_save_registry"),
+            patch.object(monitors, "_mint_cookie", return_value=None),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=10_000.0),
+        ):
+            try:
+                monitors._idle_monitor()
+            except StopIteration:
+                pass
+
+    def test_iteration_error_does_not_end_the_monitor(self):
+        podman = IdleMonitorPodman()
+        regs = [RuntimeError("registry unreadable"), {"crews": {"a": self._crew("a")}}, {"crews": {"a": self._crew("a")}}]
+        responses = [MockHTTPResponse(200, {"agents": []}), MockHTTPResponse(200, {"jobs": []})]
+        with self.assertLogs(monitors.logger, level="ERROR") as logs:
+            self._run_loop(podman, regs, responses, iterations=2)
+        self.assertTrue(any("Idle monitor iteration failed" in m for m in logs.output))
+        self.assertEqual(podman.stops, ["gs-a"], "second iteration must still reap the idle crew")
+
+    def test_one_stop_failure_does_not_block_other_crews(self):
+        class FlakyPodman(IdleMonitorPodman):
+            def container_stop(self, name: str) -> None:
+                if name == "gs-a":
+                    raise RuntimeError("podman 500")
+                super().container_stop(name)
+
+        podman = FlakyPodman()
+        reg = {"crews": {"a": self._crew("a"), "b": self._crew("b")}}
+        responses = [MockHTTPResponse(200, {"agents": []}), MockHTTPResponse(200, {"jobs": []})] * 2
+        self._run_loop(podman, lambda: dict(reg), responses + [MockHTTPResponse(200, {})] * 4)
+        self.assertEqual(podman.stops, ["gs-b"])
+
+    def test_skip_reason_logged_once_when_unchanged(self):
+        monitors._idle_skip_reasons.clear()
+        with self.assertLogs(monitors.logger, level="INFO") as logs:
+            monitors._note_idle_skip("a", "cron job enabled or recently ran")
+            monitors._note_idle_skip("a", "cron job enabled or recently ran")
+            monitors._note_idle_skip("a", "tasks running")
+        kept = [m for m in logs.output if "kept running" in m]
+        self.assertEqual(len(kept), 2)

@@ -267,7 +267,7 @@
 # TRN-101/TRN-103 MIGRATION: GA_DASHBOARD_PORT_ENABLED was removed. Dashboard
 # access is now provided by ga-portal (Caddy), which is always installed. If you
 # previously used GA_DASHBOARD_PORT_ENABLED=true, just re-run install.sh — the
-# portal replaces the per-port proxy. See docs/dashboard-proxy.md.
+# portal replaces the per-port proxy. See docs/portal.md.
 #
 # GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_PORT_RANGE_SIZE=1024  # Number of ports in the range (default 1024)
@@ -277,7 +277,7 @@
 # ga-portal (Caddy) is a required component and is always installed. It binds
 # ports 443/80 AND the dashboard port range, terminates TLS, and gates auth for
 # all dashboard ports; the transport's per-port uvicorn listeners are not
-# started. See docs/caddy.md for full setup and the host-Caddy retirement
+# started. See docs/portal.md for full setup and the host-Caddy retirement
 # note.
 #
 # TRN-103 MIGRATION: GA_PORTAL_ENABLED was removed — there is no opt-out. Any
@@ -287,20 +287,20 @@
 
 # TLS mode. Choose one that fits your environment:
 #
-#   internal (default) — Caddy built-in CA issues self-signed certs. Works
+#   internal — Caddy built-in CA issues self-signed certs. Works
 #     on localhost, private IPs, and Tailscale addresses without DNS.
 #     One-time operator trust step required: install.sh prints the exact command.
 #     Ideal for homelab and private-network deployments.
 #
 #   tailscale — Real browser-trusted certs from Tailscale ACME for .ts.net
 #     hostnames. Requires the Tailscale daemon on the host. No trust step.
-#     Ideal for your-server deployments.
+#     Ideal for deployments on a Tailscale network.
 #
 #   acme — Public Let's Encrypt certificate for GA_PORTAL_DOMAIN. Requires
 #     GA_PORTAL_DOMAIN set and ports 80/443 reachable for ACME challenge.
 #     Ideal for internet-facing deployments.
 #
-#   off — Plain HTTP, no TLS. For local dev or when an upstream terminator
+#   off (default) — Plain HTTP, no TLS. For local dev or when an upstream terminator
 #     already handles TLS.
 #
 # GA_PORTAL_TLS_MODE=off   ← default: plain HTTP

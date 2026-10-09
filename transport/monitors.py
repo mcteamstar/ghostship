@@ -358,6 +358,18 @@ def _cron_has_enabled_job(payload: Any) -> bool:
     return any(isinstance(job, dict) and job.get("enabled") for job in jobs)
 
 
+# Last reason each idle crew was kept running, so the reason is logged once
+# when it changes rather than every interval.
+_idle_skip_reasons: dict[str, str] = {}
+
+
+def _note_idle_skip(crew_id: str, reason: str) -> None:
+    """Record why an idle crew was not stopped; log only when the reason changes."""
+    if _idle_skip_reasons.get(crew_id) != reason:
+        _idle_skip_reasons[crew_id] = reason
+        logger.info("Idle crew %s kept running: %s", crew_id, reason)
+
+
 def _idle_monitor() -> None:
     """Background thread: stop crew containers that have been idle too long.
 
@@ -380,128 +392,151 @@ def _idle_monitor() -> None:
         # ── Interval sleep ───────────────────────────────────────────────────
         time.sleep(max(GA_IDLE_TIMEOUT_SECS, 10))
         try:
-            podman = _get_podman()
-        except Exception:
-            continue
-
-        with _registry_lock:
-            reg = _load_registry()
-            crew_items = list(reg["crews"].items())
-
-        now = time.time()
-        for crew_id, info in crew_items:
-            if info.get("status") == "auth_required":
-                continue
-            if not podman.container_is_running(info["container"]):
-                continue
-
-            last_used = info.get("last_used", 0)
-            idle_secs = now - last_used
-            if idle_secs < GA_IDLE_TIMEOUT_SECS:
-                continue
-
-            crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
-            cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
-
-            # Check for active dispatched tasks before stopping.
             try:
-                r = _http.get(
-                    f"{crew_url}/api/spawn",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code in (401, 403):
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/spawn",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                payload = r.json()
-                if not isinstance(payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                agents = payload.get("agents")
-                if not isinstance(agents, list):
-                    continue
-                active = [
-                    agent for agent in agents
-                    if isinstance(agent, dict) and not agent.get("done")
-                ]
-                if active:
-                    # Tasks still running — update last_used and skip.
-                    _touch_crew(crew_id)
-                    continue
+                podman = _get_podman()
             except Exception:
                 continue
 
-            # Cron executions do not appear in /api/spawn.  The gateway exposes
-            # their running and last-completed timestamps through /api/crons —
-            # and an enabled job that hasn't fired yet (its interval can
-            # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
-            # just one that already has.
-            try:
-                r = _http.get(
-                    f"{crew_url}/api/crons",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code in (401, 403):
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/crons",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                cron_payload = r.json()
-                if not isinstance(cron_payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                if not isinstance(cron_payload.get("jobs"), list):
-                    continue
-                if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
-                    cron_payload
-                ):
-                    _touch_crew(crew_id)
-                    continue
-            except Exception:
-                continue
-
-            logger.info(
-                "Crew %s idle for %.0fs — stopping container",
-                crew_id, idle_secs,
-            )
-            podman.container_stop(info["container"])
             with _registry_lock:
                 reg = _load_registry()
-                if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["status"] = "stopped"
-                    _save_registry(reg)
+                crew_items = list(reg["crews"].items())
+
+            now = time.time()
+            for crew_id, info in crew_items:
+                if info.get("status") == "auth_required":
+                    continue
+                if not podman.container_is_running(info["container"]):
+                    continue
+
+                last_used = info.get("last_used", 0)
+                idle_secs = now - last_used
+                if idle_secs < GA_IDLE_TIMEOUT_SECS:
+                    continue
+
+                crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
+                cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
+
+                # Check for active dispatched tasks before stopping.
+                try:
+                    r = _http.get(
+                        f"{crew_url}/api/spawn",
+                        headers={"Cookie": cookie, "Origin": crew_url},
+                        timeout=5.0,
+                    )
+                    if r.status_code in (401, 403):
+                        # Cookie expired — attempt refresh and retry
+                        new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                        if new_cookie:
+                            cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                            with _registry_lock:
+                                reg = _load_registry()
+                                if crew_id in reg["crews"]:
+                                    reg["crews"][crew_id]["cookie"] = new_cookie
+                                    _save_registry(reg)
+                            r = _http.get(
+                                f"{crew_url}/api/spawn",
+                                headers={"Cookie": cookie, "Origin": crew_url},
+                                timeout=5.0,
+                            )
+                        else:
+                            # Can't verify activity — skip this crew (fail-open)
+                            _note_idle_skip(crew_id, "spawn check: cookie refresh failed")
+                            continue
+                    if r.status_code != 200:
+                        # Activity is unknown after any non-success response — fail open.
+                        _note_idle_skip(crew_id, f"spawn check: HTTP {r.status_code}")
+                        continue
+                    payload = r.json()
+                    if not isinstance(payload, dict):
+                        # A successful response with an unusable shape is still unknown activity.
+                        _note_idle_skip(crew_id, "spawn check: unexpected response")
+                        continue
+                    agents = payload.get("agents")
+                    if not isinstance(agents, list):
+                        _note_idle_skip(crew_id, "spawn check: no agent list")
+                        continue
+                    active = [
+                        agent for agent in agents
+                        if isinstance(agent, dict) and not agent.get("done")
+                    ]
+                    if active:
+                        # Tasks still running — update last_used and skip.
+                        _note_idle_skip(crew_id, "tasks running")
+                        _touch_crew(crew_id)
+                        continue
+                except Exception as e:
+                    _note_idle_skip(crew_id, f"spawn check error: {type(e).__name__}")
+                    continue
+
+                # Cron executions do not appear in /api/spawn.  The gateway exposes
+                # their running and last-completed timestamps through /api/crons —
+                # and an enabled job that hasn't fired yet (its interval can
+                # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
+                # just one that already has.
+                try:
+                    r = _http.get(
+                        f"{crew_url}/api/crons",
+                        headers={"Cookie": cookie, "Origin": crew_url},
+                        timeout=5.0,
+                    )
+                    if r.status_code in (401, 403):
+                        # Cookie expired — attempt refresh and retry
+                        new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                        if new_cookie:
+                            cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                            with _registry_lock:
+                                reg = _load_registry()
+                                if crew_id in reg["crews"]:
+                                    reg["crews"][crew_id]["cookie"] = new_cookie
+                                    _save_registry(reg)
+                            r = _http.get(
+                                f"{crew_url}/api/crons",
+                                headers={"Cookie": cookie, "Origin": crew_url},
+                                timeout=5.0,
+                            )
+                        else:
+                            # Can't verify activity — skip this crew (fail-open)
+                            _note_idle_skip(crew_id, "cron check: cookie refresh failed")
+                            continue
+                    if r.status_code != 200:
+                        # Activity is unknown after any non-success response — fail open.
+                        _note_idle_skip(crew_id, f"cron check: HTTP {r.status_code}")
+                        continue
+                    cron_payload = r.json()
+                    if not isinstance(cron_payload, dict):
+                        # A successful response with an unusable shape is still unknown activity.
+                        _note_idle_skip(crew_id, "cron check: unexpected response")
+                        continue
+                    if not isinstance(cron_payload.get("jobs"), list):
+                        _note_idle_skip(crew_id, "cron check: no job list")
+                        continue
+                    if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
+                        cron_payload
+                    ):
+                        _note_idle_skip(crew_id, "cron job enabled or recently ran")
+                        _touch_crew(crew_id)
+                        continue
+                except Exception as e:
+                    _note_idle_skip(crew_id, f"cron check error: {type(e).__name__}")
+                    continue
+
+                logger.info(
+                    "Crew %s idle for %.0fs — stopping container",
+                    crew_id, idle_secs,
+                )
+                try:
+                    podman.container_stop(info["container"])
+                except Exception as e:
+                    # One crew's stop failure must not end idle reaping for every crew.
+                    logger.warning("Could not stop idle crew %s: %s", crew_id, e)
+                    continue
+                _idle_skip_reasons.pop(crew_id, None)
+                with _registry_lock:
+                    reg = _load_registry()
+                    if crew_id in reg["crews"]:
+                        reg["crews"][crew_id]["status"] = "stopped"
+                        _save_registry(reg)
+        except Exception:
+            # Never let one bad iteration end idle reaping for the process.
+            logger.exception("Idle monitor iteration failed; retrying next interval")
+

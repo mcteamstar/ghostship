@@ -13,6 +13,12 @@
 # Print the normalised optional backends, comma-separated, first-listed order.
 agent_backends_normalise() {
   local raw="${1:-}" entry name out="" entries=()
+  # `read` stops at a newline, which would silently drop later entries. The
+  # transport rejects the same input, so reject it here too.
+  if [[ "$raw" == *$'\n'* || "$raw" == *$'\r'* ]]; then
+    echo "✗ GA_AGENT_BACKENDS must be a single line (found a line break)." >&2
+    return 1
+  fi
   # read -a splits without pathname expansion, so '*' or '?' stay literal.
   IFS=',' read -r -a entries <<< "$raw"
   for entry in ${entries[@]+"${entries[@]}"}; do

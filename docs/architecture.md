@@ -2,7 +2,7 @@
 
 ## Components
 
-**ga-transport** — the MCP server (`transport/server.py`). Runs as a `podman run` container bound to `localhost`. Manages crew containers via the Podman socket and exposes the `ghostship` tools. Optionally runs on a **dedicated Podman machine** (macOS) or **dedicated systemd socket-activated instance** (Linux) — see `GA_DEDICATED_MACHINE` in [configuration.md](configuration.md).
+**ga-transport** — the MCP server (`transport/server.py`). Runs as a container started by `podman-compose` from the `compose.yml` that `install.sh` generates. It publishes no host port; Caddy (`ga-portal`) fronts it on `PORT`, published on all interfaces. Manages crew containers via the Podman socket and exposes the `ghostship` tools. Optionally runs on a **dedicated Podman machine** (macOS) or **dedicated systemd socket-activated instance** (Linux) — see `GA_DEDICATED_MACHINE` in [configuration.md](configuration.md).
 
 **Crew containers** — on-demand KiroCrew instances (`localhost/spec-ops:latest`), named `gs-<id>`. Each has a workspace volume (`gs-vol-<id>`) and a home volume (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join `ga-starboard` so transport can reach them by name (`http://gs-<id>:5476`). Isolated from `ga-portal` by network topology — see [Networking](#networking-trn-107-portsidestarboard-split).
 
@@ -109,7 +109,7 @@ Every `dispatch` requests a retained run (`keep=true`), keeping each task's sess
 
 Recurring jobs created by `schedule` use `persistent_session=True` on `/api/crons`.
 
-`pickup(task_id=None, crew_id=None, timeout_secs=0)` — unified status and polling tool (aliases: bridge, patrol, poll, watch, wait, monitor, hold).
+`pickup(task_id=None, crew_id=None, timeout_secs=0)` — unified status and polling tool.
 
 - **timeout_secs=0 (default):** check once and return immediately.
 - **timeout_secs > 0:** poll every 3s until the task completes or the timeout elapses; returns not-done state on timeout.

@@ -305,7 +305,7 @@ optional.
 
 `podman start` (what idle-stop recovery and transport-restart use) restarts
 an *existing* container from whatever image it was created from — it does
-**not** pick up a rebuilt image. Only a fresh `podman run` does that:
+**not** pick up a rebuilt image. Only recreating the container does that:
 
 | Rebuilt... | Needs recreating | How |
 |:-----------|:------------------|:----|

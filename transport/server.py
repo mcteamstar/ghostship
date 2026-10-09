@@ -1606,7 +1606,18 @@ async def _handle_login_get(request: Request) -> Response:
         _write_auth_file(auth_b64)
         logger.info("ga-kiro-auth written after login completion")
     except Exception as e:
-        logger.warning("Could not write auth file: %s", e)
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-kiro-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="academy",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
 
     # Inject all currently running crews
     with _registry_lock:
@@ -1647,11 +1658,6 @@ async def _handle_logout_post(request: Request) -> Response:
     if not _read_auth_file():
         return PlainTextResponse("Not authenticated.", status_code=404)
 
-    _security.audit_auth_event(
-        action="logout", outcome="success", account="academy",
-        source=_request_source(request), emit=logger.info,
-    )
-
     try:
         podman = _get_podman()
     except Exception as e:
@@ -1663,9 +1669,24 @@ async def _handle_logout_post(request: Request) -> Response:
         auth_path.unlink(missing_ok=True)
         logger.info("Deleted ga-kiro-auth")
     except Exception as e:
-        logger.warning("Could not delete ga-kiro-auth: %s", e)
+        logger.error("Could not delete ga-kiro-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="academy",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="academy",
+        source=_request_source(request), emit=logger.info,
+    )
 
     # Wipe auth rows from all running crews
+    wipe_failed: list[str] = []
     with _registry_lock:
         reg = _load_registry()
     for cid, info in reg["crews"].items():
@@ -1678,7 +1699,11 @@ async def _handle_logout_post(request: Request) -> Response:
                 logger.info("Cleared auth_kv from crew %s", cid)
             except Exception as e:
                 logger.warning("Could not clear auth from crew %s: %s", cid, e)
+                wipe_failed.append(cid)
 
+    if wipe_failed:
+        # The stored credential is gone; these running crews may still hold a copy.
+        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
     return JSONResponse({"status": "logged_out"})
 
 
@@ -1813,7 +1838,18 @@ async def _handle_claude_login_get(request: Request) -> Response:
         _write_claude_auth_file(tar_bytes)
         logger.info("ga-claude-auth written after Claude login completion")
     except Exception as e:
-        logger.warning("Could not write Claude auth file: %s", e)
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-claude-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="claude",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
 
     # Nuke temp container and clear pending state (guarded)
     _nuke_claude_login_container(podman, pending["container"])
@@ -1892,7 +1928,15 @@ async def _handle_claude_logout_post(request: Request) -> Response:
         auth_path.unlink(missing_ok=True)
         logger.info("Deleted ga-claude-auth")
     except Exception as e:
-        logger.warning("Could not delete ga-claude-auth: %s", e)
+        logger.error("Could not delete ga-claude-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="claude",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
 
     # Audit after deletion so the log only records a logout that actually happened.
     _security.audit_auth_event(
@@ -1901,6 +1945,7 @@ async def _handle_claude_logout_post(request: Request) -> Response:
     )
 
     # Wipe ~/.claude/ from all running Claude-backend crews
+    wipe_failed: list[str] = []
     with _registry_lock:
         reg = _load_registry()
     for cid, info in reg["crews"].items():
@@ -1913,7 +1958,11 @@ async def _handle_claude_logout_post(request: Request) -> Response:
                 logger.info("Wiped ~/.claude/ from crew %s", cid)
             except Exception as e:
                 logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
+                wipe_failed.append(cid)
 
+    if wipe_failed:
+        # The stored credential is gone; these running crews may still hold a copy.
+        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
     return JSONResponse({"status": "logged_out"})
 
 
@@ -2001,7 +2050,18 @@ async def _handle_codex_login_get(request: Request) -> Response:
         _write_codex_auth_file(tar_bytes)
         logger.info("ga-codex-auth written after Codex login completion")
     except Exception as e:
-        logger.warning("Could not write Codex auth file: %s", e)
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-codex-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="codex",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
 
     # Nuke temp container and clear pending state (guarded)
     _nuke_codex_login_container(podman, pending["container"])
@@ -2041,7 +2101,15 @@ async def _handle_codex_logout_post(request: Request) -> Response:
         auth_path.unlink(missing_ok=True)
         logger.info("Deleted ga-codex-auth")
     except Exception as e:
-        logger.warning("Could not delete ga-codex-auth: %s", e)
+        logger.error("Could not delete ga-codex-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="codex",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
 
     # Audit after deletion so the log only records a logout that actually happened.
     _security.audit_auth_event(
@@ -2050,6 +2118,7 @@ async def _handle_codex_logout_post(request: Request) -> Response:
     )
 
     # Wipe ~/.codex/ from all running Codex-backend crews
+    wipe_failed: list[str] = []
     with _registry_lock:
         reg = _load_registry()
     for cid, info in reg["crews"].items():
@@ -2062,7 +2131,11 @@ async def _handle_codex_logout_post(request: Request) -> Response:
                 logger.info("Wiped ~/.codex/ from crew %s", cid)
             except Exception as e:
                 logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
+                wipe_failed.append(cid)
 
+    if wipe_failed:
+        # The stored credential is gone; these running crews may still hold a copy.
+        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
     return JSONResponse({"status": "logged_out"})
 
 

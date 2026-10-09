@@ -44,8 +44,8 @@ If your security requirements mandate full SELinux enforcement, you can:
    ```bash
    sudo semodule -i ghostship-transport.pp
    ```
-3. Remove `--security-opt label=disable` from the `podman run` invocation in
-   `install.sh` (or add `--security-opt label=type:ghostship_transport_t`
+3. Remove the `label=disable` entry from `security_opt` for `ga-transport` in
+   the `compose.yml` that `install.sh` generates (or add `--security-opt label=type:ghostship_transport_t`
    to assign your custom domain).
 4. Verify with: `sudo ausearch -m AVC -ts recent | grep ga-transport`
 

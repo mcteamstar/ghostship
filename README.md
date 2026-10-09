@@ -56,7 +56,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts the transport and Caddy proxy on `localhost:64057`. Then connect your harness:
+Builds crew images, starts the transport and Caddy proxy on port 64057 (published on all interfaces — set `GA_API_KEY` if the host is reachable from other machines). Then connect your harness:
 
 **Kiro (via Power):**
 

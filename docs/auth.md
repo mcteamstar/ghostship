@@ -321,7 +321,7 @@ UNAUTHENTICATED  ──[POST /login/codex]──►  PENDING  ──[GET /login/
 **`POST /login/codex`** — starts the Codex OAuth login flow inside an ephemeral
 `ga-codex-login-*` container. Returns `{"status": "pending", "login_url": "..."}`.
 Returns 409 if already authenticated or a flow is in progress, and 400 if
-`GA_CREW_ACP_BACKEND != "codex"`.
+`codex` is not in `GA_AGENT_BACKENDS`.
 
 **`GET /login/codex`** — polls completion. On success writes `ga-codex-auth` and
 returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.

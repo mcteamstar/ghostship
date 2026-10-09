@@ -61,6 +61,10 @@ def _validate_next_url(url: str) -> str:
     # The leading-slash guard already blocks javascript: and //evil.com inputs.
     if not url.startswith("/") or url.startswith("//"):
         return "/"
+    # Browsers treat "\\" as "/" in a path, so "/\\evil.com" becomes "//evil.com".
+    # Reject backslashes and control characters outright.
+    if "\\" in url or any(ord(ch) < 0x20 for ch in url):
+        return "/"
     return url
 
 

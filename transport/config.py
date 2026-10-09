@@ -22,6 +22,7 @@ intentionally NOT part of `Config`.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 
@@ -55,11 +56,16 @@ def _env_float(name: str, default: str) -> float:
     """Read a float env var, raising ConfigError with a clear message on failure."""
     raw = os.environ.get(name, default)
     try:
-        return float(raw)
+        value = float(raw)
     except (ValueError, TypeError):
         raise ConfigError(
             f"Environment variable {name}={raw!r} cannot be parsed as a float"
         ) from None
+    # float() accepts "nan" and "inf"; a NaN threshold never compares true, so
+    # a gate set to it would silently never trip.
+    if not math.isfinite(value):
+        raise ConfigError(f"Environment variable {name}={raw!r} must be a finite number")
+    return value
 
 
 _config_logger = logging.getLogger(__name__)

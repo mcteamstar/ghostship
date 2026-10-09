@@ -5,14 +5,14 @@
 ### Breaking changes
 
 - **Retired `GA_INCLUDE_CLAUDE_AGENT` and `GA_INCLUDE_CODEX_AGENT` (TRN-202)** — agent backends are now enabled with one list, `GA_AGENT_BACKENDS` (for example `GA_AGENT_BACKENDS=claude,codex`; kiro is always available and is the default when unset). `install.sh` derives the image toolchains from this list. If either retired variable is set, the transport and `install.sh` fail at startup with a message naming `GA_AGENT_BACKENDS`. Migrate by replacing `GA_INCLUDE_CLAUDE_AGENT=true` with `GA_AGENT_BACKENDS=claude` and `GA_INCLUDE_CODEX_AGENT=true` with `GA_AGENT_BACKENDS=codex` (or list both).
-- **Removed `prewarm` MCP tool and `POST /crews/{crew_id}/prewarm` REST route (TRN-194)** — the explicit prewarm surface is gone. Callers of `prewarm(crew_id=...)` will receive a tool-not-found error; `POST /crews/{id}/prewarm` returns 404. Warming now happens automatically as a background side-effect of `supply` and `schedule` — no operator action is required.
+- **Removed `prewarm` MCP tool and `POST /crews/{crew_id}/prewarm` REST route (TRN-194)** — the explicit prewarm surface is gone. Callers of `prewarm(crew_id=...)` will receive a tool-not-found error; `POST /crews/{id}/prewarm` returns 404. Warming is now internal: when `GA_PREWARM_ENABLED` is on (default `false`), it runs as a background side-effect of `supply` and `schedule`. `install.sh` does not pass `GA_PREWARM_*` through yet, so on a standard install warming is off.
 
-### KiroCrew 0.6.0 → 0.7.2 upgrade (TRN-166, TRN-173)
+### KiroCrew 0.6.0 → 0.8.0 upgrade (TRN-166, TRN-173, TRN-185, TRN-188)
 
-Crew base image bumped from `0.6.0` to `0.7.2`. KiroCrew 0.7.x tightened the spawn security model — internal spawns now require attested session identities, and several schema and config changes were needed:
+Crew base image bumped from `0.6.0` to `0.8.0` (by way of `0.7.2` and `0.8.0-insider.8`). KiroCrew 0.7.x tightened the spawn security model — internal spawns now require attested session identities, and several schema and config changes were needed:
 
 - `seed_kiro_db.py` updated for kiro-cli 2.24.0: 6 migration rows (versions 0–5), `state.value` changed from `BLOB` to `TEXT`, and removed `conversations`, `conversations_v2`, and `extracted_kas_versions` tables that no longer exist in 0.7.2.
-- `KC_BASE_IMAGE` wired through `install.sh` as a build-arg — single source of truth, no more separate config knob per build step.
+- `KC_BASE_IMAGE`: the admission Containerfile's `ARG` default is the single source of the base image. `install.sh` passes `--build-arg KC_BASE_IMAGE` only when the config sets it.
 - Transport/Caddy readiness timeout increased to 90s; health probe gains an exec+curl fallback for remote deployments.
 - Auth polling fix: `launch` now polls the auth DB when login is pending — no longer requires `GET /login` to unblock the wait loop.
 
@@ -35,7 +35,7 @@ Bearer auth removed from crew UI paths (`/crews/*/ui`, WebSocket). `Caddy` forwa
 - **Claude Code (TRN-167)** — Claude Code ACP backend support. Crew containers can now run Claude Code as the underlying agent runtime alongside kiro-cli.
 - **Codex (TRN-172)** — Codex ACP backend. `POST /logout/codex` returns 200 when already unauthenticated (idempotent).
 - **Claude subscription OAuth (TRN-170)** — OAuth login flow for Claude subscription accounts. Three Banshee review fixes applied post-implementation.
-- **Anthropic endpoint override (TRN-171)** — `GA_ANTHROPIC_BASE_URL` / per-agent override for custom Anthropic-compatible endpoints.
+- **Anthropic endpoint override (TRN-171)** — `GA_CREW_ANTHROPIC_BASE_URL` points Claude-backend crews at a custom Anthropic-compatible endpoint.
 
 ### Codebase cleanup (TRN-174, TRN-175, TRN-176, TRN-177, TRN-178, TRN-179, TRN-180)
 
@@ -78,7 +78,23 @@ With member-based dispatch (TRN-186/187) working correctly, the `slot` parameter
 - Accessibility: `aria-hidden` on decorative elements, `role="alert"` on the error paragraph
 - All CSS/JS inline — no external dependencies
 
+### Known limitations
+
+- **Captain autopilot does not run on the Claude backend.** Raven declines to read the crew gateway's local IPC secret, which the `spec-driven-development` and `independent-review` templates need to dispatch other personas. Drive Claude crews with a manual relay (`dispatch`, `pickup`, `steer`) until this is fixed.
+- **Claude OAuth credentials go stale after the first token refresh.** Each crew receives a copy of `ga-claude-auth`. About eight hours after login, the first crew to run refreshes the token inside its own container, and later crews fail with "OAuth session expired and could not be refreshed". Work around it by logging in again (`POST /logout/claude`, then `POST /login/claude`) or by using `GA_CREW_ANTHROPIC_API_KEY`.
+- **The default install is not authenticated.** `ga-portal` is published on all interfaces at `PORT` and `GA_API_KEY` is empty by default, so anyone who can reach the host can use every MCP tool. Set `GA_API_KEY` on any machine reachable from another host.
+
 ### Fixes
+
+- **Logout reached Caddy, not the transport.** `POST /logout/claude` and `POST /logout/codex` were not routed to the transport, and Caddy answered them with an empty 200. They are now proxied like `/login*`.
+- **Codex login completed without a credential.** Any non-empty file under `~/.codex/` counted as a finished login. Completion now requires a non-empty `auth.json`, as the Claude flow requires `.credentials.json`.
+- **Login and logout reported success after a failure.** A failed credential write now returns 500 and keeps the login retryable instead of discarding the credential. A failed logout delete returns 500, the kiro logout audits only after the delete, and crews whose credential wipe failed are listed in the response.
+- **Model API keys in `compose.yml`** are no longer world-readable: the file is written with mode 600.
+- **Idle reaper:** one failing crew no longer ends idle reaping for the process, and the reason a crew is kept running is logged when it changes.
+- **`install.sh`:** a flag given without a value now errors instead of exiting silently, an unknown `GA_PORTAL_TLS_MODE` fails fast, a line break in `GA_AGENT_BACKENDS` is rejected (matching the transport), and the migrated temporary config copy is removed on exit.
+- **Config:** `nan` and `inf` are rejected for numeric settings.
+- **Dashboard login:** a backslash in `next` (`/\evil.com`) can no longer redirect off-site.
+- **Logs:** raw `kirocrew token` output is no longer logged when a token can't be parsed.
 
 - **Presigned URL auth (TRN-169)** — `/files/?sig=` paths now exempt from Caddy bearer check; previously a presigned download through the Caddy proxy was incorrectly rejected with 401.
 
