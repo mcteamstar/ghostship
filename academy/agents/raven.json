@@ -7,7 +7,7 @@
     "grep",
     "glob",
     "shell",
-    "spawn_run"
+    "@kirocrew-core"
   ],
   "allowedTools": [
     "read",
