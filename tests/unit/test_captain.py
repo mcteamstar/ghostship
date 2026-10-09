@@ -1375,3 +1375,140 @@ class ListOrderTemplatesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaptainCookieInjectionTests(unittest.TestCase):
+    """Tests for .dashboard_cookie injection in captain dispatch/steer helpers.
+
+    4.1 _finish_crew_setup writes .dashboard_cookie via podman exec after cookie mint
+    4.2 .dashboard_cookie write failure is non-fatal (logs warning, doesn't abort setup)
+    4.3 _dispatch_captain_checkin writes .dashboard_cookie before dispatch
+    4.4 _steer_captain_checkin writes .dashboard_cookie before continue
+    """
+
+    # ── 4.3: _dispatch_captain_checkin writes .dashboard_cookie ──────────────
+
+    def test_dispatch_captain_checkin_writes_dashboard_cookie(self) -> None:
+        """dispatch writes .dashboard_cookie before POSTing to /api/spawn."""
+        podman = Mock()
+        cookie_written: list[tuple[object, str, str]] = []
+
+        def fake_write(p, container, cookie):
+            cookie_written.append((p, container, cookie))
+            return True
+
+        crew = {"container": "gs-demo", "cookie": "abc123", "enrolled_agents": ["raven"]}
+        reg_data = {
+            "crews": {"demo": {"cookie": "abc123", "container": "gs-demo"}},
+            "schedules": {},
+        }
+
+        with (
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_write_dashboard_cookie", side_effect=fake_write),
+            patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(
+                server, "_crew_api_with_recovery",
+                return_value={"id": "task-001"},
+            ),
+        ):
+            task_id = server._dispatch_captain_checkin(crew, "demo")
+
+        self.assertEqual(task_id, "task-001")
+        self.assertEqual(len(cookie_written), 1, "should write cookie exactly once")
+        _, container, cookie = cookie_written[0]
+        self.assertEqual(container, "gs-demo")
+        self.assertEqual(cookie, "abc123")
+
+    def test_dispatch_captain_checkin_cookie_failure_is_non_fatal(self) -> None:
+        """dispatch continues even when _write_dashboard_cookie raises."""
+        podman = Mock()
+
+        crew = {"container": "gs-demo", "cookie": "abc123", "enrolled_agents": ["raven"]}
+        reg_data = {
+            "crews": {"demo": {"cookie": "abc123", "container": "gs-demo"}},
+            "schedules": {},
+        }
+
+        with (
+            patch.object(server, "_get_podman", side_effect=RuntimeError("podman down")),
+            patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(
+                server, "_crew_api_with_recovery",
+                return_value={"id": "task-002"},
+            ),
+        ):
+            # Should not raise despite podman failure
+            task_id = server._dispatch_captain_checkin(crew, "demo")
+
+        self.assertEqual(task_id, "task-002")
+
+    # ── 4.4: _steer_captain_checkin writes .dashboard_cookie ─────────────────
+
+    def test_steer_captain_checkin_writes_dashboard_cookie(self) -> None:
+        """steer writes .dashboard_cookie before POSTing /continue."""
+        podman = Mock()
+        cookie_written: list[tuple[object, str, str]] = []
+
+        def fake_write(p, container, cookie):
+            cookie_written.append((p, container, cookie))
+            return True
+
+        crew = {"container": "gs-demo", "cookie": "xyz789"}
+        captain_entry = {
+            "type": "captain",
+            "current_task_id": "old-task",
+            "model": None,
+        }
+        reg_data = {
+            "crews": {"demo": {"cookie": "xyz789", "container": "gs-demo"}},
+            "schedules": {"demo": [captain_entry]},
+        }
+
+        with (
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_write_dashboard_cookie", side_effect=fake_write),
+            patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_get_crew_schedules", return_value=[captain_entry]),
+            patch.object(
+                server, "_crew_api_with_recovery",
+                return_value={"id": "new-task"},
+            ),
+        ):
+            task_id = server._steer_captain_checkin(crew, "demo")
+
+        self.assertEqual(task_id, "new-task")
+        self.assertEqual(len(cookie_written), 1, "should write cookie exactly once")
+        _, container, cookie = cookie_written[0]
+        self.assertEqual(container, "gs-demo")
+        self.assertEqual(cookie, "xyz789")
+
+    def test_steer_captain_checkin_cookie_failure_is_non_fatal(self) -> None:
+        """steer continues even when _write_dashboard_cookie raises."""
+        crew = {"container": "gs-demo", "cookie": "xyz789"}
+        captain_entry = {
+            "type": "captain",
+            "current_task_id": "old-task",
+            "model": None,
+        }
+        reg_data = {
+            "crews": {"demo": {"cookie": "xyz789", "container": "gs-demo"}},
+            "schedules": {"demo": [captain_entry]},
+        }
+
+        with (
+            patch.object(server, "_get_podman", side_effect=RuntimeError("podman down")),
+            patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_get_crew_schedules", return_value=[captain_entry]),
+            patch.object(
+                server, "_crew_api_with_recovery",
+                return_value={"id": "new-task-2"},
+            ),
+        ):
+            task_id = server._steer_captain_checkin(crew, "demo")
+
+        self.assertEqual(task_id, "new-task-2")

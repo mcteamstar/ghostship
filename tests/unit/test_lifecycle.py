@@ -2750,3 +2750,83 @@ class EnsureCrewRunningWaiterPropagationTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinishCrewSetupCookieTests(unittest.TestCase):
+    """Tests for .dashboard_cookie injection in _finish_crew_setup.
+
+    4.1 _finish_crew_setup writes .dashboard_cookie via podman exec after cookie mint
+    4.2 .dashboard_cookie write failure is non-fatal (logs warning, doesn't abort setup)
+    """
+
+    def _run_setup_with_cookie_mock(
+        self, write_returns: bool = True
+    ) -> tuple[list, dict | None]:
+        """Run _finish_crew_setup with _write_dashboard_cookie mocked.
+
+        Returns (cookie_write_calls, result).
+        """
+        cookie_write_calls: list[tuple] = []
+
+        def fake_write(podman, container, cookie):
+            cookie_write_calls.append((container, cookie))
+            return write_returns
+
+        class SimplePodman:
+            def container_stop(self, c): pass
+            def container_start(self, c): pass
+            def container_exec(self, c, cmd, env=None): return "ready"
+            def container_exec_checked(self, c, cmd): return "ok"
+            def container_exec_stdin(self, c, cmd, stdin_data): return "ok"
+            def container_inspect(self, c): return {"Config": {"Labels": {}}}
+
+        podman = SimplePodman()
+
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            registry_path = data_dir / "crews.json"
+            with (
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_inject_auth"),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_copy_agents"),
+                patch.object(lifecycle, "_copy_skills"),
+                patch.object(lifecycle, "_copy_steering"),
+                patch.object(lifecycle, "_seed_openspec_store"),
+                patch.object(lifecycle, "_patch_models"),
+                patch.object(lifecycle, "_inject_policy", return_value="1"),
+                patch.object(lifecycle, "_mint_cookie", return_value="tok-abc"),
+                patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
+            ):
+                result = lifecycle._finish_crew_setup(
+                    podman,
+                    "demo",
+                    "gs-demo",
+                    "gs-vol-demo",
+                    "gs-home-demo",
+                    "auth-b64",
+                    admiral_secret="ab" * 32,
+                )
+
+        return cookie_write_calls, result
+
+    def test_finish_crew_setup_writes_dashboard_cookie(self) -> None:
+        """4.1: _finish_crew_setup calls _write_dashboard_cookie with minted cookie."""
+        calls, result = self._run_setup_with_cookie_mock()
+
+        self.assertNotIn("error", result, f"setup should succeed: {result}")
+        self.assertEqual(len(calls), 1, "should write cookie exactly once")
+        container, cookie = calls[0]
+        self.assertEqual(container, "gs-demo")
+        self.assertEqual(cookie, "tok-abc")
+
+    def test_finish_crew_setup_cookie_failure_is_non_fatal(self) -> None:
+        """4.2: _write_dashboard_cookie returning False doesn't abort setup."""
+        calls, result = self._run_setup_with_cookie_mock(write_returns=False)
+
+        # Setup should still succeed despite cookie write failure
+        self.assertNotIn("error", result, f"setup should succeed even if cookie write fails: {result}")
+        # The write was attempted
+        self.assertEqual(len(calls), 1, "write should have been attempted")

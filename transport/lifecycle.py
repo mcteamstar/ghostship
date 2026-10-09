@@ -306,6 +306,43 @@ def _crew_cookie(crew: dict) -> str:
     return f"mc_token_{CREW_GATEWAY_PORT}={crew['cookie']}"
 
 
+_DASHBOARD_COOKIE_PATH = "/home/kirocrew/.kiro/crew/.dashboard_cookie"
+
+
+def _write_dashboard_cookie(podman: "PodmanClient", container: str, cookie: str) -> bool:
+    """Write the dashboard cookie value to .dashboard_cookie inside the container.
+
+    Writes ``mc_token_<port>=<value>`` raw value (not the full header) to
+    ``/home/kirocrew/.kiro/crew/.dashboard_cookie`` with mode 0600 so crew
+    members can read it via ``$(cat .dashboard_cookie)`` and construct
+    ``Cookie: mc_token_5476=$COOKIE`` for gateway REST calls.
+
+    Non-fatal — returns True on success, False on failure (logged as WARNING).
+    Parallel to ``.local_secret`` which the gateway writes itself at startup.
+    """
+    try:
+        podman.container_exec(
+            container,
+            [
+                "python3", "-c",
+                (
+                    f"import os; "
+                    f"p = {_DASHBOARD_COOKIE_PATH!r}; "
+                    f"open(p, 'w').write({cookie!r}); "
+                    f"os.chmod(p, 0o600)"
+                ),
+            ],
+        )
+        logger.debug("Dashboard cookie written to %s in %s", _DASHBOARD_COOKIE_PATH, container)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Failed to write dashboard cookie to %s in %s: %s",
+            _DASHBOARD_COOKIE_PATH, container, exc,
+        )
+        return False
+
+
 def _crew_api(crew: dict, method: str, path: str, **kw: Any) -> Any:
     url = _crew_url(crew)
     r = _http.request(
@@ -780,6 +817,8 @@ def _ensure_crew_running(
                     _save_registry(reg)
             crew = {**crew, "cookie": new_cookie}
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
+            # Refresh .dashboard_cookie in container so crew members can still spawn
+            _write_dashboard_cookie(podman, crew["container"], new_cookie)
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
         deployed = _deployed_agent_names(podman, crew["container"])
@@ -1974,6 +2013,9 @@ def _finish_crew_setup(
     if not cookie:
         _cleanup_crew(podman, container, volume, home_volume)
         return {"error": f"Failed to mint session cookie for crew {crew_id}"}
+
+    # Write cookie into container so crew members can use cookie auth for spawning
+    _write_dashboard_cookie(podman, container, cookie)
 
     # Read crew image version from OCI label
     crew_image_version = "unknown"

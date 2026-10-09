@@ -682,6 +682,7 @@ try:
         _startup_events_lock,
         _validate_agent,
         _wait_gateway,
+        _write_dashboard_cookie,
     )
 except ModuleNotFoundError:
     from transport.lifecycle import (  # local dev
@@ -769,6 +770,7 @@ except ModuleNotFoundError:
         _startup_events_lock,
         _validate_agent,
         _wait_gateway,
+        _write_dashboard_cookie,
     )
 
 # Academy composition/manifest/validation surface — extracted from lifecycle
@@ -3064,6 +3066,18 @@ def _dispatch_captain_checkin(
             f"Crew {crew_id}: raven is not enrolled — cannot dispatch Captain check-in. "
             "Re-launch the crew to enroll members."
         )
+    # Refresh .dashboard_cookie so Raven (and any sub-agents she spawns) can use
+    # cookie auth for all REST calls. Read cookie from registry in case crew dict
+    # is a stale minimal copy.
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            current_cookie = reg.get("crews", {}).get(crew_id, {}).get("cookie", "")
+        if current_cookie:
+            podman = _get_podman()
+            _write_dashboard_cookie(podman, crew["container"], current_cookie)
+    except Exception as exc:
+        logger.warning("Captain dispatch: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
     spawn_body: dict[str, Any] = {
         "task": _CAPTAIN_CHECKIN_TASK,
         "agent": "raven",
@@ -3112,6 +3126,17 @@ def _steer_captain_checkin(
     if not current_task_id:
         # No task yet — fresh dispatch
         return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+
+    # Refresh .dashboard_cookie so Raven's cookie auth stays current before continuing.
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            current_cookie = reg.get("crews", {}).get(crew_id, {}).get("cookie", "")
+        if current_cookie:
+            podman = _get_podman()
+            _write_dashboard_cookie(podman, crew["container"], current_cookie)
+    except Exception as exc:
+        logger.warning("Captain steer: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
 
     # Try to continue the existing session
     continue_body: dict[str, Any] = {"task": _CAPTAIN_CHECKIN_TASK}
