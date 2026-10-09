@@ -8,7 +8,7 @@ Defines the Codex/OpenAI login flow, credential storage, injection into crew con
 
 ### Requirement: Codex auth state machine
 
-The Ghost Academy SHALL maintain a Codex auth state machine with exactly three states — unauthenticated, pending, and authenticated — determined by the presence and content of `DATA_DIR/ga-codex-auth`. Transitions are: unauthenticated → pending via `POST /login/codex`; pending → authenticated via `GET /login/codex` completing; authenticated → unauthenticated via `POST /logout/codex`. No other transitions are valid. This state machine is independent of the kiro and Claude auth state machines. `POST /login/codex` SHALL be available whenever codex is an enabled backend, whether or not it is the default.
+The Ghost Academy SHALL maintain a Codex auth state machine with exactly three states — unauthenticated, pending, and authenticated — determined by the presence and content of `DATA_DIR/ga-codex-auth`. Transitions are: unauthenticated → pending via `POST /login/codex`; pending → authenticated via `GET /login/codex` completing; authenticated → unauthenticated via `POST /logout/codex`. No other transitions are valid. This state machine is independent of the kiro and Claude auth state machines.
 
 #### Scenario: POST /login/codex starts device flow when unauthenticated
 - **WHEN** `POST /login/codex` is called and `ga-codex-auth` does not exist or is empty
