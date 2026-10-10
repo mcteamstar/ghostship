@@ -450,17 +450,48 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 # "kiro" (default): kiro-cli auth injection (existing behaviour).
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY from GA_CREW_ANTHROPIC_API_KEY.
 # "codex": skip kiro auth, inject OPENAI_API_KEY from GA_CREW_OPENAI_API_KEY.
+def _read_podman_secret(name: str) -> str:
+    """Read a Podman secret mounted at /run/secrets/<name>.
+
+    Returns the file contents stripped of surrounding whitespace, or "" when the
+    secret is not mounted (FileNotFoundError) or cannot be read. Mirrors the
+    _load_api_key() / _load_transport_secret() pattern so crew model keys and
+    KIRO_API_KEY are delivered as Podman secrets rather than plaintext compose
+    env vars (secret-delivery-hardening).
+    """
+    secret_path = Path("/run/secrets") / name
+    try:
+        return secret_path.read_text().strip()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return ""
+
+
 GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
+# Prefer the Podman-secret file over the (now always empty) env-var value: the
+# compose template no longer carries these keys in its environment block, so
+# cfg.ga_crew_anthropic_api_key is "" in production and the secret file is the
+# real source. The env-var value is retained as the fallback for dev/test runs
+# that set GA_CREW_ANTHROPIC_API_KEY directly without a mounted secret.
 _GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
+_secret_value = _read_podman_secret("ga-crew-anthropic-api-key")
+if _secret_value:
+    _GA_CREW_ANTHROPIC_API_KEY = _secret_value
 _GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
 # Register the Anthropic API key with the redaction filter so it is never
-# written to logs when the Claude backend is active.
+# written to logs when the Claude backend is active. Registered after the
+# secret-file read so the file-sourced value is covered, not just the env var.
 if _GA_CREW_ANTHROPIC_API_KEY:
     _security.register_secret(_GA_CREW_ANTHROPIC_API_KEY)
 _GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
+_secret_value = _read_podman_secret("ga-crew-openai-api-key")
+if _secret_value:
+    _GA_CREW_OPENAI_API_KEY = _secret_value
 _GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
 # Register the OpenAI API key with the redaction filter so it is never written
-# to logs when the Codex backend is active.
+# to logs when the Codex backend is active. Registered after the secret-file
+# read so the file-sourced value is covered, not just the env var.
 if _GA_CREW_OPENAI_API_KEY:
     _security.register_secret(_GA_CREW_OPENAI_API_KEY)
 
@@ -583,9 +614,13 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 # flow is skipped entirely. Injected as an env var into crew
 # containers; unset (default) => existing device-code flow is used.
 KIRO_API_KEY = cfg.kiro_api_key
+_secret_value = _read_podman_secret("ga-kiro-api-key")
+if _secret_value:
+    KIRO_API_KEY = _secret_value
 # Register KIRO_API_KEY with the redaction filter
 # so the value is scrubbed from logs if it appears in an error or log record,
-# consistent with the GA_API_KEY pattern in _load_api_key().
+# consistent with the GA_API_KEY pattern in _load_api_key(). Registered after
+# the secret-file read so the file-sourced value is covered, not just the env var.
 if KIRO_API_KEY:
     _security.register_secret(KIRO_API_KEY)
 
