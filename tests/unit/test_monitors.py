@@ -164,6 +164,153 @@ class IdleMonitorTests(unittest.TestCase):
         self.assertTrue(result["saved_regs"])
         self.assertEqual(result["saved_regs"][-1]["crews"]["idle-crew"]["status"], "stopped")
 
+    def test_touched_during_http_checks_skips_stop(self) -> None:
+        """3.3 (D3): a crew whose last_used advances during the HTTP activity
+        checks must NOT be stopped. The reaper re-reads last_used from the live
+        registry under the lock right before the stop and skips when it is now
+        within GA_IDLE_TIMEOUT_SECS.
+
+        The snapshot the reaper iterates shows the crew idle (last_used=0), but
+        a dispatch landing during the ~multi-second HTTP checks advances
+        last_used to 'now' in the live registry. The re-read must observe that
+        and skip the stop.
+        """
+        podman = IdleMonitorPodman(containers_running={"gs-raced": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        cron_resp = MockHTTPResponse(200, {"jobs": []})
+        fake_http = FakeHTTP([spawn_resp, cron_resp], default=FakeResponse(500))
+
+        # The idle snapshot (first _load_registry) shows last_used=0 → idle.
+        idle_snapshot = {"crews": {"raced": {
+            "container": "gs-raced", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+        # Every subsequent _load_registry (the TOCTOU re-read, and the
+        # post-stop write path) sees last_used advanced to 'now' — a dispatch
+        # that landed during the HTTP checks.
+        touched_registry = {"crews": {"raced": {
+            "container": "gs-raced", "status": "running", "cookie": "c", "last_used": 1000.0,
+        }}}
+        load_calls = [0]
+
+        def load_side_effect():
+            load_calls[0] += 1
+            # First call = the iteration snapshot (idle); all later calls =
+            # the live re-read showing the crew was just touched.
+            return idle_snapshot if load_calls[0] == 1 else touched_registry
+
+        sleep_called = [False]
+
+        def fake_sleep(secs):
+            if sleep_called[0]:
+                raise StopIteration()
+            sleep_called[0] = True
+
+        saved_regs: list[dict] = []
+        with (
+            patch.object(monitors, "_get_podman", return_value=podman),
+            patch.object(monitors, "_http", fake_http),
+            patch.object(monitors, "_touch_crew"),
+            patch.object(monitors, "_load_registry", side_effect=load_side_effect),
+            patch.object(monitors, "_save_registry", side_effect=lambda r: saved_regs.append(dict(r))),
+            patch.object(monitors, "_mint_cookie", return_value=None),
+            patch.object(monitors, "GA_IDLE_TIMEOUT_SECS", 300.0),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=1000.0),
+        ):
+            try:
+                server._idle_monitor()
+            except StopIteration:
+                pass
+
+        # The re-check saw last_used == now (within the 300s timeout) → no stop,
+        # and no "stopped" status write for this crew.
+        self.assertEqual(podman.stops, [])
+        self.assertFalse(
+            any("raced" in r.get("crews", {})
+                and r["crews"]["raced"].get("status") == "stopped"
+                for r in saved_regs),
+            f"crew was stopped despite being touched during checks: {saved_regs}",
+        )
+
+    def test_stop_is_atomic_with_recheck_under_lock(self) -> None:
+        """3.2 (D3): the container_stop call must happen while _registry_lock is
+        held, so a concurrent _touch_crew (which also acquires the same lock) cannot
+        slip between the re-check and the stop.
+
+        The test verifies that when container_stop is invoked the registry lock is
+        already held: we replace _registry_lock with a real threading.Lock, then
+        record inside container_stop whether the lock is currently held by checking
+        lock.locked(). If the stop is outside the lock, locked() returns False.
+        """
+        podman = IdleMonitorPodman(containers_running={"gs-atomic": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        cron_resp = MockHTTPResponse(200, {"jobs": []})
+        fake_http = FakeHTTP([spawn_resp, cron_resp], default=FakeResponse(500))
+
+        idle_snapshot = {"crews": {"atomic": {
+            "container": "gs-atomic", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+        # The re-read (inside the lock) shows the crew is still idle — stop proceeds.
+        still_idle_registry = {"crews": {"atomic": {
+            "container": "gs-atomic", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+        load_calls = [0]
+
+        def load_side_effect():
+            load_calls[0] += 1
+            return idle_snapshot if load_calls[0] == 1 else still_idle_registry
+
+        # Use a real lock so we can inspect its state inside container_stop.
+        real_lock = threading.Lock()
+        lock_held_during_stop = [None]  # True/False/None
+
+        class _AtomicPodman:
+            stops: list[str] = []
+
+            def container_is_running(self, name: str) -> bool:
+                return True
+
+            def container_stop(self, name: str) -> None:
+                # Record whether _registry_lock is held at the moment of the stop.
+                lock_held_during_stop[0] = real_lock.locked()
+                self.stops.append(name)
+
+        atomic_podman = _AtomicPodman()
+        sleep_called = [False]
+
+        def fake_sleep(secs):
+            if sleep_called[0]:
+                raise StopIteration()
+            sleep_called[0] = True
+
+        with (
+            patch.object(monitors, "_get_podman", return_value=atomic_podman),
+            patch.object(monitors, "_http", fake_http),
+            patch.object(monitors, "_touch_crew"),
+            patch.object(monitors, "_load_registry", side_effect=load_side_effect),
+            patch.object(monitors, "_save_registry"),
+            patch.object(monitors, "_mint_cookie", return_value=None),
+            patch.object(monitors, "_registry_lock", real_lock),
+            patch.object(monitors, "GA_IDLE_TIMEOUT_SECS", 300.0),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=1000.0),
+        ):
+            try:
+                server._idle_monitor()
+            except StopIteration:
+                pass
+
+        # The stop should have happened (crew was genuinely idle).
+        self.assertIn("gs-atomic", atomic_podman.stops,
+                      "expected the idle crew to be stopped")
+        # The decisive assertion: the lock must have been held when stop ran.
+        self.assertTrue(
+            lock_held_during_stop[0],
+            "container_stop was called OUTSIDE _registry_lock — the re-check and "
+            "stop are not atomic; a concurrent _touch_crew can slip between them "
+            "(task 3.2 / D3 design requirement)",
+        )
+
     def test_recently_used_crew_skipped(self) -> None:
         """4.4: recently used crew (within timeout) is skipped."""
         podman = IdleMonitorPodman(containers_running={"gs-recent": True})

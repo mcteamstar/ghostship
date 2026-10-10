@@ -439,7 +439,13 @@ def _phase0_transient_503(
 
     Re-raises the last 503 error if all retries are exhausted.
     Raises any non-503 HTTPStatusError immediately without retrying.
+
+    Note (D6): a 503 here means the task process is still starting and has not
+    served the route yet — the request was not acted upon, so retrying is safe
+    for any method (including POST). The idempotency guard D6 adds is for a
+    connection reset (_phase2_dead_gateway), not this transient-503 path.
     """
+    last_exc: Exception | None = None
     for _attempt in range(4):
         time.sleep(1.0)
         try:
@@ -466,6 +472,12 @@ def _phase1_stale_cookie(
 
     Returns the API result on success.
     Raises CrewUnresponsiveError if Phase 2 restart also fails.
+
+    Note (D6): a stale-cookie failure is a 400/401/403 — the gateway REJECTED
+    the request at auth and did not act on it, so retrying after a cookie
+    refresh cannot duplicate a side effect even for a POST. The idempotency
+    guard that D6 adds lives in _phase2_dead_gateway (a connection reset, where
+    the request MAY have been accepted before the socket dropped), not here.
     """
     logger.info(
         "Crew %s stale-cookie phase — attempting cookie refresh",
@@ -598,6 +610,20 @@ def _crew_api_with_recovery(
 
     If phase 1 cookie refresh fails, escalates to phase 2.
     At most one retry per failure class — no infinite loops.
+
+    NON-REENTRANT CONTRACT (D1 — do not reintroduce the deadlock):
+    This function holds ``_get_recovery_lock(crew_id)`` for the entire call,
+    INCLUDING any phase-1/phase-2 sub-call into ``_ensure_crew_running``. The
+    per-crew recovery lock is a plain ``threading.Lock`` (non-reentrant), so a
+    code path reached *while this lock is held* must NOT call
+    ``_crew_api_with_recovery`` again for the same crew — doing so blocks
+    forever trying to re-acquire the lock. Concretely: ``_ensure_crew_running``
+    (reached via phase 2) calls ``_enroll_crew_members``, which therefore uses
+    ``_crew_api`` DIRECTLY (best-effort, its own try/except) and never
+    ``_crew_api_with_recovery``. Any new caller of ``_enroll_crew_members`` — or
+    any new sub-call added under this lock — must preserve that: route
+    gateway calls through ``_crew_api``, not through recovery, so the lock is
+    never re-entered. See design.md D1.
     """
     lock = _get_recovery_lock(crew_id)
     with lock:
@@ -856,13 +882,36 @@ def _ensure_crew_running(
         # Refresh cookie (old one may have expired)
         new_cookie = _mint_cookie(podman, crew["container"], crew_url)
         if new_cookie:
-            with _registry_lock:
-                reg = _load_registry()
-                if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["cookie"] = new_cookie
-                    reg["crews"][crew_id]["status"] = "running"
-                    reg["crews"][crew_id]["last_used"] = time.time()
-                    _save_registry(reg)
+            try:
+                with _registry_lock:
+                    reg = _load_registry()
+                    if crew_id in reg["crews"]:
+                        reg["crews"][crew_id]["cookie"] = new_cookie
+                        reg["crews"][crew_id]["status"] = "running"
+                        reg["crews"][crew_id]["last_used"] = time.time()
+                        _save_registry(reg)
+            except Exception as reg_exc:
+                # D7b: the container is running but we could not persist the
+                # "running" status (registry I/O error — e.g. EACCES, now that
+                # _load_registry/_save_registry propagate instead of returning
+                # empty). Returning here would leave a running container that the
+                # registry believes is stopped — a state mismatch that the idle
+                # reaper and active-limit check cannot reconcile. Stop the
+                # container so its real state matches the stale registry entry,
+                # then re-raise for the leader's except/finally to propagate.
+                logger.error(
+                    "Crew %s: registry write failed after restart (%s) — stopping "
+                    "container to match registry state",
+                    crew_id, reg_exc,
+                )
+                try:
+                    podman.container_stop(crew["container"])
+                except Exception as stop_exc:
+                    logger.error(
+                        "Crew %s: container_stop during registry-failure cleanup "
+                        "also failed: %s", crew_id, stop_exc,
+                    )
+                raise
             crew = {**crew, "cookie": new_cookie}
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
             # Also refresh the internally-bound cookie for crew member spawn auth
