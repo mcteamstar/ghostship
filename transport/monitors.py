@@ -534,27 +534,35 @@ def _idle_monitor() -> None:
                     "Crew %s idle for %.0fs — stopping container",
                     crew_id, idle_secs,
                 )
-                # TOCTOU guard: re-read last_used from the live registry before
-                # stopping.  A dispatch arriving during the HTTP checks above
-                # would have advanced last_used but be invisible to our snapshot.
+                # TOCTOU guard: re-read last_used from the live registry and
+                # perform the stop while the lock is held, so a _touch_crew
+                # call that lands between our HTTP checks and the stop cannot
+                # race us.  The design (D3) requires the re-check AND the stop
+                # to be atomic with respect to _touch_crew (which also acquires
+                # _registry_lock).  Holding the lock across container_stop adds
+                # latency bounded by Podman's stop timeout — acceptable per the
+                # design risk analysis.
+                stop_failed = False
                 with _registry_lock:
                     live_reg = _load_registry()
                     live_last_used = live_reg.get("crews", {}).get(crew_id, {}).get("last_used", 0)
-                if now - live_last_used < GA_IDLE_TIMEOUT_SECS:
-                    _note_idle_skip(crew_id, "last_used advanced during checks — skipping stop")
+                    if now - live_last_used < GA_IDLE_TIMEOUT_SECS:
+                        _note_idle_skip(crew_id, "last_used advanced during checks — skipping stop")
+                        continue
+                    try:
+                        podman.container_stop(info["container"])
+                    except Exception as e:
+                        # One crew's stop failure must not end idle reaping for every crew.
+                        logger.warning("Could not stop idle crew %s: %s", crew_id, e)
+                        stop_failed = True
+                    if not stop_failed:
+                        _idle_skip_reasons.pop(crew_id, None)
+                        reg = _load_registry()
+                        if crew_id in reg["crews"]:
+                            reg["crews"][crew_id]["status"] = "stopped"
+                            _save_registry(reg)
+                if stop_failed:
                     continue
-                try:
-                    podman.container_stop(info["container"])
-                except Exception as e:
-                    # One crew's stop failure must not end idle reaping for every crew.
-                    logger.warning("Could not stop idle crew %s: %s", crew_id, e)
-                    continue
-                _idle_skip_reasons.pop(crew_id, None)
-                with _registry_lock:
-                    reg = _load_registry()
-                    if crew_id in reg["crews"]:
-                        reg["crews"][crew_id]["status"] = "stopped"
-                        _save_registry(reg)
         except Exception:
             # Never let one bad iteration end idle reaping for the process.
             logger.exception("Idle monitor iteration failed; retrying next interval")
