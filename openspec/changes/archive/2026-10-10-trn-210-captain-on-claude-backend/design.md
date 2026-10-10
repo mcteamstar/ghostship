@@ -141,11 +141,42 @@ On a Claude-backend crew, Captain check-in lifecycle:
 confirms it knows mail is in `/var/mail`, not `ListAgents`. This is the same signal
 the original finding used to detect the problem.
 
+→ **Smoke-test note (task 3.2):** On the first Claude-backend Captain check-in, Raven's
+response should reference `/var/mail/` paths (e.g. `/var/mail/raven/new/`,
+`/var/mail/captain/`) — confirming the `raven.json` persona prompt was received and
+applied. If instead the response mentions Claude Code's `ListAgents` tool or shows no
+awareness that mailboxes are files under `/var/mail`, the persona prompt is NOT reaching
+the session and delivery is broken (this is exactly the signal the original Medium
+finding used). Treat a `/var/mail/`-aware first response as the pass criterion.
+
 **[Risk] Model defaulting adds a conditional branch to `_dispatch_captain_checkin`.**
 → Mitigation: the branch is simple: if model is None and `acp_backend == "claude"`,
 read `model` from the crew's registry entry `"model"` key. No new registry fields.
 Existing non-Claude paths are unaffected (model stays None → gateway picks default,
 same as today).
+
+## Persona Prompt Delivery — source finding (TRN-210 task 3.1)
+
+Inspection of `transport/lifecycle.py` confirms the delivery path up to the gateway
+boundary:
+
+- `_copy_agents()` (lifecycle.py) globs `academy/agents/*.json` (bind-mounted at
+  `/agents` inside the transport container), selects the files named by the crew
+  manifest, and `podman.container_archive_put`s each into `KIRO_AGENTS_DIR` in the crew
+  container. This copy is **backend-agnostic** — it runs identically for `kiro`,
+  `claude`, and `codex` crews. `raven.json` lands in the crew's agents directory on a
+  Claude-backend crew exactly as on a kiro-backend crew.
+- The `GA_CREW_ACP_BACKEND == "claude"` branch in `_launch_crew` only changes
+  **authentication** (ANTHROPIC credential injection, `.claude/settings.local.json`
+  with `bypassPermissions`); it does **not** touch agent-file delivery.
+
+What is **not** verifiable from this repository: whether KiroCrew's closed-source
+`claude-agent-acp` backend (in the `kiro_crew` package, outside `transport/`) forwards
+the persona `prompt` field as the Claude session's system prompt and whether Claude
+honours it in full. The agent JSON is present in the container; how the gateway hands it
+to the Claude Code session is internal to KiroCrew 0.8.0. Per D2, this residual gap is
+covered by the integration smoke test in task 3.2 (see the Risks note above): a first
+check-in response that references `/var/mail/` paths confirms end-to-end delivery.
 
 ## Open Questions
 

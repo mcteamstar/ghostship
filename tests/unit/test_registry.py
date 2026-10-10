@@ -164,6 +164,79 @@ class SaveRegistryDurabilityTests(unittest.TestCase):
 
         self.assertEqual(result, {"crews": {}})
 
+    def test_permission_error_raises_and_does_not_overwrite(self) -> None:
+        """2.4 (D2): an I/O error reading crews.json (e.g. PermissionError)
+        propagates out of _load_registry instead of returning {"crews": {}},
+        and the existing registry file is left untouched (not clobbered by a
+        follow-on save)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            reg_path = test_dir / "crews.json"
+            original = {"crews": {"existing": {"status": "running", "container": "gs-existing"}}}
+            reg_path.write_text(json.dumps(original))
+
+            def _raise_permission(*_a, **_k):
+                raise PermissionError("read denied")
+
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(Path, "read_text", _raise_permission),
+                self.assertLogs("transport.registry", level="ERROR"),
+            ):
+                # Must RAISE, not return {"crews": {}} — the old fallback let a
+                # follow-on _save_registry clobber every crew.
+                with self.assertRaises(PermissionError):
+                    registry._load_registry()
+
+            # The on-disk file must be unchanged (no empty-registry overwrite).
+            self.assertEqual(json.loads(reg_path.read_text()), original)
+
+    def test_durability_after_transient_read_error(self) -> None:
+        """6.2 (D2 integration): a transient PermissionError on one read does
+        not produce an empty registry on the next write. Simulates a transport
+        restart sequence: read fails (raises, caller does not save), the error
+        clears, a later load+save round-trips the ORIGINAL crews — never an
+        empty {"crews": {}} that a stale fallback would have persisted.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td)
+            reg_path = test_dir / "crews.json"
+            original = {"crews": {"c1": {"status": "running", "container": "gs-c1"}}}
+            reg_path.write_text(json.dumps(original))
+
+            real_read_text = Path.read_text
+            fail = {"on": True}
+
+            def _maybe_fail(self, *a, **k):
+                if fail["on"] and self == reg_path:
+                    raise PermissionError("transient read error")
+                return real_read_text(self, *a, **k)
+
+            with (
+                patch.object(registry, "DATA_DIR", test_dir),
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(Path, "read_text", _maybe_fail),
+            ):
+                # 1) Transient failure: the caller sees it raise. A fail-open
+                #    background caller catches and continues WITHOUT saving — so
+                #    the file is never overwritten with an empty registry.
+                with self.assertRaises(PermissionError):
+                    registry._load_registry()
+                # Nothing was written during the failure.
+                self.assertEqual(json.loads(real_read_text(reg_path)), original)
+
+                # 2) Error clears; a normal load+save round-trips the original.
+                fail["on"] = False
+                reg = registry._load_registry()
+                self.assertEqual(reg, original)
+                registry._save_registry(reg)
+
+            # Final on-disk state is the original crews, not an empty registry.
+            self.assertEqual(json.loads(reg_path.read_text())["crews"], original["crews"])
+
 
 class SaveRegistryDirFsyncTests(unittest.TestCase):
     """Regression test: _save_registry() must fsync the parent directory after os.replace.

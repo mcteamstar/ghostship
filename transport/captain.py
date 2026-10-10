@@ -365,8 +365,37 @@ def _format_captain_mail(body: str, signing_secret: str | None = None, supersede
         # Sign with Ed25519. signing_secret is the hex-encoded 32-byte private
         # seed; the detached 64-byte signature is base64url-encoded (no padding)
         # into the X-Admiral-Sig header.
+        #
+        # Payload format (TRN-216): length-prefixed, no normalization. For each
+        # of subject and From, emit the UTF-8 byte length as ASCII decimal, a
+        # newline, then the raw UTF-8 bytes; the serialized body bytes follow.
+        # This is unambiguous regardless of the header values' contents, so a
+        # newline injected into a header cannot shift bytes between fields. We
+        # still reject newline-bearing header values outright (see below): a
+        # newline in Subject or From is a caller bug or an attack, not something
+        # to silently encode.
+        sender = "admiral@localhost"
+        if "\n" in subject or "\r" in subject:
+            raise ValueError("subject must not contain newline characters")
+        if "\n" in sender or "\r" in sender:
+            raise ValueError("From value must not contain newline characters")
+
         private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_secret))
-        payload = f"Subject:{subject}\nFrom:admiral@localhost\n\n{body}".encode("utf-8")
+        subject_utf8 = subject.encode("utf-8")
+        from_utf8 = sender.encode("utf-8")
+        # Sign the body EXACTLY as it is serialized into the message below
+        # (``... + "\n\n" + body + "\n"``). The verifier reads the body back via
+        # email.Message.get_payload(), which yields the body plus that single
+        # trailing newline, so the signed bytes and the parsed bytes are
+        # identical and no normalization is needed on either side (design D2).
+        body_bytes = (body + "\n").encode("utf-8")
+        payload = (
+            f"{len(subject_utf8)}\n".encode("ascii")
+            + subject_utf8
+            + f"{len(from_utf8)}\n".encode("ascii")
+            + from_utf8
+            + body_bytes
+        )
         sig = private_key.sign(payload)
         sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
         headers.append(f"X-Admiral-Sig: {sig_b64}")

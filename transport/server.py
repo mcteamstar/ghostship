@@ -2508,11 +2508,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             with _lifecycle._login_pending_lock:
                 pending = _lifecycle._login_pending
             if pending is not None:
+                _poll_consumed = False
                 try:
                     auth_b64 = _read_auth_from_crew(podman, pending["container"]) or None
                     if auth_b64:
                         _write_auth_file(auth_b64)
                         _nuke_login_container(podman, pending["container"])
+                        _poll_consumed = True
                         with _lifecycle._login_pending_lock:
                             if (
                                 _lifecycle._login_pending is not None
@@ -2522,6 +2524,23 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                         logger.info("Auth completed via launch poll — login container cleaned up")
                 except Exception as e:
                     logger.warning("Auth poll in launch failed: %s", e)
+                finally:
+                    # D7a: if the poll did not complete the login (read raised or
+                    # returned no auth) we fall through to _initiate_login below,
+                    # which starts a NEW login container. The stale one from the
+                    # prior flow would then leak. Nuke it and clear the sentinel
+                    # here so the retry starts clean.
+                    if not _poll_consumed:
+                        try:
+                            _nuke_login_container(podman, pending["container"])
+                        except Exception:
+                            pass
+                        with _lifecycle._login_pending_lock:
+                            if (
+                                _lifecycle._login_pending is not None
+                                and _lifecycle._login_pending.get("container") == pending["container"]
+                            ):
+                                _lifecycle._login_pending = None
             if not auth_b64:
                 result = _initiate_login(podman)
                 if result.get("login_pending"):
@@ -2712,6 +2731,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             if dashboard_port is not None:
                 _caddy_portal.release_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
+            # D7c: the admiral secret file was written just above (before
+            # container_start); remove it on this early-return failure path.
+            try:
+                _delete_crew_secret(crew_id)
+            except Exception:
+                pass
             with _registry_lock:
                 reg = _load_registry()
                 reg["crews"].pop(crew_id, None)
@@ -2727,6 +2752,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 reg = _load_registry()
                 reg["crews"].pop(crew_id, None)
                 _save_registry(reg)
+            # D7c: _finish_crew_setup's error paths call _cleanup_crew (which
+            # removes the Podman public-key secret) but not the host-side
+            # admiral seed file written here before setup. Remove it too.
+            try:
+                _delete_crew_secret(crew_id)
+            except Exception:
+                pass
             if dashboard_port is not None:
                 try:
                     _caddy_portal.release_port(dashboard_port)
@@ -2758,6 +2790,15 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         logger.error("Launch failed for %s: %s", crew_id, e)
         try:
             _cleanup_crew(podman, container, volume, home_volume)
+        except Exception:
+            pass
+        # D7c: remove the host-side admiral signing-secret file. _cleanup_crew
+        # removes the Podman public-key secret but NOT the plaintext seed file
+        # written by _write_crew_secret inside the try block. Without this the
+        # file leaks on every failed launch (secret for a crew that no longer
+        # exists). Best-effort — a failure before _write_crew_secret just no-ops.
+        try:
+            _delete_crew_secret(crew_id)
         except Exception:
             pass
         # Free any port allocated before the failure
@@ -3122,6 +3163,34 @@ def _dispatch_captain_checkin(
         "keep": True,
         "parent_session": "dashboard:member-raven",
     }
+    # Deterministic model selection for Claude-backend crews (TRN-210 D3).
+    # raven.json carries a GPT-specific model, so on a Claude-backend crew a
+    # dispatch with model=None would otherwise rely on raven.json's model (wrong
+    # runtime) or a silent gateway fallback. When the crew is on the Claude
+    # backend (acp_backend == "claude", or its configured model is a Claude model
+    # string) and the caller supplied no model, pass the crew's configured model
+    # explicitly so Raven is always dispatched on a compatible model.
+    if model is None:
+        crew_backend = crew.get("acp_backend")
+        crew_model = crew.get("model")
+        if crew_backend is None or crew_model is None:
+            # crew may be a stale minimal copy — read authoritative values from
+            # the registry (mirrors the enrolled_agents fallback above).
+            try:
+                with _registry_lock:
+                    reg = _load_registry()
+                    crew_info = reg.get("crews", {}).get(crew_id, {})
+                if crew_backend is None:
+                    crew_backend = crew_info.get("acp_backend")
+                if crew_model is None:
+                    crew_model = crew_info.get("model")
+            except Exception:
+                pass
+        is_claude_crew = crew_backend == "claude" or (
+            isinstance(crew_model, str) and crew_model.startswith("claude")
+        )
+        if is_claude_crew and crew_model:
+            model = crew_model
     if model is not None:
         spawn_body["model"] = model
     result = _crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
