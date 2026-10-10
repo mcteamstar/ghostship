@@ -1,182 +1,119 @@
 #!/usr/bin/env bash
-# Test: Linux uninstall preserves ga-kiro-auth unless --purge-auth is passed
+# Integration test: scripts/uninstall.sh credential + machine preservation.
 #
-# Verifies that the Linux dedicated instance teardown in uninstall.sh only
-# wipes containers/, not the entire ~/.local/share/${GA_MACHINE_NAME} tree.
-# The ga-kiro-auth file should survive an uninstall without --purge-auth,
-# even when --keep-machine is not passed.
+# trn-212-test-coverage-gaps A.3/A.4 — rewritten to invoke the REAL
+# scripts/uninstall.sh --yes inside a sandbox (helpers/sandbox.sh) instead of a
+# `simulate_linux_teardown` reimplementation. Assertions are made on actual
+# filesystem state after the real script runs, so a regression that deleted
+# credentials would turn this test red (the old reimplementation would not).
+#
+# Linux data-dir layout the script operates on:
+#   $XDG_DATA_HOME/$GA_MACHINE_NAME/data/   <- ga-kiro-auth, crews.json, …
+#   $HOME/.local/share/$GA_MACHINE_NAME/containers/   <- storage root
+# A dedicated-machine teardown only fires when a systemd unit file for the
+# machine exists under ~/.config/systemd/user, so we seed one when the scenario
+# needs the containers-teardown branch to run.
 #
 # Run: bash tests/integration/test_uninstall_auth_preservation.sh
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+UNINSTALL="$REPO_DIR/scripts/uninstall.sh"
+MACHINE="ghost-academy"   # install.sh/uninstall.sh default GA_MACHINE_NAME
 
-PASS=0
-FAIL=0
-pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
-fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; }
+# shellcheck source=helpers/sandbox.sh
+source "$SCRIPT_DIR/helpers/sandbox.sh"
 
-echo "=== Test: Linux Uninstall Auth Preservation ==="
-
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-# Simulate the Linux dedicated machine teardown block from uninstall.sh.
-# This mirrors the exact logic so regressions are caught here first.
-simulate_linux_teardown() {
-  local machine_name="$1"
-  local base_dir="$2"
-  local keep_machine="$3"  # "1" = keep, "" = remove
-
-  local storage_root="${base_dir}/${machine_name}/containers/storage"
-
-  if [[ -z "$keep_machine" ]]; then
-    if [[ -d "${base_dir}/${machine_name}/containers" ]]; then
-      # Only wipe containers/ — mirrors the fix in uninstall.sh
-      rm -rf "${base_dir}/${machine_name}/containers"
-    fi
+# Seed a realistic dedicated-instance layout inside the current sandbox HOME.
+# Pass "unit" as $1 to also create the systemd unit file that makes
+# uninstall.sh treat this as a dedicated machine (so the containers-teardown
+# branch runs).
+seed_instance() {
+  local with_unit="${1:-}"
+  local data_dir="${SANDBOX_HOME}/.local/share/${MACHINE}/data"
+  local containers_dir="${SANDBOX_HOME}/.local/share/${MACHINE}/containers"
+  mkdir -p "${containers_dir}/storage/overlay"
+  mkdir -p "$data_dir"
+  echo "fake-auth-token" > "${data_dir}/ga-kiro-auth"
+  echo "fake-crews"      > "${data_dir}/crews.json"
+  if [[ "$with_unit" == "unit" ]]; then
+    mkdir -p "${SANDBOX_HOME}/.config/systemd/user"
+    : > "${SANDBOX_HOME}/.config/systemd/user/podman-${MACHINE}.service"
   fi
 }
 
-# ── Test 1: auth file survives teardown without --keep-machine ────────────────
+# Paths inside the current sandbox (recomputed after each sandbox_setup).
+auth_file()      { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/data/ga-kiro-auth"; }
+crews_file()     { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/data/crews.json"; }
+containers_dir() { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/containers"; }
+
+echo "=== Test: uninstall.sh auth / machine preservation (real script) ==="
+
+# ── Test 1: no --purge-auth → ga-kiro-auth survives ──────────────────────────
 echo ""
-echo "--- Test 1: ga-kiro-auth preserved without --keep-machine ---"
-
-TMPDIR1="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR1"' EXIT
-MACHINE="ghost-academy"
-
-# Set up fake dedicated instance structure
-mkdir -p "${TMPDIR1}/${MACHINE}/containers/storage/overlay"
-mkdir -p "${TMPDIR1}/${MACHINE}/data"
-echo "fake-auth-token" > "${TMPDIR1}/${MACHINE}/data/ga-kiro-auth"
-echo "fake-crews" > "${TMPDIR1}/${MACHINE}/data/crews.json"
-
-# Run teardown without --keep-machine
-simulate_linux_teardown "$MACHINE" "$TMPDIR1" ""
-
-# containers/ should be gone
-if [[ ! -d "${TMPDIR1}/${MACHINE}/containers" ]]; then
-  pass "containers/ removed by teardown"
-else
-  fail "containers/ still present after teardown"
-fi
-
-# data/ and ga-kiro-auth should survive
-if [[ -f "${TMPDIR1}/${MACHINE}/data/ga-kiro-auth" ]]; then
-  pass "ga-kiro-auth preserved without --keep-machine"
+echo "--- Test 1: ga-kiro-auth preserved without --purge-auth ---"
+sandbox_setup
+seed_instance unit
+sandbox_run_script "$UNINSTALL" --yes
+if [[ -f "$(auth_file)" ]]; then
+  pass "ga-kiro-auth preserved without --purge-auth"
 else
   fail "ga-kiro-auth was destroyed without --purge-auth"
+  echo "    output: ${SANDBOX_OUTPUT}"
 fi
-
-if [[ -f "${TMPDIR1}/${MACHINE}/data/crews.json" ]]; then
-  pass "data/ directory preserved without --keep-machine"
+if [[ ! -f "$(crews_file)" ]]; then
+  pass "non-auth data (crews.json) removed from data dir"
 else
-  fail "data/ directory was destroyed without --purge-auth"
+  fail "crews.json survived — data dir was not cleaned"
 fi
 
-# ── Test 2: --keep-machine also preserves auth ────────────────────────────────
+# ── Test 2: --keep-machine → containers storage survives ──────────────────────
 echo ""
-echo "--- Test 2: ga-kiro-auth preserved with --keep-machine ---"
-
-TMPDIR2="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR1" "$TMPDIR2"' EXIT
-
-mkdir -p "${TMPDIR2}/${MACHINE}/containers/storage/overlay"
-mkdir -p "${TMPDIR2}/${MACHINE}/data"
-echo "fake-auth-token" > "${TMPDIR2}/${MACHINE}/data/ga-kiro-auth"
-
-# Run teardown WITH --keep-machine (containers/ skipped entirely)
-simulate_linux_teardown "$MACHINE" "$TMPDIR2" "1"
-
-if [[ -d "${TMPDIR2}/${MACHINE}/containers" ]]; then
+echo "--- Test 2: --keep-machine preserves containers storage ---"
+sandbox_setup
+seed_instance unit
+sandbox_run_script "$UNINSTALL" --yes --keep-machine
+if [[ -d "$(containers_dir)" ]]; then
   pass "containers/ preserved with --keep-machine"
 else
   fail "containers/ removed despite --keep-machine"
+  echo "    output: ${SANDBOX_OUTPUT}"
 fi
-
-if [[ -f "${TMPDIR2}/${MACHINE}/data/ga-kiro-auth" ]]; then
+# Auth still survives too (no --purge-auth).
+if [[ -f "$(auth_file)" ]]; then
   pass "ga-kiro-auth preserved with --keep-machine"
 else
-  fail "ga-kiro-auth was destroyed with --keep-machine"
+  fail "ga-kiro-auth destroyed with --keep-machine"
 fi
 
-# ── Test 3: --purge-auth removes auth (data-dir cleanup step) ─────────────────
+# ── Test 3: --purge-auth removes ga-kiro-auth (A.4 regression) ────────────────
 echo ""
 echo "--- Test 3: --purge-auth removes ga-kiro-auth ---"
-
-TMPDIR3="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR1" "$TMPDIR2" "$TMPDIR3"' EXIT
-
-DATA_DIR="${TMPDIR3}/${MACHINE}/data"
-mkdir -p "$DATA_DIR"
-AUTH_FILE="${DATA_DIR}/ga-kiro-auth"
-echo "fake-auth-token" > "$AUTH_FILE"
-echo "fake-crews" > "${DATA_DIR}/crews.json"
-
-# Simulate the data-dir cleanup step with --purge-auth set
-simulate_data_dir_cleanup() {
-  local data_dir="$1"
-  local purge_auth="$2"
-  local auth_file="${data_dir}/ga-kiro-auth"
-
-  if [[ -d "$data_dir" ]]; then
-    shopt -s dotglob nullglob
-    for entry in "$data_dir"/*; do
-      [[ "$entry" == "$auth_file" ]] && continue
-      rm -rf "$entry"
-    done
-    shopt -u dotglob nullglob
-
-    if [[ -n "$purge_auth" ]]; then
-      rm -f "$auth_file"
-    fi
-  fi
-}
-
-simulate_data_dir_cleanup "$DATA_DIR" "1"
-
-if [[ ! -f "$AUTH_FILE" ]]; then
-  pass "ga-kiro-auth removed with --purge-auth"
+sandbox_setup
+seed_instance unit
+sandbox_run_script "$UNINSTALL" --yes --purge-auth
+if [[ ! -e "$(auth_file)" ]]; then
+  pass "ga-kiro-auth removed by --purge-auth"
 else
-  fail "ga-kiro-auth still present despite --purge-auth"
+  fail "ga-kiro-auth survived --purge-auth"
+  echo "    output: ${SANDBOX_OUTPUT}"
 fi
 
-if [[ ! -f "${DATA_DIR}/crews.json" ]]; then
-  pass "crews.json removed by data-dir cleanup"
-else
-  fail "crews.json still present after data-dir cleanup"
-fi
-
-# ── Test 4: without --purge-auth, data-dir cleanup keeps auth ────────────────
+# ── Test 4: data dir cleanup without a dedicated machine ──────────────────────
+# No systemd unit seeded → the dedicated-machine teardown branch is skipped,
+# but the data-dir cleanup still runs and still preserves ga-kiro-auth.
 echo ""
-echo "--- Test 4: data-dir cleanup without --purge-auth keeps ga-kiro-auth ---"
-
-TMPDIR4="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR1" "$TMPDIR2" "$TMPDIR3" "$TMPDIR4"' EXIT
-
-DATA_DIR4="${TMPDIR4}/${MACHINE}/data"
-mkdir -p "$DATA_DIR4"
-echo "fake-auth-token" > "${DATA_DIR4}/ga-kiro-auth"
-echo "fake-crews" > "${DATA_DIR4}/crews.json"
-
-simulate_data_dir_cleanup "$DATA_DIR4" ""
-
-if [[ -f "${DATA_DIR4}/ga-kiro-auth" ]]; then
-  pass "ga-kiro-auth preserved without --purge-auth in data-dir cleanup"
+echo "--- Test 4: data-dir cleanup with no dedicated machine ---"
+sandbox_setup
+seed_instance   # no unit
+sandbox_run_script "$UNINSTALL" --yes
+if [[ -f "$(auth_file)" && ! -f "$(crews_file)" ]]; then
+  pass "data dir cleaned, ga-kiro-auth preserved (no dedicated machine)"
 else
-  fail "ga-kiro-auth was destroyed without --purge-auth"
+  fail "data-dir cleanup incorrect without a dedicated machine"
+  echo "    auth exists: $([[ -f "$(auth_file)" ]] && echo yes || echo no); crews exists: $([[ -f "$(crews_file)" ]] && echo yes || echo no)"
+  echo "    output: ${SANDBOX_OUTPUT}"
 fi
 
-if [[ ! -f "${DATA_DIR4}/crews.json" ]]; then
-  pass "crews.json removed by data-dir cleanup (non-auth state cleared)"
-else
-  fail "crews.json still present after data-dir cleanup"
-fi
-
-# ── Summary ───────────────────────────────────────────────────────────────────
-echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
-if [[ $FAIL -gt 0 ]]; then
-  exit 1
-fi
+sandbox_report
