@@ -19,6 +19,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Set for externally-reachable deployments. |
 | `GA_FILE_SECRET` | unset (generated once, stored in `DATA_DIR/ga-file-secret`) | HMAC secret signing presigned file URLs. The stored secret survives transport restarts. `install.sh` does not pass an override. |
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`). Set via `install.sh --api-key <key>` — persisted to the data directory and reused on later installs; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md). |
+| `GA_REQUIRE_API_KEY` | `warn` | Controls the install-time and startup warning when `GA_API_KEY` is unset and the transport is bound to a non-loopback address. `warn` (default) — prints a warning to stderr. `error` — aborts `install.sh` with a non-zero exit. `off` — silences the check entirely. Use `error` on deployments where an unauthenticated network-reachable install should never be allowed; use `off` for intentionally open local installs. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider. |

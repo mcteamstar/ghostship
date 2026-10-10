@@ -107,6 +107,10 @@ CLIENT_ONLY_API_KEY=""
 # To enable TLS: set GA_PORTAL_TLS_MODE=acme + GA_PORTAL_DOMAIN (any port).
 GA_PORTAL_TLS_MODE=off
 GA_PORTAL_DOMAIN=""
+# Bind-address warning mode. When GA_API_KEY is absent and the transport is
+# not bound to loopback, emit a warning (warn), abort install (error), or
+# stay silent (off). Default: warn.
+GA_REQUIRE_API_KEY=warn
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -753,6 +757,23 @@ else
 fi
 echo "✓ academy/ (agents, skills, steering, policies, orders, mcp) and crews/ copied to ${DATA_DIR}"
 
+# ── Bind-address warning ─────────────────────────────────────────────────────
+# Warn when the transport is exposed on a non-loopback address with no API key.
+# GA_REQUIRE_API_KEY controls severity: warn (default), error, or off.
+_bind_host="${HOST:-0.0.0.0}"
+if [[ "${GA_REQUIRE_API_KEY:-warn}" != "off" && -z "${GA_API_KEY:-}" ]]; then
+  if [[ "$_bind_host" != "127.0.0.1" && "$_bind_host" != "::1" && "$_bind_host" != "localhost" ]]; then
+    _warn_msg="WARNING: ghostship transport will bind on ${_bind_host}:${PORT} with no API key — anyone who can reach this host can use every MCP tool. Set GA_API_KEY in ghostship.conf or use HOST=127.0.0.1 to restrict to loopback."
+    if [[ "${GA_REQUIRE_API_KEY:-warn}" == "error" ]]; then
+      echo "$_warn_msg" >&2
+      echo "Aborting: set GA_API_KEY or HOST=127.0.0.1, or set GA_REQUIRE_API_KEY=off to silence this check." >&2
+      exit 1
+    else
+      echo "$_warn_msg" >&2
+    fi
+  fi
+fi
+
 # ── Generate compose.yml ──────────────────────────────────────────────────────
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and
 # not committed to the repo. start.sh and uninstall.sh both read it.
@@ -840,6 +861,7 @@ services:
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
       GA_ORDERS_DIR: "${GA_ORDERS_DIR:-}"
+      GA_REQUIRE_API_KEY: "${GA_REQUIRE_API_KEY:-warn}"
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)

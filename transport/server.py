@@ -556,9 +556,25 @@ def _load_api_key() -> str:
     except Exception:
         pass
 
-    _logger.warning("GA_API_KEY is not set — transport is running WITHOUT authentication. "
-                    "All MCP tools and file endpoints are publicly accessible. "
-                    "Set GA_API_KEY to require Bearer token auth.")
+    _logger.warning(
+        "GA_API_KEY is not set — transport is running WITHOUT authentication. "
+        "All MCP tools and file endpoints are publicly accessible. "
+        "Set GA_API_KEY to require Bearer token auth."
+    )
+
+    # Additional bind-address warning when running on a non-loopback interface.
+    import os as _os
+    _host = _os.environ.get("HOST", "0.0.0.0")
+    if _host not in ("127.0.0.1", "::1", "localhost"):
+        _require = _os.environ.get("GA_REQUIRE_API_KEY", "warn")
+        if _require != "off":
+            _logger.warning(
+                "Transport is bound on %s with no API key — anyone who can "
+                "reach this host can use every MCP tool. Set GA_API_KEY in "
+                "ghostship.conf or use HOST=127.0.0.1 to restrict to loopback.",
+                _host,
+            )
+
     return ""
 
 

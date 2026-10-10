@@ -637,6 +637,8 @@ class TestApiKeyLoading(unittest.TestCase):
             return original_is_file(self)
 
         env_backup = os.environ.pop("GA_API_KEY", None)
+        host_backup = os.environ.get("HOST")
+        os.environ["HOST"] = "127.0.0.1"  # loopback — suppresses bind-address warning
         try:
             with patch.object(Path, "is_file", mock_is_file), \
                  patch("logging.getLogger") as mock_get_logger:
@@ -648,6 +650,10 @@ class TestApiKeyLoading(unittest.TestCase):
         finally:
             if env_backup is not None:
                 os.environ["GA_API_KEY"] = env_backup
+            if host_backup is not None:
+                os.environ["HOST"] = host_backup
+            else:
+                os.environ.pop("HOST", None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
