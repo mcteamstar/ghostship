@@ -568,6 +568,7 @@ def _captain_monitor() -> None:
     # _dispatch_captain_checkin we import from server at call time (they are
     # defined there, not in lifecycle) to avoid a module-load cycle.
     while True:
+        next_wakeup = time.time() + _CAPTAIN_MONITOR_INTERVAL  # initialised before try so sleep line is always defined
         try:
             with _registry_lock:
                 reg = _load_registry()
