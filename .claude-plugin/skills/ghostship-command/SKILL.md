@@ -153,11 +153,12 @@ git bundle create /tmp/<crew_id>.bundle --all
 curl -X POST "<url>&bundle=1" --data-binary @/tmp/<crew_id>.bundle
 ```
 
-Always deliver the repo to `path="ghostship"` or `path="repo"` — a sibling
-to the crew's shared `openspec/` store, never inside it. Every persona and
-skill looks for the repo at this level. Using `bundle=True` is preferred
-over `unpack=True` because it preserves full git history and lets the agent
-run `git log`, `git diff`, and `git bundle` for `evac`.
+Always deliver the repo to `path="repo"` — a sibling to the crew's shared
+`openspec/` store, never inside it. Every persona and skill looks for the repo
+at this level, and the SDD orders template hardcodes this path. Using
+`bundle=True` is preferred over `unpack=True` because it preserves full git
+history and lets the agent run `git log`, `git diff`, and `git bundle` for
+`evac`.
 
 ### 3. Do work — `dispatch`
 
@@ -335,7 +336,7 @@ The most common pattern is extracting a git bundle and inspecting commits:
 
 ```bash
 # 1. Get the URL
-evac(path="ghostship", crew_id="...", ref="release/0.2.0", bundle=True)
+evac(path="repo", crew_id="...", ref="release/0.2.0", bundle=True)
 
 # 2. Download
 curl -s "<url>" -o /tmp/bundle.bundle
@@ -454,7 +455,7 @@ git filter-repo --name-callback 'return b"Your Name"' \
 | `supply`/`evac` "succeeded" but nothing appeared | Forgot the second step — you must POST/GET bytes against the returned URL |
 | `steer` errors oddly or does nothing | Wrong task_id, or trying to `steer` a `job_id` from `schedule`/`captain` |
 | Crew won't respond after a while | Idle-stopped (expected) — next call restarts it transparently |
-| Repo landed in wrong place | Use `path="ghostship"` or `path="repo"`, not nested inside `openspec/` |
+| Repo landed in wrong place | Use `path="repo"`, not a custom name and not nested inside `openspec/` |
 | Nuked a crew and lost work | Should have `evac`'d first — no undo |
 | Agent did wrong thing despite timeout steer | Used fresh `dispatch` instead of `steer` — lost full prior context |
 | Captain sending many duplicate admiral mails | Raven correctly reporting completion each cycle; Raven self-pauses on SDD template — check `captain status` for `paused`. For free-form orders, the dedup check prevents most repeats but a manual `captain(action="stop")` may be needed |
@@ -465,7 +466,7 @@ git filter-repo --name-callback 'return b"Your Name"' \
 ```python
 # 1. Launch + seed
 launch(crew_id="trn-70-impl")
-supply(path="ghostship", crew_id="trn-70-impl", bundle=True)
+supply(path="repo", crew_id="trn-70-impl", bundle=True)
 # → POST /tmp/myrepo.bundle to the returned URL
 
 # 2. Optional: start spectre to kick off planning if OpenSpec change doesn't exist yet
@@ -481,7 +482,7 @@ captain(crew_id="trn-70-impl", action="status")   # summary + mail counts
 crews()                                            # active tasks
 
 # 5. When captain status shows paused (lifecycle complete):
-evac(path="ghostship", crew_id="trn-70-impl", ref="release/0.2.0", bundle=True)
+evac(path="repo", crew_id="trn-70-impl", ref="release/0.2.0", bundle=True)
 # → curl -s "<url>" -o /tmp/bundle.bundle
 # → git fetch /tmp/bundle.bundle ... && git log ... && git cherry-pick <hash>
 nuke(crew_id="trn-70-impl", confirm=True)
