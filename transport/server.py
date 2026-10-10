@@ -3122,6 +3122,34 @@ def _dispatch_captain_checkin(
         "keep": True,
         "parent_session": "dashboard:member-raven",
     }
+    # Deterministic model selection for Claude-backend crews (TRN-210 D3).
+    # raven.json carries a GPT-specific model, so on a Claude-backend crew a
+    # dispatch with model=None would otherwise rely on raven.json's model (wrong
+    # runtime) or a silent gateway fallback. When the crew is on the Claude
+    # backend (acp_backend == "claude", or its configured model is a Claude model
+    # string) and the caller supplied no model, pass the crew's configured model
+    # explicitly so Raven is always dispatched on a compatible model.
+    if model is None:
+        crew_backend = crew.get("acp_backend")
+        crew_model = crew.get("model")
+        if crew_backend is None or crew_model is None:
+            # crew may be a stale minimal copy — read authoritative values from
+            # the registry (mirrors the enrolled_agents fallback above).
+            try:
+                with _registry_lock:
+                    reg = _load_registry()
+                    crew_info = reg.get("crews", {}).get(crew_id, {})
+                if crew_backend is None:
+                    crew_backend = crew_info.get("acp_backend")
+                if crew_model is None:
+                    crew_model = crew_info.get("model")
+            except Exception:
+                pass
+        is_claude_crew = crew_backend == "claude" or (
+            isinstance(crew_model, str) and crew_model.startswith("claude")
+        )
+        if is_claude_crew and crew_model:
+            model = crew_model
     if model is not None:
         spawn_body["model"] = model
     result = _crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)

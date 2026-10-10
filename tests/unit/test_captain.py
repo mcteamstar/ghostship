@@ -1512,3 +1512,164 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             task_id = server._steer_captain_checkin(crew, "demo")
 
         self.assertEqual(task_id, "new-task-2")
+
+
+class CaptainClaudeModelDefaultingTests(unittest.TestCase):
+    """TRN-210 task 2: _dispatch_captain_checkin defaults the dispatch model to
+    the crew's configured model on Claude-backend crews so Raven is never
+    dispatched on raven.json's GPT model (or left to a silent gateway fallback).
+    """
+
+    def _reg(self) -> dict:
+        return {
+            "crews": {"demo": {"container": "gs-demo", "cookie": "abc123"}},
+            "schedules": {},
+        }
+
+    def _dispatch(self, crew: dict, model=None) -> dict:
+        """Run _dispatch_captain_checkin and return the captured spawn body."""
+        captured: dict[str, Any] = {}
+
+        def fake_api(_crew, _crew_id, _method, _path, json=None):
+            captured["body"] = json
+            return {"id": "task-xyz"}
+
+        with (
+            patch.object(server, "_get_podman", side_effect=RuntimeError("skip cookie")),
+            patch.object(server, "_load_registry", return_value=self._reg()),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_crew_api_with_recovery", side_effect=fake_api),
+        ):
+            server._dispatch_captain_checkin(crew, "demo", model=model)
+        return captured["body"]
+
+    # ── 2.3: Claude-backend crew with explicit model, caller passes None ─────
+
+    def test_claude_backend_crew_defaults_model_when_caller_passes_none(self) -> None:
+        crew = {
+            "container": "gs-demo",
+            "cookie": "abc123",
+            "enrolled_agents": ["raven"],
+            "acp_backend": "claude",
+            "model": "claude-sonnet-4-5",
+        }
+        body = self._dispatch(crew, model=None)
+        self.assertEqual(body["model"], "claude-sonnet-4-5")
+
+    def test_claude_model_string_defaults_even_without_acp_backend_flag(self) -> None:
+        """A crew whose configured model is a Claude model string is treated as
+        Claude-backend even if acp_backend is unset."""
+        crew = {
+            "container": "gs-demo",
+            "cookie": "abc123",
+            "enrolled_agents": ["raven"],
+            "model": "claude-sonnet-4-5",
+        }
+        body = self._dispatch(crew, model=None)
+        self.assertEqual(body["model"], "claude-sonnet-4-5")
+
+    def test_explicit_model_is_not_overridden(self) -> None:
+        """An explicit caller model wins over the crew default."""
+        crew = {
+            "container": "gs-demo",
+            "cookie": "abc123",
+            "enrolled_agents": ["raven"],
+            "acp_backend": "claude",
+            "model": "claude-sonnet-4-5",
+        }
+        body = self._dispatch(crew, model="claude-opus-4-1")
+        self.assertEqual(body["model"], "claude-opus-4-1")
+
+    def test_non_claude_crew_leaves_model_unset_when_caller_passes_none(self) -> None:
+        """kiro-backend crews keep today's behaviour: no model in the spawn body
+        → gateway picks its default."""
+        crew = {
+            "container": "gs-demo",
+            "cookie": "abc123",
+            "enrolled_agents": ["raven"],
+            "acp_backend": "kiro",
+            "model": "gpt-5.6-luna",
+        }
+        body = self._dispatch(crew, model=None)
+        self.assertNotIn("model", body)
+
+    def test_claude_backend_reads_model_from_registry_when_crew_dict_is_stale(self) -> None:
+        """When the crew dict lacks acp_backend/model (stale minimal copy), the
+        values are read from the registry entry."""
+        crew = {
+            "container": "gs-demo",
+            "cookie": "abc123",
+            "enrolled_agents": ["raven"],
+        }
+        reg = {
+            "crews": {
+                "demo": {
+                    "container": "gs-demo",
+                    "cookie": "abc123",
+                    "acp_backend": "claude",
+                    "model": "claude-sonnet-4-5",
+                }
+            },
+            "schedules": {},
+        }
+        captured: dict[str, Any] = {}
+
+        def fake_api(_crew, _crew_id, _method, _path, json=None):
+            captured["body"] = json
+            return {"id": "task-reg"}
+
+        with (
+            patch.object(server, "_get_podman", side_effect=RuntimeError("skip cookie")),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_crew_api_with_recovery", side_effect=fake_api),
+        ):
+            server._dispatch_captain_checkin(crew, "demo", model=None)
+
+        self.assertEqual(captured["body"]["model"], "claude-sonnet-4-5")
+
+
+class RavenPersonaAuthDivergenceTests(unittest.TestCase):
+    """TRN-210 task 4: guard against raven.json's spawn-auth instructions
+    diverging from the cookie-only pattern in _RAVEN_GATEWAY_ORIENTATION.
+    """
+
+    @staticmethod
+    def _raven_prompt() -> str:
+        # tests/unit/test_captain.py → repo root is three parents up.
+        repo_root = Path(__file__).resolve().parents[2]
+        raven_path = repo_root / "academy" / "agents" / "raven.json"
+        data = json.loads(raven_path.read_text(encoding="utf-8"))
+        return data["prompt"]
+
+    # ── 4.1: no stale internal-auth artifacts ───────────────────────────────
+
+    def test_raven_prompt_has_no_internal_secret_auth_artifacts(self) -> None:
+        prompt = self._raven_prompt()
+        self.assertNotIn(
+            ".local_secret", prompt,
+            "raven.json must not instruct reading .local_secret (cookie-only auth)",
+        )
+        self.assertNotIn(
+            "X-Internal-Secret: ", prompt,
+            "raven.json must not send X-Internal-Secret (cookie-only auth)",
+        )
+        self.assertNotIn(
+            "X-Session-Key: ", prompt,
+            "raven.json must not send X-Session-Key (cookie-only auth)",
+        )
+
+    # ── 4.2: cookie-only auth present ────────────────────────────────────────
+
+    def test_raven_prompt_uses_dashboard_cookie(self) -> None:
+        prompt = self._raven_prompt()
+        self.assertIn(
+            ".dashboard_cookie", prompt,
+            "raven.json must read .dashboard_cookie for cookie-only auth",
+        )
+
+    def test_raven_prompt_auth_paragraph_matches_orientation_constant(self) -> None:
+        """The canonical spawn-auth text in _RAVEN_GATEWAY_ORIENTATION must appear
+        verbatim in the persona prompt, so the two cannot drift (design D1)."""
+        prompt = self._raven_prompt()
+        self.assertIn(captain_mod._RAVEN_GATEWAY_ORIENTATION, prompt)
