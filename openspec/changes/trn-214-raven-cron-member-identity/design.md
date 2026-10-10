@@ -1,100 +1,124 @@
-# Design: TRN-214 Stage 2 — Cookie Injection
+# Design: TRN-214 Stage 2 — Internal Cookie Mint
 
 See proposal.md for root cause and Stage 1 history.
 
 ## Context
 
-The transport holds `crew["cookie"]` — the `mc_token_5476=<value>` dashboard session
-cookie. This is minted by `_mint_cookie(podman, container, crew_url)` via
-`kirocrew token --ttl 24h` inside the container, then exchanged for a session cookie.
+`_mint_cookie(podman, container, crew_url)` currently does two things:
+1. `podman exec` → `kirocrew token --ttl 24h` → parses `?token=<jwt>` from output
+2. `_http.get(f"{crew_url}/?token={token}")` → exchange from transport host → parses `Set-Cookie`
 
-The transport already uses this cookie for all its own gateway calls via `_crew_cookie(crew)`.
-Writing it to `/home/kirocrew/.kiro/crew/.dashboard_cookie` makes it available to all
-crew members via the shell tool.
+Step 2 is done from the transport host's IP. The gateway's `token_auth.py` binds the
+resulting session cookie to that IP via `bind_token_ip(token, request.remote)`. Any
+subsequent request using that cookie must come from the same IP — requests from inside
+the container (loopback `127.0.0.1`) get `403 IP mismatch`.
+
+**Fix:** add `_mint_internal_cookie(podman, container)` that runs step 2 from inside
+the container via `podman exec curl`. The resulting cookie is bound to `127.0.0.1` and
+usable by any process inside without IP restriction.
+
+`_mint_cookie` is **not changed** — the transport's own `crew["cookie"]` continues to
+bind to the bridge IP, which is correct for transport→gateway calls.
 
 ## Architecture
 
 ```
-At launch (_finish_crew_setup):
-  cookie = crew["cookie"]  # already minted
-  podman exec <container> python3 -c "
-    open('/home/kirocrew/.kiro/crew/.dashboard_cookie','w').write(cookie)
-    import os; os.chmod('/home/kirocrew/.kiro/crew/.dashboard_cookie', 0o600)
-  "
+Two cookies in play:
+  crew["cookie"]        — minted by _mint_cookie (exchange from transport host)
+                          bound to bridge IP, used by transport for _crew_api calls
+  .dashboard_cookie     — minted by _mint_internal_cookie (exchange from inside)
+                          bound to 127.0.0.1, used by crew members for spawn calls
 
-At each Captain dispatch/steer:
-  # Refresh in case cookie has aged (24h TTL)
-  cookie = crew["cookie"]  # from registry (refreshed by _refresh_cookie if needed)
-  write .dashboard_cookie with updated value
+_mint_internal_cookie (new):
+  1. podman exec kirocrew token --ttl 24h → parse ?token=<jwt>
+  2. podman exec curl -si "http://localhost:5476/?token=<jwt>" → parse Set-Cookie
+  return mc_token_5476=<value> or None
 
-Crew member spawn call:
-  SECRET=$(cat /home/kirocrew/.kiro/crew/.local_secret)
+_finish_crew_setup:
+  cookie = _mint_cookie(...)                           # external, for crew["cookie"]
+  internal = _mint_internal_cookie(podman, container)  # internal, for .dashboard_cookie
+  _write_dashboard_cookie(podman, container, internal) if internal else log WARNING
+
+_refresh_cookie (extended):
+  new_cookie = _mint_cookie(...)                       # refresh external
+  new_internal = _mint_internal_cookie(...)            # refresh internal together
+  _write_dashboard_cookie(podman, container, new_internal) if new_internal
+  # Single refresh path covers all crews (Captain or not, idle or active)
+
+_ensure_crew_running restart path:
+  # _refresh_cookie is already called here via the restart sequence;
+  # no separate internal refresh needed once _refresh_cookie covers both.
+
+_dispatch_captain_checkin / _steer_captain_checkin:
+  # No cookie minting here — _refresh_cookie handles staleness.
+  # These keep the _write_dashboard_cookie call as a belt-and-suspenders refresh
+  # using the ALREADY-MINTED internal cookie from registry (not a fresh mint).
+  # If no internal cookie in registry, skip silently — _refresh_cookie will fix it.
+
+Crew member spawn call (all four endpoints):
   COOKIE=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
   curl -s -X POST http://localhost:5476/api/spawn \
-    -H "X-Internal-Secret: $SECRET" \
     -H "Cookie: mc_token_5476=$COOKIE" \
+    -H "Origin: http://$(hostname):5476" \
     -H "Content-Type: application/json" \
     -d '{"task": "...", "agent": "ghost"}'
 ```
 
 ## Decisions
 
-**D1: Write just the cookie value, not the full header.**
+**D1: Add `_mint_internal_cookie` as a separate helper, leave `_mint_cookie` unchanged.**
 
-`.dashboard_cookie` stores the raw value (e.g. `abc123`). Callers construct
-`Cookie: mc_token_5476=$(cat .dashboard_cookie)`. This keeps the port number
-(`CREW_GATEWAY_PORT`) out of the file and lets callers assemble the correct
-header without hardcoding it.
+`_mint_cookie` signature, callers, and the transport's `crew["cookie"]` are all
+unchanged. `_mint_internal_cookie` is the new path for the internal-bound cookie only.
 
-**D2: Write at `_finish_crew_setup`, refresh at dispatch/steer.**
+**D2: Run the exchange from inside the container via `podman exec curl -si`.**
 
-`_finish_crew_setup` is the natural place — the cookie is already minted there.
-The transport refreshes `crew["cookie"]` via `_refresh_cookie` when stale; we
-piggyback on that by writing to the container whenever we have an up-to-date value.
+`curl` is present in the spec-ops image (confirmed). `-si` returns response headers
+including `Set-Cookie` without progress output. The exchange hits `localhost:5476`
+from inside, so `request.remote` resolves to `127.0.0.1`.
 
-**D3: `podman exec` write, same pattern as other container-side setup.**
+**D3: `_refresh_cookie` is the single refresh path for both cookies.**
 
-Consistent with `_inject_auth`, `_patch_crew_config`, `_enroll_crew_members`.
-The transport already has `podman.container_exec` for this pattern.
+It already runs on health-probe cycle and at crew restart. Extending it to also call
+`_mint_internal_cookie` and `_write_dashboard_cookie` covers all cases — Captain crews,
+non-Captain crews, idle restarts. No parallel refresh machinery needed.
 
-**D4: `chmod 600` on the file.**
+**D4: Store the internal cookie value in the registry alongside `crew["cookie"]`.**
 
-Same permission as `.local_secret`. The `kirocrew` user can read it; no
-world-readable credential sitting in the container.
+Key: `internal_cookie`. This lets `_dispatch_captain_checkin` / `_steer_captain_checkin`
+write the already-minted value to `.dashboard_cookie` without triggering a fresh mint
+on every Captain tick. If `internal_cookie` is absent (old registry), fall back to
+skipping the write (next `_refresh_cookie` will populate it).
 
-**D5: Update `_RAVEN_GATEWAY_ORIENTATION` to use cookie auth, drop X-Session-Key for all REST calls.**
+**D5: Cookie-only auth for ALL four spawn REST endpoints.**
 
-Cookie auth (dashboard owner path) is admitted without a session key on all four
-spawn endpoints: `POST /api/spawn`, `GET /api/spawn/{id}` (no auth at all),
-`POST /api/spawn/{id}/steer`, and `POST /api/spawn/{id}/continue`. Confirmed in
-`messaging.py:_spawn_scope_refusal`: `if request.get("internal_auth") is not True: return None`
-— the dashboard owner is passed through unconditionally.
+Confirmed in source (`_spawn_scope_refusal`): cookie auth (no `internal_auth`) is
+admitted unconditionally on `POST /api/spawn`, `POST /api/spawn/{id}/steer`,
+`POST /api/spawn/{id}/continue`. `GET /api/spawn/{id}` has no auth at all.
 
-`X-Session-Key` should not be sent alongside a cookie — it would trigger the
-`internal_auth` path instead of the dashboard owner path.
+Sending `X-Internal-Secret` alongside the cookie routes to `internal_auth`, which
+IGNORES the cookie and hits the attestation wall. Cookie-only is correct.
+`X-Internal-Secret` is NOT needed for any of Raven's REST calls when using cookie auth.
+
+**D6: `Origin: http://$(hostname):5476` required on spawn calls.**
+
+Without an `Origin` header some gateway middleware rejects the request. `$(hostname)`
+inside the container resolves to the container name (e.g. `gs-demo`), matching what
+the transport sends in `_crew_api`.
 
 ## Risks / Trade-offs
 
-**[Risk] Cookie expires between refresh and use** → 24h TTL. Refresh happens at each
-Captain fire (e.g. every hour). For non-Captain spawns from Ghost/Spectre/etc., the
-cookie is written at launch and valid for 24h. A crew idle >24h would have a stale
-cookie. Mitigation: `_ensure_crew_running` also refreshes the cookie and writes the file.
+**[Risk] Two cookies in flight** → Different IPs, different use cases. No overlap.
+The internal cookie is never used by the transport; the external cookie is never
+written to `.dashboard_cookie`.
 
-**[Risk] `.dashboard_cookie` readable by any process in the container** → Same risk as
-`.local_secret`. Container = trusted boundary in KiroCrew's model. chmod 600 limits
-it to the kirocrew user.
+**[Risk] 24h TTL expiry** → Handled by `_refresh_cookie` (same cycle as external
+cookie refresh). No separate expiry handling needed.
 
-**[Risk] Sandbox visibility** → `.local_secret` is in `_CREW_CHILD_WITHHELD_LEAVES`
-(not readable by sandboxed child harnesses). `.dashboard_cookie` may face the same
-restriction. However, crew members using `shell` tool are NOT sandboxed foreign
-harnesses — they're the kirocrew process's own shell. The sandbox restriction applies
-to child harnesses (e.g. a second kiro-cli instance), not the primary agent shell.
-Mitigation: test confirms cookie is readable from shell tool before declaring done.
+**[Risk] `internal_cookie` absent in old registry rows** → Graceful skip at dispatch/steer;
+next `_refresh_cookie` writes it. No hard failure.
 
-## Migration
-
-1. Deploy new transport — existing crews get `.dashboard_cookie` written on next
-   `_ensure_crew_running` call. No crew image rebuild needed.
-2. Existing Captain entries continue to work — next steer writes the cookie.
-3. No rollback risk: if cookie write fails, spawn calls fall back to the existing
-   `member_identity_unavailable` behaviour, not something worse.
+**[Risk] `curl` availability** → Confirmed in spec-ops image. If absent in a custom
+image, `_mint_internal_cookie` returns None and `.dashboard_cookie` is not written —
+crew members fall back to the existing `member_identity_unavailable` behaviour, not
+something worse.

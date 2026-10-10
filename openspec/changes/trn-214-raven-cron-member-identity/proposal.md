@@ -26,60 +26,77 @@ calling the REST API from shell:
 - Unix socket: `/proc` ancestry resolves to the parent session, causing `peer_session_mismatch`
 - `X-Session-Token` (`KIROCREW_STUB_SESSION_TOKEN`): NOT present in the agent's shell
   environment — confirmed by empirical test with Ghost dispatched into member slot
+- `kirocrew spawn run` CLI: same `member_identity_unavailable` — uses identical internal_auth
+  path, confirmed by live investigation in 0.8.0
 
-The transport uses cookie auth and can spawn freely. Crew members have no access to the
-cookie — they only have `.local_secret` for `X-Internal-Secret`.
+Cookie auth is the only viable path. But the cookie is IP-bound to whoever does the
+`GET /?token=...` exchange: currently `_mint_cookie` does that exchange from the transport
+host, so the cookie is bound to the transport's IP. Requests from inside the container
+(loopback) get `403 IP mismatch`.
 
-**Empirical confirmation:** Ghost dispatched into `member-ghost` slot, sent
-`X-Internal-Secret` + `X-Session-Key` + empty `X-Session-Token` → `member_identity_unavailable`.
+**Empirical confirmation:** Cookie minted via transport host → `403 IP mismatch` from inside
+container. Cookie minted by doing the exchange from inside the container → `{"status": "spawned"}`.
 
-## Fix — inject the dashboard cookie into all crew members
+## Fix — mint an internal cookie from inside the container
 
-The dashboard cookie (`mc_token_5476=<value>`) gives any process inside the container the
-same authority as the dashboard owner. The transport already mints and holds this cookie
-(`_mint_cookie` → `crew["cookie"]`). Writing it to a known path in the container makes it
-available to all crew members for spawning.
+Change `_mint_cookie` to do the token exchange step (`GET /?token=...`) from inside the
+container via `podman exec curl` rather than from the transport host. This binds the
+resulting cookie to `127.0.0.1` (loopback), not the transport's IP.
+
+The cookie written to `.dashboard_cookie` is then usable by any process inside the
+container — crew members, agents, subagents — without IP restriction.
+
+**Two-step mint (both inside the container):**
+1. `kirocrew token --ttl 24h` → URL with raw token (already runs inside via podman exec)
+2. `curl http://localhost:5476/?token=<token>` inside the container → Set-Cookie response
+   → parse `mc_token_5476=<value>` from response headers
 
 **Standardised pattern** (parallel to `.local_secret`):
+```
+/home/kirocrew/.kiro/crew/.local_secret      → X-Internal-Secret (gateway-owned)
+/home/kirocrew/.kiro/crew/.dashboard_cookie  → Cookie: mc_token_5476=<value> (transport-written)
+```
 
+Any crew member reads `.dashboard_cookie` and spawns with:
+```bash
+COOKIE=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
+curl -s -X POST http://localhost:5476/api/spawn \
+  -H "Cookie: mc_token_5476=$COOKIE" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "...", "agent": "ghost"}'
 ```
-/home/kirocrew/.kiro/crew/.local_secret      → X-Internal-Secret (already exists, gateway-owned)
-/home/kirocrew/.kiro/crew/.dashboard_cookie  → Cookie: mc_token_5476=<value> (new, transport-written)
-```
+Note: `X-Internal-Secret` is NOT needed alongside the cookie — it would route to
+`internal_auth` and ignore the cookie. Cookie alone (with `Origin`) is sufficient.
 
-Any crew member that needs to spawn reads `.dashboard_cookie` and uses:
-```
-Cookie: mc_token_5476=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
-```
-The gateway treats this as the dashboard owner — no attestation required.
-
-**Written at launch, refreshed on Captain dispatch/steer.** Cookie TTL is 24h; the
-transport refreshes it each time it dispatches or steers Raven, keeping it current.
+**Written at launch, refreshed on Captain dispatch/steer.** Cookie TTL is 24h.
 
 ## What changes
 
-**`transport/lifecycle.py` — `_finish_crew_setup`**: after minting the cookie, write it
-to `/home/kirocrew/.kiro/crew/.dashboard_cookie` inside the container via `podman exec`.
+**`transport/lifecycle.py` — `_mint_cookie`**: change the token exchange step to run
+`curl http://localhost:{CREW_GATEWAY_PORT}/?token={token}` via `podman exec` inside the
+container, parsing `Set-Cookie` from the curl output. The `kirocrew token` step is unchanged.
+This is a contained change — `_mint_cookie` signature and return type are unchanged.
 
-**`transport/lifecycle.py` — `_ensure_crew_running`** (restart path): also refresh
-`.dashboard_cookie` when the crew restarts and a new cookie is minted.
+**`transport/lifecycle.py` — `_write_dashboard_cookie`**: helper already added; no change.
 
-**`transport/server.py` — `_dispatch_captain_checkin`**: refresh `.dashboard_cookie`
-before each Raven dispatch (cookie may have aged).
+**`transport/lifecycle.py` — `_finish_crew_setup`**: already calls `_write_dashboard_cookie`
+after `_mint_cookie`; no change needed once `_mint_cookie` produces the right cookie.
 
-**`transport/server.py` — `_steer_captain_checkin`**: refresh `.dashboard_cookie`
-before each steer.
+**`transport/lifecycle.py` — `_ensure_crew_running`**: same — already refreshes.
+
+**`transport/server.py` — `_dispatch_captain_checkin` / `_steer_captain_checkin`**: already
+refresh `.dashboard_cookie`; no change needed.
 
 **`transport/captain.py` — `_RAVEN_GATEWAY_ORIENTATION`**: update spawn auth instructions
-to use the cookie header alongside the local secret:
+to use cookie-only (no `X-Internal-Secret`, no `X-Session-Key`):
+```bash
+COOKIE=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
+curl -s -X POST http://localhost:5476/api/spawn \
+  -H "Cookie: mc_token_5476=$COOKIE" \
+  -H "Origin: http://$(hostname):5476" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "...", "agent": "ghost"}'
 ```
-X-Internal-Secret: $(cat /home/kirocrew/.kiro/crew/.local_secret)
-Cookie: mc_token_5476=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
-```
-Note: `X-Session-Key` header is no longer needed for spawning with cookie auth.
-
-**`academy/agents/*.json`** — no changes needed; cookie auth works from the shell tool
-without any tool list changes.
 
 ## What does NOT change
 
@@ -87,3 +104,4 @@ without any tool list changes.
 - The captain mailbox, fire_immediately, API surface — unchanged
 - Raven's tool list (`["read", "grep", "glob", "shell"]`) — unchanged
 - The dispatch+steer architecture from Stage 1 — unchanged
+- `_mint_cookie` signature, callers, and the transport's own `crew["cookie"]` — unchanged

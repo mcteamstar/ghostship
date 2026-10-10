@@ -1399,7 +1399,7 @@ class CaptainCookieInjectionTests(unittest.TestCase):
 
         crew = {"container": "gs-demo", "cookie": "abc123", "enrolled_agents": ["raven"]}
         reg_data = {
-            "crews": {"demo": {"cookie": "abc123", "container": "gs-demo"}},
+            "crews": {"demo": {"cookie": "abc123", "internal_cookie": "int-abc123", "container": "gs-demo"}},
             "schedules": {},
         }
 
@@ -1419,7 +1419,7 @@ class CaptainCookieInjectionTests(unittest.TestCase):
         self.assertEqual(len(cookie_written), 1, "should write cookie exactly once")
         _, container, cookie = cookie_written[0]
         self.assertEqual(container, "gs-demo")
-        self.assertEqual(cookie, "abc123")
+        self.assertEqual(cookie, "int-abc123")  # internal cookie, not external
 
     def test_dispatch_captain_checkin_cookie_failure_is_non_fatal(self) -> None:
         """dispatch continues even when _write_dashboard_cookie raises."""
@@ -1440,7 +1440,7 @@ class CaptainCookieInjectionTests(unittest.TestCase):
                 return_value={"id": "task-002"},
             ),
         ):
-            # Should not raise despite podman failure
+            # Should not raise despite podman failure (no internal_cookie in reg → skip)
             task_id = server._dispatch_captain_checkin(crew, "demo")
 
         self.assertEqual(task_id, "task-002")
@@ -1463,7 +1463,7 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             "model": None,
         }
         reg_data = {
-            "crews": {"demo": {"cookie": "xyz789", "container": "gs-demo"}},
+            "crews": {"demo": {"cookie": "xyz789", "internal_cookie": "int-xyz789", "container": "gs-demo"}},
             "schedules": {"demo": [captain_entry]},
         }
 
@@ -1484,7 +1484,7 @@ class CaptainCookieInjectionTests(unittest.TestCase):
         self.assertEqual(len(cookie_written), 1, "should write cookie exactly once")
         _, container, cookie = cookie_written[0]
         self.assertEqual(container, "gs-demo")
-        self.assertEqual(cookie, "xyz789")
+        self.assertEqual(cookie, "int-xyz789")  # internal cookie, not external
 
     def test_steer_captain_checkin_cookie_failure_is_non_fatal(self) -> None:
         """steer continues even when _write_dashboard_cookie raises."""

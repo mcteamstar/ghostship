@@ -374,6 +374,11 @@ def _refresh_cookie(crew: dict, crew_id: str) -> bool:
 
     Returns True on success, False on failure. On success the registry is
     updated with the new cookie value so subsequent calls use it.
+
+    Also mints a new internal cookie (loopback-bound, for crew members) and
+    updates ``.dashboard_cookie`` inside the container plus the registry's
+    ``internal_cookie`` field.  Internal cookie failure is non-fatal — the
+    external cookie refresh still returns True.
     """
     try:
         podman = _get_podman()
@@ -385,14 +390,25 @@ def _refresh_cookie(crew: dict, crew_id: str) -> bool:
     if not new_cookie:
         return False
 
+    # Also mint an internally-bound cookie for crew member spawn auth.
+    new_internal = _mint_internal_cookie(podman, crew["container"])
+
     with _registry_lock:
         reg = _load_registry()
         if crew_id in reg["crews"]:
             reg["crews"][crew_id]["cookie"] = new_cookie
+            if new_internal:
+                reg["crews"][crew_id]["internal_cookie"] = new_internal
             _save_registry(reg)
 
     # Update the in-memory crew dict so the caller can use it immediately
     crew["cookie"] = new_cookie
+    if new_internal:
+        crew["internal_cookie"] = new_internal
+        _write_dashboard_cookie(podman, crew["container"], new_internal)
+    else:
+        logger.warning("Internal cookie refresh failed for crew %s", crew_id)
+
     logger.info("Cookie refreshed for crew %s", crew_id)
     return True
 
@@ -817,8 +833,18 @@ def _ensure_crew_running(
                     _save_registry(reg)
             crew = {**crew, "cookie": new_cookie}
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
-            # Refresh .dashboard_cookie in container so crew members can still spawn
-            _write_dashboard_cookie(podman, crew["container"], new_cookie)
+            # Also refresh the internally-bound cookie for crew member spawn auth
+            new_internal = _mint_internal_cookie(podman, crew["container"])
+            if new_internal:
+                with _registry_lock:
+                    reg = _load_registry()
+                    if crew_id in reg["crews"]:
+                        reg["crews"][crew_id]["internal_cookie"] = new_internal
+                        _save_registry(reg)
+                crew = {**crew, "internal_cookie": new_internal}
+                _write_dashboard_cookie(podman, crew["container"], new_internal)
+            else:
+                logger.warning("Crew %s restarted but internal cookie refresh failed", crew_id)
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
         deployed = _deployed_agent_names(podman, crew["container"])
@@ -1223,6 +1249,56 @@ def _mint_cookie(podman: PodmanClient, container: str, crew_url: str) -> str | N
         return cookie_val or None
     except Exception as e:
         logger.error("Cookie mint failed: %s", e)
+        return None
+
+
+def _mint_internal_cookie(podman: PodmanClient, container: str) -> str | None:
+    """Mint a dashboard cookie bound to 127.0.0.1 by doing the exchange from inside.
+
+    Runs both the token mint and the token exchange inside the container so the
+    resulting session cookie is bound to loopback (127.0.0.1) rather than the
+    transport host's IP.  Crew members can then use this cookie for gateway REST
+    calls (spawn, steer, continue) from inside the container without hitting the
+    IP-mismatch check.
+
+    Returns the raw cookie value (without the ``mc_token_<port>=`` prefix) or
+    None on any failure.  Non-fatal — callers log a WARNING and continue.
+    """
+    try:
+        # Step 1: mint a one-time URL token (runs inside container, unchanged)
+        raw = podman.container_exec(
+            container,
+            ["kirocrew", "token", "--ttl", "24h"],
+        )
+        m = re.search(r'token=([A-Za-z0-9._-]+)', raw)
+        if not m:
+            logger.warning(
+                "Internal cookie mint: could not parse token from `kirocrew token` output "
+                "(%d bytes)", len(raw)
+            )
+            return None
+        token = m.group(1)
+
+        # Step 2: exchange from INSIDE the container so cookie binds to 127.0.0.1
+        curl_out = podman.container_exec(
+            container,
+            ["curl", "-si", f"http://localhost:{CREW_GATEWAY_PORT}/?token={token}"],
+        )
+        cookie_val = ""
+        prefix = f"mc_token_{CREW_GATEWAY_PORT}="
+        empty_marker = f'mc_token_{CREW_GATEWAY_PORT}=""'
+        for line in curl_out.splitlines():
+            low = line.lower()
+            if low.startswith("set-cookie:") and prefix in line and empty_marker not in line:
+                cookie_val = line.split(prefix)[1].split(";")[0].strip()
+                break
+        if not cookie_val:
+            logger.warning("Internal cookie mint: Set-Cookie not found in curl output")
+            return None
+        logger.debug("Internal cookie minted for %s", container)
+        return cookie_val
+    except Exception as exc:
+        logger.warning("Internal cookie mint failed for %s: %s", container, exc)
         return None
 
 
@@ -2014,8 +2090,13 @@ def _finish_crew_setup(
         _cleanup_crew(podman, container, volume, home_volume)
         return {"error": f"Failed to mint session cookie for crew {crew_id}"}
 
-    # Write cookie into container so crew members can use cookie auth for spawning
-    _write_dashboard_cookie(podman, container, cookie)
+    # Mint an internally-bound cookie (exchange from inside container → 127.0.0.1)
+    # so crew members can use cookie auth for spawning without IP-mismatch errors.
+    internal_cookie = _mint_internal_cookie(podman, container)
+    if internal_cookie:
+        _write_dashboard_cookie(podman, container, internal_cookie)
+    else:
+        logger.warning("Could not mint internal cookie for crew %s — spawn auth unavailable", crew_id)
 
     # Read crew image version from OCI label
     crew_image_version = "unknown"
@@ -2049,6 +2130,8 @@ def _finish_crew_setup(
             # to member DM slots. Populated from _copy_agents at launch.
             "enrolled_agents": [n.removesuffix(".json") for n in copied_agents],
         }
+        if internal_cookie:
+            crew_entry["internal_cookie"] = internal_cookie
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
             crew_entry["policy_signing_key_id"] = _secret_identifier(policy_signing_key)

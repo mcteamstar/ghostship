@@ -638,6 +638,7 @@ try:
         _inject_codex_auth,
         _inject_policy,
         _mint_cookie,
+        _mint_internal_cookie,
         _nuke_login_container,
         _nuke_claude_login_container,
         _nuke_codex_login_container,
@@ -726,6 +727,7 @@ except ModuleNotFoundError:
         _inject_codex_auth,
         _inject_policy,
         _mint_cookie,
+        _mint_internal_cookie,
         _nuke_login_container,
         _nuke_claude_login_container,
         _nuke_codex_login_container,
@@ -3067,15 +3069,16 @@ def _dispatch_captain_checkin(
             "Re-launch the crew to enroll members."
         )
     # Refresh .dashboard_cookie so Raven (and any sub-agents she spawns) can use
-    # cookie auth for all REST calls. Read cookie from registry in case crew dict
-    # is a stale minimal copy.
+    # cookie auth for all REST calls. Read internal_cookie from registry — it is
+    # loopback-bound and safe to use from inside the container. If absent (old
+    # registry row), skip silently — _refresh_cookie will populate it next cycle.
     try:
         with _registry_lock:
             reg = _load_registry()
-            current_cookie = reg.get("crews", {}).get(crew_id, {}).get("cookie", "")
-        if current_cookie:
+            internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
+        if internal_cookie:
             podman = _get_podman()
-            _write_dashboard_cookie(podman, crew["container"], current_cookie)
+            _write_dashboard_cookie(podman, crew["container"], internal_cookie)
     except Exception as exc:
         logger.warning("Captain dispatch: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
     spawn_body: dict[str, Any] = {
@@ -3128,13 +3131,14 @@ def _steer_captain_checkin(
         return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
 
     # Refresh .dashboard_cookie so Raven's cookie auth stays current before continuing.
+    # Use internal_cookie (loopback-bound) — skip if absent, _refresh_cookie will populate.
     try:
         with _registry_lock:
             reg = _load_registry()
-            current_cookie = reg.get("crews", {}).get(crew_id, {}).get("cookie", "")
-        if current_cookie:
+            internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
+        if internal_cookie:
             podman = _get_podman()
-            _write_dashboard_cookie(podman, crew["container"], current_cookie)
+            _write_dashboard_cookie(podman, crew["container"], internal_cookie)
     except Exception as exc:
         logger.warning("Captain steer: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
 

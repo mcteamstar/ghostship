@@ -2760,9 +2760,10 @@ class FinishCrewSetupCookieTests(unittest.TestCase):
     """
 
     def _run_setup_with_cookie_mock(
-        self, write_returns: bool = True
+        self, write_returns: bool = True, internal_cookie_returns: str | None = "int-tok"
     ) -> tuple[list, dict | None]:
-        """Run _finish_crew_setup with _write_dashboard_cookie mocked.
+        """Run _finish_crew_setup with _write_dashboard_cookie and
+        _mint_internal_cookie mocked.
 
         Returns (cookie_write_calls, result).
         """
@@ -2798,6 +2799,7 @@ class FinishCrewSetupCookieTests(unittest.TestCase):
                 patch.object(lifecycle, "_patch_models"),
                 patch.object(lifecycle, "_inject_policy", return_value="1"),
                 patch.object(lifecycle, "_mint_cookie", return_value="tok-abc"),
+                patch.object(lifecycle, "_mint_internal_cookie", return_value=internal_cookie_returns),
                 patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
             ):
                 result = lifecycle._finish_crew_setup(
@@ -2810,23 +2812,149 @@ class FinishCrewSetupCookieTests(unittest.TestCase):
                     admiral_secret="ab" * 32,
                 )
 
-        return cookie_write_calls, result
+            registry_data = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+        return cookie_write_calls, result, registry_data
 
     def test_finish_crew_setup_writes_dashboard_cookie(self) -> None:
-        """4.1: _finish_crew_setup calls _write_dashboard_cookie with minted cookie."""
-        calls, result = self._run_setup_with_cookie_mock()
+        """4.1: _finish_crew_setup calls _write_dashboard_cookie with internal cookie."""
+        calls, result, _ = self._run_setup_with_cookie_mock()
 
         self.assertNotIn("error", result, f"setup should succeed: {result}")
         self.assertEqual(len(calls), 1, "should write cookie exactly once")
         container, cookie = calls[0]
         self.assertEqual(container, "gs-demo")
-        self.assertEqual(cookie, "tok-abc")
+        self.assertEqual(cookie, "int-tok")  # internal cookie, not external
 
     def test_finish_crew_setup_cookie_failure_is_non_fatal(self) -> None:
         """4.2: _write_dashboard_cookie returning False doesn't abort setup."""
-        calls, result = self._run_setup_with_cookie_mock(write_returns=False)
+        calls, result, _ = self._run_setup_with_cookie_mock(write_returns=False)
 
         # Setup should still succeed despite cookie write failure
         self.assertNotIn("error", result, f"setup should succeed even if cookie write fails: {result}")
         # The write was attempted
         self.assertEqual(len(calls), 1, "write should have been attempted")
+
+    def test_finish_crew_setup_stores_internal_cookie_in_registry(self) -> None:
+        """6.3: internal_cookie stored in registry entry when _mint_internal_cookie succeeds."""
+        _, result, registry_data = self._run_setup_with_cookie_mock(internal_cookie_returns="int-tok")
+
+        self.assertNotIn("error", result)
+        crew = registry_data.get("crews", {}).get("demo", {})
+        self.assertEqual(crew.get("internal_cookie"), "int-tok")
+
+    def test_finish_crew_setup_no_write_when_internal_cookie_absent(self) -> None:
+        """6.3 (negative): _write_dashboard_cookie not called when _mint_internal_cookie returns None."""
+        calls, result, registry_data = self._run_setup_with_cookie_mock(internal_cookie_returns=None)
+
+        self.assertNotIn("error", result, "setup should still succeed")
+        self.assertEqual(len(calls), 0, "should not write cookie when internal mint fails")
+        crew = registry_data.get("crews", {}).get("demo", {})
+        self.assertNotIn("internal_cookie", crew)
+
+
+class MintInternalCookieTests(unittest.TestCase):
+    """Tests for _mint_internal_cookie helper.
+
+    6.1 Parses cookie correctly from well-formed curl output
+    6.2 Returns None on exec failure (logs WARNING)
+    """
+
+    def test_parses_cookie_from_curl_output(self) -> None:
+        """6.1: _mint_internal_cookie parses Set-Cookie from curl output."""
+        # Simulate curl -si output with a Set-Cookie header
+        curl_output = (
+            "HTTP/1.1 302 Found\r\n"
+            "Location: http://localhost:5476/\r\n"
+            f"set-cookie: mc_token_5476=abc123def456; Path=/; HttpOnly\r\n"
+            "\r\n"
+        )
+        token_output = "http://localhost:5476/?token=some-jwt-token"
+
+        exec_calls: list[list] = []
+
+        class FakePodman:
+            def container_exec(self, container, cmd, env=None):
+                exec_calls.append(cmd)
+                if "kirocrew" in cmd:
+                    return token_output
+                if "curl" in cmd:
+                    return curl_output
+                return ""
+
+        result = lifecycle._mint_internal_cookie(FakePodman(), "gs-demo")
+
+        self.assertEqual(result, "abc123def456")
+        self.assertEqual(len(exec_calls), 2, "should make exactly 2 exec calls")
+
+    def test_returns_none_on_exec_failure(self) -> None:
+        """6.2: _mint_internal_cookie returns None and logs WARNING when exec raises."""
+        class BrokenPodman:
+            def container_exec(self, container, cmd, env=None):
+                raise RuntimeError("exec failed")
+
+        with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+            result = lifecycle._mint_internal_cookie(BrokenPodman(), "gs-demo")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("Internal cookie mint failed" in msg for msg in log_ctx.output))
+
+    def test_returns_none_when_token_not_parseable(self) -> None:
+        """6.2 (variant): returns None when kirocrew token output has no token."""
+        class BadTokenPodman:
+            def container_exec(self, container, cmd, env=None):
+                if "kirocrew" in cmd:
+                    return "error: gateway not running"
+                return ""
+
+        with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+            result = lifecycle._mint_internal_cookie(BadTokenPodman(), "gs-demo")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("could not parse token" in msg for msg in log_ctx.output))
+
+
+class RefreshCookieInternalTests(unittest.TestCase):
+    """Tests for _refresh_cookie extended with internal cookie refresh.
+
+    6.4 _refresh_cookie calls _mint_internal_cookie and stores result in registry
+    """
+
+    def test_refresh_cookie_also_refreshes_internal_cookie(self) -> None:
+        """6.4: _refresh_cookie mints internal cookie and writes it to registry and file."""
+        write_calls: list[tuple] = []
+
+        def fake_write(podman, container, cookie):
+            write_calls.append((container, cookie))
+            return True
+
+        crew = {"container": "gs-demo", "cookie": "old-ext"}
+
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            registry_path = data_dir / "crews.json"
+            # Pre-populate registry
+            registry_path.write_text(
+                json.dumps({"crews": {"demo": {"cookie": "old-ext", "container": "gs-demo"}},
+                            "schedules": {}})
+            )
+            with (
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
+                patch.object(lifecycle, "_get_podman", return_value=Mock()),
+                patch.object(lifecycle, "_mint_cookie", return_value="new-ext"),
+                patch.object(lifecycle, "_mint_internal_cookie", return_value="new-int"),
+                patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
+                patch.object(lifecycle, "_crew_url", return_value="http://gs-demo:5476"),
+            ):
+                result = lifecycle._refresh_cookie(crew, "demo")
+
+            registry_data = json.loads(registry_path.read_text())
+
+        self.assertTrue(result)
+        self.assertEqual(crew["cookie"], "new-ext")
+        self.assertEqual(crew.get("internal_cookie"), "new-int")
+        self.assertEqual(len(write_calls), 1)
+        self.assertEqual(write_calls[0], ("gs-demo", "new-int"))
+        crew_reg = registry_data["crews"]["demo"]
+        self.assertEqual(crew_reg["cookie"], "new-ext")
+        self.assertEqual(crew_reg.get("internal_cookie"), "new-int")
