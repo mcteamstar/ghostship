@@ -4,14 +4,16 @@ Baked into the crew image at build time so kiro-cli finds the DB already
 initialised — transport only needs to INSERT auth_kv rows at launch,
 with no migration wait and no restart cycle.
 
-⚠️  Migration schema for KiroCrew 0.5.0 (10 rows, versions 0-9, max_version 9).
-    Re-verified for the 0.5.0 base-image bump (TRN-113): the hard-coded seed
-    still produces (count, max_version) = (10, 9). The exact kiro-cli version
-    shipped in ghcr.io/kirodotdev/kirocrew:0.6.0 and a live
-    `SELECT COUNT(*), MAX(version) FROM migrations` comparison against that
-    image must be confirmed on a host with podman before release — if the count
-    or schema differ, add the new INSERT INTO migrations rows / CREATE TABLE
-    changes here. See crews/_base/graduation/Containerfile for the checklist.
+⚠️  Migration schema for KiroCrew 0.8.0 / kiro-cli 2.27.1 (6 rows, versions 0-5, max_version 5).
+    Verified 2026-10-09 against ghcr.io/kirodotdev/kirocrew:0.8.0: result (6, 5).
+    Tables: migrations, history, state (value TEXT), auth_kv.
+    Removed vs 0.5.0 seed: conversations, conversations_v2 (+2 indexes), extracted_kas_versions.
+    When updating the FROM pin to a newer kirocrew version, re-verify:
+      podman run --rm ghcr.io/kirodotdev/kirocrew:<tag> python3 -c \
+        "import sqlite3; c=sqlite3.connect('/home/kirocrew/.local/share/kiro-cli/data.sqlite3'); \
+         print(c.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
+    If count or schema differ, update this file and Containerfile before release.
+    See crews/_base/graduation/Containerfile for the checklist.
 """
 import os
 import pathlib
@@ -26,24 +28,6 @@ conn.executescript("""
 CREATE TABLE auth_kv (
     key TEXT PRIMARY KEY,
     value TEXT
-);
-CREATE TABLE conversations (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-CREATE TABLE conversations_v2 (
-    key TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
-    value TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY (key, conversation_id)
-);
-CREATE INDEX idx_conversations_v2_key_updated ON conversations_v2(key, updated_at DESC);
-CREATE INDEX idx_conversations_v2_updated_at ON conversations_v2(updated_at DESC);
-CREATE TABLE extracted_kas_versions (
-    version TEXT PRIMARY KEY,
-    last_used_at INTEGER NOT NULL
 );
 CREATE TABLE history (
     id INTEGER PRIMARY KEY,
@@ -65,7 +49,7 @@ CREATE TABLE migrations (
 );
 CREATE TABLE state (
     key TEXT PRIMARY KEY,
-    value BLOB
+    value TEXT
 );
 INSERT INTO migrations (version, migration_time) VALUES
     (0, 1700000000),
@@ -73,11 +57,7 @@ INSERT INTO migrations (version, migration_time) VALUES
     (2, 1700000000),
     (3, 1700000000),
     (4, 1700000000),
-    (5, 1700000000),
-    (6, 1700000000),
-    (7, 1700000000),
-    (8, 1700000000),
-    (9, 1700000000);
+    (5, 1700000000);
 """)
 conn.close()
 os.chmod(str(db), 0o600)

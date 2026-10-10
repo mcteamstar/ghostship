@@ -160,6 +160,9 @@ def _schedule_monitor() -> None:
                 for sched in schedules:
                     if not sched.get("enabled", True):
                         continue
+                    # Captain entries are driven by _captain_monitor, not here
+                    if sched.get("type") == "captain":
+                        continue
                     next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
                     if next_fire > now:
                         continue
@@ -358,6 +361,18 @@ def _cron_has_enabled_job(payload: Any) -> bool:
     return any(isinstance(job, dict) and job.get("enabled") for job in jobs)
 
 
+# Last reason each idle crew was kept running, so the reason is logged once
+# when it changes rather than every interval.
+_idle_skip_reasons: dict[str, str] = {}
+
+
+def _note_idle_skip(crew_id: str, reason: str) -> None:
+    """Record why an idle crew was not stopped; log only when the reason changes."""
+    if _idle_skip_reasons.get(crew_id) != reason:
+        _idle_skip_reasons[crew_id] = reason
+        logger.info("Idle crew %s kept running: %s", crew_id, reason)
+
+
 def _idle_monitor() -> None:
     """Background thread: stop crew containers that have been idle too long.
 
@@ -380,128 +395,277 @@ def _idle_monitor() -> None:
         # ── Interval sleep ───────────────────────────────────────────────────
         time.sleep(max(GA_IDLE_TIMEOUT_SECS, 10))
         try:
-            podman = _get_podman()
-        except Exception:
-            continue
-
-        with _registry_lock:
-            reg = _load_registry()
-            crew_items = list(reg["crews"].items())
-
-        now = time.time()
-        for crew_id, info in crew_items:
-            if info.get("status") == "auth_required":
-                continue
-            if not podman.container_is_running(info["container"]):
-                continue
-
-            last_used = info.get("last_used", 0)
-            idle_secs = now - last_used
-            if idle_secs < GA_IDLE_TIMEOUT_SECS:
-                continue
-
-            crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
-            cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
-
-            # Check for active dispatched tasks before stopping.
             try:
-                r = _http.get(
-                    f"{crew_url}/api/spawn",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code in (401, 403):
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/spawn",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                payload = r.json()
-                if not isinstance(payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                agents = payload.get("agents")
-                if not isinstance(agents, list):
-                    continue
-                active = [
-                    agent for agent in agents
-                    if isinstance(agent, dict) and not agent.get("done")
-                ]
-                if active:
-                    # Tasks still running — update last_used and skip.
-                    _touch_crew(crew_id)
-                    continue
+                podman = _get_podman()
             except Exception:
                 continue
 
-            # Cron executions do not appear in /api/spawn.  The gateway exposes
-            # their running and last-completed timestamps through /api/crons —
-            # and an enabled job that hasn't fired yet (its interval can
-            # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
-            # just one that already has.
-            try:
-                r = _http.get(
-                    f"{crew_url}/api/crons",
-                    headers={"Cookie": cookie, "Origin": crew_url},
-                    timeout=5.0,
-                )
-                if r.status_code in (401, 403):
-                    # Cookie expired — attempt refresh and retry
-                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                    if new_cookie:
-                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                        with _registry_lock:
-                            reg = _load_registry()
-                            if crew_id in reg["crews"]:
-                                reg["crews"][crew_id]["cookie"] = new_cookie
-                                _save_registry(reg)
-                        r = _http.get(
-                            f"{crew_url}/api/crons",
-                            headers={"Cookie": cookie, "Origin": crew_url},
-                            timeout=5.0,
-                        )
-                    else:
-                        # Can't verify activity — skip this crew (fail-open)
-                        continue
-                if r.status_code != 200:
-                    # Activity is unknown after any non-success response — fail open.
-                    continue
-                cron_payload = r.json()
-                if not isinstance(cron_payload, dict):
-                    # A successful response with an unusable shape is still unknown activity.
-                    continue
-                if not isinstance(cron_payload.get("jobs"), list):
-                    continue
-                if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
-                    cron_payload
-                ):
-                    _touch_crew(crew_id)
-                    continue
-            except Exception:
-                continue
-
-            logger.info(
-                "Crew %s idle for %.0fs — stopping container",
-                crew_id, idle_secs,
-            )
-            podman.container_stop(info["container"])
             with _registry_lock:
                 reg = _load_registry()
-                if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["status"] = "stopped"
-                    _save_registry(reg)
+                crew_items = list(reg["crews"].items())
+
+            now = time.time()
+            for crew_id, info in crew_items:
+                if info.get("status") == "auth_required":
+                    continue
+                try:
+                    if not podman.container_is_running(info["container"]):
+                        continue
+                except Exception as e:
+                    logger.warning(
+                        "Idle monitor: transient Podman error for crew %s — skipping: %s",
+                        crew_id, e,
+                    )
+                    continue
+
+                last_used = info.get("last_used", 0)
+                idle_secs = now - last_used
+                if idle_secs < GA_IDLE_TIMEOUT_SECS:
+                    continue
+
+                crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
+                cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
+
+                # Check for active dispatched tasks before stopping.
+                try:
+                    r = _http.get(
+                        f"{crew_url}/api/spawn",
+                        headers={"Cookie": cookie, "Origin": crew_url},
+                        timeout=5.0,
+                    )
+                    if r.status_code in (401, 403):
+                        # Cookie expired — attempt refresh and retry
+                        new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                        if new_cookie:
+                            cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                            with _registry_lock:
+                                reg = _load_registry()
+                                if crew_id in reg["crews"]:
+                                    reg["crews"][crew_id]["cookie"] = new_cookie
+                                    _save_registry(reg)
+                            r = _http.get(
+                                f"{crew_url}/api/spawn",
+                                headers={"Cookie": cookie, "Origin": crew_url},
+                                timeout=5.0,
+                            )
+                        else:
+                            # Can't verify activity — skip this crew (fail-open)
+                            _note_idle_skip(crew_id, "spawn check: cookie refresh failed")
+                            continue
+                    if r.status_code != 200:
+                        # Activity is unknown after any non-success response — fail open.
+                        _note_idle_skip(crew_id, f"spawn check: HTTP {r.status_code}")
+                        continue
+                    payload = r.json()
+                    if not isinstance(payload, dict):
+                        # A successful response with an unusable shape is still unknown activity.
+                        _note_idle_skip(crew_id, "spawn check: unexpected response")
+                        continue
+                    agents = payload.get("agents")
+                    if not isinstance(agents, list):
+                        _note_idle_skip(crew_id, "spawn check: no agent list")
+                        continue
+                    active = [
+                        agent for agent in agents
+                        if isinstance(agent, dict) and not agent.get("done")
+                    ]
+                    if active:
+                        # Tasks still running — update last_used and skip.
+                        _note_idle_skip(crew_id, "tasks running")
+                        _touch_crew(crew_id)
+                        continue
+                except Exception as e:
+                    _note_idle_skip(crew_id, f"spawn check error: {type(e).__name__}")
+                    continue
+
+                # Cron executions do not appear in /api/spawn.  The gateway exposes
+                # their running and last-completed timestamps through /api/crons —
+                # and an enabled job that hasn't fired yet (its interval can
+                # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
+                # just one that already has.
+                try:
+                    r = _http.get(
+                        f"{crew_url}/api/crons",
+                        headers={"Cookie": cookie, "Origin": crew_url},
+                        timeout=5.0,
+                    )
+                    if r.status_code in (401, 403):
+                        # Cookie expired — attempt refresh and retry
+                        new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                        if new_cookie:
+                            cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                            with _registry_lock:
+                                reg = _load_registry()
+                                if crew_id in reg["crews"]:
+                                    reg["crews"][crew_id]["cookie"] = new_cookie
+                                    _save_registry(reg)
+                            r = _http.get(
+                                f"{crew_url}/api/crons",
+                                headers={"Cookie": cookie, "Origin": crew_url},
+                                timeout=5.0,
+                            )
+                        else:
+                            # Can't verify activity — skip this crew (fail-open)
+                            _note_idle_skip(crew_id, "cron check: cookie refresh failed")
+                            continue
+                    if r.status_code != 200:
+                        # Activity is unknown after any non-success response — fail open.
+                        _note_idle_skip(crew_id, f"cron check: HTTP {r.status_code}")
+                        continue
+                    cron_payload = r.json()
+                    if not isinstance(cron_payload, dict):
+                        # A successful response with an unusable shape is still unknown activity.
+                        _note_idle_skip(crew_id, "cron check: unexpected response")
+                        continue
+                    if not isinstance(cron_payload.get("jobs"), list):
+                        _note_idle_skip(crew_id, "cron check: no job list")
+                        continue
+                    if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
+                        cron_payload
+                    ):
+                        _note_idle_skip(crew_id, "cron job enabled or recently ran")
+                        _touch_crew(crew_id)
+                        continue
+                except Exception as e:
+                    _note_idle_skip(crew_id, f"cron check error: {type(e).__name__}")
+                    continue
+
+                logger.info(
+                    "Crew %s idle for %.0fs — stopping container",
+                    crew_id, idle_secs,
+                )
+                # TOCTOU guard: re-read last_used from the live registry and
+                # perform the stop while the lock is held, so a _touch_crew
+                # call that lands between our HTTP checks and the stop cannot
+                # race us.  The design (D3) requires the re-check AND the stop
+                # to be atomic with respect to _touch_crew (which also acquires
+                # _registry_lock).  Holding the lock across container_stop adds
+                # latency bounded by Podman's stop timeout — acceptable per the
+                # design risk analysis.
+                stop_failed = False
+                with _registry_lock:
+                    live_reg = _load_registry()
+                    live_last_used = live_reg.get("crews", {}).get(crew_id, {}).get("last_used", 0)
+                    if now - live_last_used < GA_IDLE_TIMEOUT_SECS:
+                        _note_idle_skip(crew_id, "last_used advanced during checks — skipping stop")
+                        continue
+                    try:
+                        podman.container_stop(info["container"])
+                    except Exception as e:
+                        # One crew's stop failure must not end idle reaping for every crew.
+                        logger.warning("Could not stop idle crew %s: %s", crew_id, e)
+                        stop_failed = True
+                    if not stop_failed:
+                        _idle_skip_reasons.pop(crew_id, None)
+                        reg = _load_registry()
+                        if crew_id in reg["crews"]:
+                            reg["crews"][crew_id]["status"] = "stopped"
+                            _save_registry(reg)
+                if stop_failed:
+                    continue
+        except Exception:
+            # Never let one bad iteration end idle reaping for the process.
+            logger.exception("Idle monitor iteration failed; retrying next interval")
+
+
+
+# ── Captain monitor ───────────────────────────────────────────────────────────
+
+_CAPTAIN_MONITOR_INTERVAL: int = 30  # seconds between scans when no entry is due
+
+
+def _captain_monitor() -> None:
+    """Background thread: drive Captain dispatch+steer check-ins.
+
+    Runs as a daemon thread — exits automatically when the process exits.
+    Scans the registry every _CAPTAIN_MONITOR_INTERVAL seconds (or sooner
+    when an entry is due) and fires ``_steer_captain_checkin`` for each
+    enabled captain entry whose ``next_fire_at`` has passed.
+
+    Captain entries (type == "captain") are managed entirely by the transport
+    registry; there is no gateway cron job for Captain.  This loop is the
+    replacement for the gateway cron timer.
+    """
+    # Import here to avoid circular import (same pattern as _schedule_monitor).
+    # These are injected via bind_lifecycle() for _crew_api_with_recovery and
+    # _ensure_crew_running.  For _steer_captain_checkin and
+    # _dispatch_captain_checkin we import from server at call time (they are
+    # defined there, not in lifecycle) to avoid a module-load cycle.
+    while True:
+        next_wakeup = time.time() + _CAPTAIN_MONITOR_INTERVAL  # initialised before try so sleep line is always defined
+        try:
+            with _registry_lock:
+                reg = _load_registry()
+                crew_items = list(reg["crews"].items())
+
+            now = time.time()
+            next_wakeup = now + _CAPTAIN_MONITOR_INTERVAL
+
+            for crew_id, info in crew_items:
+                schedules = info.get("schedules", [])
+                for sched in schedules:
+                    if sched.get("type") != "captain":
+                        continue
+                    if not sched.get("enabled", True):
+                        continue
+                    next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
+                    # Track earliest upcoming fire for sleep duration
+                    if next_fire > now and next_fire < next_wakeup:
+                        next_wakeup = next_fire
+                    if next_fire > now:
+                        continue
+
+                    # Entry is due — wake the crew and steer/dispatch
+                    try:
+                        crew = _ensure_crew_running(info, crew_id)
+                    except Exception as e:
+                        logger.warning(
+                            "Captain monitor: crew %s won't start for check-in: %s",
+                            crew_id, e,
+                        )
+                        _advance_next_fire_at(sched)
+                        with _registry_lock:
+                            reg2 = _load_registry()
+                            for s in _get_crew_schedules(reg2, crew_id):
+                                if s.get("type") == "captain":
+                                    s["next_fire_at"] = sched["next_fire_at"]
+                                    break
+                            _save_registry(reg2)
+                        continue
+
+                    # Import _steer_captain_checkin from server at call time
+                    # to avoid a module-load cycle (server imports monitors).
+                    try:
+                        try:
+                            from server import (  # container: flat /app/
+                                _steer_captain_checkin,
+                                _dispatch_captain_checkin,
+                            )
+                        except ModuleNotFoundError:
+                            from transport.server import (  # local dev  # type: ignore[no-redef]
+                                _steer_captain_checkin,
+                                _dispatch_captain_checkin,
+                            )
+                        _steer_captain_checkin(crew, crew_id)
+                    except Exception as e:
+                        logger.error(
+                            "Captain monitor: check-in failed for crew %s: %s",
+                            crew_id, e,
+                        )
+
+                    # Advance next_fire_at in registry
+                    _advance_next_fire_at(sched)
+                    with _registry_lock:
+                        reg3 = _load_registry()
+                        for s in _get_crew_schedules(reg3, crew_id):
+                            if s.get("type") == "captain":
+                                s["next_fire_at"] = sched["next_fire_at"]
+                                break
+                        _save_registry(reg3)
+
+        except Exception:
+            logger.exception("Captain monitor iteration failed; retrying next interval")
+
+        # Sleep until the next due entry, or _CAPTAIN_MONITOR_INTERVAL
+        sleep_secs = max(1.0, next_wakeup - time.time())
+        time.sleep(sleep_secs)

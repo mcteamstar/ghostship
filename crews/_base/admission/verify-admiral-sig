@@ -13,11 +13,24 @@ is asserted: any whitespace trimming would silently truncate the ~4.7% of keys
 that happen to start or end with an ASCII whitespace byte.
 
 The X-Admiral-Sig header carries a base64url-encoded (unpadded) detached
-Ed25519 signature over ``Subject:<s>\nFrom:<f>\n\n<body>``.
+Ed25519 signature over a length-prefixed payload (TRN-216):
+
+    f"{len(subject_utf8)}\n".encode() + subject_utf8
+    + f"{len(from_utf8)}\n".encode() + from_utf8
+    + body_bytes
+
+where ``subject_utf8``/``from_utf8`` are the UTF-8 bytes of the Subject and
+From header values and ``body_bytes`` are the UTF-8 body bytes used verbatim
+(no normalization on this side; the signer already rstrips the body of
+``\r\n`` before signing). The length prefixes make field boundaries
+unambiguous regardless of value contents, so a newline in a header value
+cannot shift bytes between fields. Header values containing ``\n`` or ``\r``
+are rejected outright (exit 1), and a multipart message — whose payload is a
+list rather than a string — is rejected cleanly (exit 1) rather than crashing.
 
 Exit codes (unchanged from the prior HMAC implementation):
   0 — valid signature (message is genuine Admiral mail)
-  1 — signature mismatch (message is not genuine)
+  1 — signature mismatch, malformed, or structurally non-Admiral (not genuine)
   2 — public key not found after retries (cannot verify; transient)
 
 Usage:
@@ -52,7 +65,14 @@ else:
 sig = msg.get('X-Admiral-Sig', '').strip()
 subject = msg.get('Subject', '')
 sender = msg.get('From', '')
-body = (msg.get_payload() or '').rstrip('\n')
+
+payload_obj = msg.get_payload()
+if not isinstance(payload_obj, str):
+    # Multipart messages yield a list of sub-parts, not a string. These are
+    # not legitimate Admiral mail; reject cleanly rather than crashing on a
+    # later string operation.
+    sys.exit(1)
+body = payload_obj
 
 if not sig:
     # No signature header present — not Admiral mail
@@ -86,7 +106,25 @@ except ValueError:
     # Malformed public key material — cannot verify; treat as absent/transient.
     sys.exit(2)
 
-payload = f'Subject:{subject}\nFrom:{sender}\n\n{body}'.encode('utf-8')
+# Reject header values carrying newlines before constructing the payload: a
+# newline in Subject or From is a structurally invalid (bug or adversarial)
+# message, not genuine Admiral mail.
+if '\n' in subject or '\r' in subject or '\n' in sender or '\r' in sender:
+    sys.exit(1)
+
+# Length-prefixed payload (TRN-216), mirroring the signer. Field boundaries are
+# unambiguous, so header contents cannot shift bytes between fields. The body is
+# used verbatim (no normalization on this side).
+subject_utf8 = subject.encode('utf-8')
+from_utf8 = sender.encode('utf-8')
+body_bytes = body.encode('utf-8')
+payload = (
+    f'{len(subject_utf8)}\n'.encode('ascii')
+    + subject_utf8
+    + f'{len(from_utf8)}\n'.encode('ascii')
+    + from_utf8
+    + body_bytes
+)
 try:
     public_key.verify(sig_raw, payload)
     sys.exit(0)

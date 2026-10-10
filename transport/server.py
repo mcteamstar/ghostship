@@ -65,7 +65,6 @@ import re
 import secrets
 import time
 import threading
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -160,12 +159,12 @@ except ModuleNotFoundError:
     )
 
 try:
-    from config import Config  # container: both files flat in /app
+    from config import Config, inert_backend_settings  # container: both files flat in /app
 except ImportError:
     # Local dev: transport/ is a package dir, and a bare `import config` can
     # resolve to the repo-root config/ namespace package (which has no Config),
     # raising ImportError rather than ModuleNotFoundError — fall back either way.
-    from transport.config import Config
+    from transport.config import Config, inert_backend_settings
 
 try:
     from registry import (  # container: flat /app/
@@ -393,7 +392,6 @@ PODMAN_SOCK = cfg.podman_socket
 KC_IMAGE = cfg.kc_image
 # Upstream image used for ephemeral containers that only need kiro-cli (e.g.
 # Login containers use the upstream base image directly — see lifecycle.py.
-KC_BASE_IMAGE = "ghcr.io/kirodotdev/kirocrew:0.6.0"
 GA_MAX_CREWS = cfg.ga_max_crews
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_AUTH_FILE = "ga-kiro-auth"
@@ -446,6 +444,56 @@ GA_DASHBOARD_PORT_RANGE_SIZE = cfg.ga_dashboard_port_range_size
 # When unset, per-persona identity (e.g. Ghost <ghost@localhost>) is preserved.
 GA_GIT_AUTHOR_NAME = os.environ.get("GA_GIT_AUTHOR_NAME", "").strip()
 GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
+
+# ── ACP backend ───────────────────────────────────────────────────────────────
+# Controls the ACP runtime used inside crew containers.
+# "kiro" (default): kiro-cli auth injection (existing behaviour).
+# "claude": skip kiro auth, inject ANTHROPIC_API_KEY from GA_CREW_ANTHROPIC_API_KEY.
+# "codex": skip kiro auth, inject OPENAI_API_KEY from GA_CREW_OPENAI_API_KEY.
+def _read_podman_secret(name: str) -> str:
+    """Read a Podman secret mounted at /run/secrets/<name>.
+
+    Returns the file contents stripped of surrounding whitespace, or "" when the
+    secret is not mounted (FileNotFoundError) or cannot be read. Mirrors the
+    _load_api_key() / _load_transport_secret() pattern so crew model keys and
+    KIRO_API_KEY are delivered as Podman secrets rather than plaintext compose
+    env vars (secret-delivery-hardening).
+    """
+    secret_path = Path("/run/secrets") / name
+    try:
+        return secret_path.read_text().strip()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return ""
+
+
+GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
+# Prefer the Podman-secret file over the (now always empty) env-var value: the
+# compose template no longer carries these keys in its environment block, so
+# cfg.ga_crew_anthropic_api_key is "" in production and the secret file is the
+# real source. The env-var value is retained as the fallback for dev/test runs
+# that set GA_CREW_ANTHROPIC_API_KEY directly without a mounted secret.
+_GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
+_secret_value = _read_podman_secret("ga-crew-anthropic-api-key")
+if _secret_value:
+    _GA_CREW_ANTHROPIC_API_KEY = _secret_value
+_GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
+# Register the Anthropic API key with the redaction filter so it is never
+# written to logs when the Claude backend is active. Registered after the
+# secret-file read so the file-sourced value is covered, not just the env var.
+if _GA_CREW_ANTHROPIC_API_KEY:
+    _security.register_secret(_GA_CREW_ANTHROPIC_API_KEY)
+_GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
+_secret_value = _read_podman_secret("ga-crew-openai-api-key")
+if _secret_value:
+    _GA_CREW_OPENAI_API_KEY = _secret_value
+_GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
+# Register the OpenAI API key with the redaction filter so it is never written
+# to logs when the Codex backend is active. Registered after the secret-file
+# read so the file-sourced value is covered, not just the env var.
+if _GA_CREW_OPENAI_API_KEY:
+    _security.register_secret(_GA_CREW_OPENAI_API_KEY)
 
 # ── Transport security ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
@@ -508,9 +556,25 @@ def _load_api_key() -> str:
     except Exception:
         pass
 
-    _logger.warning("GA_API_KEY is not set — transport is running WITHOUT authentication. "
-                    "All MCP tools and file endpoints are publicly accessible. "
-                    "Set GA_API_KEY to require Bearer token auth.")
+    _logger.warning(
+        "GA_API_KEY is not set — transport is running WITHOUT authentication. "
+        "All MCP tools and file endpoints are publicly accessible. "
+        "Set GA_API_KEY to require Bearer token auth."
+    )
+
+    # Additional bind-address warning when running on a non-loopback interface.
+    import os as _os
+    _host = _os.environ.get("HOST", "0.0.0.0")
+    if _host not in ("127.0.0.1", "::1", "localhost"):
+        _require = _os.environ.get("GA_REQUIRE_API_KEY", "warn")
+        if _require != "off":
+            _logger.warning(
+                "Transport is bound on %s with no API key — anyone who can "
+                "reach this host can use every MCP tool. Set GA_API_KEY in "
+                "ghostship.conf or use HOST=127.0.0.1 to restrict to loopback.",
+                _host,
+            )
+
     return ""
 
 
@@ -566,9 +630,13 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 # flow is skipped entirely. Injected as an env var into crew
 # containers; unset (default) => existing device-code flow is used.
 KIRO_API_KEY = cfg.kiro_api_key
+_secret_value = _read_podman_secret("ga-kiro-api-key")
+if _secret_value:
+    KIRO_API_KEY = _secret_value
 # Register KIRO_API_KEY with the redaction filter
 # so the value is scrubbed from logs if it appears in an error or log record,
-# consistent with the GA_API_KEY pattern in _load_api_key().
+# consistent with the GA_API_KEY pattern in _load_api_key(). Registered after
+# the secret-file read so the file-sourced value is covered, not just the env var.
 if KIRO_API_KEY:
     _security.register_secret(KIRO_API_KEY)
 
@@ -587,6 +655,8 @@ try:
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
+        GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
+        GA_CODEX_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -610,16 +680,33 @@ try:
         _cron_has_enabled_job,
         _ensure_crew_running,
         _finish_crew_setup,
+        _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
+        _captain_monitor,
         _inject_auth,
+        _inject_claude_auth,
+        _inject_codex_auth,
         _inject_policy,
         _mint_cookie,
+        _mint_internal_cookie,
         _nuke_login_container,
+        _nuke_claude_login_container,
+        _nuke_codex_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
+        _claude_auth_file_path,
+        _claude_auth_exists,
+        _write_claude_auth_file,
+        _codex_auth_file_path,
+        _codex_auth_exists,
+        _write_codex_auth_file,
         _initiate_login,
+        _initiate_claude_login,
+        _initiate_codex_login,
+        _poll_claude_login_container,
+        _poll_codex_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -631,7 +718,6 @@ try:
         _task_timestamps_lock,
         _probe_gateway,
         _prewarm_crew,
-        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -642,10 +728,13 @@ try:
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
+        _start_claude_login_container,
+        _start_codex_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
         _wait_gateway,
+        _write_dashboard_cookie,
     )
 except ModuleNotFoundError:
     from transport.lifecycle import (  # local dev
@@ -655,6 +744,8 @@ except ModuleNotFoundError:
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
         GA_LOGIN_CONTAINER_PREFIX,
+        GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
+        GA_CODEX_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -678,16 +769,33 @@ except ModuleNotFoundError:
         _cron_has_enabled_job,
         _ensure_crew_running,
         _finish_crew_setup,
+        _resolve_dispatch_slot,
         _get_recovery_lock,
         _idle_monitor,
+        _captain_monitor,
         _inject_auth,
+        _inject_claude_auth,
+        _inject_codex_auth,
         _inject_policy,
         _mint_cookie,
+        _mint_internal_cookie,
         _nuke_login_container,
+        _nuke_claude_login_container,
+        _nuke_codex_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
+        _claude_auth_file_path,
+        _claude_auth_exists,
+        _write_claude_auth_file,
+        _codex_auth_file_path,
+        _codex_auth_exists,
+        _write_codex_auth_file,
         _initiate_login,
+        _initiate_claude_login,
+        _initiate_codex_login,
+        _poll_claude_login_container,
+        _poll_codex_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -699,7 +807,6 @@ except ModuleNotFoundError:
         _task_timestamps_lock,
         _probe_gateway,
         _prewarm_crew,
-        prewarm as prewarm_impl,
         _read_auth_from_crew,
         _reconcile_registry,
         _recovery_locks,
@@ -710,10 +817,13 @@ except ModuleNotFoundError:
         _schedule_monitor,
         _seed_openspec_store,
         _start_login_container,
+        _start_claude_login_container,
+        _start_codex_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
         _wait_gateway,
+        _write_dashboard_cookie,
     )
 
 # Academy composition/manifest/validation surface — extracted from lifecycle
@@ -1143,8 +1253,15 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
 
     # Forward the client's requested subprotocols and inject the session cookie
     # and the internal crew origin (required by KiroCrew's WS origin check).
+    # TRN-191: send "http://localhost:{port}" rather than the container hostname
+    # (http://gs-{crew_id}:5476). KiroCrew's build_allowed_origins() always
+    # includes http://localhost:{port} and http://127.0.0.1:{port} regardless
+    # of config, but only adds dashboard.url when token auth middleware is
+    # active — which Ghostship's gateway does not use. The Origin header is
+    # only checked for WS CSRF; the actual IP-binding uses the TCP connection
+    # peer, not the Origin value, so sending localhost is safe.
     subprotocols = ws.scope.get("subprotocols") or []
-    crew_origin = f"http://{CREW_CONTAINER_PREFIX}{crew_id}:{CREW_GATEWAY_PORT}"
+    crew_origin = f"http://localhost:{CREW_GATEWAY_PORT}"
     handshake_headers = {
         "Cookie": _crew_cookie(crew),
         "Origin": crew_origin,
@@ -1423,36 +1540,6 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
     return JSONResponse({"dashboard_url": None})
 
 
-async def _handle_crew_prewarm_post(request: Request) -> Response:
-    """POST /crews/{crew_id}/prewarm — pre-establish the crew's ACP session.
-
-    Thin REST wrapper over the ``prewarm`` MCP tool. Behaves identically for a
-    given crew: it warms the crew's session ahead of an expected dispatch,
-    respecting the enable flag and the memory / active-crew gates, and returns
-    ``{"crew_id", "status"}`` with status in ``warmed | already_warm | disabled
-    | blocked:<gate> | error:<msg>``.
-
-    Auth: gated by the same ``GA_API_KEY`` Bearer auth as the other crew REST
-    endpoints (enforced by BearerAuthMiddleware, which never dispatches to this
-    handler without a valid key). Returns 404 for an unknown crew.
-    """
-    # Parse + require only (auto_wake=False) — _prewarm_crew owns the start/gate
-    # path via _ensure_crew_running, exactly like the dashboard handler.
-    resolved = await _resolve_crew_for_proxy(request.scope["path"], auto_wake=False)
-    if isinstance(resolved, Response):
-        return resolved
-    crew_id, _sub, crew = resolved
-
-    result = await asyncio.to_thread(_prewarm_crew, crew, crew_id)
-    if "error" in result:
-        return JSONResponse(result, status_code=404)
-    logger.info(
-        "POST /crews/%s/prewarm — status=%s",
-        crew_id, result.get("status"),
-    )
-    return JSONResponse(result)
-
-
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
@@ -1576,7 +1663,18 @@ async def _handle_login_get(request: Request) -> Response:
         _write_auth_file(auth_b64)
         logger.info("ga-kiro-auth written after login completion")
     except Exception as e:
-        logger.warning("Could not write auth file: %s", e)
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-kiro-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="academy",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
 
     # Inject all currently running crews
     with _registry_lock:
@@ -1617,11 +1715,6 @@ async def _handle_logout_post(request: Request) -> Response:
     if not _read_auth_file():
         return PlainTextResponse("Not authenticated.", status_code=404)
 
-    _security.audit_auth_event(
-        action="logout", outcome="success", account="academy",
-        source=_request_source(request), emit=logger.info,
-    )
-
     try:
         podman = _get_podman()
     except Exception as e:
@@ -1633,9 +1726,24 @@ async def _handle_logout_post(request: Request) -> Response:
         auth_path.unlink(missing_ok=True)
         logger.info("Deleted ga-kiro-auth")
     except Exception as e:
-        logger.warning("Could not delete ga-kiro-auth: %s", e)
+        logger.error("Could not delete ga-kiro-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="academy",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="academy",
+        source=_request_source(request), emit=logger.info,
+    )
 
     # Wipe auth rows from all running crews
+    wipe_failed: list[str] = []
     with _registry_lock:
         reg = _load_registry()
     for cid, info in reg["crews"].items():
@@ -1648,7 +1756,443 @@ async def _handle_logout_post(request: Request) -> Response:
                 logger.info("Cleared auth_kv from crew %s", cid)
             except Exception as e:
                 logger.warning("Could not clear auth from crew %s: %s", cid, e)
+                wipe_failed.append(cid)
 
+    if wipe_failed:
+        # The stored credential is gone; these running crews may still hold a copy.
+        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
+    return JSONResponse({"status": "logged_out"})
+
+
+# ── Claude OAuth login/logout endpoints ────────────────────────────────────────
+
+
+def _warn_inert_backend_settings() -> None:
+    """Log one warning per setting that belongs to a disabled backend.
+
+    Called once from the startup path, not from Config (which loads in several
+    modules and does no file reads). Names only; values are never logged.
+    """
+    stored = frozenset(
+        name for name, present in (
+            ("ga-claude-auth", _claude_auth_exists()),
+            ("ga-codex-auth", _codex_auth_exists()),
+        ) if present
+    )
+    for name in inert_backend_settings(cfg, stored):
+        logger.warning(
+            "%s is set but its backend is not in GA_AGENT_BACKENDS; it has no effect.", name
+        )
+
+
+def _backend_enabled(backend: str) -> bool:
+    """True when ``backend`` is enabled. Kiro always is (bundled in every crew
+    image); the others must be listed in GA_AGENT_BACKENDS."""
+    return backend == "kiro" or backend in cfg.ga_agent_backends
+
+
+def _backend_not_enabled_message(backend: str) -> str:
+    return (
+        f"The {backend} backend is not enabled on this transport. Add {backend} to "
+        f"GA_AGENT_BACKENDS in ghostship.conf, then re-run `ghostship install`."
+    )
+
+
+async def _handle_claude_login_post(request: Request) -> Response:
+    """POST /login/claude — initiate Claude OAuth device-code flow.
+
+    Three-state machine guard:
+      - 409 if ga-claude-auth already exists (already authenticated)
+      - 409 if a Claude login flow is already in progress
+      - Calls _initiate_claude_login, returns {"login_url", "code"}
+
+    Requires claude to be an enabled backend (GA_AGENT_BACKENDS), whether or
+    not it is the default; returns 400 otherwise.
+    """
+    if not _backend_enabled("claude"):
+        return PlainTextResponse(_backend_not_enabled_message("claude"), status_code=400)
+
+    with _lifecycle._claude_login_pending_lock:
+        if _claude_auth_exists():
+            return PlainTextResponse(
+                "Already authenticated. POST /logout/claude first.",
+                status_code=409,
+            )
+        if _lifecycle._claude_login_pending is not None:
+            return PlainTextResponse(
+                "Claude login already in progress. Poll GET /login/claude for status.",
+                status_code=409,
+            )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _initiate_claude_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Claude login already in progress. Poll GET /login/claude for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_claude_login_get(request: Request) -> Response:
+    """GET /login/claude — poll whether the Claude OAuth flow has completed.
+
+    Returns {"status": "pending", "login_url": ...} while waiting.
+    On completion: tars ~/.claude/ from the login container, writes ga-claude-auth
+    (mode 0600), nukes the login container, clears _claude_login_pending, and
+    returns {"status": "complete"}.
+    Returns 404 if no Claude login flow is in progress.
+    """
+    with _lifecycle._claude_login_pending_lock:
+        pending = _lifecycle._claude_login_pending
+
+    if pending is None:
+        return PlainTextResponse("No Claude login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # A submitted code that never completed the exchange abandons the flow.
+    if _lifecycle._claude_login_code_expired(pending):
+        _nuke_claude_login_container(podman, pending["container"])
+        with _lifecycle._claude_login_pending_lock:
+            if (
+                _lifecycle._claude_login_pending is not None
+                and _lifecycle._claude_login_pending.get("container") == pending["container"]
+            ):
+                _lifecycle._claude_login_pending = None
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="claude",
+            source=_request_source(request),
+            emit=logger.info,
+        )
+        return JSONResponse({"status": "expired"}, status_code=410)
+
+    # Poll the login container for the completed Claude credential.
+    tar_bytes = _poll_claude_login_container(podman, pending["container"])
+    if not tar_bytes:
+        return JSONResponse({
+            "status": "pending",
+            "login_url": pending.get("login_url"),
+        })
+
+    # ── Auth complete — write ga-claude-auth ──────────────────────────────────
+    try:
+        _write_claude_auth_file(tar_bytes)
+        logger.info("ga-claude-auth written after Claude login completion")
+    except Exception as e:
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-claude-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="claude",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
+
+    # Nuke temp container and clear pending state (guarded)
+    _nuke_claude_login_container(podman, pending["container"])
+    with _lifecycle._claude_login_pending_lock:
+        if (
+            _lifecycle._claude_login_pending is not None
+            and _lifecycle._claude_login_pending.get("container") == pending["container"]
+        ):
+            _lifecycle._claude_login_pending = None
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="claude",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_claude_login_code_post(request: Request) -> Response:
+    """POST /login/claude/code — deliver the pasted Claude authorisation code.
+
+    Body: {"code": "<code>"}. The code is written to the pending login's PTY so
+    the CLI can complete the token exchange. Poll GET /login/claude afterwards.
+
+    Returns 202 once the code is written, 400 for a malformed body, 404 when no
+    flow is awaiting a code, 409 when a code was already submitted, and 500 when
+    the PTY closed before the write. The code is never logged or echoed.
+    Requires claude to be an enabled backend; returns 400 otherwise. That check
+    runs before the body is parsed or the pending flow is looked up.
+    """
+    if not _backend_enabled("claude"):
+        return JSONResponse({"error": _backend_not_enabled_message("claude")}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
+    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(code, str) or not code.strip():
+        return JSONResponse({"error": "'code' must be a non-empty string."}, status_code=400)
+
+    result = _lifecycle._submit_claude_login_code(code.strip())
+    error = result.get("error")
+    if error == "no_pending":
+        return JSONResponse({"error": "No Claude login is awaiting a code."}, status_code=404)
+    if error == "already_submitted":
+        return JSONResponse(
+            {"error": "A code was already submitted; poll GET /login/claude."},
+            status_code=409,
+        )
+    if error:
+        return JSONResponse({"error": "The login session closed before the code was written."},
+                            status_code=500)
+    return JSONResponse({"status": "submitted"}, status_code=202)
+
+
+async def _handle_claude_logout_post(request: Request) -> Response:
+    """POST /logout/claude — de-authenticate Claude OAuth.
+
+    Deletes ga-claude-auth and wipes ~/.claude/ from every running
+    Claude-backend crew. Returns 409 if not currently authenticated via OAuth.
+    """
+    if not _claude_auth_exists():
+        return PlainTextResponse(
+            "Not authenticated via Claude OAuth (ga-claude-auth not found).",
+            status_code=409,
+        )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Delete ga-claude-auth
+    auth_path = _claude_auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-claude-auth")
+    except Exception as e:
+        logger.error("Could not delete ga-claude-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="claude",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="claude",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe ~/.claude/ from all running Claude-backend crews
+    wipe_failed: list[str] = []
+    with _registry_lock:
+        reg = _load_registry()
+    for cid, info in reg["crews"].items():
+        if info.get("status") == "running" and info.get("acp_backend") == "claude":
+            try:
+                podman.container_exec(
+                    info["container"],
+                    ["sh", "-c", "rm -rf /home/kirocrew/.claude/"],
+                )
+                logger.info("Wiped ~/.claude/ from crew %s", cid)
+            except Exception as e:
+                logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
+                wipe_failed.append(cid)
+
+    if wipe_failed:
+        # The stored credential is gone; these running crews may still hold a copy.
+        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
+    return JSONResponse({"status": "logged_out"})
+
+
+# ── Codex OAuth login/logout endpoints ──────────────────────────────────────────
+
+
+async def _handle_codex_login_post(request: Request) -> Response:
+    """POST /login/codex — initiate Codex OAuth/device login flow.
+
+    Three-state machine guard (mirrors POST /login/claude):
+      - 409 if ga-codex-auth already exists (already authenticated)
+      - 409 if a Codex login flow is already in progress
+      - Calls _initiate_codex_login, returns {"login_url", "code"}
+
+    Requires codex to be an enabled backend (GA_AGENT_BACKENDS), whether or
+    not it is the default; returns 400 otherwise.
+    """
+    if not _backend_enabled("codex"):
+        return PlainTextResponse(_backend_not_enabled_message("codex"), status_code=400)
+
+    with _lifecycle._codex_login_pending_lock:
+        if _codex_auth_exists():
+            return PlainTextResponse(
+                "Already authenticated. POST /logout/codex first.",
+                status_code=409,
+            )
+        if _lifecycle._codex_login_pending is not None:
+            return PlainTextResponse(
+                "Codex login already in progress. Poll GET /login/codex for status.",
+                status_code=409,
+            )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _initiate_codex_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Codex login already in progress. Poll GET /login/codex for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_codex_login_get(request: Request) -> Response:
+    """GET /login/codex — poll whether the Codex OAuth flow has completed.
+
+    Returns {"status": "pending", "login_url": ...} while waiting.
+    On completion: tars ~/.codex/ from the login container, writes ga-codex-auth
+    (mode 0600), nukes the login container, clears _codex_login_pending, and
+    returns {"status": "complete"}.
+    Returns 404 if no Codex login flow is in progress.
+    """
+    with _lifecycle._codex_login_pending_lock:
+        pending = _lifecycle._codex_login_pending
+
+    if pending is None:
+        return PlainTextResponse("No Codex login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Poll the login container for completed ~/.codex/ credentials.
+    tar_bytes = _poll_codex_login_container(podman, pending["container"])
+    if not tar_bytes:
+        return JSONResponse({
+            "status": "pending",
+            "login_url": pending.get("login_url"),
+        })
+
+    # ── Auth complete — write ga-codex-auth ───────────────────────────────────
+    try:
+        _write_codex_auth_file(tar_bytes)
+        logger.info("ga-codex-auth written after Codex login completion")
+    except Exception as e:
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-codex-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="codex",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
+
+    # Nuke temp container and clear pending state (guarded)
+    _nuke_codex_login_container(podman, pending["container"])
+    with _lifecycle._codex_login_pending_lock:
+        if (
+            _lifecycle._codex_login_pending is not None
+            and _lifecycle._codex_login_pending.get("container") == pending["container"]
+        ):
+            _lifecycle._codex_login_pending = None
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="codex",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_codex_logout_post(request: Request) -> Response:
+    """POST /logout/codex — de-authenticate Codex OAuth.
+
+    Deletes ga-codex-auth and wipes ~/.codex/ from every running Codex-backend
+    crew. Idempotent: returns HTTP 200 even when already unauthenticated (no
+    ga-codex-auth to clear), matching the codex-auth spec requirement.
+    """
+    if not _codex_auth_exists():
+        return JSONResponse({"status": "logged_out"})
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Delete ga-codex-auth
+    auth_path = _codex_auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-codex-auth")
+    except Exception as e:
+        logger.error("Could not delete ga-codex-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="codex",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="codex",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe ~/.codex/ from all running Codex-backend crews
+    wipe_failed: list[str] = []
+    with _registry_lock:
+        reg = _load_registry()
+    for cid, info in reg["crews"].items():
+        if info.get("status") == "running" and info.get("acp_backend") == "codex":
+            try:
+                podman.container_exec(
+                    info["container"],
+                    ["sh", "-c", "rm -rf /home/kirocrew/.codex/"],
+                )
+                logger.info("Wiped ~/.codex/ from crew %s", cid)
+            except Exception as e:
+                logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
+                wipe_failed.append(cid)
+
+    if wipe_failed:
+        # The stored credential is gone; these running crews may still hold a copy.
+        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
     return JSONResponse({"status": "logged_out"})
 
 
@@ -1736,6 +2280,9 @@ def crews() -> dict:
             "last_task_at": info.get("last_task_at"),
             "gateway_healthy": gateway_healthy,
             "crew_image_version": info.get("crew_image_version", "unknown"),
+            # acp_backend: "kiro" (default), "claude", or "codex". Defaults to "kiro" for
+            # pre-TRN-167 registry entries that do not have the field.
+            "acp_backend": info.get("acp_backend", "kiro"),
             "agents": [],
         }
         # Derive dashboard_url from stored dashboard_port (None if no port assigned).
@@ -1875,13 +2422,14 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                    (false unless configured). Pass False to force headless even
                    when GA_DASHBOARD_DEFAULT=true.
 
-                   MEMORY COST: dashboard=True causes dispatch() to auto-attach
-                   tasks to a session slot (slot="bridge"), which spawns an extra
-                   kiro-cli-chat process per task (~300-400 MB each). For
-                   autonomous/unattended work (SDD, batch jobs, background tasks)
-                   where you don't need browser visibility, pass dashboard=False
-                   to avoid this overhead. Use dashboard=True only when you
-                   actually intend to watch the crew in a browser.
+                   MEMORY COST: when dashboard=True, dispatching enrolled persona
+                   agents with the default slot (slot=None) routes them into
+                   their member DM slot, which spawns a kiro-cli-chat process
+                   per task (~300-400 MB each). For autonomous/unattended work
+                   (SDD, batch jobs, background tasks) where you don't need
+                   browser visibility, pass dashboard=False (or dispatch with
+                   slot=False) to avoid this overhead. Use dashboard=True only
+                   when you actually intend to watch the crew in a browser.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """
@@ -1908,26 +2456,123 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         return {"error": str(e)}
 
     # ── Auth check — before registry write to avoid orphaned entries ──────────
-    # When KIRO_API_KEY is set, kiro-cli authenticates via the env var
-    # injected into the crew container; the device-code flow, the ga-kiro-auth
-    # file, and auth_b64 injection are all skipped.
-    auth_b64: str | None = _read_auth_file() or None
-    if not KIRO_API_KEY and not auth_b64:
-        result = _initiate_login(podman)
-        if result.get("login_pending"):
+    # When GA_CREW_ACP_BACKEND=claude, all kiro-cli auth (device-code flow,
+    # ga-kiro-auth file, auth_b64 injection) is skipped entirely.
+    # ANTHROPIC_API_KEY is injected at container_create time (API key path) or
+    # ~/.claude/ is injected via _inject_claude_auth in _finish_crew_setup (OAuth).
+    #
+    # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var;
+    # the device-code flow and auth_b64 injection are also skipped on that path.
+    auth_b64: str | None = None
+    # Defensive: startup already rejects a default backend outside the enabled
+    # set, so configuration can't reach this. It becomes a real path once a
+    # crew can pick its own backend (per-session selection).
+    if not _backend_enabled(GA_CREW_ACP_BACKEND):
+        return {
+            "error": "backend_not_enabled",
+            "instructions": _backend_not_enabled_message(GA_CREW_ACP_BACKEND),
+        }
+    if GA_CREW_ACP_BACKEND == "claude":
+        # Task 3.3: Claude backend — require either API key or OAuth credential.
+        # If neither is present, initiate the Claude login flow and return
+        # not_authenticated with the login URL (identical behaviour to kiro path).
+        if not _GA_CREW_ANTHROPIC_API_KEY and not _claude_auth_exists():
+            result = _initiate_claude_login(podman)
+            if result.get("login_pending"):
+                return {
+                    "error": "not_authenticated",
+                    "login_pending": True,
+                    "instructions": "Claude login already in progress. Poll GET /login/claude, then call launch again.",
+                }
+            if "error" in result:
+                return {"error": result["error"]}
             return {
                 "error": "not_authenticated",
-                "login_pending": True,
-                "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                "login_url": result.get("login_url"),
+                "code": result.get("code"),
+                "instructions": "Open login_url, approve, then POST the pasted code to /login/claude/code, poll GET /login/claude until complete, then call launch again.",
             }
-        if "error" in result:
-            return {"error": result["error"]}
-        return {
-            "error": "not_authenticated",
-            "login_url": result.get("login_url"),
-            "code": result.get("code"),
-            "instructions": "Open login_url to authenticate, then call launch again.",
-        }
+    elif GA_CREW_ACP_BACKEND == "codex":
+        # Task 3.3: Codex backend — require either GA_CREW_OPENAI_API_KEY or a
+        # non-empty ga-codex-auth OAuth credential. If neither is present,
+        # initiate the Codex login flow and return not_authenticated with the
+        # login URL (mirrors the Claude path). OPENAI_API_KEY/OPENAI_BASE_URL are
+        # injected at container_create time; ~/.codex/ is injected via
+        # _inject_codex_auth in _finish_crew_setup on the OAuth path.
+        if not _GA_CREW_OPENAI_API_KEY and not _codex_auth_exists():
+            result = _initiate_codex_login(podman)
+            if result.get("login_pending"):
+                return {
+                    "error": "not_authenticated",
+                    "login_pending": True,
+                    "instructions": "Codex login already in progress. Poll GET /login/codex, then call launch again.",
+                }
+            if "error" in result:
+                return {"error": result["error"]}
+            return {
+                "error": "not_authenticated",
+                "login_url": result.get("login_url"),
+                "code": result.get("code"),
+                "instructions": "Open login_url to authenticate with Codex, then call launch again.",
+            }
+    else:
+        auth_b64 = _read_auth_file() or None
+        if not KIRO_API_KEY and not auth_b64:
+            # If a login is already in progress, poll the DB before giving up —
+            # the user may have just completed the device flow but GET /login
+            # hasn't been called yet to write the auth file.
+            with _lifecycle._login_pending_lock:
+                pending = _lifecycle._login_pending
+            if pending is not None:
+                _poll_consumed = False
+                try:
+                    auth_b64 = _read_auth_from_crew(podman, pending["container"]) or None
+                    if auth_b64:
+                        _write_auth_file(auth_b64)
+                        _nuke_login_container(podman, pending["container"])
+                        _poll_consumed = True
+                        with _lifecycle._login_pending_lock:
+                            if (
+                                _lifecycle._login_pending is not None
+                                and _lifecycle._login_pending.get("container") == pending["container"]
+                            ):
+                                _lifecycle._login_pending = None
+                        logger.info("Auth completed via launch poll — login container cleaned up")
+                except Exception as e:
+                    logger.warning("Auth poll in launch failed: %s", e)
+                finally:
+                    # D7a: if the poll did not complete the login (read raised or
+                    # returned no auth) we fall through to _initiate_login below,
+                    # which starts a NEW login container. The stale one from the
+                    # prior flow would then leak. Nuke it and clear the sentinel
+                    # here so the retry starts clean.
+                    if not _poll_consumed:
+                        try:
+                            _nuke_login_container(podman, pending["container"])
+                        except Exception:
+                            pass
+                        with _lifecycle._login_pending_lock:
+                            if (
+                                _lifecycle._login_pending is not None
+                                and _lifecycle._login_pending.get("container") == pending["container"]
+                            ):
+                                _lifecycle._login_pending = None
+            if not auth_b64:
+                result = _initiate_login(podman)
+                if result.get("login_pending"):
+                    return {
+                        "error": "not_authenticated",
+                        "login_pending": True,
+                        "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                    }
+                if "error" in result:
+                    return {"error": result["error"]}
+                return {
+                    "error": "not_authenticated",
+                    "login_url": result.get("login_url"),
+                    "code": result.get("code"),
+                    "instructions": "Open login_url to authenticate, then call launch again.",
+                }
 
     with _registry_lock:
         reg = _load_registry()
@@ -1982,6 +2627,28 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # entirely unaffected when KIRO_API_KEY is unset.
         if KIRO_API_KEY:
             container_env["KIRO_API_KEY"] = KIRO_API_KEY
+        # When the Claude ACP backend is selected, inject ANTHROPIC_API_KEY into
+        # the crew container so claude-agent-acp can authenticate against
+        # api.anthropic.com. The kiro auth path is skipped for Claude-backend crews
+        # (handled in _finish_crew_setup). Only set when non-empty — the key is
+        # optional (Claude OAuth is an alternative), so we guard on its presence
+        # here rather than relying on any startup validation.
+        if GA_CREW_ACP_BACKEND == "claude" and _GA_CREW_ANTHROPIC_API_KEY:
+            container_env["ANTHROPIC_API_KEY"] = _GA_CREW_ANTHROPIC_API_KEY
+            if _GA_CREW_ANTHROPIC_BASE_URL:
+                container_env["ANTHROPIC_BASE_URL"] = _GA_CREW_ANTHROPIC_BASE_URL
+        # When the Codex ACP backend is selected, inject OPENAI_API_KEY into the
+        # crew container so codex-acp can authenticate against api.openai.com
+        # (API-key path). The kiro auth path is skipped for Codex-backend crews
+        # (handled in _finish_crew_setup); the OAuth path injects ~/.codex/
+        # instead. OPENAI_BASE_URL is injected whenever the backend is codex and
+        # the value is set, independent of the API key (task 3.4) — it redirects
+        # both the API-key and OAuth paths to an OpenAI-compatible endpoint.
+        if GA_CREW_ACP_BACKEND == "codex":
+            if _GA_CREW_OPENAI_API_KEY:
+                container_env["OPENAI_API_KEY"] = _GA_CREW_OPENAI_API_KEY
+            if _GA_CREW_OPENAI_BASE_URL:
+                container_env["OPENAI_BASE_URL"] = _GA_CREW_OPENAI_BASE_URL
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
             container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL
@@ -2080,6 +2747,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             if dashboard_port is not None:
                 _caddy_portal.release_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
+            # D7c: the admiral secret file was written just above (before
+            # container_start); remove it on this early-return failure path.
+            try:
+                _delete_crew_secret(crew_id)
+            except Exception:
+                pass
             with _registry_lock:
                 reg = _load_registry()
                 reg["crews"].pop(crew_id, None)
@@ -2095,6 +2768,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 reg = _load_registry()
                 reg["crews"].pop(crew_id, None)
                 _save_registry(reg)
+            # D7c: _finish_crew_setup's error paths call _cleanup_crew (which
+            # removes the Podman public-key secret) but not the host-side
+            # admiral seed file written here before setup. Remove it too.
+            try:
+                _delete_crew_secret(crew_id)
+            except Exception:
+                pass
             if dashboard_port is not None:
                 try:
                     _caddy_portal.release_port(dashboard_port)
@@ -2128,6 +2808,15 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             _cleanup_crew(podman, container, volume, home_volume)
         except Exception:
             pass
+        # D7c: remove the host-side admiral signing-secret file. _cleanup_crew
+        # removes the Podman public-key secret but NOT the plaintext seed file
+        # written by _write_crew_secret inside the try block. Without this the
+        # file leaks on every failed launch (secret for a crew that no longer
+        # exists). Best-effort — a failure before _write_crew_secret just no-ops.
+        try:
+            _delete_crew_secret(crew_id)
+        except Exception:
+            pass
         # Free any port allocated before the failure
         try:
             if dashboard_port is not None:
@@ -2139,6 +2828,24 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             reg["crews"].pop(crew_id, None)
             _save_registry(reg)
         return {"error": f"Launch failed: {e}"}
+
+
+def _bg_prewarm(crew: dict, crew_id: str) -> None:
+    """Fire-and-forget background prewarm. Non-fatal.
+
+    Starts a daemon thread that calls _prewarm_crew; any exception is caught
+    and logged at WARNING so that the calling tool is never blocked or failed
+    by a prewarm error.  _prewarm_crew owns the GA_PREWARM_ENABLED gate and
+    returns early when disabled, so no guard is needed here.
+    """
+    def _run() -> None:
+        try:
+            _prewarm_crew(crew, crew_id)
+        except Exception as exc:
+            logger.warning(
+                "Background prewarm for %s failed (non-fatal): %s", crew_id, exc
+            )
+    threading.Thread(target=_run, daemon=True).start()
 
 
 @mcp.tool()
@@ -2210,7 +2917,7 @@ def supply(
         return {"error": "Invalid path — no traversal allowed"}
 
     try:
-        _ensure_crew_running(_require_crew(crew_id), crew_id)
+        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
@@ -2230,6 +2937,7 @@ def supply(
         curl_example = f'curl -X POST "{url}" --data-binary @./your-file'
 
     _security.audit_auth_event(action="presign_supply", outcome="issued", source=None)
+    _bg_prewarm(crew, crew_id)
     return {
         "crew_id": crew_id,
         "path": clean,
@@ -2379,6 +3087,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     schedules = _get_crew_schedules(reg, crew_id)
     for sched in schedules:
         job_id = sched.get("job_id", "")
+        if not job_id:
+            # Captain entries (type=="captain") have no gateway cron job to cancel
+            continue
         try:
             _crew_api(crew, "DELETE", f"/api/crons/{job_id}")
         except Exception as e:
@@ -2415,6 +3126,198 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     return {"crew_id": crew_id, "status": "nuked", "container": container}
 
 
+# ── Captain dispatch/steer helpers ────────────────────────────────────────────
+
+def _dispatch_captain_checkin(
+    crew: dict,
+    crew_id: str,
+    model: str | None = None,
+) -> str:
+    """Dispatch Raven into its member-raven slot for a Captain check-in.
+
+    Calls POST /api/spawn with keep=True and parent_session=dashboard:member-raven
+    so the session is attested and can make downstream spawns.  Returns the
+    new task_id.  Raises on failure — callers are responsible for error
+    handling.
+
+    Must be called after _enroll_crew_members has run (member-raven slot must
+    exist).  Verifies enrollment before dispatching; raises ValueError if
+    raven is not enrolled.
+    """
+    enrolled: frozenset[str] = frozenset(crew.get("enrolled_agents") or [])
+    if "raven" not in enrolled:
+        # Fallback: read enrolled_agents from registry (crew dict may be a stale
+        # minimal copy from _require_crew before _ensure_crew_running enriched it)
+        try:
+            with _registry_lock:
+                reg = _load_registry()
+                crew_info = reg.get("crews", {}).get(crew_id, {})
+                enrolled = frozenset(crew_info.get("enrolled_agents") or [])
+        except Exception:
+            pass
+    if "raven" not in enrolled:
+        raise ValueError(
+            f"Crew {crew_id}: raven is not enrolled — cannot dispatch Captain check-in. "
+            "Re-launch the crew to enroll members."
+        )
+    # Refresh .dashboard_cookie so Raven (and any sub-agents she spawns) can use
+    # cookie auth for all REST calls. Read internal_cookie from registry — it is
+    # loopback-bound and safe to use from inside the container. If absent (old
+    # registry row), skip silently — _refresh_cookie will populate it next cycle.
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
+        if internal_cookie:
+            podman = _get_podman()
+            _write_dashboard_cookie(podman, crew["container"], internal_cookie)
+    except Exception as exc:
+        logger.warning("Captain dispatch: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
+    spawn_body: dict[str, Any] = {
+        "task": _CAPTAIN_CHECKIN_TASK,
+        "agent": "raven",
+        "keep": True,
+        "parent_session": "dashboard:member-raven",
+    }
+    # Deterministic model selection for Claude-backend crews (TRN-210 D3).
+    # raven.json carries a GPT-specific model, so on a Claude-backend crew a
+    # dispatch with model=None would otherwise rely on raven.json's model (wrong
+    # runtime) or a silent gateway fallback. When the crew is on the Claude
+    # backend (acp_backend == "claude", or its configured model is a Claude model
+    # string) and the caller supplied no model, pass the crew's configured model
+    # explicitly so Raven is always dispatched on a compatible model.
+    if model is None:
+        crew_backend = crew.get("acp_backend")
+        crew_model = crew.get("model")
+        if crew_backend is None or crew_model is None:
+            # crew may be a stale minimal copy — read authoritative values from
+            # the registry (mirrors the enrolled_agents fallback above).
+            try:
+                with _registry_lock:
+                    reg = _load_registry()
+                    crew_info = reg.get("crews", {}).get(crew_id, {})
+                if crew_backend is None:
+                    crew_backend = crew_info.get("acp_backend")
+                if crew_model is None:
+                    crew_model = crew_info.get("model")
+            except Exception:
+                pass
+        is_claude_crew = crew_backend == "claude" or (
+            isinstance(crew_model, str) and crew_model.startswith("claude")
+        )
+        if is_claude_crew and crew_model:
+            model = crew_model
+    if model is not None:
+        spawn_body["model"] = model
+    result = _crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
+    task_id = result.get("id") if isinstance(result, dict) else None
+    if not task_id:
+        raise RuntimeError(
+            f"Crew {crew_id}: POST /api/spawn returned no task id: {result!r}"
+        )
+    return task_id
+
+
+def _steer_captain_checkin(
+    crew: dict,
+    crew_id: str,
+    model: str | None = None,
+) -> str:
+    """Continue or re-dispatch the Captain check-in for crew_id.
+
+    Reads current_task_id from the registry and calls POST /api/spawn/{id}/continue.
+    Updates current_task_id in the registry on success.
+
+    Recovery paths:
+    - conversation_gone (404): falls back to _dispatch_captain_checkin()
+    - conversation_busy (409): logs warning, returns existing task_id unchanged
+    - Other errors: re-raises after logging
+
+    Returns the (possibly new) task_id.
+    """
+    with _registry_lock:
+        reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
+    captain_sched = next(
+        (s for s in schedules if s.get("type") == "captain"),
+        None,
+    )
+    current_task_id = captain_sched.get("current_task_id") if captain_sched else None
+    saved_model = captain_sched.get("model") if captain_sched else None
+    effective_model = model or saved_model
+
+    if not current_task_id:
+        # No task yet — fresh dispatch
+        return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+
+    # Refresh .dashboard_cookie so Raven's cookie auth stays current before continuing.
+    # Use internal_cookie (loopback-bound) — skip if absent, _refresh_cookie will populate.
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
+        if internal_cookie:
+            podman = _get_podman()
+            _write_dashboard_cookie(podman, crew["container"], internal_cookie)
+    except Exception as exc:
+        logger.warning("Captain steer: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
+
+    # Try to continue the existing session
+    continue_body: dict[str, Any] = {"task": _CAPTAIN_CHECKIN_TASK}
+    if effective_model:
+        continue_body["model"] = effective_model
+    try:
+        result = _crew_api_with_recovery(
+            crew, crew_id, "POST", f"/api/spawn/{current_task_id}/continue",
+            json=continue_body,
+        )
+    except Exception as exc:
+        err_str = str(exc)
+        # /continue returns 404 with code "conversation_gone" when the session
+        # is no longer available (container restart, etc.)
+        if "conversation_gone" in err_str or "404" in err_str:
+            logger.info(
+                "Captain check-in: session %s gone for crew %s — re-dispatching",
+                current_task_id, crew_id,
+            )
+            return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+        # /continue returns 409 with code "conversation_busy" when mid-turn
+        if "conversation_busy" in err_str or "409" in err_str:
+            logger.warning(
+                "Captain check-in: session %s busy for crew %s — skipping this tick",
+                current_task_id, crew_id,
+            )
+            return current_task_id
+        raise
+
+    # /continue returns a new id for the continuation run
+    new_task_id = result.get("id") if isinstance(result, dict) else None
+    if not new_task_id:
+        logger.warning(
+            "Captain check-in: /continue for crew %s returned no id — keeping %s",
+            crew_id, current_task_id,
+        )
+        return current_task_id
+
+    # Persist the new task_id
+    try:
+        with _registry_lock:
+            reg = _load_registry()
+            crew_scheds = _get_crew_schedules(reg, crew_id)
+            for s in crew_scheds:
+                if s.get("type") == "captain":
+                    s["current_task_id"] = new_task_id
+                    from datetime import datetime as _dt, timezone as _tz
+                    s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
+                    break
+            _save_registry(reg)
+    except Exception as exc:
+        logger.warning(
+            "Captain check-in: could not persist new task_id %s for crew %s: %s",
+            new_task_id, crew_id, exc,
+        )
+    return new_task_id
+
 
 def _captain_do_order(
     crew_id: str,
@@ -2430,10 +3333,16 @@ def _captain_do_order(
     """Handle ``captain(action="order")``.
 
     Validates the order arguments, resolves a template when given, wakes the
-    crew, provisions/resumes the single Raven check-in job, persists the
+    crew, provisions/resumes the Captain dispatch+steer loop, persists the
     schedule entry, and appends the standing order to ``captain@localhost``.
     ``action`` and ``model`` are already validated by the ``captain()``
     dispatcher.
+
+    The Captain no longer uses a gateway cron job.  Instead, Raven is dispatched
+    into its member-raven slot (which carries a captured execution_context that
+    allows downstream spawning).  Subsequent check-ins are driven by
+    ``_captain_monitor`` in monitors.py, which calls ``_steer_captain_checkin``
+    at each ``next_fire_at`` interval.
     """
     has_message = message is not None
     has_template = template is not None
@@ -2464,96 +3373,66 @@ def _captain_do_order(
         return {"error": str(exc)}
 
     with _captain_order_lock(crew_id):
-        try:
-            cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-        except (ValueError, KeyError, RuntimeError, CrewUnresponsiveError) as exc:
-            return {"error": str(exc)}
-        except Exception as exc:
-            return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+        # Check registry for an existing captain entry
+        with _registry_lock:
+            reg = _load_registry()
+            existing_schedules = _get_crew_schedules(reg, crew_id)
+        existing_entry = next(
+            (s for s in existing_schedules if s.get("type") == "captain"),
+            None,
+        )
 
-        existing_job = _captain_checkin_job(cron_listing)
-        enabled_job = _captain_checkin_job(cron_listing, enabled_only=True)
-        if existing_job is None and not cron and not interval:
+        is_new_entry = existing_entry is None
+        if is_new_entry and not cron and not interval:
             return {
                 "error": "A new Captain check-in requires either cron or interval",
             }
 
-        job = existing_job
-        is_new_job = False
-        if job is None:
-            body: dict[str, Any] = {
-                "name": _CAPTAIN_CHECKIN_JOB_NAME,
-                "message": _CAPTAIN_CHECKIN_TASK,
-                "agent": "raven",
-            }
-            if cron:
-                body["cron"] = cron
-                body["timezone"] = timezone
-            else:
-                body["every"] = interval
-            if model is not None:
-                body["model"] = model
-            try:
-                job = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
-            except Exception as exc:
-                return {"error": f"Could not create Captain check-in: {exc}"}
-            job = dict(job)
-            is_new_job = True
-        elif enabled_job is None:
-            try:
-                toggle = _crew_api_with_recovery(
-                    crew,
-                    crew_id,
-                    "POST",
-                    f"/api/crons/{job.get('id')}/enable",
-                    json={"enabled": True},
-                )
-                if isinstance(toggle, dict) and toggle.get("ok") is False:
-                    return {"error": "Could not resume Captain check-in: job not found"}
-            except Exception as exc:
-                return {"error": f"Could not resume Captain check-in: {exc}"}
-            job = dict(job)
-            job["enabled"] = True
+        # Resolve effective interval/cron — new entries require a schedule;
+        # resuming an existing entry reuses the stored one when not overridden.
+        effective_interval = interval
+        effective_cron = cron
+        effective_model = model
+        if not is_new_entry and existing_entry is not None:
+            if effective_interval is None and effective_cron is None:
+                effective_interval = existing_entry.get("interval_secs")
+                effective_cron = existing_entry.get("cron_expr")
+            if effective_model is None:
+                effective_model = existing_entry.get("model")
 
-        # Write schedule entry to transport registry
-        schedule_entry = {
-            "job_id": job.get("id"),
+        # Build the new schedule entry
+        now = time.time()
+        if effective_interval:
+            next_fire = now + effective_interval
+        else:
+            # cron schedule: fire in at most 60s for first fire, then the
+            # monitor will respect the cron expression via next_fire_at.
+            # Exact cron scheduling is future work; for now treat cron as
+            # interval=60 for the first fire and store cron_expr for display.
+            next_fire = now + 60
+
+        schedule_entry: dict[str, Any] = {
+            "type": "captain",
             "name": _CAPTAIN_CHECKIN_JOB_NAME,
-            "interval_secs": interval,
-            "cron_expr": cron,
-            "next_fire_at": time.time() + (interval or 60),
+            "interval_secs": effective_interval,
+            "cron_expr": effective_cron,
+            "next_fire_at": next_fire,
             "agent": "raven",
             "message": _CAPTAIN_CHECKIN_TASK,
             "enabled": True,
+            "model": effective_model,
+            "current_task_id": existing_entry.get("current_task_id") if existing_entry else None,
         }
-        if is_new_job:
-            schedule_entry["model"] = model
+
         try:
             with _registry_lock:
                 reg = _load_registry()
-                if not is_new_job:
-                    # Resume does not accept a new model.  Prefer the
-                    # gateway's value when present, but preserve the
-                    # registry pin for older gateway responses that omit it.
-                    if "model" in job:
-                        schedule_entry["model"] = job.get("model")
-                    else:
-                        prior_entry = next(
-                            (
-                                entry
-                                for entry in _get_crew_schedules(reg, crew_id)
-                                if entry.get("job_id") == schedule_entry["job_id"]
-                            ),
-                            None,
-                        )
-                        if prior_entry is not None and "model" in prior_entry:
-                            schedule_entry["model"] = prior_entry["model"]
                 _upsert_crew_schedule(reg, crew_id, schedule_entry)
                 _save_registry(reg)
         except Exception as exc:
-            logger.warning("Could not persist schedule entry: %s", exc)
+            logger.warning("Could not persist captain schedule entry: %s", exc)
 
-        # Only append an order after the check-in exists and is enabled.  A
+        # Only append an order after the schedule entry exists.  A
         # failed provisioning call must not leave mail that no Raven can read.
         try:
             podman = _get_podman()
@@ -2566,30 +3445,45 @@ def _captain_do_order(
             "action": "order",
             "status": "ordered",
             "mode": "standing-orders",
-            "job_id": job.get("id"),
+            "job_id": None,  # no gateway cron — kept for API compatibility
             "mailbox": "captain@localhost",
-            "schedule": job.get("schedule") or cron or (
-                f"every {interval}s" if interval else None
+            "schedule": effective_cron or (
+                f"every {effective_interval}s" if effective_interval else None
             ),
         }
 
-        # Immediate dispatch: only for newly created jobs (not resumes)
-        if is_new_job:
-            should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
-            if should_fire:
-                try:
-                    immediate_body: dict[str, Any] = {
-                        "task": _CAPTAIN_CHECKIN_TASK,
-                        "agent": "raven",
-                        "keep": True,
-                    }
-                    if model is not None:
-                        immediate_body["model"] = model
-                    _crew_api_with_recovery(
-                        crew, crew_id, "POST", "/api/spawn", json=immediate_body,
-                    )
-                except Exception as exc:
-                    result["immediate_dispatch_error"] = str(exc)
+        # Determine whether to fire immediately
+        if is_new_entry:
+            should_fire = fire_immediately if fire_immediately is not None else (effective_interval is not None)
+        else:
+            # Resume: fire immediately only if explicitly requested
+            should_fire = fire_immediately is True
+
+        if should_fire:
+            try:
+                new_task_id = _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+                # Persist the task_id and updated next_fire_at
+                if effective_interval:
+                    fired_next = time.time() + effective_interval
+                else:
+                    fired_next = time.time() + 60
+                with _registry_lock:
+                    reg = _load_registry()
+                    for s in _get_crew_schedules(reg, crew_id):
+                        if s.get("type") == "captain":
+                            s["current_task_id"] = new_task_id
+                            s["next_fire_at"] = fired_next
+                            from datetime import datetime as _dt, timezone as _tz
+                            s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
+                            break
+                    _save_registry(reg)
+                result["current_task_id"] = new_task_id
+            except Exception as exc:
+                result["immediate_dispatch_error"] = str(exc)
+        elif not is_new_entry and existing_entry is not None:
+            # Resume path: existing enabled captain, steer on next timer tick.
+            # Ensure the entry is enabled in the registry (it may have been stopped).
+            result["current_task_id"] = existing_entry.get("current_task_id")
 
         return result
 
@@ -2599,6 +3493,9 @@ def _captain_do_status(crew_id: str) -> dict:
 
     Skims all mailboxes (works on running and stopped containers) and reports
     the durable standing-orders state without waking a dormant crew.
+
+    Reads captain state from the transport registry rather than the gateway
+    cron API — no need to wake the crew for a status check.
     """
     try:
         crew = _require_crew(crew_id)
@@ -2615,25 +3512,16 @@ def _captain_do_status(crew_id: str) -> dict:
     captain_mail = len(captain_subjects)
     admiral_mail = len(admiral_subjects)
 
-    # If the container is already running, read the live cron job state
-    # without waking it. If stopped, return dormant/no-job without starting.
-    try:
-        is_running = podman.container_is_running(crew["container"])
-    except Exception:
-        is_running = False
+    # Read captain state from registry — no need to wake the crew
+    with _registry_lock:
+        reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
+    captain_entry = next(
+        (s for s in schedules if s.get("type") == "captain"),
+        None,
+    )
 
-    if is_running:
-        standing_job: dict[str, Any] | None = None
-        try:
-            running_crew = _ensure_crew_running(crew, crew_id)
-            cron_listing = _crew_api_with_recovery(running_crew, crew_id, "GET", "/api/crons")
-            standing_job = _captain_checkin_job(cron_listing)
-        except Exception:
-            standing_job = None
-    else:
-        standing_job = None
-
-    if standing_job is None:
+    if captain_entry is None:
         return {
             "crew_id": crew_id,
             "action": action,
@@ -2652,10 +3540,36 @@ def _captain_do_status(crew_id: str) -> dict:
             "agent_mail": agent_mail,
         }
 
+    # Build a synthetic "job" dict from the registry entry for _captain_standing_view
+    synthetic_job: dict[str, Any] = {
+        "id": None,  # no gateway cron id
+        "enabled": captain_entry.get("enabled", True),
+        "last_run_ts": None,
+        "last_status": None,
+        "last_result": None,
+    }
+    # If the crew is running, check if the current task is still alive
+    try:
+        is_running = podman.container_is_running(crew["container"])
+    except Exception:
+        is_running = False
+
+    current_task_id = captain_entry.get("current_task_id")
+    if is_running and current_task_id:
+        try:
+            running_crew = _ensure_crew_running(crew, crew_id)
+            task_info = _crew_api_with_recovery(
+                running_crew, crew_id, "GET", f"/api/spawn/{current_task_id}"
+            )
+            if isinstance(task_info, dict):
+                synthetic_job["last_status"] = "running" if not task_info.get("done") else "ok"
+        except Exception:
+            pass  # best-effort — status still works without task liveness
+
     status_result = _captain_standing_view(
         crew_id,
         action,
-        standing_job,
+        synthetic_job,
         podman,
         crew["container"],
     )
@@ -2664,36 +3578,34 @@ def _captain_do_status(crew_id: str) -> dict:
     status_result["captain_mail"] = captain_mail
     status_result["admiral_mail"] = admiral_mail
     status_result["agent_mail"] = agent_mail
+    status_result["current_task_id"] = current_task_id
     return status_result
 
 
 def _captain_do_stop(crew_id: str) -> dict:
     """Handle ``captain(action="stop")``.
 
-    Wakes the crew (the gateway cron API is needed to disable the job),
-    best-effort disables the gateway cron, and always marks the registry
-    schedule disabled so restart reconciliation and the idle monitor see the
-    correct state.
+    Marks the captain schedule entry disabled in the transport registry.
+    No gateway cron to disable — the Captain no longer uses a cron job.
+    The crew does not need to be running to stop the Captain.
     """
     try:
         crew = _require_crew(crew_id)
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
 
-    action = "stop"
-    try:
-        crew = _ensure_crew_running(crew, crew_id)
-        podman = _get_podman()
-    except (ValueError, KeyError, RuntimeError) as exc:
-        return {"error": str(exc)}
+    podman = _get_podman()
 
-    try:
-        cron_listing = _crew_api_with_recovery(crew, crew_id, "GET", "/api/crons")
-        standing_job = _captain_checkin_job(cron_listing)
-    except Exception as exc:
-        return {"error": f"Could not inspect Captain check-in jobs: {exc}"}
+    # Read captain entry from registry — no need to wake the crew
+    with _registry_lock:
+        reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
+    captain_entry = next(
+        (s for s in schedules if s.get("type") == "captain"),
+        None,
+    )
 
-    if standing_job is None:
+    if captain_entry is None:
         return {
             "crew_id": crew_id,
             "action": "stop",
@@ -2704,60 +3616,33 @@ def _captain_do_stop(crew_id: str) -> dict:
             "mailbox": "captain@localhost",
         }
 
-    # Best-effort: disable the gateway cron if it is currently enabled.
-    # A failure here is logged as a warning — it must not block the
-    # registry update below.
-    if standing_job.get("enabled", False):
-        try:
-            toggle = _crew_api_with_recovery(
-                crew,
-                crew_id,
-                "POST",
-                f"/api/crons/{standing_job.get('id')}/enable",
-                json={"enabled": False},
-            )
-            if isinstance(toggle, dict) and toggle.get("ok") is False:
-                logger.warning(
-                    "captain stop: gateway cron %s not found for crew %s",
-                    standing_job.get("id"),
-                    crew_id,
-                )
-        except Exception as exc:
-            logger.warning(
-                "captain stop: gateway cron disable failed for crew %s: %s",
-                crew_id,
-                exc,
-            )
-    standing_job = dict(standing_job)
-    standing_job["enabled"] = False
-
-    # Always update the registry to disabled, regardless of the gateway API call
-    # result. This ensures the reconcile-on-restart sees the correct state and
-    # the idle monitor can eventually stop the crew.
+    # Mark disabled in registry — this is the only action needed.
+    # The _captain_monitor will skip disabled entries on its next tick.
     try:
         with _registry_lock:
             reg = _load_registry()
-            schedules = _get_crew_schedules(reg, crew_id)
             matched = False
-            for sched in schedules:
-                if sched.get("job_id") == standing_job.get("id"):
+            for sched in _get_crew_schedules(reg, crew_id):
+                if sched.get("type") == "captain":
                     sched["enabled"] = False
                     matched = True
                     break
             if not matched:
                 logger.warning(
-                    "captain stop: no registry entry found for job %s in crew %s",
-                    standing_job.get("id"),
+                    "captain stop: no captain registry entry found for crew %s",
                     crew_id,
                 )
             _save_registry(reg)
     except Exception as exc:
         logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
 
+    stopped_entry = dict(captain_entry)
+    stopped_entry["enabled"] = False
+
     result = _captain_standing_view(
         crew_id,
-        action,
-        standing_job,
+        "stop",
+        stopped_entry,
         podman,
         crew["container"],
     )
@@ -2994,6 +3879,7 @@ def schedule(
         except Exception as exc:
             logger.warning("Could not persist one-shot schedule entry: %s", exc)
 
+        _bg_prewarm(crew, crew_id)
         return {
             "job_id": r.get("id"),
             "crew_id": crew_id,
@@ -3033,6 +3919,8 @@ def schedule(
             _save_registry(reg)
     except Exception as exc:
         logger.warning("Could not persist schedule entry: %s", exc)
+
+    _bg_prewarm(crew, crew_id)
 
     # Resolve fire_immediately default: True for interval, False for cron
     should_fire = fire_immediately if fire_immediately is not None else (interval is not None)
@@ -3196,7 +4084,7 @@ def dispatch(
     crew_id: str | None = None,
     model: str | None = None,
     tasks: list[str] | None = None,
-    slot: str | bool | None = None,
+    slot: bool | None = None,
 ) -> dict:
     """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
 
@@ -3230,9 +4118,7 @@ def dispatch(
         "agent", "slot", "created_at"}``. ``slot`` echoes the resolved slot
         name, or ``None`` when headless.
         Batch (all started): ``{"batch_id", "task_ids", "crew_id",
-        "status": "dispatched", "agent", "slot", "created_at"}``. For
-        ``slot=True``, also includes ``"task_slots"`` mapping each task_id to
-        its generated slot name.
+        "status": "dispatched", "agent", "slot", "created_at"}``.
         Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
         the ``task_ids`` assigned so far, and an ``error`` field naming the
         failure. Tasks that never received a ``task_id`` are the lost members.
@@ -3248,27 +4134,24 @@ def dispatch(
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
         slot: Dashboard session routing for this dispatch. One of:
-            ``None`` (default) — resolved at dispatch time from the crew's
-            ``dashboard_port``: ``"bridge"`` if a dashboard is active,
-            ``None`` (headless, no ``parent_session``) otherwise.
-            ``"bridge"`` — tasks attach to the crew's shared ``"bridge"``
-            session (``parent_session="dashboard:bridge"``); one command post
-            for the crew.
-            ``True`` — auto-generate a unique slot name (``uuid4().hex[:8]``)
-            per task; each task gets its own dedicated visible session.
-            ``"<name>"`` — attach to the named slot
-            (``parent_session="dashboard:<name>"``); multiple dispatches with
-            the same name share one session.
-            When a slot resolves to a non-None value, the system pre-creates it
-            via ``POST /api/chat/slots`` (409 treated as success; non-fatal).
+            ``None`` (default) — let the system decide. For enrolled agents,
+            routes into the agent's member DM slot
+            (``parent_session="dashboard:member-<slug>"``), which is attested
+            and visible in the dashboard as a named thread; the echoed slot
+            name is the agent name (e.g. ``"ghost"``). For unenrolled agents,
+            dispatches headless (no session created, echoed slot ``None``).
+            ``False`` — explicit headless, regardless of enrollment: no session
+            is created and the echoed slot is ``None``.
+            ``True`` and arbitrary string slot names are no longer accepted —
+            member slots cover all legitimate slotted-dispatch use cases. A
+            member DM slot is pre-created at enrollment time, so no dispatch-time
+            slot pre-creation is performed.
 
-            MEMORY COST: each slot attachment spawns a kiro-cli-chat process
-            inside the crew container (~300-400 MB RSS). On crews launched with
-            dashboard=True, slot defaults to "bridge" automatically — meaning
-            every dispatch adds ~300-400 MB. For autonomous/unattended tasks
-            (SDD, batch jobs, Raven check-ins) where browser visibility is not
-            needed, pass slot=None explicitly to dispatch headless and avoid
-            this overhead.
+            MEMORY COST: a member-slot attachment spawns a kiro-cli-chat process
+            inside the crew container (~300-400 MB RSS). For autonomous or
+            unattended tasks (SDD, batch jobs, Raven check-ins) where dashboard
+            visibility is not needed, pass ``slot=False`` to dispatch headless
+            and avoid this overhead.
     """
     # Mutual-exclusion + presence guard (task 2.2).
     if task is not None and tasks is not None:
@@ -3293,41 +4176,20 @@ def dispatch(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
-    # Resolve effective slot: explicit arg > live dashboard check.
-    # slot=None (default) → "bridge" if dashboard active, else None (headless).
-    # A string or True is taken as-is.
-    if slot is None:
-        effective_slot: str | bool | None = "bridge" if crew.get("dashboard_port") else None
-    else:
-        effective_slot = slot
+    effective_slot, parent_session = _resolve_dispatch_slot(agent, slot, crew)
 
     body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
     if model is not None:
         body["model"] = model
 
-    # Build parent_session from the effective slot and pre-create the dashboard
-    # session slot so it appears in the Sessions list. POST /api/chat/slots
-    # {"name": "<slot>"} materialises a visible session; a 409 means the slot
-    # already exists — treat as success. Non-fatal — parent_session routing
-    # still works via the dashboard: prefix even if slot creation fails.
-    parent_session: str | None = None
     resolved_slot_name: str | None = None
-    if effective_slot is True:
-        resolved_slot_name = uuid.uuid4().hex[:8]
-        parent_session = f"dashboard:{resolved_slot_name}"
-        body["parent_session"] = parent_session
-        try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": resolved_slot_name})
-        except Exception:
-            pass  # non-fatal
-    elif isinstance(effective_slot, str):
+    if parent_session:
+        # Member DM auto-route (effective_slot is the agent name). The member
+        # slot is pre-created at enrollment time, so no dispatch-time
+        # slot pre-creation is needed. Headless dispatch leaves parent_session
+        # unset (effective_slot is None).
         resolved_slot_name = effective_slot
-        parent_session = f"dashboard:{effective_slot}"
         body["parent_session"] = parent_session
-        try:
-            _crew_api(crew, "POST", "/api/chat/slots", json={"name": effective_slot})
-        except Exception:
-            pass  # non-fatal
 
     try:
         result = _crew_api_with_recovery(
@@ -3363,34 +4225,6 @@ def dispatch(
         "created_at": created_at,
     }
     return response
-
-
-@mcp.tool()
-@_registry_guard
-def prewarm(crew_id: str | None = None) -> dict:
-    """Pre-establish a crew's ACP session ahead of an expected dispatch.
-
-    Warms the crew's ``kiro-cli-chat`` session — forking the session process and
-    completing the ACP handshake — so a subsequent ``dispatch`` on that crew does
-    not pay session cold-start latency. Returns promptly; it never blocks on a
-    real task and never dispatches real agent work, sends mail, or writes specs.
-
-    Opt-in and operator-bounded: prewarm does nothing unless
-    ``GA_PREWARM_ENABLED=true``. It respects the same memory
-    (``GA_MIN_FREE_MEM_GB``) and active-crew (``GA_MAX_ACTIVE_CREWS``) gates that
-    gate a real dispatch, and a warmed-but-unused session is still reaped by the
-    crew's ``session.timeout_secs`` idle timer.
-    Also: warm, preheat, pre-fork session.
-
-    Args:
-        crew_id: Which crew to warm. Required — use launch first.
-
-    Returns:
-        ``{"crew_id", "status"}`` where status is one of ``warmed`` |
-        ``already_warm`` | ``disabled`` | ``blocked:<gate>`` | ``error:<msg>``.
-        An unknown crew_id returns ``{"error": ...}`` and performs no start/fork.
-    """
-    return prewarm_impl(crew_id)
 
 
 # _record_last_task_at and _dispatch_batch live in transport.lifecycle next to
@@ -3748,8 +4582,19 @@ health_routes = [
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Validate cross-field config constraints before doing anything else.
+    # No-op — credential validation is lazy (deferred to launch())
+    try:
+        cfg.validate()
+    except Exception as _cfg_err:
+        logger.error("Transport startup aborted — config error: %s", _cfg_err)
+        raise SystemExit(1) from _cfg_err
+
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
+    logger.info("Agent backends enabled: %s (default: %s)",
+                ", ".join(sorted(cfg.ga_agent_backends)), GA_CREW_ACP_BACKEND)
+    _warn_inert_backend_settings()
     _reconcile_registry()
     # Restore UI port allocations from persisted registry so restarts
     # don't re-allocate ports already claimed by existing crews.
@@ -3766,6 +4611,7 @@ if __name__ == "__main__":
         logger.warning("Academy validation: %s", _warning)
     threading.Thread(target=_idle_monitor, daemon=True, name="idle-monitor").start()
     threading.Thread(target=_schedule_monitor, daemon=True, name="schedule-monitor").start()
+    threading.Thread(target=_captain_monitor, daemon=True, name="captain-monitor").start()
 
     # Build the MCP ASGI app, wrap with API-key middleware, serve with Uvicorn.
     # Login/logout routes are handled inside BearerAuthMiddleware directly so
@@ -3787,12 +4633,18 @@ if __name__ == "__main__":
         ("POST", "/login"): _handle_login_post,
         ("GET",  "/login"): _handle_login_get,
         ("POST", "/logout"): _handle_logout_post,
+        ("POST", "/login/claude"): _handle_claude_login_post,
+        ("GET",  "/login/claude"): _handle_claude_login_get,
+        ("POST", "/login/claude/code"): _handle_claude_login_code_post,
+        ("POST", "/logout/claude"): _handle_claude_logout_post,
+        ("POST", "/login/codex"): _handle_codex_login_post,
+        ("GET",  "/login/codex"): _handle_codex_login_get,
+        ("POST", "/logout/codex"): _handle_codex_logout_post,
         ("GET",  "/health"): _handle_health,
         ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
         ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
         ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
-        ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
         ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
     }
     _openapi_schema_public_routes = {
@@ -3819,14 +4671,18 @@ if __name__ == "__main__":
             ("POST", "/login"): _handle_login_post,
             ("GET",  "/login"): _handle_login_get,
             ("POST", "/logout"): _handle_logout_post,
+            ("POST", "/login/claude"): _handle_claude_login_post,
+            ("GET",  "/login/claude"): _handle_claude_login_get,
+            ("POST", "/login/claude/code"): _handle_claude_login_code_post,
+            ("POST", "/logout/claude"): _handle_claude_logout_post,
+            ("POST", "/login/codex"): _handle_codex_login_post,
+            ("GET",  "/login/codex"): _handle_codex_login_get,
+            ("POST", "/logout/codex"): _handle_codex_logout_post,
             ("GET",  "/health"): _handle_health,
             # Crew proxy routes — pattern keys used by BearerAuthMiddleware dispatch
-            ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
             ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
             ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
-            ("POST", "/crews/*/prewarm"): _handle_crew_prewarm_post,
-            ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,
@@ -3835,6 +4691,11 @@ if __name__ == "__main__":
             ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
             ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
             ("GET",  "/openapi.json"): _handle_openapi_get,  # public, no auth
+            # Crew UI paths — protected by Caddy's gs_session forward-auth,
+            # not by bearer token. The transport never sees these requests
+            # without Caddy's forward-auth check having passed first.
+            ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
+            ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all

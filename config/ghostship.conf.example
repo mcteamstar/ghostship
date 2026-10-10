@@ -23,6 +23,11 @@
 # API key for MCP endpoint auth. Leave unset for local/trusted installs.
 # GA_API_KEY=""
 
+# Bind-address warning mode. When GA_API_KEY is unset and the transport is
+# bound to a non-loopback address, install.sh and the transport emit a warning.
+# warn (default) — print warning. error — abort install. off — silence.
+# GA_REQUIRE_API_KEY=warn
+
 # Two auth paths for kiro-cli inside crews:
 #   Option A — API key (Pro+, headless): set KIRO_API_KEY to skip the device-code
 #     login flow entirely. The key is injected as an env var into crew containers
@@ -90,19 +95,9 @@
 # Maximum turns per task. KiroCrew default is 100.
 # GA_SUBAGENT_MAX_TURNS=200
 
-# ── ACP prewarm (TRN-131) ─────────────────────────────────────────────────────
-# Opt-in warm-up of a crew's ACP session ahead of an expected dispatch, to hide
-# session cold-start latency. Off by default: when disabled, the prewarm MCP
-# tool and POST /crews/{id}/prewarm endpoint do nothing and report "disabled".
-# Set true (or 1/yes/on) to enable. Prewarm still respects GA_MIN_FREE_MEM_GB
-# and GA_MAX_ACTIVE_CREWS, and a warmed-but-unused session is still reaped by
-# the crew's session.timeout_secs idle timer.
+# ACP prewarm internal gate (TRN-194: prewarm is now implicit — these control
+# the internal behaviour of the background warm-up triggered by supply/schedule).
 # GA_PREWARM_ENABLED=false
-
-# Warm-lifetime hint (seconds) for prewarm's idempotency check. A prewarm on a
-# running crew warmed within this window returns "already_warm" with no second
-# warm-up request. Capped internally at the crew's session.timeout_secs (300),
-# so a larger value has no effect beyond the cap. Only consulted when enabled.
 # GA_PREWARM_TTL_SECS=300
 
 # ── Memory gate ───────────────────────────────────────────────────────────────
@@ -140,10 +135,99 @@
 # Crew container image used for spec-ops crews.
 # KC_IMAGE=localhost/spec-ops:latest
 
+# Upstream base image used for ephemeral containers that only need kiro-cli
+# (e.g. login containers). Must match the FROM pin in
+# crews/_base/admission/Containerfile.
+# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.8.0
+
 # ── Crew agent ────────────────────────────────────────────────────────────────
 # KiroCrew agent name written to config.local.json inside each crew. Must be
 # non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
 # GA_CREW_AGENT=kiro
+
+# ── Agent backends (TRN-202) ─────────────────────────────────────────────────
+# GA_AGENT_BACKENDS: comma-separated optional backends to enable — "claude",
+# "codex", or both. Kiro is always enabled (bundled in every crew image), so
+# listing it is optional. Default: unset, which means kiro only.
+#   - install.sh builds one toolchain per listed backend into the crew image
+#     (crews/spec-ops/toolchains/<name>.sh).
+#   - The transport accepts login (POST /login/claude, /login/codex) only for
+#     enabled backends, whether or not the backend is the default.
+# GA_CREW_ACP_BACKEND: the default backend for new crews — "kiro" (default),
+# "claude" or "codex". It must be enabled: a default outside GA_AGENT_BACKENDS
+# stops install.sh and the transport with an error naming both settings.
+# Re-run `ghostship install` after changing either setting; a restart alone
+# doesn't rebuild the image or update the transport.
+# Retired: GA_INCLUDE_CLAUDE_AGENT and GA_INCLUDE_CODEX_AGENT. Setting either
+# (to any value) is an error; use GA_AGENT_BACKENDS instead.
+#
+# GA_AGENT_BACKENDS=""            # e.g. "claude", "codex" or "claude,codex"
+# GA_CREW_ACP_BACKEND=kiro
+
+# ── Claude Code ACP backend (TRN-167, TRN-170) ───────────────────────────────
+# To use the Claude Code ACP runtime inside crews:
+#   1. Enable it: GA_AGENT_BACKENDS=claude (see Agent backends above). Set
+#      GA_CREW_ACP_BACKEND=claude to make it the default for new crews.
+#   2. A Claude credential — one of:
+#      a. GA_CREW_ANTHROPIC_API_KEY — Anthropic pay-per-token API key (TRN-167).
+#         When set, takes precedence over OAuth credentials.
+#      b. Claude OAuth login (TRN-170). Requires a Claude Pro/Max subscription.
+#         Two steps: POST /login/claude returns a login_url; approve it in the
+#         browser, then POST the pasted <code>#<state> to /login/claude/code.
+#         Poll GET /login/claude until it returns "complete". Credentials are
+#         stored in ga-claude-auth and injected into new crew containers.
+#      If neither is present at launch time, launch() returns not_authenticated
+#      with a login URL. GA_CREW_ANTHROPIC_API_KEY is optional from TRN-170.
+#
+# NOTE: The KiroCrew per-call tool approval gate is bypassed when
+# GA_CREW_ACP_BACKEND=claude. The signed security policy ceiling (academy/
+# policies/default.json) is still enforced. Outbound access to
+# api.anthropic.com is required for Claude-backend crews.
+#
+# The Anthropic settings below are used by crews running on claude, which today
+# means claude must also be the default (GA_CREW_ACP_BACKEND=claude). With claude
+# enabled but not the default they are accepted but unused. With claude
+# disabled the transport logs each one as having no effect.
+#
+# GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
+# GA_CREW_ANTHROPIC_BASE_URL=""
+#
+# Model override (applies to all agents; a dispatch(model=...) call still wins).
+# Use a model id the organisation permits. On Claude, claude-haiku-5-5 is known
+# to work; the default persona model may be restricted.
+# KC_MODEL_OVERRIDE="claude-haiku-5-5"
+
+# ── Codex ACP backend (TRN-172) ──────────────────────────────────────────────
+# To use the Codex ACP runtime inside crews:
+#   1. Enable it: GA_AGENT_BACKENDS=codex (see Agent backends above). Set
+#      GA_CREW_ACP_BACKEND=codex to make it the default for new crews. The
+#      toolchain is ONE npm package, @agentclientprotocol/codex-acp: the
+#      adapter ships its own compatible Codex binary, so there is no separate
+#      `codex` CLI.
+#   2. An OpenAI credential — one of:
+#      a. GA_CREW_OPENAI_API_KEY — OpenAI pay-per-token API key. When set,
+#         takes precedence over OAuth credentials.
+#      b. Codex OAuth login via POST /login/codex. Requires a ChatGPT
+#         subscription. Authenticate by calling POST /login/codex and completing
+#         the browser flow; credentials are stored in ga-codex-auth and injected
+#         automatically into new crew containers.
+#      If neither is present at launch time, launch() returns not_authenticated
+#      with a login URL. GA_CREW_OPENAI_API_KEY is optional (OAuth is an
+#      alternative).
+#
+# NOTE: The KiroCrew per-call tool approval gate is bypassed when
+# GA_CREW_ACP_BACKEND=codex — codex-acp runs under a verified read-only ACP
+# mode instead. The signed security policy ceiling (academy/policies/
+# default.json) is still enforced. Outbound access to api.openai.com (or the
+# GA_CREW_OPENAI_BASE_URL endpoint when set) is required for Codex-backend crews.
+#
+# The OpenAI settings below are used by crews running on codex, which today
+# means codex must also be the default (GA_CREW_ACP_BACKEND=codex). With codex
+# enabled but not the default they are accepted but unused. With codex disabled
+# the transport logs each one as having no effect.
+#
+# GA_CREW_OPENAI_API_KEY=""   # optional when using Codex OAuth login
+# GA_CREW_OPENAI_BASE_URL=""
 
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────
 # Path to a directory of operator-managed standing-order template .md files.
@@ -188,17 +272,17 @@
 # TRN-101/TRN-103 MIGRATION: GA_DASHBOARD_PORT_ENABLED was removed. Dashboard
 # access is now provided by ga-portal (Caddy), which is always installed. If you
 # previously used GA_DASHBOARD_PORT_ENABLED=true, just re-run install.sh — the
-# portal replaces the per-port proxy. See docs/dashboard-proxy.md.
+# portal replaces the per-port proxy. See docs/portal.md.
 #
 # GA_DASHBOARD_PORT_RANGE_START=64058
-# GA_DASHBOARD_PORT_RANGE_SIZE=1024  # Fixed — not configurable
+# GA_DASHBOARD_PORT_RANGE_SIZE=1024  # Number of ports in the range (default 1024)
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch()
 
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is a required component and is always installed. It binds
 # ports 443/80 AND the dashboard port range, terminates TLS, and gates auth for
 # all dashboard ports; the transport's per-port uvicorn listeners are not
-# started. See docs/caddy.md for full setup and the host-Caddy retirement
+# started. See docs/portal.md for full setup and the host-Caddy retirement
 # note.
 #
 # TRN-103 MIGRATION: GA_PORTAL_ENABLED was removed — there is no opt-out. Any
@@ -208,20 +292,20 @@
 
 # TLS mode. Choose one that fits your environment:
 #
-#   internal (default) — Caddy built-in CA issues self-signed certs. Works
+#   internal — Caddy built-in CA issues self-signed certs. Works
 #     on localhost, private IPs, and Tailscale addresses without DNS.
 #     One-time operator trust step required: install.sh prints the exact command.
 #     Ideal for homelab and private-network deployments.
 #
 #   tailscale — Real browser-trusted certs from Tailscale ACME for .ts.net
 #     hostnames. Requires the Tailscale daemon on the host. No trust step.
-#     Ideal for your-server deployments.
+#     Ideal for deployments on a Tailscale network.
 #
 #   acme — Public Let's Encrypt certificate for GA_PORTAL_DOMAIN. Requires
 #     GA_PORTAL_DOMAIN set and ports 80/443 reachable for ACME challenge.
 #     Ideal for internet-facing deployments.
 #
-#   off — Plain HTTP, no TLS. For local dev or when an upstream terminator
+#   off (default) — Plain HTTP, no TLS. For local dev or when an upstream terminator
 #     already handles TLS.
 #
 # GA_PORTAL_TLS_MODE=off   ← default: plain HTTP

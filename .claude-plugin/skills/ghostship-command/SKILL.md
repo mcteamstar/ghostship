@@ -3,7 +3,7 @@ name: ghostship-command
 description: Command a ghostship fleet over the `ghostship` MCP server — launch crew containers, seed and extract workspace files, dispatch OpenSpec work to the six agent personas, poll or steer running tasks, run a crew on autopilot via Captain, and tear crews down. Use whenever the `ghostship` MCP tools (crews, launch, supply, evac, dispatch, pickup, steer, captain, schedule, nuke) are available and there's fleet work to do — this skill has no assumed repo context, it is the context.
 metadata:
   author: ghostship
-  version: "0.5.2"
+  version: "0.6.0"
 ---
 
 # Ghostship Command
@@ -114,15 +114,15 @@ session cookie — the cookie is issued to any visitor who loads the page. Only
 use `dashboard=True` on deployments protected by Tailscale or a firewall. Do
 not enable it on any deployment reachable from the public internet.
 
-**Memory cost of `dashboard=True`:** when a dashboard is active, `dispatch`
-auto-routes tasks to the `"bridge"` session slot by default. Each slot
+**Memory cost of slot attachment:** an enrolled persona dispatched with the
+default `slot=None` routes into its attested member DM slot. Each slot
 attachment spawns a `kiro-cli-chat` process inside the container (~300–400 MB
-RSS). On a memory-constrained host this adds up fast — two dashboard crews
-each with an active Ghost task can consume ~800 MB in slot processes alone.
+RSS). On a memory-constrained host this adds up fast — two crews each with an
+active Ghost task can consume ~800 MB in slot processes alone.
 **For autonomous/unattended work** (SDD, batch jobs, Raven check-ins) where
-browser visibility isn't needed, pass `dashboard=False` to launch headless and
-avoid this overhead entirely. Use `dashboard=True` only when you actually
-intend to watch the crew in a browser.
+dashboard visibility isn't needed, pass `slot=False` to dispatch headless and
+avoid this overhead entirely. Use the default member slot only when you
+actually intend to watch the agent's thread in a dashboard.
 
 ### 2. Seed the workspace — `supply`
 
@@ -153,11 +153,12 @@ git bundle create /tmp/<crew_id>.bundle --all
 curl -X POST "<url>&bundle=1" --data-binary @/tmp/<crew_id>.bundle
 ```
 
-Always deliver the repo to `path="ghostship"` or `path="repo"` — a sibling
-to the crew's shared `openspec/` store, never inside it. Every persona and
-skill looks for the repo at this level. Using `bundle=True` is preferred
-over `unpack=True` because it preserves full git history and lets the agent
-run `git log`, `git diff`, and `git bundle` for `evac`.
+Always deliver the repo to `path="repo"` — a sibling to the crew's shared
+`openspec/` store, never inside it. Every persona and skill looks for the repo
+at this level, and the SDD orders template hardcodes this path. Using
+`bundle=True` is preferred over `unpack=True` because it preserves full git
+history and lets the agent run `git log`, `git diff`, and `git bundle` for
+`evac`.
 
 ### 3. Do work — `dispatch`
 
@@ -171,20 +172,34 @@ It outranks both the crew's per-agent model and `KC_MODEL_OVERRIDE` for this
 call, so `KC_MODEL_OVERRIDE` is not an absolute ceiling when a caller supplies
 `model=`.
 
-**Slot and memory cost:** each non-None slot spawns a `kiro-cli-chat` process
-(~300–400 MB RSS) inside the crew container. On dashboard crews the slot
-defaults to `"bridge"` — meaning every dispatch adds ~300–400 MB unless you
-override it. For autonomous tasks where browser visibility is not needed, pass
-`slot=None` explicitly to dispatch headless and avoid the overhead:
+**Slot and member routing:** Ghostship persona agents (ghost, spectre, banshee,
+wraith, reaper, raven) are enrolled as named crew members at launch. When
+dispatched with `slot=None` (the default), they automatically route into their
+member DM slot (`member-<slug>`), which is both attested (enables downstream
+spawning) and visible in the dashboard as a named member thread.
+
+`slot` has two modes only — `None` (the default) and `False`:
+
+- `slot=None` — let the system decide. Enrolled personas route into their
+  attested member DM slot (above). An unenrolled/non-persona agent dispatches
+  headless (no session is created).
+- `slot=False` — explicit headless for anyone, regardless of enrollment: no
+  session is created, saving the ~300–400 MB slot process.
+
+`slot=True` (per-task UUID slots) and arbitrary string slot names
+(`slot="bridge"`, `slot="myname"`) are no longer accepted — the member slot
+covers every legitimate slotted-dispatch case, and the member slot is
+pre-created at enrollment time, so dispatch performs no slot pre-creation.
 
 ```python
-dispatch(task="...", agent="ghost", crew_id="...", slot=None)   # headless — no slot process
-dispatch(task="...", agent="ghost", crew_id="...", slot="bridge")  # attaches to dashboard session
+dispatch(task="...", agent="ghost", crew_id="...")              # → member-ghost (attested, default)
+dispatch(task="...", agent="ghost", crew_id="...", slot=None)   # same as default
+dispatch(task="...", agent="ghost", crew_id="...", slot=False)  # headless (no session)
 ```
 
-The rule of thumb: use `slot=None` for SDD, batch, Raven, and any
-long-running background work. Use `slot="bridge"` or `slot=True` only when
-you want to watch the task live in the browser dashboard.
+The rule of thumb: omit `slot` for persona agents — they handle routing
+automatically into their attested member slot. Pass `slot=False` only when you
+want a headless dispatch with no dashboard session and no slot process.
 
 The dispatched agent has **no context beyond `task`** — no memory of this
 conversation, no idea what you're trying to accomplish beyond what you wrote.
@@ -321,7 +336,7 @@ The most common pattern is extracting a git bundle and inspecting commits:
 
 ```bash
 # 1. Get the URL
-evac(path="ghostship", crew_id="...", ref="release/0.2.0", bundle=True)
+evac(path="repo", crew_id="...", ref="release/0.2.0", bundle=True)
 
 # 2. Download
 curl -s "<url>" -o /tmp/bundle.bundle
@@ -440,18 +455,18 @@ git filter-repo --name-callback 'return b"Your Name"' \
 | `supply`/`evac` "succeeded" but nothing appeared | Forgot the second step — you must POST/GET bytes against the returned URL |
 | `steer` errors oddly or does nothing | Wrong task_id, or trying to `steer` a `job_id` from `schedule`/`captain` |
 | Crew won't respond after a while | Idle-stopped (expected) — next call restarts it transparently |
-| Repo landed in wrong place | Use `path="ghostship"` or `path="repo"`, not nested inside `openspec/` |
+| Repo landed in wrong place | Use `path="repo"`, not a custom name and not nested inside `openspec/` |
 | Nuked a crew and lost work | Should have `evac`'d first — no undo |
 | Agent did wrong thing despite timeout steer | Used fresh `dispatch` instead of `steer` — lost full prior context |
 | Captain sending many duplicate admiral mails | Raven correctly reporting completion each cycle; Raven self-pauses on SDD template — check `captain status` for `paused`. For free-form orders, the dedup check prevents most repeats but a manual `captain(action="stop")` may be needed |
-| Host memory pressure / transport rejects new launches | Dashboard crews with active tasks each use ~300–400 MB per slot process (`kiro-cli-chat`). Use `dashboard=False` + `slot=None` for unattended SDD/batch work; reserve `dashboard=True` for crews you're actively watching in a browser |
+| Host memory pressure / transport rejects new launches | Crews with active tasks each use ~300–400 MB per slot process (`kiro-cli-chat`). Use `slot=False` for unattended SDD/batch work to dispatch headless with no slot process; reserve the default member slot for crews you're actively watching in a dashboard |
 
 ## Worked example — captain autopilot (recommended for non-trivial work)
 
 ```python
 # 1. Launch + seed
 launch(crew_id="trn-70-impl")
-supply(path="ghostship", crew_id="trn-70-impl", bundle=True)
+supply(path="repo", crew_id="trn-70-impl", bundle=True)
 # → POST /tmp/myrepo.bundle to the returned URL
 
 # 2. Optional: start spectre to kick off planning if OpenSpec change doesn't exist yet
@@ -467,7 +482,7 @@ captain(crew_id="trn-70-impl", action="status")   # summary + mail counts
 crews()                                            # active tasks
 
 # 5. When captain status shows paused (lifecycle complete):
-evac(path="ghostship", crew_id="trn-70-impl", ref="release/0.2.0", bundle=True)
+evac(path="repo", crew_id="trn-70-impl", ref="release/0.2.0", bundle=True)
 # → curl -s "<url>" -o /tmp/bundle.bundle
 # → git fetch /tmp/bundle.bundle ... && git log ... && git cherry-pick <hash>
 nuke(crew_id="trn-70-impl", confirm=True)

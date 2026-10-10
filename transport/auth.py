@@ -371,7 +371,11 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 and _ws_parts[2] == "ui"
             ):
                 # Delegate to the registered ws_proxy handler if present.
-                ws_handler = self._routes.get(("WS", "/crews/*/ui"))
+                # The WS handler lives in public_routes (no bearer auth needed —
+                # Caddy's gs_session forward-auth is the gate). Check both dicts.
+                ws_handler = self._public_routes.get(
+                    ("WS", "/crews/*/ui")
+                ) or self._routes.get(("WS", "/crews/*/ui"))
                 if ws_handler is not None:
                     await ws_handler(scope, receive, send)
                     return
@@ -398,6 +402,8 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
         """Serve a registered public route without any authentication check.
 
         Returns True if a public route handled the request.
+        Supports exact path keys and ``/crews/*/ui`` wildcard pattern
+        (crew UI paths are gated by Caddy's gs_session forward-auth, not bearer).
         """
         from starlette.requests import Request
 
@@ -407,6 +413,18 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             response = await public_handler(request)
             await response(scope, receive, send)
             return True
+
+        # Pattern match for /crews/{id}/ui[/{path}] — gated by Caddy forward-auth.
+        _path = scope["path"]
+        _parts = _path.lstrip("/").split("/")
+        if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":
+            ui_handler = self._public_routes.get(("GET", "/crews/*/ui"))
+            if ui_handler is not None:
+                request = Request(scope, receive)
+                response = await ui_handler(request)
+                await response(scope, receive, send)
+                return True
+
         return False
 
     async def _dispatch_file(self, scope, receive, send) -> bool:
@@ -480,24 +498,6 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                     dash_delete = self._routes.get(("DELETE", "/crews/*/dashboard"))
                     if dash_delete is not None:
                         response = await dash_delete(request)
-                        await response(scope, receive, send)
-                        return
-                else:
-                    from starlette.responses import PlainTextResponse
-                    response = PlainTextResponse("Method Not Allowed", status_code=405)
-                    await response(scope, receive, send)
-                    return
-            # POST /crews/{id}/prewarm (GA_API_KEY unset path)
-            if (
-                len(_parts) == 3
-                and _parts[0] == "crews"
-                and _parts[2] == "prewarm"
-            ):
-                request = Request(scope, receive)
-                if scope["method"] == "POST":
-                    prewarm_post = self._routes.get(("POST", "/crews/*/prewarm"))
-                    if prewarm_post is not None:
-                        response = await prewarm_post(request)
                         await response(scope, receive, send)
                         return
                 else:
@@ -598,25 +598,6 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 dash_delete = self._routes.get(("DELETE", "/crews/*/dashboard"))
                 if dash_delete is not None:
                     response = await dash_delete(request)
-                    await response(scope, receive, send)
-                    return
-            else:
-                response = PlainTextResponse("Method Not Allowed", status_code=405)
-                await response(scope, receive, send)
-                return
-
-        # POST /crews/{id}/prewarm (keyed path — auth already passed above)
-        if (
-            len(path_parts) == 3
-            and path_parts[0] == "crews"
-            and path_parts[2] == "prewarm"
-        ):
-            from starlette.responses import PlainTextResponse
-            request = Request(scope, receive)
-            if scope["method"] == "POST":
-                prewarm_post = self._routes.get(("POST", "/crews/*/prewarm"))
-                if prewarm_post is not None:
-                    response = await prewarm_post(request)
                     await response(scope, receive, send)
                     return
             else:

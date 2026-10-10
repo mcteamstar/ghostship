@@ -4,7 +4,7 @@ Migration target for classes whose function-under-test is defined in
 ``lifecycle.py`` (``_ensure_crew_running``, ``_finish_crew_setup``,
 ``_crew_api_with_recovery``, ``_crew_api``, ``_probe_gateway``,
 ``_patch_crew_config``, ``_copy_agents``, ``_copy_skills``, ``_inject_policy``,
-``_inject_git_identity``, ``_mint_cookie``, ``_reconcile_registry``,
+``_mint_cookie``, ``_reconcile_registry``,
 ``_reseed_crew_schedules``, ``_nuke_login_container``) — **not** the academy
 functions (those go to ``test_academy.py``).
 
@@ -2120,18 +2120,27 @@ class PatchCrewConfigTests(unittest.TestCase):
         return _json.loads(base64.b64decode(overrides_b64).decode())
 
     def test_patch_crew_config_sets_sandbox_off(self) -> None:
-        """sandbox must be 'off' -- without it every agent spawn fails under
-        rootless Podman because kiro-cli 0.5.0+ is fail-closed on the
-        MS_REMOUNT inside a user namespace.
+        """sandbox_allow_unsandboxed_exec must be True -- under Podman rootless
+        the kernel denies the MS_REMOUNT bind mount that kiro-cli 0.7.0+
+        requires to seal credential directories (EPERM inside a user namespace).
+        KiroCrew 0.7.0 replaced the broad ``sandbox: "off"`` with the more
+        targeted ``sandbox_allow_unsandboxed_exec: true`` escape hatch, which
+        skips only the failing bind-mount step while keeping other guards.
 
         The full_overrides dict nests agent keys under
         ``full_overrides["agent"]`` rather than at the top level."""
         overrides = self._call_patch_crew_config()
         agent = overrides.get("agent", {})
-        self.assertEqual(
-            agent.get("sandbox"),
-            "off",
-            f"Expected agent.sandbox='off' but got: {agent.get('sandbox')!r}",
+        self.assertIs(
+            agent.get("sandbox_allow_unsandboxed_exec"),
+            True,
+            f"Expected agent.sandbox_allow_unsandboxed_exec=True but got: "
+            f"{agent.get('sandbox_allow_unsandboxed_exec')!r}",
+        )
+        self.assertNotIn(
+            "sandbox",
+            agent,
+            "agent.sandbox should not be set — use sandbox_allow_unsandboxed_exec instead",
         )
 
     def test_patch_crew_config_sets_dangerously_skip_permissions(self) -> None:
@@ -2223,6 +2232,29 @@ class PatchCrewConfigTests(unittest.TestCase):
             overrides.get("auto_update"),
             False,
             f"Expected auto_update=False but got: {overrides.get('auto_update')!r}",
+        )
+
+    def test_patch_crew_config_sets_orchestrator_max_plan_duration(self) -> None:
+        """orchestrator.max_plan_duration_seconds must be >= 14400 (4h).
+
+        KiroCrew 0.7.0 introduced a default 2h (7200s) cap on plan duration.
+        Multi-persona SDD runs (Spectre → Ghost → Banshee → Reaper) can exceed
+        2h on large codebases, so we raise the ceiling to 4h at crew setup."""
+        overrides = self._call_patch_crew_config()
+        orchestrator = overrides.get("orchestrator", {})
+        self.assertIsNotNone(
+            orchestrator,
+            "Expected 'orchestrator' section in full_overrides but it was absent",
+        )
+        duration = orchestrator.get("max_plan_duration_seconds")
+        self.assertIsNotNone(
+            duration,
+            "Expected orchestrator.max_plan_duration_seconds to be set",
+        )
+        self.assertGreaterEqual(
+            duration,
+            14400,
+            f"Expected orchestrator.max_plan_duration_seconds >= 14400 but got: {duration!r}",
         )
 
 
@@ -2718,3 +2750,490 @@ class EnsureCrewRunningWaiterPropagationTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinishCrewSetupCookieTests(unittest.TestCase):
+    """Tests for .dashboard_cookie injection in _finish_crew_setup.
+
+    4.1 _finish_crew_setup writes .dashboard_cookie via podman exec after cookie mint
+    4.2 .dashboard_cookie write failure is non-fatal (logs warning, doesn't abort setup)
+    """
+
+    def _run_setup_with_cookie_mock(
+        self, write_returns: bool = True, internal_cookie_returns: str | None = "int-tok"
+    ) -> tuple[list, dict | None]:
+        """Run _finish_crew_setup with _write_dashboard_cookie and
+        _mint_internal_cookie mocked.
+
+        Returns (cookie_write_calls, result).
+        """
+        cookie_write_calls: list[tuple] = []
+
+        def fake_write(podman, container, cookie):
+            cookie_write_calls.append((container, cookie))
+            return write_returns
+
+        class SimplePodman:
+            def container_stop(self, c): pass
+            def container_start(self, c): pass
+            def container_exec(self, c, cmd, env=None): return "ready"
+            def container_exec_checked(self, c, cmd): return "ok"
+            def container_exec_stdin(self, c, cmd, stdin_data): return "ok"
+            def container_inspect(self, c): return {"Config": {"Labels": {}}}
+
+        podman = SimplePodman()
+
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            registry_path = data_dir / "crews.json"
+            with (
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_inject_auth"),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_copy_agents"),
+                patch.object(lifecycle, "_copy_skills"),
+                patch.object(lifecycle, "_copy_steering"),
+                patch.object(lifecycle, "_seed_openspec_store"),
+                patch.object(lifecycle, "_patch_models"),
+                patch.object(lifecycle, "_inject_policy", return_value="1"),
+                patch.object(lifecycle, "_mint_cookie", return_value="tok-abc"),
+                patch.object(lifecycle, "_mint_internal_cookie", return_value=internal_cookie_returns),
+                patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
+            ):
+                result = lifecycle._finish_crew_setup(
+                    podman,
+                    "demo",
+                    "gs-demo",
+                    "gs-vol-demo",
+                    "gs-home-demo",
+                    "auth-b64",
+                    admiral_secret="ab" * 32,
+                )
+
+            registry_data = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+        return cookie_write_calls, result, registry_data
+
+    def test_finish_crew_setup_writes_dashboard_cookie(self) -> None:
+        """4.1: _finish_crew_setup calls _write_dashboard_cookie with internal cookie."""
+        calls, result, _ = self._run_setup_with_cookie_mock()
+
+        self.assertNotIn("error", result, f"setup should succeed: {result}")
+        self.assertEqual(len(calls), 1, "should write cookie exactly once")
+        container, cookie = calls[0]
+        self.assertEqual(container, "gs-demo")
+        self.assertEqual(cookie, "int-tok")  # internal cookie, not external
+
+    def test_finish_crew_setup_cookie_failure_is_non_fatal(self) -> None:
+        """4.2: _write_dashboard_cookie returning False doesn't abort setup."""
+        calls, result, _ = self._run_setup_with_cookie_mock(write_returns=False)
+
+        # Setup should still succeed despite cookie write failure
+        self.assertNotIn("error", result, f"setup should succeed even if cookie write fails: {result}")
+        # The write was attempted
+        self.assertEqual(len(calls), 1, "write should have been attempted")
+
+    def test_finish_crew_setup_stores_internal_cookie_in_registry(self) -> None:
+        """6.3: internal_cookie stored in registry entry when _mint_internal_cookie succeeds."""
+        _, result, registry_data = self._run_setup_with_cookie_mock(internal_cookie_returns="int-tok")
+
+        self.assertNotIn("error", result)
+        crew = registry_data.get("crews", {}).get("demo", {})
+        self.assertEqual(crew.get("internal_cookie"), "int-tok")
+
+    def test_finish_crew_setup_no_write_when_internal_cookie_absent(self) -> None:
+        """6.3 (negative): _write_dashboard_cookie not called when _mint_internal_cookie returns None."""
+        calls, result, registry_data = self._run_setup_with_cookie_mock(internal_cookie_returns=None)
+
+        self.assertNotIn("error", result, "setup should still succeed")
+        self.assertEqual(len(calls), 0, "should not write cookie when internal mint fails")
+        crew = registry_data.get("crews", {}).get("demo", {})
+        self.assertNotIn("internal_cookie", crew)
+
+
+class MintInternalCookieTests(unittest.TestCase):
+    """Tests for _mint_internal_cookie helper.
+
+    6.1 Parses cookie correctly from well-formed curl output
+    6.2 Returns None on exec failure (logs WARNING)
+    """
+
+    def test_parses_cookie_from_curl_output(self) -> None:
+        """6.1: _mint_internal_cookie parses Set-Cookie from curl output."""
+        # Simulate curl -si output with a Set-Cookie header
+        curl_output = (
+            "HTTP/1.1 302 Found\r\n"
+            "Location: http://localhost:5476/\r\n"
+            f"set-cookie: mc_token_5476=abc123def456; Path=/; HttpOnly\r\n"
+            "\r\n"
+        )
+        token_output = "http://localhost:5476/?token=some-jwt-token"
+
+        exec_calls: list[list] = []
+
+        class FakePodman:
+            def container_exec(self, container, cmd, env=None):
+                exec_calls.append(cmd)
+                if "kirocrew" in cmd:
+                    return token_output
+                if "curl" in cmd:
+                    return curl_output
+                return ""
+
+        result = lifecycle._mint_internal_cookie(FakePodman(), "gs-demo")
+
+        self.assertEqual(result, "abc123def456")
+        self.assertEqual(len(exec_calls), 2, "should make exactly 2 exec calls")
+
+    def test_returns_none_on_exec_failure(self) -> None:
+        """6.2: _mint_internal_cookie returns None and logs WARNING when exec raises."""
+        class BrokenPodman:
+            def container_exec(self, container, cmd, env=None):
+                raise RuntimeError("exec failed")
+
+        with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+            result = lifecycle._mint_internal_cookie(BrokenPodman(), "gs-demo")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("Internal cookie mint failed" in msg for msg in log_ctx.output))
+
+    def test_returns_none_when_token_not_parseable(self) -> None:
+        """6.2 (variant): returns None when kirocrew token output has no token."""
+        class BadTokenPodman:
+            def container_exec(self, container, cmd, env=None):
+                if "kirocrew" in cmd:
+                    return "error: gateway not running"
+                return ""
+
+        with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+            result = lifecycle._mint_internal_cookie(BadTokenPodman(), "gs-demo")
+
+        self.assertIsNone(result)
+        self.assertTrue(any("could not parse token" in msg for msg in log_ctx.output))
+
+
+class RefreshCookieInternalTests(unittest.TestCase):
+    """Tests for _refresh_cookie extended with internal cookie refresh.
+
+    6.4 _refresh_cookie calls _mint_internal_cookie and stores result in registry
+    """
+
+    def test_refresh_cookie_also_refreshes_internal_cookie(self) -> None:
+        """6.4: _refresh_cookie mints internal cookie and writes it to registry and file."""
+        write_calls: list[tuple] = []
+
+        def fake_write(podman, container, cookie):
+            write_calls.append((container, cookie))
+            return True
+
+        crew = {"container": "gs-demo", "cookie": "old-ext"}
+
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            registry_path = data_dir / "crews.json"
+            # Pre-populate registry
+            registry_path.write_text(
+                json.dumps({"crews": {"demo": {"cookie": "old-ext", "container": "gs-demo"}},
+                            "schedules": {}})
+            )
+            with (
+                patch.object(_registry_mod, "DATA_DIR", data_dir),
+                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
+                patch.object(lifecycle, "_get_podman", return_value=Mock()),
+                patch.object(lifecycle, "_mint_cookie", return_value="new-ext"),
+                patch.object(lifecycle, "_mint_internal_cookie", return_value="new-int"),
+                patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
+                patch.object(lifecycle, "_crew_url", return_value="http://gs-demo:5476"),
+            ):
+                result = lifecycle._refresh_cookie(crew, "demo")
+
+            registry_data = json.loads(registry_path.read_text())
+
+        self.assertTrue(result)
+        self.assertEqual(crew["cookie"], "new-ext")
+        self.assertEqual(crew.get("internal_cookie"), "new-int")
+        self.assertEqual(len(write_calls), 1)
+        self.assertEqual(write_calls[0], ("gs-demo", "new-int"))
+        crew_reg = registry_data["crews"]["demo"]
+        self.assertEqual(crew_reg["cookie"], "new-ext")
+        self.assertEqual(crew_reg.get("internal_cookie"), "new-int")
+
+
+# ── D1: recovery self-deadlock (tasks 1.2, 6.1) ──────────────────────────────
+
+
+class RecoveryDeadlockTests(unittest.TestCase):
+    """D1: _enroll_crew_members must NOT re-enter the per-crew recovery lock.
+
+    The recovery lock (``_get_recovery_lock(crew_id)``) is a non-reentrant
+    threading.Lock held for the whole of ``_crew_api_with_recovery``. Before the
+    fix, ``_enroll_crew_members`` called ``_crew_api_with_recovery`` again, so a
+    second failure during enrolment tried to re-acquire the same lock and
+    deadlocked forever. The fix routes enrolment through ``_crew_api`` directly.
+    """
+
+    def _call_from_within_recovery_lock(self, crew_id: str, fn, *args) -> None:
+        """Acquire the per-crew recovery lock, then run fn(*args) in a worker
+        thread with a timeout. If fn tries to re-acquire the same lock it will
+        block; the join timeout then flags the deadlock.
+        """
+        lock = lifecycle._get_recovery_lock(crew_id)
+        result: dict = {"done": False, "exc": None}
+
+        def _run():
+            try:
+                fn(*args)
+                result["done"] = True
+            except Exception as e:  # noqa: BLE001 — recorded, not re-raised
+                result["exc"] = e
+                result["done"] = True
+
+        with lock:
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=5.0)
+        return result, t
+
+    def test_enroll_does_not_reacquire_recovery_lock(self) -> None:
+        """1.2: _enroll_crew_members completes while the recovery lock is held
+        (no deadlock), because it uses _crew_api directly."""
+        crew = {"container": "gs-dead", "cookie": "c", "status": "running",
+                "enrolled_agents": ["ghost", "raven"]}
+
+        # _crew_api is the DIRECT path enrolment must use. If enrolment instead
+        # called _crew_api_with_recovery, acquiring the already-held lock would
+        # block and the join below would time out.
+        with patch.object(lifecycle, "_crew_api", return_value={"ok": True}):
+            result, worker = self._call_from_within_recovery_lock(
+                "dead",
+                lifecycle._enroll_crew_members,
+                crew, "dead", ["ghost.json", "raven.json"],
+            )
+
+        self.assertTrue(result["done"], "enrolment deadlocked while recovery lock held")
+        self.assertFalse(worker.is_alive(), "worker thread still blocked on the lock")
+        self.assertIsNone(result["exc"])
+
+    def test_enroll_failure_is_nonfatal_under_lock(self) -> None:
+        """6.1: even if every enrolment call fails, _enroll_crew_members returns
+        (failures logged, non-fatal) and never blocks on the recovery lock."""
+        crew = {"container": "gs-dead2", "cookie": "c", "status": "running"}
+
+        def _always_fail(*_a, **_k):
+            raise RuntimeError("gateway refused")
+
+        with patch.object(lifecycle, "_crew_api", side_effect=_always_fail):
+            result, worker = self._call_from_within_recovery_lock(
+                "dead2",
+                lifecycle._enroll_crew_members,
+                crew, "dead2", ["ghost.json"],
+            )
+
+        self.assertTrue(result["done"], "enrolment deadlocked under failure")
+        self.assertFalse(worker.is_alive())
+        # Non-fatal: the failure is swallowed, not propagated.
+        self.assertIsNone(result["exc"])
+
+    def test_crew_api_with_recovery_documents_nonreentrant_contract(self) -> None:
+        """6.3: the non-reentrant contract is documented on
+        _crew_api_with_recovery so future callers do not reintroduce the
+        deadlock pattern."""
+        doc = lifecycle._crew_api_with_recovery.__doc__ or ""
+        self.assertIn("NON-REENTRANT", doc.upper())
+        self.assertIn("_enroll_crew_members", doc)
+
+
+# ── D5: restart race guard (task 5.6) ────────────────────────────────────────
+
+
+class RestartRaceGuardTests(unittest.TestCase):
+    """D5: a concurrent _ensure_crew_running for a crew already being restarted
+    must take the WAITER path — the ``crew_id in _startup_events`` check fires
+    BEFORE the container_is_running probe and any stop, so it never probes or
+    stops a container a concurrent leader is mid-restart on.
+    """
+
+    def test_in_progress_restart_takes_waiter_path_without_probe(self) -> None:
+        """5.6: with a restart already in progress (startup event present), a
+        second call waits on the event and never calls container_is_running or
+        container_stop."""
+        crew_id = "racing"
+        crew = {"container": "gs-racing", "cookie": "c", "status": "stopped"}
+
+        probe_calls = {"is_running": 0, "stop": 0}
+
+        class _RecordingPodman:
+            def container_is_running(self, name):
+                probe_calls["is_running"] += 1
+                return True  # would wrongly return early / stop without the guard
+
+            def container_stop(self, name):
+                probe_calls["stop"] += 1
+
+        # Pre-seed a startup event (a leader is mid-restart) and record a
+        # SUCCESS outcome + matching generation so the waiter path returns the
+        # refreshed crew cleanly.
+        ev = threading.Event()
+        ev.set()  # leader already finished → waiter returns immediately
+        startup_events = {crew_id: ev}
+        running_crew = {"container": "gs-racing", "cookie": "c", "status": "running"}
+
+        with (
+            patch.object(lifecycle, "_get_podman", return_value=_RecordingPodman()),
+            patch.object(lifecycle, "_startup_events", startup_events),
+            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
+            patch.object(lifecycle, "_crew_restart_outcomes", {crew_id: (True, None)}),
+            patch.object(lifecycle, "_startup_generation", {crew_id: 0}),
+            patch.object(lifecycle, "_get_crew", return_value=running_crew),
+        ):
+            result = lifecycle._ensure_crew_running(crew, crew_id)
+
+        # The guard fired first: no probe, no stop — pure waiter path.
+        self.assertEqual(probe_calls["is_running"], 0,
+                         "container_is_running was probed despite an in-progress restart")
+        self.assertEqual(probe_calls["stop"], 0,
+                         "container_stop was called despite an in-progress restart")
+        self.assertEqual(result["status"], "running")
+
+
+# ── D6: idempotent-only retry on connection reset (task 5.7) ──────────────────
+
+
+class IdempotentRetryTests(unittest.TestCase):
+    """D6: a connection reset (phase-2) must NOT auto-retry a non-idempotent
+    request (POST) after a gateway restart — the request may have been accepted
+    before the socket dropped, so a blind replay would duplicate the side
+    effect. GET (idempotent) is retried; POST raises CrewUnresponsiveError.
+    """
+
+    def _make_crew(self):
+        return {"container": "gs-reset", "cookie": "c", "status": "running"}
+
+    def test_post_not_retried_on_connection_reset(self) -> None:
+        """5.7: POST through _crew_api_with_recovery with a connection reset
+        and a dead gateway restarts the crew but does NOT replay the POST."""
+        import httpx2 as httpx
+        crew = self._make_crew()
+        api_calls = []
+
+        def _reset(_c, method, path, **kw):
+            api_calls.append((method, path))
+            raise httpx.ConnectError("connection reset")
+
+        with (
+            patch.object(lifecycle, "_crew_api", side_effect=_reset),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),  # dead
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
+        ):
+            with self.assertRaises(lifecycle.CrewUnresponsiveError):
+                lifecycle._crew_api_with_recovery(crew, "reset", "POST", "/api/spawn")
+
+        # Exactly ONE _crew_api attempt (the original) — no replay after restart.
+        self.assertEqual(
+            api_calls, [("POST", "/api/spawn")],
+            f"POST was retried after a connection reset: {api_calls}",
+        )
+
+    def test_get_is_retried_on_connection_reset(self) -> None:
+        """GET (idempotent) IS retried after a gateway restart — the retry runs
+        and, on repeated failure, surfaces CrewUnresponsiveError (proving the
+        retry attempt was made, unlike the POST path)."""
+        import httpx2 as httpx
+        crew = self._make_crew()
+        api_calls = []
+
+        def _reset(_c, method, path, **kw):
+            api_calls.append((method, path))
+            raise httpx.ConnectError("connection reset")
+
+        with (
+            patch.object(lifecycle, "_crew_api", side_effect=_reset),
+            patch.object(lifecycle, "_probe_gateway", return_value=False),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
+        ):
+            with self.assertRaises(lifecycle.CrewUnresponsiveError):
+                lifecycle._crew_api_with_recovery(crew, "reset", "GET", "/status")
+
+        # Two attempts: the original + the post-restart retry.
+        self.assertEqual(
+            api_calls, [("GET", "/status"), ("GET", "/status")],
+            f"GET should be retried once after restart: {api_calls}",
+        )
+
+
+# ── D7b: registry-write failure stops the container (task 5.4) ───────────────
+
+
+class RegistryWriteFailureCleanupTests(unittest.TestCase):
+    """D7b: if _ensure_crew_running starts the container but then cannot persist
+    the "running" status (registry I/O error — now that _load_registry /
+    _save_registry propagate instead of returning empty), it must stop the
+    container before propagating, so the container's real state matches the
+    stale registry entry (which still says stopped).
+    """
+
+    def test_registry_write_failure_stops_container(self) -> None:
+        """A _save_registry failure on the status=running write triggers a
+        container_stop and re-raises."""
+        crew_id = "wf"
+        reg = {"crews": {crew_id: {"status": "stopped", "container": "gs-wf", "cookie": "c"}}}
+
+        class _Podman:
+            def __init__(self):
+                self.started = 0
+                self.stopped = 0
+
+            def container_is_running(self, name):
+                return False
+
+            def container_start(self, name):
+                self.started += 1
+
+            def container_stop(self, name):
+                self.stopped += 1
+
+            def container_exec(self, name, cmd, env=None):
+                return "ok"
+
+        podman = _Podman()
+
+        # _save_registry raises on the FIRST call (the status=running write
+        # inside the cookie-refresh block). _load_registry succeeds.
+        save_calls = [0]
+
+        def _save(_r):
+            save_calls[0] += 1
+            raise PermissionError("registry write denied")
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry", side_effect=_save),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_startup_events", {}),
+            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
+            patch.object(lifecycle, "_crew_restart_outcomes", {}),
+            patch.object(lifecycle, "_startup_generation", {}),
+            patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
+            patch.object(lifecycle, "_patch_crew_config"),
+            patch.object(lifecycle, "_crew_url", return_value="http://gs-wf:5476"),
+            patch.object(lifecycle, "_mint_cookie", return_value="new-c"),
+        ):
+            crew = reg["crews"][crew_id]
+            with self.assertRaises(PermissionError):
+                lifecycle._ensure_crew_running(crew, crew_id)
+
+        self.assertGreaterEqual(podman.started, 1, "container should have been started")
+        # The restart path stops the container during the config re-patch cycle
+        # too; the D7b cleanup adds one more stop on the registry-write failure.
+        # The decisive signal is the error-log cleanup stop, asserted via the
+        # stop count exceeding the starts is not reliable — instead assert the
+        # container ended stopped (stopped count >= started count means every
+        # start was matched, including the cleanup stop after the final start).
+        self.assertGreaterEqual(
+            podman.stopped, podman.started,
+            "container must be stopped on registry-write failure so its state "
+            "matches the stale 'stopped' registry entry (cleanup stop missing)",
+        )

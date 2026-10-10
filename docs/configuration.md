@@ -2,12 +2,12 @@
 
 ## Environment variables
 
-These variables are baked into the transport container by `install.sh` at `podman run` time (via `-e "VAR=value"`). Operators do **not** set them by exporting shell variables — `install.sh` resolves each through its default → config file → CLI flag hierarchy and passes the resolved value to the container.
+These variables are written into the transport container's environment by `install.sh`, through the `compose.yml` it generates. Operators do **not** set them by exporting shell variables — `install.sh` resolves each through its default → config file → CLI flag hierarchy and passes the resolved value to the container.
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `HOST` | `0.0.0.0` | Interface the transport binds to inside the container. `install.sh` adds `-p "127.0.0.1:PORT:PORT"` so the port is only reachable from localhost on the host. |
-| `PORT` | `64057` | Transport server port (MCP + file routes). Set via `install.sh --port <port>`. |
+| `HOST` | `0.0.0.0` | Interface the transport binds to inside its container. The transport publishes no host port: Caddy (`ga-portal`) is published on all interfaces (`0.0.0.0`) at `PORT` and proxies to it. |
+| `PORT` | `64057` | Host port Caddy (`ga-portal`) listens on for MCP and file routes. The transport itself always listens on 64057 inside its container. Set via `install.sh --port <port>`. |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. |
 | `GA_MAX_CREWS` | `20` | Maximum registered crews (running + stopped). Stopped crews cost no memory; this is a housekeeping limit. |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum simultaneously running crews. Enforced on restart — if the running count equals this limit, restart is refused until another crew idles out. Set to `0` to disable. At ~2–3 GB per running crew, the default of 3 fits an 8 GB host. |
@@ -17,8 +17,9 @@ These variables are baked into the transport container by `install.sh` at `podma
 | `TRANSPORT_DATA_DIR` | `/data` | Registry and data directory. |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. On Linux uses host uid (`id -u`); on macOS uses the `podman machine` guest uid (`podman machine ssh -- id -u`), which may differ. |
 | `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Set for externally-reachable deployments. |
-| `GA_FILE_SECRET` | unset (random per process) | HMAC secret signing presigned file URLs. Set explicitly if presigned URLs must survive a transport restart. |
+| `GA_FILE_SECRET` | unset (generated once, stored in `DATA_DIR/ga-file-secret`) | HMAC secret signing presigned file URLs. The stored secret survives transport restarts. `install.sh` does not pass an override. |
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`). Set via `install.sh --api-key <key>` — persisted to the data directory and reused on later installs; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md). |
+| `GA_REQUIRE_API_KEY` | `warn` | Controls the install-time and startup warning when `GA_API_KEY` is unset and the transport is bound to a non-loopback address. `warn` (default) — prints a warning to stderr. `error` — aborts `install.sh` with a non-zero exit. `off` — silences the check entirely. Use `error` on deployments where an unauthenticated network-reachable install should never be allowed; use `off` for intentionally open local installs. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider. |
@@ -35,9 +36,14 @@ These variables are baked into the transport container by `install.sh` at `podma
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Patched into each crew's `subagent_max_turns` — maximum tool-call turns per subagent task. |
 | `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
-| `GA_PREWARM_ENABLED` | `false` | Master switch for ACP prewarm. When `false` (default), the `prewarm` tool and `POST /crews/{crew_id}/prewarm` endpoint do nothing. Set to `true` (or `1`/`yes`/`on`) to allow on-demand warm-up of a crew's `kiro-cli-chat` session before dispatch. Prewarm respects `GA_MIN_FREE_MEM_GB` and `GA_MAX_ACTIVE_CREWS`; warmed-but-unused sessions are reaped by `session.timeout_secs`. |
-| `GA_PREWARM_TTL_SECS` | `300` | Idempotency window for prewarm (seconds). A `prewarm` call on a crew warmed within this window returns `already_warm`. Capped at the crew's effective `session.timeout_secs` (300). Only consulted when `GA_PREWARM_ENABLED=true`. |
 | `GA_CREW_AGENT` | `kiro` | Patched into each crew's `agent` field in `config.local.json`. KiroCrew 0.5.0 requires this field — crew creation fails with 4xx if absent. Override only if your instance uses a differently-named built-in agent. |
+| `GA_AGENT_BACKENDS` | _(unset: kiro only)_ | Comma-separated optional agent backends to enable: `claude`, `codex`, or both (TRN-202). Kiro is always enabled, so listing it is optional. Case, whitespace, empty entries and duplicates are normalised. `install.sh` builds one toolchain per listed backend into the crew image (`crews/spec-ops/toolchains/<name>.sh`, passed as the `AGENT_TOOLCHAINS` build arg) and writes the normalised list into the transport environment. Login routes (`POST /login/claude`, `/login/claude/code`, `/login/codex`) only accept enabled backends. Unknown names stop `install.sh` and the transport. Re-run `ghostship install` after changing it. |
+| `GA_CREW_ACP_BACKEND` | `kiro` | Default ACP runtime for new crews. Valid values: `kiro` (default, existing behaviour), `claude` (Claude Code ACP backend), `codex` (Codex ACP backend). Must be an enabled backend: a value outside `GA_AGENT_BACKENDS` stops `install.sh` and the transport with an error naming both settings. When `claude`, kiro-cli auth injection is skipped; credentials are supplied via `GA_CREW_ANTHROPIC_API_KEY` (API key path) or Claude OAuth login (OAuth path). When `codex`, kiro-cli auth injection is skipped; credentials are supplied via `GA_CREW_OPENAI_API_KEY` (API key path) or Codex OAuth login (`ga-codex-auth`). Unrecognised values abort startup with a `ConfigError`. |
+| `GA_CREW_ANTHROPIC_API_KEY` | _(unset)_ | Claude backend. Anthropic API key injected as `ANTHROPIC_API_KEY` into crew containers when `GA_CREW_ACP_BACKEND=claude`. **Optional from TRN-170** — when unset, Claude OAuth credentials (`ga-claude-auth`) are used instead. When both are present, the API key takes precedence. If neither is present at `launch` time, `launch()` returns `not_authenticated` with a login URL. Logged as having no effect (name only) while `claude` is not in `GA_AGENT_BACKENDS`. **Never log, print, or embed this value.** |
+| `GA_CREW_ANTHROPIC_BASE_URL` | _(unset)_ | Claude backend. Optional Anthropic-compatible endpoint URL injected as `ANTHROPIC_BASE_URL` into crew containers when `GA_CREW_ACP_BACKEND=claude`. When set, allows operators to redirect Claude-backend crew traffic to a local LLM proxy (litellm, OpenRouter, LM Studio, etc.) without image changes. Has no effect when `GA_CREW_ACP_BACKEND != "claude"`. |
+| `GA_CREW_OPENAI_API_KEY` | _(unset)_ | Codex backend. OpenAI API key injected as `OPENAI_API_KEY` into crew containers when `GA_CREW_ACP_BACKEND=codex`. **Optional** — when unset, Codex OAuth credentials (`ga-codex-auth`) are used instead. When both are present, the API key takes precedence. If neither is present at `launch` time, `launch()` returns `not_authenticated` with a login URL (mirrors the TRN-170 Claude model). Logged as having no effect (name only) while `codex` is not in `GA_AGENT_BACKENDS`. **Never log, print, or embed this value.** |
+| `GA_CREW_OPENAI_BASE_URL` | _(unset)_ | Codex backend. Optional OpenAI-compatible endpoint URL injected as `OPENAI_BASE_URL` into crew containers when `GA_CREW_ACP_BACKEND=codex`. When set, redirects Codex-backend crew traffic to an OpenAI-compatible endpoint without image changes, and the `launch()` network WARNING names this endpoint instead of `api.openai.com`. Has no effect when `GA_CREW_ACP_BACKEND != "codex"`. |
+| ~~`GA_INCLUDE_CLAUDE_AGENT`~~, ~~`GA_INCLUDE_CODEX_AGENT`~~ | _(removed)_ | **Removed in TRN-202.** Replaced by `GA_AGENT_BACKENDS` (`GA_AGENT_BACKENDS=claude`, `codex`, or `claude,codex`). Setting either variable, to any value including `false`, stops `install.sh` and the transport with an error naming the replacement. |
 | `GA_TLS_MIN_VERSION` | `1.2` | Minimum TLS version when the transport terminates TLS directly (`1.2` or `1.3`). Only takes effect when both `GA_TLS_CERTFILE` and `GA_TLS_KEYFILE` are set. |
 | `GA_TLS_CERTFILE` | _(unset)_ | Path to a TLS certificate file. Setting both this and `GA_TLS_KEYFILE` enables direct TLS termination. |
 | `GA_TLS_KEYFILE` | _(unset)_ | Path to the TLS private key paired with `GA_TLS_CERTFILE`. |
@@ -52,6 +58,9 @@ These variables are baked into the transport container by `install.sh` at `podma
 | `GA_GIT_AUTHOR_NAME` | _(unset)_ | Injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup. When set with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. Config-file-only. |
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
+| `GA_DASHBOARD_PORT_RANGE_SIZE` | `1024` | Number of host ports in the dashboard proxy port range. Config-file-only. |
+| `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
+| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew:0.8.0`)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path to an operator-managed directory of additional standing-order template `.md` files. When set and the path exists, its templates are merged with built-in `academy/orders/` templates; a user-defined template whose filename stem matches a built-in name takes precedence. A warning is logged if the path is set but missing. Config-file-only. |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). Unrecognised values fall back to `off` with a WARNING. |
@@ -168,7 +177,7 @@ See [Repository transfer](architecture.md#repository-transfer) in architecture.m
 
 ## Deployment security boundary
 
-`install.sh` publishes the transport port on `127.0.0.1` only. For remote or shared-network deployments, set `GA_API_KEY` to require bearer authentication on MCP requests and terminate TLS at a trusted reverse proxy or encrypted VPN.
+`install.sh` publishes Caddy (`ga-portal`) on all interfaces (`0.0.0.0`) at `PORT`. With `GA_API_KEY` unset, MCP requests are not authenticated, so anyone who can reach the host can use every tool. Set `GA_API_KEY` on any machine reachable from another host, restrict the port with a host firewall, and terminate TLS at a trusted reverse proxy or encrypted VPN.
 
 File-transfer routes use HMAC presigned-URL authorization and do **not** require the API key. A valid presigned URL is a bearer capability until its TTL expires, regardless of `GA_API_KEY`. See [auth.md](auth.md).
 
@@ -209,7 +218,7 @@ Rate limit exceeded. Retry after <window_secs> seconds.
 Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew:0.6.0
+FROM ghcr.io/kirodotdev/kirocrew:0.8.0
 USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     nodejs npm \   # already included
@@ -323,8 +332,8 @@ Every crew launched by the transport receives fixed headless-optimised values wr
 | State | RSS |
 |:------|:----|
 | Idle (no active task) | ~160 MB (gateway process only) |
-| Active task, headless (`slot=None`) | ~400–600 MB (subagents only, no session attached) |
-| Active task, with session slot (`slot="bridge"` or `slot=True`) | ~1.5–1.9 GB (session + subagents) |
+| Active task, headless (`slot=False`, or `slot=None` for a persona that isn't enrolled) | ~400–600 MB (subagents only, no session attached) |
+| Active task, with a session slot (`slot=None` for an enrolled persona, the default) | ~1.5–1.9 GB (session + subagents) |
 | Idle, session reaped (after `session.timeout_secs`) | ~160 MB |
 
 Without these overrides, idle RSS is ~470 MB due to an eagerly pre-spawned `kiro-cli-chat` process. With `session.eager_spawn=false` (the ghostship default), the session process is not created until first dispatch — and with headless dispatch (`slot=None`), no persistent session process is created at all.

@@ -1,0 +1,47 @@
+# Spec Delta
+
+## MODIFIED Requirements
+
+### Requirement: Codex auth state machine
+
+The Ghost Academy SHALL maintain a Codex auth state machine with exactly three states — unauthenticated, pending, and authenticated — determined by the presence and content of `DATA_DIR/ga-codex-auth`. Transitions are: unauthenticated → pending via `POST /login/codex`; pending → authenticated via `GET /login/codex` completing; authenticated → unauthenticated via `POST /logout/codex`. No other transitions are valid. This state machine is independent of the kiro and Claude auth state machines. `POST /login/codex` SHALL be available whenever codex is an enabled backend, whether or not it is the default.
+
+#### Scenario: POST /login/codex starts device flow when unauthenticated
+- **WHEN** `POST /login/codex` is called and `ga-codex-auth` does not exist or is empty
+- **THEN** the transport starts a Codex OAuth login flow, returns HTTP 200 with `{"login_url": "<url>", "code": "<code>"}` (or `{"login_url": "<url>"}` when the flow has no separate code), and stores the pending flow state
+
+#### Scenario: POST /login/codex returns 409 when already authenticated
+- **WHEN** `POST /login/codex` is called and `ga-codex-auth` exists and is non-empty
+- **THEN** the transport returns HTTP 409 indicating Codex auth is already present and `POST /logout/codex` must be called first
+
+#### Scenario: POST /login/codex returns 409 when flow already in progress
+- **WHEN** `POST /login/codex` is called while a Codex login flow is already pending
+- **THEN** the transport returns HTTP 409 indicating a flow is in progress and `GET /login/codex` should be polled
+
+#### Scenario: POST /login/codex rejected when backend is not codex
+- **WHEN** `POST /login/codex` is called and codex is not an enabled backend in `GA_AGENT_BACKENDS`
+- **THEN** the transport returns HTTP 400 naming `GA_AGENT_BACKENDS` and the `ghostship install` re-run; no login container is started
+
+#### Scenario: GET /login/codex returns pending while user has not approved
+- **WHEN** `GET /login/codex` is polled and the user has not yet completed the login
+- **THEN** the transport returns HTTP 200 with `{"status": "pending", "login_url": "<url>"}`
+
+#### Scenario: GET /login/codex completes and writes ga-codex-auth
+- **WHEN** `GET /login/codex` is polled and the Codex login has completed inside the login container
+- **THEN** the transport captures the resulting `~/.codex/` credential directory as a tar archive, writes it to `DATA_DIR/ga-codex-auth` with owner-only permissions, tears down the login container, and returns HTTP 200 with `{"status": "authenticated"}`
+
+### Requirement: Codex login uses an ephemeral login container
+
+The transport SHALL run the Codex login inside an ephemeral `ga-codex-login-<token>` container built from the spec-ops image (which carries the `codex-acp` adapter only when codex is an enabled backend in `GA_AGENT_BACKENDS`), so the login flow never runs on the host and its credential output can be captured from a known path. Codex login SHALL be available whenever codex is enabled, including when it is not the default backend.
+
+#### Scenario: Login container requires the Codex-enabled image
+- **WHEN** `POST /login/codex` is called and codex is not an enabled backend
+- **THEN** the transport returns HTTP 400 naming `GA_AGENT_BACKENDS` and the `ghostship install` re-run as the remedy; no login container is created and no credential is written
+
+#### Scenario: Login container is removed after the flow ends
+- **WHEN** a Codex login flow completes, fails, or is abandoned
+- **THEN** the `ga-codex-login-<token>` container is stopped and removed (best-effort), leaving no long-lived login container
+
+#### Scenario: Codex login available while another backend is the default
+- **WHEN** codex is an enabled backend, `GA_CREW_ACP_BACKEND` is unset, and `POST /login/codex` is called
+- **THEN** the Codex login flow starts

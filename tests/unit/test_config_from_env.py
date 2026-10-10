@@ -48,6 +48,9 @@ class TestConfigEnvIntErrors(unittest.TestCase):
     def test_ga_dashboard_port_range_start_invalid(self):
         self._assert_config_error("GA_DASHBOARD_PORT_RANGE_START", "high")
 
+    def test_ga_dashboard_port_range_size_invalid(self):
+        self._assert_config_error("GA_DASHBOARD_PORT_RANGE_SIZE", "big")
+
     def test_ga_portal_session_ttl_secs_invalid(self):
         self._assert_config_error("GA_PORTAL_SESSION_TTL_SECS", "never")
 
@@ -100,6 +103,20 @@ class TestConfigEnvValidValues(unittest.TestCase):
         self.assertAlmostEqual(cfg.ga_min_free_mem_gb, 3.5)
         self.assertAlmostEqual(cfg.ga_resource_pressure_gb, 1.0)
 
+    def test_ga_dashboard_port_range_size_configured(self):
+        """GA_DASHBOARD_PORT_RANGE_SIZE env var overrides the default."""
+        with patch.dict("os.environ", {"GA_DASHBOARD_PORT_RANGE_SIZE": "50"}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_dashboard_port_range_size, 50)
+
+    def test_ga_dashboard_port_range_size_default(self):
+        """GA_DASHBOARD_PORT_RANGE_SIZE defaults to 1024 when unset."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "GA_DASHBOARD_PORT_RANGE_SIZE"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_dashboard_port_range_size, 1024)
+
     def test_defaults_when_unset(self):
         """Config.from_env() with no relevant env vars uses field defaults."""
         # Clear all numeric vars to ensure defaults apply
@@ -109,6 +126,7 @@ class TestConfigEnvValidValues(unittest.TestCase):
             "GA_MIN_FREE_MEM_GB", "GA_SPAWN_MIN_MEMORY_GB",
             "GA_RESOURCE_PRESSURE_GB", "GA_RESOURCE_CRITICAL_GB",
             "GA_PREWARM_TTL_SECS", "GA_DASHBOARD_PORT_RANGE_START",
+            "GA_DASHBOARD_PORT_RANGE_SIZE",
             "GA_PORTAL_SESSION_TTL_SECS",
         ]
         clean_env = {k: v for k, v in __import__("os").environ.items()
@@ -125,6 +143,56 @@ class TestConfigEnvValidValues(unittest.TestCase):
         with patch.dict("os.environ", {"GA_MAX_CREWS": "bad"}):
             with self.assertRaises(ValueError):
                 Config.from_env()
+
+
+class TestConfigKcBaseImage(unittest.TestCase):
+    """Config.from_env() respects KC_BASE_IMAGE env var."""
+
+    def test_default_value(self):
+        """kc_base_image defaults to the pinned upstream image."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "KC_BASE_IMAGE"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, "ghcr.io/kirodotdev/kirocrew:0.8.0")
+
+    def test_custom_value_respected(self):
+        """KC_BASE_IMAGE env var overrides the default."""
+        with patch.dict("os.environ", {"KC_BASE_IMAGE": "custom:latest"}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, "custom:latest")
+
+    def test_empty_string_allowed(self):
+        """An empty KC_BASE_IMAGE is passed through as-is."""
+        with patch.dict("os.environ", {"KC_BASE_IMAGE": ""}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, "")
+
+
+class TestConfigPrewarmDefaults(unittest.TestCase):
+    """GA_PREWARM_ENABLED defaults to False and GA_PREWARM_TTL_SECS defaults to 300."""
+
+    def test_ga_prewarm_enabled_default_off(self) -> None:
+        """GA_PREWARM_ENABLED is False when unset — the demote invariant."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "GA_PREWARM_ENABLED"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertIs(cfg.ga_prewarm_enabled, False)
+
+    def test_ga_prewarm_enabled_on_when_explicitly_set(self) -> None:
+        """GA_PREWARM_ENABLED=1 enables prewarm."""
+        with patch.dict("os.environ", {"GA_PREWARM_ENABLED": "1"}):
+            cfg = Config.from_env()
+        self.assertIs(cfg.ga_prewarm_enabled, True)
+
+    def test_ga_prewarm_ttl_secs_default(self) -> None:
+        """GA_PREWARM_TTL_SECS defaults to 300 when unset."""
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "GA_PREWARM_TTL_SECS"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_prewarm_ttl_secs, 300)
 
 
 class TestConfigTLSDefault(unittest.TestCase):

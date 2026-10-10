@@ -349,20 +349,22 @@ class ModelOverrideTests(unittest.TestCase):
         api.assert_not_called()
 
     def _captain_create_body(self, **kwargs: object) -> dict:
-        registry = {"crews": {"demo": {"schedules": []}}}
+        # New model: captain uses dispatch+steer, not cron.
+        # Returns the spawn body sent to /api/spawn.
+        registry = {"crews": {"demo": {"schedules": [], "enrolled_agents": ["raven"]}}}
         podman = Mock()
+        spawn_calls = []
 
         def api(_crew: dict, _crew_id: str, method: str, path: str, **_kwargs: object) -> dict:
-            if method == "GET" and path == "/api/crons":
-                return {"jobs": []}
-            if method == "POST" and path == "/api/crons":
-                return {"id": "captain-job", "enabled": True}
-            return {"id": "immediate-task"}
+            if method == "POST" and "/api/spawn" in path:
+                spawn_calls.append(_kwargs.get("json", {}))
+                return {"id": "task-1"}
+            return {}
 
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api) as gateway,
+            patch.object(server, "_crew_api_with_recovery", side_effect=api),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=registry),
@@ -373,47 +375,41 @@ class ModelOverrideTests(unittest.TestCase):
                 "order",
                 message="hold",
                 interval=120,
-                fire_immediately=False,
+                fire_immediately=True,  # trigger spawn so we can inspect the body
                 **kwargs,
             )
 
         self.assertEqual(result["status"], "ordered")
-        cron_calls = [
-            call for call in gateway.call_args_list
-            if call.args[2:] == ("POST", "/api/crons")
-        ]
-        self.assertEqual(len(cron_calls), 1)
-        return cron_calls[0].kwargs["json"]
+        # Should have called POST /api/spawn with member-raven slot
+        self.assertEqual(len(spawn_calls), 1)
+        return spawn_calls[0]
 
     def test_captain_new_job_forwards_model(self) -> None:
         body = self._captain_create_body(model="claude-opus-5")
         self.assertEqual(body["model"], "claude-opus-5")
+        self.assertEqual(body["parent_session"], "dashboard:member-raven")
 
     def test_captain_new_job_omits_model_when_unset(self) -> None:
         body = self._captain_create_body()
         self.assertNotIn("model", body)
 
     def test_captain_resume_ignores_model_without_creating_job(self) -> None:
-        existing = {
-            "id": "paused-job",
-            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
-            "agent": "raven",
-            "enabled": False,
+        # Resume: existing captain entry, no immediate dispatch unless fire_immediately=True
+        existing_entry = {
+            "type": "captain",
+            "name": "captain",
+            "enabled": True,
+            "interval_secs": 300,
+            "next_fire_at": 9999999999.0,
+            "current_task_id": "task-existing",
+            "model": None,
         }
-        registry = {"crews": {"demo": {"schedules": []}}}
+        registry = {"crews": {"demo": {"schedules": [existing_entry], "enrolled_agents": ["raven"]}}}
         podman = Mock()
-
-        def api(_crew: dict, _crew_id: str, method: str, path: str, **_kwargs: object) -> dict:
-            if method == "GET" and path == "/api/crons":
-                return {"jobs": [existing]}
-            if method == "POST" and path.endswith("/enable"):
-                return {"ok": True}
-            raise AssertionError(f"unexpected gateway call: {method} {path}")
 
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api) as gateway,
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=registry),
@@ -423,8 +419,9 @@ class ModelOverrideTests(unittest.TestCase):
                 "demo", "order", message="resume", model="claude-opus-5"
             )
 
-        self.assertEqual(result["job_id"], "paused-job")
-        self.assertTrue(all(call.args[2:] != ("POST", "/api/crons") for call in gateway.call_args_list))
+        self.assertEqual(result["status"], "ordered")
+        # No cron created (dispatch+steer model)
+        self.assertIsNone(result["job_id"])
 
     def test_captain_resume_rejects_invalid_model_without_resuming(self) -> None:
         with (
@@ -441,7 +438,7 @@ class ModelOverrideTests(unittest.TestCase):
         ensure.assert_not_called()
         gateway.assert_not_called()
 class TaskOrchestrationTests(unittest.TestCase):
-    CREW = {"container": "gs-demo"}
+    CREW = {"container": "gs-demo", "enrolled_agents": ["ghost", "spectre", "banshee", "wraith", "reaper", "raven"]}
 
     def _steer_with_api(self, responses: list[dict], *, force: bool) -> tuple[dict, Mock]:
         with (
@@ -465,7 +462,8 @@ class TaskOrchestrationTests(unittest.TestCase):
             self.CREW,
             "POST",
             "/api/spawn",
-            json={"task": "do work", "agent": "ghost", "keep": True},
+            json={"task": "do work", "agent": "ghost", "keep": True,
+                  "parent_session": "dashboard:member-ghost"},
         )
 
     def test_force_steer_deletes_before_continuing_a_running_task(self) -> None:
@@ -1073,10 +1071,15 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
         self.assertTrue(hasattr(server, "KIRO_API_KEY"))
 
     def test_install_sh_passes_api_key_env(self) -> None:
-        """4.1: install.sh wires KIRO_API_KEY into the ga-transport env block."""
+        """4.1: KIRO_API_KEY is scrubbed from the ga-transport compose env block.
+
+        KiroCrew 0.7.0 removes KIRO_API_KEY from agent environment. The
+        compose.yml generated by install.sh must NOT inject it so the
+        deprecation path in lifecycle.py fires only when explicitly set by
+        the operator outside of ghostship — not as a ghostship default."""
         repo_root = Path(__file__).resolve().parents[2]
         installer = (repo_root / "scripts" / "install.sh").read_text()
-        self.assertIn('KIRO_API_KEY: "${KIRO_API_KEY:-}"', installer)
+        self.assertNotIn('KIRO_API_KEY: "${KIRO_API_KEY:-}"', installer)
 
 
 class WriteAuthFileFdSentinelTests(unittest.TestCase):
@@ -3012,66 +3015,7 @@ class GitIdentityInjectionTests(unittest.TestCase):
         self.assertNotIn("GIT_AUTHOR_NAME", env)
         self.assertNotIn("GIT_COMMITTER_NAME", env)
 
-    # ── _inject_git_identity is a no-op ──────────────────────────────────────
 
-    def test_inject_git_identity_is_noop_does_not_exec(self) -> None:
-        """_inject_git_identity must never call container_exec_checked.
-        The /etc/environment approach is removed; identity is in process env.
-        The function body is a single-line no-op; only the signature is kept."""
-        podman = Mock()
-        podman.container_exec_checked = Mock()
-
-        # Call via lifecycle (where the function lives)
-        lifecycle._inject_git_identity(podman, "gs-test")
-
-        podman.container_exec_checked.assert_not_called()
-
-    # ── Integration: _finish_crew_setup still calls _inject_git_identity ─────
-
-    def test_finish_crew_setup_completes_successfully_without_inject_git_identity(self) -> None:
-        """_inject_git_identity is no longer called during _finish_crew_setup.
-        The call site was replaced with a comment; the function signature is
-        kept in lifecycle for backward-compat but is never invoked from setup."""
-        podman = Mock()
-        podman.container_stop = Mock()
-        podman.container_start = Mock()
-        podman.container_exec = Mock(return_value="ready")
-        podman.container_exec_checked = Mock(return_value="ok")
-        podman.container_inspect = Mock(return_value={"Config": {"Labels": {}}})
-
-        with tempfile.TemporaryDirectory() as tmp:
-            import contextlib
-            with contextlib.ExitStack() as _stack:
-                _stack.enter_context(patch.object(server, "DATA_DIR", Path(tmp)))
-                _stack.enter_context(patch.object(server, "REGISTRY_PATH", Path(tmp) / "crews.json"))
-                _stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
-                _stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", Path(tmp) / "crews.json"))
-                _stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(server, "_wait_gateway", return_value=True))
-                _stack.enter_context(patch.object(lifecycle, "_inject_auth", return_value=True))
-                _stack.enter_context(patch.object(server, "_inject_auth", return_value=True))
-                _stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
-                _stack.enter_context(patch.object(server, "_patch_crew_config"))
-                _stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_agents", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_skills", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
-                _stack.enter_context(patch.object(server, "_copy_steering", return_value=[]))
-                _stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(server, "_seed_openspec_store"))
-                _stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
-                _stack.enter_context(patch.object(server, "_inject_policy", return_value="1"))
-                _stack.enter_context(patch.object(lifecycle, "_patch_models"))
-                _stack.enter_context(patch.object(server, "_patch_models"))
-                _stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="test-cookie"))
-                _stack.enter_context(patch.object(server, "_mint_cookie", return_value="test-cookie"))
-                result = server._finish_crew_setup(
-                    podman, "test", "gs-test", "vol", "home", "auth",
-                    admiral_secret="ab" * 32,
-                )
-
-        self.assertEqual(result["status"], "ready")
 class Trn89TaskTimestampTests(unittest.TestCase):
     """Task 1 — task lifecycle timestamps in dispatch and pickup."""
 
@@ -3998,3 +3942,158 @@ class EvacUnpackMCPToolTests(unittest.TestCase):
         self.assertIn("bundle", result["error"])
         # _sign_file_url must NOT have been called
         mock_sign.assert_not_called()
+
+
+# ── TRN-190: DashboardGate.handle_login_get HTML structure ───────────────────
+
+
+class Trn190LoginGetHtmlTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for DashboardGate.handle_login_get HTML structure (trn-190).
+
+    Covers the three scenarios from the spec:
+      1. Login page loads with required visual elements and structure
+      2. Password visibility toggle wiring (aria-label, hidden fields intact)
+      3. Shake animation structure for failed-login feedback
+    """
+
+    async def _get_html(self, next_param: str = "") -> str:
+        req = _FormRequest(query_params={"next": next_param} if next_param else {})
+        resp = await server._dashboard_gate.handle_login_get(req)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/html", resp.media_type)
+        return bytes(resp.body).decode()
+
+    # ── Scenario 1: Login page loads ─────────────────────────────────────────
+
+    async def test_login_get_returns_200_text_html(self) -> None:
+        """Page loads with 200 text/html response."""
+        req = _FormRequest()
+        resp = await server._dashboard_gate.handle_login_get(req)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/html", resp.media_type)
+
+    async def test_login_get_has_ghost_emoji_hero(self) -> None:
+        """Page contains the ghost emoji hero element."""
+        html = await self._get_html()
+        self.assertIn("👻", html)
+        self.assertIn('class="hero"', html)
+
+    async def test_login_get_hero_is_aria_hidden(self) -> None:
+        """Decorative hero element is aria-hidden to screen readers."""
+        html = await self._get_html()
+        self.assertIn('aria-hidden="true"', html)
+
+    async def test_login_get_submit_button_is_purple(self) -> None:
+        """Submit button background uses Ghostship purple (#7c3aed)."""
+        html = await self._get_html()
+        self.assertIn("#7c3aed", html)
+
+    async def test_login_get_no_green_button(self) -> None:
+        """Old green button colour (#2d6a4f) is absent."""
+        html = await self._get_html()
+        self.assertNotIn("#2d6a4f", html)
+
+    async def test_login_get_card_width_360px(self) -> None:
+        """Card is 360px wide as specified."""
+        html = await self._get_html()
+        self.assertIn("360px", html)
+
+    async def test_login_get_float_animation_present(self) -> None:
+        """Float keyframes animate the ghost emoji continuously."""
+        html = await self._get_html()
+        self.assertIn("@keyframes float", html)
+        self.assertIn("translateY(-6px)", html)
+        self.assertIn("translateY(6px)", html)
+        self.assertIn("3s ease-in-out infinite", html)
+
+    async def test_login_get_no_external_dependencies(self) -> None:
+        """No CDN or external URLs in the page."""
+        html = await self._get_html()
+        self.assertNotIn("cdn.", html.lower())
+        self.assertNotIn("googleapis.com", html.lower())
+
+    # ── Scenario 2: Password visibility toggle ────────────────────────────────
+
+    async def test_login_get_password_field_present(self) -> None:
+        """API key input renders as a password field by default."""
+        html = await self._get_html()
+        self.assertIn('type="password"', html)
+        self.assertIn('name="ga_api_key"', html)
+
+    async def test_login_get_toggle_button_type_button(self) -> None:
+        """Show/hide toggle is a <button type=button> (does not submit form)."""
+        html = await self._get_html()
+        self.assertIn('type="button"', html)
+
+    async def test_login_get_toggle_has_aria_label(self) -> None:
+        """Toggle button has an initial accessible aria-label."""
+        html = await self._get_html()
+        self.assertIn('aria-label="Show API key"', html)
+
+    async def test_login_get_toggle_svg_is_aria_hidden(self) -> None:
+        """SVG eye icon inside the labeled button is aria-hidden (decorative)."""
+        html = await self._get_html()
+        # The SVG must carry aria-hidden so screen readers don't double-announce.
+        import re
+        svg_match = re.search(r'<svg[^>]*>', html)
+        self.assertIsNotNone(svg_match)
+        self.assertIn('aria-hidden="true"', svg_match.group(0))
+
+    async def test_login_get_toggle_js_switches_aria_label(self) -> None:
+        """JS toggle listener updates aria-label to Hide API key when showing."""
+        html = await self._get_html()
+        self.assertIn("Hide API key", html)
+
+    async def test_login_get_hidden_fields_preserved(self) -> None:
+        """Required hidden fields next and csrf_token are present."""
+        html = await self._get_html()
+        self.assertIn('name="next"', html)
+        self.assertIn('name="csrf_token"', html)
+
+    async def test_login_get_next_param_embedded(self) -> None:
+        """A safe ?next= value is embedded in the hidden next field."""
+        html = await self._get_html(next_param="/dashboard/crews")
+        self.assertIn("/dashboard/crews", html)
+
+    async def test_login_get_unsafe_next_param_sanitised(self) -> None:
+        """An unsafe ?next= value (open redirect) is replaced with /."""
+        html = await self._get_html(next_param="//evil.com")
+        self.assertNotIn("//evil.com", html)
+
+    async def test_login_get_async_fetch_submit_present(self) -> None:
+        """Async fetch submit handler is present."""
+        html = await self._get_html()
+        self.assertIn("fetch(", html)
+
+    async def test_login_get_redirect_from_json_body(self) -> None:
+        """Post-login redirect uses the JSON response body, not raw form data."""
+        html = await self._get_html()
+        self.assertIn(".json()", html)
+
+    # ── Scenario 3: Shake animation on failed login ───────────────────────────
+
+    async def test_login_get_shake_keyframes_present(self) -> None:
+        """Shake keyframes are defined in the style block."""
+        html = await self._get_html()
+        self.assertIn("@keyframes shake", html)
+
+    async def test_login_get_error_paragraph_role_alert(self) -> None:
+        """Error paragraph has role=alert so screen readers announce it."""
+        html = await self._get_html()
+        self.assertIn('role="alert"', html)
+
+    async def test_login_get_shake_class_added_on_error(self) -> None:
+        """JS adds .shake class to error element on a failed login response."""
+        html = await self._get_html()
+        self.assertIn("classList.add('shake')", html)
+
+    async def test_login_get_shake_removed_on_animationend(self) -> None:
+        """animationend listener removes .shake so the animation re-triggers."""
+        html = await self._get_html()
+        self.assertIn("animationend", html)
+        self.assertIn("classList.remove('shake')", html)
+
+    async def test_login_get_error_show_class_added_on_error(self) -> None:
+        """JS adds .show class to reveal the error paragraph on failure."""
+        html = await self._get_html()
+        self.assertIn("classList.add('show')", html)

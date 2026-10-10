@@ -2,14 +2,14 @@
 
 ## Components
 
-**ga-transport** — the MCP server (`transport/server.py`). Runs as a `podman run` container bound to `localhost`. Manages crew containers via the Podman socket and exposes the `ghostship` tools. Optionally runs on a **dedicated Podman machine** (macOS) or **dedicated systemd socket-activated instance** (Linux) — see `GA_DEDICATED_MACHINE` in [configuration.md](configuration.md).
+**ga-transport** — the MCP server (`transport/server.py`). Runs as a container started by `podman-compose` from the `compose.yml` that `install.sh` generates. It publishes no host port; Caddy (`ga-portal`) fronts it on `PORT`, published on all interfaces. Manages crew containers via the Podman socket and exposes the `ghostship` tools. Optionally runs on a **dedicated Podman machine** (macOS) or **dedicated systemd socket-activated instance** (Linux) — see `GA_DEDICATED_MACHINE` in [configuration.md](configuration.md).
 
 **Crew containers** — on-demand KiroCrew instances (`localhost/spec-ops:latest`), named `gs-<id>`. Each has a workspace volume (`gs-vol-<id>`) and a home volume (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join `ga-starboard` so transport can reach them by name (`http://gs-<id>:5476`). Isolated from `ga-portal` by network topology — see [Networking](#networking-trn-107-portsidestarboard-split).
 
-**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.6.0` (Debian 12, Python 3.12, git, curl). Adds Node.js 24 LTS and the `openspec` CLI. Built locally at install time as `localhost/spec-ops:latest` via three stages:
+**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.8.0` (Debian 12, Python 3.12, git, curl). Adds Node.js 24 LTS and the `openspec` CLI. Built locally at install time as `localhost/spec-ops:latest` via three stages:
 
-1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`. Extends `ghcr.io/kirodotdev/kirocrew:0.6.0`.
-2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. Extends `base-admission`.
+1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`. Extends `ghcr.io/kirodotdev/kirocrew:0.8.0`.
+2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. When `GA_AGENT_BACKENDS` includes optional backends (`claude`, `codex`), the corresponding toolchain scripts are run here. Extends `base-admission`.
 3. **`base-graduation`** — pre-seeds the kiro-cli SQLite DB schema (`seed_kiro_db.py`) so auth injection works without migrations at every launch. Extends the `spec-ops` intermediate image.
 
 See [configuration.md](configuration.md#extending-the-crew-image) to add packages.
@@ -39,12 +39,12 @@ launch(crew_id)
      `/run/secrets/.admiral_public_key` (root-owned, 0444). Placed outside
      home/workspace volumes — Podman creates secret parent dirs as root:root,
      which would block the crew from writing its own config.
-  5. Wait for gateway ready (GET / on :5476, 30s timeout)
+  5. Wait for gateway ready (GET / on :5476, 90s timeout)
   6. Inject kiro-cli auth rows into crew's SQLite DB
   7. Patch KiroCrew config (agent, dangerously_skip_permissions=true,
      spawn_min_memory_gb, resource_pressure_gb, resource_critical_gb,
      subagent_timeout_secs, subagent_max_turns, default_agent=ghost,
-     reasoning_effort=max)
+     reasoning_effort=max, config.agents section for all 6 personas)
      These thresholds govern KiroCrew's internal subagent admission; set
      lower than GA_MIN_FREE_MEM_GB so the transport's outer memory gate fires first.
   8. Restart container (workers pick up auth + config)
@@ -60,7 +60,11 @@ launch(crew_id)
       Failure is logged but never aborts launch.
   16. Patch agent model files to the pinned model in each agent's JSON
   17. Mint a session token (TTL 24h), exchange for cookie
-  18. Register in /data/crews.json with last_used set to setup completion time
+  18. Enroll all 6 personas: POST /api/members/{slug}/thread for each agent
+      creates a DM binding and a member session identity (attested). The
+      enrolled_agents list is persisted in the crew registry so dispatch
+      can route each persona into its member-<slug> slot automatically.
+  19. Register in /data/crews.json with last_used set to setup completion time
   └── returns { status: "ready" } (~30s)
 
 nuke(crew_id, confirm=True)
@@ -87,6 +91,8 @@ For multi-angle review use the `independent-review` template:
 
 `transport://orders` returns a summary index (name + one-line description per template). `transport://orders/{name}` returns the full resolved body. `GA_ORDERS_DIR` lets operators point at custom `.md` templates that merge with and can override `academy/orders/`.
 
+**Known limitation:** Captain autopilot works for kiro-backend crews only. On Claude or Codex backend crews, Raven cannot read the crew gateway's local IPC secret that the `sdd` and `independent-review` templates require for dispatching other personas. Drive non-kiro crews with manual relay (`dispatch`, `pickup`, `steer`) until this is fixed.
+
 ## Steering
 
 kiro-cli loads every `.md` under `~/.kiro/steering/` for every session — steering is crew-wide standing context every dispatched task gets automatically. `_copy_steering` copies manifest-selected files from `academy/steering/` into that path at every `launch`.
@@ -103,13 +109,18 @@ Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. Without int
 
 Every `dispatch` requests a retained run (`keep=true`), keeping each task's session data available for continuation after a forceful stop.
 
-**Dispatch model:** Tasks are dispatched via KiroCrew's `/api/spawn` endpoint — each runs as an isolated subagent process with its own working directory (`subagent_<task_id>/`). This is the minimal-overhead path: no persistent `kiro-cli-chat` session is attached, and the process exits when the task completes. Dashboard session slots (`slot=` on `dispatch`) attach a `kiro-cli-chat` session for browser visibility at the cost of ~300–400 MB RSS per slot. Slots are opt-in — the default is headless spawn. On crews launched with `dashboard=True`, the transport defaults `slot="bridge"` automatically, so all dispatches attach a session unless `slot=None` is passed explicitly.
+**Dispatch model:** Tasks are dispatched via KiroCrew's `/api/spawn` endpoint — each runs as an isolated subagent process with its own working directory (`subagent_<task_id>/`). This is the minimal-overhead path: no persistent `kiro-cli-chat` session is attached, and the process exits when the task completes. Dashboard session slots (`slot=` on `dispatch`) attach a `kiro-cli-chat` session for browser visibility at the cost of ~250 MB RSS per slot.
+
+`dispatch()` has two slot modes:
+
+- **`slot=None` (default)** — enrolled persona agents route into their attested `member-<slug>` session (visible in the dashboard, able to make downstream spawn calls). Unenrolled agents dispatch headless.
+- **`slot=False`** — explicit headless regardless of enrollment, saving ~250 MB RSS per dispatch.
 
 `steer(task_id, message, crew_id, force=False)` defaults to turn-boundary behaviour: a running task receives `/steer`; a completed task uses `/continue`. With `force=True` on a running task, transport calls `DELETE /api/spawn/{task_id}` then `POST /api/spawn/{task_id}/continue` and returns `force_redeployed`. A completed task follows the normal `/continue` path even with `force=True`.
 
 Recurring jobs created by `schedule` use `persistent_session=True` on `/api/crons`.
 
-`pickup(task_id=None, crew_id=None, timeout_secs=0)` — unified status and polling tool (aliases: bridge, patrol, poll, watch, wait, monitor, hold).
+`pickup(task_id=None, crew_id=None, timeout_secs=0)` — unified status and polling tool.
 
 - **timeout_secs=0 (default):** check once and return immediately.
 - **timeout_secs > 0:** poll every 3s until the task completes or the timeout elapses; returns not-done state on timeout.
@@ -251,6 +262,32 @@ Policy injection failure is logged but never aborts launch.
 - Policy is HMAC-signed with `policy_signing_key`. A tampered policy causes a signature mismatch and the gateway refuses to continue.
 - The Admiral private key never enters the container, so the agent cannot forge an Admiral standing order. The agent can read `policy_signing_key` from `admission_policy.json` and could forge a policy signature — see [auth.md](auth.md) for the threat model.
 - Policy is set once at launch. To change policy, nuke and relaunch.
+
+### Claude backend governance gap (TRN-167)
+
+When `GA_CREW_ACP_BACKEND=claude`, the Claude Code ACP server (`claude-agent-acp`) runs inside each crew container instead of `kiro-cli`. This changes the trust model in one important way:
+
+- **KiroCrew's per-call tool approval gate is bypassed.** kiro-cli normally blocks individual tool calls until they are approved by the approval policy (or automatically approved under `dangerously_skip_permissions=true`). `claude-agent-acp` does not route through this gate; all tool calls are executed without a KiroCrew-level checkpoint. Headless auto-approval is achieved via the `CLAUDE_CODE_HEADLESS=1` environment variable injected into crew containers at launch.
+
+- **The signed security policy ceiling is still enforced.** The operator governance policy (`academy/policies/default.json` or a custom template) is HMAC-signed and injected as `security_policy.json` + `admission_policy.json` into every crew at setup time, regardless of backend. The gateway enforces this ceiling and a tampered policy causes a signature mismatch at startup. Crew images are built with `claude-agent-acp` only when `claude` is in `GA_AGENT_BACKENDS`; the transport refuses to start with `claude` as the default backend otherwise, so a crew never starts without it. Without that check it would fail to spawn agents.
+
+### Claude backend external network requirement (TRN-167)
+
+Crews running with `GA_CREW_ACP_BACKEND=claude` require outbound HTTPS access to **`api.anthropic.com`**. The transport emits a `WARNING`-level log entry naming this host at every `launch()` call when the Claude backend is selected. Deployments with egress firewalls must add `api.anthropic.com:443` to their allow list before launching Claude-backend crews.
+
+### Codex backend governance model (TRN-172)
+
+When `GA_CREW_ACP_BACKEND=codex`, the Codex ACP adapter (`codex-acp`) runs inside each crew container instead of `kiro-cli`. Its trust model parallels the Claude backend but rests on a different mechanism:
+
+- **KiroCrew's per-call tool approval gate is bypassed** — but by design, not by an approval-suppression flag. KiroCrew verifies at `session/new` that the codex session advertises `mode=read-only` before the first prompt; the read-only mode is the mechanism, so there is no ghostship-side approval-suppression environment variable to inject (unlike the Claude backend's `CLAUDE_CODE_HEADLESS=1`). ghostship's job is simply not to fight this — the per-call kiro approval gate does not apply to a codex session.
+
+- **The signed security policy ceiling is still enforced.** As with every backend, the HMAC-signed operator governance policy is injected as `security_policy.json` + `admission_policy.json` into every crew at setup time and enforced at the gateway; a tampered policy causes a signature mismatch at startup. Crew images are built with `codex-acp` only when `codex` is in `GA_AGENT_BACKENDS`; the transport refuses to start with `codex` as the default backend otherwise, so a crew never starts without it.
+
+- **The ACP-v1 read-visibility gap is compensated, not fixed.** ghostship's sensitive-path read block cannot see reads the codex adapter performs. This gap is closed by KiroCrew's OS-boundary credential mask (`adapter_hidden_credential_dirs`), which covers `~/.codex/auth.json` — this is KiroCrew's control at the OS boundary, not something ghostship re-implements. ghostship does not weaken the container's standard credential-tier confinement.
+
+### Codex backend external network requirement (TRN-172)
+
+Crews running with `GA_CREW_ACP_BACKEND=codex` require outbound HTTPS access to **`api.openai.com`** (or the endpoint configured via `GA_CREW_OPENAI_BASE_URL`). The transport emits a `WARNING`-level log entry naming the effective endpoint at every `launch()` call when the Codex backend is selected. Deployments with egress firewalls must add `api.openai.com:443` (or the configured base URL's host) to their allow list before launching Codex-backend crews.
 
 ## Networking
 

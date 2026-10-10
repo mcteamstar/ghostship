@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-09
+ticket: TRN-208
+skip_specs: true  # pure bug-fix / refactor — no new or modified capability contracts

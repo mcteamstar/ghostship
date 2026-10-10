@@ -164,6 +164,153 @@ class IdleMonitorTests(unittest.TestCase):
         self.assertTrue(result["saved_regs"])
         self.assertEqual(result["saved_regs"][-1]["crews"]["idle-crew"]["status"], "stopped")
 
+    def test_touched_during_http_checks_skips_stop(self) -> None:
+        """3.3 (D3): a crew whose last_used advances during the HTTP activity
+        checks must NOT be stopped. The reaper re-reads last_used from the live
+        registry under the lock right before the stop and skips when it is now
+        within GA_IDLE_TIMEOUT_SECS.
+
+        The snapshot the reaper iterates shows the crew idle (last_used=0), but
+        a dispatch landing during the ~multi-second HTTP checks advances
+        last_used to 'now' in the live registry. The re-read must observe that
+        and skip the stop.
+        """
+        podman = IdleMonitorPodman(containers_running={"gs-raced": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        cron_resp = MockHTTPResponse(200, {"jobs": []})
+        fake_http = FakeHTTP([spawn_resp, cron_resp], default=FakeResponse(500))
+
+        # The idle snapshot (first _load_registry) shows last_used=0 → idle.
+        idle_snapshot = {"crews": {"raced": {
+            "container": "gs-raced", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+        # Every subsequent _load_registry (the TOCTOU re-read, and the
+        # post-stop write path) sees last_used advanced to 'now' — a dispatch
+        # that landed during the HTTP checks.
+        touched_registry = {"crews": {"raced": {
+            "container": "gs-raced", "status": "running", "cookie": "c", "last_used": 1000.0,
+        }}}
+        load_calls = [0]
+
+        def load_side_effect():
+            load_calls[0] += 1
+            # First call = the iteration snapshot (idle); all later calls =
+            # the live re-read showing the crew was just touched.
+            return idle_snapshot if load_calls[0] == 1 else touched_registry
+
+        sleep_called = [False]
+
+        def fake_sleep(secs):
+            if sleep_called[0]:
+                raise StopIteration()
+            sleep_called[0] = True
+
+        saved_regs: list[dict] = []
+        with (
+            patch.object(monitors, "_get_podman", return_value=podman),
+            patch.object(monitors, "_http", fake_http),
+            patch.object(monitors, "_touch_crew"),
+            patch.object(monitors, "_load_registry", side_effect=load_side_effect),
+            patch.object(monitors, "_save_registry", side_effect=lambda r: saved_regs.append(dict(r))),
+            patch.object(monitors, "_mint_cookie", return_value=None),
+            patch.object(monitors, "GA_IDLE_TIMEOUT_SECS", 300.0),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=1000.0),
+        ):
+            try:
+                server._idle_monitor()
+            except StopIteration:
+                pass
+
+        # The re-check saw last_used == now (within the 300s timeout) → no stop,
+        # and no "stopped" status write for this crew.
+        self.assertEqual(podman.stops, [])
+        self.assertFalse(
+            any("raced" in r.get("crews", {})
+                and r["crews"]["raced"].get("status") == "stopped"
+                for r in saved_regs),
+            f"crew was stopped despite being touched during checks: {saved_regs}",
+        )
+
+    def test_stop_is_atomic_with_recheck_under_lock(self) -> None:
+        """3.2 (D3): the container_stop call must happen while _registry_lock is
+        held, so a concurrent _touch_crew (which also acquires the same lock) cannot
+        slip between the re-check and the stop.
+
+        The test verifies that when container_stop is invoked the registry lock is
+        already held: we replace _registry_lock with a real threading.Lock, then
+        record inside container_stop whether the lock is currently held by checking
+        lock.locked(). If the stop is outside the lock, locked() returns False.
+        """
+        podman = IdleMonitorPodman(containers_running={"gs-atomic": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        cron_resp = MockHTTPResponse(200, {"jobs": []})
+        fake_http = FakeHTTP([spawn_resp, cron_resp], default=FakeResponse(500))
+
+        idle_snapshot = {"crews": {"atomic": {
+            "container": "gs-atomic", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+        # The re-read (inside the lock) shows the crew is still idle — stop proceeds.
+        still_idle_registry = {"crews": {"atomic": {
+            "container": "gs-atomic", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+        load_calls = [0]
+
+        def load_side_effect():
+            load_calls[0] += 1
+            return idle_snapshot if load_calls[0] == 1 else still_idle_registry
+
+        # Use a real lock so we can inspect its state inside container_stop.
+        real_lock = threading.Lock()
+        lock_held_during_stop = [None]  # True/False/None
+
+        class _AtomicPodman:
+            stops: list[str] = []
+
+            def container_is_running(self, name: str) -> bool:
+                return True
+
+            def container_stop(self, name: str) -> None:
+                # Record whether _registry_lock is held at the moment of the stop.
+                lock_held_during_stop[0] = real_lock.locked()
+                self.stops.append(name)
+
+        atomic_podman = _AtomicPodman()
+        sleep_called = [False]
+
+        def fake_sleep(secs):
+            if sleep_called[0]:
+                raise StopIteration()
+            sleep_called[0] = True
+
+        with (
+            patch.object(monitors, "_get_podman", return_value=atomic_podman),
+            patch.object(monitors, "_http", fake_http),
+            patch.object(monitors, "_touch_crew"),
+            patch.object(monitors, "_load_registry", side_effect=load_side_effect),
+            patch.object(monitors, "_save_registry"),
+            patch.object(monitors, "_mint_cookie", return_value=None),
+            patch.object(monitors, "_registry_lock", real_lock),
+            patch.object(monitors, "GA_IDLE_TIMEOUT_SECS", 300.0),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=1000.0),
+        ):
+            try:
+                server._idle_monitor()
+            except StopIteration:
+                pass
+
+        # The stop should have happened (crew was genuinely idle).
+        self.assertIn("gs-atomic", atomic_podman.stops,
+                      "expected the idle crew to be stopped")
+        # The decisive assertion: the lock must have been held when stop ran.
+        self.assertTrue(
+            lock_held_during_stop[0],
+            "container_stop was called OUTSIDE _registry_lock — the re-check and "
+            "stop are not atomic; a concurrent _touch_crew can slip between them "
+            "(task 3.2 / D3 design requirement)",
+        )
+
     def test_recently_used_crew_skipped(self) -> None:
         """4.4: recently used crew (within timeout) is skipped."""
         podman = IdleMonitorPodman(containers_running={"gs-recent": True})
@@ -728,21 +875,16 @@ class SchedulePersistenceTests(unittest.TestCase):
     def test_captain_order_writes_schedule_entry(self) -> None:
         """7.1 — captain(action='order') writes schedule entry to registry."""
         reg = self._make_registry()
+        # Add enrolled_agents so dispatch can find raven
+        reg["crews"]["demo"]["enrolled_agents"] = ["raven"]
         save_calls = []
 
         def fake_save(r):
             save_calls.append(json.loads(json.dumps(r)))
 
-        jobs_listing = {"jobs": []}
-        created_job = {"id": "cap-job-1", "name": "captain", "schedule": "every 300s"}
-
         def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "POST" and path == "/api/crons":
-                return created_job
             if method == "POST" and "/api/spawn" in path:
-                return {"id": "spawn-1"}
+                return {"id": "task-1"}
             return {}
 
         fake_podman = SetupPodman()
@@ -769,13 +911,14 @@ class SchedulePersistenceTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ordered")
-        self.assertEqual(result["job_id"], "cap-job-1")
-        # Verify registry was written with schedule entry
+        # New model: no gateway job_id
+        self.assertIsNone(result["job_id"])
+        # Verify registry was written with captain schedule entry
         self.assertTrue(len(save_calls) > 0)
         last_reg = save_calls[-1]
         schedules = last_reg["crews"]["demo"]["schedules"]
         self.assertEqual(len(schedules), 1)
-        self.assertEqual(schedules[0]["job_id"], "cap-job-1")
+        self.assertEqual(schedules[0]["type"], "captain")
         self.assertEqual(schedules[0]["name"], "captain")
         self.assertEqual(schedules[0]["agent"], "raven")
         self.assertEqual(schedules[0]["model"], "claude-opus-5")
@@ -905,31 +1048,16 @@ class SchedulePersistenceTests(unittest.TestCase):
         """7.x — captain resume sets next_fire_at ≈ now + interval in registry."""
         interval = 300
         reg = self._make_registry(schedules=[
-            # Existing disabled entry — the resume path will re-enable it
-            {"job_id": "cap-job-1", "name": "captain", "interval_secs": interval,
+            # Existing disabled captain entry (new model: type==captain)
+            {"type": "captain", "name": "captain", "interval_secs": interval,
              "cron_expr": None, "agent": "raven", "enabled": False,
-             "next_fire_at": 0.0},
+             "next_fire_at": 0.0, "current_task_id": None},
         ])
+        reg["crews"]["demo"]["enrolled_agents"] = ["raven"]
         save_calls = []
 
         def fake_save(r):
             save_calls.append(json.loads(json.dumps(r)))
-
-        # Gateway has the job disabled (resume path: existing_job != None, enabled_job == None)
-        existing_job = {"id": "cap-job-1", "name": "captain", "schedule": f"every {interval}s",
-                        "enabled": False, "agent": "raven"}
-        jobs_listing = {"jobs": [existing_job]}
-
-        def api(_crew, _crew_id, method, path, **kwargs):
-            if method == "GET" and path == "/api/crons":
-                return jobs_listing
-            if method == "POST" and path == f"/api/crons/{existing_job['id']}/enable":
-                return {"ok": True}
-            if method == "POST" and path == "/api/crons":
-                return {"id": "cap-job-1", "schedule": f"every {interval}s"}
-            if method == "POST" and "/api/spawn" in path:
-                return {"id": "spawn-1"}
-            return {}
 
         fake_podman = SetupPodman()
         fake_podman.container_exec = lambda *a, **kw: ""
@@ -940,8 +1068,6 @@ class SchedulePersistenceTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
-            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
-            patch.object(server, "_crew_api_with_recovery", side_effect=api),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
@@ -1443,13 +1569,11 @@ class FireImmediatelyTests(unittest.TestCase):
         """3.7 — captain(action="order") with interval and new check-in → immediate Raven dispatch."""
         podman = Mock()
         spawn_calls: list[dict] = []
+        reg = {"crews": {"demo": {"container": "gs-demo", "cookie": "cookie",
+                                  "enrolled_agents": ["raven"], "schedules": []}}}
 
-        def api(_crew, method, path, **kwargs):
-            if method == "GET":
-                return {"jobs": []}
-            if method == "POST" and path == "/api/crons":
-                return {"id": "job-1", "enabled": True}
-            if method == "POST" and path == "/api/spawn":
+        def api(_crew, _crew_id, method, path, **kwargs):
+            if method == "POST" and "/api/spawn" in path:
                 spawn_calls.append(kwargs.get("json", {}))
                 return {"id": "immediate-task"}
             return {}
@@ -1462,8 +1586,12 @@ class FireImmediatelyTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
+            patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
+            patch.object(server, "_crew_api_with_recovery", side_effect=api),
         ):
             result = server.captain(
                 "demo", "order", message="hold", interval=120,
@@ -1471,27 +1599,33 @@ class FireImmediatelyTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ordered")
-        # Exactly one immediate dispatch to Raven
+        # Exactly one immediate dispatch to Raven with member-raven slot
         self.assertEqual(len(spawn_calls), 1)
         self.assertEqual(spawn_calls[0]["agent"], "raven")
+        self.assertEqual(spawn_calls[0]["parent_session"], "dashboard:member-raven")
         self.assertEqual(spawn_calls[0]["model"], "claude-opus-5")
 
     def test_captain_order_resume_no_immediate_dispatch(self) -> None:
-        """3.8 — captain(action="order") resume of paused job → no immediate dispatch."""
-        existing = {
-            "id": "job-paused",
-            "name": server._CAPTAIN_CHECKIN_JOB_NAME,
-            "agent": "raven",
+        """3.8 — captain(action="order") resume of paused captain entry → no immediate dispatch."""
+        existing_entry = {
+            "type": "captain",
+            "name": "captain",
             "enabled": False,
+            "interval_secs": 300,
+            "cron_expr": None,
+            "next_fire_at": 9999999999.0,
+            "current_task_id": "task-paused",
+            "model": None,
         }
+        reg = {"crews": {"demo": {"container": "gs-demo", "cookie": "cookie",
+                                  "enrolled_agents": ["raven"],
+                                  "schedules": [existing_entry]}}}
         podman = Mock()
-        api_paths: list[str] = []
+        spawn_paths: list[str] = []
 
-        def api(_crew, method, path, **kwargs):
-            api_paths.append(f"{method} {path}")
-            if method == "GET":
-                return {"jobs": [existing]}
-            return {"ok": True}
+        def api(_crew, _crew_id, method, path, **kwargs):
+            spawn_paths.append(f"{method} {path}")
+            return {"id": "task-1"}
 
         with (
             patch.object(lifecycle, "_require_crew", return_value=self.CREW),
@@ -1501,14 +1635,18 @@ class FireImmediatelyTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
-            patch.object(lifecycle, "_crew_api", side_effect=api),
-            patch.object(server, "_crew_api", side_effect=api),
+            patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
+            patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
+            patch.object(server, "_crew_api_with_recovery", side_effect=api),
         ):
             result = server.captain("demo", "order", message="resume this")
 
-        self.assertEqual(result["job_id"], "job-paused")
-        # No immediate dispatch for a resume
-        self.assertNotIn("POST /api/spawn", api_paths)
+        self.assertEqual(result["status"], "ordered")
+        # No immediate dispatch for a resume (fire_immediately not set)
+        self.assertFalse(any("spawn" in p for p in spawn_paths))
 class DispatchFireAfterTests(unittest.TestCase):
     """Tests for schedule(delay=...)."""
 
@@ -1572,3 +1710,64 @@ class DispatchFireAfterTests(unittest.TestCase):
             )
 
         self.assertEqual(result, {"error": "delay must be >= 1"})
+
+
+class IdleMonitorResilienceTests(unittest.TestCase):
+    """0.6.0 review fixes: the reaper survives errors and records skip reasons."""
+
+    def _crew(self, cid: str) -> dict:
+        return {"container": f"gs-{cid}", "cookie": "c", "last_used": 0, "status": "running"}
+
+    def _run_loop(self, podman, registry_side_effect, http_responses, iterations: int = 1):
+        calls = [0]
+
+        def fake_sleep(secs: float) -> None:
+            calls[0] += 1
+            if calls[0] > iterations:
+                raise StopIteration()
+
+        with (
+            patch.object(monitors, "_get_podman", return_value=podman),
+            patch.object(monitors, "_http", FakeHTTP(list(http_responses), default=FakeResponse(200, json_data={"agents": []}))),
+            patch.object(monitors, "_touch_crew"),
+            patch.object(monitors, "_load_registry", side_effect=registry_side_effect),
+            patch.object(monitors, "_save_registry"),
+            patch.object(monitors, "_mint_cookie", return_value=None),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=10_000.0),
+        ):
+            try:
+                monitors._idle_monitor()
+            except StopIteration:
+                pass
+
+    def test_iteration_error_does_not_end_the_monitor(self):
+        podman = IdleMonitorPodman()
+        regs = [RuntimeError("registry unreadable"), {"crews": {"a": self._crew("a")}}, {"crews": {"a": self._crew("a")}}]
+        responses = [MockHTTPResponse(200, {"agents": []}), MockHTTPResponse(200, {"jobs": []})]
+        with self.assertLogs(monitors.logger, level="ERROR") as logs:
+            self._run_loop(podman, regs, responses, iterations=2)
+        self.assertTrue(any("Idle monitor iteration failed" in m for m in logs.output))
+        self.assertEqual(podman.stops, ["gs-a"], "second iteration must still reap the idle crew")
+
+    def test_one_stop_failure_does_not_block_other_crews(self):
+        class FlakyPodman(IdleMonitorPodman):
+            def container_stop(self, name: str) -> None:
+                if name == "gs-a":
+                    raise RuntimeError("podman 500")
+                super().container_stop(name)
+
+        podman = FlakyPodman()
+        reg = {"crews": {"a": self._crew("a"), "b": self._crew("b")}}
+        responses = [MockHTTPResponse(200, {"agents": []}), MockHTTPResponse(200, {"jobs": []})] * 2
+        self._run_loop(podman, lambda: dict(reg), responses + [MockHTTPResponse(200, {})] * 4)
+        self.assertEqual(podman.stops, ["gs-b"])
+
+    def test_skip_reason_logged_once_when_unchanged(self):
+        monitors._idle_skip_reasons.clear()
+        with self.assertLogs(monitors.logger, level="INFO") as logs:
+            monitors._note_idle_skip("a", "cron job enabled or recently ran")
+            monitors._note_idle_skip("a", "cron job enabled or recently ran")
+            monitors._note_idle_skip("a", "tasks running")
+        kept = [m for m in logs.output if "kept running" in m]
+        self.assertEqual(len(kept), 2)

@@ -325,5 +325,89 @@ class PodmanSecretTests(unittest.TestCase):
         self.assertNotIn("secrets", captured["json"])
 
 
+class ContainerStateErrorSemanticsTests(unittest.TestCase):
+    """D4 (task 4.5): ``container_exists`` / ``container_is_running`` must map a
+    404 to ``False`` but RAISE on any other non-200 (transient Podman error),
+    instead of the old behaviour of returning ``False`` on every non-200 and
+    thereby hiding a daemon restart / socket error as "container absent".
+    """
+
+    def _client(self):
+        client = podman.PodmanClient.__new__(podman.PodmanClient)
+        client._sock_path = "/nonexistent.sock"
+        return client
+
+    class _Resp:
+        def __init__(self, status_code: int, body: dict | None = None) -> None:
+            self.status_code = status_code
+            self._body = body or {}
+
+        def json(self) -> dict:
+            return self._body
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                import httpx2 as httpx
+                raise httpx.HTTPStatusError(
+                    f"HTTP {self.status_code}", request=None, response=self
+                )
+
+    def _http_returning(self, resp):
+        outer = self
+
+        class FakeHTTP:
+            def get(self_inner, path, **kwargs):
+                return resp
+        _ = outer
+        return FakeHTTP()
+
+    # ── container_exists ──────────────────────────────────────────────────────
+
+    def test_container_exists_200_true(self) -> None:
+        client = self._client()
+        client._c = self._http_returning(self._Resp(200))
+        self.assertTrue(client.container_exists("gs-demo"))
+
+    def test_container_exists_404_false(self) -> None:
+        client = self._client()
+        client._c = self._http_returning(self._Resp(404))
+        self.assertFalse(client.container_exists("gs-demo"))
+
+    def test_container_exists_500_raises(self) -> None:
+        import httpx2 as httpx
+        client = self._client()
+        client._c = self._http_returning(self._Resp(500))
+        with self.assertRaises(httpx.HTTPStatusError):
+            client.container_exists("gs-demo")
+
+    # ── container_is_running ──────────────────────────────────────────────────
+
+    def test_container_is_running_200_running_true(self) -> None:
+        client = self._client()
+        client._c = self._http_returning(
+            self._Resp(200, {"State": {"Status": "running"}})
+        )
+        self.assertTrue(client.container_is_running("gs-demo"))
+
+    def test_container_is_running_200_stopped_false(self) -> None:
+        client = self._client()
+        client._c = self._http_returning(
+            self._Resp(200, {"State": {"Status": "exited"}})
+        )
+        self.assertFalse(client.container_is_running("gs-demo"))
+
+    def test_container_is_running_404_false(self) -> None:
+        client = self._client()
+        client._c = self._http_returning(self._Resp(404))
+        self.assertFalse(client.container_is_running("gs-demo"))
+
+    def test_container_is_running_500_raises(self) -> None:
+        import httpx2 as httpx
+        client = self._client()
+        client._c = self._http_returning(self._Resp(500))
+        with self.assertRaises(httpx.HTTPStatusError):
+            client.container_is_running("gs-demo")
+
+
 if __name__ == "__main__":
     unittest.main()

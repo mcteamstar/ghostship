@@ -357,8 +357,10 @@ class TestErrorMessages(unittest.TestCase):
 
         msg = str(ctx.exception)
         self.assertIn("my-crew", msg)
-        self.assertIn("restart", msg)
-        self.assertIn("Suggestion:", msg)
+        self.assertIn("POST", msg)  # names the method
+        # Non-idempotent POST after gateway restart — new behaviour: does not
+        # retry, reports the method rather than a generic "Suggestion:" message.
+        self.assertIn("non-idempotent", msg)
 
     def test_no_traceback_leak(self):
         """Error messages do not contain tracebacks or raw HTTP bodies."""

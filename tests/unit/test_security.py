@@ -154,6 +154,38 @@ class TestSessions(unittest.TestCase):
         s = sec.SessionStore()
         self.assertFalse(s.validate("never-issued"))
 
+    def test_issued_map_stays_bounded_after_expiry(self):
+        """_issued map is pruned on the next issue() after tokens expire.
+
+        Tokens that expire without being re-presented to validate() would
+        accumulate forever if _issued were not swept; this test confirms
+        the sweep runs on issue() so the map stays bounded.
+        """
+        s = sec.SessionStore(lifetime_secs=1.0)
+        # Issue 500 tokens at t=0 — all expire by t=2.
+        for _ in range(500):
+            s.issue(now=0.0)
+        self.assertEqual(len(s._issued), 500)
+        # One more issue at t=2 (past expiry) triggers the sweep.
+        s.issue(now=2.0)
+        # The 500 expired tokens should be gone; only the one new token remains.
+        self.assertEqual(len(s._issued), 1)
+
+    def test_revoked_set_stays_bounded_after_expiry(self):
+        """_revoked set is pruned of stale entries (tokens no longer in _issued).
+
+        Revoked tokens whose _issued entry has been swept no longer need to
+        live in _revoked; this test confirms they are removed by _sweep().
+        """
+        s = sec.SessionStore(lifetime_secs=1.0)
+        tok = s.issue(now=0.0)
+        s.revoke(tok)
+        # tok is removed from _issued immediately by revoke(); _revoked holds it.
+        self.assertIn(tok, s._revoked)
+        # A new issue at t=2 triggers _sweep(), which removes stale revocations.
+        s.issue(now=2.0)
+        self.assertNotIn(tok, s._revoked)
+
 
 # ── input-validation ─────────────────────────────────────────────────────────
 

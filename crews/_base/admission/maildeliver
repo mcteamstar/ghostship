@@ -23,6 +23,15 @@ LOCAL="${RECIPIENT%%@*}"
 # Strip plus-extension to get base persona
 BASE="${LOCAL%%+*}"
 
+# Validate BASE before constructing any filesystem path: a lowercase letter
+# followed by lowercase letters, digits, underscores, or hyphens only. This
+# rejects path-traversal (../), separators (/), dotfiles, uppercase, empty, and
+# whitespace inputs before any mkdir/write occurs.
+if ! [[ "$BASE" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+    echo "maildeliver: invalid recipient base '${BASE}' (must match ^[a-z][a-z0-9_-]*\$)" >&2
+    exit 1
+fi
+
 MAILDIR="/var/mail/${BASE}"
 
 # Ensure Maildir structure exists

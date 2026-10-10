@@ -107,7 +107,231 @@ UNAUTHENTICATED  ──[POST /login]──►  PENDING  ──[GET /login → co
 
 ---
 
-## MCP API-key authentication (`GA_API_KEY`)
+## Claude OAuth login (TRN-170)
+
+`ga-claude-auth` is a tar archive of `~/.claude/` (the credential directory written
+by the `claude` CLI), stored at `DATA_DIR/ga-claude-auth` (mode `0600`).
+
+This path is an alternative to `GA_CREW_ANTHROPIC_API_KEY` for operators with a
+Claude Pro/Max subscription who prefer not to maintain a separate API-tier account.
+
+### Prerequisites
+
+1. Enable the Claude backend: add `claude` to `GA_AGENT_BACKENDS` in your
+   `ghostship.conf` and re-run `ghostship install`, which builds the `claude` CLI
+   into the crew image.
+2. To make Claude the default for new crews, also set `GA_CREW_ACP_BACKEND=claude`.
+   Login works whenever `claude` is enabled, even while another backend is the
+   default.
+
+### Authenticate
+
+**1. Start the login flow**
+
+```bash
+curl -sX POST http://localhost:64057/login/claude | jq
+```
+
+```json
+{
+  "status": "pending",
+  "login_url": "https://claude.com/cai/oauth/authorize?...",
+  "code": null
+}
+```
+
+**2. Approve in your browser.** Open `login_url` and sign in with your Claude
+account (Pro or Max). After approval, the browser shows a code of the form
+`<code>#<state>`. Copy it.
+
+**3. Submit the code** (the second step, required for Claude):
+
+```bash
+curl -sX POST http://localhost:64057/login/claude/code \
+  -H 'Content-Type: application/json' \
+  -d '{"code": "<code>#<state>"}'
+# → 202 {"status": "submitted"}
+```
+
+The transport writes the code to the CLI and the token exchange runs. Submit it
+once; a second submission returns 409. The code is never logged.
+
+**4. Confirm completion**
+
+```bash
+curl -s http://localhost:64057/login/claude | jq .status
+# → "pending" until the credential is saved, then "complete"
+```
+
+Completion means `~/.claude/.credentials.json` exists and is non-empty inside the
+login container. Other files, such as the `backups/` directory, do not count.
+
+If no code is submitted within 15 minutes of starting the login, the poll also returns `410`. If the exchange does not finish within 120 seconds of submitting the code, the
+poll returns `410` with `{"status": "expired"}`, the login container is removed,
+and the audit log records a failed login. Start again from step 1.
+
+**5. Launch** — the transport is ready. Each new crew will receive `~/.claude/`
+injected at setup time.
+
+### Re-authenticate
+
+Claude OAuth tokens may expire. To refresh:
+
+```bash
+# Clear the old credential
+curl -sX POST http://localhost:64057/logout/claude
+
+# Start a fresh login flow
+curl -sX POST http://localhost:64057/login/claude | jq
+```
+
+### Logout
+
+```bash
+curl -sX POST http://localhost:64057/logout/claude
+```
+
+This deletes `ga-claude-auth` and runs `rm -rf ~/.claude/` inside every running
+Claude-backend crew. Existing crew sessions become unauthenticated; relaunch them
+after logging in again.
+
+### Credential precedence
+
+When both `GA_CREW_ANTHROPIC_API_KEY` and `ga-claude-auth` are present, the API key
+takes precedence. OAuth credentials are only used when the API key is unset.
+
+### Claude OAuth API
+
+Four HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
+`GA_API_KEY` is set. Available only while `claude` is in `GA_AGENT_BACKENDS`; otherwise `POST /login/claude` and `POST /login/claude/code` return 400 naming `GA_AGENT_BACKENDS`. Logout always works.
+
+```
+UNAUTHENTICATED  ──[POST /login/claude]──►  PENDING  ──[POST /login/claude/code]──►  CODE SUBMITTED  ──[GET /login/claude → complete]──►  AUTHENTICATED
+                                                                                               │
+               ◄──────────────────────────────────────[POST /logout/claude]────────────────────┘
+```
+
+**`POST /login/claude`** — starts the Claude OAuth authorisation flow inside an
+ephemeral `ga-claude-login-*` container. Returns `{"login_url": "...", "code": null}`.
+Returns 409 if already authenticated or flow in progress.
+
+**`POST /login/claude/code`** — body `{"code": "<code>#<state>"}`, the value the browser
+shows after approval. Writes it to the CLI and returns 202. Returns 404 if no flow
+is awaiting a code, 409 if a code was already submitted, and 400 for a malformed body.
+The code is never logged.
+
+**`GET /login/claude`** — polls completion. On success writes `ga-claude-auth` and
+returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
+Returns 404 if no flow is in progress, and 410 `{"status": "expired"}` when a
+submitted code did not complete within 120 seconds.
+
+**`POST /logout/claude`** — deletes `ga-claude-auth` and wipes `~/.claude/` from
+every running Claude-backend crew. Returns 409 if not authenticated via OAuth.
+
+---
+
+## Codex OAuth login (TRN-172)
+
+`ga-codex-auth` is a tar archive of `~/.codex/` (the credential directory holding
+`auth.json`, written by the Codex login flow), stored at `DATA_DIR/ga-codex-auth`
+(mode `0600`).
+
+This path is an alternative to `GA_CREW_OPENAI_API_KEY` for operators with a
+ChatGPT subscription who prefer not to maintain a separate API-tier account.
+
+### Prerequisites
+
+1. Enable the Codex backend: add `codex` to `GA_AGENT_BACKENDS` in your
+   `ghostship.conf` and re-run `ghostship install`, which builds the `codex-acp`
+   adapter into the crew image (ONE package — it ships its own Codex binary).
+2. To make Codex the default for new crews, also set `GA_CREW_ACP_BACKEND=codex`.
+   Login works whenever `codex` is enabled, even while another backend is the
+   default.
+
+### Authenticate
+
+**1. Trigger the Codex login flow**
+
+```bash
+curl -sX POST http://localhost:64057/login/codex | jq
+```
+
+```json
+{
+  "status": "pending",
+  "login_url": "https://auth.openai.com/...",
+  "code": null
+}
+```
+
+The `code` field may be `null` — the Codex login flow can surface a browser-based
+sign-in with no separate device code.
+
+**2. Open the URL in your browser** and approve the request using your OpenAI /
+ChatGPT account.
+
+**3. Confirm completion**
+
+```bash
+curl -s http://localhost:64057/login/codex | jq .status
+# → "complete"
+```
+
+**4. Launch** — the transport is ready. Each new crew will receive `~/.codex/`
+injected at setup time.
+
+### Re-authenticate
+
+Codex OAuth tokens may expire. To refresh:
+
+```bash
+# Clear the old credential
+curl -sX POST http://localhost:64057/logout/codex
+
+# Start a fresh login flow
+curl -sX POST http://localhost:64057/login/codex | jq
+```
+
+### Logout
+
+```bash
+curl -sX POST http://localhost:64057/logout/codex
+```
+
+This deletes `ga-codex-auth` and runs `rm -rf ~/.codex/` inside every running
+Codex-backend crew. Existing crew sessions become unauthenticated; relaunch them
+after logging in again.
+
+### Credential precedence
+
+When both `GA_CREW_OPENAI_API_KEY` and `ga-codex-auth` are present, the API key
+takes precedence. OAuth credentials are only used when the API key is unset.
+
+### Codex OAuth API
+
+Three HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
+`GA_API_KEY` is set. Available only while `codex` is in `GA_AGENT_BACKENDS`; otherwise `POST /login/codex` returns 400 naming `GA_AGENT_BACKENDS`. Logout always works.
+
+```
+UNAUTHENTICATED  ──[POST /login/codex]──►  PENDING  ──[GET /login/codex → complete]──►  AUTHENTICATED
+                                                                                              │
+              ◄──────────────────────────────────────[POST /logout/codex]────────────────────┘
+```
+
+**`POST /login/codex`** — starts the Codex OAuth login flow inside an ephemeral
+`ga-codex-login-*` container. Returns `{"status": "pending", "login_url": "..."}`.
+Returns 409 if already authenticated or a flow is in progress, and 400 if
+`codex` is not in `GA_AGENT_BACKENDS`.
+
+**`GET /login/codex`** — polls completion. On success writes `ga-codex-auth` and
+returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
+Returns 404 if no flow is in progress.
+
+**`POST /logout/codex`** — deletes `ga-codex-auth` and wipes `~/.codex/` from
+every running Codex-backend crew. Idempotent: returns 200 even when already
+unauthenticated (nothing to clear).
+
+---
 
 An optional static bearer credential protecting the MCP endpoint.
 

@@ -60,7 +60,12 @@ def _load_registry() -> dict:
             "registry corrupt — crews.json.corrupt preserved for inspection"
         ) from e
     except Exception as e:
-        logger.warning("Failed to load registry: %s", e)
+        # Re-raise so callers can decide: returning an empty dict here caused
+        # a subsequent _save_registry call to silently clobber every crew.
+        # Background-thread callers (monitors, lifecycle) must catch explicitly
+        # and fail-open; MCP tool handlers let this propagate to the boundary.
+        logger.error("Failed to load registry: %s", e)
+        raise
     return {"crews": {}}
 
 
@@ -96,11 +101,19 @@ def _get_crew_schedules(reg: dict, crew_id: str) -> list:
 
 
 def _upsert_crew_schedule(reg: dict, crew_id: str, job: dict) -> None:
-    """Insert or update a schedule entry by job_id."""
+    """Insert or update a schedule entry by job_id (or type for captain entries)."""
     crew_entry = reg.get("crews", {}).get(crew_id)
     if crew_entry is None:
         return
     schedules = crew_entry.setdefault("schedules", [])
+    # Captain entries are matched by type, not job_id (they have no gateway job_id)
+    if job.get("type") == "captain":
+        for i, existing in enumerate(schedules):
+            if existing.get("type") == "captain":
+                schedules[i] = job
+                return
+        schedules.append(job)
+        return
     job_id = job.get("job_id")
     for i, existing in enumerate(schedules):
         if existing.get("job_id") == job_id:

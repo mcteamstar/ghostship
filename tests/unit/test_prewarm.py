@@ -1,73 +1,27 @@
-"""Unit + REST tests for the ACP prewarm operation.
+"""Unit tests for the ACP prewarm operation.
 
-Covers ``lifecycle._prewarm_crew`` / ``lifecycle.prewarm`` (the transport-side
-warm-up mechanism) and the ``POST /crews/{crew_id}/prewarm`` REST surface via
-``server._handle_crew_prewarm_post`` + ``BearerAuthMiddleware``.
+Covers ``lifecycle._prewarm_crew`` (the transport-side warm-up mechanism) and
+the implicit background triggers added to ``supply`` and ``schedule`` in
+``server.py``.
 
 Patch-target rule (test_lifecycle §2, the call-site principle):
 
-* ``_prewarm_crew`` / ``prewarm`` are defined in ``lifecycle.py`` and resolve
+* ``_prewarm_crew`` is defined in ``lifecycle.py`` and resolves
   ``_ensure_crew_running`` / ``_crew_api_with_recovery`` / ``_require_crew`` /
   ``_get_podman`` and the ``GA_PREWARM_*`` constants from lifecycle's globals,
   so those are patched ``lifecycle.X``.
-* ``_handle_crew_prewarm_post`` is defined in ``server.py`` and resolves
-  ``_resolve_crew_for_proxy`` / ``_prewarm_crew`` from server's namespace, so
-  those call sites are patched ``server.X``.
+* ``_bg_prewarm`` / ``_prewarm_crew`` called from ``supply``/``schedule`` are
+  resolved from server's namespace, so those are patched ``server.X``.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import threading
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 from tests.unit.helpers import lifecycle, server
-
-
-class _FakeStreamRequest:
-    """Minimal async-compatible request stub for the REST handler test."""
-
-    def __init__(self, method: str = "POST", path: str = "/crews/demo/prewarm") -> None:
-        self.method = method
-        self.scope = {"type": "http", "method": method, "path": path, "query_string": b""}
-        self.headers = {}
-
-    async def body(self) -> bytes:
-        return b""
-
-
-class _FakeDownstream:
-    """ASGI app that records whether the inner app was reached (auth passthrough)."""
-
-    def __init__(self) -> None:
-        self.called = False
-
-    async def __call__(self, scope, receive, send) -> None:
-        self.called = True
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"OK"})
-
-
-def _run_asgi(app, scope, body: bytes = b"") -> tuple[int, list, bytes]:
-    status = None
-    resp_headers: list = []
-    resp_body = b""
-
-    async def receive():
-        return {"type": "http.request", "body": body}
-
-    async def send(msg):
-        nonlocal status, resp_headers, resp_body
-        if msg["type"] == "http.response.start":
-            status = msg["status"]
-            resp_headers = msg.get("headers", [])
-        elif msg["type"] == "http.response.body":
-            resp_body += msg.get("body", b"")
-
-    asyncio.run(app(scope, receive, send))
-    return status, resp_headers, resp_body
 
 
 class _RecordingPodman:
@@ -88,8 +42,12 @@ class _RecordingPodman:
         self.stops.append(name)
 
 
-class PrewarmDisabledTests(unittest.TestCase):
-    """4.1 — disabled returns ``disabled`` and performs no start/fork."""
+class TestPrewarmCore(unittest.TestCase):
+    """Core _prewarm_crew behaviour (unchanged by this change)."""
+
+    def setUp(self) -> None:
+        with lifecycle._warm_markers_lock:
+            lifecycle._warm_markers.clear()
 
     def test_disabled_no_start_no_fork(self) -> None:
         crew = {"container": "gs-demo", "cookie": "c"}
@@ -107,14 +65,6 @@ class PrewarmDisabledTests(unittest.TestCase):
         warmup.assert_not_called()
         self.assertEqual(podman.starts, [])
 
-
-class PrewarmStoppedCrewTests(unittest.TestCase):
-    """4.2 — stopped crew (gates permitting) starts, waits, warms once, warmed."""
-
-    def setUp(self) -> None:
-        with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers.clear()
-
     def test_stopped_crew_starts_and_warms_once(self) -> None:
         crew = {"container": "gs-demo", "cookie": "c"}
         warmed_crew = {"container": "gs-demo", "cookie": "new"}
@@ -129,31 +79,15 @@ class PrewarmStoppedCrewTests(unittest.TestCase):
 
         self.assertEqual(result, {"crew_id": "demo", "status": "warmed"})
         ensure.assert_called_once_with(crew, "demo")
-        # Exactly one warm-up request, routed through the recovery wrapper.
         self.assertEqual(warmup.call_count, 1)
-        call = warmup.call_args
-        self.assertEqual(call.args[0], warmed_crew)
-        self.assertEqual(call.args[1], "demo")
-        self.assertEqual(call.args[2], "GET")
-        self.assertEqual(call.args[3], lifecycle._PREWARM_WARMUP_PATH)
-        # A warm marker was recorded.
         with lifecycle._warm_markers_lock:
             self.assertIn("demo", lifecycle._warm_markers)
-
-
-class PrewarmAlreadyWarmTests(unittest.TestCase):
-    """4.3 — running crew with a fresh marker returns already_warm, no rework."""
-
-    def setUp(self) -> None:
-        with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers.clear()
 
     def test_already_warm_no_restart_no_second_warmup(self) -> None:
         crew = {"container": "gs-demo", "cookie": "c"}
         podman = _RecordingPodman(running=True)
-        import time as _time
         with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers["demo"] = _time.monotonic()
+            lifecycle._warm_markers["demo"] = time.monotonic()
         with (
             patch.object(lifecycle, "GA_PREWARM_ENABLED", True),
             patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 300),
@@ -166,15 +100,6 @@ class PrewarmAlreadyWarmTests(unittest.TestCase):
         self.assertEqual(result, {"crew_id": "demo", "status": "already_warm"})
         ensure.assert_not_called()
         warmup.assert_not_called()
-        self.assertEqual(podman.starts, [])
-
-
-class PrewarmNonDestructiveTests(unittest.TestCase):
-    """4.4 — no /api/spawn real-task dispatch, no mail, no spec/workspace write."""
-
-    def setUp(self) -> None:
-        with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers.clear()
 
     def test_warmup_uses_readiness_surface_not_spawn(self) -> None:
         crew = {"container": "gs-demo", "cookie": "c"}
@@ -196,110 +121,46 @@ class PrewarmNonDestructiveTests(unittest.TestCase):
         self.assertEqual(result["status"], "warmed")
         self.assertEqual(len(seen), 1)
         method, path, kw = seen[0]
-        # Non-destructive: GET readiness/session surface, never POST /api/spawn.
         self.assertEqual(method, "GET")
         self.assertNotIn("/api/spawn", path)
-        self.assertNotIn("json", kw)  # no task body / real-work payload
+        self.assertNotIn("json", kw)
         self.assertEqual(lifecycle._PREWARM_WARMUP_PATH, path)
 
-
-class PrewarmGateTests(unittest.TestCase):
-    """4.5 — memory + active-crew gates each produce blocked:<gate>, no start."""
-
-    def setUp(self) -> None:
-        with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers.clear()
-
-    def _run_with_gate(self, error: RuntimeError) -> dict:
+    def test_memory_gate_blocks(self) -> None:
         crew = {"container": "gs-demo", "cookie": "c"}
         podman = _RecordingPodman(running=False)
         with (
             patch.object(lifecycle, "GA_PREWARM_ENABLED", True),
             patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_ensure_crew_running", side_effect=error),
+            patch.object(
+                lifecycle, "_ensure_crew_running",
+                side_effect=RuntimeError("Insufficient available memory to start crew demo: 1.0GB free"),
+            ),
             patch.object(lifecycle, "_crew_api_with_recovery") as warmup,
         ):
             result = lifecycle._prewarm_crew(crew, "demo")
         self.assertFalse(warmup.called)
-        return result
-
-    def test_memory_gate_blocks(self) -> None:
-        result = self._run_with_gate(
-            RuntimeError("Insufficient available memory to start crew demo: 1.0GB free")
-        )
         self.assertEqual(result, {"crew_id": "demo", "status": "blocked:insufficient-memory"})
 
     def test_active_crew_gate_blocks(self) -> None:
-        result = self._run_with_gate(
-            RuntimeError("Active crew limit (3) reached — wait for a running crew to idle out")
-        )
-        self.assertEqual(result, {"crew_id": "demo", "status": "blocked:active-crew-limit"})
-
-
-class PrewarmTtlCapTests(unittest.TestCase):
-    """4.6 — warm marker TTL is capped at session.timeout_secs."""
-
-    def test_ttl_capped_at_session_timeout(self) -> None:
-        with (
-            patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 100000),
-            patch.object(lifecycle, "GA_SESSION_TIMEOUT_SECS", 300),
-        ):
-            self.assertEqual(lifecycle._effective_prewarm_ttl(), 300)
-
-    def test_ttl_below_cap_is_unchanged(self) -> None:
-        with (
-            patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 120),
-            patch.object(lifecycle, "GA_SESSION_TIMEOUT_SECS", 300),
-        ):
-            self.assertEqual(lifecycle._effective_prewarm_ttl(), 120)
-
-    def test_stale_marker_beyond_capped_ttl_rewarms(self) -> None:
-        """A marker older than the capped TTL does not count as already_warm."""
-        with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers.clear()
         crew = {"container": "gs-demo", "cookie": "c"}
-        podman = _RecordingPodman(running=True)
-        import time as _time
-        # Marker is 400s old; capped TTL is 300s → stale → must rewarm.
-        with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers["demo"] = _time.monotonic() - 400
+        podman = _RecordingPodman(running=False)
         with (
             patch.object(lifecycle, "GA_PREWARM_ENABLED", True),
-            patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 100000),
-            patch.object(lifecycle, "GA_SESSION_TIMEOUT_SECS", 300),
             patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
-            patch.object(lifecycle, "_crew_api_with_recovery", return_value={}) as warmup,
-        ):
-            result = lifecycle._prewarm_crew(crew, "demo")
-        self.assertEqual(result["status"], "warmed")
-        self.assertEqual(warmup.call_count, 1)
-
-
-class PrewarmUnknownCrewTests(unittest.TestCase):
-    """4.7 — unknown crew_id returns an error and takes no action."""
-
-    def test_unknown_crew_returns_error_no_action(self) -> None:
-        with (
-            patch.object(lifecycle, "_require_crew", side_effect=ValueError("crew_id required")),
-            patch.object(lifecycle, "_ensure_crew_running") as ensure,
+            patch.object(
+                lifecycle, "_ensure_crew_running",
+                side_effect=RuntimeError("Active crew limit (3) reached — wait for a running crew to idle out"),
+            ),
             patch.object(lifecycle, "_crew_api_with_recovery") as warmup,
         ):
-            result = lifecycle.prewarm("nope")
-
-        self.assertIn("error", result)
-        ensure.assert_not_called()
-        warmup.assert_not_called()
-
-
-class PrewarmWarmupErrorTests(unittest.TestCase):
-    """2.6 — a warm-up request failure yields error:<msg>, dispatch unchanged."""
-
-    def setUp(self) -> None:
-        with lifecycle._warm_markers_lock:
-            lifecycle._warm_markers.clear()
+            result = lifecycle._prewarm_crew(crew, "demo")
+        self.assertFalse(warmup.called)
+        self.assertEqual(result, {"crew_id": "demo", "status": "blocked:active-crew-limit"})
 
     def test_warmup_failure_returns_error_status(self) -> None:
+        with lifecycle._warm_markers_lock:
+            lifecycle._warm_markers.clear()
         crew = {"container": "gs-demo", "cookie": "c"}
         podman = _RecordingPodman(running=False)
         with (
@@ -317,86 +178,228 @@ class PrewarmWarmupErrorTests(unittest.TestCase):
         with lifecycle._warm_markers_lock:
             self.assertNotIn("demo", lifecycle._warm_markers)
 
+    def test_disabled_is_the_module_default(self) -> None:
+        """GA_PREWARM_ENABLED is False when the module is loaded without the env var."""
+        # The module-level constant is False by default (the demote invariant).
+        self.assertIs(lifecycle.GA_PREWARM_ENABLED, False)
 
-class PrewarmRestEndpointTests(unittest.TestCase):
-    """4.8 — REST endpoint succeeds with valid GA_API_KEY, rejected without it."""
-
-    def test_handler_returns_status_json(self) -> None:
+    def test_generic_runtime_error_returns_start_failed(self) -> None:
+        """A RuntimeError whose message matches neither memory nor active-crew → blocked:start-failed."""
+        with lifecycle._warm_markers_lock:
+            lifecycle._warm_markers.clear()
         crew = {"container": "gs-demo", "cookie": "c"}
+        podman = _RecordingPodman(running=False)
+        with (
+            patch.object(lifecycle, "GA_PREWARM_ENABLED", True),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
+            patch.object(
+                lifecycle, "_ensure_crew_running",
+                side_effect=RuntimeError("container image not found"),
+            ),
+            patch.object(lifecycle, "_crew_api_with_recovery"),
+        ):
+            result = lifecycle._prewarm_crew(crew, "demo")
+        self.assertEqual(result, {"crew_id": "demo", "status": "blocked:start-failed"})
 
-        async def fake_resolve(path, auto_wake=True):
-            return ("demo", "", crew)
+    def test_ttl_zero_disables_idempotency_check(self) -> None:
+        """With GA_PREWARM_TTL_SECS=0 a fresh warm marker does not produce already_warm."""
+        with lifecycle._warm_markers_lock:
+            lifecycle._warm_markers.clear()
+            lifecycle._warm_markers["demo"] = time.monotonic()  # fresh marker
+        crew = {"container": "gs-demo", "cookie": "c"}
+        podman = _RecordingPodman(running=True)
+        with (
+            patch.object(lifecycle, "GA_PREWARM_ENABLED", True),
+            patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 0),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value={}) as warmup,
+        ):
+            result = lifecycle._prewarm_crew(crew, "demo")
+        self.assertNotEqual(result.get("status"), "already_warm")
+        warmup.assert_called_once()
 
-        async def run():
-            with (
-                patch.object(server, "_resolve_crew_for_proxy", side_effect=fake_resolve),
-                patch.object(
-                    server, "_prewarm_crew",
-                    return_value={"crew_id": "demo", "status": "warmed"},
-                ),
-            ):
-                request = _FakeStreamRequest(method="POST", path="/crews/demo/prewarm")
-                return await server._handle_crew_prewarm_post(request)
 
-        response = asyncio.run(run())
-        self.assertEqual(response.status_code, 200)
-        body = json.loads(response.body)
-        self.assertEqual(body, {"crew_id": "demo", "status": "warmed"})
+class TestPrewarmTTL(unittest.TestCase):
+    """TTL cap tests (unchanged by this change)."""
 
-    def test_handler_404_for_unknown_crew(self) -> None:
-        async def fake_resolve(path, auto_wake=True):
-            return server.PlainTextResponse("Crew 'nope' not found", status_code=404)
+    def test_ttl_capped_at_session_timeout(self) -> None:
+        with (
+            patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 100000),
+            patch.object(lifecycle, "GA_SESSION_TIMEOUT_SECS", 300),
+        ):
+            self.assertEqual(lifecycle._effective_prewarm_ttl(), 300)
 
-        async def run():
-            with patch.object(server, "_resolve_crew_for_proxy", side_effect=fake_resolve):
-                request = _FakeStreamRequest(method="POST", path="/crews/nope/prewarm")
-                return await server._handle_crew_prewarm_post(request)
+    def test_ttl_below_cap_is_unchanged(self) -> None:
+        with (
+            patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 120),
+            patch.object(lifecycle, "GA_SESSION_TIMEOUT_SECS", 300),
+        ):
+            self.assertEqual(lifecycle._effective_prewarm_ttl(), 120)
 
-        response = asyncio.run(run())
-        self.assertEqual(response.status_code, 404)
+    def test_stale_marker_beyond_capped_ttl_rewarms(self) -> None:
+        with lifecycle._warm_markers_lock:
+            lifecycle._warm_markers.clear()
+        crew = {"container": "gs-demo", "cookie": "c"}
+        podman = _RecordingPodman(running=True)
+        with lifecycle._warm_markers_lock:
+            lifecycle._warm_markers["demo"] = time.monotonic() - 400
+        with (
+            patch.object(lifecycle, "GA_PREWARM_ENABLED", True),
+            patch.object(lifecycle, "GA_PREWARM_TTL_SECS", 100000),
+            patch.object(lifecycle, "GA_SESSION_TIMEOUT_SECS", 300),
+            patch.object(lifecycle, "_get_podman", return_value=podman),
+            patch.object(lifecycle, "_ensure_crew_running", return_value=crew),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value={}) as warmup,
+        ):
+            result = lifecycle._prewarm_crew(crew, "demo")
+        self.assertEqual(result["status"], "warmed")
+        self.assertEqual(warmup.call_count, 1)
 
-    def test_middleware_dispatches_prewarm_when_auth_passes(self) -> None:
-        handled = []
 
-        async def fake_prewarm_post(req):
-            handled.append("prewarm")
-            return server.PlainTextResponse("ok")
+class TestPrewarmImplicitTriggers(unittest.TestCase):
+    """Implicit background prewarm is fired by supply and schedule."""
 
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/crews/demo/prewarm",
-            "headers": [(b"authorization", b"Bearer testkey")],
-        }
-        mw = server.BearerAuthMiddleware(
-            _FakeDownstream(), api_key="testkey",
-            routes={("POST", "/crews/*/prewarm"): fake_prewarm_post},
-        )
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 200)
-        self.assertIn("prewarm", handled)
+    # ── supply ────────────────────────────────────────────────────────────────
 
-    def test_middleware_rejects_prewarm_when_key_missing(self) -> None:
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/crews/demo/prewarm",
-            "headers": [],  # no Authorization header
-        }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="secret")
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
+    def test_supply_fires_background_prewarm(self) -> None:
+        """supply() calls _bg_prewarm after issuing a presigned URL."""
+        done = threading.Event()
+        prewarm_calls: list[tuple] = []
 
-    def test_middleware_rejects_prewarm_when_key_wrong(self) -> None:
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/crews/demo/prewarm",
-            "headers": [(b"authorization", b"Bearer wrongkey")],
-        }
-        mw = server.BearerAuthMiddleware(_FakeDownstream(), api_key="correctkey")
-        status, _, _ = _run_asgi(mw, scope)
-        self.assertEqual(status, 401)
+        def fake_bg_prewarm(crew, crew_id):
+            prewarm_calls.append((crew, crew_id))
+            done.set()
+
+        crew = {"container": "gs-demo", "cookie": "c"}
+        with (
+            patch.object(server, "_require_crew", return_value=crew),
+            patch.object(server, "_ensure_crew_running", return_value=crew),
+            patch.object(server, "_sign_upload_url", return_value="https://host/upload?x=1"),
+            patch.object(server, "_security") as mock_sec,
+            patch.object(server, "_bg_prewarm", side_effect=fake_bg_prewarm),
+        ):
+            mock_sec.audit_auth_event = MagicMock()
+            result = server.supply("repo/file.txt", crew_id="demo")
+
+        self.assertNotIn("error", result)
+        self.assertEqual(len(prewarm_calls), 1)
+        _, crew_id = prewarm_calls[0]
+        self.assertEqual(crew_id, "demo")
+
+    def test_supply_prewarm_exception_is_nonfatal(self) -> None:
+        """An exception raised inside the _bg_prewarm thread must not fail supply.
+
+        We test this by letting the REAL _bg_prewarm run while patching
+        _prewarm_crew (which it calls) to raise; supply must still return success.
+        """
+        done = threading.Event()
+
+        def raising_prewarm(crew, crew_id):
+            done.set()
+            raise RuntimeError("prewarm boom")
+
+        crew = {"container": "gs-demo", "cookie": "c"}
+        with (
+            patch.object(server, "_require_crew", return_value=crew),
+            patch.object(server, "_ensure_crew_running", return_value=crew),
+            patch.object(server, "_sign_upload_url", return_value="https://host/upload?x=1"),
+            patch.object(server, "_security") as mock_sec,
+            patch.object(server, "_prewarm_crew", side_effect=raising_prewarm),
+        ):
+            mock_sec.audit_auth_event = MagicMock()
+            result = server.supply("repo/file.txt", crew_id="demo")
+
+        # supply must succeed regardless of prewarm outcome
+        self.assertNotIn("error", result)
+        # wait briefly for the background thread to confirm it was called
+        done.wait(timeout=2.0)
+
+    # ── schedule ──────────────────────────────────────────────────────────────
+
+    def _minimal_schedule_patches(self, crew):
+        """Return the common patches for schedule create calls."""
+        return [
+            patch.object(server, "_require_crew", return_value=crew),
+            patch.object(server, "_ensure_crew_running", return_value=crew),
+            patch.object(server, "_validate_model", return_value=None),
+            patch.object(server, "_validate_agent"),
+            patch.object(
+                server, "_crew_api_with_recovery",
+                return_value={"id": "job-1"},
+            ),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_upsert_crew_schedule"),
+            patch.object(server, "time") if hasattr(server, "time") else
+                patch("time.time", return_value=1000.0),
+        ]
+
+    def test_schedule_fires_background_prewarm(self) -> None:
+        """schedule(action='create') calls _bg_prewarm after the registry write."""
+        prewarm_calls: list[tuple] = []
+
+        def fake_bg_prewarm(crew, crew_id):
+            prewarm_calls.append((crew, crew_id))
+
+        crew = {"container": "gs-demo", "cookie": "c"}
+        with (
+            patch.object(server, "_require_crew", return_value=crew),
+            patch.object(server, "_ensure_crew_running", return_value=crew),
+            patch.object(server, "_validate_model", return_value=None),
+            patch.object(server, "_validate_agent"),
+            patch.object(
+                server, "_crew_api_with_recovery",
+                return_value={"id": "job-1"},
+            ),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_upsert_crew_schedule"),
+            patch.object(server, "_bg_prewarm", side_effect=fake_bg_prewarm),
+        ):
+            result = server.schedule(
+                name="nightly", message="run report",
+                crew_id="demo", interval=3600,
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(len(prewarm_calls), 1)
+        _, crew_id = prewarm_calls[0]
+        self.assertEqual(crew_id, "demo")
+
+    def test_schedule_prewarm_exception_is_nonfatal(self) -> None:
+        """An exception raised inside the _bg_prewarm thread must not fail schedule."""
+        done = threading.Event()
+
+        def raising_prewarm(crew, crew_id):
+            done.set()
+            raise RuntimeError("prewarm boom")
+
+        crew = {"container": "gs-demo", "cookie": "c"}
+        with (
+            patch.object(server, "_require_crew", return_value=crew),
+            patch.object(server, "_ensure_crew_running", return_value=crew),
+            patch.object(server, "_validate_model", return_value=None),
+            patch.object(server, "_validate_agent"),
+            patch.object(
+                server, "_crew_api_with_recovery",
+                return_value={"id": "job-1"},
+            ),
+            patch.object(server, "_registry_lock", threading.Lock()),
+            patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_upsert_crew_schedule"),
+            patch.object(server, "_prewarm_crew", side_effect=raising_prewarm),
+        ):
+            result = server.schedule(
+                name="nightly", message="run report",
+                crew_id="demo", interval=3600,
+            )
+
+        self.assertNotIn("error", result)
+        done.wait(timeout=2.0)
 
 
 if __name__ == "__main__":

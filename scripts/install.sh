@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Install/update Ghost Academy locally on macOS or Linux.
 #
-# Builds the crew + transport images and runs the transport container
-# directly with `podman run`, bound to localhost — no remote host, no
-# reverse proxy, just this machine. On macOS, Podman runs inside a
+# Builds the crew + transport images and starts the transport and Caddy
+# (ga-portal) with podman-compose from a generated compose.yml. Caddy is
+# published on all interfaces at PORT; set GA_API_KEY on shared networks. On macOS, Podman runs inside a
 # lightweight Linux VM ("podman machine"); on Linux it runs directly on
 # the host kernel, no VM involved.
 #
@@ -70,6 +70,18 @@ GA_SUBAGENT_MAX_TURNS=200
 GA_BATCH_MAX_TASKS=20
 GA_PICKUP_MAX_POLL_SECS=30
 GA_CREW_AGENT=kiro
+# Optional agent backends to enable, comma-separated (claude, codex). Kiro is
+# always enabled. Drives the image toolchains and the transport (TRN-202).
+GA_AGENT_BACKENDS=""
+GA_CREW_ACP_BACKEND=kiro
+GA_CREW_ANTHROPIC_API_KEY=""
+# Crew model backend keys and the headless kiro key. Config-file vars (set in
+# ghostship.conf), not flags — passing a key on the command line would leak it
+# into the process list and shell history. install.sh delivers each as a Podman
+# secret (ga-crew-*-api-key / ga-kiro-api-key) rather than a plaintext compose
+# env var (secret-delivery-hardening).
+GA_CREW_OPENAI_API_KEY=""
+KIRO_API_KEY=""
 GA_MIN_FREE_MEM_GB=2.0
 GA_SPAWN_MIN_MEMORY_GB=1.5
 GA_RESOURCE_PRESSURE_GB=2.0
@@ -95,6 +107,10 @@ CLIENT_ONLY_API_KEY=""
 # To enable TLS: set GA_PORTAL_TLS_MODE=acme + GA_PORTAL_DOMAIN (any port).
 GA_PORTAL_TLS_MODE=off
 GA_PORTAL_DOMAIN=""
+# Bind-address warning mode. When GA_API_KEY is absent and the transport is
+# not bound to loopback, emit a warning (warn), abort install (error), or
+# stay silent (off). Default: warn.
+GA_REQUIRE_API_KEY=warn
 
 # ── Config file: extract --config <path> first (peek at $@, don't consume) ──
 # Source BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -121,6 +137,8 @@ if [[ -n "$CONFIG_FILE" ]]; then
   if grep -qE '^[[:space:]]*GA_PORTAL_PORT=' "$CONFIG_FILE" 2>/dev/null; then
     echo "⚠ Deprecated GA_PORTAL_PORT found in config — auto-migrating to PORT" >&2
     _MIGRATED_CONFIG="$(mktemp)"
+    # The copy may contain API keys; remove it however the script exits.
+    trap 'rm -f "$_MIGRATED_CONFIG"' EXIT
     sed 's/^\([[:space:]]*\)GA_PORTAL_PORT=/\1PORT=/' "$CONFIG_FILE" > "$_MIGRATED_CONFIG"
     CONFIG_FILE="$_MIGRATED_CONFIG"
   fi
@@ -150,6 +168,12 @@ fi
 API_KEY_FLAG_PASSED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --config|--identity-provider|--region|--license|--port|--model|--model-default|\
+    --public-url|--api-key|--caddy-domain|--caddy-tls-mode|--url)
+      # Without this, `shift 2` fails under set -e and the script exits silently.
+      [[ $# -ge 2 ]] || { echo "Error: $1 requires a value" >&2; exit 1; } ;;
+  esac
+  case "$1" in
     --config) shift 2 ;;  # already consumed above
     --identity-provider) KIRO_IDENTITY_PROVIDER="$2"; shift 2 ;;
     --region) KIRO_REGION="$2"; shift 2 ;;
@@ -166,6 +190,23 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+# ── TLS mode ──────────────────────────────────────────────────────────────────
+# Fail on an unknown value. The transport falls back to "off" for unknown values
+# while the Caddy config below treats them as internal TLS, so a typo would give
+# an HTTPS portal and http:// URLs from the transport.
+case "${GA_PORTAL_TLS_MODE:-off}" in
+  off|internal|tailscale|acme) ;;
+  *) echo "✗ GA_PORTAL_TLS_MODE='${GA_PORTAL_TLS_MODE}' is not one of: off, internal, tailscale, acme" >&2; exit 1 ;;
+esac
+
+# ── Agent backends (TRN-202) ─────────────────────────────────────────────────
+# The retired GA_INCLUDE_*_AGENT flags are a config error in every mode,
+# including --client-only. The toolchain and default checks need a build, so
+# they run after the client-only exit below.
+# shellcheck source=lib/agent_backends.sh
+source "$GHOSTSHIP_DIR/scripts/lib/agent_backends.sh"
+agent_backends_reject_retired || exit 1
 
 # ── Client-only early-exit ────────────────────────────────────────────────────
 # When --client-only is set, wire the ghostship CLI + agent harnesses to a
@@ -193,6 +234,15 @@ if [[ "$CLIENT_ONLY" == "true" ]]; then
 
   exit 0
 fi
+
+# Normalise GA_AGENT_BACKENDS once; the same value drives the image build
+# (AGENT_TOOLCHAINS) and the transport environment. Fail before any build on
+# an unknown name or a default backend that isn't enabled, so a bad config
+# doesn't cost a full build and a restart loop.
+AGENT_TOOLCHAINS="$(agent_backends_normalise "$GA_AGENT_BACKENDS")" || exit 1
+agent_backends_validate "$AGENT_TOOLCHAINS" "$GHOSTSHIP_DIR/crews/spec-ops/toolchains" || exit 1
+agent_backends_check_default "$GA_CREW_ACP_BACKEND" "$AGENT_TOOLCHAINS" "$GHOSTSHIP_DIR/crews/spec-ops/toolchains" || exit 1
+echo "✓ Agent backends: kiro${AGENT_TOOLCHAINS:+,$AGENT_TOOLCHAINS} (default: ${GA_CREW_ACP_BACKEND})"
 
 if [[ -z "${KIRO_IDENTITY_PROVIDER:-}" && -t 0 ]]; then
   read -rp "kiro-cli identity provider URL (blank = default Builder ID login): " KIRO_IDENTITY_PROVIDER
@@ -447,6 +497,17 @@ fi
 
 mkdir -p "$DATA_DIR"
 
+# compose.yml files written before TRN-202 always set the retired
+# GA_INCLUDE_*_AGENT flags (to "false"), which the new transport rejects at
+# startup. compose.yml is regenerated only after the images are built, so a
+# failed upgrade would leave the new transport image booting against the old
+# file and crash-looping. Strip the retired entries up front.
+if [[ -f "${DATA_DIR}/compose.yml" ]] && grep -qE 'GA_INCLUDE_(CLAUDE|CODEX)_AGENT' "${DATA_DIR}/compose.yml"; then
+  sed -i.bak -e '/GA_INCLUDE_CLAUDE_AGENT:/d' -e '/GA_INCLUDE_CODEX_AGENT:/d' "${DATA_DIR}/compose.yml" \
+    && rm -f "${DATA_DIR}/compose.yml.bak" \
+    && echo "✓ Removed retired GA_INCLUDE_* entries from existing compose.yml"
+fi
+
 # ga-kiro-auth persists as a plain file under DATA_DIR (ga-kiro-auth),
 # written directly by transport itself once a login completes — install.sh
 # doesn't need to touch it at all, since the existing -v "${DATA_DIR}:/data"
@@ -566,6 +627,13 @@ fi
 
 _CREW_BUILD_FLAGS=()
 if ${_PODMAN_CMD} image exists localhost/spec-ops:latest 2>/dev/null; then
+  # A changed toolchain list must not reuse a cached toolchain layer.
+  _baked_toolchains="$(${_PODMAN_CMD} inspect localhost/spec-ops:latest --format '{{ index .Labels "org.ghostship.toolchains" }}' 2>/dev/null || true)"
+  [[ "$_baked_toolchains" == "<no value>" ]] && _baked_toolchains=""
+  if [[ "$_baked_toolchains" != "$AGENT_TOOLCHAINS" ]]; then
+    echo "  Agent toolchains changed ('${_baked_toolchains}' -> '${AGENT_TOOLCHAINS}') -- forcing a clean rebuild."
+    _CREW_BUILD_FLAGS=(--no-cache)
+  fi
   _baked_crew_version="$(${_PODMAN_CMD} inspect localhost/spec-ops:latest --format '{{ index .Labels "org.ghostship.version" }}' 2>/dev/null || true)"
   if [[ "$_baked_crew_version" != "${VERSION}-spec-ops" ]]; then
     echo "  Detected stale localhost/spec-ops:latest version ('$_baked_crew_version' != '${VERSION}-spec-ops') -- forcing a clean rebuild."
@@ -582,6 +650,7 @@ cp -r "$GHOSTSHIP_DIR/crews/_base/admission/." "$_ADMISSION_CTX/"
 mkdir -p "$_ADMISSION_CTX/container_scripts"
 cp "$GHOSTSHIP_DIR/transport/container_scripts/"*.py "$_ADMISSION_CTX/container_scripts/"
 ${_PODMAN_CMD} build -t localhost/base-admission:latest \
+  ${KC_BASE_IMAGE:+--build-arg KC_BASE_IMAGE="${KC_BASE_IMAGE}"} \
   "$_ADMISSION_CTX/" \
   && echo "✓ admission image built" || { echo "✗ admission image build failed"; rm -rf "$_ADMISSION_CTX"; exit 1; }
 rm -rf "$_ADMISSION_CTX"
@@ -600,6 +669,7 @@ echo "Building localhost/spec-ops:latest ..."
 ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}-spec-ops" \
+  --build-arg AGENT_TOOLCHAINS="${AGENT_TOOLCHAINS}" \
   "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && ${_PODMAN_CMD} build -t localhost/spec-ops:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
@@ -623,6 +693,30 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   printf '%s' "$GA_API_KEY" | ${_PODMAN_CMD} secret create ga-api-key -
   GA_SECRET_FLAG="secrets:\n      - ga-api-key"
   echo "✓ Podman secret 'ga-api-key' created"
+fi
+
+# ── Podman secret for ga-crew-anthropic-api-key ───────────────────────────────
+# Model backend keys and KIRO_API_KEY are delivered as Podman secrets rather
+# than plaintext compose env vars (secret-delivery-hardening). Each block is
+# idempotent: remove any prior secret, then recreate only when the value is set.
+${_PODMAN_CMD} secret rm ga-crew-anthropic-api-key 2>/dev/null || true
+if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then
+  printf '%s' "$GA_CREW_ANTHROPIC_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-anthropic-api-key -
+  echo "✓ Podman secret 'ga-crew-anthropic-api-key' created"
+fi
+
+# ── Podman secret for ga-crew-openai-api-key ──────────────────────────────────
+${_PODMAN_CMD} secret rm ga-crew-openai-api-key 2>/dev/null || true
+if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then
+  printf '%s' "$GA_CREW_OPENAI_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-openai-api-key -
+  echo "✓ Podman secret 'ga-crew-openai-api-key' created"
+fi
+
+# ── Podman secret for ga-kiro-api-key ─────────────────────────────────────────
+${_PODMAN_CMD} secret rm ga-kiro-api-key 2>/dev/null || true
+if [[ -n "${KIRO_API_KEY:-}" ]]; then
+  printf '%s' "$KIRO_API_KEY" | ${_PODMAN_CMD} secret create ga-kiro-api-key -
+  echo "✓ Podman secret 'ga-kiro-api-key' created"
 fi
 
 # ── Podman secret for GA_TRANSPORT_SECRET ────────────────────────────────────────
@@ -663,6 +757,23 @@ else
 fi
 echo "✓ academy/ (agents, skills, steering, policies, orders, mcp) and crews/ copied to ${DATA_DIR}"
 
+# ── Bind-address warning ─────────────────────────────────────────────────────
+# Warn when the transport is exposed on a non-loopback address with no API key.
+# GA_REQUIRE_API_KEY controls severity: warn (default), error, or off.
+_bind_host="${HOST:-0.0.0.0}"
+if [[ "${GA_REQUIRE_API_KEY:-warn}" != "off" && -z "${GA_API_KEY:-}" ]]; then
+  if [[ "$_bind_host" != "127.0.0.1" && "$_bind_host" != "::1" && "$_bind_host" != "localhost" ]]; then
+    _warn_msg="WARNING: ghostship transport will bind on ${_bind_host}:${PORT} with no API key — anyone who can reach this host can use every MCP tool. Set GA_API_KEY in ghostship.conf or use HOST=127.0.0.1 to restrict to loopback."
+    if [[ "${GA_REQUIRE_API_KEY:-warn}" == "error" ]]; then
+      echo "$_warn_msg" >&2
+      echo "Aborting: set GA_API_KEY or HOST=127.0.0.1, or set GA_REQUIRE_API_KEY=off to silence this check." >&2
+      exit 1
+    else
+      echo "$_warn_msg" >&2
+    fi
+  fi
+fi
+
 # ── Generate compose.yml ──────────────────────────────────────────────────────
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and
 # not committed to the repo. start.sh and uninstall.sh both read it.
@@ -671,6 +782,11 @@ echo "✓ academy/ (agents, skills, steering, policies, orders, mcp) and crews/ 
 _DASHBOARD_PORT_START="${GA_DASHBOARD_PORT_RANGE_START:-64058}"
 _DASHBOARD_PORT_END=$(( _DASHBOARD_PORT_START + ${GA_DASHBOARD_PORT_RANGE_SIZE:-1024} - 1 ))
 
+# compose.yml carries model API keys (GA_CREW_ANTHROPIC_API_KEY,
+# GA_CREW_OPENAI_API_KEY): create it owner-only. chmod as well, because
+# rewriting an existing file keeps its old mode.
+_ga_saved_umask="$(umask)"
+umask 077
 cat > "${DATA_DIR}/compose.yml" <<COMPOSE_EOF
 # Generated by install.sh on $(date -u '+%Y-%m-%dT%H:%M:%SZ') — do not edit manually.
 # Re-run install.sh to regenerate.
@@ -707,10 +823,19 @@ services:
       GA_BATCH_MAX_TASKS: "${GA_BATCH_MAX_TASKS:-20}"
       GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
+      GA_CREW_ACP_BACKEND: "${GA_CREW_ACP_BACKEND:-kiro}"
+      # Model backend keys (GA_CREW_ANTHROPIC_API_KEY, GA_CREW_OPENAI_API_KEY)
+      # and KIRO_API_KEY are NOT passed as environment values here — they are
+      # delivered to the transport as Podman secrets mounted under /run/secrets
+      # (see the secrets: blocks below) so the keys never appear in plaintext in
+      # this compose file (secret-delivery-hardening). Only the non-secret base
+      # URLs remain in the environment.
+      GA_CREW_ANTHROPIC_BASE_URL: "${GA_CREW_ANTHROPIC_BASE_URL:-}"
+      GA_AGENT_BACKENDS: "${AGENT_TOOLCHAINS}"
+      GA_CREW_OPENAI_BASE_URL: "${GA_CREW_OPENAI_BASE_URL:-}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
       KIRO_LICENSE: "${KIRO_LICENSE:-}"
-      KIRO_API_KEY: "${KIRO_API_KEY:-}"
       KC_MODEL_OVERRIDE: "${KC_MODEL_OVERRIDE:-}"
       KC_MODEL_DEFAULT: "${KC_MODEL_DEFAULT:-}"
       GA_MIN_FREE_MEM_GB: "${GA_MIN_FREE_MEM_GB:-2.0}"
@@ -735,12 +860,14 @@ services:
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
-      GA_PREWARM_ENABLED: "${GA_PREWARM_ENABLED:-false}"
-      GA_PREWARM_TTL_SECS: "${GA_PREWARM_TTL_SECS:-0}"
       GA_ORDERS_DIR: "${GA_ORDERS_DIR:-}"
+      GA_REQUIRE_API_KEY: "${GA_REQUIRE_API_KEY:-warn}"
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
+$(if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then printf '      - ga-crew-anthropic-api-key\n'; fi)
+$(if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then printf '      - ga-crew-openai-api-key\n'; fi)
+$(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '      - ga-kiro-api-key\n'; fi)
   ga-portal:
     image: docker.io/caddy:2
     container_name: ga-portal
@@ -766,9 +893,14 @@ secrets:
   ga-transport-secret:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '  ga-api-key:\n    external: true\n'; fi)
+$(if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then printf '  ga-crew-anthropic-api-key:\n    external: true\n'; fi)
+$(if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then printf '  ga-crew-openai-api-key:\n    external: true\n'; fi)
+$(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '  ga-kiro-api-key:\n    external: true\n'; fi)
 volumes:
   ga-portal-data:
 COMPOSE_EOF
+umask "$_ga_saved_umask"
+chmod 600 "${DATA_DIR}/compose.yml"
 
 echo "✓ compose.yml written to ${DATA_DIR}/compose.yml"
 
@@ -863,7 +995,7 @@ cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
 ${_AUTH_ROUTES}
             {
               "@id": "ga-transport-misc",
-              "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout"]}],
+              "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout", "/logout*"]}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             }
           ]
@@ -945,12 +1077,19 @@ fi
 sleep 1  # brief pause before first probe attempt
 echo ""
 echo "=== Health check ==="
-_max_wait=30
-_interval=2
+_max_wait=90
+_interval=3
 _ready=0
-# Transport has no host port (Caddy is the external listener). Probe via
-# podman exec so we don't need a host-side binding.
+_caddy_scheme="http"
+[[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
+# Two probe methods tried each iteration:
+#   1. podman exec into ga-transport — works locally; may fail on remote deploys
+#      due to variable expansion differences in the SSH non-interactive shell.
+#   2. curl via Caddy on the host port — works on remote deploys; only succeeds
+#      once both ga-transport and ga-portal are up.
+# Either passing is sufficient — the transport is ready.
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
+  # Method 1: container-internal probe
   if ${_PODMAN_CMD} exec ga-transport python3 -c "
 import urllib.request, os
 secret = open('/run/secrets/ga-transport-secret').read().strip() if os.path.exists('/run/secrets/ga-transport-secret') else ''
@@ -960,34 +1099,20 @@ urllib.request.urlopen(req)
     _ready=1
     break
   fi
+  # Method 2: curl via Caddy (fallback for remote/SSH deploys)
+  if curl -sk "${_caddy_scheme}://127.0.0.1:${PORT:-64057}/health" >/dev/null 2>&1; then
+    _ready=1
+    break
+  fi
   sleep "$_interval"
 done
 if [[ "$_ready" == "1" ]]; then
-  echo "✓ Transport is ready (container-internal health check passed)"
+  echo "✓ Transport is ready"
 else
   echo "✗ Transport did not become ready within ${_max_wait}s" >&2
   echo "  Last 20 lines of container logs:" >&2
   ${_PODMAN_CMD} logs ga-transport --tail 20 >&2
   exit 1
-fi
-
-# ga-portal health check (Caddy is always installed)
-_caddy_ready=0
-_caddy_scheme="http"
-[[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
-for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  if curl -sk "${_caddy_scheme}://127.0.0.1:${PORT:-64057}/health" >/dev/null 2>&1; then
-    _caddy_ready=1
-    break
-  fi
-  sleep "$_interval"
-done
-if [[ "$_caddy_ready" == "1" ]]; then
-  echo "✓ Caddy is ready"
-else
-  echo "⚠ Caddy (ga-portal) did not respond on port ${PORT:-64057} within ${_max_wait}s"
-  echo "  Check: ${_PODMAN_CMD} logs ga-portal --tail 20"
-  echo "  This is non-fatal — Caddy may still be pulling or starting."
 fi
 
 echo ""

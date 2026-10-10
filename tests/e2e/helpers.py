@@ -106,6 +106,14 @@ def is_error(result: dict) -> bool:
 # They require GHOSTSHIP_PODMAN_SOCKET to be reachable from the test runner.
 
 
+# Versioned libpod prefix, matching transport/podman.py. Some Podman sockets
+# (for example a podman-machine API socket on macOS) answer the unversioned
+# /libpod/... paths with 404, which the helpers below used to read as
+# "stopped" / "not running", so stopped-crew tests passed without stopping
+# anything.
+PODMAN_API_PREFIX = "/v4.0.0"
+
+
 def _podman_client(socket: str = GHOSTSHIP_PODMAN_SOCKET) -> httpx.Client:
     """Return an httpx.Client configured to talk to a Podman Unix socket."""
     transport = httpx.HTTPTransport(uds=socket)
@@ -116,29 +124,33 @@ def container_stop(container: str, timeout: int = 10) -> None:
     """Stop a container via the Podman REST API (POST /libpod/containers/{name}/stop).
 
     ``timeout`` is the seconds Podman waits for a graceful SIGTERM before
-    sending SIGKILL.  Raises on unexpected HTTP errors; treats 204 (stopped),
-    304 (already stopped), and 404 (container gone) as success.
+    sending SIGKILL. Treats 204 (stopped) and 304 (already stopped) as success.
+    Raises on anything else, including 404: a missing container means the
+    test's precondition is broken, not that the stop worked.
     """
     with _podman_client() as client:
         resp = client.post(
-            f"/libpod/containers/{container}/stop",
+            f"{PODMAN_API_PREFIX}/libpod/containers/{container}/stop",
             params={"t": timeout},
             timeout=30.0,
         )
-        # 204 = stopped, 304 = already stopped, 404 = container gone — all fine
-        if resp.status_code not in (204, 304, 404):
-            resp.raise_for_status()
+        if resp.status_code not in (204, 304):
+            raise RuntimeError(
+                f"container_stop({container!r}) failed: HTTP {resp.status_code} {resp.text[:200]}"
+            )
 
 
 def container_is_running(container: str) -> bool:
     """Return True if the named container's Podman state is 'running'.
 
-    Returns False for both stopped and non-existent containers.
+    Returns False for a stopped container or one that doesn't exist (404).
+    Raises on any other response, so a broken socket can't look like "stopped".
     """
     with _podman_client() as client:
-        resp = client.get(f"/libpod/containers/{container}/json", timeout=10.0)
-        if resp.status_code != 200:
+        resp = client.get(f"{PODMAN_API_PREFIX}/libpod/containers/{container}/json", timeout=10.0)
+        if resp.status_code == 404:
             return False
+        resp.raise_for_status()
         return resp.json().get("State", {}).get("Status") == "running"
 
 

@@ -31,6 +31,26 @@ jobs:
           name: openapi-schema
           path: openapi.json
 
+  # trn-212-test-coverage-gaps E.1: run the shell integration tests on every
+  # push/PR. The bash scripts under tests/integration use only POSIX tools and
+  # stub binaries (stub podman/systemctl/id on PATH, sandboxed HOME), so no
+  # Python or Podman setup is required here.
+  #
+  # E.2 — BRANCH PROTECTION (manual step, cannot be set from this file):
+  #   Add "integration-tests" to the repo's required-status-check list for the
+  #   `main` branch under Settings → Branches → Branch protection rules, so a PR
+  #   cannot merge while these tests fail. GitHub exposes required status checks
+  #   only through repo settings / the API, not through the workflow YAML, so
+  #   this must be done once by a repo admin after this job first runs.
+  integration-tests:
+    name: integration-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shell integration tests
+        run: tests/run.sh --integration
+
   security-scan:
     name: security-scan
     runs-on: ubuntu-latest

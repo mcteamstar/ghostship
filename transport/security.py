@@ -383,10 +383,29 @@ class SessionStore:
     _revoked: set[str] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def _sweep(self, now: float) -> None:
+        """Prune expired entries from _issued and stale entries from _revoked.
+
+        Called under self._lock. Removes any token from _issued whose expiry has
+        passed (tokens that expired without ever being re-presented to validate()
+        would otherwise accumulate indefinitely). Also removes any token from
+        _revoked that is no longer in _issued (it has already been swept or was
+        never issued), keeping _revoked bounded to the active token set.
+        """
+        expired = [t for t, exp in self._issued.items() if now >= exp]
+        for t in expired:
+            self._issued.pop(t, None)
+        # Prune revocations for tokens no longer in _issued.
+        stale_revocations = self._revoked - self._issued.keys()
+        self._revoked -= stale_revocations
+
     def issue(self, now: float | None = None) -> str:
         now = time.time() if now is None else now
         token = secrets.token_urlsafe(32)
         with self._lock:
+            # Sweep expired entries before adding a new one so _issued stays
+            # bounded to roughly the number of active (non-expired) sessions.
+            self._sweep(now)
             self._issued[token] = now + self.lifetime_secs
         return token
 
@@ -454,7 +473,9 @@ def encode_url_component(value: str) -> str:
 
 # ── Security response headers (transport-security) ────────────────────────────
 
-# CSP intentionally starts in report-only during staged rollout (task 3.2/3.5).
+# CSP defaults to report-only when csp_report_only=True (the parameter default).
+# In production server.py passes csp_enforce=True → csp_report_only=False, so
+# the Content-Security-Policy header is enforced, not report-only, at runtime.
 DEFAULT_CSP = "default-src 'self'; frame-ancestors 'none'; object-src 'none'"
 DEFAULT_HSTS = "max-age=63072000; includeSubDomains"
 

@@ -32,5 +32,23 @@ RUN apt-get update -qq && \
 # file's `metadata.generatedBy`) — bumping the skills means bumping this too.
 RUN npm install -g @fission-ai/openspec@1.9.0
 
+# Optional agent toolchains (TRN-202). install.sh passes AGENT_TOOLCHAINS: the
+# optional backends listed in GA_AGENT_BACKENDS (kiro is bundled in the base
+# image and never listed). Each name runs toolchains/<name>.sh, which owns its
+# pinned versions. Adding a backend means adding a script; this block and
+# install.sh don't change. The label lets install.sh detect a changed list and
+# force a cache-less rebuild, since podman can reuse a layer when only a
+# build arg changes.
+ARG AGENT_TOOLCHAINS=""
+COPY toolchains/ /tmp/toolchains/
+RUN set -e; \
+    for name in $(echo "${AGENT_TOOLCHAINS}" | tr ',' ' '); do \
+      case "$name" in ''|[!a-z]*|*[!a-z0-9-]*) echo "Invalid agent toolchain name: '$name'" >&2; exit 1;; esac; \
+      echo "Installing agent toolchain: $name"; \
+      sh "/tmp/toolchains/$name.sh" || { echo "Agent toolchain failed: $name" >&2; exit 1; }; \
+    done; \
+    rm -rf /tmp/toolchains
+LABEL org.ghostship.toolchains=$AGENT_TOOLCHAINS
+
 ARG VERSION=0.0.0-dev
 LABEL org.ghostship.version=$VERSION

@@ -1,5 +1,105 @@
 # Changelog
 
+## v0.6.0
+
+### Breaking changes
+
+- **Retired `GA_INCLUDE_CLAUDE_AGENT` and `GA_INCLUDE_CODEX_AGENT` (TRN-202)** — agent backends are now enabled with one list, `GA_AGENT_BACKENDS` (for example `GA_AGENT_BACKENDS=claude,codex`; kiro is always available and is the default when unset). `install.sh` derives the image toolchains from this list. If either retired variable is set, the transport and `install.sh` fail at startup with a message naming `GA_AGENT_BACKENDS`. Migrate by replacing `GA_INCLUDE_CLAUDE_AGENT=true` with `GA_AGENT_BACKENDS=claude` and `GA_INCLUDE_CODEX_AGENT=true` with `GA_AGENT_BACKENDS=codex` (or list both).
+- **Removed `prewarm` MCP tool and `POST /crews/{crew_id}/prewarm` REST route (TRN-194)** — the explicit prewarm surface is gone. Callers of `prewarm(crew_id=...)` will receive a tool-not-found error; `POST /crews/{id}/prewarm` returns 404. Warming is now internal: when `GA_PREWARM_ENABLED` is on (default `false`), it runs as a background side-effect of `supply` and `schedule`. `install.sh` does not pass `GA_PREWARM_*` through yet, so on a standard install warming is off.
+
+### KiroCrew 0.6.0 → 0.8.0 upgrade (TRN-166, TRN-173, TRN-185, TRN-188)
+
+Crew base image bumped from `0.6.0` to `0.8.0` (by way of `0.7.2` and `0.8.0-insider.8`). KiroCrew 0.7.x tightened the spawn security model — internal spawns now require attested session identities, and several schema and config changes were needed:
+
+- `seed_kiro_db.py` updated for kiro-cli 2.24.0: 6 migration rows (versions 0–5), `state.value` changed from `BLOB` to `TEXT`, and removed `conversations`, `conversations_v2`, and `extracted_kas_versions` tables that no longer exist in 0.7.2.
+- `KC_BASE_IMAGE`: the admission Containerfile's `ARG` default is the single source of the base image. `install.sh` passes `--build-arg KC_BASE_IMAGE` only when the config sets it.
+- Transport/Caddy readiness timeout increased to 90s; health probe gains an exec+curl fallback for remote deployments.
+- Auth polling fix: `launch` now polls the auth DB when login is pending — no longer requires `GET /login` to unblock the wait loop.
+
+### Captain-driven spawning restored (TRN-185, TRN-186, TRN-187)
+
+KiroCrew 0.7.0's attestation requirement broke the full Captain workflow (SDD, independent-review) — headless Raven tasks had no session identity and `/api/spawn` returned `member_identity_unavailable`. Fixed end-to-end:
+
+- **Persona enrollment (TRN-186)** — `_patch_crew_config()` now writes a `config.agents` section for all 6 composition personas at crew launch. `_enroll_crew_members()` calls `POST /api/members/{slug}/thread` for each agent after gateway-ready, creating a DM binding and a member session identity. `enrolled_agents` is persisted in the crew registry across all three launch paths (fresh, stale-config restart, reboot recovery).
+
+- **Member-based dispatch (TRN-187)** — `_resolve_dispatch_slot()` is the new unified helper for both single and batch dispatch. Enrolled persona agents automatically route into their `member-<slug>` parent session (attested identity), echoed back to the caller as the clean agent name (e.g. `"ghost"`, not `"member-ghost"`). Crews without `enrolled_agents` fall back to the previous bridge/headless behaviour.
+
+- **Raven attestation** — Raven's spawn curl updated to send `X-Session-Key: $KIRO_SESSION_ID`. Both `spec-driven-development.md` and `independent-review.md` order templates updated to match.
+
+### Dashboard auth hardening
+
+Bearer auth removed from crew UI paths (`/crews/*/ui`, WebSocket). `Caddy` forward-auth (`gs_session` cookie) is now the sole gate for dashboard access — bearer tokens are no longer needed or accepted on those paths. `_dispatch_public_route` in `auth.py` gains glob pattern matching to support the `/crews/*/ui` path shape.
+
+### New ACP backends
+
+- **Claude Code (TRN-167)** — Claude Code ACP backend support. Crew containers can now run Claude Code as the underlying agent runtime alongside kiro-cli.
+- **Codex (TRN-172)** — Codex ACP backend. `POST /logout/codex` returns 200 when already unauthenticated (idempotent).
+- **Claude subscription OAuth (TRN-170)** — OAuth login flow for Claude subscription accounts. Three Banshee review fixes applied post-implementation.
+- **Anthropic endpoint override (TRN-171)** — `GA_CREW_ANTHROPIC_BASE_URL` points Claude-backend crews at a custom Anthropic-compatible endpoint.
+
+### Codebase cleanup (TRN-174, TRN-175, TRN-176, TRN-177, TRN-178, TRN-179, TRN-180)
+
+- `KC_BASE_IMAGE` moved from module-level constant to `cfg.kc_base_image` (TRN-174)
+- `_validate_claude_api_key` deleted; `Config.validate()` is now a no-op (TRN-175)
+- Dead `inject-git-identity` code removed (TRN-176)
+- Stale `ga-net` migration shim and docstring references removed (TRN-177)
+- PTY login flow extracted to `_run_pty_login_flow` helper (TRN-178)
+- Dead `GA_PORTAL_ENABLED` branches removed from dashboard-auth and TLS specs (TRN-179)
+- `GA_DASHBOARD_PORT_RANGE_SIZE` env var wired into config (TRN-180)
+
+### Dashboard WebSocket fixed (TRN-189, TRN-191)
+
+Two bugs prevented the KiroCrew dashboard from establishing a WebSocket connection through the Caddy proxy:
+
+- **Caddy WS forward_auth bypass (TRN-189)** — WebSocket upgrade requests were hitting the forward_auth gate and being rejected with 401. Caddy crew server config now emits two routes per crew: a WS upgrade route (no forward_auth) and an HTTP catch-all (with forward_auth). WebSocket sessions connect without authentication friction.
+
+- **WS origin + auth.py dispatch (TRN-191)** — Three-bug chain: `BearerAuthMiddleware.__call__` was looking up the WS handler in `_routes` instead of `_public_routes`, so the handler was always `None` → 403. The transport WS proxy was sending `Origin: http://gs-{crew_id}:5476` but the gateway only accepts loopback; changed to `http://localhost:{CREW_GATEWAY_PORT}`. Together these fixes make `101 Switching Protocols` reliable — Ghost sessions stream live and sub-agents spawn correctly through the dashboard.
+
+### Dispatch slot model simplified (TRN-192)
+
+With member-based dispatch (TRN-186/187) working correctly, the `slot` parameter on `dispatch()` has been reduced from four modes to two:
+
+- **`slot=None` (default)** — enrolled persona agents route into their attested member DM slot (`member-<slug>`), visible in the dashboard sessions list and able to make downstream spawn calls. Unenrolled agents dispatch headless.
+- **`slot=False`** — explicit headless, regardless of enrollment. No session is created, saving ~250 MB RSS per dispatch.
+
+`slot=True` (UUID auto-generation), `slot="bridge"`, and arbitrary named slots are removed. They were not attested (breaking downstream spawning for enrolled agents), cost the same memory as member slots, and offered no advantage now that member slots provide browser visibility for free. The bridge fallback for unenrolled agents on dashboard crews is also removed — unenrolled agents always dispatch headless.
+
+`_resolve_dispatch_slot` in `lifecycle.py` is now three lines. `slot_pre_create` calls (which POSTed to `/api/chat/slots` before dispatch) are removed — member DM slots are pre-created at enrollment time. The `task_slots` field is removed from batch dispatch responses.
+
+### Dashboard login redesign (TRN-190)
+
+`GET /dashboard/login` rewritten with Ghostship's visual identity:
+
+- Purple primary button (`#7c3aed`, hover `#6d28d9`) replacing the previous green
+- Floating ghost emoji hero (👻) with CSS `translateY` animation above the form title
+- Show/hide toggle on the API key field (inline SVG eye icon, vanilla JS)
+- Shake animation on the error paragraph for failed login attempts
+- Card widened to 360px with tightened label/field spacing
+- Accessibility: `aria-hidden` on decorative elements, `role="alert"` on the error paragraph
+- All CSS/JS inline — no external dependencies
+
+### Known limitations
+
+- **Captain autopilot does not run on the Claude backend.** Raven declines to read the crew gateway's local IPC secret, which the `spec-driven-development` and `independent-review` templates need to dispatch other personas. Drive Claude crews with a manual relay (`dispatch`, `pickup`, `steer`) until this is fixed.
+- **Claude OAuth credentials go stale after the first token refresh.** Each crew receives a copy of `ga-claude-auth`. About eight hours after login, the first crew to run refreshes the token inside its own container, and later crews fail with "OAuth session expired and could not be refreshed". Work around it by logging in again (`POST /logout/claude`, then `POST /login/claude`) or by using `GA_CREW_ANTHROPIC_API_KEY`.
+- **The default install is not authenticated.** `ga-portal` is published on all interfaces at `PORT` and `GA_API_KEY` is empty by default, so anyone who can reach the host can use every MCP tool. Set `GA_API_KEY` on any machine reachable from another host.
+
+### Fixes
+
+- **Logout reached Caddy, not the transport.** `POST /logout/claude` and `POST /logout/codex` were not routed to the transport, and Caddy answered them with an empty 200. They are now proxied like `/login*`.
+- **Codex login completed without a credential.** Any non-empty file under `~/.codex/` counted as a finished login. Completion now requires a non-empty `auth.json`, as the Claude flow requires `.credentials.json`.
+- **Login and logout reported success after a failure.** A failed credential write now returns 500 and keeps the login retryable instead of discarding the credential. A failed logout delete returns 500, the kiro logout audits only after the delete, and crews whose credential wipe failed are listed in the response.
+- **Model API keys in `compose.yml`** are no longer world-readable: the file is written with mode 600.
+- **Idle reaper:** one failing crew no longer ends idle reaping for the process, and the reason a crew is kept running is logged when it changes.
+- **`install.sh`:** a flag given without a value now errors instead of exiting silently, an unknown `GA_PORTAL_TLS_MODE` fails fast, a line break in `GA_AGENT_BACKENDS` is rejected (matching the transport), and the migrated temporary config copy is removed on exit.
+- **Config:** `nan` and `inf` are rejected for numeric settings.
+- **Dashboard login:** a backslash in `next` (`/\evil.com`) can no longer redirect off-site.
+- **Logs:** raw `kirocrew token` output is no longer logged when a token can't be parsed.
+
+- **Presigned URL auth (TRN-169)** — `/files/?sig=` paths now exempt from Caddy bearer check; previously a presigned download through the Caddy proxy was incorrectly rejected with 401.
+
+---
+
 ## v0.5.1
 
 ### evac pack=True
@@ -74,7 +174,7 @@ Crew base image bumped from `0.6.0`. Login containers also updated. `KC_BASE_IMA
   - `slot="<name>"` — attach to a named slot
   - The slot is pre-created via `POST /api/chat/slots` before dispatch (409 treated as success).
 
-- **Auto-prewarm at launch (TRN-131)** — `_prewarm_crew()` fires at the end of `_finish_crew_setup`, sending a no-op canary dispatch to warm the KiroCrew process pool before the first real task arrives. Non-fatal — a prewarm failure is logged but does not fail the launch. `pre_warm_status` in the launch response. New env vars: `GA_PREWARM_ENABLED`, `GA_PREWARM_TTL_SECS`.
+- **Auto-prewarm at launch (TRN-131)** — `_prewarm_crew()` fires at the end of `_finish_crew_setup`, sending `GET /api/ready` to warm the ACP session before the first real task arrives. Non-fatal — a prewarm failure is logged but does not fail the launch. `pre_warm_status` in the launch response. New env vars: `GA_PREWARM_ENABLED`, `GA_PREWARM_TTL_SECS`.
 
 - **Docs infographics + tool docstrings (TRN-66)** — 3 new infographic PNGs (architecture, usage flow, fleet hierarchy). All 10 `server.py` MCP tool docstrings updated with workflow framing. README and docs reduced by ~30% via a targeted clarity pass.
 

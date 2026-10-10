@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-09
+ticket: TRN-212
+skip_specs: true  # pure test infrastructure change — no production capability specs modified
