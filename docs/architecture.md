@@ -9,7 +9,7 @@
 **Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.8.0` (Debian 12, Python 3.12, git, curl). Adds Node.js 24 LTS and the `openspec` CLI. Built locally at install time as `localhost/spec-ops:latest` via three stages:
 
 1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`. Extends `ghcr.io/kirodotdev/kirocrew:0.8.0`.
-2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. Extends `base-admission`.
+2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. When `GA_AGENT_BACKENDS` includes optional backends (`claude`, `codex`), the corresponding toolchain scripts are run here. Extends `base-admission`.
 3. **`base-graduation`** — pre-seeds the kiro-cli SQLite DB schema (`seed_kiro_db.py`) so auth injection works without migrations at every launch. Extends the `spec-ops` intermediate image.
 
 See [configuration.md](configuration.md#extending-the-crew-image) to add packages.
@@ -39,12 +39,12 @@ launch(crew_id)
      `/run/secrets/.admiral_public_key` (root-owned, 0444). Placed outside
      home/workspace volumes — Podman creates secret parent dirs as root:root,
      which would block the crew from writing its own config.
-  5. Wait for gateway ready (GET / on :5476, 30s timeout)
+  5. Wait for gateway ready (GET / on :5476, 90s timeout)
   6. Inject kiro-cli auth rows into crew's SQLite DB
   7. Patch KiroCrew config (agent, dangerously_skip_permissions=true,
      spawn_min_memory_gb, resource_pressure_gb, resource_critical_gb,
      subagent_timeout_secs, subagent_max_turns, default_agent=ghost,
-     reasoning_effort=max)
+     reasoning_effort=max, config.agents section for all 6 personas)
      These thresholds govern KiroCrew's internal subagent admission; set
      lower than GA_MIN_FREE_MEM_GB so the transport's outer memory gate fires first.
   8. Restart container (workers pick up auth + config)
@@ -60,7 +60,11 @@ launch(crew_id)
       Failure is logged but never aborts launch.
   16. Patch agent model files to the pinned model in each agent's JSON
   17. Mint a session token (TTL 24h), exchange for cookie
-  18. Register in /data/crews.json with last_used set to setup completion time
+  18. Enroll all 6 personas: POST /api/members/{slug}/thread for each agent
+      creates a DM binding and a member session identity (attested). The
+      enrolled_agents list is persisted in the crew registry so dispatch
+      can route each persona into its member-<slug> slot automatically.
+  19. Register in /data/crews.json with last_used set to setup completion time
   └── returns { status: "ready" } (~30s)
 
 nuke(crew_id, confirm=True)
@@ -87,6 +91,8 @@ For multi-angle review use the `independent-review` template:
 
 `transport://orders` returns a summary index (name + one-line description per template). `transport://orders/{name}` returns the full resolved body. `GA_ORDERS_DIR` lets operators point at custom `.md` templates that merge with and can override `academy/orders/`.
 
+**Known limitation:** Captain autopilot works for kiro-backend crews only. On Claude or Codex backend crews, Raven cannot read the crew gateway's local IPC secret that the `sdd` and `independent-review` templates require for dispatching other personas. Drive non-kiro crews with manual relay (`dispatch`, `pickup`, `steer`) until this is fixed.
+
 ## Steering
 
 kiro-cli loads every `.md` under `~/.kiro/steering/` for every session — steering is crew-wide standing context every dispatched task gets automatically. `_copy_steering` copies manifest-selected files from `academy/steering/` into that path at every `launch`.
@@ -103,7 +109,12 @@ Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. Without int
 
 Every `dispatch` requests a retained run (`keep=true`), keeping each task's session data available for continuation after a forceful stop.
 
-**Dispatch model:** Tasks are dispatched via KiroCrew's `/api/spawn` endpoint — each runs as an isolated subagent process with its own working directory (`subagent_<task_id>/`). This is the minimal-overhead path: no persistent `kiro-cli-chat` session is attached, and the process exits when the task completes. Dashboard session slots (`slot=` on `dispatch`) attach a `kiro-cli-chat` session for browser visibility at the cost of ~300–400 MB RSS per slot. Slots are opt-in — the default is headless spawn. On crews launched with `dashboard=True`, the transport defaults `slot="bridge"` automatically, so all dispatches attach a session unless `slot=None` is passed explicitly.
+**Dispatch model:** Tasks are dispatched via KiroCrew's `/api/spawn` endpoint — each runs as an isolated subagent process with its own working directory (`subagent_<task_id>/`). This is the minimal-overhead path: no persistent `kiro-cli-chat` session is attached, and the process exits when the task completes. Dashboard session slots (`slot=` on `dispatch`) attach a `kiro-cli-chat` session for browser visibility at the cost of ~250 MB RSS per slot.
+
+`dispatch()` has two slot modes:
+
+- **`slot=None` (default)** — enrolled persona agents route into their attested `member-<slug>` session (visible in the dashboard, able to make downstream spawn calls). Unenrolled agents dispatch headless.
+- **`slot=False`** — explicit headless regardless of enrollment, saving ~250 MB RSS per dispatch.
 
 `steer(task_id, message, crew_id, force=False)` defaults to turn-boundary behaviour: a running task receives `/steer`; a completed task uses `/continue`. With `force=True` on a running task, transport calls `DELETE /api/spawn/{task_id}` then `POST /api/spawn/{task_id}/continue` and returns `force_redeployed`. A completed task follows the normal `/continue` path even with `force=True`.
 

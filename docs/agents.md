@@ -33,6 +33,8 @@ Both forms append the resolved order to `captain@localhost`. `captain(..., actio
 
 `transport://orders` returns a summary index; `transport://orders/{name}` returns the full resolved body.
 
+**Known limitation — Claude and Codex backend crews:** Captain autopilot does not run on non-kiro backend crews. Raven cannot read the crew gateway's local IPC secret that the `sdd` and `independent-review` templates need for dispatching other personas. Drive Claude or Codex crews manually with `dispatch`, `pickup`, and `steer`.
+
 ## Steering, not enforcement
 
 The `tools`/`allowedTools` arrays in each agent JSON are a real technical gate. The "OpenSpec ops" column above is not: skills are copied crew-wide, and a custom agent inherits every default resource — including every skill — unless `chat.disableInheritingDefaultResources` is set *and* the agent defines its own `resources` list. None of the six currently do. The division is enforced only by each agent's system prompt. Raven's five-worker roster is similarly prompt-level; transport's allowlist enforces all six names for `dispatch` and `schedule`.
