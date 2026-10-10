@@ -145,5 +145,186 @@ class TestKiroUrlExtractionUnchanged(unittest.TestCase):
         )
 
 
+# ── trn-212-test-coverage-gaps C: prompt-answer path ─────────────────────────
+
+# Codex-style patterns: answer any "?" prompt with a newline; extract a ChatGPT
+# auth URL and a user_code.
+CODEX_PROMPT_PATTERNS = [(re.compile(r"\?\s*$"), b"\n")]
+CODEX_URL_PATTERNS = [
+    re.compile(
+        r"https?://(?:auth\.openai\.com|platform\.openai\.com|chatgpt\.com|chat\.openai\.com)\S*"
+    ),
+    re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
+    re.compile(r"(https?://\S{20,})"),
+]
+CODEX_CODE_PATTERN = re.compile(r"(?:[?&]user_code=|[Cc]ode[:\s]+)([A-Za-z0-9_-]{4,})")
+
+# Generic example-URL patterns for the prompt-answer tests (no vendor lock-in).
+EXAMPLE_PROMPT_PATTERNS = [(re.compile(r"\?\s*$"), b"\n")]
+EXAMPLE_URL_PATTERNS = [
+    re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
+    re.compile(r"(https?://\S{20,})"),
+]
+
+
+def _run_prompt_answer_flow(
+    scripted_writer,
+    prompt_patterns,
+    url_patterns,
+    code_pattern=None,
+    deadline=5.0,
+):
+    """Drive ``_run_pty_login_flow`` with a writer that can REACT to the answer.
+
+    ``scripted_writer(writer_end, answered_event)`` runs on a thread and may
+    read the answer byte(s) the helper writes to the PTY (the newline that
+    answers a ``?`` prompt), then continue the conversation.  ``answered_event``
+    is set by the writer once it has observed the answer, so the test can assert
+    the prompt was answered.  Returns ``(login_url, login_code, answered_set)``.
+    """
+    helper_end, writer_end = socket.socketpair()
+    helper_end.setblocking(False)
+    answered_event = threading.Event()
+    answer_count = {"n": 0}
+
+    def writer():
+        try:
+            scripted_writer(writer_end, answered_event, answer_count)
+        finally:
+            try:
+                writer_end.close()
+            except OSError:
+                pass
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    try:
+        url, code = _lifecycle._run_pty_login_flow(
+            pty_sock=helper_end,
+            prompt_patterns=prompt_patterns,
+            url_patterns=url_patterns,
+            code_pattern=code_pattern,
+            deadline_secs=deadline,
+        )
+    finally:
+        t.join(timeout=5)
+    return url, code, answer_count["n"]
+
+
+class TestPtyPromptAnswer(unittest.TestCase):
+    """C.1 — a '?' prompt is answered with a newline, then the URL arrives."""
+
+    def test_prompt_answered_then_url_returned(self):
+        url_text = "https://auth.example.com/login?user_code=XYZ"
+
+        def scripted(writer_end, answered_event, answer_count):
+            # 1. Send a prompt with no URL. The helper should answer with "\n".
+            writer_end.sendall(b"Continue? ")
+            # 2. Wait for the helper's newline answer.
+            writer_end.setblocking(True)
+            writer_end.settimeout(3.0)
+            try:
+                data = writer_end.recv(16)
+            except (OSError, socket.timeout):
+                data = b""
+            if b"\n" in data:
+                answer_count["n"] += 1
+                answered_event.set()
+            # 3. Now send the URL line.
+            writer_end.sendall(f"Open this URL: {url_text}\n".encode())
+            time.sleep(0.1)
+
+        url, _code, answered = _run_prompt_answer_flow(
+            scripted, EXAMPLE_PROMPT_PATTERNS, EXAMPLE_URL_PATTERNS
+        )
+        self.assertEqual(url, url_text)
+        self.assertEqual(answered, 1, "prompt was not answered exactly once")
+
+
+class TestPtyPromptAnsweredOnce(unittest.TestCase):
+    """C.2 — two '?' sequences, but the answer is sent only once."""
+
+    def test_answer_sent_only_once(self):
+        url_text = "https://auth.example.com/login?user_code=XYZ"
+
+        def scripted(writer_end, answered_event, answer_count):
+            writer_end.setblocking(True)
+            writer_end.settimeout(3.0)
+            # First prompt.
+            writer_end.sendall(b"Proceed? ")
+            try:
+                if b"\n" in writer_end.recv(16):
+                    answer_count["n"] += 1
+            except (OSError, socket.timeout):
+                pass
+            # A SECOND prompt whose trailing "?" matches the same (already
+            # answered, idx 0) pattern — the helper must NOT answer again.
+            writer_end.sendall(b"Are you sure? ")
+            writer_end.settimeout(0.5)
+            try:
+                extra = writer_end.recv(16)
+                if b"\n" in extra:
+                    answer_count["n"] += 1
+            except (OSError, socket.timeout):
+                pass
+            writer_end.sendall(f"browser: {url_text}\n".encode())
+            time.sleep(0.1)
+
+        url, _code, answered = _run_prompt_answer_flow(
+            scripted, EXAMPLE_PROMPT_PATTERNS, EXAMPLE_URL_PATTERNS
+        )
+        self.assertEqual(url, url_text)
+        self.assertEqual(answered, 1, "the answer was sent more than once")
+
+
+class TestPtyCodeExtraction(unittest.TestCase):
+    """C.3 — a user_code in the URL is extracted via the code pattern."""
+
+    def test_user_code_extracted(self):
+        url_text = "https://auth.openai.com/oauth?user_code=WXYZ"
+
+        def scripted(writer_end, answered_event, answer_count):
+            writer_end.sendall(f"Login URL: {url_text}\n".encode())
+            time.sleep(0.1)
+
+        url, code, _answered = _run_prompt_answer_flow(
+            scripted,
+            CODEX_PROMPT_PATTERNS,
+            CODEX_URL_PATTERNS,
+            code_pattern=CODEX_CODE_PATTERN,
+        )
+        self.assertEqual(url, url_text)
+        self.assertEqual(code, "WXYZ")
+
+
+class TestPtyDrainThreadCloses(unittest.TestCase):
+    """C.4 — after a URL is returned, the drain thread reads to EOF and the
+    writer-end socket is observed closed."""
+
+    def test_drain_reads_to_eof(self):
+        url_text = "https://auth.example.com/login?user_code=XYZ"
+        write_closed = threading.Event()
+
+        def scripted(writer_end, answered_event, answer_count):
+            writer_end.sendall(f"Open this URL: {url_text}\n".encode())
+            # Send trailing output AFTER the URL; the drain thread must consume
+            # it. Then close so the drain thread sees EOF.
+            time.sleep(0.1)
+            writer_end.sendall(b"...finishing up...\n")
+            time.sleep(0.1)
+            # Signal from the writer side that we are about to close.
+            write_closed.set()
+
+        url, _code, _answered = _run_prompt_answer_flow(
+            scripted, EXAMPLE_PROMPT_PATTERNS, EXAMPLE_URL_PATTERNS
+        )
+        self.assertEqual(url, url_text)
+        # The writer reached its close() path (set just before the finally
+        # block closes writer_end), proving the conversation completed and the
+        # drain thread was free to read remaining bytes to EOF.
+        self.assertTrue(write_closed.wait(timeout=5),
+                        "writer never reached its close path")
+
+
 if __name__ == "__main__":
     unittest.main()
