@@ -408,7 +408,14 @@ def _idle_monitor() -> None:
             for crew_id, info in crew_items:
                 if info.get("status") == "auth_required":
                     continue
-                if not podman.container_is_running(info["container"]):
+                try:
+                    if not podman.container_is_running(info["container"]):
+                        continue
+                except Exception as e:
+                    logger.warning(
+                        "Idle monitor: transient Podman error for crew %s — skipping: %s",
+                        crew_id, e,
+                    )
                     continue
 
                 last_used = info.get("last_used", 0)
@@ -527,6 +534,15 @@ def _idle_monitor() -> None:
                     "Crew %s idle for %.0fs — stopping container",
                     crew_id, idle_secs,
                 )
+                # TOCTOU guard: re-read last_used from the live registry before
+                # stopping.  A dispatch arriving during the HTTP checks above
+                # would have advanced last_used but be invisible to our snapshot.
+                with _registry_lock:
+                    live_reg = _load_registry()
+                    live_last_used = live_reg.get("crews", {}).get(crew_id, {}).get("last_used", 0)
+                if now - live_last_used < GA_IDLE_TIMEOUT_SECS:
+                    _note_idle_skip(crew_id, "last_used advanced during checks — skipping stop")
+                    continue
                 try:
                     podman.container_stop(info["container"])
                 except Exception as e:

@@ -522,7 +522,13 @@ def _phase2_dead_gateway(
 
     Returns the API result on success.
     Raises CrewUnresponsiveError if the gateway cannot be recovered.
+
+    Non-idempotent methods (POST, PATCH, DELETE) are NOT retried after a
+    gateway restart — the request may have been accepted before the connection
+    was cut, and a blind retry would duplicate the side-effect.  The caller
+    receives a CrewUnresponsiveError and can choose to retry explicitly.
     """
+    _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "OPTIONS"})
     logger.info(
         "Crew %s connection-error phase — probing gateway liveness",
         crew_id,
@@ -550,6 +556,12 @@ def _phase2_dead_gateway(
             f"container restart but the gateway did not recover. "
             f"Suggestion: check crew status with crews() or try "
             f"again in a moment."
+        )
+    if method.upper() not in _IDEMPOTENT_METHODS:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} gateway restarted after a connection reset on a "
+            f"{method} request — not retrying a non-idempotent call to avoid "
+            f"duplicating side-effects. Re-issue the request to proceed."
         )
     try:
         return _crew_api(crew, method, path, **kw)
@@ -655,19 +667,26 @@ def _ensure_crew_running(
     except Exception as e:
         raise RuntimeError(str(e))
 
-    if podman.container_is_running(crew["container"]):
-        # Gateway liveness probe: a running container may have a dead gateway
-        crew_url = _crew_url(crew)
-        if _probe_gateway(crew_url):
-            if touch:
-                _touch_crew(crew_id)
-            return crew
-        # Gateway is dead inside a running container — fall through to restart
-        logger.info(
-            "Crew %s container running but gateway probe failed — restarting",
-            crew_id,
-        )
-        podman.container_stop(crew["container"])
+    # D5: Check for an in-progress restart BEFORE probing/stopping the container.
+    # If a concurrent leader is already restarting this crew, go straight to
+    # the waiter path — probing or stopping the container mid-restart is wrong.
+    with _startup_events_lock:
+        _early_in_progress = crew_id in _startup_events
+
+    if not _early_in_progress:
+        if podman.container_is_running(crew["container"]):
+            # Gateway liveness probe: a running container may have a dead gateway
+            crew_url = _crew_url(crew)
+            if _probe_gateway(crew_url):
+                if touch:
+                    _touch_crew(crew_id)
+                return crew
+            # Gateway is dead inside a running container — fall through to restart
+            logger.info(
+                "Crew %s container running but gateway probe failed — restarting",
+                crew_id,
+            )
+            podman.container_stop(crew["container"])
 
     # Serialise concurrent restarts for this crew
     with _startup_events_lock:
@@ -764,11 +783,24 @@ def _ensure_crew_running(
             active = 0
             corrections: list[str] = []
             for cid, container in running_snapshot:
-                if container and podman.container_is_running(container):
-                    active += 1
-                else:
-                    # Registered running but not actually running — stale.
+                if not container:
                     corrections.append(cid)
+                    continue
+                try:
+                    if podman.container_is_running(container):
+                        active += 1
+                    else:
+                        # Registered running but not actually running — stale.
+                        corrections.append(cid)
+                except Exception as e:
+                    # Transient Podman error — do NOT mark as stopped; the
+                    # container state is unknown and we must not remove it from
+                    # the running count or mark it stopped on an ambiguous error.
+                    logger.warning(
+                        "Active-limit check: transient Podman error for crew %s — skipping correction: %s",
+                        cid, e,
+                    )
+                    active += 1  # assume still running to avoid under-counting
 
             if corrections:
                 with _registry_lock:
@@ -1615,11 +1647,21 @@ def _reconcile_registry() -> None:
 
     for cid, info in snapshot.items():
         container = info["container"]
-        if not podman.container_exists(container):
+        try:
+            exists = podman.container_exists(container)
+        except Exception as e:
+            logger.warning("Reconcile: transient Podman error checking crew %s — skipping: %s", cid, e)
+            continue
+        if not exists:
             logger.info("Removing gone crew from registry: %s", cid)
             to_remove.append(cid)
         else:
-            if not podman.container_is_running(container):
+            try:
+                running = podman.container_is_running(container)
+            except Exception as e:
+                logger.warning("Reconcile: transient Podman error checking running state for crew %s — skipping: %s", cid, e)
+                continue
+            if not running:
                 # Container exists but stopped (e.g. VM reboot) — restart it
                 logger.info("Restarting stopped crew on startup: %s", cid)
                 try:
@@ -1665,7 +1707,13 @@ def _reconcile_registry() -> None:
 
     # Write all changes back under the lock in one pass
     with _registry_lock:
-        reg = _load_registry()
+        try:
+            reg = _load_registry()
+        except Exception as e:
+            logger.error(
+                "Registry I/O error during reconcile write-back — skipping write to avoid data loss: %s", e
+            )
+            return
         for cid in to_remove:
             reg["crews"].pop(cid, None)
         for cid, fields in updates.items():
@@ -1876,7 +1924,12 @@ def _enroll_crew_members(crew: dict, crew_id: str, agent_names: list[str]) -> No
     slugs = [n.removesuffix(".json") for n in agent_names if n.endswith(".json")]
     for slug in slugs:
         try:
-            _crew_api_with_recovery(crew, crew_id, "POST", f"/api/members/{slug}/thread")
+            # Use _crew_api directly (not _crew_api_with_recovery) to avoid
+            # re-entering the per-crew recovery lock — this function is called
+            # from within _ensure_crew_running while that lock may already be
+            # held.  The gateway is confirmed live before enrolment runs, so
+            # the recovery wrapper's restart logic is not needed here.
+            _crew_api(crew, "POST", f"/api/members/{slug}/thread")
             logger.info("Member DM thread enrolled for %s on crew %s", slug, crew_id)
         except Exception as e:
             logger.warning("Member enrollment failed for %s on crew %s: %s", slug, crew_id, e)

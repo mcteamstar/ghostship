@@ -60,7 +60,12 @@ def _load_registry() -> dict:
             "registry corrupt — crews.json.corrupt preserved for inspection"
         ) from e
     except Exception as e:
-        logger.warning("Failed to load registry: %s", e)
+        # Re-raise so callers can decide: returning an empty dict here caused
+        # a subsequent _save_registry call to silently clobber every crew.
+        # Background-thread callers (monitors, lifecycle) must catch explicitly
+        # and fail-open; MCP tool handlers let this propagate to the boundary.
+        logger.error("Failed to load registry: %s", e)
+        raise
     return {"crews": {}}
 
 

@@ -295,12 +295,33 @@ class PodmanClient(ContainerRuntime):
         return r.json()
 
     def container_exists(self, name: str) -> bool:
-        return self._c.get(f"/libpod/containers/{name}/json").status_code == 200
+        """Return True if the container exists, False on 404.
+
+        Raises ``httpx.HTTPStatusError`` on any non-200/non-404 response so
+        callers can distinguish a definitively-absent container from a
+        transient Podman error.  Previously all non-200 responses returned
+        False, conflating an I/O error with a genuine absence.
+        """
+        r = self._c.get(f"/libpod/containers/{name}/json")
+        if r.status_code == 200:
+            return True
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()  # non-200, non-404 → transient error, let caller decide
+        return False  # unreachable; satisfies type checker
 
     def container_is_running(self, name: str) -> bool:
+        """Return True if the container is running, False if stopped or absent (404).
+
+        Raises ``httpx.HTTPStatusError`` on any other non-200 response so
+        callers can distinguish a stopped/absent container from a transient
+        Podman error.  Previously all non-200 responses returned False.
+        """
         r = self._c.get(f"/libpod/containers/{name}/json")
-        if r.status_code != 200:
+        if r.status_code == 404:
             return False
+        if r.status_code != 200:
+            r.raise_for_status()  # transient error — let caller decide
         return r.json().get("State", {}).get("Status") == "running"
 
     def system_info(self) -> dict:
