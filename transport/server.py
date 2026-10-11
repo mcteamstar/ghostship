@@ -429,6 +429,7 @@ GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
 GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
 GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
+GA_SPAWN_PRESSURE_ESCALATE_CYCLES = cfg.ga_spawn_pressure_escalate_cycles
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
 GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
 
@@ -3150,6 +3151,114 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
 # ── Captain dispatch/steer helpers ────────────────────────────────────────────
 
+# Stable marker prefixing every memory-pressure immediate_dispatch_error string,
+# so the fire path (and tests/Raven) can classify the outcome without having to
+# re-run the probe or sniff an arbitrary message. (TRN-225)
+_MEMORY_PRESSURE_MARKER = "memory_pressure:"
+
+
+class _MemoryPressureSkip(RuntimeError):
+    """Raised when a Captain check-in dispatch is skipped (or refused) because
+    the host is under critical memory pressure. A thin RuntimeError subclass so
+    the fire path can catch it separately from any other dispatch error without
+    string-sniffing."""
+
+
+def _check_in_memory_pressure() -> float | None:
+    """Return host available memory (GB) when BELOW the critical threshold,
+    else None.
+
+    None also means "probe unavailable → fail open": when the podman client or
+    the memory reading is not available we return None so the caller dispatches
+    anyway, letting the gateway's own refusal (D4) be the backstop rather than
+    freezing the crew on a missing probe.
+    """
+    try:
+        podman = _get_podman()
+        free_gb = _get_host_memory_gb_cached(podman)
+    except Exception:
+        return None
+    if free_gb is None:
+        return None  # fail open: no probe, do not block the crew
+    return free_gb if free_gb < GA_RESOURCE_CRITICAL_GB else None
+
+
+def _is_memory_pressure_refusal(resp) -> bool:
+    """True when ``resp`` is a gateway spawn refusal caused by host memory
+    pressure (HTTP 429/503 whose body names memory pressure or insufficient
+    memory). A 503-still-spawning body (no "memory" token) is NOT a match, so it
+    stays on the normal _crew_api_with_recovery retry path."""
+    try:
+        if resp.status_code not in (429, 503):
+            return False
+        body = (resp.text or "").lower()
+    except Exception:
+        return False
+    return "memory" in body and ("pressure" in body or "insufficient" in body)
+
+
+def _mail_admiral(crew_id: str, subject: str, body: str) -> None:
+    """Deliver one message to admiral@localhost from inside the crew container
+    via /usr/local/bin/maildeliver (the atomic Maildir delivery path documented
+    in STANDING_ORDERS.md). Best-effort: a delivery failure is logged, never
+    raised, so an escalation attempt cannot break the fire path."""
+    try:
+        crew = _require_crew(crew_id)
+        container = crew.get("container")
+        if not container:
+            logger.warning("Admiral escalation for crew %s: no container to deliver mail", crew_id)
+            return
+        from datetime import datetime as _dt, timezone as _tz
+        import uuid as _uuid
+
+        header_ts = _dt.now(_tz.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        message = (
+            f"From: transport@localhost\r\n"
+            f"To: admiral@localhost\r\n"
+            f"Subject: {subject}\r\n"
+            f"Message-ID: <{_uuid.uuid4()}@localhost>\r\n"
+            f"Date: {header_ts}\r\n"
+            f"\r\n"
+            f"{body}\r\n"
+        ).encode("utf-8")
+        podman = _get_podman()
+        podman.container_exec_stdin(
+            container,
+            ["/usr/local/bin/maildeliver", "admiral@localhost"],
+            message,
+        )
+    except Exception as exc:
+        logger.warning("Admiral escalation mail for crew %s failed: %s", crew_id, exc)
+
+
+def _record_memory_pressure_cycle(crew_id: str) -> None:
+    """Increment the captain schedule's consecutive_memory_pressure_skips counter
+    (treating a missing field as 0), persist it under _registry_lock, and fire a
+    single edge-triggered Admiral escalation when the post-increment value EQUALS
+    GA_SPAWN_PRESSURE_ESCALATE_CYCLES (so it mails exactly once on the crossing,
+    not on every subsequent cycle while the counter stays at/above the bound)."""
+    n = 0
+    with _registry_lock:
+        reg = _load_registry()
+        for s in _get_crew_schedules(reg, crew_id):
+            if s.get("type") == "captain":
+                n = int(s.get("consecutive_memory_pressure_skips", 0) or 0) + 1
+                s["consecutive_memory_pressure_skips"] = n
+                break
+        _save_registry(reg)
+    if n == GA_SPAWN_PRESSURE_ESCALATE_CYCLES:
+        _mail_admiral(
+            crew_id,
+            subject=f"captain check-in deferred — sustained memory pressure {crew_id}",
+            body=(
+                f"{n} consecutive check-in cycles for crew {crew_id} were "
+                f"deferred because host available memory stayed below "
+                f"{GA_RESOURCE_CRITICAL_GB}GB. SDD progress is paused until "
+                f"memory pressure drops."
+            ),
+        )
+
+
 def _dispatch_captain_checkin(
     crew: dict,
     crew_id: str,
@@ -3231,7 +3340,45 @@ def _dispatch_captain_checkin(
             model = crew_model
     if model is not None:
         spawn_body["model"] = model
-    result = _crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
+    # Pre-dispatch host-memory probe (TRN-225): skip the spawn WITHOUT calling
+    # /api/spawn when the host is under critical memory pressure. Fail-open when
+    # the probe is unavailable (helper returns None).
+    low_gb = _check_in_memory_pressure()
+    if low_gb is not None:
+        logger.warning(
+            "Captain check-in for crew %s deferred: host at %sGB free "
+            "(< %sGB critical) — memory pressure",
+            crew_id, low_gb, GA_RESOURCE_CRITICAL_GB,
+        )
+        raise _MemoryPressureSkip(
+            f"{_MEMORY_PRESSURE_MARKER} host at {low_gb}GB free "
+            f"(< {GA_RESOURCE_CRITICAL_GB}GB critical) — check-in deferred"
+        )
+    # A gateway-side memory-pressure refusal (one that slipped past the probe
+    # because the gateway threshold is stricter) is re-raised as the same typed
+    # skip and NOT routed through _crew_api_with_recovery's in-cycle retries.
+    #
+    # Note: _crew_api_with_recovery's _phase0_transient_503 retries all 503
+    # responses up to 4× before re-raising. When the gateway returns a
+    # memory-pressure 503, phase0 will retry it 4× (~4 s) before the error
+    # propagates here for classification. The probe (D3) prevents this in the
+    # common case (same threshold on both sides); the retry overhead only occurs
+    # in the narrow window where the gateway's threshold is stricter than
+    # GA_RESOURCE_CRITICAL_GB. Fixing this properly requires a body-check inside
+    # _phase0_transient_503 (lifecycle.py), which is outside this change's
+    # declared footprint; tracked as a follow-on for lifecycle.py.
+    try:
+        result = _crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
+    except httpx.HTTPStatusError as exc:
+        if _is_memory_pressure_refusal(exc.response):
+            logger.warning(
+                "Captain check-in for crew %s refused by gateway under memory pressure",
+                crew_id,
+            )
+            raise _MemoryPressureSkip(
+                f"{_MEMORY_PRESSURE_MARKER} gateway refused spawn under memory pressure"
+            ) from exc
+        raise
     task_id = result.get("id") if isinstance(result, dict) else None
     if not task_id:
         raise RuntimeError(
@@ -3495,11 +3642,22 @@ def _captain_do_order(
                         if s.get("type") == "captain":
                             s["current_task_id"] = new_task_id
                             s["next_fire_at"] = fired_next
+                            # Successful dispatch clears any accumulated
+                            # memory-pressure skips so a later sustained-pressure
+                            # run re-arms the Admiral escalation. (TRN-225)
+                            s["consecutive_memory_pressure_skips"] = 0
                             from datetime import datetime as _dt, timezone as _tz
                             s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
                             break
                     _save_registry(reg)
                 result["current_task_id"] = new_task_id
+            except _MemoryPressureSkip as exc:
+                # Memory-pressure skip/refusal: do NOT advance current_task_id
+                # (so the dispatch is retried on a later cycle), count the cycle,
+                # and let _record_memory_pressure_cycle handle edge-triggered
+                # Admiral escalation. (TRN-225)
+                result["immediate_dispatch_error"] = str(exc)
+                _record_memory_pressure_cycle(crew_id)
             except Exception as exc:
                 result["immediate_dispatch_error"] = str(exc)
         elif not is_new_entry and existing_entry is not None:
@@ -3964,9 +4122,20 @@ def schedule(
             }
             if model is not None:
                 immediate_body["model"] = model
-            _crew_api_with_recovery(
-                crew, crew_id, "POST", "/api/spawn", json=immediate_body,
-            )
+            try:
+                _crew_api_with_recovery(
+                    crew, crew_id, "POST", "/api/spawn", json=immediate_body,
+                )
+            except httpx.HTTPStatusError as exc:
+                # Classify a gateway memory-pressure refusal consistently with the
+                # captain path: tag it with the stable marker so callers/Raven can
+                # recognise it. No counter here — generic scheduled jobs have no
+                # captain escalation. (TRN-225)
+                if _is_memory_pressure_refusal(exc.response):
+                    raise _MemoryPressureSkip(
+                        f"{_MEMORY_PRESSURE_MARKER} gateway refused spawn under memory pressure"
+                    ) from exc
+                raise
         except Exception as exc:
             result["immediate_dispatch_error"] = str(exc)
 

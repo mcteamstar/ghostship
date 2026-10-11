@@ -32,7 +32,8 @@ These variables are written into the transport container's environment by `insta
 | `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine name (macOS) or systemd service suffix (Linux). Used in `podman machine` commands and as the `podman-<name>.socket`/`.service` name. |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Patched into each crew's `spawn_min_memory_gb` (KiroCrew subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate fires first. |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Patched into each crew's `resource_pressure_gb` — KiroCrew throttles subagent spawning below this threshold. |
-| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Patched into each crew's `resource_critical_gb` — KiroCrew refuses subagent spawning below this hard floor. |
+| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Patched into each crew's `resource_critical_gb` — KiroCrew refuses subagent spawning below this hard floor. Also used by the transport as the pre-dispatch probe threshold for captain check-ins (TRN-225). |
+| `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` | `3` | Consecutive captain check-in cycles skipped or refused for host memory pressure (available memory below `GA_RESOURCE_CRITICAL_GB`) before the transport mails `admiral@localhost` once. Edge-triggered: one mail per threshold crossing; the counter resets on the next successful dispatch. |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Patched into each crew's `subagent_max_turns` — maximum tool-call turns per subagent task. |
 | `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
