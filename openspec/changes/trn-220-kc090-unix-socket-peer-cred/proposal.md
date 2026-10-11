@@ -18,7 +18,7 @@ This proposal records the assessment of ghostship's exposure, pins the
 invariant that keeps ghostship safe, and adds a guardrail so a future change
 cannot silently route an internal-API call across a UID boundary.
 
-## Why it is needed
+## Why
 
 The transport talks to each crew gateway over REST. There are two distinct
 auth paths, and 0.9.0 only tightens one of them:
