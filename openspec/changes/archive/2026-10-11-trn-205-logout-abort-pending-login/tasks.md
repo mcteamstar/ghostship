@@ -30,6 +30,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Start a login flow, call `POST /logout`, confirm `GET /login` returns 404
-      (not authenticated, not pending)
-- [ ] 4.2 Confirm a fresh `POST /login` succeeds immediately after the abort
+- [x] 4.1 Start a login flow, call `POST /logout`, confirm `GET /login` returns 404
+      (not authenticated, not pending) — VERIFIED: `POST /logout` returns `{"status":"logged_out"}`, `GET /login` returns 404 on live corsair transport.
+- [x] 4.2 Confirm a fresh `POST /login` succeeds immediately after the abort — VERIFIED: second `POST /login` returns HTTP 200 (not 409) immediately after logout.
