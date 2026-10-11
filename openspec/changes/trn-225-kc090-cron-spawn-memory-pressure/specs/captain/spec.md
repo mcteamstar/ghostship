@@ -70,7 +70,8 @@ Each template SHALL instruct Raven to:
 - Count consecutive memory-pressure refused cycles and, after
   `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive refusals for the same
   dispatch, mail `admiral@localhost` with subject
-  `captain check-in deferred — sustained memory pressure` before holding.
+  `captain check-in deferred — sustained memory pressure <crew_id>`
+  (substituting the actual crew id) before holding.
 
 #### Scenario: Raven holds and retries on a memory-pressure refusal
 - **WHEN** Raven issues `POST /api/spawn` and receives a memory-pressure refusal (HTTP 503 or 429 whose body names memory pressure)
@@ -79,5 +80,5 @@ Each template SHALL instruct Raven to:
 
 #### Scenario: Raven escalates after sustained memory-pressure refusals
 - **WHEN** Raven has observed `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive memory-pressure refusals for the same dispatch intent
-- **THEN** Raven mails `admiral@localhost` with subject `captain check-in deferred — sustained memory pressure`
+- **THEN** Raven mails `admiral@localhost` with subject `captain check-in deferred — sustained memory pressure <crew_id>` (substituting the actual crew id)
 - **THEN** Raven holds and does not attempt another spawn in the same cycle

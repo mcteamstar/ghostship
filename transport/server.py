@@ -3357,6 +3357,16 @@ def _dispatch_captain_checkin(
     # A gateway-side memory-pressure refusal (one that slipped past the probe
     # because the gateway threshold is stricter) is re-raised as the same typed
     # skip and NOT routed through _crew_api_with_recovery's in-cycle retries.
+    #
+    # Note: _crew_api_with_recovery's _phase0_transient_503 retries all 503
+    # responses up to 4× before re-raising. When the gateway returns a
+    # memory-pressure 503, phase0 will retry it 4× (~4 s) before the error
+    # propagates here for classification. The probe (D3) prevents this in the
+    # common case (same threshold on both sides); the retry overhead only occurs
+    # in the narrow window where the gateway's threshold is stricter than
+    # GA_RESOURCE_CRITICAL_GB. Fixing this properly requires a body-check inside
+    # _phase0_transient_503 (lifecycle.py), which is outside this change's
+    # declared footprint; tracked as a follow-on for lifecycle.py.
     try:
         result = _crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
     except httpx.HTTPStatusError as exc:
