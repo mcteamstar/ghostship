@@ -40,10 +40,15 @@
 
 ## 5. Build and validate — BLOCKED (needs Podman + registry pull)
 - [ ] Force a cache-less rebuild of the admission layer (base-image bump is a build-arg change; podman reuses layers on arg-only changes otherwise)
+  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
 - [ ] Build the full chain: `base-admission` → `<comp>-mid` → `<comp>` (graduation)
+  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
 - [ ] Launch a throwaway crew and confirm `inject_auth.py` succeeds (no `no such table: auth_kv`, auth insert complete)
+  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
 - [ ] Confirm at least one agent authenticates and runs a trivial task end-to-end
+  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
 - [ ] Confirm OpenSpec CLI still resolves inside the spec-ops image (`openspec --version`)
+  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
 
 ## 6. Record outcome — DONE
 - [x] Note the verified schema tuple and kiro-cli version in the commit message / change notes — recorded here and in the seed header: **`(6, 5)`, kiro-cli 2.29.0, four tables unchanged**. To go in the release commit message.
