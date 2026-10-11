@@ -5,11 +5,11 @@ invariant against the source and/or the running `0.9.0-insider.4` gateway.
 
 ## Source audit (static)
 
-- [ ] Confirm `CaddyPortal.register_crew` in `transport/caddy.py` still builds the WS route by matching `{"header": {"Connection": ["Upgrade"]}}` and handling it with `crew_proxy_handler`.
-- [ ] Confirm `crew_proxy_handler` sets only `X-Transport-Token` on the upstream request and sets no `X-App-Token` (or any app-token header).
-- [ ] Confirm the TRN-189 WS-route comment still accurately describes cookie-inherited auth (WS inherits the `gs_session` validated on the SPA's HTTP load).
-- [ ] Confirm `DashboardGate.handle_auth` in `transport/dashboard.py` validates only the `gs_session` cookie and never reads a WS payload body.
-- [ ] Grep `transport/` for `tool_title` and `assistant_content` reads on the WS path; confirm none exist.
+- [x] Confirm `CaddyPortal.register_crew` in `transport/caddy.py` still builds the WS route by matching `{"header": {"Connection": ["Upgrade"]}}` and handling it with `crew_proxy_handler`.
+- [x] Confirm `crew_proxy_handler` sets only `X-Transport-Token` on the upstream request and sets no `X-App-Token` (or any app-token header).
+- [x] Confirm the TRN-189 WS-route comment still accurately describes cookie-inherited auth (WS inherits the `gs_session` validated on the SPA's HTTP load).
+- [x] Confirm `DashboardGate.handle_auth` in `transport/dashboard.py` validates only the `gs_session` cookie and never reads a WS payload body.
+- [x] Grep `transport/` for `tool_title` and `assistant_content` reads on the WS path; confirm none exist.
 
 ## Runtime verification (against 0.9.0-insider.4)
 
@@ -21,7 +21,7 @@ invariant against the source and/or the running `0.9.0-insider.4` gateway.
 
 ## Record / sign-off
 
-- [ ] Record the verification outcome (pass/fail per check) in the change notes.
+- [x] Record the verification outcome (pass/fail per check) in the change notes.
 - [ ] If all checks pass, mark TRN-222 as verified-no-change for the 0.9.0 upgrade.
 - [ ] If any check fails, re-open with a concrete code task referencing the failing file/function and escalate the priority verdict above "low impact".
-- [ ] Add the D3 future-break guard note to the WS-proxy code review checklist so any future app-token WS change re-opens this baseline.
+- [x] Add the D3 future-break guard note to the WS-proxy code review checklist so any future app-token WS change re-opens this baseline.
