@@ -359,6 +359,8 @@ Every standing order written to `/var/mail/captain` carries an `X-Admiral-Sig:` 
 
 **Policy signing:** a separate `policy_signing_key` signs `security_policy.json` via HMAC-SHA256. A tampered policy causes a mismatch and the gateway refuses to start. `policy_signing_key` is distinct from the Admiral seed — an agent reading `admission_policy.json` cannot forge Admiral standing orders.
 
+**SEL signing key (KiroCrew 0.9.0+):** the Security Event Log (SEL) signing key is a **KiroCrew gateway-internal credential** and, as of KiroCrew 0.9.0, lives under `$KIROCREW_HOME/trust/` (the consolidated trust root the 0.9.0 governance work introduced). ghostship does not read, sign with, or verify against the SEL key today. If a future feature needs to read or verify SEL audit entries, it MUST resolve the key under `$KIROCREW_HOME/trust/` — never a hardcoded pre-0.9.0 location. Do not confuse the SEL key with ghostship's own `.local_secret` (the gateway's internal-API secret, used by `transport/lifecycle.py` for dashboard-cookie writes) or `policy_signing_key` (ghostship's own policy HMAC key). A static guardrail test (`tests/unit/test_trn_221_no_hardcoded_sel_path.py`) fails CI if a pre-0.9.0 SEL path literal is reintroduced under `transport/`. See TRN-221 (`trn-221-kc090-sel-key-trust-dir`).
+
 **Storage:** `crews.json` stores only a non-reversible `sha256:<hex[:16]>` identifier for each secret. The Admiral Ed25519 private seed is persisted to `DATA_DIR/secrets/<crew_id>` (mode `0600`) so the transport can sign standing orders after launch.
 
 ### Threat model
