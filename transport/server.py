@@ -3296,12 +3296,32 @@ def _steer_captain_checkin(
     except Exception as exc:
         err_str = str(exc)
         # /continue returns 404 with code "conversation_gone" when the session
-        # is no longer available (container restart, etc.)
-        if "conversation_gone" in err_str or "404" in err_str:
+        # is no longer available (container restart, etc.).
+        # TRN-230: /continue also returns 400 Bad Request when the Raven task
+        # has completed and its session is gone — _crew_api_with_recovery now
+        # re-raises this as a raw HTTPStatusError rather than routing to
+        # phase-1 stale-cookie recovery.  Treat it the same as 404: fall back
+        # to a fresh dispatch and clear the stale current_task_id.
+        if "conversation_gone" in err_str or "404" in err_str or ("400 Bad Request" in err_str and "/continue" in err_str):
             logger.info(
-                "Captain check-in: session %s gone for crew %s — re-dispatching",
+                "Captain check-in: session %s gone for crew %s (400/404) — re-dispatching",
                 current_task_id, crew_id,
             )
+            # Clear the stale current_task_id so the next monitor tick doesn't
+            # retry this dead session.
+            try:
+                with _registry_lock:
+                    reg = _load_registry()
+                    for s in _get_crew_schedules(reg, crew_id):
+                        if s.get("type") == "captain":
+                            s["current_task_id"] = None
+                            break
+                    _save_registry(reg)
+            except Exception as clear_exc:
+                logger.warning(
+                    "Captain check-in: could not clear current_task_id for crew %s: %s",
+                    crew_id, clear_exc,
+                )
             return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
         # /continue returns 409 with code "conversation_busy" when mid-turn
         if "conversation_busy" in err_str or "409" in err_str:

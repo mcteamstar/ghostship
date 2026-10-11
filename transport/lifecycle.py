@@ -658,6 +658,11 @@ def _crew_api_with_recovery(
                 return _phase0_transient_503(crew, method, path, **kw)
             if status not in (400, 401, 403):
                 raise
+            # ── TRN-230: 400 on /continue means session is gone, not a stale cookie.
+            # Phase-1 cookie refresh cannot recover a finished session — re-raise so
+            # the caller (_steer_captain_checkin) can handle it as "session gone".
+            if status == 400 and "/continue" in path:
+                raise
             # ── Phase 1: stale cookie ─────────────────────────────────────────
             return _phase1_stale_cookie(crew, crew_id, method, path, **kw)
 
