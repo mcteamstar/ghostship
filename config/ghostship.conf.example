@@ -123,6 +123,12 @@
 # GA_RESOURCE_PRESSURE_GB=2.0
 # GA_RESOURCE_CRITICAL_GB=1.0
 
+# Consecutive Captain check-in cycles that must be refused/skipped for host
+# memory pressure (available memory below GA_RESOURCE_CRITICAL_GB) before the
+# transport mails admiral@localhost. Edge-triggered: one mail per crossing; the
+# counter resets on the next successful dispatch. Default 3.
+# GA_SPAWN_PRESSURE_ESCALATE_CYCLES=3
+
 # ── Storage / runtime paths ───────────────────────────────────────────────────
 # Directory the transport uses for its persistent state (crews.json, secrets).
 # Inside the container this is the /data mount; rarely overridden.
