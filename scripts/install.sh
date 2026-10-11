@@ -90,7 +90,7 @@ GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
-GA_DASHBOARD_PORT_RANGE_SIZE=1024
+GA_DASHBOARD_PORT_RANGE_SIZE=64
 # ── Client-only install ──────────────────────────────────────────────────────
 # --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
 # transport WITHOUT running any container-infrastructure steps. --url selects
@@ -780,7 +780,7 @@ fi
 
 # Pre-compute UI port range end for the compose template.
 _DASHBOARD_PORT_START="${GA_DASHBOARD_PORT_RANGE_START:-64058}"
-_DASHBOARD_PORT_END=$(( _DASHBOARD_PORT_START + ${GA_DASHBOARD_PORT_RANGE_SIZE:-1024} - 1 ))
+_DASHBOARD_PORT_END=$(( _DASHBOARD_PORT_START + ${GA_DASHBOARD_PORT_RANGE_SIZE:-64} - 1 ))
 
 # compose.yml carries model API keys (GA_CREW_ANTHROPIC_API_KEY,
 # GA_CREW_OPENAI_API_KEY): create it owner-only. chmod as well, because
@@ -856,7 +856,7 @@ services:
       GA_RATE_LIMIT_CREW_API: "${GA_RATE_LIMIT_CREW_API:-120:60}"
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
       GA_DASHBOARD_DEFAULT: "${GA_DASHBOARD_DEFAULT:-false}"
-      GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-1024}"
+      GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-64}"
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
