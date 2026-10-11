@@ -218,7 +218,7 @@ Rate limit exceeded. Retry after <window_secs> seconds.
 Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew:0.8.0
+FROM ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009
 USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     nodejs npm \   # already included

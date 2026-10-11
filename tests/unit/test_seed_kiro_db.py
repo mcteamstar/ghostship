@@ -3,7 +3,7 @@
 Verifies that the pre-seeded kiro-cli DB produced by seed_kiro_db.py matches
 the migration count and max_version expected for the pinned base image.
 
-Expected result for KiroCrew 0.8.0 / kiro-cli 2.27.1: (count, max_version) == (6, 5).
+Expected result for KiroCrew 0.9.0-insider.4 / kiro-cli 2.29.0: (count, max_version) == (6, 5).
 
 Marked @pytest.mark.slow — requires a running Podman daemon and pulls the base
 image on first run. Excluded from the default fast unit run; add to a separate

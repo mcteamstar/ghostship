@@ -210,7 +210,8 @@ class Config:
     # Upstream base image used for ephemeral containers that only need kiro-cli
     # (e.g. login containers). Must match the FROM pin in
     # crews/_base/admission/Containerfile.
-    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew:0.8.0"
+    # TRN-219: pinned to the immutable digest of 0.9.0-insider.4.
+    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009"
 
     # ── Crew lifecycle ───────────────────────────────────────────────────────
     ga_max_crews: int = 20

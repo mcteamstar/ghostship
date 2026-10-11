@@ -148,13 +148,19 @@ class TestConfigEnvValidValues(unittest.TestCase):
 class TestConfigKcBaseImage(unittest.TestCase):
     """Config.from_env() respects KC_BASE_IMAGE env var."""
 
+    # TRN-219: bumped from :0.8.0 to the immutable digest of 0.9.0-insider.4.
+    _EXPECTED_DEFAULT = (
+        "ghcr.io/kirodotdev/kirocrew@sha256:"
+        "f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009"
+    )
+
     def test_default_value(self):
-        """kc_base_image defaults to the pinned upstream image."""
+        """kc_base_image defaults to the pinned 0.9.0-insider.4 digest (TRN-219)."""
         env = {k: v for k, v in __import__("os").environ.items()
                if k != "KC_BASE_IMAGE"}
         with patch.dict("os.environ", env, clear=True):
             cfg = Config.from_env()
-        self.assertEqual(cfg.kc_base_image, "ghcr.io/kirodotdev/kirocrew:0.8.0")
+        self.assertEqual(cfg.kc_base_image, self._EXPECTED_DEFAULT)
 
     def test_custom_value_respected(self):
         """KC_BASE_IMAGE env var overrides the default."""
