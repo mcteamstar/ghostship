@@ -2264,6 +2264,69 @@ class PatchCrewConfigTests(unittest.TestCase):
             f"Expected orchestrator.max_plan_duration_seconds >= 14400 but got: {duration!r}",
         )
 
+    def test_patch_crew_config_sets_memory_store_default(self) -> None:
+        """Every agent entry in agents comprehension must carry memory_store: "default".
+
+        Under KiroCrew 0.9.0+ "default" is a store *selector* with no ordering
+        assumption — the gateway switches internally to vector-similarity
+        retrieval, but the string "default" is still accepted without
+        modification (TRN-224 spec: crew-member-enrollment requirement,
+        scenario 'memory_store "default" accepted under KiroCrew 0.9.0').
+
+        This test guards against the key being renamed, dropped, or changed to
+        an ordering-specific identifier in a future refactor.
+        """
+        import base64
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        exec_calls: list[list[str]] = []
+
+        class CapturingPodman:
+            def container_exec(
+                self, container: str, cmd: list[str], env: dict | None = None
+            ) -> str:
+                exec_calls.append(cmd)
+                return "patched config.local.json"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents_dir = Path(tmp) / "agents"
+            agents_dir.mkdir()
+            # Create two stub agent JSON files so the comprehension produces
+            # at least one entry — any non-empty glob result is sufficient.
+            (agents_dir / "ghost.json").write_text("{}")
+            (agents_dir / "spectre.json").write_text("{}")
+
+            real_path = Path
+
+            def _path_factory(p):
+                if str(p) == "/agents":
+                    return agents_dir
+                return real_path(p)
+
+            with patch("transport.lifecycle.Path", side_effect=_path_factory):
+                lifecycle._patch_crew_config(CapturingPodman(), "gs-demo")
+
+        self.assertTrue(exec_calls, "container_exec was never called")
+        cmd = exec_calls[0]
+        overrides_b64 = cmd[-1]
+        overrides = _json.loads(base64.b64decode(overrides_b64).decode())
+
+        agents: dict = overrides.get("agents", {})
+        self.assertTrue(
+            agents,
+            "Expected 'agents' section in full_overrides but it was absent or empty",
+        )
+        for slug, agent_cfg in agents.items():
+            self.assertEqual(
+                agent_cfg.get("memory_store"),
+                "default",
+                f"Expected agents[{slug!r}].memory_store='default' but got: "
+                f"{agent_cfg.get('memory_store')!r}",
+            )
+
 
 # ── schedule monitor gateway source-of-truth ────────────────────────
 
