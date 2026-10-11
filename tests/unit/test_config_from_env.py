@@ -110,12 +110,12 @@ class TestConfigEnvValidValues(unittest.TestCase):
         self.assertEqual(cfg.ga_dashboard_port_range_size, 50)
 
     def test_ga_dashboard_port_range_size_default(self):
-        """GA_DASHBOARD_PORT_RANGE_SIZE defaults to 1024 when unset."""
+        """GA_DASHBOARD_PORT_RANGE_SIZE defaults to 64 when unset."""
         env = {k: v for k, v in __import__("os").environ.items()
                if k != "GA_DASHBOARD_PORT_RANGE_SIZE"}
         with patch.dict("os.environ", env, clear=True):
             cfg = Config.from_env()
-        self.assertEqual(cfg.ga_dashboard_port_range_size, 1024)
+        self.assertEqual(cfg.ga_dashboard_port_range_size, 64)
 
     def test_defaults_when_unset(self):
         """Config.from_env() with no relevant env vars uses field defaults."""

@@ -1840,15 +1840,34 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
         "reasoning_effort": "max",
         "subagent_timeout_secs": GA_SUBAGENT_TIMEOUT_SECS,
         "subagent_max_turns": GA_SUBAGENT_MAX_TURNS,
-        # ``sandbox_allow_unsandboxed_exec=True`` is the correct rootless escape
-        # hatch introduced in KiroCrew 0.7.0. Podman rootless cannot perform
-        # user-namespace bind mounts (errno EPERM), so we must opt out of the
-        # inner namespace sandbox. In 0.7.0 the text-based credential gate was
-        # removed — bind masks are now the only fence — so the prior ``sandbox:
-        # "off"`` left no protection. ``sandbox_allow_unsandboxed_exec: true``
-        # is the explicit opt-in for hosts that cannot sandbox: it skips only
-        # the failing bind-mount step while keeping all other credential guards
-        # in place. The Podman container itself remains the OS-level boundary.
+        # KiroCrew 0.9.0 sandbox bypass for Podman rootless hosts.
+        #
+        # Podman rootless cannot perform user-namespace bind mounts inside the
+        # container (the kernel refuses ``unshare(CLONE_NEWNS)`` or the mount
+        # propagation step with errno EPERM/EACCES). Two complementary keys are
+        # needed:
+        #
+        # ``sandbox: "off"`` — skip the sandbox launcher entirely. wrap_argv()
+        #   returns the unmodified argv immediately when mode=="off", before
+        #   probing or launching the namespace setup. The governance floor clamp
+        #   runs first, but on a non-enterprise crew container (no IAM Identity
+        #   Center governance profile) the floor is absent and "off" passes
+        #   through. Equivalent to the old 0.6.x behaviour where ``sandbox: "off"``
+        #   was the sole escape hatch.
+        #
+        # ``sandbox_allow_unsandboxed_exec: true`` — belt-and-suspenders for
+        #   subsequent spawns when the ACP runtime re-reads config independently.
+        #   In 0.9.0 the gateway's entrypoint pre-checks config.json (not the
+        #   merged config.local.json) and emits a hint if the key is absent; the
+        #   key in config.local.json satisfies the actual gate via
+        #   KiroCrewConfig.load() deep-merge, but setting it alongside sandbox:off
+        #   makes the intent unambiguous.
+        #
+        # The Podman container itself (and the workspace volume isolation) remain
+        # the OS-level security boundary. This is equivalent to running KiroCrew
+        # on any other unsandboxable host (e.g. macOS without SIP or inside a
+        # Docker container with the default seccomp profile).
+        "sandbox": "off",
         "sandbox_allow_unsandboxed_exec": True,
     }
     # When GA_CREW_ACP_BACKEND=claude, write acp_backend into the crew config so

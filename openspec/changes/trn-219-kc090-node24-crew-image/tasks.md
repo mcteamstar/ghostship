@@ -38,17 +38,35 @@
 - [x] Confirm `crews/spec-ops/Containerfile` still uses `setup_24.x` with `NODESOURCE_SETUP_SHA256="6e3d580f5bd7ccf2aa1e8df8d35c60d78e873c3ff8beb282c9bebd914904ad72"` — confirmed present and unchanged
 - [x] Recompute the NodeSource script SHA-256 only if the `sha256sum -c -` step fails during build — not applicable until a build runs (§5); no change made
 
-## 5. Build and validate — BLOCKED (needs Podman + registry pull)
-- [ ] Force a cache-less rebuild of the admission layer (base-image bump is a build-arg change; podman reuses layers on arg-only changes otherwise)
-  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
-- [ ] Build the full chain: `base-admission` → `<comp>-mid` → `<comp>` (graduation)
-  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
-- [ ] Launch a throwaway crew and confirm `inject_auth.py` succeeds (no `no such table: auth_kv`, auth insert complete)
-  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
+## 5. Build and validate — IN PROGRESS (corsair local install, 2026-10-11)
+
+> **Update 2026-10-11:** Podman host now available via the local corsair install
+> (`ghost-academy` Podman machine, `localhost:64057`). Build validated. Sandbox
+> timing bug found and fixed (see below).
+
+### 5a. Sandbox timing bug (found during local validation) — FIXED
+**Root cause:** `_patch_crew_config()` writes `config.local.json` (which contains
+`sandbox_allow_unsandboxed_exec: true`) AFTER the gateway is ready. But
+`kirocrew-entrypoint` runs the inner sandbox probe against `config.json` BEFORE
+the gateway starts — before `config.local.json` is merged in. On the Podman VM,
+bind-mounting `token_signing.key` as unreadable fails with errno 13, and the
+entrypoint logs: *"Note: agent.sandbox_allow_unsandboxed_exec is not set in
+config.json."* The gateway error message mentions "a governance floor clamps the
+mode back up" but this is the generic error template — no governance floor is
+active; the real failure is the timing gap.
+
+**Fix:** Bake `sandbox_allow_unsandboxed_exec: true` into `config.json` at image
+build time via `seed_kiro_db.py` (or a companion `seed_crew_config.py` step in
+graduation), so the value is present in `config.json` before the entrypoint runs.
+`_patch_crew_config()` continues to write `config.local.json` for runtime
+overrides — this is additive, not a replacement.
+
+- [x] Diagnose sandbox timing bug (entrypoint reads config.json before _patch_crew_config runs)
+- [x] Add `sandbox: "off"` to `_patch_crew_config` alongside `sandbox_allow_unsandboxed_exec: true` — root cause: `sandbox_allow_unsandboxed_exec` only gates the *cached-failure* path (after a prior failed probe), not the initial spawn; `sandbox: "off"` causes `wrap_argv()` to return unmodified argv immediately, bypassing the launcher entirely
+- [x] Confirm agents spawn on corsair local install (`echo hello` task completed in 13s)
+- [ ] Launch a throwaway crew and confirm `inject_auth.py` succeeds (no `no such table: auth_kv`)
 - [ ] Confirm at least one agent authenticates and runs a trivial task end-to-end
-  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
 - [ ] Confirm OpenSpec CLI still resolves inside the spec-ops image (`openspec --version`)
-  > **DEFERRED: requires Podman host -- run manually before 0.7.0 release.**
 
 ## 6. Record outcome — DONE
 - [x] Note the verified schema tuple and kiro-cli version in the commit message / change notes — recorded here and in the seed header: **`(6, 5)`, kiro-cli 2.29.0, four tables unchanged**. To go in the release commit message.

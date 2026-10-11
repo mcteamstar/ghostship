@@ -2120,12 +2120,19 @@ class PatchCrewConfigTests(unittest.TestCase):
         return _json.loads(base64.b64decode(overrides_b64).decode())
 
     def test_patch_crew_config_sets_sandbox_off(self) -> None:
-        """sandbox_allow_unsandboxed_exec must be True -- under Podman rootless
-        the kernel denies the MS_REMOUNT bind mount that kiro-cli 0.7.0+
-        requires to seal credential directories (EPERM inside a user namespace).
-        KiroCrew 0.7.0 replaced the broad ``sandbox: "off"`` with the more
-        targeted ``sandbox_allow_unsandboxed_exec: true`` escape hatch, which
-        skips only the failing bind-mount step while keeping other guards.
+        """sandbox: "off" and sandbox_allow_unsandboxed_exec must both be set.
+
+        Under Podman rootless the kernel denies the namespace/mount operations
+        KiroCrew 0.9.0 uses to seal credential directories. Two keys are needed:
+
+        - ``sandbox: "off"`` causes wrap_argv() to return the unmodified argv
+          immediately, bypassing the sandbox launcher entirely. This is needed
+          because ``sandbox_allow_unsandboxed_exec`` alone only gates the
+          *cached-failure* path (populated after a prior failed probe), so the
+          first agent spawn on a fresh crew would still fail without this.
+
+        - ``sandbox_allow_unsandboxed_exec: true`` is belt-and-suspenders for
+          subsequent spawns and for the ACP runtime's independent config reads.
 
         The full_overrides dict nests agent keys under
         ``full_overrides["agent"]`` rather than at the top level."""
@@ -2137,10 +2144,10 @@ class PatchCrewConfigTests(unittest.TestCase):
             f"Expected agent.sandbox_allow_unsandboxed_exec=True but got: "
             f"{agent.get('sandbox_allow_unsandboxed_exec')!r}",
         )
-        self.assertNotIn(
-            "sandbox",
-            agent,
-            "agent.sandbox should not be set — use sandbox_allow_unsandboxed_exec instead",
+        self.assertEqual(
+            agent.get("sandbox"),
+            "off",
+            f"Expected agent.sandbox='off' but got: {agent.get('sandbox')!r}",
         )
 
     def test_patch_crew_config_sets_dangerously_skip_permissions(self) -> None:
