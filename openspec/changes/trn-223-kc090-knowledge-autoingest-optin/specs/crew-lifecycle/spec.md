@@ -3,8 +3,7 @@
 ### Requirement: Headless crew config overrides
 The `_patch_crew_config()` function SHALL write a fixed set of overrides into each crew's
 `config.local.json` at launch, covering not just the `agent` section but also `stt`,
-`session`, `telemetry`, top-level keys, and — as of KiroCrew 0.9.0 — an explicit
-`knowledge.auto_ingest` pin.
+`session`, `telemetry`, and top-level keys.
 
 The fixed overrides for all spec-ops crews are:
 
@@ -16,13 +15,21 @@ The fixed overrides for all spec-ops crews are:
 | `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session; recycle if exceeded (above ~1.9 GB active task peak) |
 | `telemetry.beacon_enabled` | `false` | No outbound beacon on server deployment |
 | `auto_update` | `false` | Prevent version drift on a pinned container image |
-| `knowledge.auto_ingest` | `false` | Knowledge auto-ingest is opt-in under KiroCrew 0.9.0+ (PR #2448); pin it off explicitly so a future upstream default flip cannot silently enable ingest from the mounted worktree |
+
+Knowledge auto-ingest is **not** written into `full_overrides`. As of KiroCrew 0.9.0
+(PR #2448) knowledge auto-ingest is opt-in and already defaults off upstream. Verification
+against the pinned base image (`kiro_crew` 0.9.0rc4) established there is no single
+`knowledge.auto_ingest` boolean to pin — the toggles are separate fields
+(`auto_ingest_artifacts`, `auto_add_documents`), each defaulting to `false` — so pinning one
+would write an inert dead key. The disabled posture therefore relies on the verified
+upstream default (decision D1 = Option B), guarded by a CI regression test rather than a
+config pin. `full_overrides` SHALL NOT contain a `knowledge` section.
 
 The `patch_crew_config.py` container script SHALL accept a full config override
 dict (not just agent-scoped keys) and deep-merge all top-level sections into
-`config.local.json`. A `knowledge` section passed in `full_overrides` SHALL be
-written to `config.local.json` under the top-level `knowledge` key via the existing
-`_deep_merge()` logic — no patcher change is required.
+`config.local.json`. This deep-merge capability is unchanged by this change; it already
+supports any future top-level section (including `knowledge`) should an operator opt in,
+with no patcher change required.
 
 #### Scenario: Fresh crew launch has headless overrides applied
 - **WHEN** a crew container starts for the first time
@@ -30,21 +37,28 @@ written to `config.local.json` under the top-level `knowledge` key via the exist
 
 #### Scenario: Knowledge auto-ingest is disabled after headless overrides applied
 - **WHEN** `_patch_crew_config` is called on a new crew container running KiroCrew 0.9.0+
-- **THEN** `config.local.json` contains `knowledge.auto_ingest = false`
-- **AND** no knowledge auto-ingest path (file-watcher, git commit hook, clipboard capture) is active
+- **THEN** `config.local.json` contains no `knowledge` section written by ghostship
+- **AND** knowledge auto-ingest is disabled by the verified upstream default (opt-in)
+- **AND** no knowledge auto-ingest path (artifact watcher, agent auto-add-documents, folder ingestion) is active
 
-#### Scenario: Upstream default flip cannot silently enable ingest
-- **GIVEN** `knowledge.auto_ingest = false` is pinned in `full_overrides`
-- **WHEN** a future KiroCrew version changes its built-in default for `knowledge.auto_ingest` back to `true`
-- **THEN** the crew still runs with auto-ingest disabled, because `config.local.json` is deep-merged over `config.json` and the explicit pin takes precedence
+#### Scenario: full_overrides declares no knowledge section
+- **WHEN** `_patch_crew_config` builds the `full_overrides` dict
+- **THEN** `full_overrides` contains no `knowledge` key
+- **AND** no inert/dead `knowledge.auto_ingest` pin is written (no such upstream key exists to pin)
+
+#### Scenario: Upstream default flip is caught by the regression test
+- **GIVEN** the disabled posture relies on the upstream default rather than a config pin
+- **WHEN** a future KiroCrew version changes a knowledge ingest toggle's built-in default to `true`
+- **THEN** `tests/unit/test_trn223_knowledge_autoingest.py` fails in CI, surfacing the change for an explicit re-decision
+- **AND** the posture is not silently flipped on inside crew containers without notice
 
 #### Scenario: Upgrade from KiroCrew 0.8.x to 0.9.0 is a no-op for ingest
 - **WHEN** an existing crew's base image is bumped from `0.8.x` to `0.9.0+`
 - **THEN** the crew's auto-ingest behaviour is identical before and after the upgrade (disabled in both versions)
 
-#### Scenario: Knowledge section deep-merges without patcher change
-- **WHEN** `full_overrides` includes `{"knowledge": {"auto_ingest": false}}`
-- **THEN** `config.local.json` contains a top-level `knowledge` object with `auto_ingest: false` after patching
+#### Scenario: Knowledge section can still deep-merge if an operator opts in
+- **WHEN** `full_overrides` includes `{"knowledge": {"auto_ingest_artifacts": true}}`
+- **THEN** `config.local.json` contains a top-level `knowledge` object with that key via the existing `_deep_merge()` logic — no patcher change is required
 - **AND** existing top-level sections (`agent`, `session`, `telemetry`, `agents`) are preserved
 
 #### Scenario: Idle crew RSS is below 200 MB after headless overrides

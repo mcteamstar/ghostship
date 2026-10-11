@@ -21,11 +21,16 @@ with a note pointing to `PORT`.
 
 The documentation SHALL include a "Knowledge auto-ingest" note stating that:
 - ghostship does not enable knowledge auto-ingest;
-- under KiroCrew 0.9.0+ (PR #2448) knowledge auto-ingest (file-watcher, git commit hook,
-  clipboard capture) is opt-in rather than default-on;
-- the disabled posture is pinned explicitly in the crew config (`knowledge.auto_ingest:
-  false` in `full_overrides`) so it survives both KiroCrew gateway upgrades and any future
-  upstream change to the default value of `knowledge.auto_ingest`;
+- under KiroCrew 0.9.0+ (PR #2448) knowledge auto-ingest (artifact watcher, agent
+  auto-add-documents path, folder ingestion) is opt-in rather than default-on;
+- the disabled posture relies on the verified upstream default and is NOT pinned in the
+  crew config, because verification against the pinned base image (`kiro_crew` 0.9.0rc4,
+  `ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4`) found no single `knowledge.auto_ingest`
+  boolean to pin — the real toggles (`knowledge.auto_ingest_artifacts`,
+  `knowledge.auto_add_documents`) each already default to `false`;
+- the open item (a future upstream default flip could silently enable ingest) is guarded by
+  a CI regression test (`tests/unit/test_trn223_knowledge_autoingest.py`) rather than a
+  config pin;
 - an operator who wants knowledge built from commits in the mounted worktree must opt in
   explicitly.
 
@@ -47,4 +52,6 @@ The documentation SHALL include a "Knowledge auto-ingest" note stating that:
 
 #### Scenario: Knowledge auto-ingest posture documented
 - **WHEN** an operator reads the knowledge section of `docs/configuration.md`
-- **THEN** they learn that auto-ingest is off, that it is pinned off explicitly in the crew config, and how to opt in explicitly if wanted
+- **THEN** they learn that auto-ingest is off by the verified upstream default, that it is
+  deliberately NOT pinned (no `knowledge.auto_ingest` key exists to pin), that a CI test
+  guards against an upstream default flip, and how to opt in explicitly if wanted

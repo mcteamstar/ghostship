@@ -121,20 +121,37 @@ KiroCrew 0.9.0 shipping auto-ingest off by default.
 - *Con:* a later upstream default flip (or a config template that re-enables it) would
   silently turn ingest on inside crew containers with no ghostship guard.
 
-**Decision:** Prefer **Option A**, *conditional on verifying the exact key name against the
-0.9.0 config schema*. If the key name cannot be verified (schema not yet stable in the
-insider build), fall back to Option B and record the open item, keeping only the
-documentation and the "no implicit enablement" test. This mirrors the TRN-219 posture of
-not pinning an upstream-schema value until it is verified against the actual base image.
+**Decision (FINAL — verified 2026-10-11): Option B.** Task 2 verification against the
+pinned base image's gateway (`ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4`, shipping
+`kiro_crew` 0.9.0rc4) found that the assumed key `knowledge.auto_ingest` **does not
+exist**. The real `KnowledgeConfig` section (`kiro_crew/config/memory_sections.py`) has
+**no single auto-ingest boolean**; its ingest-enabling toggles are separate fields —
+`auto_ingest_artifacts` (bool, default `False`) and `auto_add_documents` (bool, default
+`False`, renamed from `auto_ingest_doc_links`) — plus budget/kind fields. The gateway
+CHANGELOG confirms the posture: *"Knowledge auto-ingest is opt-in. A fresh install ingests
+nothing… until you switch it on."*
+
+Pinning `knowledge.auto_ingest=false` (Option A) would therefore write an **inert dead
+key** that no code reads — precisely the "wrong key name" primary risk below. The design's
+own fallback rule ("if the key name cannot be verified, fall back to Option B and record
+the open item") is triggered, so **no key is pinned**. The disabled posture is the verified
+upstream default. The open item (an upstream default flip could silently enable ingest) is
+converted from a passive assumption into an **active CI tripwire**:
+`tests/unit/test_trn223_knowledge_autoingest.py` asserts `auto_ingest_artifacts` and
+`auto_add_documents` still default to `False` and fails loudly if either flips. This mirrors
+the TRN-219 posture of not pinning an upstream-schema value that cannot be verified against
+the actual base image.
+
+(Had a single verified boolean existed, Option A — a defensive pin alongside `stt`/
+`telemetry` — would have been preferred; it did not, so Option B stands.)
 
 ### D2 — Where the key goes
 
-If D1-A is accepted, the key is a **fixed, non-operator-configurable** override, placed in
-the static part of `full_overrides` (not derived from a `GA_*` env var). This matches the
-existing treatment of `stt.enabled=false` and `telemetry.beacon_enabled=false`, which are
-headless-crew constants (see the design note "D1" referenced in TRN-213 and the
-`full_overrides` comment block). No `config.py` field and no `ghostship.conf.example` entry
-is added.
+Not applicable under the final Option B decision (no key is written). Retained for context:
+had D1 been Option A, the key would have been a **fixed, non-operator-configurable**
+override in the static part of `full_overrides` (not derived from a `GA_*` env var),
+matching the treatment of `stt.enabled=false` and `telemetry.beacon_enabled=false`. No
+`config.py` field and no `ghostship.conf.example` entry is added either way.
 
 ### D3 — Verification approach
 
@@ -161,11 +178,16 @@ real `_deep_merge()` rather than a mock.
 - **Scope creep.** It is tempting to add operator knowledge knobs; this change explicitly
   does not (Non-Goals).
 
-## Implementation sketch (if D1-A accepted)
+## Implementation (D1 = Option B, as executed)
 
-1. In `transport/lifecycle.py`, add the `"knowledge": {"auto_ingest": False}` entry to the
-   `full_overrides` literal in `_patch_crew_config()` (between `auto_update` and
-   `orchestrator`), with the explanatory comment from D1.
-2. No change to `patch_crew_config.py` — `_deep_merge()` already writes the section.
-3. Add the assertion test (D3).
-4. Add the `docs/configuration.md` note.
+1. **No change** to `transport/lifecycle.py` — `full_overrides` stays as-is (no `knowledge`
+   section). The assumed `knowledge.auto_ingest` key does not exist upstream, so there is
+   nothing to pin; task 3 (Option-A-only) was correctly skipped.
+2. No change to `patch_crew_config.py` — `_deep_merge()` is unchanged and still supports any
+   future top-level section should an operator opt in.
+3. Added the assertion test `tests/unit/test_trn223_knowledge_autoingest.py` (D3): asserts
+   `full_overrides` writes no `knowledge` section AND that the verified upstream ingest
+   toggles (`auto_ingest_artifacts`, `auto_add_documents`) default to `False` — the Option-B
+   tripwire. Runs green under `python3 -m unittest`.
+4. Added the `docs/configuration.md` "Knowledge auto-ingest" note recording the opt-in
+   posture, the not-pinned decision with its evidence, and the explicit opt-in path.
