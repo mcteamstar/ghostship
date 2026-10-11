@@ -41,34 +41,44 @@ def _parse_base_image(containerfile: pathlib.Path) -> str:
     1. Direct FROM line::
 
            FROM ghcr.io/kirodotdev/kirocrew:<tag>
+           FROM ghcr.io/kirodotdev/kirocrew@sha256:<digest>
 
     2. Build-arg indirection (current pattern used to support ``--build-arg``
        overrides from ``install.sh``)::
 
            ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:<tag>
+           ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:<digest>
            FROM ${KC_BASE_IMAGE}
 
+    The reference may be either a ``:<tag>`` or an immutable
+    ``@sha256:<digest>`` form (TRN-219 pins by digest).
+
     Returns the full image reference (e.g.
-    ``ghcr.io/kirodotdev/kirocrew:0.8.0``).
+    ``ghcr.io/kirodotdev/kirocrew:0.8.0`` or
+    ``ghcr.io/kirodotdev/kirocrew@sha256:f4f4...``).
 
     Raises ValueError if no matching reference can be found.
     """
     text = containerfile.read_text()
     lines = text.splitlines()
 
-    # Pattern 1: direct FROM ghcr.io/kirodotdev/kirocrew:<tag>
+    # Image reference: ghcr.io/kirodotdev/kirocrew followed by either a
+    # :<tag> or an @sha256:<digest> suffix.
+    _ref = r"ghcr\.io/kirodotdev/kirocrew(?::[^\s]+|@sha256:[0-9a-f]+)"
+
+    # Pattern 1: direct FROM <ref>
     direct_pattern = re.compile(
-        r"^\s*FROM\s+(ghcr\.io/kirodotdev/kirocrew:[^\s]+)", re.IGNORECASE
+        rf"^\s*FROM\s+({_ref})", re.IGNORECASE
     )
     for line in lines:
         m = direct_pattern.match(line)
         if m:
             return m.group(1)
 
-    # Pattern 2: ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:<tag>
+    # Pattern 2: ARG KC_BASE_IMAGE=<ref>
     # followed by FROM ${KC_BASE_IMAGE} (or similar variable reference).
     arg_pattern = re.compile(
-        r"^\s*ARG\s+KC_BASE_IMAGE=(ghcr\.io/kirodotdev/kirocrew:[^\s]+)",
+        rf"^\s*ARG\s+KC_BASE_IMAGE=({_ref})",
         re.IGNORECASE,
     )
     for line in lines:

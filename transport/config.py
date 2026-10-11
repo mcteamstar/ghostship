@@ -364,7 +364,7 @@ class Config:
                 "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
-            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:0.8.0"),
+            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009"),
             ga_max_crews=_env_int("GA_MAX_CREWS", "20"),
             ga_max_active_crews=_env_int("GA_MAX_ACTIVE_CREWS", "3"),
             ga_idle_timeout_secs=_env_int("GA_IDLE_TIMEOUT_SECS", "300"),

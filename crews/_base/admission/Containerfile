@@ -13,10 +13,18 @@
 # This is a build dependency, not a launchable composition — it is NOT
 # listed in crews/registry.json.
 #
-# Pinned semver tag — driven by KC_BASE_IMAGE build-arg from install.sh,
+# Pinned base image — driven by KC_BASE_IMAGE build-arg from install.sh,
 # which reads it from ghostship.conf (KC_BASE_IMAGE env var).
 # Default here matches the config default so plain `podman build` still works.
-ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.8.0
+#
+# TRN-219: bumped 0.8.0 → 0.9.0-insider.4 for the KiroCrew 0.9.0 upgrade.
+# Pinned to the immutable digest so a rebuild cannot float onto a newer insider
+# build silently. Human-readable tag for this digest: 0.9.0-insider.4.
+# ⚠️  The graduation-layer DB seed (crews/_base/graduation/seed_kiro_db.py) MUST
+#     be re-verified against this exact base image before release — see TRN-219
+#     tasks.md §1/§5. Bumping this pin without that verification is the silent
+#     auth-injection regression the change guards against.
+ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009
 FROM ${KC_BASE_IMAGE}
 
 USER root
