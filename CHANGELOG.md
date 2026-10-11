@@ -1,5 +1,9 @@
 # Changelog
 
+## KiroCrew 0.8.0 → 0.9.0 upgrade
+
+- **TRN-220 — internal-API peer-cred validation (PR #2424) does not affect ghostship; transport uses the cookie path. Guardrail test added.** KiroCrew 0.9.0 (`0.9.0-insider.4`) adds unix-socket peer-credential validation to the gateway's internal-secret API path (`X-Internal-Secret` / `X-Session-Key`): a caller whose OS UID differs from the gateway's `kirocrew` process is now rejected even with a valid shared secret. The transport authenticates to crew gateways on the external dashboard-cookie path only (`Cookie` + `Origin`), so this is a no-op for ghostship today. `transport/lifecycle.py::_crew_api` now documents the invariant, carries `_FORBIDDEN_INTERNAL_HEADERS`, and refuses the internal-secret headers if a caller ever passes them via `headers=`; `tests/unit/test_trn220_crew_api_headers.py` asserts the cookie-only contract so a future change that routes an internal-API call across the UID boundary fails loudly in CI.
+
 ## v0.6.0
 
 ### Breaking changes

@@ -343,11 +343,32 @@ def _write_dashboard_cookie(podman: "PodmanClient", container: str, cookie: str)
         return False
 
 
+# TRN-220: headers the transport host must never send to a crew gateway.
+# These select the gateway's INTERNAL auth path, which KiroCrew 0.9.0
+# (PR #2424 / issue #302) now peer-cred-gates over the unix socket: a caller
+# whose OS UID does not match the gateway's `kirocrew` process is rejected even
+# with a valid shared secret. The transport host runs under a different UID, so
+# any internal-secret call from here would be rejected. The transport always
+# uses the external dashboard-cookie path instead.
+_FORBIDDEN_INTERNAL_HEADERS = ("X-Internal-Secret", "X-Session-Key")
+
+
 def _crew_api(crew: dict, method: str, path: str, **kw: Any) -> Any:
     url = _crew_url(crew)
+    # TRN-220: authenticate on the external cookie path (Cookie + Origin) only.
+    # Never attach the internal-secret headers — see _FORBIDDEN_INTERNAL_HEADERS.
+    headers = {"Cookie": _crew_cookie(crew), "Origin": url}
+    caller_headers = kw.pop("headers", None)
+    if caller_headers:
+        for h in _FORBIDDEN_INTERNAL_HEADERS:
+            if h in caller_headers:
+                raise ValueError(
+                    f"TRN-220: {h} must not be sent on the transport cookie path"
+                )
+        headers.update(caller_headers)
     r = _http.request(
         method, f"{url}{path}",
-        headers={"Cookie": _crew_cookie(crew), "Origin": url},
+        headers=headers,
         **kw,
     )
     r.raise_for_status()
