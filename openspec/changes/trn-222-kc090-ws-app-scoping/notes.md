@@ -82,3 +82,38 @@ change notes and should be added to the WS-proxy code review checklist.
 > If this change adds `X-App-Token` to any WebSocket proxy path, re-open
 > TRN-222 and verify that per-app event scoping in KiroCrew 0.9.0+ does not
 > hide events the portal depends on.
+
+---
+
+## Runtime close-out attempt — 2026-10-11 (Ghost, trn-222 worktree)
+
+**Outcome: runtime checks BLOCKED (not failed); no re-open required.**
+
+A second attempt was made to run the four runtime checks against a live
+`0.9.0-insider.4` gateway. The agent environment has **no container runtime of
+any kind** — `podman`, `docker`, `nerdctl`, `containerd`, `ctr`, and `buildah`
+are all absent, and neither `/var/run/docker.sock` nor
+`/run/podman/podman.sock` exists. Building or starting a crew from
+`ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4` is therefore impossible here, and
+with no running gateway the WS-inspector, WS-stream, portal-render, and
+console-error checks cannot be exercised.
+
+This is an **environmental limitation, not a verification failure.** No runtime
+check was run, so none failed.
+
+### Static evidence re-confirmed against current source (worktree HEAD)
+
+The static invariants underpinning all four runtime checks were re-verified
+directly against the current `trn-222-kc090-ws-app-scoping` source:
+
+- `transport/caddy.py` WS route (`"match": [{"header": {"Connection": ["Upgrade"]}}]` → `crew_proxy_handler`) still sets only `X-Transport-Token`; grep for `X-App-Token` / `app_token` across `transport/` → **zero matches**.
+- `transport/dashboard.py` reads only `request.cookies.get("gs_session", "")`; no WS payload body, no `X-App-Token`.
+- Grep of `transport/` for `tool_title` / `assistant_content` → **zero matches**.
+
+### Sign-off verdict
+
+- **No code change required.** Priority verdict unchanged: *BEHAVIOUR CHANGE / LOW IMPACT — verification only.*
+- **TRN-222 NOT marked `verified-no-change`** on this run: the `verified-no-change`
+  label requires the four runtime confirmations, which are deferred to manual/CI
+  verification on a host with a container runtime. Static audit is complete and
+  all-pass; nothing was found that warrants re-opening with concrete code tasks.
