@@ -329,6 +329,34 @@ Every crew launched by the transport receives fixed headless-optimised values wr
 | `telemetry.beacon_enabled` | `false` | Suppress outbound telemetry beacon pings. |
 | `auto_update` | `false` | Prevents KiroCrew from self-updating inside a pinned container image. |
 
+### Knowledge auto-ingest
+
+ghostship does **not** enable knowledge auto-ingest for any crew. As of KiroCrew
+0.9.0 (PR #2448) knowledge auto-ingest — the artifact watcher, the agent
+"auto-add documents" path, and folder ingestion — is **opt-in** rather than
+default-on: a fresh install ingests nothing and spends nothing on extraction
+until an operator switches it on.
+
+The disabled posture is **not pinned** in `config.local.json`; it relies on the
+verified upstream default. Verification against the pinned base image's gateway
+(`ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4`, `kiro_crew` 0.9.0rc4) showed the
+`knowledge` config section has **no single `auto_ingest` boolean** to pin — the
+ingest toggles are separate fields (`knowledge.auto_ingest_artifacts`,
+`knowledge.auto_add_documents`), each already defaulting to `false`. Pinning a
+`knowledge.auto_ingest` key would be an inert dead key, so none is written (see
+`openspec` change `trn-223-kc090-knowledge-autoingest-optin`, decision D1 =
+Option B).
+
+**Open item:** because the posture is the upstream default rather than an
+explicit pin, a future KiroCrew release that flips any ingest toggle's default to
+`true` would enable it inside crew containers with no ghostship guard. The
+regression tripwire for this lives in
+`tests/unit/test_trn223_knowledge_autoingest.py`, which asserts the upstream
+toggles still default to `false` and fails CI loudly if that changes.
+
+An operator who *wants* knowledge built from the mounted worktree must opt in
+explicitly by setting the relevant `knowledge.*` toggle in the crew's config.
+
 ### Memory profile
 
 | State | RSS |
