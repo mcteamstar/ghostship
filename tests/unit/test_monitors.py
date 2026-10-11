@@ -507,6 +507,67 @@ class IdleMonitorTests(unittest.TestCase):
         self.assertIn("gs-403idle", result["stops"])
         self.assertTrue(result["saved_regs"])
         self.assertEqual(result["saved_regs"][-1]["crews"]["idle-403-crew"]["status"], "stopped")
+
+    # ── TRN-228: captain schedule hold tests ──────────────────────────────────
+
+    def test_crew_with_enabled_captain_schedule_not_stopped(self) -> None:
+        """TRN-228 (2.1): crew with enabled captain schedule and next_fire_at in
+        the future must NOT be idle-stopped; _touch_crew is called."""
+        podman = IdleMonitorPodman(containers_running={"gs-captain": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        crew_items = [("captain-crew", {
+            "container": "gs-captain", "status": "running", "cookie": "c", "last_used": 0,
+            "schedules": [{"type": "captain", "enabled": True, "next_fire_at": 1300.0}],
+        })]
+        # Only spawn check should fire — the captain check short-circuits before /api/crons
+        result = self._run_one_iteration(crew_items, podman, [spawn_resp])
+
+        self.assertNotIn("gs-captain", result["stops"])
+        self.assertIn("captain-crew", result["touched"])
+
+    def test_crew_with_disabled_captain_schedule_can_be_stopped(self) -> None:
+        """TRN-228 (2.2): disabled captain schedule must NOT block idle-stop."""
+        podman = IdleMonitorPodman(containers_running={"gs-captoff": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        cron_resp = MockHTTPResponse(200, {"jobs": []})
+        crew_items = [("captain-off", {
+            "container": "gs-captoff", "status": "running", "cookie": "c", "last_used": 0,
+            "schedules": [{"type": "captain", "enabled": False, "next_fire_at": 1300.0}],
+        })]
+        result = self._run_one_iteration(crew_items, podman, [spawn_resp, cron_resp])
+
+        self.assertIn("gs-captoff", result["stops"])
+
+    def test_crew_with_captain_schedule_at_never_fire_can_be_stopped(self) -> None:
+        """TRN-228 (2.3): captain schedule with next_fire_at == _NEVER_FIRE_AT
+        (9_999_999_999.0) must NOT block idle-stop — it has already fired or
+        been paused."""
+        podman = IdleMonitorPodman(containers_running={"gs-captnever": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        cron_resp = MockHTTPResponse(200, {"jobs": []})
+        crew_items = [("captain-never", {
+            "container": "gs-captnever", "status": "running", "cookie": "c", "last_used": 0,
+            "schedules": [{"type": "captain", "enabled": True, "next_fire_at": 9_999_999_999.0}],
+        })]
+        result = self._run_one_iteration(crew_items, podman, [spawn_resp, cron_resp])
+
+        self.assertIn("gs-captnever", result["stops"])
+
+    def test_crew_with_captain_schedule_and_active_task_not_stopped(self) -> None:
+        """TRN-228 (2.4): both hold conditions are independent — active spawn task
+        alone prevents stop; captain schedule alone prevents stop; both together
+        still prevent stop."""
+        podman = IdleMonitorPodman(containers_running={"gs-captboth": True})
+        spawn_resp = MockHTTPResponse(200, {"agents": [{"done": False}]})
+        crew_items = [("captain-both", {
+            "container": "gs-captboth", "status": "running", "cookie": "c", "last_used": 0,
+            "schedules": [{"type": "captain", "enabled": True, "next_fire_at": 1300.0}],
+        })]
+        result = self._run_one_iteration(crew_items, podman, [spawn_resp])
+
+        self.assertNotIn("gs-captboth", result["stops"])
+
+
 class IdleMonitorActivityTests(unittest.TestCase):
     def test_cron_activity_counts_running_and_recent_completed_runs(self) -> None:
         self.assertTrue(

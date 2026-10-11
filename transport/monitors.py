@@ -478,6 +478,20 @@ def _idle_monitor() -> None:
                     _note_idle_skip(crew_id, f"spawn check error: {type(e).__name__}")
                     continue
 
+                # Captain schedule entries are transport-side (type=="captain") and
+                # have no corresponding gateway cron job.  Check the registry directly
+                # before going to /api/crons so that a crew with an active captain
+                # check-in schedule is never idle-stopped between check-ins.
+                if any(
+                    s.get("type") == "captain"
+                    and s.get("enabled", True)
+                    and s.get("next_fire_at", _NEVER_FIRE_AT) < _NEVER_FIRE_AT
+                    for s in info.get("schedules", [])
+                ):
+                    _note_idle_skip(crew_id, "captain check-in scheduled")
+                    _touch_crew(crew_id)
+                    continue
+
                 # Cron executions do not appear in /api/spawn.  The gateway exposes
                 # their running and last-completed timestamps through /api/crons —
                 # and an enabled job that hasn't fired yet (its interval can
