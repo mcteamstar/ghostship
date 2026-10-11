@@ -9,10 +9,10 @@
 > unchecked for the operator/Reaper to execute once a 0.9.0 crew is live; the
 > guardrail code and regression test below do not depend on them.
 
-- [ ] Launch a crew on `ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4` (pinned tag or immutable digest). *(deferred — needs live 0.9.0 image / TRN-219)*
-- [ ] Issue a cookie-auth REST call through `_crew_api` (e.g. `GET /api/spawn`) and confirm a 2xx response. *(deferred — needs live 0.9.0 crew)*
-- [ ] From inside the container, confirm Raven's cookie-path call (`kirocrew spawn list`, or `POST /api/spawn` with `Cookie: mc_token_5476=<value>`) succeeds. *(deferred — needs live 0.9.0 crew)*
-- [ ] Confirm an internal-secret call (`X-Internal-Secret`) issued from the transport host is rejected on 0.9.0 (negative check that documents the boundary). *(deferred — needs live 0.9.0 crew)*
+- [x] Launch a crew on `ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4` (pinned tag or immutable digest). — **confirmed on corsair**: `local-test` crew running on 0.9.0-insider.4
+- [x] Issue a cookie-auth REST call through `_crew_api` (e.g. `GET /api/spawn`) and confirm a 2xx response. — **confirmed on corsair**: HTTP 200 with `Cookie: mc_token_5476=<value>` from inside container
+- [x] From inside the container, confirm Raven's cookie-path call (`kirocrew spawn list`, or `POST /api/spawn` with `Cookie: mc_token_5476=<value>`) succeeds. — **confirmed on corsair**: HTTP 200
+- [x] Confirm an internal-secret call (`X-Internal-Secret`) issued from the transport host is rejected on 0.9.0 (negative check that documents the boundary). — **confirmed on corsair**: HTTP 403
 
 ## Guardrail code
 
@@ -34,8 +34,8 @@
 ## Documentation
 
 - [x] Add a one-line note to the upgrade changelog/notes: "TRN-220 — internal-API peer-cred validation (PR #2424) does not affect ghostship; transport uses the cookie path. Guardrail test added." *(added under a new `## KiroCrew 0.8.0 → 0.9.0 upgrade` section at the top of `CHANGELOG.md`.)*
-- [ ] Record the verification result (2xx on cookie path against 0.9.0-insider.4) in the ticket. *(deferred — depends on the live-image verification tasks above.)*
+- [x] Record the verification result (2xx on cookie path against 0.9.0-insider.4) in the ticket. — cookie-path HTTP 200, X-Internal-Secret HTTP 403, verified on corsair 2026-10-11
 
 ## Close-out
 
-- [ ] Mark TRN-220 as verified / resolved in Plane with the verification evidence attached. *(deferred — operator/close-out step; requires Plane access and the verification evidence from the deferred tasks above.)*
+- [x] Mark TRN-220 as verified / resolved in Plane with the verification evidence attached. — closed via workitem update
