@@ -46,19 +46,22 @@ a crew container.
   operator who wants crew-knowledge-from-commits in a mounted worktree must opt in
   explicitly.
 
-### Config posture (optional, defensive — gated behind a decision)
+### Config posture (DECIDED — Option B, no pin)
 
-- Optionally add an **explicit** `"knowledge": {"auto_ingest": false}` entry to the
-  `full_overrides` dict in `transport/lifecycle.py` `_patch_crew_config()`. This pins the
-  disabled posture into `config.local.json` so it survives both KiroCrew upgrades and any
-  future upstream default change. See `design.md` D1 for the trade-off (defensive pin vs.
-  tracking the key name against an unversioned upstream schema).
+- No change to the `full_overrides` dict in `transport/lifecycle.py`. Task 2 verification
+  against the pinned base image (`kiro_crew` 0.9.0rc4) found **no `knowledge.auto_ingest`
+  key** in the real `KnowledgeConfig` schema — the ingest toggles are separate fields
+  (`auto_ingest_artifacts`, `auto_add_documents`), each already defaulting to `false`.
+  Pinning the assumed key would write an inert dead key, so **nothing is pinned** and the
+  disabled posture relies on the verified upstream default. See `design.md` D1 (final =
+  Option B).
 
 ### Verification (required)
 
-- One source-level assertion test confirming the `full_overrides` dict contains no
-  implicit knowledge-ingest enablement (and, if D1 is accepted, that it explicitly pins
-  `knowledge.auto_ingest=false`).
+- One source-level assertion test (`tests/unit/test_trn223_knowledge_autoingest.py`)
+  confirming (a) ghostship's `full_overrides` contains no `knowledge` section / no implicit
+  ingest enablement, and (b) the verified upstream ingest toggles still default to `false`
+  — the Option-B tripwire that fails CI if a future upstream default flips.
 
 ## Non-Goals
 
@@ -71,7 +74,7 @@ a crew container.
 
 | File | Function / region | Change |
 |---|---|---|
-| `transport/lifecycle.py` | `_patch_crew_config()` → `full_overrides` dict (~L1885–1965) | Optional: add explicit `"knowledge": {"auto_ingest": false}` (D1) |
-| `docs/configuration.md` | new "Knowledge auto-ingest" note | Document opt-in posture under 0.9.0 |
+| `transport/lifecycle.py` | `_patch_crew_config()` → `full_overrides` dict (~L1885–1965) | No change — D1 resolved to Option B; the assumed `knowledge.auto_ingest` key does not exist upstream, so nothing is pinned |
+| `docs/configuration.md` | new "Knowledge auto-ingest" note | Document opt-in posture under 0.9.0 (not pinned; relies on verified upstream default) |
 | `transport/container_scripts/patch_crew_config.py` | `patch_config()` / `_deep_merge()` | No change — already deep-merges any new top-level section |
-| `tests/` (new) | source-grounded assertion on `full_overrides` | Verify no implicit enablement |
+| `tests/unit/test_trn223_knowledge_autoingest.py` (new) | assertion on `full_overrides` + upstream defaults | Verify no implicit enablement; tripwire on upstream default flip |

@@ -228,6 +228,9 @@ class Config:
     ga_spawn_min_memory_gb: float = 1.5
     ga_resource_pressure_gb: float = 2.0
     ga_resource_critical_gb: float = 1.0
+    # Consecutive memory-pressure check-in cycles before the transport mails
+    # the Admiral (edge-triggered escalation; see TRN-225).
+    ga_spawn_pressure_escalate_cycles: int = 3
 
     # ── Subagent timeouts ────────────────────────────────────────────────────
     ga_subagent_timeout_secs: int = 3600
@@ -376,6 +379,7 @@ class Config:
             ga_spawn_min_memory_gb=_env_float("GA_SPAWN_MIN_MEMORY_GB", "1.5"),
             ga_resource_pressure_gb=_env_float("GA_RESOURCE_PRESSURE_GB", "2.0"),
             ga_resource_critical_gb=_env_float("GA_RESOURCE_CRITICAL_GB", "1.0"),
+            ga_spawn_pressure_escalate_cycles=_env_int("GA_SPAWN_PRESSURE_ESCALATE_CYCLES", "3"),
             ga_subagent_timeout_secs=_env_int("GA_SUBAGENT_TIMEOUT_SECS", "3600"),
             ga_subagent_max_turns=_env_int("GA_SUBAGENT_MAX_TURNS", "200"),
             ga_prewarm_enabled=_env_bool_default_off("GA_PREWARM_ENABLED"),

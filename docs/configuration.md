@@ -32,7 +32,8 @@ These variables are written into the transport container's environment by `insta
 | `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine name (macOS) or systemd service suffix (Linux). Used in `podman machine` commands and as the `podman-<name>.socket`/`.service` name. |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Patched into each crew's `spawn_min_memory_gb` (KiroCrew subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate fires first. |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Patched into each crew's `resource_pressure_gb` — KiroCrew throttles subagent spawning below this threshold. |
-| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Patched into each crew's `resource_critical_gb` — KiroCrew refuses subagent spawning below this hard floor. |
+| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Patched into each crew's `resource_critical_gb` — KiroCrew refuses subagent spawning below this hard floor. Also used by the transport as the pre-dispatch probe threshold for captain check-ins (TRN-225). |
+| `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` | `3` | Consecutive captain check-in cycles skipped or refused for host memory pressure (available memory below `GA_RESOURCE_CRITICAL_GB`) before the transport mails `admiral@localhost` once. Edge-triggered: one mail per threshold crossing; the counter resets on the next successful dispatch. |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
 | `GA_SUBAGENT_MAX_TURNS` | `200` | Patched into each crew's `subagent_max_turns` — maximum tool-call turns per subagent task. |
 | `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
@@ -328,6 +329,34 @@ Every crew launched by the transport receives fixed headless-optimised values wr
 | `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session process (KiroCrew 0.5.0+). Set above the ~1.9 GB active-task peak to avoid recycling healthy sessions; catches runaway RSS accumulation. |
 | `telemetry.beacon_enabled` | `false` | Suppress outbound telemetry beacon pings. |
 | `auto_update` | `false` | Prevents KiroCrew from self-updating inside a pinned container image. |
+
+### Knowledge auto-ingest
+
+ghostship does **not** enable knowledge auto-ingest for any crew. As of KiroCrew
+0.9.0 (PR #2448) knowledge auto-ingest — the artifact watcher, the agent
+"auto-add documents" path, and folder ingestion — is **opt-in** rather than
+default-on: a fresh install ingests nothing and spends nothing on extraction
+until an operator switches it on.
+
+The disabled posture is **not pinned** in `config.local.json`; it relies on the
+verified upstream default. Verification against the pinned base image's gateway
+(`ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4`, `kiro_crew` 0.9.0rc4) showed the
+`knowledge` config section has **no single `auto_ingest` boolean** to pin — the
+ingest toggles are separate fields (`knowledge.auto_ingest_artifacts`,
+`knowledge.auto_add_documents`), each already defaulting to `false`. Pinning a
+`knowledge.auto_ingest` key would be an inert dead key, so none is written (see
+`openspec` change `trn-223-kc090-knowledge-autoingest-optin`, decision D1 =
+Option B).
+
+**Open item:** because the posture is the upstream default rather than an
+explicit pin, a future KiroCrew release that flips any ingest toggle's default to
+`true` would enable it inside crew containers with no ghostship guard. The
+regression tripwire for this lives in
+`tests/unit/test_trn223_knowledge_autoingest.py`, which asserts the upstream
+toggles still default to `false` and fails CI loudly if that changes.
+
+An operator who *wants* knowledge built from the mounted worktree must opt in
+explicitly by setting the relevant `knowledge.*` toggle in the crew's config.
 
 ### Memory profile
 
