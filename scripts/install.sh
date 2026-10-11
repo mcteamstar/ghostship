@@ -91,6 +91,8 @@ GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
 GA_DASHBOARD_PORT_RANGE_SIZE=64
+GA_COMPOSE_RETRY_ATTEMPTS=3     # retries on transient compose up failure (min 1)
+GA_COMPOSE_RETRY_DELAY_SECS=2   # sleep between retries in seconds
 # ── Client-only install ──────────────────────────────────────────────────────
 # --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
 # transport WITHOUT running any container-infrastructure steps. --url selects
@@ -1065,7 +1067,32 @@ fi
 _COMPOSE_ENV="${_COMPOSE_ENV:+${_COMPOSE_ENV} }PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose)"
 eval "${_COMPOSE_ENV} podman rm -f ga-transport" >/dev/null 2>&1 || true
 eval "${_COMPOSE_ENV} podman rm -f ga-portal" >/dev/null 2>&1 || true
-eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${DATA_DIR}/compose.yml\" up -d --force-recreate --remove-orphans"
+
+# Retry loop: transient port conflicts (e.g. macOS ephemeral range overlap with
+# the dashboard port space) are typically released within a second or two.
+# GA_COMPOSE_RETRY_ATTEMPTS (default 3, min 1) and GA_COMPOSE_RETRY_DELAY_SECS
+# (default 2) are configurable via ghostship.conf.
+_compose_attempts="${GA_COMPOSE_RETRY_ATTEMPTS:-3}"
+_compose_delay="${GA_COMPOSE_RETRY_DELAY_SECS:-2}"
+# Guard: treat 0 or non-integer as 1
+if ! [[ "${_compose_attempts}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "  WARNING: GA_COMPOSE_RETRY_ATTEMPTS='${_compose_attempts}' is not a positive integer — using 1" >&2
+  _compose_attempts=1
+fi
+_compose_ok=0
+for _attempt in $(seq 1 "${_compose_attempts}"); do
+  if eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${DATA_DIR}/compose.yml\" up -d --force-recreate --remove-orphans"; then
+    _compose_ok=1; break
+  fi
+  if [[ "${_attempt}" -lt "${_compose_attempts}" ]]; then
+    echo "  compose up failed (attempt ${_attempt}/${_compose_attempts}), retrying in ${_compose_delay}s..." >&2
+    sleep "${_compose_delay}"
+  fi
+done
+if [[ "${_compose_ok}" -ne 1 ]]; then
+  echo "✗ compose up failed after ${_compose_attempts} attempt(s)" >&2
+  exit 1
+fi
 echo "✓ ga-transport container started"
 
 if [[ -n "${GA_API_KEY:-}" ]]; then

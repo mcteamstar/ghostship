@@ -279,6 +279,13 @@
 # GA_DASHBOARD_PORT_RANGE_SIZE=64  # Number of ports in the range (default 64)
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch()
 
+# ── Compose up retry (TRN-227) ───────────────────────────────────────────────
+# On macOS, transient port conflicts between the ephemeral port range and the
+# dashboard port space can cause compose up to fail. These vars control the
+# retry loop in install.sh.
+# GA_COMPOSE_RETRY_ATTEMPTS=3    # Max attempts (positive integer ≥ 1; default 3)
+# GA_COMPOSE_RETRY_DELAY_SECS=2  # Seconds between retries (default 2)
+
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is a required component and is always installed. It binds
 # ports 443/80 AND the dashboard port range, terminates TLS, and gates auth for

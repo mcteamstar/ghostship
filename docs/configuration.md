@@ -59,6 +59,8 @@ These variables are written into the transport container's environment by `insta
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `1024` | Number of host ports in the dashboard proxy port range. Config-file-only. |
+| `GA_COMPOSE_RETRY_ATTEMPTS` | `3` | Maximum number of `podman compose up` attempts during install. Must be a positive integer ≥ 1 (values of 0 or non-integers are treated as 1 with a warning). Increase to 5 on hosts where ephemeral port conflicts are frequent; set to 1 to disable retries. Config-file-only. |
+| `GA_COMPOSE_RETRY_DELAY_SECS` | `2` | Seconds to sleep between `podman compose up` retry attempts. Config-file-only. |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
 | `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898...` — the `0.9.0-insider.4` digest)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
