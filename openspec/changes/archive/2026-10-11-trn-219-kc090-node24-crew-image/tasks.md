@@ -64,9 +64,9 @@ overrides — this is additive, not a replacement.
 - [x] Diagnose sandbox timing bug (entrypoint reads config.json before _patch_crew_config runs)
 - [x] Add `sandbox: "off"` to `_patch_crew_config` alongside `sandbox_allow_unsandboxed_exec: true` — root cause: `sandbox_allow_unsandboxed_exec` only gates the *cached-failure* path (after a prior failed probe), not the initial spawn; `sandbox: "off"` causes `wrap_argv()` to return unmodified argv immediately, bypassing the launcher entirely
 - [x] Confirm agents spawn on corsair local install (`echo hello` task completed in 13s)
-- [ ] Launch a throwaway crew and confirm `inject_auth.py` succeeds (no `no such table: auth_kv`)
-- [ ] Confirm at least one agent authenticates and runs a trivial task end-to-end
-- [ ] Confirm OpenSpec CLI still resolves inside the spec-ops image (`openspec --version`)
+- [x] Launch a throwaway crew and confirm `inject_auth.py` succeeds (no `no such table: auth_kv`) — **confirmed on corsair**: `auth_kv` present in `data.sqlite3` (tables: auth_kv, history, migrations, state + 4 gateway-added tables)
+- [x] Confirm at least one agent authenticates and runs a trivial task end-to-end — **confirmed on corsair**: e2e `TestDispatchPickup` passed, ghost agent ran `echo hello` and returned output
+- [x] Confirm OpenSpec CLI still resolves inside the spec-ops image (`openspec --version`) — **confirmed on corsair**: `openspec 1.9.0`
 
 ## 6. Record outcome — DONE
 - [x] Note the verified schema tuple and kiro-cli version in the commit message / change notes — recorded here and in the seed header: **`(6, 5)`, kiro-cli 2.29.0, four tables unchanged**. To go in the release commit message.
