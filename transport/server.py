@@ -1758,9 +1758,17 @@ async def _handle_logout_post(request: Request) -> Response:
                 logger.warning("Could not clear auth from crew %s: %s", cid, e)
                 wipe_failed.append(cid)
 
+    # Abort any in-progress login flow so the transport is in a clean
+    # unauthenticated state immediately after logout (TRN-205).
+    aborted = _lifecycle._abort_pending_login(podman)
+
     if wipe_failed:
-        # The stored credential is gone; these running crews may still hold a copy.
-        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
+        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
+        if aborted:
+            resp["aborted_pending_login"] = True
+        return JSONResponse(resp)
+    if aborted:
+        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
     return JSONResponse({"status": "logged_out"})
 
 
@@ -2017,9 +2025,16 @@ async def _handle_claude_logout_post(request: Request) -> Response:
                 logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
                 wipe_failed.append(cid)
 
+    # Abort any in-progress Claude login flow (TRN-205).
+    aborted = _lifecycle._abort_claude_pending_login(podman)
+
     if wipe_failed:
-        # The stored credential is gone; these running crews may still hold a copy.
-        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
+        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
+        if aborted:
+            resp["aborted_pending_login"] = True
+        return JSONResponse(resp)
+    if aborted:
+        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
     return JSONResponse({"status": "logged_out"})
 
 
@@ -2190,9 +2205,16 @@ async def _handle_codex_logout_post(request: Request) -> Response:
                 logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
                 wipe_failed.append(cid)
 
+    # Abort any in-progress Codex login flow (TRN-205).
+    aborted = _lifecycle._abort_codex_pending_login(podman)
+
     if wipe_failed:
-        # The stored credential is gone; these running crews may still hold a copy.
-        return JSONResponse({"status": "logged_out", "wipe_failed": wipe_failed})
+        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
+        if aborted:
+            resp["aborted_pending_login"] = True
+        return JSONResponse(resp)
+    if aborted:
+        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
     return JSONResponse({"status": "logged_out"})
 
 

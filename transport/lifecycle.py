@@ -2818,6 +2818,38 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     return {"login_url": login_url, "code": login_code}
 
 
+def _abort_pending_login(podman: "PodmanClient") -> bool:
+    """Abort an in-progress kiro login flow, if any.
+
+    Acquires _login_pending_lock, nukes the login container (best-effort), and
+    clears _login_pending so a fresh POST /login can be issued immediately.
+
+    Returns True if a flow was in progress and was aborted, False if there was
+    nothing to abort (no-op).
+
+    Safe to call from the logout handler regardless of whether a flow is
+    pending.
+    """
+    global _login_pending
+    with _login_pending_lock:
+        pending = _login_pending
+        if pending is None:
+            return False
+        # Clear state immediately under the lock so concurrent callers see no
+        # pending flow even if the container nuke takes a moment.
+        _login_pending = None
+
+    container = pending.get("container")
+    if container:
+        try:
+            _nuke_login_container(podman, container)
+            logger.info("Aborted pending kiro login in container %s", container)
+        except Exception as e:
+            logger.warning("Could not nuke login container %s: %s", container, e)
+    else:
+        logger.info("Aborted pending kiro login (container not yet started)")
+    return True
+
 
 # ── Claude OAuth device-flow state ────────────────────────────────────────────
 # _claude_login_pending mirrors _login_pending:
@@ -3109,6 +3141,42 @@ def _poll_claude_login_container(podman: "PodmanClient", container: str) -> byte
     except Exception as e:
         logger.warning("Error polling Claude login container: %s", e)
     return None
+
+
+def _abort_claude_pending_login(podman: "PodmanClient") -> bool:
+    """Abort an in-progress Claude login flow, if any.
+
+    Mirrors _abort_pending_login for the Claude OAuth device flow. Acquires
+    _claude_login_pending_lock, closes the PTY socket if present, nukes the
+    login container (best-effort), and clears _claude_login_pending.
+
+    Returns True if a flow was aborted, False if nothing was pending.
+    """
+    global _claude_login_pending
+    with _claude_login_pending_lock:
+        pending = _claude_login_pending
+        if pending is None:
+            return False
+        _claude_login_pending = None
+
+    # Close PTY socket if present (best-effort)
+    pty_sock = pending.get("pty_sock")
+    if pty_sock is not None:
+        try:
+            pty_sock.close()
+        except Exception:
+            pass
+
+    container = pending.get("container")
+    if container:
+        try:
+            _nuke_claude_login_container(podman, container)
+            logger.info("Aborted pending Claude login in container %s", container)
+        except Exception as e:
+            logger.warning("Could not nuke Claude login container %s: %s", container, e)
+    else:
+        logger.info("Aborted pending Claude login (container not yet started)")
+    return True
 
 
 # ── Codex login container helpers ─────────────────────────────────────────────
@@ -3425,6 +3493,34 @@ def _poll_codex_login_container(podman: "PodmanClient", container: str) -> bytes
     except Exception as e:
         logger.warning("Error polling Codex login container: %s", e)
     return None
+
+
+def _abort_codex_pending_login(podman: "PodmanClient") -> bool:
+    """Abort an in-progress Codex login flow, if any.
+
+    Mirrors _abort_pending_login for the Codex OAuth device flow. Acquires
+    _codex_login_pending_lock, nukes the login container (best-effort), and
+    clears _codex_login_pending.
+
+    Returns True if a flow was aborted, False if nothing was pending.
+    """
+    global _codex_login_pending
+    with _codex_login_pending_lock:
+        pending = _codex_login_pending
+        if pending is None:
+            return False
+        _codex_login_pending = None
+
+    container = pending.get("container")
+    if container:
+        try:
+            _nuke_codex_login_container(podman, container)
+            logger.info("Aborted pending Codex login in container %s", container)
+        except Exception as e:
+            logger.warning("Could not nuke Codex login container %s: %s", container, e)
+    else:
+        logger.info("Aborted pending Codex login (container not yet started)")
+    return True
 
 
 # ── Schedule / idle monitors ───────────────────────────────────────
