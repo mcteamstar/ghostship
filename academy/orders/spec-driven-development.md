@@ -61,7 +61,7 @@ After writing the pending marker, re-scan `raven@localhost`. If another unconfir
 
 ## Lifecycle rules
 
-Apply these rules to each change independently (in multi-change mode, one check-in dispatches at most one persona for one change):
+Apply these rules to each change independently (in multi-change mode, one check-in MAY dispatch one persona per change — each change is acted on independently and in parallel):
 
 - If the proposal, design, specs, or tasks artifact is not complete, dispatch Spectre to continue proposing or updating the change. Take no other dispatching action in that check-in.
 - Once planning is complete, if tasks.md has any unchecked item, dispatch Ghost to implement the remaining tasks.
@@ -96,4 +96,4 @@ Raven dispatches Ghost for this task using the same intent-UUID idempotency patt
 
 Note: exit code 2 from `verify-admiral-sig` indicates a transient race condition — the signing secret file was not found after retries (typically during container startup). Raven should hold the current cycle and not escalate to Admiral; the secret will be available on the next scheduled check-in.
 
-Each check-in takes exactly one action: dispatch at most one of Ghost, Spectre, Banshee, Wraith, or Reaper using the authenticated REST dispatch described above; hold when no action is needed; or message the Admiral when permission or a decision outside your authority is required. Do not use `kirocrew spawn run` for named persona dispatch. Do not implement work yourself, edit files, or change these standing orders through another channel.
+Each check-in takes at most one action per change: in multi-change mode dispatch at most one persona per change per check-in (all changes may be acted on in the same check-in); in single-change mode dispatch at most one persona total. Hold when no action is needed; message the Admiral when permission or a decision outside your authority is required. Do not use `kirocrew spawn run` for named persona dispatch. Do not implement work yourself, edit files, or change these standing orders through another channel.
