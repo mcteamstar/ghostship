@@ -658,6 +658,7 @@ try:
         GA_LOGIN_CONTAINER_PREFIX,
         GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
         GA_CODEX_LOGIN_CONTAINER_PREFIX,
+        GA_OPENCODE_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -688,12 +689,14 @@ try:
         _inject_auth,
         _inject_claude_auth,
         _inject_codex_auth,
+        _inject_opencode_auth,
         _inject_policy,
         _mint_cookie,
         _mint_internal_cookie,
         _nuke_login_container,
         _nuke_claude_login_container,
         _nuke_codex_login_container,
+        _nuke_opencode_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
@@ -703,12 +706,17 @@ try:
         _codex_auth_file_path,
         _codex_auth_exists,
         _write_codex_auth_file,
+        _opencode_auth_file_path,
+        _opencode_auth_exists,
+        _write_opencode_auth_file,
         _initiate_login,
         _initiate_claude_login,
         _initiate_claude_setup_token,
         _initiate_codex_login,
+        _initiate_opencode_login,
         _poll_claude_login_container,
         _poll_codex_login_container,
+        _poll_opencode_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -732,6 +740,7 @@ try:
         _start_login_container,
         _start_claude_login_container,
         _start_codex_login_container,
+        _start_opencode_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
@@ -748,6 +757,7 @@ except ModuleNotFoundError:
         GA_LOGIN_CONTAINER_PREFIX,
         GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
         GA_CODEX_LOGIN_CONTAINER_PREFIX,
+        GA_OPENCODE_LOGIN_CONTAINER_PREFIX,
         GA_PORTSIDE_NETWORK,
         GA_STARBOARD_NETWORK,
         KIRO_AGENTS_DIR,
@@ -778,12 +788,14 @@ except ModuleNotFoundError:
         _inject_auth,
         _inject_claude_auth,
         _inject_codex_auth,
+        _inject_opencode_auth,
         _inject_policy,
         _mint_cookie,
         _mint_internal_cookie,
         _nuke_login_container,
         _nuke_claude_login_container,
         _nuke_codex_login_container,
+        _nuke_opencode_login_container,
         _auth_file_path,
         _read_auth_file,
         _write_auth_file,
@@ -793,12 +805,17 @@ except ModuleNotFoundError:
         _codex_auth_file_path,
         _codex_auth_exists,
         _write_codex_auth_file,
+        _opencode_auth_file_path,
+        _opencode_auth_exists,
+        _write_opencode_auth_file,
         _initiate_login,
         _initiate_claude_login,
         _initiate_claude_setup_token,
         _initiate_codex_login,
+        _initiate_opencode_login,
         _poll_claude_login_container,
         _poll_codex_login_container,
+        _poll_opencode_login_container,
         _patch_crew_config,
         _patch_models,
         _pickup_batch,
@@ -822,6 +839,7 @@ except ModuleNotFoundError:
         _start_login_container,
         _start_claude_login_container,
         _start_codex_login_container,
+        _start_opencode_login_container,
         _startup_events,
         _startup_events_lock,
         _validate_agent,
@@ -1862,6 +1880,7 @@ def _warn_inert_backend_settings() -> None:
         name for name, present in (
             ("ga-claude-auth", _claude_auth_exists()),
             ("ga-codex-auth", _codex_auth_exists()),
+            ("ga-opencode-auth", _opencode_auth_exists()),
         ) if present
     )
     for name in inert_backend_settings(cfg, stored):
@@ -2345,6 +2364,188 @@ async def _handle_codex_logout_post(request: Request) -> Response:
     return JSONResponse({"status": "logged_out"})
 
 
+# ── OpenCode login/logout endpoints ──────────────────────────────────────────
+
+
+async def _handle_opencode_login_post(request: Request) -> Response:
+    """POST /login/opencode — initiate the OpenCode login flow.
+
+    Three-state machine guard (mirrors POST /login/codex):
+      - 409 if ga-opencode-auth already exists (already authenticated)
+      - 409 if an OpenCode login flow is already in progress
+      - Calls _initiate_opencode_login, returns {"login_url", "code"}
+
+    Requires opencode to be an enabled backend (GA_CREW_AGENT), whether or
+    not it is the default; returns HTTP 400 naming GA_CREW_AGENT otherwise.
+    The disabled-backend check runs before any body validation (task 3.3).
+    """
+    if not _backend_enabled("opencode"):
+        return PlainTextResponse(_backend_not_enabled_message("opencode"), status_code=400)
+
+    with _lifecycle._opencode_login_pending_lock:
+        if _opencode_auth_exists():
+            return PlainTextResponse(
+                "Already authenticated. POST /logout/opencode first.",
+                status_code=409,
+            )
+        if _lifecycle._opencode_login_pending is not None:
+            return PlainTextResponse(
+                "OpenCode login already in progress. Poll GET /login/opencode for status.",
+                status_code=409,
+            )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _initiate_opencode_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "OpenCode login already in progress. Poll GET /login/opencode for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_opencode_login_get(request: Request) -> Response:
+    """GET /login/opencode — poll whether the OpenCode login flow has completed.
+
+    Returns {"status": "pending", "login_url": ...} while waiting.
+    On completion: tars ~/.local/share/opencode/ from the login container, writes
+    ga-opencode-auth (mode 0600), nukes the login container, clears
+    _opencode_login_pending, and returns {"status": "complete"}.
+    Returns 404 if no OpenCode login flow is in progress.
+    """
+    with _lifecycle._opencode_login_pending_lock:
+        pending = _lifecycle._opencode_login_pending
+
+    if pending is None:
+        return PlainTextResponse("No OpenCode login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Poll the login container for completed ~/.local/share/opencode/ credentials.
+    tar_bytes = _poll_opencode_login_container(podman, pending["container"])
+    if not tar_bytes:
+        return JSONResponse({
+            "status": "pending",
+            "login_url": pending.get("login_url"),
+        })
+
+    # ── Auth complete — write ga-opencode-auth ────────────────────────────────
+    try:
+        _write_opencode_auth_file(tar_bytes)
+        logger.info("ga-opencode-auth written after OpenCode login completion")
+    except Exception as e:
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-opencode-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="opencode",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
+
+    # Nuke temp container and clear pending state (guarded)
+    _nuke_opencode_login_container(podman, pending["container"])
+    with _lifecycle._opencode_login_pending_lock:
+        if (
+            _lifecycle._opencode_login_pending is not None
+            and _lifecycle._opencode_login_pending.get("container") == pending["container"]
+        ):
+            _lifecycle._opencode_login_pending = None
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="opencode",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_opencode_logout_post(request: Request) -> Response:
+    """POST /logout/opencode — de-authenticate OpenCode.
+
+    Deletes ga-opencode-auth and wipes ~/.local/share/opencode/ from every
+    running OpenCode-backend crew. Available regardless of whether opencode is
+    enabled (mirrors Claude/Codex logout). Idempotent: returns HTTP 200 even
+    when already unauthenticated (no ga-opencode-auth to clear).
+    """
+    if not _opencode_auth_exists():
+        return JSONResponse({"status": "logged_out"})
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Delete ga-opencode-auth
+    auth_path = _opencode_auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-opencode-auth")
+    except Exception as e:
+        logger.error("Could not delete ga-opencode-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="opencode",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="opencode",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe ~/.local/share/opencode/ from all running OpenCode-backend crews
+    wipe_failed: list[str] = []
+    with _registry_lock:
+        reg = _load_registry()
+    for cid, info in reg["crews"].items():
+        if info.get("status") == "running" and info.get("acp_backend") == "opencode":
+            try:
+                podman.container_exec(
+                    info["container"],
+                    ["sh", "-c", "rm -rf /home/kirocrew/.local/share/opencode/"],
+                )
+                logger.info("Wiped ~/.local/share/opencode/ from crew %s", cid)
+            except Exception as e:
+                logger.warning("Could not wipe ~/.local/share/opencode/ from crew %s: %s", cid, e)
+                wipe_failed.append(cid)
+
+    # Abort any in-progress OpenCode login flow.
+    aborted = _lifecycle._abort_opencode_pending_login(podman)
+
+    if wipe_failed:
+        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
+        if aborted:
+            resp["aborted_pending_login"] = True
+        return JSONResponse(resp)
+    if aborted:
+        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
+    return JSONResponse({"status": "logged_out"})
+
+
 # ── MCP tools: workspace ─────────────────────────────────────────────────────
 
 
@@ -2663,6 +2864,28 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "login_url": result.get("login_url"),
                 "code": result.get("code"),
                 "instructions": "Open login_url to authenticate with Codex, then call launch again.",
+            }
+    elif GA_CREW_ACP_BACKEND == "opencode":
+        # Task 4.2: OpenCode backend — require a non-empty ga-opencode-auth
+        # credential (login-flow only; no API-key env var path). If absent,
+        # initiate the OpenCode login flow and return not_authenticated with the
+        # login URL, and do NOT start the crew. ~/.local/share/opencode/ is
+        # injected via _inject_opencode_auth in _finish_crew_setup.
+        if not _opencode_auth_exists():
+            result = _initiate_opencode_login(podman)
+            if result.get("login_pending"):
+                return {
+                    "error": "not_authenticated",
+                    "login_pending": True,
+                    "instructions": "OpenCode login already in progress. Poll GET /login/opencode, then call launch again.",
+                }
+            if "error" in result:
+                return {"error": result["error"]}
+            return {
+                "error": "not_authenticated",
+                "login_url": result.get("login_url"),
+                "code": result.get("code"),
+                "instructions": "Open login_url to authenticate with OpenCode (run `opencode auth login`), then call launch again.",
             }
     else:
         auth_b64 = _read_auth_file() or None
@@ -4978,6 +5201,9 @@ if __name__ == "__main__":
         ("POST", "/login/codex"): _handle_codex_login_post,
         ("GET",  "/login/codex"): _handle_codex_login_get,
         ("POST", "/logout/codex"): _handle_codex_logout_post,
+        ("POST", "/login/opencode"): _handle_opencode_login_post,
+        ("GET",  "/login/opencode"): _handle_opencode_login_get,
+        ("POST", "/logout/opencode"): _handle_opencode_logout_post,
         ("GET",  "/health"): _handle_health,
         ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
@@ -5018,6 +5244,9 @@ if __name__ == "__main__":
             ("POST", "/login/codex"): _handle_codex_login_post,
             ("GET",  "/login/codex"): _handle_codex_login_get,
             ("POST", "/logout/codex"): _handle_codex_logout_post,
+            ("POST", "/login/opencode"): _handle_opencode_login_post,
+            ("GET",  "/login/opencode"): _handle_opencode_login_get,
+            ("POST", "/logout/opencode"): _handle_opencode_logout_post,
             ("GET",  "/health"): _handle_health,
             # Crew proxy routes — pattern keys used by BearerAuthMiddleware dispatch
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,

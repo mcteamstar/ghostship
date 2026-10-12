@@ -72,7 +72,7 @@ _config_logger = logging.getLogger(__name__)
 
 
 _CADDY_TLS_MODES: frozenset[str] = frozenset({"internal", "tailscale", "acme", "off"})
-_ACP_BACKEND_VALUES: frozenset[str] = frozenset({"kiro", "claude", "codex"})
+_ACP_BACKEND_VALUES: frozenset[str] = frozenset({"kiro", "claude", "codex", "opencode"})
 _ALWAYS_ENABLED_BACKEND = "kiro"
 _RETIRED_BACKEND_FLAGS: tuple[str, ...] = ("GA_INCLUDE_CLAUDE_AGENT", "GA_INCLUDE_CODEX_AGENT")
 _REINSTALL_HINT = "Re-run `ghostship install` after changing these settings."
@@ -177,6 +177,7 @@ _BACKEND_SETTINGS: dict[str, tuple[str, ...]] = {
 _BACKEND_CREDENTIAL_FILES: dict[str, str] = {
     "claude": "ga-claude-auth",
     "codex": "ga-codex-auth",
+    "opencode": "ga-opencode-auth",
 }
 
 
@@ -193,13 +194,17 @@ def inert_backend_settings(cfg: "Config", stored_credentials: frozenset[str]) ->
         if name.strip()
     )
     inert: list[str] = []
-    for backend, settings in _BACKEND_SETTINGS.items():
+    for backend, credential_file in _BACKEND_CREDENTIAL_FILES.items():
         if backend in enabled_backends:
             continue
         # Config field names mirror env var names lowercased (see module docstring).
-        inert.extend(name for name in settings if getattr(cfg, name.lower(), ""))
-        if _BACKEND_CREDENTIAL_FILES[backend] in stored_credentials:
-            inert.append(_BACKEND_CREDENTIAL_FILES[backend])
+        # OpenCode has no API-key settings (login-flow only), so _BACKEND_SETTINGS
+        # has no entry for it — default to () so only its stored credential is flagged.
+        for name in _BACKEND_SETTINGS.get(backend, ()):
+            if getattr(cfg, name.lower(), ""):
+                inert.append(name)
+        if credential_file in stored_credentials:
+            inert.append(credential_file)
     return inert
 
 
