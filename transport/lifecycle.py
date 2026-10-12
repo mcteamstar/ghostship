@@ -142,7 +142,7 @@ KIRO_API_KEY = cfg.kiro_api_key
 
 # The reusable kiro-cli auth blob lives under the transport data mount; the
 # KIRO_* values drive the interactive `kiro-cli login` device flow in _initiate_login.
-DATA_DIR = Path(cfg.transport_data_dir)
+DATA_DIR = Path("/data")
 GA_AUTH_FILE = "ga-kiro-auth"
 KIRO_LICENSE = cfg.kiro_license
 KIRO_IDENTITY_PROVIDER = cfg.kiro_identity_provider
@@ -199,7 +199,11 @@ KC_IMAGE = cfg.kc_image
 # FROM pin in crews/_base/admission/Containerfile.
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
-GA_CREW_AGENT = cfg.ga_crew_agent
+# KiroCrew agent name written to config.local.json inside each crew.
+# Hardcoded: this is the KiroCrew built-in agent name and is not operator-configurable.
+_KC_AGENT_NAME = "kiro"
+# Retained as GA_CREW_AGENT for existing call sites in _patch_crew_config.
+GA_CREW_AGENT = _KC_AGENT_NAME
 KC_MODEL_OVERRIDE = cfg.kc_model_override
 KC_MODEL_DEFAULT = cfg.kc_model_default
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
@@ -207,15 +211,22 @@ GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
 GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
-GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
-GA_PREWARM_ENABLED = cfg.ga_prewarm_enabled
-GA_PREWARM_TTL_SECS = cfg.ga_prewarm_ttl_secs
+# Hardcoded: subagent max turns and prewarm TTL are internal constants.
+_SUBAGENT_MAX_TURNS = 200
+GA_SUBAGENT_MAX_TURNS = _SUBAGENT_MAX_TURNS
+_PREWARM_TTL_SECS = 300
+GA_PREWARM_TTL_SECS = _PREWARM_TTL_SECS
+# GA_PREWARM_ENABLED: prewarm always fires when triggered (gate removed).
+# Retained as a module-level name so tests can patch it for isolation.
+GA_PREWARM_ENABLED = True
 
 # ACP backend selection — controls whether kiro, Claude Code, or Codex runs inside crew containers.
 # "kiro" (default): kiro-cli auth injection path (existing behaviour).
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY + CLAUDE_CODE_HEADLESS=1.
 # "codex": skip kiro auth, inject OPENAI_API_KEY (or the ga-codex-auth archive).
-GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
+# GA_CREW_AGENT is the consolidated backend var (replaces GA_CREW_ACP_BACKEND + GA_AGENT_BACKENDS).
+# The runtime default backend is the first entry.
+GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
 GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
 GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
 GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
@@ -278,7 +289,8 @@ _warm_markers_lock = threading.Lock()
 # Bounded in-process memory: _task_timestamps completed entries are evicted once
 # their completed_at is older than _TASK_TIMESTAMP_TTL_SECS (env-overridable);
 # _warm_markers entries are evicted once older than _WARM_MARKER_TTL_SECS.
-# Both TTLs floor at one hour.
+# The warm-marker TTL is floored at one hour via `_warm_marker_ttl_secs()`;
+# `_TASK_TIMESTAMP_TTL_SECS` has no floor.
 _TASK_TIMESTAMP_TTL_SECS = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
 
 
@@ -1034,10 +1046,6 @@ def _prewarm_crew(crew: dict, crew_id: str) -> dict:
     spec/workspace state. The only bookkeeping is the in-memory warm marker and
     whatever _ensure_crew_running already performs for a normal auto-start.
     """
-    # 2.2: opt-in gate — return early when disabled, before any start/fork.
-    if not GA_PREWARM_ENABLED:
-        return {"crew_id": crew_id, "status": "disabled"}
-
     ttl = _effective_prewarm_ttl()
 
     # 2.3: idempotency — a fresh warm marker on a running container is a no-op.
@@ -2302,15 +2310,14 @@ def _finish_crew_setup(
     # Fire-and-report: non-fatal. AcpProcessDied on the prewarm is acceptable —
     # it still expands the balloon. Errors are logged but never bubble up to the
     # caller so launch always succeeds even if prewarm fails.
-    if GA_PREWARM_ENABLED:
-        try:
-            pw = _prewarm_crew(crew_entry, crew_id)
-            if pw.get("pre_warm_task_id"):
-                result["pre_warm_task_id"] = pw["pre_warm_task_id"]
-            result["pre_warm_status"] = pw.get("status", "unknown")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Crew %s prewarm failed (non-fatal): %s", crew_id, exc)
-            result["pre_warm_status"] = "error"
+    try:
+        pw = _prewarm_crew(crew_entry, crew_id)
+        if pw.get("pre_warm_task_id"):
+            result["pre_warm_task_id"] = pw["pre_warm_task_id"]
+        result["pre_warm_status"] = pw.get("status", "unknown")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Crew %s prewarm failed (non-fatal): %s", crew_id, exc)
+        result["pre_warm_status"] = "error"
 
     return result
 
@@ -2395,7 +2402,7 @@ def _start_claude_login_container(podman: PodmanClient) -> str:
     except Exception as e:
         raise RuntimeError(
             f"Failed to create Claude login container from image {KC_IMAGE!r}: {e}. "
-            "Enable claude in GA_AGENT_BACKENDS and re-run `ghostship install`."
+            "Enable claude in GA_CREW_AGENT and re-run `ghostship install`."
         ) from e
     podman.container_start(name)
     logger.info("Started ephemeral Claude login container %s", name)
@@ -2936,7 +2943,7 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
         return {
             "error": (
                 f"'claude' CLI not found in image {KC_IMAGE!r}. "
-                "Enable claude in GA_AGENT_BACKENDS and re-run `ghostship install`."
+                "Enable claude in GA_CREW_AGENT and re-run `ghostship install`."
             )
         }
 
@@ -3192,7 +3199,7 @@ def _start_codex_login_container(podman: PodmanClient) -> str:
 
     Uses KC_IMAGE (the local spec-ops image built with the codex toolchain)
     because the ``codex-acp`` adapter is only present in that image. Fails with a
-    clear error naming GA_AGENT_BACKENDS if the image cannot start.
+    clear error naming GA_CREW_AGENT if the image cannot start.
     The actual adapter-binary check happens after start in _initiate_codex_login.
     Returns the container name.
     """
@@ -3213,7 +3220,7 @@ def _start_codex_login_container(podman: PodmanClient) -> str:
     except Exception as e:
         raise RuntimeError(
             f"Failed to create Codex login container from image {KC_IMAGE!r}: {e}. "
-            "Enable codex in GA_AGENT_BACKENDS and re-run `ghostship install`."
+            "Enable codex in GA_CREW_AGENT and re-run `ghostship install`."
         ) from e
     podman.container_start(name)
     logger.info("Started ephemeral Codex login container %s", name)
@@ -3389,7 +3396,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
         return {
             "error": (
                 f"'codex-acp' adapter not found in image {KC_IMAGE!r}. "
-                "Enable codex in GA_AGENT_BACKENDS and re-run `ghostship install`."
+                "Enable codex in GA_CREW_AGENT and re-run `ghostship install`."
             )
         }
 

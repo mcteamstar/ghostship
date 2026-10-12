@@ -184,7 +184,7 @@ class TestCodeEndpoint(unittest.TestCase):
         self._backend = server.GA_CREW_ACP_BACKEND
         server.GA_CREW_ACP_BACKEND = "claude"
         self.addCleanup(setattr, server, "GA_CREW_ACP_BACKEND", self._backend)
-        patcher = patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
+        patcher = patch.object(server.cfg, "ga_crew_agent", "kiro,claude")
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -204,16 +204,16 @@ class TestCodeEndpoint(unittest.TestCase):
             self._call(_FakeRequest(body={"code": "abc#def"})).status_code, 404)
 
     def test_wrong_backend_returns_400(self):
-        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})):
+        with patch.object(server.cfg, "ga_crew_agent", "kiro"):
             self.assertEqual(
                 self._call(_FakeRequest(body={"code": "abc#def"})).status_code, 400)
 
     def test_disabled_backend_checked_before_body(self):
         """agent-backends: the membership check runs before body validation."""
-        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})):
+        with patch.object(server.cfg, "ga_crew_agent", "kiro"):
             response = self._call(_FakeRequest(raises=True))
         self.assertEqual(response.status_code, 400)
-        self.assertIn(b"GA_AGENT_BACKENDS", response.body)
+        self.assertIn(b"GA_CREW_AGENT", response.body)
 
     def test_enabled_but_not_default_accepts_code(self):
         """agent-backends: claude login works while kiro is the default backend."""
@@ -268,11 +268,11 @@ class TestClaudeOptIn(unittest.TestCase):
 
     def test_login_refused_when_image_not_built_for_claude(self):
         from unittest.mock import Mock as _Mock
-        with patch.object(server.cfg, "ga_agent_backends", frozenset({"kiro"})), \
+        with patch.object(server.cfg, "ga_crew_agent", "kiro"), \
              patch.object(server, "_initiate_claude_login") as initiate:
             response = asyncio.run(server._handle_claude_login_post(_Mock()))
         self.assertEqual(response.status_code, 400)
-        self.assertIn(b"GA_AGENT_BACKENDS", response.body)
+        self.assertIn(b"GA_CREW_AGENT", response.body)
         initiate.assert_not_called()
 
 

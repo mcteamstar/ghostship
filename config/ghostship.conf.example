@@ -70,9 +70,6 @@
 # GA_MACHINE_MEMORY=16384
 # GA_MACHINE_DISK=100
 
-# Name of the dedicated machine/service:
-# GA_MACHINE_NAME="ghost-academy"
-
 # ── Crew lifecycle ────────────────────────────────────────────────────────────
 # Stop idle crew containers after this many seconds to free memory.
 # The schedule monitor wakes crews before ticks fire, so this can be set
@@ -86,95 +83,39 @@
 # Maximum number of simultaneously running crew containers.
 # Enforced on restart: refused if running count already equals this limit.
 # Set to 0 to disable the active limit entirely.
+# Values ≤ 0 all disable the limit.
 # GA_MAX_ACTIVE_CREWS=3
 
 # ── Subagent timeouts ─────────────────────────────────────────────────────────
 # Wall-clock timeout per task (seconds). KiroCrew default is 1800 (30 min).
 # GA_SUBAGENT_TIMEOUT_SECS=3600
 
-# Maximum turns per task. KiroCrew default is 100.
-# GA_SUBAGENT_MAX_TURNS=200
-
-# ACP prewarm internal gate (TRN-194: prewarm is now implicit — these control
-# the internal behaviour of the background warm-up triggered by supply/schedule).
-# GA_PREWARM_ENABLED=false
-# GA_PREWARM_TTL_SECS=300
-
 # ── Memory gate ───────────────────────────────────────────────────────────────
 # Minimum free host memory (GB) required before launching a new crew.
 # Set to 0 to disable the gate entirely.
 # GA_MIN_FREE_MEM_GB=2.0
 
-# ── KiroCrew memory thresholds ────────────────────────────────────────────────
-# Written to config.local.json inside each crew at launch.
-# KiroCrew memory gate thresholds. These are written into each crew's
-# config.local.json and control when the gateway throttles or blocks
-# new subagent spawns based on host free memory.
+# ── Agent backend (TRN-213) ───────────────────────────────────────────────────
+# GA_CREW_AGENT: which agent backend to build and run. Comma-separated for
+# multi-toolchain builds; first entry is the runtime default.
 #
-# IMPORTANT: Inside a container, memory is dynamically allocated by the host
-# (Podman balloon on Linux, Podman machine VM on macOS). The container sees
-# only what has been allocated so far, not the full potential ceiling. Setting
-# any non-zero threshold will trigger throttling almost immediately under real
-# workloads, causing AcpProcessDied failures rather than preventing them.
-# Leave unset (or set to 0) to disable memory gating and let the OS manage
-# pressure. Only set non-zero values on truly memory-constrained hosts with no
-# dynamic allocation (e.g. a fixed-memory VM with no balloon).
-# GA_SPAWN_MIN_MEMORY_GB=1.5
-# GA_RESOURCE_PRESSURE_GB=2.0
-# GA_RESOURCE_CRITICAL_GB=1.0
-
-# Consecutive Captain check-in cycles that must be refused/skipped for host
-# memory pressure (available memory below GA_RESOURCE_CRITICAL_GB) before the
-# transport mails admiral@localhost. Edge-triggered: one mail per crossing; the
-# counter resets on the next successful dispatch. Default 3.
-# GA_SPAWN_PRESSURE_ESCALATE_CYCLES=3
-
-# ── Storage / runtime paths ───────────────────────────────────────────────────
-# Directory the transport uses for its persistent state (crews.json, secrets).
-# Inside the container this is the /data mount; rarely overridden.
-# TRANSPORT_DATA_DIR=/data
-
-# Path to the Podman API socket the transport talks to.
-# PODMAN_SOCKET=/run/user/1000/podman/podman.sock
-
-# ── Container images ──────────────────────────────────────────────────────────
-# Crew container image used for spec-ops crews.
-# KC_IMAGE=localhost/spec-ops:latest
-
-# Upstream base image used for ephemeral containers that only need kiro-cli
-# (e.g. login containers). Must match the FROM pin in
-# crews/_base/admission/Containerfile.
-# TRN-219: 0.9.0-insider.4, pinned by immutable digest.
-# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009
-
-# ── Crew agent ────────────────────────────────────────────────────────────────
-# KiroCrew agent name written to config.local.json inside each crew. Must be
-# non-empty (KiroCrew 0.5.0 requires it). Override for a differently-named agent.
+# Values: kiro (default), claude, codex, opencode.
+# - kiro: KiroCrew-native kiro-cli agent (existing behaviour). Always bundled.
+# - claude: Claude Code ACP backend. Requires a credential (see below).
+# - codex: Codex ACP backend. Requires a credential (see below).
+#
+# Multi-toolchain example: GA_CREW_AGENT=claude,codex builds both toolchains;
+# runtime default is claude. Advanced use; most installs just set one value.
+#
+# Deprecated aliases (still work with a warning for one release):
+#   GA_CREW_ACP_BACKEND — maps to GA_CREW_AGENT
+#   GA_AGENT_BACKENDS — combined into GA_CREW_AGENT
+#
 # GA_CREW_AGENT=kiro
-
-# ── Agent backends (TRN-202) ─────────────────────────────────────────────────
-# GA_AGENT_BACKENDS: comma-separated optional backends to enable — "claude",
-# "codex", or both. Kiro is always enabled (bundled in every crew image), so
-# listing it is optional. Default: unset, which means kiro only.
-#   - install.sh builds one toolchain per listed backend into the crew image
-#     (crews/spec-ops/toolchains/<name>.sh).
-#   - The transport accepts login (POST /login/claude, /login/codex) only for
-#     enabled backends, whether or not the backend is the default.
-# GA_CREW_ACP_BACKEND: the default backend for new crews — "kiro" (default),
-# "claude" or "codex". It must be enabled: a default outside GA_AGENT_BACKENDS
-# stops install.sh and the transport with an error naming both settings.
-# Re-run `ghostship install` after changing either setting; a restart alone
-# doesn't rebuild the image or update the transport.
-# Retired: GA_INCLUDE_CLAUDE_AGENT and GA_INCLUDE_CODEX_AGENT. Setting either
-# (to any value) is an error; use GA_AGENT_BACKENDS instead.
-#
-# GA_AGENT_BACKENDS=""            # e.g. "claude", "codex" or "claude,codex"
-# GA_CREW_ACP_BACKEND=kiro
 
 # ── Claude Code ACP backend (TRN-167, TRN-170) ───────────────────────────────
 # To use the Claude Code ACP runtime inside crews:
-#   1. Enable it: GA_AGENT_BACKENDS=claude (see Agent backends above). Set
-#      GA_CREW_ACP_BACKEND=claude to make it the default for new crews.
+#   1. Enable it: GA_CREW_AGENT=claude (see Agent backend above).
 #   2. A Claude credential — one of:
 #      a. GA_CREW_ANTHROPIC_API_KEY — Anthropic pay-per-token API key (TRN-167).
 #         When set, takes precedence over OAuth credentials.
@@ -187,14 +128,9 @@
 #      with a login URL. GA_CREW_ANTHROPIC_API_KEY is optional from TRN-170.
 #
 # NOTE: The KiroCrew per-call tool approval gate is bypassed when
-# GA_CREW_ACP_BACKEND=claude. The signed security policy ceiling (academy/
+# GA_CREW_AGENT=claude. The signed security policy ceiling (academy/
 # policies/default.json) is still enforced. Outbound access to
 # api.anthropic.com is required for Claude-backend crews.
-#
-# The Anthropic settings below are used by crews running on claude, which today
-# means claude must also be the default (GA_CREW_ACP_BACKEND=claude). With claude
-# enabled but not the default they are accepted but unused. With claude
-# disabled the transport logs each one as having no effect.
 #
 # GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
 # GA_CREW_ANTHROPIC_BASE_URL=""
@@ -206,11 +142,9 @@
 
 # ── Codex ACP backend (TRN-172) ──────────────────────────────────────────────
 # To use the Codex ACP runtime inside crews:
-#   1. Enable it: GA_AGENT_BACKENDS=codex (see Agent backends above). Set
-#      GA_CREW_ACP_BACKEND=codex to make it the default for new crews. The
-#      toolchain is ONE npm package, @agentclientprotocol/codex-acp: the
-#      adapter ships its own compatible Codex binary, so there is no separate
-#      `codex` CLI.
+#   1. Enable it: GA_CREW_AGENT=codex (see Agent backend above). The toolchain
+#      is ONE npm package, @agentclientprotocol/codex-acp: the adapter ships
+#      its own compatible Codex binary, so there is no separate `codex` CLI.
 #   2. An OpenAI credential — one of:
 #      a. GA_CREW_OPENAI_API_KEY — OpenAI pay-per-token API key. When set,
 #         takes precedence over OAuth credentials.
@@ -223,52 +157,49 @@
 #      alternative).
 #
 # NOTE: The KiroCrew per-call tool approval gate is bypassed when
-# GA_CREW_ACP_BACKEND=codex — codex-acp runs under a verified read-only ACP
+# GA_CREW_AGENT=codex — codex-acp runs under a verified read-only ACP
 # mode instead. The signed security policy ceiling (academy/policies/
 # default.json) is still enforced. Outbound access to api.openai.com (or the
 # GA_CREW_OPENAI_BASE_URL endpoint when set) is required for Codex-backend crews.
-#
-# The OpenAI settings below are used by crews running on codex, which today
-# means codex must also be the default (GA_CREW_ACP_BACKEND=codex). With codex
-# enabled but not the default they are accepted but unused. With codex disabled
-# the transport logs each one as having no effect.
 #
 # GA_CREW_OPENAI_API_KEY=""   # optional when using Codex OAuth login
 # GA_CREW_OPENAI_BASE_URL=""
 
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────
-# Path to a directory of operator-managed standing-order template .md files.
-# When set and the directory exists, its templates are merged with the built-in
-# academy/orders/ templates (user-defined takes precedence on name collision).
+# Path to a host directory of operator-managed standing-order template .md files.
+# Must be an absolute path. When set and the directory exists, its templates are
+# merged with the built-in academy/orders/ templates (user-defined takes
+# precedence on name collision). The directory is bind-mounted read-only into the
+# transport container at /mnt/orders; the container receives GA_ORDERS_DIR=/mnt/orders.
 # Leave unset to use only the built-in templates.
 # GA_ORDERS_DIR=""
 
-# ── Transport TLS / security headers (TRN-70) ─────────────────────────────────
-# Minimum TLS version enforced when the app terminates TLS directly ("1.2"/"1.3").
-# GA_TLS_MIN_VERSION=1.2
-
-# Enable direct TLS termination by pointing these at a cert/key pair.
+# ── Transport TLS / security (TRN-70) ─────────────────────────────────────────
+# Enable direct TLS termination by pointing these at a cert/key pair. Both must
+# be in the same parent directory; that directory is bind-mounted read-only at
+# /mnt/tls inside the container, and the container-side paths are rewritten to
+# /mnt/tls/<basename> automatically.
+# Both must be set together or both left unset (setting only one is an error).
 # GA_TLS_CERTFILE=""
 # GA_TLS_KEYFILE=""
 
-# Emit baseline security headers (HSTS, etc.). Default on.
-# GA_ENABLE_SECURITY_HEADERS=1
+# ── Advanced / expert-only knobs (see docs/configuration.md) ─────────────────
+# These are listed here so the config sync test passes. Normal installs never
+# need to override them. See the "Advanced / expert-only" section of
+# docs/configuration.md for full descriptions.
+# PODMAN_SOCKET=/run/user/1000/podman/podman.sock
+# KC_IMAGE=localhost/spec-ops:latest
+# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009
+# GA_SPAWN_MIN_MEMORY_GB=1.5
+# GA_RESOURCE_PRESSURE_GB=2.0
+# GA_RESOURCE_CRITICAL_GB=1.0
+# GA_SPAWN_PRESSURE_ESCALATE_CYCLES=3
+# GA_DASHBOARD_PORT_RANGE_SIZE=64
 
 # ── HTTP rate limiting (TRN-52) ───────────────────────────────────────────────
-# Per-endpoint sliding-window request limits. Each value is "<count>:<window_secs>"
-# (both positive integers). State is in-memory only and resets on transport restart.
 # Master switch — set to "false" to disable all rate limiting entirely.
+# Per-endpoint limits and other knobs are in docs/configuration.md (advanced).
 # GA_RATE_LIMIT_ENABLED=true
-# GET /login — polling allowed, hammering blocked (default 30 req / 60 s).
-# GA_RATE_LIMIT_LOGIN_GET=30:60
-# POST /login — tight limit enforces deliberate use (default 5 req / 300 s).
-# GA_RATE_LIMIT_LOGIN_POST=5:300
-# /mcp and sub-paths — headroom for multi-tool orchestration (default 300 req / 60 s).
-# GA_RATE_LIMIT_MCP=300:60
-# /files/* — protects git subprocess execution (default 60 req / 60 s).
-# GA_RATE_LIMIT_FILES=60:60
-# /crews/*/api/* — proxied crew API (default 120 req / 60 s).
-# GA_RATE_LIMIT_CREW_API=120:60
 
 # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
 # Each crew launched with dashboard=True is assigned a host port from the range
@@ -282,15 +213,7 @@
 # portal replaces the per-port proxy. See docs/portal.md.
 #
 # GA_DASHBOARD_PORT_RANGE_START=64058
-# GA_DASHBOARD_PORT_RANGE_SIZE=64  # Number of ports in the range (default 64)
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch()
-
-# ── Compose up retry (TRN-227) ───────────────────────────────────────────────
-# On macOS, transient port conflicts between the ephemeral port range and the
-# dashboard port space can cause compose up to fail. These vars control the
-# retry loop in install.sh.
-# GA_COMPOSE_RETRY_ATTEMPTS=3    # Max attempts (positive integer ≥ 1; default 3)
-# GA_COMPOSE_RETRY_DELAY_SECS=2  # Seconds between retries (default 2)
 
 # ── Caddy reverse proxy (TRN-92 / TRN-103) ───────────────────────────────────
 # ga-portal (Caddy) is a required component and is always installed. It binds

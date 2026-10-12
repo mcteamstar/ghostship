@@ -20,7 +20,7 @@ except ImportError:
 
 cfg = Config.from_env()
 
-DATA_DIR = Path(cfg.transport_data_dir)
+DATA_DIR = Path("/data")
 REGISTRY_PATH = DATA_DIR / "crews.json"
 
 logger = logging.getLogger(__name__)

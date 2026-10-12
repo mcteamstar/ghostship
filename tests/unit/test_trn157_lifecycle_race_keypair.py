@@ -333,6 +333,7 @@ class LaunchRegistryCleanupOnErrorDictTests(unittest.TestCase):
             ga_dashboard_default=True,
             ga_host_url=None,
             ga_portal_tls_mode="off",
+            ga_crew_agent="kiro",
         )))
         # caddy_portal must be patched in the server namespace as a real attribute
         with stack:

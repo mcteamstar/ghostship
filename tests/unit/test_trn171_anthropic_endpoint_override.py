@@ -90,7 +90,7 @@ class TestAnthropicBaseUrlClaudeBackendSet(unittest.TestCase):
     def setUp(self):
         super().setUp()
         # Claude is opt-in via GA_AGENT_BACKENDS: these tests exercise the Claude path, so enable it.
-        patcher = patch.object(_server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
+        patcher = patch.object(_server.cfg, "ga_crew_agent", "kiro,claude")
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -129,7 +129,7 @@ class TestAnthropicBaseUrlClaudeBackendUnset(unittest.TestCase):
     def setUp(self):
         super().setUp()
         # Claude is opt-in via GA_AGENT_BACKENDS: these tests exercise the Claude path, so enable it.
-        patcher = patch.object(_server.cfg, "ga_agent_backends", frozenset({"kiro", "claude"}))
+        patcher = patch.object(_server.cfg, "ga_crew_agent", "kiro,claude")
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -197,7 +197,7 @@ class TestConfigAnthropicBaseUrl(unittest.TestCase):
         """GA_CREW_ANTHROPIC_BASE_URL is read and stripped."""
         with patch.dict("os.environ", {
             "GA_CREW_ANTHROPIC_BASE_URL": "  http://proxy.example.com/v1  ",
-            "GA_CREW_ACP_BACKEND": "kiro",
+            "GA_CREW_AGENT": "kiro",
         }):
             cfg = Config.from_env()
         self.assertEqual(cfg.ga_crew_anthropic_base_url, "http://proxy.example.com/v1")
