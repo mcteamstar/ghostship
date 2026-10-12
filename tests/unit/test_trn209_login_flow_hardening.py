@@ -362,11 +362,18 @@ class TestSweepExpiredLoginsClaude(unittest.TestCase):
             }
 
         podman = Mock()
-        with patch.object(_lifecycle, "_nuke_claude_login_container") as nuke:
+        with patch.object(_lifecycle, "_nuke_claude_login_container") as nuke, \
+                patch.object(_lifecycle._security, "audit_auth_event") as audit:
             _lifecycle._sweep_expired_logins(podman)
 
         self.assertIsNone(_lifecycle._claude_login_pending)
         nuke.assert_called_once()
+        # Spec (claude-auth): sweep expiry SHALL record action=login outcome=failure.
+        audit.assert_called_once()
+        kwargs = audit.call_args.kwargs
+        self.assertEqual(kwargs.get("action"), "login")
+        self.assertEqual(kwargs.get("outcome"), "failure")
+        self.assertEqual(kwargs.get("account"), "claude")
 
     def test_claude_code_submitted_expired_is_cleared(self) -> None:
         """A submitted code that has exceeded CLAUDE_LOGIN_CODE_DEADLINE_SECS is swept."""

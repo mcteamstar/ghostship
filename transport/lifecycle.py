@@ -3195,6 +3195,14 @@ def _sweep_expired_logins(podman: "PodmanClient") -> None:
         with _claude_login_pending_lock:
             if _claude_login_pending is claude_pending:
                 _claude_login_pending = None
+        # Spec (claude-auth): on sweep expiry the transport SHALL record
+        # action=login outcome=failure in the audit log, mirroring the
+        # poll-driven expiry path in server.py.  No HTTP request here, so
+        # source is None.
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="claude",
+            source=None, emit=logger.info,
+        )
 
     # ── Codex ─────────────────────────────────────────────────────────────────
     with _codex_login_pending_lock:
