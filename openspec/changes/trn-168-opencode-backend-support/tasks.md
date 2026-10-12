@@ -29,5 +29,5 @@
 ## 6. Tests and verification
 
 - [ ] 6.1 Add unit tests for the new `/login/opencode` and `/logout/opencode` routes — disabled-backend rejection, login container launch, logout credential deletion
-- [ ] 6.2 Add unit test: `GA_CREW_ACP_BACKEND=opencode` with no `ga-opencode-auth` → launch fails with descriptive error
-- [ ] 6.3 Manual smoke test: build spec-ops image with `GA_AGENT_BACKENDS=opencode`, run login flow, launch a crew, verify `opencode acp` session starts and Crew tools are available
+- [ ] 6.2 Add unit test: `GA_CREW_AGENT=opencode` with no `ga-opencode-auth` → launch fails with descriptive error
+- [ ] 6.3 Manual smoke test: build spec-ops image with `GA_CREW_AGENT=opencode`, run login flow, launch a crew, verify `opencode acp` session starts and Crew tools are available
