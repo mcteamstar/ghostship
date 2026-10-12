@@ -358,7 +358,7 @@ HOST = cfg.host  # Binds all interfaces inside the container.
 # non-containerised installs where you want loopback-only binding.
 PORT = cfg.port
 
-DATA_DIR = Path(cfg.transport_data_dir)
+DATA_DIR = Path("/data")
 # REGISTRY_PATH is imported from transport.registry
 
 
@@ -419,10 +419,11 @@ def _validate_model(model: str | None) -> str | None:
         )
     return model
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
-# KiroCrew 0.4.0 requires a non-empty `agent` field in config.local.json; crew
-# creation fails at the gateway with a 4xx if it is absent. Default "kiro" is
-# KiroCrew's built-in agent name; operators override for a differently-named agent.
-GA_CREW_AGENT = cfg.ga_crew_agent
+# KiroCrew agent name written to config.local.json inside each crew.
+# Hardcoded: not operator-configurable (always the built-in KiroCrew agent name).
+_KC_AGENT_NAME = "kiro"
+# Retained as GA_CREW_AGENT for existing call sites.
+GA_CREW_AGENT = _KC_AGENT_NAME
 KC_MODEL_OVERRIDE = cfg.kc_model_override
 KC_MODEL_DEFAULT = cfg.kc_model_default
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
@@ -431,7 +432,9 @@ GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
 GA_SPAWN_PRESSURE_ESCALATE_CYCLES = cfg.ga_spawn_pressure_escalate_cycles
 GA_SUBAGENT_TIMEOUT_SECS = cfg.ga_subagent_timeout_secs
-GA_SUBAGENT_MAX_TURNS = cfg.ga_subagent_max_turns
+# Hardcoded: subagent max turns is an internal constant.
+_SUBAGENT_MAX_TURNS = 200
+GA_SUBAGENT_MAX_TURNS = _SUBAGENT_MAX_TURNS
 
 # ── Crew UI port allocation ───────────────────────────────
 # GA_DASHBOARD_PORT_ENABLED was removed; dashboard access is exclusively
@@ -469,7 +472,7 @@ def _read_podman_secret(name: str) -> str:
         return ""
 
 
-GA_CREW_ACP_BACKEND = cfg.ga_crew_acp_backend
+GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
 # Prefer the Podman-secret file over the (now always empty) env-var value: the
 # compose template no longer carries these keys in its environment block, so
 # cfg.ga_crew_anthropic_api_key is "" in production and the secret file is the
@@ -498,20 +501,17 @@ if _GA_CREW_OPENAI_API_KEY:
 
 # ── Transport security ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
-# security headers so protection does not depend solely on edge config. These
-# flags let each protection be toggled via config for a staged rollout and
-# config-only rollback.
+# security headers so protection does not depend solely on edge config.
 #
-# GA_TLS_MIN_VERSION: minimum TLS version enforced when the app terminates TLS
-#   directly (ssl_version passed to uvicorn). Values: "1.2" or "1.3".
 # GA_TLS_CERTFILE / GA_TLS_KEYFILE: enable direct TLS termination when set.
-# GA_ENABLE_SECURITY_HEADERS: emit baseline security headers (default on).
-# HTTPS redirect: unconditionally disabled (Caddy owns redirects).
-# CSP: unconditionally enforced (always emit CSP headers).
-GA_TLS_MIN_VERSION = cfg.ga_tls_min_version
+# Security headers and TLS min version are hardcoded — not operator-configurable.
+_TLS_MIN_VERSION = "1.2"
+# Retained as GA_TLS_MIN_VERSION for existing call sites.
+GA_TLS_MIN_VERSION = _TLS_MIN_VERSION
 GA_TLS_CERTFILE = cfg.ga_tls_certfile
 GA_TLS_KEYFILE = cfg.ga_tls_keyfile
-GA_ENABLE_SECURITY_HEADERS = cfg.ga_enable_security_headers
+# Security headers are always active — GA_ENABLE_SECURITY_HEADERS removed.
+GA_ENABLE_SECURITY_HEADERS = True
 
 # ── Caddy reverse proxy ───────────────────────────────────
 # ga-portal (Caddy) is always present: a ga-portal container owns port bindings
@@ -1790,20 +1790,25 @@ def _warn_inert_backend_settings() -> None:
     )
     for name in inert_backend_settings(cfg, stored):
         logger.warning(
-            "%s is set but its backend is not in GA_AGENT_BACKENDS; it has no effect.", name
+            "%s is set but its backend is not enabled in GA_CREW_AGENT; it has no effect.", name
         )
 
 
 def _backend_enabled(backend: str) -> bool:
     """True when ``backend`` is enabled. Kiro always is (bundled in every crew
-    image); the others must be listed in GA_AGENT_BACKENDS."""
-    return backend == "kiro" or backend in cfg.ga_agent_backends
+    image); others must be listed in GA_CREW_AGENT."""
+    enabled = frozenset(
+        name.strip().lower()
+        for name in cfg.ga_crew_agent.split(",")
+        if name.strip()
+    )
+    return backend == "kiro" or backend in enabled
 
 
 def _backend_not_enabled_message(backend: str) -> str:
     return (
         f"The {backend} backend is not enabled on this transport. Add {backend} to "
-        f"GA_AGENT_BACKENDS in ghostship.conf, then re-run `ghostship install`."
+        f"GA_CREW_AGENT in ghostship.conf, then re-run `ghostship install`."
     )
 
 
@@ -1815,7 +1820,7 @@ async def _handle_claude_login_post(request: Request) -> Response:
       - 409 if a Claude login flow is already in progress
       - Calls _initiate_claude_login, returns {"login_url", "code"}
 
-    Requires claude to be an enabled backend (GA_AGENT_BACKENDS), whether or
+    Requires claude to be an enabled backend (GA_CREW_AGENT), whether or
     not it is the default; returns 400 otherwise.
     """
     if not _backend_enabled("claude"):
@@ -2050,7 +2055,7 @@ async def _handle_codex_login_post(request: Request) -> Response:
       - 409 if a Codex login flow is already in progress
       - Calls _initiate_codex_login, returns {"login_url", "code"}
 
-    Requires codex to be an enabled backend (GA_AGENT_BACKENDS), whether or
+    Requires codex to be an enabled backend (GA_CREW_AGENT), whether or
     not it is the default; returns 400 otherwise.
     """
     if not _backend_enabled("codex"):
@@ -4803,8 +4808,8 @@ if __name__ == "__main__":
 
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
-    logger.info("Agent backends enabled: %s (default: %s)",
-                ", ".join(sorted(cfg.ga_agent_backends)), GA_CREW_ACP_BACKEND)
+    logger.info("Agent backend: %s (runtime default: %s)",
+                cfg.ga_crew_agent, GA_CREW_ACP_BACKEND)
     _warn_inert_backend_settings()
     _reconcile_registry()
     # Restore UI port allocations from persisted registry so restarts

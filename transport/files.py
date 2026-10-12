@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 cfg = Config.from_env()
 
 PORT = cfg.port
-DATA_DIR = Path(cfg.transport_data_dir)
+DATA_DIR = Path("/data")
 CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
 # SEC-01 — ref parameter validation

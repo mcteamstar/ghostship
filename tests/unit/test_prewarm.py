@@ -49,21 +49,21 @@ class TestPrewarmCore(unittest.TestCase):
         with lifecycle._warm_markers_lock:
             lifecycle._warm_markers.clear()
 
-    def test_disabled_no_start_no_fork(self) -> None:
+    def test_prewarm_runs_without_gate(self) -> None:
+        """_prewarm_crew runs without a GA_PREWARM_ENABLED gate (TRN-213: gate removed)."""
         crew = {"container": "gs-demo", "cookie": "c"}
+        warmed_crew = {"container": "gs-demo", "cookie": "new"}
         podman = _RecordingPodman(running=False)
         with (
-            patch.object(lifecycle, "GA_PREWARM_ENABLED", False),
             patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_ensure_crew_running") as ensure,
-            patch.object(lifecycle, "_crew_api_with_recovery") as warmup,
+            patch.object(lifecycle, "_ensure_crew_running", return_value=warmed_crew),
+            patch.object(lifecycle, "_crew_api_with_recovery", return_value={}) as warmup,
         ):
             result = lifecycle._prewarm_crew(crew, "demo")
 
-        self.assertEqual(result, {"crew_id": "demo", "status": "disabled"})
-        ensure.assert_not_called()
-        warmup.assert_not_called()
-        self.assertEqual(podman.starts, [])
+        # Gate is removed — prewarm always fires when called
+        self.assertEqual(result, {"crew_id": "demo", "status": "warmed"})
+        warmup.assert_called_once()
 
     def test_stopped_crew_starts_and_warms_once(self) -> None:
         crew = {"container": "gs-demo", "cookie": "c"}
@@ -179,9 +179,9 @@ class TestPrewarmCore(unittest.TestCase):
             self.assertNotIn("demo", lifecycle._warm_markers)
 
     def test_disabled_is_the_module_default(self) -> None:
-        """GA_PREWARM_ENABLED is False when the module is loaded without the env var."""
-        # The module-level constant is False by default (the demote invariant).
-        self.assertIs(lifecycle.GA_PREWARM_ENABLED, False)
+        """GA_PREWARM_ENABLED is True (gate removed, TRN-213) — prewarm always fires."""
+        # The gate was removed in TRN-213: prewarm always runs when triggered.
+        self.assertIs(lifecycle.GA_PREWARM_ENABLED, True)
 
     def test_generic_runtime_error_returns_start_failed(self) -> None:
         """A RuntimeError whose message matches neither memory nor active-crew → blocked:start-failed."""

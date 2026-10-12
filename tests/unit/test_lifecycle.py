@@ -2055,8 +2055,8 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         self.assertEqual(result.get("pre_warm_status"), "warmed")
         self.assertEqual(result.get("pre_warm_task_id"), "abc123")
 
-    def test_finish_crew_setup_skips_prewarm_when_disabled(self) -> None:
-        """_finish_crew_setup skips _prewarm_crew when GA_PREWARM_ENABLED=false."""
+    def test_finish_crew_setup_always_calls_prewarm(self) -> None:
+        """_finish_crew_setup always calls _prewarm_crew (GA_PREWARM_ENABLED gate removed, TRN-213)."""
         inject_policy_calls: list = []
         admiral_secret_calls: list = []
 
@@ -2066,12 +2066,10 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
             prewarm_calls.append(crew_id)
             return {"status": "warmed"}
 
-        with patch.object(lifecycle, "GA_PREWARM_ENABLED", False), \
-             patch.object(lifecycle, "_prewarm_crew", side_effect=fake_prewarm):
+        with patch.object(lifecycle, "_prewarm_crew", side_effect=fake_prewarm):
             _, result = self._run_finish_crew_setup(inject_policy_calls, admiral_secret_calls)
 
-        self.assertEqual(prewarm_calls, [], "_prewarm_crew must not be called when disabled")
-        self.assertNotIn("pre_warm_status", result)
+        self.assertEqual(prewarm_calls, ["demo"], "_prewarm_crew must always be called")
 
     def test_finish_crew_setup_prewarm_failure_is_nonfatal(self) -> None:
         """A prewarm error must not prevent launch from succeeding."""

@@ -91,8 +91,8 @@ GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 # GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
 GA_DASHBOARD_PORT_RANGE_SIZE=64
-GA_COMPOSE_RETRY_ATTEMPTS=3     # retries on transient compose up failure (min 1)
-GA_COMPOSE_RETRY_DELAY_SECS=2   # sleep between retries in seconds
+_COMPOSE_RETRY_ATTEMPTS=3     # retries on transient compose up failure (hardcoded)
+_COMPOSE_RETRY_DELAY_SECS=2   # sleep between retries in seconds (hardcoded)
 # ── Client-only install ──────────────────────────────────────────────────────
 # --client-only wires the ghostship CLI + agent harnesses to a (usually remote)
 # transport WITHOUT running any container-infrastructure steps. --url selects
@@ -237,14 +237,31 @@ if [[ "$CLIENT_ONLY" == "true" ]]; then
   exit 0
 fi
 
-# Normalise GA_AGENT_BACKENDS once; the same value drives the image build
+# ── Agent backend consolidation (TRN-213) ────────────────────────────────────
+# GA_CREW_AGENT replaces GA_AGENT_BACKENDS + GA_CREW_ACP_BACKEND.
+# Deprecated alias handling: map old vars to GA_CREW_AGENT with a warning.
+if [[ -n "${GA_AGENT_BACKENDS:-}" ]]; then
+  echo "  WARNING: GA_AGENT_BACKENDS is deprecated — use GA_CREW_AGENT instead." >&2
+  echo "  Mapping GA_AGENT_BACKENDS=${GA_AGENT_BACKENDS} → GA_CREW_AGENT for this run." >&2
+  if [[ -z "${GA_CREW_AGENT:-}" || "${GA_CREW_AGENT}" == "kiro" ]]; then
+    GA_CREW_AGENT="${GA_AGENT_BACKENDS}"
+  fi
+fi
+if [[ -n "${GA_CREW_ACP_BACKEND:-}" && "${GA_CREW_ACP_BACKEND}" != "kiro" ]]; then
+  echo "  WARNING: GA_CREW_ACP_BACKEND is deprecated — use GA_CREW_AGENT instead." >&2
+  echo "  Mapping GA_CREW_ACP_BACKEND=${GA_CREW_ACP_BACKEND} → GA_CREW_AGENT for this run." >&2
+  if [[ -z "${GA_CREW_AGENT:-}" || "${GA_CREW_AGENT}" == "kiro" ]]; then
+    GA_CREW_AGENT="${GA_CREW_ACP_BACKEND}"
+  fi
+fi
+
+# Normalise GA_CREW_AGENT once; the same value drives the image build
 # (AGENT_TOOLCHAINS) and the transport environment. Fail before any build on
-# an unknown name or a default backend that isn't enabled, so a bad config
-# doesn't cost a full build and a restart loop.
-AGENT_TOOLCHAINS="$(agent_backends_normalise "$GA_AGENT_BACKENDS")" || exit 1
+# an unknown name, so a bad config doesn't cost a full build and a restart loop.
+# GA_CREW_AGENT is comma-separated; first entry is the runtime default.
+AGENT_TOOLCHAINS="$(agent_backends_normalise "${GA_CREW_AGENT:-kiro}")" || exit 1
 agent_backends_validate "$AGENT_TOOLCHAINS" "$GHOSTSHIP_DIR/crews/spec-ops/toolchains" || exit 1
-agent_backends_check_default "$GA_CREW_ACP_BACKEND" "$AGENT_TOOLCHAINS" "$GHOSTSHIP_DIR/crews/spec-ops/toolchains" || exit 1
-echo "✓ Agent backends: kiro${AGENT_TOOLCHAINS:+,$AGENT_TOOLCHAINS} (default: ${GA_CREW_ACP_BACKEND})"
+echo "✓ Agent backend: ${GA_CREW_AGENT:-kiro} (runtime default: $(echo "${GA_CREW_AGENT:-kiro}" | cut -d',' -f1))"
 
 if [[ -z "${KIRO_IDENTITY_PROVIDER:-}" && -t 0 ]]; then
   read -rp "kiro-cli identity provider URL (blank = default Builder ID login): " KIRO_IDENTITY_PROVIDER
@@ -780,6 +797,33 @@ fi
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and
 # not committed to the repo. start.sh and uninstall.sh both read it.
 
+# ── Pre-compose validation: GA_ORDERS_DIR ────────────────────────────────────
+if [[ -n "${GA_ORDERS_DIR:-}" ]]; then
+  if [[ "${GA_ORDERS_DIR}" != /* ]]; then
+    echo "✗ GA_ORDERS_DIR=${GA_ORDERS_DIR} is not an absolute path. Set it to an absolute path or leave it unset." >&2
+    exit 1
+  fi
+  if [[ ! -e "${GA_ORDERS_DIR}" ]]; then
+    echo "  WARNING: GA_ORDERS_DIR=${GA_ORDERS_DIR} does not exist. The directory will be bind-mounted at runtime; ensure it exists before starting ga-transport." >&2
+  fi
+fi
+
+# ── Pre-compose validation: TLS cert/key ─────────────────────────────────────
+if [[ -n "${GA_TLS_CERTFILE:-}" ]] || [[ -n "${GA_TLS_KEYFILE:-}" ]]; then
+  if [[ -z "${GA_TLS_CERTFILE:-}" ]] || [[ -z "${GA_TLS_KEYFILE:-}" ]]; then
+    echo "✗ GA_TLS_CERTFILE and GA_TLS_KEYFILE must both be set or both be unset." >&2
+    exit 1
+  fi
+  _cert_dir="$(dirname "${GA_TLS_CERTFILE}")"
+  _key_dir="$(dirname "${GA_TLS_KEYFILE}")"
+  if [[ "${_cert_dir}" != "${_key_dir}" ]]; then
+    echo "✗ GA_TLS_CERTFILE and GA_TLS_KEYFILE must be in the same parent directory." >&2
+    echo "  Cert: ${GA_TLS_CERTFILE} (dir: ${_cert_dir})" >&2
+    echo "  Key:  ${GA_TLS_KEYFILE} (dir: ${_key_dir})" >&2
+    exit 1
+  fi
+fi
+
 # Pre-compute UI port range end for the compose template.
 _DASHBOARD_PORT_START="${GA_DASHBOARD_PORT_RANGE_START:-64058}"
 _DASHBOARD_PORT_END=$(( _DASHBOARD_PORT_START + ${GA_DASHBOARD_PORT_RANGE_SIZE:-64} - 1 ))
@@ -812,6 +856,8 @@ services:
       - ${DATA_DIR}/academy/mcp:/mcp:ro
       - ${DATA_DIR}/crews:/crews:ro
       - ${PODMAN_SOCK}:${PODMAN_SOCK}
+$(if [[ -n "${GA_ORDERS_DIR:-}" ]]; then printf '      - %s:/mnt/orders:ro\n' "${GA_ORDERS_DIR}"; fi)
+$(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(dirname "${GA_TLS_CERTFILE}")"; fi)
     environment:
       PODMAN_SOCKET: ${PODMAN_SOCK}
       HOST: ${HOST:-0.0.0.0}
@@ -821,11 +867,9 @@ services:
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
       GA_IDLE_TIMEOUT_SECS: "${GA_IDLE_TIMEOUT_SECS:-300}"
       GA_SUBAGENT_TIMEOUT_SECS: "${GA_SUBAGENT_TIMEOUT_SECS:-3600}"
-      GA_SUBAGENT_MAX_TURNS: "${GA_SUBAGENT_MAX_TURNS:-200}"
       GA_BATCH_MAX_TASKS: "${GA_BATCH_MAX_TASKS:-20}"
       GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
-      GA_CREW_ACP_BACKEND: "${GA_CREW_ACP_BACKEND:-kiro}"
       # Model backend keys (GA_CREW_ANTHROPIC_API_KEY, GA_CREW_OPENAI_API_KEY)
       # and KIRO_API_KEY are NOT passed as environment values here — they are
       # delivered to the transport as Podman secrets mounted under /run/secrets
@@ -833,7 +877,6 @@ services:
       # this compose file (secret-delivery-hardening). Only the non-secret base
       # URLs remain in the environment.
       GA_CREW_ANTHROPIC_BASE_URL: "${GA_CREW_ANTHROPIC_BASE_URL:-}"
-      GA_AGENT_BACKENDS: "${AGENT_TOOLCHAINS}"
       GA_CREW_OPENAI_BASE_URL: "${GA_CREW_OPENAI_BASE_URL:-}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
@@ -846,10 +889,8 @@ services:
       GA_RESOURCE_CRITICAL_GB: "${GA_RESOURCE_CRITICAL_GB:-1.0}"
       GA_GIT_AUTHOR_NAME: "${GA_GIT_AUTHOR_NAME:-}"
       GA_GIT_AUTHOR_EMAIL: "${GA_GIT_AUTHOR_EMAIL:-}"
-      GA_ENABLE_SECURITY_HEADERS: "${GA_ENABLE_SECURITY_HEADERS:-1}"
-      GA_TLS_MIN_VERSION: "${GA_TLS_MIN_VERSION:-1.2}"
-      GA_TLS_CERTFILE: "${GA_TLS_CERTFILE:-}"
-      GA_TLS_KEYFILE: "${GA_TLS_KEYFILE:-}"
+      GA_TLS_CERTFILE: "$(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then echo "/mnt/tls/$(basename "${GA_TLS_CERTFILE}")"; else echo ""; fi)"
+      GA_TLS_KEYFILE: "$(if [[ -n "${GA_TLS_KEYFILE:-}" ]]; then echo "/mnt/tls/$(basename "${GA_TLS_KEYFILE}")"; else echo ""; fi)"
       GA_RATE_LIMIT_ENABLED: "${GA_RATE_LIMIT_ENABLED:-true}"
       GA_RATE_LIMIT_LOGIN_GET: "${GA_RATE_LIMIT_LOGIN_GET:-30:60}"
       GA_RATE_LIMIT_LOGIN_POST: "${GA_RATE_LIMIT_LOGIN_POST:-5:300}"
@@ -862,7 +903,7 @@ services:
       GA_PORTAL_TLS_MODE: "${GA_PORTAL_TLS_MODE:-off}"
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
-      GA_ORDERS_DIR: "${GA_ORDERS_DIR:-}"
+      GA_ORDERS_DIR: "$(if [[ -n "${GA_ORDERS_DIR:-}" ]]; then echo "/mnt/orders"; else echo ""; fi)"
       GA_REQUIRE_API_KEY: "${GA_REQUIRE_API_KEY:-warn}"
     secrets:
       - ga-transport-secret
@@ -1070,10 +1111,9 @@ eval "${_COMPOSE_ENV} podman rm -f ga-portal" >/dev/null 2>&1 || true
 
 # Retry loop: transient port conflicts (e.g. macOS ephemeral range overlap with
 # the dashboard port space) are typically released within a second or two.
-# GA_COMPOSE_RETRY_ATTEMPTS (default 3, min 1) and GA_COMPOSE_RETRY_DELAY_SECS
-# (default 2) are configurable via ghostship.conf.
-_compose_attempts="${GA_COMPOSE_RETRY_ATTEMPTS:-3}"
-_compose_delay="${GA_COMPOSE_RETRY_DELAY_SECS:-2}"
+# _COMPOSE_RETRY_ATTEMPTS (3) and _COMPOSE_RETRY_DELAY_SECS (2) are hardcoded.
+_compose_attempts="${_COMPOSE_RETRY_ATTEMPTS}"
+_compose_delay="${_COMPOSE_RETRY_DELAY_SECS}"
 # Guard: treat 0 or non-integer as 1
 if ! [[ "${_compose_attempts}" =~ ^[1-9][0-9]*$ ]]; then
   echo "  WARNING: GA_COMPOSE_RETRY_ATTEMPTS='${_compose_attempts}' is not a positive integer — using 1" >&2

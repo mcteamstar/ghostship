@@ -39,12 +39,6 @@ class TestConfigEnvIntErrors(unittest.TestCase):
     def test_ga_subagent_timeout_secs_invalid(self):
         self._assert_config_error("GA_SUBAGENT_TIMEOUT_SECS", "inf")
 
-    def test_ga_subagent_max_turns_invalid(self):
-        self._assert_config_error("GA_SUBAGENT_MAX_TURNS", "lots")
-
-    def test_ga_prewarm_ttl_secs_invalid(self):
-        self._assert_config_error("GA_PREWARM_TTL_SECS", "fast")
-
     def test_ga_dashboard_port_range_start_invalid(self):
         self._assert_config_error("GA_DASHBOARD_PORT_RANGE_START", "high")
 
@@ -122,10 +116,10 @@ class TestConfigEnvValidValues(unittest.TestCase):
         # Clear all numeric vars to ensure defaults apply
         vars_to_clear = [
             "PORT", "GA_MAX_CREWS", "GA_MAX_ACTIVE_CREWS", "GA_IDLE_TIMEOUT_SECS",
-            "GA_SUBAGENT_TIMEOUT_SECS", "GA_SUBAGENT_MAX_TURNS",
+            "GA_SUBAGENT_TIMEOUT_SECS",
             "GA_MIN_FREE_MEM_GB", "GA_SPAWN_MIN_MEMORY_GB",
             "GA_RESOURCE_PRESSURE_GB", "GA_RESOURCE_CRITICAL_GB",
-            "GA_PREWARM_TTL_SECS", "GA_DASHBOARD_PORT_RANGE_START",
+            "GA_DASHBOARD_PORT_RANGE_START",
             "GA_DASHBOARD_PORT_RANGE_SIZE",
             "GA_PORTAL_SESSION_TTL_SECS",
         ]
@@ -176,29 +170,21 @@ class TestConfigKcBaseImage(unittest.TestCase):
 
 
 class TestConfigPrewarmDefaults(unittest.TestCase):
-    """GA_PREWARM_ENABLED defaults to False and GA_PREWARM_TTL_SECS defaults to 300."""
+    """Prewarm TTL is hardcoded to 300 in lifecycle.py (TRN-213).
 
-    def test_ga_prewarm_enabled_default_off(self) -> None:
-        """GA_PREWARM_ENABLED is False when unset — the demote invariant."""
-        env = {k: v for k, v in __import__("os").environ.items()
-               if k != "GA_PREWARM_ENABLED"}
-        with patch.dict("os.environ", env, clear=True):
-            cfg = Config.from_env()
-        self.assertIs(cfg.ga_prewarm_enabled, False)
+    GA_PREWARM_ENABLED and GA_PREWARM_TTL_SECS are no longer Config fields —
+    they were hardcoded in TRN-213. These tests verify the module constants.
+    """
 
-    def test_ga_prewarm_enabled_on_when_explicitly_set(self) -> None:
-        """GA_PREWARM_ENABLED=1 enables prewarm."""
-        with patch.dict("os.environ", {"GA_PREWARM_ENABLED": "1"}):
-            cfg = Config.from_env()
-        self.assertIs(cfg.ga_prewarm_enabled, True)
+    def test_ga_prewarm_ttl_module_constant(self) -> None:
+        """_PREWARM_TTL_SECS is hardcoded to 300 in lifecycle.py."""
+        import transport.lifecycle as _lifecycle
+        self.assertEqual(_lifecycle._PREWARM_TTL_SECS, 300)
 
-    def test_ga_prewarm_ttl_secs_default(self) -> None:
-        """GA_PREWARM_TTL_SECS defaults to 300 when unset."""
-        env = {k: v for k, v in __import__("os").environ.items()
-               if k != "GA_PREWARM_TTL_SECS"}
-        with patch.dict("os.environ", env, clear=True):
-            cfg = Config.from_env()
-        self.assertEqual(cfg.ga_prewarm_ttl_secs, 300)
+    def test_ga_prewarm_enabled_module_constant(self) -> None:
+        """GA_PREWARM_ENABLED is True (gate removed) in lifecycle.py."""
+        import transport.lifecycle as _lifecycle
+        self.assertIs(_lifecycle.GA_PREWARM_ENABLED, True)
 
 
 class TestConfigTLSDefault(unittest.TestCase):

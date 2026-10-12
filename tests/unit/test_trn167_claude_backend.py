@@ -34,53 +34,53 @@ import transport.server as _server       # noqa: E402
 
 
 class TestAcpBackendConfigValidation(unittest.TestCase):
-    """GA_CREW_ACP_BACKEND validation: invalid value → startup ConfigError."""
+    """GA_CREW_AGENT config validation (TRN-213: consolidated from GA_CREW_ACP_BACKEND + GA_AGENT_BACKENDS)."""
 
     def test_invalid_value_raises_config_error(self) -> None:
-        """Unrecognised GA_CREW_ACP_BACKEND value raises ConfigError at from_env()."""
-        with patch.dict("os.environ", {"GA_CREW_ACP_BACKEND": "openai"}):
+        """Unrecognised GA_CREW_AGENT value raises ConfigError at from_env()."""
+        with patch.dict("os.environ", {"GA_CREW_AGENT": "openai"}):
             with self.assertRaises(ConfigError) as ctx:
                 Config.from_env()
-        self.assertIn("GA_CREW_ACP_BACKEND", str(ctx.exception))
+        self.assertIn("GA_CREW_AGENT", str(ctx.exception))
         self.assertIn("openai", str(ctx.exception))
 
     def test_invalid_value_is_config_error_subclass(self) -> None:
         """ConfigError is a ValueError subclass — existing bare ValueError catches still work."""
-        with patch.dict("os.environ", {"GA_CREW_ACP_BACKEND": "bogus"}):
+        with patch.dict("os.environ", {"GA_CREW_AGENT": "bogus"}):
             with self.assertRaises(ValueError):
                 Config.from_env()
 
     def test_kiro_backend_is_valid(self) -> None:
-        with patch.dict("os.environ", {"GA_CREW_ACP_BACKEND": "kiro"}):
+        with patch.dict("os.environ", {"GA_CREW_AGENT": "kiro"}):
             cfg = Config.from_env()
-        self.assertEqual(cfg.ga_crew_acp_backend, "kiro")
+        self.assertIn("kiro", cfg.ga_crew_agent)
 
     def test_claude_backend_is_valid_with_key(self) -> None:
         env = {
-            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
+            "GA_CREW_AGENT": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test123",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
-        self.assertEqual(cfg.ga_crew_acp_backend, "claude")
+        self.assertIn("claude", cfg.ga_crew_agent)
 
     def test_default_backend_is_kiro(self) -> None:
-        # Clear GA_CREW_ACP_BACKEND to exercise the default.
+        # Clear GA_CREW_AGENT to exercise the default.
         clean = {k: v for k, v in __import__("os").environ.items()
-                 if k not in ("GA_CREW_ACP_BACKEND",)}
+                 if k not in ("GA_CREW_AGENT", "GA_CREW_ACP_BACKEND")}
         with patch.dict("os.environ", clean, clear=True):
             cfg = Config.from_env()
-        self.assertEqual(cfg.ga_crew_acp_backend, "kiro")
+        self.assertEqual(cfg.ga_crew_agent, "kiro")
 
     def test_claude_without_api_key_no_longer_fails_validate(self) -> None:
-        """TRN-170: GA_CREW_ACP_BACKEND=claude + no API key no longer raises ConfigError.
+        """TRN-170: GA_CREW_AGENT=claude + no API key no longer raises ConfigError.
 
         Config.validate() is now a no-op — the credential requirement is enforced
         lazily at launch() time so operators can start the transport before
         authenticating via Claude OAuth.
         """
         env = {
-            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
+            "GA_CREW_AGENT": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
@@ -90,29 +90,23 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
 
     def test_kiro_backend_validate_passes_without_api_key(self) -> None:
         """validate() does not raise for kiro backend even without an Anthropic key."""
-        with patch.dict("os.environ", {"GA_CREW_ACP_BACKEND": "kiro",
+        with patch.dict("os.environ", {"GA_CREW_AGENT": "kiro",
                                         "GA_CREW_ANTHROPIC_API_KEY": ""}):
             cfg = Config.from_env()
         cfg.validate()  # must not raise
 
     def test_retired_include_claude_flag_rejected(self) -> None:
-        """TRN-202: GA_INCLUDE_CLAUDE_AGENT is retired in favour of GA_AGENT_BACKENDS."""
+        """TRN-202: GA_INCLUDE_CLAUDE_AGENT is retired in favour of GA_CREW_AGENT (TRN-213)."""
         with patch.dict("os.environ", {"GA_INCLUDE_CLAUDE_AGENT": "true"}):
             with self.assertRaises(ConfigError) as ctx:
                 Config.from_env()
         self.assertIn("GA_INCLUDE_CLAUDE_AGENT", str(ctx.exception))
-        self.assertIn("GA_AGENT_BACKENDS", str(ctx.exception))
+        self.assertIn("GA_CREW_AGENT", str(ctx.exception))
 
     def test_validate_called_no_longer_raises_when_claude_without_key(self) -> None:
-        """TRN-170: Config.validate() is now a no-op for missing API key.
-
-        The startup ConfigError for GA_CREW_ACP_BACKEND=claude without API key
-        was removed in TRN-170 — the transport can start before Claude OAuth
-        authentication completes. The credential requirement is enforced lazily
-        at launch() time instead.
-        """
+        """TRN-170: Config.validate() is now a no-op for missing API key."""
         env = {
-            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
+            "GA_CREW_AGENT": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
@@ -123,7 +117,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
     def test_validate_called_passes_when_key_present(self) -> None:
         """Config.validate() does not raise when claude backend has an API key."""
         env = {
-            "GA_CREW_ACP_BACKEND": "claude", "GA_AGENT_BACKENDS": "claude",
+            "GA_CREW_AGENT": "claude",
             "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test-validate",
         }
         with patch.dict("os.environ", env):
