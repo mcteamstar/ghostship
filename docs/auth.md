@@ -107,17 +107,60 @@ UNAUTHENTICATED  ──[POST /login]──►  PENDING  ──[GET /login → co
 
 ---
 
-## Claude OAuth login (TRN-170)
+## Claude headless auth (recommended)
+
+`ga-claude-auth` is a tar archive of `~/.claude/` (the credential directory written
+by the `claude` CLI), stored at `DATA_DIR/ga-claude-auth` (mode `0600`).
+
+This is the recommended path for headless and server deployments. A single API call
+runs `claude setup-token` inside the login container, captures the resulting
+long-lived token, and stores it — no browser redirect, no code submission, no
+short-TTY refresh cycle.
+
+### Prerequisites
+
+Same as OAuth: enable the Claude backend by adding `claude` to `GA_CREW_AGENT`
+in your `ghostship.conf` and re-run `ghostship install`.
+
+### Authenticate
+
+```bash
+curl -sX POST http://localhost:64057/login/claude/setup-token \
+  -H 'Authorization: Bearer <GA_API_KEY>'
+```
+
+```json
+{"status": "complete"}
+```
+
+That's it. The credential is stored as `ga-claude-auth` and will be injected into
+every new crew at launch.
+
+### Headless auth API
+
+One HTTP endpoint. Requires `Authorization: Bearer <key>` when `GA_API_KEY` is set.
+Available only while `claude` is in `GA_CREW_AGENT`.
+
+**`POST /login/claude/setup-token`** — runs `claude setup-token` synchronously inside
+a `ga-claude-login-*` container and writes the resulting credential to `ga-claude-auth`.
+Returns `{"status": "complete"}` on success.
+Returns 409 if already authenticated or an OAuth flow is in progress.
+Returns 400 if claude is not an enabled backend.
+
+---
+
+## Claude OAuth login (interactive)
 
 `ga-claude-auth` is a tar archive of `~/.claude/` (the credential directory written
 by the `claude` CLI), stored at `DATA_DIR/ga-claude-auth` (mode `0600`).
 
 This path is an alternative to `GA_CREW_ANTHROPIC_API_KEY` for operators with a
 Claude Pro/Max subscription who prefer not to maintain a separate API-tier account.
+For unattended or server deployments, prefer the headless auth path above.
 
 ### Prerequisites
 
-1. Enable the Claude backend: add `claude` to `GA_AGENT_BACKENDS` in your
+1. Enable the Claude backend: add `claude` to `GA_CREW_AGENT` in your
    `ghostship.conf` and re-run `ghostship install`, which builds the `claude` CLI
    into the crew image.
 2. To make Claude the default for new crews, also set `GA_CREW_ACP_BACKEND=claude`.
@@ -175,7 +218,10 @@ injected at setup time.
 
 ### Re-authenticate
 
-Claude OAuth tokens may expire. To refresh:
+Claude OAuth tokens obtained via this flow may expire. Tokens obtained via
+`POST /login/claude/setup-token` (headless auth) do not have this limitation.
+
+To refresh an OAuth token:
 
 ```bash
 # Clear the old credential
@@ -203,7 +249,7 @@ takes precedence. OAuth credentials are only used when the API key is unset.
 ### Claude OAuth API
 
 Four HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
-`GA_API_KEY` is set. Available only while `claude` is in `GA_AGENT_BACKENDS`; otherwise `POST /login/claude` and `POST /login/claude/code` return 400 naming `GA_AGENT_BACKENDS`. Logout always works.
+`GA_API_KEY` is set. Available only while `claude` is in `GA_CREW_AGENT`; otherwise `POST /login/claude` and `POST /login/claude/code` return 400 naming `GA_CREW_AGENT`. Logout always works.
 
 ```
 UNAUTHENTICATED  ──[POST /login/claude]──►  PENDING  ──[POST /login/claude/code]──►  CODE SUBMITTED  ──[GET /login/claude → complete]──►  AUTHENTICATED
@@ -241,7 +287,7 @@ ChatGPT subscription who prefer not to maintain a separate API-tier account.
 
 ### Prerequisites
 
-1. Enable the Codex backend: add `codex` to `GA_AGENT_BACKENDS` in your
+1. Enable the Codex backend: add `codex` to `GA_CREW_AGENT` in your
    `ghostship.conf` and re-run `ghostship install`, which builds the `codex-acp`
    adapter into the crew image (ONE package — it ships its own Codex binary).
 2. To make Codex the default for new crews, also set `GA_CREW_ACP_BACKEND=codex`.
@@ -310,7 +356,7 @@ takes precedence. OAuth credentials are only used when the API key is unset.
 ### Codex OAuth API
 
 Three HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
-`GA_API_KEY` is set. Available only while `codex` is in `GA_AGENT_BACKENDS`; otherwise `POST /login/codex` returns 400 naming `GA_AGENT_BACKENDS`. Logout always works.
+`GA_API_KEY` is set. Available only while `codex` is in `GA_CREW_AGENT`; otherwise `POST /login/codex` returns 400 naming `GA_CREW_AGENT`. Logout always works.
 
 ```
 UNAUTHENTICATED  ──[POST /login/codex]──►  PENDING  ──[GET /login/codex → complete]──►  AUTHENTICATED
@@ -321,7 +367,7 @@ UNAUTHENTICATED  ──[POST /login/codex]──►  PENDING  ──[GET /login/
 **`POST /login/codex`** — starts the Codex OAuth login flow inside an ephemeral
 `ga-codex-login-*` container. Returns `{"status": "pending", "login_url": "..."}`.
 Returns 409 if already authenticated or a flow is in progress, and 400 if
-`codex` is not in `GA_AGENT_BACKENDS`.
+`codex` is not in `GA_CREW_AGENT`.
 
 **`GET /login/codex`** — polls completion. On success writes `ga-codex-auth` and
 returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
