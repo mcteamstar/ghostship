@@ -90,6 +90,11 @@ three pending-login dicts and expires any that have exceeded their TTL. Wire it 
 existing periodic maintenance path (the startup sweep already in `lifecycle.py` around
 line 1581, or a new lightweight timer).
 
+**Note:** TRN-205 added `POST /logout` aborting a pending login flow, giving operators a
+manual escape hatch from the stuck-pending state. The sweep is still valuable — it fires
+automatically without operator intervention, important for unattended installs (e.g.
+starport) where a leaked login container may run for hours unnoticed.
+
 **Expiry TTLs:**
 | Backend | Proposed TTL | Rationale |
 |---------|-------------|-----------|

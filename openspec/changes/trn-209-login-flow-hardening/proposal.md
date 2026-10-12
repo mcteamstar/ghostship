@@ -13,7 +13,7 @@ The login flows share a PTY helper and per-backend state that lose output, never
 | Severity | Finding | Where | Who | Status |
 |---|---|---|---|---|
 | High | PTY bytes received in the same chunk as the 101 upgrade headers are discarded, so the login URL is lost intermittently (kiro, Claude, Codex). No socket timeout. | `podman.py:371-396` | T, Q | Reproduced with a fake socket |
-| High | Kiro and Codex logins never expire: an abandoned flow keeps its container and returns 409 until restart. Claude's expiry only runs when someone polls (seen live: a container ran two hours). | `lifecycle.py:2375`, `:2896`; `server.py:1553`, `:1971` | Q, T, live | Reproduced (Claude poll-only); read (kiro, Codex) |
+| High | Kiro and Codex logins never expire: an abandoned flow keeps its container and returns 409 until restart. Claude's expiry only runs when someone polls (seen live: a container ran two hours). **Partially mitigated by TRN-205** (POST /logout now aborts a pending flow — operators can manually unstick without restarting), but automatic expiry is still missing. | `lifecycle.py:2375`, `:2896`; `server.py:1553`, `:1971` | Q, T, live | Reproduced (Claude poll-only); read (kiro, Codex) |
 | Medium | Codex device-code regex matches prose: "The code will expire…" yields `will`. | `lifecycle.py:3004` | T | Reproduced |
 | Low | `sendall` on the Claude PTY under `_claude_login_pending_lock` on a blocking socket; a failed prompt answer is swallowed and reported as a URL timeout. | `lifecycle.py:2664`, `:2281` | Q | Read only |
 | Related | Claude OAuth refresh-token rotation leaves `ga-claude-auth` stale after the first crew refresh. Tracked separately; design owned by the Admiral. | `lifecycle.py` `_inject_claude_auth` | live | Strong evidence, not proven |
