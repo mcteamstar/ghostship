@@ -21,7 +21,7 @@ The platform detection and config resolution logic already exists in `start.sh` 
 
 ## Decisions
 
-**Read config before stopping** — `cmd_stop` needs `GA_MACHINE_NAME` and `GA_DEDICATED_MACHINE`. These live in `ghostship.conf`. The CLI already has `_load_config()` used by other commands — reuse it, defaulting to the same candidate paths as `start.sh`.
+**Read config before stopping** — `cmd_stop` needs `GA_MACHINE_NAME` and `GA_DEDICATED_MACHINE`. These are read from the environment via `os.environ.get()` — the same pattern `_podman_cmd()` already uses. No config-file loading is needed; `install.sh` writes these into the compose environment, and operators who set them in `ghostship.conf` will have them sourced before calling `ghostship stop`.
 
 **Platform detection in Python** — `platform.system()` gives `"Darwin"` or `"Linux"`. Mirror the `start.sh` logic directly.
 
