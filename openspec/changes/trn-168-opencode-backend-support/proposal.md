@@ -4,10 +4,10 @@ KiroCrew 0.7.0 shipped OpenCode as a selectable agent backend, removing the bloc
 
 ## What Changes
 
-- `GA_AGENT_BACKENDS` validation extended to accept `opencode` as a valid name alongside `kiro`, `claude`, and `codex`
-- New toolchain script `crews/spec-ops/toolchains/opencode.sh` — installs the `opencode` binary, configures the provider API key via env var
-- `scripts/install.sh` updated to handle `opencode` in `GA_AGENT_BACKENDS` (warn on inert settings, reject retired flags)
-- `crews/spec-ops/Containerfile` updated to install opencode binary in the crew image when `opencode` is in `GA_AGENT_BACKENDS`
+- `GA_CREW_AGENT` validation extended to accept `opencode` as a valid name alongside `kiro`, `claude`, and `codex` (TRN-213 consolidated `GA_AGENT_BACKENDS` + `GA_CREW_ACP_BACKEND` into `GA_CREW_AGENT`)
+- New toolchain script `crews/spec-ops/toolchains/opencode.sh` — installs the `opencode` binary
+- `scripts/install.sh` updated to handle `opencode` in `GA_CREW_AGENT` (warn on inert settings, reject retired flags)
+- `crews/spec-ops/Containerfile` updated to install opencode binary in the crew image when `opencode` is in `GA_CREW_AGENT`
 - `scripts/lib/agent_backends.sh` updated to recognise `opencode`
 - `docs/configuration.md` updated with `opencode` backend documentation
 - `docs/auth.md` updated for any API key / auth differences
@@ -27,7 +27,7 @@ OpenCode notes (from KiroCrew docs):
 
 ### Modified Capabilities
 
-- `agent-backends`: Extend `GA_AGENT_BACKENDS` valid names to include `opencode`; add inert-setting warnings for OpenCode credentials when disabled; extend install.sh validation
+- `agent-backends`: Extend `GA_CREW_AGENT` valid names to include `opencode`; add inert-setting warnings for OpenCode credentials when disabled; extend install.sh validation
 
 ## Impact
 

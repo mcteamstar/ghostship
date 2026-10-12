@@ -3,9 +3,11 @@
 Ghostship already supports two optional backends alongside kiro: Claude (added TRN-202) and Codex (added TRN-202). Both follow the same pattern:
 
 1. A toolchain shell script (`crews/spec-ops/toolchains/<backend>.sh`) installs the ACP adapter package(s) at image build time.
-2. `scripts/lib/agent_backends.sh` recognises the backend name in `GA_AGENT_BACKENDS`.
-3. `transport/config.py` validates the backend name and provides login routes.
+2. `scripts/lib/agent_backends.sh` recognises the backend name in `GA_CREW_AGENT`.
+3. `transport/config.py` validates the backend name via `_parse_ga_crew_agent()` and provides login routes.
 4. At crew launch, stored credentials are mounted into the crew container.
+
+**Note (TRN-213):** `GA_AGENT_BACKENDS` and `GA_CREW_ACP_BACKEND` were consolidated into a single `GA_CREW_AGENT` var. `GA_CREW_AGENT` is now the single operator-facing config for both build-time toolchain selection and runtime backend selection. `GA_AGENT_BACKENDS` is a deprecated alias in `install.sh` only (with a warning); `parse_agent_backends()` in `config.py` is a deprecated alias for the parity test. New code should use `GA_CREW_AGENT` and `_parse_ga_crew_agent()` exclusively.
 
 OpenCode follows the **Claude pattern** (login flow + stored credential file), not the Codex pattern (API key via env var):
 
@@ -19,7 +21,7 @@ See proposal.md for motivation.
 ## Goals / Non-Goals
 
 **Goals:**
-- Add `opencode` as a valid `GA_AGENT_BACKENDS` name
+- Add `opencode` as a valid `GA_CREW_AGENT` name
 - Install the `opencode-ai` npm package in the spec-ops image when enabled
 - Provide a login flow to capture `ga-opencode-auth` credentials
 - Mount credentials into the crew container at launch
