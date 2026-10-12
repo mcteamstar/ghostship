@@ -4,14 +4,14 @@
 
 ### Requirement: Claude credential injected into crew containers at launch
 
-When `GA_CREW_ACP_BACKEND=claude`, `ga-claude-auth` exists, and neither `GA_CREW_ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is set, the transport SHALL inject the Claude credential into each new crew container's `~/.claude/` directory during setup, so `claude-agent-acp` can authenticate without an API key.
+When `GA_CREW_ACP_BACKEND=claude`, `ga-claude-auth` exists, and neither `ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is set, the transport SHALL inject the Claude credential into each new crew container's `~/.claude/` directory during setup, so `claude-agent-acp` can authenticate without an API key.
 
 #### Scenario: OAuth credential injected at crew setup
-- **WHEN** a crew is launched with `GA_CREW_ACP_BACKEND=claude`, `ga-claude-auth` is present, and neither `GA_CREW_ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is set
+- **WHEN** a crew is launched with `GA_CREW_ACP_BACKEND=claude`, `ga-claude-auth` is present, and neither `ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is set
 - **THEN** the Claude credential is written into the crew container's `~/.claude/` before the gateway starts; no `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` env var is injected
 
 #### Scenario: API key path unaffected when GA_CREW_ANTHROPIC_API_KEY is set
-- **WHEN** a crew is launched with `GA_CREW_ACP_BACKEND=claude` and `GA_CREW_ANTHROPIC_API_KEY` is set (regardless of `ga-claude-auth` presence)
+- **WHEN** a crew is launched with `GA_CREW_ACP_BACKEND=claude` and `ANTHROPIC_API_KEY` is set (regardless of `ga-claude-auth` presence)
 - **THEN** the API key env var path takes precedence; OAuth credential injection is skipped
 
 #### Scenario: OAuth credential injection skipped when the OAuth token is set

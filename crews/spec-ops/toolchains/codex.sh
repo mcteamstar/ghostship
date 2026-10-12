@@ -13,7 +13,7 @@
 #   ~/.codex/auth.json  (relocatable via the CODEX_HOME env var).
 # Two auth paths are supported:
 #   - API key: the OPENAI_API_KEY env var (injected at crew-container creation
-#     from GA_CREW_OPENAI_API_KEY) authenticates without any login flow.
+#     from OPENAI_API_KEY) authenticates without any login flow.
 #   - OAuth (ChatGPT subscription): a device / browser sign-in that writes
 #     ~/.codex/auth.json. ghostship drives this in an ephemeral
 #     ga-codex-login-* container (spec-ops image), captures the resulting

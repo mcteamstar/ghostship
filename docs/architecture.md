@@ -287,7 +287,7 @@ When `GA_CREW_ACP_BACKEND=codex`, the Codex ACP adapter (`codex-acp`) runs insid
 
 ### Codex backend external network requirement (TRN-172)
 
-Crews running with `GA_CREW_ACP_BACKEND=codex` require outbound HTTPS access to **`api.openai.com`** (or the endpoint configured via `GA_CREW_OPENAI_BASE_URL`). The transport emits a `WARNING`-level log entry naming the effective endpoint at every `launch()` call when the Codex backend is selected. Deployments with egress firewalls must add `api.openai.com:443` (or the configured base URL's host) to their allow list before launching Codex-backend crews.
+Crews running with `GA_CREW_ACP_BACKEND=codex` require outbound HTTPS access to **`api.openai.com`** (or the endpoint configured via `OPENAI_BASE_URL`). The transport emits a `WARNING`-level log entry naming the effective endpoint at every `launch()` call when the Codex backend is selected. Deployments with egress firewalls must add `api.openai.com:443` (or the configured base URL's host) to their allow list before launching Codex-backend crews.
 
 ## Networking
 

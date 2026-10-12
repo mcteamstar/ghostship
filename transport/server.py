@@ -453,8 +453,8 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 # ── ACP backend ───────────────────────────────────────────────────────────────
 # Controls the ACP runtime used inside crew containers.
 # "kiro" (default): kiro-cli auth injection (existing behaviour).
-# "claude": skip kiro auth, inject ANTHROPIC_API_KEY from GA_CREW_ANTHROPIC_API_KEY.
-# "codex": skip kiro auth, inject OPENAI_API_KEY from GA_CREW_OPENAI_API_KEY.
+# "claude": skip kiro auth, inject ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN).
+# "codex": skip kiro auth, inject OPENAI_API_KEY.
 GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
 # Crew credentials come from Podman secrets mounted under /run/secrets; the
 # compose template never carries them in its environment block, so the cfg
@@ -462,16 +462,16 @@ GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
 # falls back to the env var for dev/test runs, and registers the value with the
 # redaction filter. lifecycle resolves the same names the same way, so both
 # modules agree on which credential a crew gets (TRN-226).
-_GA_CREW_ANTHROPIC_API_KEY = _security.get_secret(
-    "ga-crew-anthropic-api-key", env_var="GA_CREW_ANTHROPIC_API_KEY")
-_GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
+_ANTHROPIC_API_KEY = _security.get_secret(
+    "ga-crew-anthropic-api-key", env_var="ANTHROPIC_API_KEY")
+_ANTHROPIC_BASE_URL = cfg.anthropic_base_url
 # Long-lived token from `claude setup-token`; injected as CLAUDE_CODE_OAUTH_TOKEN
 # when no Anthropic API key is set.
 _CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
     "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
-_GA_CREW_OPENAI_API_KEY = _security.get_secret(
-    "ga-crew-openai-api-key", env_var="GA_CREW_OPENAI_API_KEY")
-_GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
+_OPENAI_API_KEY = _security.get_secret(
+    "ga-crew-openai-api-key", env_var="OPENAI_API_KEY")
+_OPENAI_BASE_URL = cfg.openai_base_url
 
 # ── Transport security ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
@@ -1831,9 +1831,9 @@ def _warn_inert_backend_settings() -> None:
     # delivered credentials; check what the transport actually resolved.
     resolved = dataclasses.replace(
         cfg,
-        ga_crew_anthropic_api_key=_GA_CREW_ANTHROPIC_API_KEY,
+        anthropic_api_key=_ANTHROPIC_API_KEY,
         claude_code_oauth_token=_CLAUDE_CODE_OAUTH_TOKEN,
-        ga_crew_openai_api_key=_GA_CREW_OPENAI_API_KEY,
+        openai_api_key=_OPENAI_API_KEY,
     )
     for name in inert_backend_settings(resolved, stored):
         logger.warning(
@@ -2552,7 +2552,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # an OAuth credential.
         # If neither is present, initiate the Claude login flow and return
         # not_authenticated with the login URL (identical behaviour to kiro path).
-        if (not _GA_CREW_ANTHROPIC_API_KEY and not _CLAUDE_CODE_OAUTH_TOKEN
+        if (not _ANTHROPIC_API_KEY and not _CLAUDE_CODE_OAUTH_TOKEN
                 and not _claude_auth_exists()):
             result = _initiate_claude_login(podman)
             if result.get("login_pending"):
@@ -2570,13 +2570,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "instructions": "Open login_url, approve, then POST the pasted code to /login/claude/code, poll GET /login/claude until complete, then call launch again.",
             }
     elif GA_CREW_ACP_BACKEND == "codex":
-        # Task 3.3: Codex backend — require either GA_CREW_OPENAI_API_KEY or a
+        # Task 3.3: Codex backend — require either OPENAI_API_KEY or a
         # non-empty ga-codex-auth OAuth credential. If neither is present,
         # initiate the Codex login flow and return not_authenticated with the
         # login URL (mirrors the Claude path). OPENAI_API_KEY/OPENAI_BASE_URL are
         # injected at container_create time; ~/.codex/ is injected via
         # _inject_codex_auth in _finish_crew_setup on the OAuth path.
-        if not _GA_CREW_OPENAI_API_KEY and not _codex_auth_exists():
+        if not _OPENAI_API_KEY and not _codex_auth_exists():
             result = _initiate_codex_login(podman)
             if result.get("login_pending"):
                 return {
@@ -2710,10 +2710,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # (handled in _finish_crew_setup). Only set when non-empty — the key is
         # optional (Claude OAuth is an alternative), so we guard on its presence
         # here rather than relying on any startup validation.
-        if GA_CREW_ACP_BACKEND == "claude" and _GA_CREW_ANTHROPIC_API_KEY:
-            container_env["ANTHROPIC_API_KEY"] = _GA_CREW_ANTHROPIC_API_KEY
-            if _GA_CREW_ANTHROPIC_BASE_URL:
-                container_env["ANTHROPIC_BASE_URL"] = _GA_CREW_ANTHROPIC_BASE_URL
+        if GA_CREW_ACP_BACKEND == "claude" and _ANTHROPIC_API_KEY:
+            container_env["ANTHROPIC_API_KEY"] = _ANTHROPIC_API_KEY
+            if _ANTHROPIC_BASE_URL:
+                container_env["ANTHROPIC_BASE_URL"] = _ANTHROPIC_BASE_URL
         # No API key: the setup-token is next in precedence (TRN-226). With it
         # set, _finish_crew_setup skips ga-claude-auth injection, so the crew
         # gets exactly one Claude credential.
@@ -2727,10 +2727,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # the value is set, independent of the API key (task 3.4) — it redirects
         # both the API-key and OAuth paths to an OpenAI-compatible endpoint.
         if GA_CREW_ACP_BACKEND == "codex":
-            if _GA_CREW_OPENAI_API_KEY:
-                container_env["OPENAI_API_KEY"] = _GA_CREW_OPENAI_API_KEY
-            if _GA_CREW_OPENAI_BASE_URL:
-                container_env["OPENAI_BASE_URL"] = _GA_CREW_OPENAI_BASE_URL
+            if _OPENAI_API_KEY:
+                container_env["OPENAI_API_KEY"] = _OPENAI_API_KEY
+            if _OPENAI_BASE_URL:
+                container_env["OPENAI_BASE_URL"] = _OPENAI_BASE_URL
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:
             container_env["GIT_AUTHOR_NAME"] = GA_GIT_AUTHOR_NAME
             container_env["GIT_AUTHOR_EMAIL"] = GA_GIT_AUTHOR_EMAIL

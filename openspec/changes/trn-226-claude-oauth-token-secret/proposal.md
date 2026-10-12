@@ -14,8 +14,9 @@ A setup-token is a static, long-lived credential the operator generates once on 
 - New config var `CLAUDE_CODE_OAUTH_TOKEN` in `ghostship.conf`. The operator runs `claude setup-token` locally and pastes the result.
 - `install.sh` delivers it as the Podman secret `ga-claude-code-oauth-token`, never as a plaintext compose env var. This follows the existing model-key pattern.
 - The transport reads the secret at startup, registers it with the redaction filter, and injects it into Claude-backend crews as `CLAUDE_CODE_OAUTH_TOKEN`.
-- Credential precedence for Claude-backend crews: `GA_CREW_ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. When a higher-precedence credential is set, `~/.claude/` is not injected, so a stale OAuth credential cannot shadow it.
+- Credential precedence for Claude-backend crews: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. When a higher-precedence credential is set, `~/.claude/` is not injected, so a stale OAuth credential cannot shadow it.
 - Fix: `lifecycle.py` read `KIRO_API_KEY`, `GA_CREW_ANTHROPIC_API_KEY` and `GA_CREW_OPENAI_API_KEY` from `cfg`, which is empty in production, so its "skip OAuth injection when an API key is set" checks never applied. Server and lifecycle now resolve all four credentials from their Podman secrets through `security.get_secret`, and the inert-setting warning checks the resolved values.
+- **Renamed settings**: `GA_CREW_ANTHROPIC_API_KEY`, `GA_CREW_ANTHROPIC_BASE_URL`, `GA_CREW_OPENAI_API_KEY` and `GA_CREW_OPENAI_BASE_URL` become `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_BASE_URL`. These settings belong to Claude and Codex, so they use the names those CLIs read, as `KIRO_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` already do. `install.sh` still accepts the old names from `ghostship.conf`, with a warning. Podman secret names do not change.
 - The launch auth gate accepts the token as a valid Claude credential, so no login flow is started.
 - `CLAUDE_CODE_OAUTH_TOKEN` is added to the Claude backend's inert-setting warnings.
 - **BREAKING**: `POST /login/claude/setup-token` and `_initiate_claude_setup_token` are removed. Callers get a 404. The interactive OAuth flow (`POST /login/claude` + `POST /login/claude/code`) is unchanged.
@@ -31,7 +32,9 @@ None.
 
 - `claude-setup-token-auth`: the endpoint requirements are replaced by config-delivered token requirements (injection as `CLAUDE_CODE_OAUTH_TOKEN`, precedence, launch gate).
 - `claude-auth`: the opt-in requirement no longer references the removed endpoint, and its docs requirement points at the token path. `~/.claude/` injection is skipped when the token is set.
-- `secret-delivery-hardening`: adds a requirement that `CLAUDE_CODE_OAUTH_TOKEN` is delivered as a Podman secret.
+- `secret-delivery-hardening`: adds a requirement that `CLAUDE_CODE_OAUTH_TOKEN` is delivered as a Podman secret; the model-key requirement uses the new names.
+- `installation`: adds the standard-name and deprecated-alias requirements; existing requirements use the new names.
+- `agent-backends`, `codex-auth`, `crew-acp-backend`, `crew-auth`: requirement text uses the new setting names (no behaviour change).
 
 ## Impact
 

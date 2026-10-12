@@ -74,19 +74,26 @@ GA_CREW_AGENT=kiro
 # always enabled. Drives the image toolchains and the transport (TRN-202).
 GA_AGENT_BACKENDS=""
 GA_CREW_ACP_BACKEND=kiro
-GA_CREW_ANTHROPIC_API_KEY=""
 # Crew model backend keys and the headless kiro key. Config-file vars (set in
 # ghostship.conf), not flags — passing a key on the command line would leak it
 # into the process list and shell history. install.sh delivers each as a Podman
 # secret (ga-crew-*-api-key / ga-kiro-api-key) rather than a plaintext compose
-# env var (secret-delivery-hardening).
-GA_CREW_OPENAI_API_KEY=""
+# env var (secret-delivery-hardening). These use the standard names the Claude
+# and Codex CLIs read (TRN-226); resetting them here is what stops a key
+# exported in the operator's own shell from being picked up.
+ANTHROPIC_API_KEY=""
+OPENAI_API_KEY=""
 KIRO_API_KEY=""
 # Long-lived Claude token from `claude setup-token`, injected into Claude-backend
 # crews as CLAUDE_CODE_OAUTH_TOKEN (TRN-226). Reset here so a token exported in
 # the operator's own shell is never picked up; only ghostship.conf sets it.
 CLAUDE_CODE_OAUTH_TOKEN=""
+ANTHROPIC_BASE_URL=""
+OPENAI_BASE_URL=""
+# Deprecated pre-TRN-226 names, still accepted from ghostship.conf (mapped below).
+GA_CREW_ANTHROPIC_API_KEY=""
 GA_CREW_ANTHROPIC_BASE_URL=""
+GA_CREW_OPENAI_API_KEY=""
 GA_CREW_OPENAI_BASE_URL=""
 GA_MIN_FREE_MEM_GB=2.0
 GA_SPAWN_MIN_MEMORY_GB=1.5
@@ -254,6 +261,22 @@ if [[ "$CLIENT_ONLY" == "true" ]]; then
 
   exit 0
 fi
+
+# ── Model backend setting names (TRN-226) ────────────────────────────────────
+# ANTHROPIC_* / OPENAI_* replace the GA_CREW_-prefixed names. An old name still
+# works for this run with a warning; when both are set, the new name wins.
+for _new in ANTHROPIC_API_KEY ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL; do
+  _old="GA_CREW_${_new}"
+  if [[ -n "${!_old:-}" ]]; then
+    echo "  WARNING: ${_old} is deprecated — rename it to ${_new} in ghostship.conf." >&2
+    if [[ -z "${!_new:-}" ]]; then
+      printf -v "$_new" '%s' "${!_old}"
+    else
+      echo "  ${_new} is also set; ignoring ${_old}." >&2
+    fi
+  fi
+done
+unset _new _old
 
 # ── Agent backend consolidation (TRN-213) ────────────────────────────────────
 # GA_CREW_AGENT replaces GA_AGENT_BACKENDS + GA_CREW_ACP_BACKEND.
@@ -737,8 +760,8 @@ fi
 # than plaintext compose env vars (secret-delivery-hardening). Each block is
 # idempotent: remove any prior secret, then recreate only when the value is set.
 ${_PODMAN_CMD} secret rm ga-crew-anthropic-api-key 2>/dev/null || true
-if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then
-  printf '%s' "$GA_CREW_ANTHROPIC_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-anthropic-api-key -
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  printf '%s' "$ANTHROPIC_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-anthropic-api-key -
   echo "✓ Podman secret 'ga-crew-anthropic-api-key' created"
 fi
 
@@ -751,8 +774,8 @@ fi
 
 # ── Podman secret for ga-crew-openai-api-key ──────────────────────────────────
 ${_PODMAN_CMD} secret rm ga-crew-openai-api-key 2>/dev/null || true
-if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then
-  printf '%s' "$GA_CREW_OPENAI_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-openai-api-key -
+if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+  printf '%s' "$OPENAI_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-openai-api-key -
   echo "✓ Podman secret 'ga-crew-openai-api-key' created"
 fi
 
@@ -853,8 +876,8 @@ fi
 _DASHBOARD_PORT_START="${GA_DASHBOARD_PORT_RANGE_START:-64058}"
 _DASHBOARD_PORT_END=$(( _DASHBOARD_PORT_START + ${GA_DASHBOARD_PORT_RANGE_SIZE:-64} - 1 ))
 
-# compose.yml carries model API keys (GA_CREW_ANTHROPIC_API_KEY,
-# GA_CREW_OPENAI_API_KEY): create it owner-only. chmod as well, because
+# compose.yml carries model API keys (ANTHROPIC_API_KEY,
+# OPENAI_API_KEY): create it owner-only. chmod as well, because
 # rewriting an existing file keeps its old mode.
 _ga_saved_umask="$(umask)"
 umask 077
@@ -895,14 +918,14 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       GA_BATCH_MAX_TASKS: "${GA_BATCH_MAX_TASKS:-20}"
       GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
-      # Model backend keys (GA_CREW_ANTHROPIC_API_KEY, GA_CREW_OPENAI_API_KEY)
+      # Model backend keys (ANTHROPIC_API_KEY, OPENAI_API_KEY)
       # and KIRO_API_KEY are NOT passed as environment values here — they are
       # delivered to the transport as Podman secrets mounted under /run/secrets
       # (see the secrets: blocks below) so the keys never appear in plaintext in
       # this compose file (secret-delivery-hardening). Only the non-secret base
       # URLs remain in the environment.
-      GA_CREW_ANTHROPIC_BASE_URL: "${GA_CREW_ANTHROPIC_BASE_URL:-}"
-      GA_CREW_OPENAI_BASE_URL: "${GA_CREW_OPENAI_BASE_URL:-}"
+      ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
       KIRO_LICENSE: "${KIRO_LICENSE:-}"
@@ -933,9 +956,9 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
-$(if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then printf '      - ga-crew-anthropic-api-key\n'; fi)
+$(if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then printf '      - ga-crew-anthropic-api-key\n'; fi)
 $(if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then printf '      - ga-claude-code-oauth-token\n'; fi)
-$(if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then printf '      - ga-crew-openai-api-key\n'; fi)
+$(if [[ -n "${OPENAI_API_KEY:-}" ]]; then printf '      - ga-crew-openai-api-key\n'; fi)
 $(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '      - ga-kiro-api-key\n'; fi)
   ga-portal:
     image: docker.io/caddy:2
@@ -962,9 +985,9 @@ secrets:
   ga-transport-secret:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '  ga-api-key:\n    external: true\n'; fi)
-$(if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then printf '  ga-crew-anthropic-api-key:\n    external: true\n'; fi)
+$(if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then printf '  ga-crew-anthropic-api-key:\n    external: true\n'; fi)
 $(if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then printf '  ga-claude-code-oauth-token:\n    external: true\n'; fi)
-$(if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then printf '  ga-crew-openai-api-key:\n    external: true\n'; fi)
+$(if [[ -n "${OPENAI_API_KEY:-}" ]]; then printf '  ga-crew-openai-api-key:\n    external: true\n'; fi)
 $(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '  ga-kiro-api-key:\n    external: true\n'; fi)
 volumes:
   ga-portal-data:

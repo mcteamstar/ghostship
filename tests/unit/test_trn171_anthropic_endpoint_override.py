@@ -1,14 +1,14 @@
 """Unit tests for TRN-171: Anthropic endpoint override.
 
 Covers:
-- 4.1 GA_CREW_ANTHROPIC_BASE_URL set with Claude backend →
+- 4.1 ANTHROPIC_BASE_URL set with Claude backend →
       ANTHROPIC_BASE_URL present in container_env passed to container_create.
-- 4.2 GA_CREW_ANTHROPIC_BASE_URL unset with Claude backend →
+- 4.2 ANTHROPIC_BASE_URL unset with Claude backend →
       ANTHROPIC_BASE_URL absent from container_env.
-- 4.3 GA_CREW_ANTHROPIC_BASE_URL set with kiro backend →
+- 4.3 ANTHROPIC_BASE_URL set with kiro backend →
       ANTHROPIC_BASE_URL absent from container_env (kiro is unaffected).
 - 4.4 Lifecycle WARNING log names effective endpoint:
-      api.anthropic.com when GA_CREW_ANTHROPIC_BASE_URL is unset;
+      api.anthropic.com when ANTHROPIC_BASE_URL is unset;
       the configured URL when it is set.
 """
 
@@ -52,12 +52,12 @@ def _launch_and_capture_env(
     finish_setup = Mock(return_value={"crew_id": "test-crew", "status": "ready"})
 
     original_backend = _server.GA_CREW_ACP_BACKEND
-    original_api_key = _server._GA_CREW_ANTHROPIC_API_KEY
-    original_base_url = _server._GA_CREW_ANTHROPIC_BASE_URL
+    original_api_key = _server._ANTHROPIC_API_KEY
+    original_base_url = _server._ANTHROPIC_BASE_URL
     try:
         _server.GA_CREW_ACP_BACKEND = backend
-        _server._GA_CREW_ANTHROPIC_API_KEY = anthropic_api_key
-        _server._GA_CREW_ANTHROPIC_BASE_URL = anthropic_base_url
+        _server._ANTHROPIC_API_KEY = anthropic_api_key
+        _server._ANTHROPIC_BASE_URL = anthropic_base_url
 
         with (
             patch.object(_server, "KIRO_API_KEY", ""),
@@ -75,8 +75,8 @@ def _launch_and_capture_env(
             _server.launch("test-crew")
     finally:
         _server.GA_CREW_ACP_BACKEND = original_backend
-        _server._GA_CREW_ANTHROPIC_API_KEY = original_api_key
-        _server._GA_CREW_ANTHROPIC_BASE_URL = original_base_url
+        _server._ANTHROPIC_API_KEY = original_api_key
+        _server._ANTHROPIC_BASE_URL = original_base_url
 
     return captured_env
 
@@ -85,7 +85,7 @@ def _launch_and_capture_env(
 
 
 class TestAnthropicBaseUrlClaudeBackendSet(unittest.TestCase):
-    """4.1: GA_CREW_ANTHROPIC_BASE_URL set with Claude backend → ANTHROPIC_BASE_URL
+    """4.1: ANTHROPIC_BASE_URL set with Claude backend → ANTHROPIC_BASE_URL
     present in the container_env passed to container_create."""
     def setUp(self):
         super().setUp()
@@ -105,7 +105,7 @@ class TestAnthropicBaseUrlClaudeBackendSet(unittest.TestCase):
         self.assertIn(
             "ANTHROPIC_BASE_URL", env,
             "ANTHROPIC_BASE_URL must be present in container_env when "
-            "GA_CREW_ACP_BACKEND=claude and GA_CREW_ANTHROPIC_BASE_URL is set",
+            "GA_CREW_ACP_BACKEND=claude and ANTHROPIC_BASE_URL is set",
         )
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://localhost:8000/v1")
 
@@ -124,7 +124,7 @@ class TestAnthropicBaseUrlClaudeBackendSet(unittest.TestCase):
 
 
 class TestAnthropicBaseUrlClaudeBackendUnset(unittest.TestCase):
-    """4.2: GA_CREW_ANTHROPIC_BASE_URL unset with Claude backend → ANTHROPIC_BASE_URL
+    """4.2: ANTHROPIC_BASE_URL unset with Claude backend → ANTHROPIC_BASE_URL
     absent from container_env (default behaviour preserved)."""
     def setUp(self):
         super().setUp()
@@ -135,7 +135,7 @@ class TestAnthropicBaseUrlClaudeBackendUnset(unittest.TestCase):
 
 
     def test_anthropic_base_url_absent_when_unset(self) -> None:
-        """ANTHROPIC_BASE_URL is NOT injected when GA_CREW_ANTHROPIC_BASE_URL is empty."""
+        """ANTHROPIC_BASE_URL is NOT injected when ANTHROPIC_BASE_URL is empty."""
         env = _launch_and_capture_env(
             backend="claude",
             anthropic_api_key="sk-ant-test-key",
@@ -143,7 +143,7 @@ class TestAnthropicBaseUrlClaudeBackendUnset(unittest.TestCase):
         )
         self.assertNotIn(
             "ANTHROPIC_BASE_URL", env,
-            "ANTHROPIC_BASE_URL must NOT appear when GA_CREW_ANTHROPIC_BASE_URL "
+            "ANTHROPIC_BASE_URL must NOT appear when ANTHROPIC_BASE_URL "
             "is unset — default (api.anthropic.com) behaviour must be unchanged",
         )
 
@@ -161,7 +161,7 @@ class TestAnthropicBaseUrlClaudeBackendUnset(unittest.TestCase):
 
 
 class TestAnthropicBaseUrlKiroBackend(unittest.TestCase):
-    """4.3: GA_CREW_ANTHROPIC_BASE_URL set with kiro backend → ANTHROPIC_BASE_URL
+    """4.3: ANTHROPIC_BASE_URL set with kiro backend → ANTHROPIC_BASE_URL
     absent from container_env (kiro backend is unaffected by this setting)."""
 
     def test_anthropic_base_url_absent_for_kiro_backend(self) -> None:
@@ -174,7 +174,7 @@ class TestAnthropicBaseUrlKiroBackend(unittest.TestCase):
         self.assertNotIn(
             "ANTHROPIC_BASE_URL", env,
             "ANTHROPIC_BASE_URL must NOT appear for kiro backend — "
-            "GA_CREW_ANTHROPIC_BASE_URL has no effect when backend != claude",
+            "ANTHROPIC_BASE_URL has no effect when backend != claude",
         )
 
     def test_anthropic_api_key_absent_for_kiro_backend(self) -> None:
@@ -187,29 +187,29 @@ class TestAnthropicBaseUrlKiroBackend(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_API_KEY", env)
 
 
-# ── Config from_env: GA_CREW_ANTHROPIC_BASE_URL binding ───────────────────────
+# ── Config from_env: ANTHROPIC_BASE_URL binding ───────────────────────
 
 
 class TestConfigAnthropicBaseUrl(unittest.TestCase):
-    """Config.from_env() correctly reads GA_CREW_ANTHROPIC_BASE_URL."""
+    """Config.from_env() correctly reads ANTHROPIC_BASE_URL."""
 
     def test_base_url_read_from_env(self) -> None:
-        """GA_CREW_ANTHROPIC_BASE_URL is read and stripped."""
+        """ANTHROPIC_BASE_URL is read and stripped."""
         with patch.dict("os.environ", {
-            "GA_CREW_ANTHROPIC_BASE_URL": "  http://proxy.example.com/v1  ",
+            "ANTHROPIC_BASE_URL": "  http://proxy.example.com/v1  ",
             "GA_CREW_AGENT": "kiro",
         }):
             cfg = Config.from_env()
-        self.assertEqual(cfg.ga_crew_anthropic_base_url, "http://proxy.example.com/v1")
+        self.assertEqual(cfg.anthropic_base_url, "http://proxy.example.com/v1")
 
     def test_base_url_default_is_empty(self) -> None:
-        """GA_CREW_ANTHROPIC_BASE_URL defaults to empty string when unset."""
+        """ANTHROPIC_BASE_URL defaults to empty string when unset."""
         import os
         clean = {k: v for k, v in os.environ.items()
-                 if k not in ("GA_CREW_ANTHROPIC_BASE_URL",)}
+                 if k not in ("ANTHROPIC_BASE_URL",)}
         with patch.dict("os.environ", clean, clear=True):
             cfg = Config.from_env()
-        self.assertEqual(cfg.ga_crew_anthropic_base_url, "")
+        self.assertEqual(cfg.anthropic_base_url, "")
 
 
 # ── 4.4 Lifecycle WARNING names the effective endpoint ────────────────────────
@@ -218,10 +218,10 @@ class TestConfigAnthropicBaseUrl(unittest.TestCase):
 class TestLifecycleWarningEffectiveEndpoint(unittest.TestCase):
     """4.4: _finish_crew_setup WARNING names the effective endpoint.
 
-    Design requirement (design.md D3): "When GA_CREW_ANTHROPIC_BASE_URL is set,
+    Design requirement (design.md D3): "When ANTHROPIC_BASE_URL is set,
     the warning should name the override instead."
     Delta spec: "The WARNING log entry … SHALL name the effective endpoint:
-    api.anthropic.com when GA_CREW_ANTHROPIC_BASE_URL is unset, or the configured
+    api.anthropic.com when ANTHROPIC_BASE_URL is unset, or the configured
     URL when it is set."
     """
 
@@ -263,11 +263,11 @@ class TestLifecycleWarningEffectiveEndpoint(unittest.TestCase):
         stack.enter_context(patch.object(_lifecycle, "_cleanup_crew"))
 
         original_backend = _lifecycle.GA_CREW_ACP_BACKEND
-        original_base_url = _lifecycle.GA_CREW_ANTHROPIC_BASE_URL
+        original_base_url = _lifecycle.ANTHROPIC_BASE_URL
         log_output: list[str] = []
         try:
             _lifecycle.GA_CREW_ACP_BACKEND = "claude"
-            _lifecycle.GA_CREW_ANTHROPIC_BASE_URL = base_url
+            _lifecycle.ANTHROPIC_BASE_URL = base_url
             with stack:
                 with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
                     _lifecycle._finish_crew_setup(
@@ -279,11 +279,11 @@ class TestLifecycleWarningEffectiveEndpoint(unittest.TestCase):
             log_output = log_ctx.output
         finally:
             _lifecycle.GA_CREW_ACP_BACKEND = original_backend
-            _lifecycle.GA_CREW_ANTHROPIC_BASE_URL = original_base_url
+            _lifecycle.ANTHROPIC_BASE_URL = original_base_url
         return log_output
 
     def test_warning_names_default_endpoint_when_base_url_unset(self) -> None:
-        """When GA_CREW_ANTHROPIC_BASE_URL is unset, WARNING names api.anthropic.com."""
+        """When ANTHROPIC_BASE_URL is unset, WARNING names api.anthropic.com."""
         log_output = self._run_finish(base_url="")
         self.assertTrue(
             any("api.anthropic.com" in msg for msg in log_output),
@@ -292,7 +292,7 @@ class TestLifecycleWarningEffectiveEndpoint(unittest.TestCase):
         )
 
     def test_warning_names_override_endpoint_when_base_url_set(self) -> None:
-        """When GA_CREW_ANTHROPIC_BASE_URL is set, WARNING names the override URL."""
+        """When ANTHROPIC_BASE_URL is set, WARNING names the override URL."""
         override_url = "http://localhost:11434/v1"
         log_output = self._run_finish(base_url=override_url)
         self.assertTrue(

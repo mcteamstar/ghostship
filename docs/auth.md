@@ -150,7 +150,7 @@ created, so evac and relaunch existing Claude-backend crews to pick up the new o
 `ga-claude-auth` is a tar archive of `~/.claude/` (the credential directory written
 by the `claude` CLI), stored at `DATA_DIR/ga-claude-auth` (mode `0600`).
 
-This path is an alternative to `GA_CREW_ANTHROPIC_API_KEY` for operators with a
+This path is an alternative to `ANTHROPIC_API_KEY` for operators with a
 Claude Pro/Max subscription who prefer not to maintain a separate API-tier account.
 For unattended or server deployments, prefer the headless auth path above.
 
@@ -243,9 +243,13 @@ after logging in again.
 
 Each Claude-backend crew gets exactly one credential, chosen in this order:
 
-1. `GA_CREW_ANTHROPIC_API_KEY`, injected as `ANTHROPIC_API_KEY`.
-2. `CLAUDE_CODE_OAUTH_TOKEN`, injected as `CLAUDE_CODE_OAUTH_TOKEN`.
+1. `ANTHROPIC_API_KEY`.
+2. `CLAUDE_CODE_OAUTH_TOKEN`.
 3. `ga-claude-auth`, copied into the crew's `~/.claude/`.
+
+The two settings are passed to the crew under the same names. Before TRN-226 the
+API key setting was `GA_CREW_ANTHROPIC_API_KEY`; that name still works with a
+deprecation warning.
 
 A lower entry is only used when every entry above it is unset.
 
@@ -285,7 +289,7 @@ every running Claude-backend crew. Returns 409 if not authenticated via OAuth.
 `auth.json`, written by the Codex login flow), stored at `DATA_DIR/ga-codex-auth`
 (mode `0600`).
 
-This path is an alternative to `GA_CREW_OPENAI_API_KEY` for operators with a
+This path is an alternative to `OPENAI_API_KEY` for operators with a
 ChatGPT subscription who prefer not to maintain a separate API-tier account.
 
 ### Prerequisites
@@ -353,7 +357,7 @@ after logging in again.
 
 ### Credential precedence
 
-When both `GA_CREW_OPENAI_API_KEY` and `ga-codex-auth` are present, the API key
+When both `OPENAI_API_KEY` and `ga-codex-auth` are present, the API key
 takes precedence. OAuth credentials are only used when the API key is unset.
 
 ### Codex OAuth API

@@ -27,6 +27,14 @@
 - [x] 4.2 Add a commented `CLAUDE_CODE_OAUTH_TOKEN` entry to `config/ghostship.conf.example` next to `GA_CREW_ANTHROPIC_API_KEY`, noting precedence. Verify by sourcing the example in a subshell without errors.
 - [x] 4.3 Add a CHANGELOG entry tagged TRN-226: the new token setting, the **BREAKING** removal of `POST /login/claude/setup-token`, and migration steps. Verify that the entry names both the var and the removed route.
 
+## 6. Rename the model backend settings
+
+- [x] 6.1 Rename `GA_CREW_ANTHROPIC_API_KEY`/`_BASE_URL` and `GA_CREW_OPENAI_API_KEY`/`_BASE_URL` to `ANTHROPIC_*`/`OPENAI_*` across `install.sh`, `transport/`, tests, `docs/` and `config/ghostship.conf.example`, keeping the `ga-crew-*` secret names. Verify with `git grep` showing no old names outside openspec, the historical CHANGELOG and the 0.6.0 release notes.
+- [x] 6.2 Add install.sh defaults for both old and new names, plus a mapping block that warns on old names and lets the new name win. Verify with unit tests that run the real defaults and mapping blocks under bash (mapping, precedence, no value in warnings, silence with new names, shell values ignored).
+- [x] 6.3 Note the old names in `docs/configuration.md`, `docs/auth.md`, `config/ghostship.conf.example` and the CHANGELOG Deprecations section. Verify that each renamed row in `docs/configuration.md` names its old setting.
+- [x] 6.4 Run the full unit suite and verify that it passes.
+- [x] 6.5 Reinstall with the real config and confirm a Claude crew still works, then run the negative checks: a bad token makes model calls fail, and no credential makes launch return `not_authenticated`. Restore the real config and confirm a crew works again.
+
 ## 5. Integration check
 
 - [x] 5.1 Run the full unit suite and verify that it passes.

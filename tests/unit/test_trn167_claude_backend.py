@@ -58,7 +58,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
     def test_claude_backend_is_valid_with_key(self) -> None:
         env = {
             "GA_CREW_AGENT": "claude",
-            "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test123",
+            "ANTHROPIC_API_KEY": "sk-ant-test123",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
@@ -81,7 +81,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
         """
         env = {
             "GA_CREW_AGENT": "claude",
-            "GA_CREW_ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
@@ -91,7 +91,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
     def test_kiro_backend_validate_passes_without_api_key(self) -> None:
         """validate() does not raise for kiro backend even without an Anthropic key."""
         with patch.dict("os.environ", {"GA_CREW_AGENT": "kiro",
-                                        "GA_CREW_ANTHROPIC_API_KEY": ""}):
+                                        "ANTHROPIC_API_KEY": ""}):
             cfg = Config.from_env()
         cfg.validate()  # must not raise
 
@@ -107,7 +107,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
         """TRN-170: Config.validate() is now a no-op for missing API key."""
         env = {
             "GA_CREW_AGENT": "claude",
-            "GA_CREW_ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
@@ -118,7 +118,7 @@ class TestAcpBackendConfigValidation(unittest.TestCase):
         """Config.validate() does not raise when claude backend has an API key."""
         env = {
             "GA_CREW_AGENT": "claude",
-            "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test-validate",
+            "ANTHROPIC_API_KEY": "sk-ant-test-validate",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
@@ -343,7 +343,7 @@ class TestLaunchKiroAuthSkipForClaude(unittest.TestCase):
         original_kiro_key = _server.KIRO_API_KEY if hasattr(_server, "KIRO_API_KEY") else ""
         try:
             _server.GA_CREW_ACP_BACKEND = "claude"
-            # The _GA_CREW_ANTHROPIC_API_KEY must be present (validated at startup).
+            # The _ANTHROPIC_API_KEY must be present (validated at startup).
             # In this unit test we trust Config.validate() separately.
             with (
                 patch.object(_server, "KIRO_API_KEY", ""),

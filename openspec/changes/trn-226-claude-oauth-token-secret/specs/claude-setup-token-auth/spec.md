@@ -16,10 +16,10 @@ The operator SHALL be able to supply a long-lived Claude token, generated with `
 
 ### Requirement: Claude OAuth token injected into crew containers
 
-When `CLAUDE_CODE_OAUTH_TOKEN` is configured, `GA_CREW_ANTHROPIC_API_KEY` is not configured, and a crew is launched on the Claude backend, the transport SHALL set `CLAUDE_CODE_OAUTH_TOKEN` in the crew container's environment to the configured token, and SHALL NOT inject the `ga-claude-auth` credential into the crew's `~/.claude/` directory.
+When `CLAUDE_CODE_OAUTH_TOKEN` is configured, `ANTHROPIC_API_KEY` is not configured, and a crew is launched on the Claude backend, the transport SHALL set `CLAUDE_CODE_OAUTH_TOKEN` in the crew container's environment to the configured token, and SHALL NOT inject the `ga-claude-auth` credential into the crew's `~/.claude/` directory.
 
 #### Scenario: Token injected at launch
-- **WHEN** a crew is launched with claude as its backend, `CLAUDE_CODE_OAUTH_TOKEN` is set and `GA_CREW_ANTHROPIC_API_KEY` is not
+- **WHEN** a crew is launched with claude as its backend, `CLAUDE_CODE_OAUTH_TOKEN` is set and `ANTHROPIC_API_KEY` is not
 - **THEN** the crew container's environment contains `CLAUDE_CODE_OAUTH_TOKEN` with the configured value, and `ANTHROPIC_API_KEY` is absent
 
 #### Scenario: Stored OAuth credential not injected alongside the token
@@ -32,14 +32,14 @@ When `CLAUDE_CODE_OAUTH_TOKEN` is configured, `GA_CREW_ANTHROPIC_API_KEY` is not
 
 ### Requirement: Claude credential precedence
 
-For a Claude-backend crew the transport SHALL select exactly one credential, in this order: `GA_CREW_ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. Only the selected credential SHALL be delivered to the crew.
+For a Claude-backend crew the transport SHALL select exactly one credential, in this order: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. Only the selected credential SHALL be delivered to the crew.
 
 #### Scenario: API key outranks the token
-- **WHEN** both `GA_CREW_ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` are set and a Claude-backend crew is launched
+- **WHEN** both `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` are set and a Claude-backend crew is launched
 - **THEN** the crew receives `ANTHROPIC_API_KEY`, does not receive `CLAUDE_CODE_OAUTH_TOKEN`, and does not receive the `ga-claude-auth` credential
 
 #### Scenario: Stored OAuth credential used only as a fallback
-- **WHEN** neither `GA_CREW_ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is set and `ga-claude-auth` exists
+- **WHEN** neither `ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is set and `ga-claude-auth` exists
 - **THEN** the crew's `~/.claude/` receives the `ga-claude-auth` credential and neither environment variable is set
 
 ### Requirement: Claude OAuth token satisfies the launch auth check
@@ -47,16 +47,16 @@ For a Claude-backend crew the transport SHALL select exactly one credential, in 
 When the default backend is claude, `launch` SHALL treat a configured `CLAUDE_CODE_OAUTH_TOKEN` as a valid Claude credential and SHALL NOT start the interactive Claude login flow or return `not_authenticated`.
 
 #### Scenario: Launch proceeds with only the token
-- **WHEN** `launch` is called with claude as the default backend, `CLAUDE_CODE_OAUTH_TOKEN` set, no `GA_CREW_ANTHROPIC_API_KEY` and no `ga-claude-auth`
+- **WHEN** `launch` is called with claude as the default backend, `CLAUDE_CODE_OAUTH_TOKEN` set, no `ANTHROPIC_API_KEY` and no `ga-claude-auth`
 - **THEN** the crew is created and no Claude login container is started
 
 #### Scenario: Launch still prompts with no Claude credential
-- **WHEN** `launch` is called with claude as the default backend and none of `GA_CREW_ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ga-claude-auth` is present
+- **WHEN** `launch` is called with claude as the default backend and none of `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ga-claude-auth` is present
 - **THEN** `launch` returns `not_authenticated` with a login URL, unchanged from the existing behaviour
 
 ### Requirement: Claude OAuth token reported as inert when claude is disabled
 
-When `CLAUDE_CODE_OAUTH_TOKEN` is set but claude is not an enabled backend, the transport SHALL include it in the inert backend-setting warnings, as it does for `GA_CREW_ANTHROPIC_API_KEY`.
+When `CLAUDE_CODE_OAUTH_TOKEN` is set but claude is not an enabled backend, the transport SHALL include it in the inert backend-setting warnings, as it does for `ANTHROPIC_API_KEY`.
 
 #### Scenario: Inert token warning
 - **WHEN** the transport starts with `CLAUDE_CODE_OAUTH_TOKEN` set and claude absent from the enabled backends

@@ -72,15 +72,60 @@ class TestInstallDefaultsIgnoreShellEnv(unittest.TestCase):
         self.assertEqual(sorted(used - assigned), [])
 
     def test_shell_values_do_not_override_defaults(self) -> None:
-        leak = {"HOST": "203.0.113.9", "GA_CREW_ANTHROPIC_BASE_URL": "http://evil",
+        leak = {"HOST": "203.0.113.9", "ANTHROPIC_BASE_URL": "http://evil",
                 "GA_RATE_LIMIT_ENABLED": "false", "GA_DASHBOARD_DEFAULT": "true"}
         out = _run_bash(
             _defaults_block()
-            + 'printf "%s|%s|%s|%s" "$HOST" "$GA_CREW_ANTHROPIC_BASE_URL" '
+            + 'printf "%s|%s|%s|%s" "$HOST" "$ANTHROPIC_BASE_URL" '
               '"$GA_RATE_LIMIT_ENABLED" "$GA_DASHBOARD_DEFAULT"',
             leak,
         )
         self.assertEqual(out, "0.0.0.0||true|false")
+
+
+def _alias_block() -> str:
+    """install.sh's deprecated GA_CREW_* → standard-name mapping."""
+    start = _INSTALL_SH.index("# ── Model backend setting names (TRN-226)")
+    end = _INSTALL_SH.index("# ── Agent backend consolidation (TRN-213)")
+    return _INSTALL_SH[start:end]
+
+
+class TestDeprecatedModelKeyNames(unittest.TestCase):
+    """GA_CREW_ANTHROPIC_* / GA_CREW_OPENAI_* still work, with a warning."""
+
+    def _run(self, conf: str) -> subprocess.CompletedProcess:
+        script = (_defaults_block() + conf + "\n" + _alias_block()
+                  + 'printf "%s|%s|%s|%s" "$ANTHROPIC_API_KEY" "$ANTHROPIC_BASE_URL" '
+                    '"$OPENAI_API_KEY" "$OPENAI_BASE_URL"')
+        return subprocess.run(["bash", "-c", script], env={"PATH": os.environ["PATH"]},
+                              capture_output=True, text=True, check=True)
+
+    def test_old_names_map_to_new(self) -> None:
+        r = self._run('GA_CREW_ANTHROPIC_API_KEY="ak"; GA_CREW_ANTHROPIC_BASE_URL="au"; '
+                      'GA_CREW_OPENAI_API_KEY="ok"; GA_CREW_OPENAI_BASE_URL="ou"')
+        self.assertEqual(r.stdout, "ak|au|ok|ou")
+        for old in ("GA_CREW_ANTHROPIC_API_KEY", "GA_CREW_ANTHROPIC_BASE_URL",
+                    "GA_CREW_OPENAI_API_KEY", "GA_CREW_OPENAI_BASE_URL"):
+            self.assertIn(f"{old} is deprecated", r.stderr)
+
+    def test_new_name_wins_when_both_set(self) -> None:
+        r = self._run('ANTHROPIC_API_KEY="new"; GA_CREW_ANTHROPIC_API_KEY="old"')
+        self.assertEqual(r.stdout.split("|")[0], "new")
+        self.assertIn("ignoring GA_CREW_ANTHROPIC_API_KEY", r.stderr)
+
+    def test_warning_never_prints_the_value(self) -> None:
+        r = self._run('GA_CREW_ANTHROPIC_API_KEY="sk-ant-SECRET-VALUE"')
+        self.assertNotIn("sk-ant-SECRET-VALUE", r.stderr)
+
+    def test_new_names_alone_are_silent(self) -> None:
+        r = self._run('ANTHROPIC_API_KEY="ak"; OPENAI_API_KEY="ok"')
+        self.assertEqual(r.stdout, "ak||ok|")
+        self.assertEqual(r.stderr, "")
+
+    def test_old_names_exported_in_shell_are_ignored(self) -> None:
+        script = _defaults_block() + _alias_block() + 'printf "%s" "$ANTHROPIC_API_KEY"'
+        out = _run_bash(script, {"GA_CREW_ANTHROPIC_API_KEY": "leak", "ANTHROPIC_API_KEY": "leak"})
+        self.assertEqual(out, "")
 
 
 class TestInstallSecretWiring(unittest.TestCase):
@@ -131,8 +176,8 @@ class TestCredentialsResolvedFromSecrets(unittest.TestCase):
 
     CREDENTIALS = {
         "KIRO_API_KEY": "ga-kiro-api-key",
-        "GA_CREW_ANTHROPIC_API_KEY": "ga-crew-anthropic-api-key",
-        "GA_CREW_OPENAI_API_KEY": "ga-crew-openai-api-key",
+        "ANTHROPIC_API_KEY": "ga-crew-anthropic-api-key",
+        "OPENAI_API_KEY": "ga-crew-openai-api-key",
         "CLAUDE_CODE_OAUTH_TOKEN": "ga-claude-code-oauth-token",
     }
 
@@ -170,8 +215,8 @@ def _launch_env(*, backend: str, api_key: str, token: str, oauth: bool = False) 
     with (
         patch.object(_server, "GA_CREW_ACP_BACKEND", backend),
         patch.object(_server, "cfg", _ALL_BACKENDS),
-        patch.object(_server, "_GA_CREW_ANTHROPIC_API_KEY", api_key),
-        patch.object(_server, "_GA_CREW_ANTHROPIC_BASE_URL", ""),
+        patch.object(_server, "_ANTHROPIC_API_KEY", api_key),
+        patch.object(_server, "_ANTHROPIC_BASE_URL", ""),
         patch.object(_server, "_CLAUDE_CODE_OAUTH_TOKEN", token),
         patch.object(_server, "_claude_auth_exists", return_value=oauth),
         patch.object(_server, "KIRO_API_KEY", "kiro-key"),
@@ -224,7 +269,7 @@ class TestOAuthInjectionSkipped(unittest.TestCase):
                  "_cleanup_crew", "_inject_auth"]
         with (
             patch.object(_lifecycle, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(_lifecycle, "GA_CREW_ANTHROPIC_API_KEY", api_key),
+            patch.object(_lifecycle, "ANTHROPIC_API_KEY", api_key),
             patch.object(_lifecycle, "CLAUDE_CODE_OAUTH_TOKEN", token),
             patch.object(_lifecycle, "_claude_auth_exists", return_value=True),
             patch.object(_lifecycle, "_inject_claude_auth") as inject,
@@ -262,7 +307,7 @@ class TestLaunchGate(unittest.TestCase):
         with (
             patch.object(_server, "GA_CREW_ACP_BACKEND", "claude"),
             patch.object(_server, "cfg", _ALL_BACKENDS),
-            patch.object(_server, "_GA_CREW_ANTHROPIC_API_KEY", ""),
+            patch.object(_server, "_ANTHROPIC_API_KEY", ""),
             patch.object(_server, "_CLAUDE_CODE_OAUTH_TOKEN", token),
             patch.object(_server, "_claude_auth_exists", return_value=False),
             patch.object(_server, "_initiate_claude_login",

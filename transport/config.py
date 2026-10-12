@@ -171,8 +171,8 @@ def _read_ga_crew_agent() -> str:
 # Settings that only apply to one optional backend, for the inert-setting
 # warnings. Kiro's settings are never inert because kiro is always enabled.
 _BACKEND_SETTINGS: dict[str, tuple[str, ...]] = {
-    "claude": ("GA_CREW_ANTHROPIC_API_KEY", "GA_CREW_ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"),
-    "codex": ("GA_CREW_OPENAI_API_KEY", "GA_CREW_OPENAI_BASE_URL"),
+    "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"),
+    "codex": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
 }
 _BACKEND_CREDENTIAL_FILES: dict[str, str] = {
     "claude": "ga-claude-auth",
@@ -305,40 +305,40 @@ class Config:
     # GA_AGENT_BACKENDS is install-time only (handled in install.sh).
     ga_crew_agent: str = "kiro"
 
-    # GA_CREW_ANTHROPIC_API_KEY: Anthropic API key injected into crew containers
+    # ANTHROPIC_API_KEY: Anthropic API key injected into crew containers
     # when GA_CREW_ACP_BACKEND=claude. Optional when using Claude OAuth login
     # (ga-claude-auth). When set, takes precedence over OAuth credentials.
     # When neither API key nor OAuth credentials are present at launch time,
     # launch() returns not_authenticated with a login URL (TRN-170).
-    ga_crew_anthropic_api_key: str = ""
+    anthropic_api_key: str = ""
 
-    # GA_CREW_ANTHROPIC_BASE_URL: optional Anthropic-compatible endpoint URL
+    # ANTHROPIC_BASE_URL: optional Anthropic-compatible endpoint URL
     # injected as ANTHROPIC_BASE_URL into Claude-backend crew containers.
     # When set, allows operators to redirect crew traffic to a local LLM
     # proxy (litellm, OpenRouter, LM Studio, etc.) without image changes.
     # Has no effect when GA_CREW_ACP_BACKEND != "claude". Default: unset.
-    ga_crew_anthropic_base_url: str = ""
+    anthropic_base_url: str = ""
 
     # CLAUDE_CODE_OAUTH_TOKEN: long-lived token from `claude setup-token`,
     # delivered as the ga-claude-code-oauth-token Podman secret and injected into
-    # Claude-backend crews when GA_CREW_ANTHROPIC_API_KEY is unset. Takes
+    # Claude-backend crews when ANTHROPIC_API_KEY is unset. Takes
     # precedence over ga-claude-auth (TRN-226). "" in production; the transport
     # reads the secret file. Kept here for the inert-setting warning.
     claude_code_oauth_token: str = ""
 
-    # GA_CREW_OPENAI_API_KEY: OpenAI API key injected as OPENAI_API_KEY into crew
+    # OPENAI_API_KEY: OpenAI API key injected under the same name into crew
     # containers when GA_CREW_ACP_BACKEND=codex. Optional when using Codex OAuth
     # login (ga-codex-auth). When set, takes precedence over OAuth credentials.
     # When neither API key nor OAuth credentials are present at launch time,
     # launch() returns not_authenticated with a login URL (TRN-172, mirrors
     # the TRN-170 Claude model).
-    ga_crew_openai_api_key: str = ""
+    openai_api_key: str = ""
 
-    # GA_CREW_OPENAI_BASE_URL: optional OpenAI-compatible endpoint URL injected
+    # OPENAI_BASE_URL: optional OpenAI-compatible endpoint URL injected
     # as OPENAI_BASE_URL into Codex-backend crew containers. When set, redirects
     # crew traffic to an OpenAI-compatible endpoint without image changes.
     # Has no effect when GA_CREW_ACP_BACKEND != "codex". Default: unset.
-    ga_crew_openai_base_url: str = ""
+    openai_base_url: str = ""
 
     # ── kiro-cli identity ────────────────────────────────────────────────────
     kiro_license: str = ""
@@ -405,11 +405,11 @@ class Config:
             kiro_api_key=os.environ.get("KIRO_API_KEY", ""),
             ga_orders_dir=os.environ.get("GA_ORDERS_DIR", ""),
             ga_crew_agent=ga_crew_agent,
-            ga_crew_anthropic_api_key=os.environ.get("GA_CREW_ANTHROPIC_API_KEY", ""),
-            ga_crew_anthropic_base_url=os.environ.get("GA_CREW_ANTHROPIC_BASE_URL", "").strip(),
+            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            anthropic_base_url=os.environ.get("ANTHROPIC_BASE_URL", "").strip(),
             claude_code_oauth_token=os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""),
-            ga_crew_openai_api_key=os.environ.get("GA_CREW_OPENAI_API_KEY", ""),
-            ga_crew_openai_base_url=os.environ.get("GA_CREW_OPENAI_BASE_URL", "").strip(),
+            openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+            openai_base_url=os.environ.get("OPENAI_BASE_URL", "").strip(),
         )
 
     def validate(self) -> None:

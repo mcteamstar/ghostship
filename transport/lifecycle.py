@@ -231,14 +231,14 @@ GA_PREWARM_ENABLED = True
 GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
 # Credentials resolve from Podman secrets exactly as in server.py, so the
 # OAuth-injection guards below see the same values the crew env was built from.
-GA_CREW_ANTHROPIC_API_KEY = _security.get_secret(
-    "ga-crew-anthropic-api-key", env_var="GA_CREW_ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = _security.get_secret(
+    "ga-crew-anthropic-api-key", env_var="ANTHROPIC_API_KEY")
 CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
     "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
-GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
-GA_CREW_OPENAI_API_KEY = _security.get_secret(
-    "ga-crew-openai-api-key", env_var="GA_CREW_OPENAI_API_KEY")
-GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
+ANTHROPIC_BASE_URL = cfg.anthropic_base_url
+OPENAI_API_KEY = _security.get_secret(
+    "ga-crew-openai-api-key", env_var="OPENAI_API_KEY")
+OPENAI_BASE_URL = cfg.openai_base_url
 
 # The effective crew session idle timeout. Spec-ops crews are patched with a
 # fixed ``session.timeout_secs = 300`` override (see _patch_crew_config); a
@@ -2141,7 +2141,7 @@ def _finish_crew_setup(
     if GA_CREW_ACP_BACKEND == "claude":
         # Task 3.4: warn at launch time that outbound access is required.
         # Use the override endpoint when set, otherwise api.anthropic.com.
-        _effective_endpoint = GA_CREW_ANTHROPIC_BASE_URL or "api.anthropic.com"
+        _effective_endpoint = ANTHROPIC_BASE_URL or "api.anthropic.com"
         logger.warning(
             "GA_CREW_ACP_BACKEND=claude: crew %s requires outbound access to "
             "%s to function",
@@ -2152,7 +2152,7 @@ def _finish_crew_setup(
         # precedence over OAuth path, then CLAUDE_CODE_OAUTH_TOKEN (TRN-226).
         # Only with neither set, inject OAuth credentials from ga-claude-auth
         # into ~/.claude/, so a crew never holds two Claude credentials.
-        if (not GA_CREW_ANTHROPIC_API_KEY and not CLAUDE_CODE_OAUTH_TOKEN
+        if (not ANTHROPIC_API_KEY and not CLAUDE_CODE_OAUTH_TOKEN
                 and _claude_auth_exists()):
             try:
                 _inject_claude_auth(podman, container)
@@ -2162,7 +2162,7 @@ def _finish_crew_setup(
                     "unable to authenticate against api.anthropic.com",
                     crew_id, e,
                 )
-        # If GA_CREW_ANTHROPIC_API_KEY is set, the env var was already injected
+        # If ANTHROPIC_API_KEY is set, the env var was already injected
         # at container_create time (server.py launch()); nothing more to do here.
         # If neither API key nor ga-claude-auth is present, this path is
         # unreachable: launch() blocks before reaching _finish_crew_setup
@@ -2175,9 +2175,9 @@ def _finish_crew_setup(
         # approval-suppression env var is needed (see crew-governance).
         #
         # Task 3.5: warn at launch time that outbound access to the effective
-        # OpenAI endpoint is required. Use GA_CREW_OPENAI_BASE_URL when set,
+        # OpenAI endpoint is required. Use OPENAI_BASE_URL when set,
         # otherwise api.openai.com.
-        _effective_endpoint = GA_CREW_OPENAI_BASE_URL or "api.openai.com"
+        _effective_endpoint = OPENAI_BASE_URL or "api.openai.com"
         logger.warning(
             "GA_CREW_ACP_BACKEND=codex: crew %s requires outbound access to "
             "%s to function",
@@ -2188,7 +2188,7 @@ def _finish_crew_setup(
         # container_create) takes precedence over OAuth path. If no API key,
         # inject OAuth credentials from ga-codex-auth into the crew container's
         # ~/.codex/ directory (the path codex-acp reads).
-        if not GA_CREW_OPENAI_API_KEY and _codex_auth_exists():
+        if not OPENAI_API_KEY and _codex_auth_exists():
             try:
                 _inject_codex_auth(podman, container)
             except Exception as e:
@@ -2197,7 +2197,7 @@ def _finish_crew_setup(
                     "unable to authenticate against api.openai.com",
                     crew_id, e,
                 )
-        # If GA_CREW_OPENAI_API_KEY is set, the env var was already injected
+        # If OPENAI_API_KEY is set, the env var was already injected
         # at container_create time (server.py launch()); nothing more to do here.
         # If neither API key nor ga-codex-auth is present, this path is
         # unreachable: launch() blocks before reaching _finish_crew_setup

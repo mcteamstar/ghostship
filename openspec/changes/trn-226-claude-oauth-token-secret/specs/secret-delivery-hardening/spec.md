@@ -29,3 +29,28 @@
 - **GIVEN** `/run/secrets/ga-claude-code-oauth-token` is present inside `ga-transport`
 - **WHEN** the transport starts
 - **THEN** the token injected into Claude-backend crews is the value from the secret file
+
+## MODIFIED Requirements
+
+### Requirement: Model API keys are delivered as Podman secrets, not env vars
+`ANTHROPIC_API_KEY` and `OPENAI_API_KEY` SHALL be delivered to `ga-transport` via Podman secrets (`ga-crew-anthropic-api-key` and `ga-crew-openai-api-key`) mounted at `/run/secrets/`. They SHALL NOT appear as plaintext in the `environment:` block of `compose.yml`. The transport SHALL read them from the secret files at startup.
+
+#### Scenario: Anthropic key delivered via Podman secret
+- **GIVEN** `ANTHROPIC_API_KEY` is set in `ghostship.conf`
+- **WHEN** `install.sh` runs
+- **THEN** the Podman secret `ga-crew-anthropic-api-key` exists, `compose.yml` lists it under `ga-transport`'s `secrets:`, and `ANTHROPIC_API_KEY` is absent from the `environment:` block
+
+#### Scenario: Anthropic key absent — no dangling secret reference
+- **GIVEN** `ANTHROPIC_API_KEY` is not set
+- **WHEN** `install.sh` runs
+- **THEN** `compose.yml` does not reference `ga-crew-anthropic-api-key` in either the service `secrets:` list or the top-level `secrets:` block
+
+#### Scenario: OpenAI key delivered via Podman secret
+- **GIVEN** `OPENAI_API_KEY` is set in `ghostship.conf`
+- **WHEN** `install.sh` runs
+- **THEN** the Podman secret `ga-crew-openai-api-key` exists and `compose.yml` lists it under `ga-transport`'s `secrets:`
+
+#### Scenario: Transport reads Anthropic key from secret file
+- **GIVEN** `/run/secrets/ga-crew-anthropic-api-key` is present inside the `ga-transport` container
+- **WHEN** the transport starts
+- **THEN** the Anthropic API key used for crew containers is the value from the secret file

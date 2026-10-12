@@ -140,15 +140,15 @@ class TestInertSettings(unittest.TestCase):
     SECRET = "sk-ant-THIS-MUST-NOT-BE-LOGGED"
 
     def test_credential_for_disabled_backend_is_inert(self):
-        cfg = Config(ga_crew_agent="kiro", ga_crew_anthropic_api_key=self.SECRET, ga_crew_openai_base_url="https://x")
+        cfg = Config(ga_crew_agent="kiro", anthropic_api_key=self.SECRET, openai_base_url="https://x")
         self.assertEqual(
             inert_backend_settings(cfg, frozenset({"ga-codex-auth"})),
-            ["GA_CREW_ANTHROPIC_API_KEY", "GA_CREW_OPENAI_BASE_URL", "ga-codex-auth"],
+            ["ANTHROPIC_API_KEY", "OPENAI_BASE_URL", "ga-codex-auth"],
         )
 
     def test_no_inert_settings_for_an_enabled_backend(self):
         cfg = Config(ga_crew_agent="kiro,claude",
-                     ga_crew_anthropic_api_key=self.SECRET)
+                     anthropic_api_key=self.SECRET)
         self.assertEqual(inert_backend_settings(cfg, frozenset({"ga-claude-auth"})), [])
 
     def test_warning_names_the_setting_once_and_never_its_value(self):
@@ -156,19 +156,19 @@ class TestInertSettings(unittest.TestCase):
         # "" in production for secret-delivered keys (TRN-226).
         cfg = Config()
         with patch.object(server, "cfg", cfg), \
-             patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", self.SECRET), \
+             patch.object(server, "_ANTHROPIC_API_KEY", self.SECRET), \
              patch.object(server, "_claude_auth_exists", return_value=False), \
              patch.object(server, "_codex_auth_exists", return_value=False), \
              self.assertLogs(server.logger, level=logging.WARNING) as logs:
             server._warn_inert_backend_settings()
         output = "\n".join(logs.output)
-        self.assertEqual(output.count("GA_CREW_ANTHROPIC_API_KEY"), 1)
+        self.assertEqual(output.count("ANTHROPIC_API_KEY"), 1)
         self.assertNotIn(self.SECRET, output)
 
     def test_loading_config_logs_no_inert_warnings(self):
         # Config loads in several modules; the warnings must come only from the
         # transport startup path, so loading config must not emit them.
-        with patch.dict("os.environ", {"GA_CREW_OPENAI_API_KEY": "sk-x"}, clear=True), \
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-x"}, clear=True), \
              self.assertNoLogs("transport.config", level=logging.WARNING):
             Config.from_env()
 

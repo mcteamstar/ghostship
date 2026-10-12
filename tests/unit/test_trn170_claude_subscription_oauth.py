@@ -44,7 +44,7 @@ class TestValidateNoLongerRaisesWithoutApiKey(unittest.TestCase):
         """Config.validate() must NOT raise ConfigError when claude backend has no API key."""
         env = {
             "GA_CREW_AGENT": "claude",
-            "GA_CREW_ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_API_KEY": "",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
@@ -55,7 +55,7 @@ class TestValidateNoLongerRaisesWithoutApiKey(unittest.TestCase):
         """validate() still passes (trivially) when API key is provided."""
         env = {
             "GA_CREW_AGENT": "claude",
-            "GA_CREW_ANTHROPIC_API_KEY": "sk-ant-test",
+            "ANTHROPIC_API_KEY": "sk-ant-test",
         }
         with patch.dict("os.environ", env):
             cfg = Config.from_env()
@@ -65,7 +65,7 @@ class TestValidateNoLongerRaisesWithoutApiKey(unittest.TestCase):
         """validate() passes for kiro backend regardless of API key."""
         with patch.dict("os.environ", {
             "GA_CREW_AGENT": "kiro",
-            "GA_CREW_ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_API_KEY": "",
         }):
             cfg = Config.from_env()
         cfg.validate()  # must not raise
@@ -373,11 +373,11 @@ class TestFinishCrewSetupClaudeBranch(unittest.TestCase):
             )
 
     def test_api_key_path_does_not_inject_claude_auth(self) -> None:
-        """When GA_CREW_ANTHROPIC_API_KEY is set, _inject_claude_auth is NOT called."""
+        """When ANTHROPIC_API_KEY is set, _inject_claude_auth is NOT called."""
         podman = self._make_podman()
         with (
             patch.object(_lifecycle, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(_lifecycle, "GA_CREW_ANTHROPIC_API_KEY", "sk-ant-key"),
+            patch.object(_lifecycle, "ANTHROPIC_API_KEY", "sk-ant-key"),
             patch.object(_lifecycle, "_inject_claude_auth") as mock_inject,
             patch.object(_lifecycle, "_inject_auth"),
             patch.object(_lifecycle, "KIRO_API_KEY", ""),
@@ -388,11 +388,11 @@ class TestFinishCrewSetupClaudeBranch(unittest.TestCase):
         self.assertEqual(result.get("status"), "ready")
 
     def test_oauth_path_calls_inject_claude_auth(self) -> None:
-        """When GA_CREW_ANTHROPIC_API_KEY is unset but ga-claude-auth exists, _inject_claude_auth is called."""
+        """When ANTHROPIC_API_KEY is unset but ga-claude-auth exists, _inject_claude_auth is called."""
         podman = self._make_podman()
         with (
             patch.object(_lifecycle, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(_lifecycle, "GA_CREW_ANTHROPIC_API_KEY", ""),
+            patch.object(_lifecycle, "ANTHROPIC_API_KEY", ""),
             patch.object(_lifecycle, "_claude_auth_exists", return_value=True),
             patch.object(_lifecycle, "_inject_claude_auth") as mock_inject,
             patch.object(_lifecycle, "_inject_auth"),
@@ -412,7 +412,7 @@ class TestFinishCrewSetupClaudeBranch(unittest.TestCase):
         podman = self._make_podman()
         with (
             patch.object(_lifecycle, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(_lifecycle, "GA_CREW_ANTHROPIC_API_KEY", ""),
+            patch.object(_lifecycle, "ANTHROPIC_API_KEY", ""),
             patch.object(_lifecycle, "_claude_auth_exists", return_value=False),
             patch.object(_lifecycle, "_inject_claude_auth") as mock_inject,
             patch.object(_lifecycle, "_inject_auth"),
@@ -459,7 +459,7 @@ class TestLaunchClaudeBackendNoCredentials(unittest.TestCase):
 
         with (
             patch.object(server, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", ""),
+            patch.object(server, "_ANTHROPIC_API_KEY", ""),
             patch.object(server, "_claude_auth_exists", return_value=False),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(
@@ -480,7 +480,7 @@ class TestLaunchClaudeBackendNoCredentials(unittest.TestCase):
 
         with (
             patch.object(server, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", ""),
+            patch.object(server, "_ANTHROPIC_API_KEY", ""),
             patch.object(server, "_claude_auth_exists", return_value=False),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(
@@ -500,7 +500,7 @@ class TestLaunchClaudeBackendNoCredentials(unittest.TestCase):
 
         with (
             patch.object(server, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", "sk-ant-real"),
+            patch.object(server, "_ANTHROPIC_API_KEY", "sk-ant-real"),
             patch.object(server, "_claude_auth_exists", return_value=False),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_initiate_claude_login") as mock_initiate,
@@ -522,7 +522,7 @@ class TestLaunchClaudeBackendNoCredentials(unittest.TestCase):
 
         with (
             patch.object(server, "GA_CREW_ACP_BACKEND", "claude"),
-            patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", ""),
+            patch.object(server, "_ANTHROPIC_API_KEY", ""),
             patch.object(server, "_claude_auth_exists", return_value=True),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_initiate_claude_login") as mock_initiate,
