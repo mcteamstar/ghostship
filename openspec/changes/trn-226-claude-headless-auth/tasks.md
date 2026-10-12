@@ -28,7 +28,8 @@
 - [ ] 3.3 409 if `_claude_login_pending is not None` (OAuth flow in progress)
 - [ ] 3.4 Call `_initiate_claude_setup_token`, surface error as 500
 - [ ] 3.5 Register `("POST", "/login/claude/setup-token")` in the route table alongside
-      the existing claude login routes (~line 4636)
+      the existing claude login routes (near the `POST /login/claude/code` entries,
+      currently around line 4927–4967)
 
 ## 4. `auth.py` — public route exemption
 

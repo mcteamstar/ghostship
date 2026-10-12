@@ -44,7 +44,7 @@ before any container work starts.
 ## D6 — Container reuse
 
 Same `ga-claude-login-*` container image as the OAuth path (requires `claude` in
-`GA_AGENT_BACKENDS`). The guard that checks for the `claude` binary (`which claude`)
+`GA_CREW_AGENT`). The guard that checks for the `claude` binary (`which claude`)
 is reused. Same nuke-on-error pattern.
 
 ## Implementation sequence
