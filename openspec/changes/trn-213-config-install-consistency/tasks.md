@@ -1,27 +1,99 @@
 # Tasks
 
-## 1. Prune ghostship.conf.example
+## 1. Hardcode 7 eliminated vars (transport/config.py, lifecycle.py, server.py)
 
-- [ ] 1.1 Remove the following vars from `config/ghostship.conf.example` entirely (they are internal implementation details operators should never set): `GA_PREWARM_ENABLED`, `GA_PREWARM_TTL_SECS`, `GA_RESOURCE_PRESSURE_GB`, `GA_RESOURCE_CRITICAL_GB`, `GA_SPAWN_MIN_MEMORY_GB`, `GA_SUBAGENT_TIMEOUT_SECS`, `GA_SUBAGENT_MAX_TURNS`, `GA_TRANSPORT_SECRET`, `TRANSPORT_DATA_DIR`, `PODMAN_SOCKET`, `GA_ENABLE_SECURITY_HEADERS`, `GA_TLS_MIN_VERSION`, `GA_CREW_AGENT`, `GA_MACHINE_NAME`, `GA_DASHBOARD_PORT_RANGE_START`, `GA_DASHBOARD_PORT_RANGE_SIZE`
-- [ ] 1.2 Move `KC_IMAGE` and `KC_BASE_IMAGE` out of `ghostship.conf.example` and into a brief "Advanced / dev-only" note in `docs/configuration.md` only — they're useful for development and custom images but not for production operators
-- [ ] 1.3 Remove all six `GA_RATE_LIMIT_*` vars from `ghostship.conf.example` — keep defaults in code, document the master switch (`GA_RATE_LIMIT_ENABLED`) only in `docs/configuration.md` as an escape hatch
+- [ ] 1.1 In `transport/config.py`, remove the following fields from the `Config` dataclass
+      and their corresponding `from_env()` lines: `ga_crew_agent` (old meaning),
+      `transport_data_dir`, `ga_enable_security_headers`, `ga_tls_min_version`,
+      `ga_prewarm_enabled`, `ga_prewarm_ttl_secs`, `ga_subagent_max_turns`.
+- [ ] 1.2 In `transport/lifecycle.py`, replace all `cfg.ga_crew_agent` / `GA_CREW_AGENT`
+      references (the KiroCrew internal agent name written to config.local.json) with the
+      literal `"kiro"` or a `_KC_AGENT_NAME = "kiro"` module constant. Same for
+      `GA_PREWARM_TTL_SECS` → `_PREWARM_TTL_SECS = 300` and
+      `GA_SUBAGENT_MAX_TURNS` → `_SUBAGENT_MAX_TURNS = 200`. Remove the
+      `GA_PREWARM_ENABLED` gate — let `_prewarm_crew` always execute when called.
+      Replace `TRANSPORT_DATA_DIR` / `cfg.transport_data_dir` with `"/data"` literal.
+- [ ] 1.3 In `transport/server.py`, replace `GA_CREW_AGENT`, `GA_ENABLE_SECURITY_HEADERS`,
+      `GA_TLS_MIN_VERSION`, `GA_SUBAGENT_MAX_TURNS` module-level reads with the
+      corresponding constants/literals. `_TLS_MIN_VERSION = "1.2"`. Remove the
+      `GA_ENABLE_SECURITY_HEADERS` conditional — `SecurityHeadersMiddleware` always active.
+- [ ] 1.4 Verify: `python3 -c "import transport.config; import transport.lifecycle; import transport.server"` passes cleanly.
 
-## 2. Fix GA_ORDERS_DIR — add volume mount
+## 2. Consolidate GA_CREW_AGENT (rename + replace GA_CREW_ACP_BACKEND + GA_AGENT_BACKENDS)
 
-- [ ] 2.1 In `scripts/install.sh`, before writing `compose.yml`, add a check: if `GA_ORDERS_DIR` is set but not an absolute path, print an error and abort; if set and path doesn't exist, print a warning but continue
-- [ ] 2.2 In the compose template, add a conditional `- ${GA_ORDERS_DIR}:/mnt/orders:ro` volume entry for `ga-transport` when `GA_ORDERS_DIR` is non-empty, and set `GA_ORDERS_DIR: "/mnt/orders"` (fixed container path) in the environment block instead of the raw host path
+- [ ] 2.1 In `transport/config.py`, add `ga_crew_agent: str = "kiro"` (new meaning:
+      the ACP backend to use). In `from_env()`, read `GA_CREW_AGENT` first; if unset,
+      fall back to `GA_CREW_ACP_BACKEND` with a deprecation warning log. Remove
+      `ga_crew_acp_backend` and `ga_agent_backends` fields.
+- [ ] 2.2 In `transport/lifecycle.py` and `transport/server.py`, replace all
+      `cfg.ga_crew_acp_backend` and `GA_CREW_ACP_BACKEND` with `cfg.ga_crew_agent`.
+      Replace `cfg.ga_agent_backends` / `GA_AGENT_BACKENDS` with a frozenset derived
+      from `cfg.ga_crew_agent.split(",")` where needed (e.g. login route validation).
+- [ ] 2.3 In `scripts/install.sh`, replace `GA_AGENT_BACKENDS` with `GA_CREW_AGENT` as
+      the source for `AGENT_TOOLCHAINS`. First entry of `GA_CREW_AGENT` becomes the
+      runtime backend passed to compose. Add deprecation warnings: if `GA_AGENT_BACKENDS`
+      or `GA_CREW_ACP_BACKEND` are set, print a warning and map them to `GA_CREW_AGENT`
+      for this run. Update compose template: replace `GA_CREW_ACP_BACKEND: ...` with
+      `GA_CREW_AGENT: <first_entry>`.
+- [ ] 2.4 Update `tests/unit/test_agent_backends.py` and `test_agent_backends_parity.py`
+      to use `GA_CREW_AGENT` instead of `GA_CREW_ACP_BACKEND`/`GA_AGENT_BACKENDS`.
+      Add test: deprecated alias `GA_CREW_ACP_BACKEND` maps to `GA_CREW_AGENT` with
+      a logged warning.
 
-## 3. Fix GA_TLS_CERTFILE / GA_TLS_KEYFILE — add volume mount
+## 3. Fix GA_ORDERS_DIR — add volume mount
 
-- [ ] 3.1 In `scripts/install.sh`, add a check: if either TLS var is set but not both, error with a clear message; if both are set and don't share the same parent directory, error explaining the same-directory requirement
-- [ ] 3.2 In the compose template, add a conditional `- <cert_dir>:/mnt/tls:ro` volume entry when both TLS vars are set; set `GA_TLS_CERTFILE: "/mnt/tls/<cert_basename>"` and `GA_TLS_KEYFILE: "/mnt/tls/<key_basename>"` as the container-side paths
+- [ ] 3.1 In `scripts/install.sh`, before writing `compose.yml`, add a check: if
+      `GA_ORDERS_DIR` is set but not an absolute path, print an error and abort; if set
+      and path doesn't exist, print a warning but continue.
+- [ ] 3.2 In the compose template, add a conditional `- ${GA_ORDERS_DIR}:/mnt/orders:ro`
+      volume entry for `ga-transport` when `GA_ORDERS_DIR` is non-empty, and set
+      `GA_ORDERS_DIR: "/mnt/orders"` (fixed container path) in the environment block.
 
-## 4. Fix lifecycle.py comment
+## 4. Fix GA_TLS_CERTFILE / GA_TLS_KEYFILE — add volume mount
 
-- [ ] 4.1 In `transport/lifecycle.py` around line 280, replace "Both TTLs floor at one hour." with an accurate comment: "The warm-marker TTL is floored at one hour via `_warm_marker_ttl_secs()`; `_TASK_TIMESTAMP_TTL_SECS` has no floor."
+- [ ] 4.1 In `scripts/install.sh`, add a check: if either TLS var is set but not both,
+      error with a clear message; if both are set and don't share the same parent
+      directory, error.
+- [ ] 4.2 In the compose template, add a conditional `- <cert_dir>:/mnt/tls:ro` volume
+      entry when both TLS vars are set; set `GA_TLS_CERTFILE: "/mnt/tls/<cert_basename>"`
+      and `GA_TLS_KEYFILE: "/mnt/tls/<key_basename>"` as the container-side paths.
 
-## 5. Update docs/configuration.md and ghostship.conf.example
+## 5. Fix lifecycle.py comment
 
-- [ ] 5.1 Update `docs/configuration.md` to remove pruned vars, add PORT clarification (Caddy host port only; transport always 64057 inside container), and add brief KC_IMAGE/KC_BASE_IMAGE note in a dev/advanced section
-- [ ] 5.2 Update `GA_MAX_ACTIVE_CREWS` entry in both docs and conf.example: values ≤ 0 all disable the limit (not just 0)
-- [ ] 5.3 Update `GA_ORDERS_DIR` and TLS entries in docs/conf.example to reflect the new volume-mount behaviour
+- [ ] 5.1 In `transport/lifecycle.py` around line 280, replace "Both TTLs floor at one
+      hour." with an accurate comment: "The warm-marker TTL is floored at one hour via
+      `_warm_marker_ttl_secs()`; `_TASK_TIMESTAMP_TTL_SECS` has no floor."
+
+## 6. Prune ghostship.conf.example and update docs
+
+- [ ] 6.1 Remove from `config/ghostship.conf.example`: all vars now hardcoded (task 1),
+      `GA_CREW_ACP_BACKEND`, `GA_AGENT_BACKENDS` (replaced by `GA_CREW_AGENT`),
+      `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE`, `GA_MACHINE_NAME`,
+      `GA_SUBAGENT_TIMEOUT_SECS`, `GA_MIN_FREE_MEM_GB`, `GA_SPAWN_MIN_MEMORY_GB`,
+      `GA_RESOURCE_PRESSURE_GB`, `GA_RESOURCE_CRITICAL_GB`,
+      `GA_SPAWN_PRESSURE_ESCALATE_CYCLES`, `GA_DASHBOARD_PORT_RANGE_START`,
+      `GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_RATE_LIMIT_LOGIN_GET`,
+      `GA_RATE_LIMIT_LOGIN_POST`, `GA_RATE_LIMIT_MCP`, `GA_RATE_LIMIT_FILES`,
+      `GA_RATE_LIMIT_CREW_API`.
+- [ ] 6.2 Add `GA_CREW_AGENT` to `ghostship.conf.example` in the agent backends section,
+      replacing the `GA_AGENT_BACKENDS` + `GA_CREW_ACP_BACKEND` block. Document values:
+      `kiro` (default), `claude`, `codex`, `opencode`. Note that `GA_CREW_ACP_BACKEND`
+      is a deprecated alias.
+- [ ] 6.3 Update `docs/configuration.md`: remove hardcoded vars from the reference table;
+      add an "Advanced / expert-only" section documenting the pruned vars that remain
+      functional; update `GA_CREW_AGENT` entry; add PORT clarification (Caddy host port
+      only; transport always 64057 inside container); update `GA_MAX_ACTIVE_CREWS` entry
+      (values ≤ 0 all disable the limit).
+- [ ] 6.4 Update `GA_ORDERS_DIR` and TLS entries in docs and conf.example to reflect
+      the new volume-mount behaviour.
+
+## 7. Tests and verification
+
+- [ ] 7.1 Run `tests/run.sh --unit` — must pass after all changes.
+- [ ] 7.2 Verify install.sh deprecation path: set `GA_CREW_ACP_BACKEND=claude` in env,
+      run `install.sh --dry-run` (or check), assert warning is printed and
+      `GA_CREW_AGENT=claude` is used.
+- [ ] 7.3 Verify hardcoding: grep for `GA_CREW_AGENT\b`, `TRANSPORT_DATA_DIR`,
+      `GA_ENABLE_SECURITY_HEADERS`, `GA_TLS_MIN_VERSION`, `GA_PREWARM_ENABLED`,
+      `GA_PREWARM_TTL_SECS`, `GA_SUBAGENT_MAX_TURNS` in transport/*.py — none should
+      reference these as env-var reads in `from_env()` or as `cfg.*` attributes.
