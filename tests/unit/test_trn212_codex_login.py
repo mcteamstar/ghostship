@@ -65,7 +65,7 @@ class TestCodexLoginTOCTOUGuard(_CodexLoginBase):
         t = threading.Thread(target=writer, daemon=True)
 
         with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
-             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end)):
+             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end, b"")):
             t.start()
             try:
                 result = _lifecycle._initiate_codex_login(podman)
@@ -115,7 +115,7 @@ class TestCodexBinaryProbe(_CodexLoginBase):
                 writer_end.close()
 
         t = threading.Thread(target=writer, daemon=True)
-        pty_stub = Mock(return_value=("exec-1", helper_end))
+        pty_stub = Mock(return_value=("exec-1", helper_end, b""))
 
         with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
              patch.object(podman, "container_exec_pty_stdin", pty_stub):
@@ -157,7 +157,7 @@ class TestCodexPtyUrlExtraction(_CodexLoginBase):
         t = threading.Thread(target=writer, daemon=True)
 
         with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
-             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end)):
+             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end, b"")):
             t.start()
             try:
                 result = _lifecycle._initiate_codex_login(podman)
@@ -200,7 +200,7 @@ class TestCodexPtyTimeout(_CodexLoginBase):
         with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
              patch.object(_lifecycle, "_nuke_codex_login_container", nuke), \
              patch.object(_lifecycle, "_run_pty_login_flow", short_flow), \
-             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end)):
+             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end, b"")):
             t.start()
             try:
                 result = _lifecycle._initiate_codex_login(podman)

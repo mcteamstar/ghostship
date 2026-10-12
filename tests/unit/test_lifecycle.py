@@ -1428,7 +1428,7 @@ class LoginLogoutTests(unittest.TestCase):
             patch.object(lifecycle, "_start_login_container", return_value=container_name),
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
-            patch.object(podman, "container_exec_pty_stdin", return_value=(exec_id, fake_sock)),
+            patch.object(podman, "container_exec_pty_stdin", return_value=(exec_id, fake_sock, b"")),
         ):
             mock_select.select.return_value = ([fake_sock], [], [])
             request = Mock()
@@ -1493,7 +1493,7 @@ class LoginLogoutTests(unittest.TestCase):
             patch.object(
                 podman,
                 "container_exec_pty_stdin",
-                return_value=(exec_id, fake_sock),
+                return_value=(exec_id, fake_sock, b""),
             ),
         ):
             mock_select.select.return_value = ([fake_sock], [], [])
@@ -1554,7 +1554,7 @@ class LoginLogoutTests(unittest.TestCase):
             patch.object(server, "time") as mock_time,
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
-            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-fail", fake_sock)),
+            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-fail", fake_sock, b"")),
         ):
             mock_time.time.side_effect = [1000.0, 1000.0, 1016.0]
             mock_select.select.return_value = ([fake_sock], [], [])
@@ -1700,7 +1700,7 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
             patch.object(server, "time") as mock_time,
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
-            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-x", fake_sock)),
+            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-x", fake_sock, b"")),
         ):
             mock_time.time.side_effect = [1000.0, 1000.0, 1016.0]
             mock_select.select.return_value = ([fake_sock], [], [])
@@ -1733,7 +1733,7 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
             patch.object(lifecycle, "select") as mock_select,
             patch.object(lifecycle, "KIRO_REGION", "us-west-2"),
             patch.object(podman, "container_exec", return_value="kiro-cli"),
-            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-r", fake_sock)),
+            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-r", fake_sock, b"")),
         ):
             mock_select.select.return_value = ([fake_sock], [], [])
             request = Mock()
@@ -1783,7 +1783,7 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
             patch.object(server, "time") as mock_time,
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
-            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-pty45", fake_sock)),
+            patch.object(podman, "container_exec_pty_stdin", return_value=("exec-pty45", fake_sock, b"")),
         ):
             # Simulate: start=1000, first deadline check=1000 (inside loop),
             # second check=1046 (past 45s deadline) — loop exits, error returned.

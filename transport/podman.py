@@ -365,14 +365,30 @@ class PodmanClient(ContainerRuntime):
         finally:
             response.close()
 
+    # Timeout applied to the raw exec socket before the header-read loop.
+    # Callers that immediately call sock.setblocking(False) after receiving the
+    # socket override this timeout for their own reads; the constant therefore
+    # only guards the header-read phase inside this method.
+    PTY_SOCKET_TIMEOUT_SECS = 120.0
+
     def container_exec_pty_stdin(
         self, name: str, cmd: list[str]
-    ) -> tuple[str, "socket.socket"]:
+    ) -> "tuple[str, socket.socket, bytes]":
         """Start a PTY+stdin exec session via a raw Unix socket.
 
-        Returns (exec_id, raw_socket). The socket is bidirectional: read from
-        it to get PTY output, write to it to send stdin. The caller is
-        responsible for closing the socket when done.
+        Returns ``(exec_id, raw_socket, leftover_bytes)`` where *leftover_bytes*
+        is any PTY output already received in the same read-chunk as the 101
+        Switching Protocols headers.  Callers must pre-populate their read
+        accumulator with these bytes so no output is lost.
+
+        The socket is bidirectional: read from it to get PTY output, write to
+        it to send stdin.  The caller is responsible for closing the socket when
+        done.
+
+        A timeout of ``PTY_SOCKET_TIMEOUT_SECS`` (120 s) is set on the socket
+        before the header-read loop.  Callers calling ``setblocking(False)``
+        after this method returns override that timeout for subsequent reads —
+        the timeout therefore only guards the header-read phase performed here.
 
         kiro-cli ignores --identity-provider / --region flags when running
         interactively (upstream bug). This method provides a writable stdin so
@@ -393,6 +409,11 @@ class PodmanClient(ContainerRuntime):
         success = False
         try:
             sock.connect(self._sock_path)
+            # Set a timeout so a hung Podman socket cannot block a login thread
+            # indefinitely.  Callers that call setblocking(False) immediately
+            # after this method returns will override the timeout for their own
+            # reads; the timeout therefore only guards the header-read loop below.
+            sock.settimeout(self.PTY_SOCKET_TIMEOUT_SECS)
 
             body = json.dumps({"Detach": False}).encode()
             request_line = f"POST /v4.0.0/libpod/exec/{exec_id}/start HTTP/1.1\r\n"
@@ -414,12 +435,18 @@ class PodmanClient(ContainerRuntime):
                     raise RuntimeError("Socket closed before exec upgrade completed")
                 response_buf.extend(chunk)
 
+            # Bytes after the header delimiter are PTY output that arrived in the
+            # same read-chunk as the 101 headers.  Return them as leftover so the
+            # caller can seed its accumulator and avoid losing early PTY output.
+            delimiter_offset = response_buf.index(b"\r\n\r\n") + 4
+            leftover = bytes(response_buf[delimiter_offset:])
+
             success = True
         finally:
             if not success:
                 sock.close()
 
-        return exec_id, sock
+        return exec_id, sock, leftover
 
     @staticmethod
     def _check_response(response: Any, operation: str) -> None:
