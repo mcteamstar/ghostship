@@ -113,13 +113,16 @@
 #
 # GA_CREW_AGENT=kiro
 
-# ── Claude Code ACP backend (TRN-167, TRN-170) ───────────────────────────────
+# ── Claude Code ACP backend (TRN-167, TRN-170, TRN-226) ──────────────────────
 # To use the Claude Code ACP runtime inside crews:
 #   1. Enable it: GA_CREW_AGENT=claude (see Agent backend above).
-#   2. A Claude credential — one of:
+#   2. A Claude credential, used in this order of precedence — one of:
 #      a. GA_CREW_ANTHROPIC_API_KEY — Anthropic pay-per-token API key (TRN-167).
-#         When set, takes precedence over OAuth credentials.
-#      b. Claude OAuth login (TRN-170). Requires a Claude Pro/Max subscription.
+#      b. CLAUDE_CODE_OAUTH_TOKEN — long-lived token from running
+#         `claude setup-token` on your own machine (TRN-226). Recommended for
+#         Claude Pro/Max subscriptions on unattended deployments. A value
+#         exported in your shell is ignored; only this file counts.
+#      c. Claude OAuth login (TRN-170). Requires a Claude Pro/Max subscription.
 #         Two steps: POST /login/claude returns a login_url; approve it in the
 #         browser, then POST the pasted <code>#<state> to /login/claude/code.
 #         Poll GET /login/claude until it returns "complete". Credentials are
@@ -132,7 +135,8 @@
 # policies/default.json) is still enforced. Outbound access to
 # api.anthropic.com is required for Claude-backend crews.
 #
-# GA_CREW_ANTHROPIC_API_KEY=""   # optional when using Claude OAuth login
+# GA_CREW_ANTHROPIC_API_KEY=""   # optional when using a token or OAuth login
+# CLAUDE_CODE_OAUTH_TOKEN=""     # from `claude setup-token`; never commit it
 # GA_CREW_ANTHROPIC_BASE_URL=""
 #
 # Model override (applies to all agents; a dispatch(model=...) call still wins).

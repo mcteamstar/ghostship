@@ -82,6 +82,12 @@ GA_CREW_ANTHROPIC_API_KEY=""
 # env var (secret-delivery-hardening).
 GA_CREW_OPENAI_API_KEY=""
 KIRO_API_KEY=""
+# Long-lived Claude token from `claude setup-token`, injected into Claude-backend
+# crews as CLAUDE_CODE_OAUTH_TOKEN (TRN-226). Reset here so a token exported in
+# the operator's own shell is never picked up; only ghostship.conf sets it.
+CLAUDE_CODE_OAUTH_TOKEN=""
+GA_CREW_ANTHROPIC_BASE_URL=""
+GA_CREW_OPENAI_BASE_URL=""
 GA_MIN_FREE_MEM_GB=2.0
 GA_SPAWN_MIN_MEMORY_GB=1.5
 GA_RESOURCE_PRESSURE_GB=2.0
@@ -89,8 +95,20 @@ GA_RESOURCE_CRITICAL_GB=1.0
 GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
-# GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
+GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
 GA_DASHBOARD_PORT_RANGE_SIZE=64
+HOST=0.0.0.0
+GA_ORDERS_DIR=""
+GA_TLS_CERTFILE=""
+GA_TLS_KEYFILE=""
+KC_BASE_IMAGE=""
+GA_PORTAL_SESSION_TTL_SECS=86400
+GA_RATE_LIMIT_ENABLED=true
+GA_RATE_LIMIT_LOGIN_GET=30:60
+GA_RATE_LIMIT_LOGIN_POST=5:300
+GA_RATE_LIMIT_MCP=300:60
+GA_RATE_LIMIT_FILES=60:60
+GA_RATE_LIMIT_CREW_API=120:60
 _COMPOSE_RETRY_ATTEMPTS=3     # retries on transient compose up failure (hardcoded)
 _COMPOSE_RETRY_DELAY_SECS=2   # sleep between retries in seconds (hardcoded)
 # ── Client-only install ──────────────────────────────────────────────────────
@@ -724,6 +742,13 @@ if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-crew-anthropic-api-key' created"
 fi
 
+# ── Podman secret for ga-claude-code-oauth-token ──────────────────────────────
+${_PODMAN_CMD} secret rm ga-claude-code-oauth-token 2>/dev/null || true
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | ${_PODMAN_CMD} secret create ga-claude-code-oauth-token -
+  echo "✓ Podman secret 'ga-claude-code-oauth-token' created"
+fi
+
 # ── Podman secret for ga-crew-openai-api-key ──────────────────────────────────
 ${_PODMAN_CMD} secret rm ga-crew-openai-api-key 2>/dev/null || true
 if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then
@@ -909,6 +934,7 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
 $(if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then printf '      - ga-crew-anthropic-api-key\n'; fi)
+$(if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then printf '      - ga-claude-code-oauth-token\n'; fi)
 $(if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then printf '      - ga-crew-openai-api-key\n'; fi)
 $(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '      - ga-kiro-api-key\n'; fi)
   ga-portal:
@@ -937,6 +963,7 @@ secrets:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '  ga-api-key:\n    external: true\n'; fi)
 $(if [[ -n "${GA_CREW_ANTHROPIC_API_KEY:-}" ]]; then printf '  ga-crew-anthropic-api-key:\n    external: true\n'; fi)
+$(if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then printf '  ga-claude-code-oauth-token:\n    external: true\n'; fi)
 $(if [[ -n "${GA_CREW_OPENAI_API_KEY:-}" ]]; then printf '  ga-crew-openai-api-key:\n    external: true\n'; fi)
 $(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '  ga-kiro-api-key:\n    external: true\n'; fi)
 volumes:

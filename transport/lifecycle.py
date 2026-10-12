@@ -138,7 +138,9 @@ cfg = Config.from_env()
 # When set, kiro-cli in the crew authenticates via this API key (injected
 # as a container env var by server.launch) and the SQLite auth-row injection
 # (_inject_auth) is skipped. Unset (default) => device-code auth is injected.
-KIRO_API_KEY = cfg.kiro_api_key
+# Read from the Podman secret, as server.py does: cfg.kiro_api_key is "" in
+# production because the compose file never carries the key (TRN-226).
+KIRO_API_KEY = _security.get_secret("ga-kiro-api-key", env_var="KIRO_API_KEY")
 
 # The reusable kiro-cli auth blob lives under the transport data mount; the
 # KIRO_* values drive the interactive `kiro-cli login` device flow in _initiate_login.
@@ -227,9 +229,15 @@ GA_PREWARM_ENABLED = True
 # GA_CREW_AGENT is the consolidated backend var (replaces GA_CREW_ACP_BACKEND + GA_AGENT_BACKENDS).
 # The runtime default backend is the first entry.
 GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
-GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
+# Credentials resolve from Podman secrets exactly as in server.py, so the
+# OAuth-injection guards below see the same values the crew env was built from.
+GA_CREW_ANTHROPIC_API_KEY = _security.get_secret(
+    "ga-crew-anthropic-api-key", env_var="GA_CREW_ANTHROPIC_API_KEY")
+CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
+    "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
 GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
-GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
+GA_CREW_OPENAI_API_KEY = _security.get_secret(
+    "ga-crew-openai-api-key", env_var="GA_CREW_OPENAI_API_KEY")
 GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
 
 # The effective crew session idle timeout. Spec-ops crews are patched with a
@@ -2141,9 +2149,11 @@ def _finish_crew_setup(
             _effective_endpoint,
         )
         # Task 3.2: API key path (env var injected at container_create) takes
-        # precedence over OAuth path. If no API key, inject OAuth credentials
-        # from ga-claude-auth into the crew container's ~/.claude/ directory.
-        if not GA_CREW_ANTHROPIC_API_KEY and _claude_auth_exists():
+        # precedence over OAuth path, then CLAUDE_CODE_OAUTH_TOKEN (TRN-226).
+        # Only with neither set, inject OAuth credentials from ga-claude-auth
+        # into ~/.claude/, so a crew never holds two Claude credentials.
+        if (not GA_CREW_ANTHROPIC_API_KEY and not CLAUDE_CODE_OAUTH_TOKEN
+                and _claude_auth_exists()):
             try:
                 _inject_claude_auth(podman, container)
             except Exception as e:
@@ -3329,83 +3339,6 @@ def _abort_claude_pending_login(podman: "PodmanClient") -> bool:
     else:
         logger.info("Aborted pending Claude login (container not yet started)")
     return True
-
-
-def _initiate_claude_setup_token(podman: "PodmanClient") -> dict:
-    """Run ``claude setup-token`` non-interactively and write ``ga-claude-auth``.
-
-    Starts an ephemeral ga-claude-login-* container, execs ``claude setup-token``
-    (non-interactive — no PTY needed), waits up to 60 s for
-    ``~/.claude/.credentials.json`` to appear, tars ``~/.claude/``, and writes
-    the archive to ``ga-claude-auth`` via ``_write_claude_auth_file``.
-
-    Returns one of:
-      {"status": "complete"}  — credential written successfully
-      {"error": str}          — failure (container always nuked on error)
-    """
-    # ── Phase: start Claude login container ──────────────────────────────────
-    try:
-        container = _start_claude_login_container(podman)
-    except Exception as e:
-        logger.error("setup-token: failed to start Claude login container: %s", e)
-        return {"error": str(e)}
-
-    # ── Phase: verify claude binary ───────────────────────────────────────────
-    for _ in range(10):
-        try:
-            check = podman.container_exec(container, ["which", "claude"])
-            if "claude" in check:
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-    else:
-        _nuke_claude_login_container(podman, container)
-        return {
-            "error": (
-                f"'claude' CLI not found in image {KC_IMAGE!r}. "
-                "Enable claude in GA_CREW_AGENT and re-run `ghostship install`."
-            )
-        }
-
-    # ── Phase: exec claude setup-token ───────────────────────────────────────
-    try:
-        podman.container_exec(container, ["claude", "setup-token"])
-    except Exception as e:
-        logger.error("setup-token: claude setup-token exec failed: %s", e)
-        _nuke_claude_login_container(podman, container)
-        return {"error": f"claude setup-token failed: {e}"}
-
-    # ── Phase: poll for credential file (up to 60 s) ─────────────────────────
-    deadline = time.time() + 60.0
-    tar_bytes: bytes | None = None
-    while time.time() < deadline:
-        tar_bytes = _poll_claude_login_container(podman, container)
-        if tar_bytes is not None:
-            break
-        time.sleep(1.0)
-
-    if tar_bytes is None:
-        _nuke_claude_login_container(podman, container)
-        return {
-            "error": (
-                f"claude setup-token did not produce {CLAUDE_CREDENTIAL_FILE} "
-                "within 60 seconds."
-            )
-        }
-
-    # ── Phase: write ga-claude-auth ───────────────────────────────────────────
-    try:
-        _write_claude_auth_file(tar_bytes)
-        logger.info("ga-claude-auth written after claude setup-token completion")
-    except Exception as e:
-        logger.error("setup-token: could not write ga-claude-auth: %s", e)
-        _nuke_claude_login_container(podman, container)
-        return {"error": f"credential obtained but could not be saved: {e}"}
-
-    # ── Phase: nuke login container ───────────────────────────────────────────
-    _nuke_claude_login_container(podman, container)
-    return {"status": "complete"}
 
 
 # ── Codex login container helpers ─────────────────────────────────────────────

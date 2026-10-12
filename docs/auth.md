@@ -109,45 +109,41 @@ UNAUTHENTICATED  ──[POST /login]──►  PENDING  ──[GET /login → co
 
 ## Claude headless auth (recommended)
 
-`ga-claude-auth` is a tar archive of `~/.claude/` (the credential directory written
-by the `claude` CLI), stored at `DATA_DIR/ga-claude-auth` (mode `0600`).
-
-This is the recommended path for headless and server deployments. A single API call
-runs `claude setup-token` inside the login container, captures the resulting
-long-lived token, and stores it — no browser redirect, no code submission, no
-short-TTY refresh cycle.
+For unattended and server deployments, give the transport a long-lived Claude token
+instead of logging in through the browser. The token comes from `claude setup-token`,
+which you run once on your own machine. It is delivered like `KIRO_API_KEY`: set in
+`ghostship.conf`, stored as the Podman secret `ga-claude-code-oauth-token`, and injected
+into each Claude-backend crew as `CLAUDE_CODE_OAUTH_TOKEN`. Every crew uses the same
+token, so the OAuth refresh problem described under
+[Re-authenticate](#re-authenticate) does not apply.
 
 ### Prerequisites
 
-Same as OAuth: enable the Claude backend by adding `claude` to `GA_CREW_AGENT`
-in your `ghostship.conf` and re-run `ghostship install`.
+Enable the Claude backend by adding `claude` to `GA_CREW_AGENT` in your
+`ghostship.conf`.
 
 ### Authenticate
 
-```bash
-curl -sX POST http://localhost:64057/login/claude/setup-token \
-  -H 'Authorization: Bearer <GA_API_KEY>'
-```
+1. On your own machine, run `claude setup-token`, approve in the browser, and copy
+   the token it prints.
+2. Add it to `ghostship.conf`:
 
-```json
-{"status": "complete"}
-```
+   ```bash
+   CLAUDE_CODE_OAUTH_TOKEN="<token>"
+   ```
 
-That's it. The credential is stored as `ga-claude-auth` and will be injected into
-every new crew at launch.
+3. Re-run `ghostship install`. New Claude-backend crews launch without a login
+   prompt.
 
-### Headless auth API
+`install.sh` ignores a `CLAUDE_CODE_OAUTH_TOKEN` exported in your shell. Only the
+value in `ghostship.conf` is used.
 
-One HTTP endpoint. Requires `Authorization: Bearer <key>` when `GA_API_KEY` is set.
-Available only while `claude` is in `GA_CREW_AGENT`.
+### Rotate
 
-**`POST /login/claude/setup-token`** — runs `claude setup-token` synchronously inside
-a `ga-claude-login-*` container and writes the resulting credential to `ga-claude-auth`.
-Returns `{"status": "complete"}` on success.
-Returns 409 if already authenticated or an OAuth flow is in progress.
-Returns 400 if claude is not an enabled backend.
-
----
+The token is long-lived but does expire. When crews start failing Claude auth, run
+`claude setup-token` again, replace the value in `ghostship.conf`, and re-run
+`ghostship install`. The token is fixed in a crew's environment when the crew is
+created, so evac and relaunch existing Claude-backend crews to pick up the new one.
 
 ## Claude OAuth login (interactive)
 
@@ -218,8 +214,10 @@ injected at setup time.
 
 ### Re-authenticate
 
-Claude OAuth tokens obtained via this flow may expire. Tokens obtained via
-`POST /login/claude/setup-token` (headless auth) do not have this limitation.
+Claude OAuth tokens obtained via this flow may expire. Each crew gets its own copy
+of `ga-claude-auth`, and the first crew to refresh the token can leave the stored
+copy stale for crews launched later. The headless token path above does not have
+this limitation.
 
 To refresh an OAuth token:
 
@@ -243,8 +241,13 @@ after logging in again.
 
 ### Credential precedence
 
-When both `GA_CREW_ANTHROPIC_API_KEY` and `ga-claude-auth` are present, the API key
-takes precedence. OAuth credentials are only used when the API key is unset.
+Each Claude-backend crew gets exactly one credential, chosen in this order:
+
+1. `GA_CREW_ANTHROPIC_API_KEY`, injected as `ANTHROPIC_API_KEY`.
+2. `CLAUDE_CODE_OAUTH_TOKEN`, injected as `CLAUDE_CODE_OAUTH_TOKEN`.
+3. `ga-claude-auth`, copied into the crew's `~/.claude/`.
+
+A lower entry is only used when every entry above it is unset.
 
 ### Claude OAuth API
 

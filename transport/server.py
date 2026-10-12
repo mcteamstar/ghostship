@@ -58,6 +58,7 @@ import posixpath
 import select
 import socket
 import tarfile
+import dataclasses
 import json
 import logging
 import os
@@ -454,50 +455,23 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 # "kiro" (default): kiro-cli auth injection (existing behaviour).
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY from GA_CREW_ANTHROPIC_API_KEY.
 # "codex": skip kiro auth, inject OPENAI_API_KEY from GA_CREW_OPENAI_API_KEY.
-def _read_podman_secret(name: str) -> str:
-    """Read a Podman secret mounted at /run/secrets/<name>.
-
-    Returns the file contents stripped of surrounding whitespace, or "" when the
-    secret is not mounted (FileNotFoundError) or cannot be read. Mirrors the
-    _load_api_key() / _load_transport_secret() pattern so crew model keys and
-    KIRO_API_KEY are delivered as Podman secrets rather than plaintext compose
-    env vars (secret-delivery-hardening).
-    """
-    secret_path = Path("/run/secrets") / name
-    try:
-        return secret_path.read_text().strip()
-    except FileNotFoundError:
-        return ""
-    except OSError:
-        return ""
-
-
 GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
-# Prefer the Podman-secret file over the (now always empty) env-var value: the
-# compose template no longer carries these keys in its environment block, so
-# cfg.ga_crew_anthropic_api_key is "" in production and the secret file is the
-# real source. The env-var value is retained as the fallback for dev/test runs
-# that set GA_CREW_ANTHROPIC_API_KEY directly without a mounted secret.
-_GA_CREW_ANTHROPIC_API_KEY = cfg.ga_crew_anthropic_api_key
-_secret_value = _read_podman_secret("ga-crew-anthropic-api-key")
-if _secret_value:
-    _GA_CREW_ANTHROPIC_API_KEY = _secret_value
+# Crew credentials come from Podman secrets mounted under /run/secrets; the
+# compose template never carries them in its environment block, so the cfg
+# values are "" in production. _security.get_secret prefers the secret file,
+# falls back to the env var for dev/test runs, and registers the value with the
+# redaction filter. lifecycle resolves the same names the same way, so both
+# modules agree on which credential a crew gets (TRN-226).
+_GA_CREW_ANTHROPIC_API_KEY = _security.get_secret(
+    "ga-crew-anthropic-api-key", env_var="GA_CREW_ANTHROPIC_API_KEY")
 _GA_CREW_ANTHROPIC_BASE_URL = cfg.ga_crew_anthropic_base_url
-# Register the Anthropic API key with the redaction filter so it is never
-# written to logs when the Claude backend is active. Registered after the
-# secret-file read so the file-sourced value is covered, not just the env var.
-if _GA_CREW_ANTHROPIC_API_KEY:
-    _security.register_secret(_GA_CREW_ANTHROPIC_API_KEY)
-_GA_CREW_OPENAI_API_KEY = cfg.ga_crew_openai_api_key
-_secret_value = _read_podman_secret("ga-crew-openai-api-key")
-if _secret_value:
-    _GA_CREW_OPENAI_API_KEY = _secret_value
+# Long-lived token from `claude setup-token`; injected as CLAUDE_CODE_OAUTH_TOKEN
+# when no Anthropic API key is set.
+_CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
+    "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
+_GA_CREW_OPENAI_API_KEY = _security.get_secret(
+    "ga-crew-openai-api-key", env_var="GA_CREW_OPENAI_API_KEY")
 _GA_CREW_OPENAI_BASE_URL = cfg.ga_crew_openai_base_url
-# Register the OpenAI API key with the redaction filter so it is never written
-# to logs when the Codex backend is active. Registered after the secret-file
-# read so the file-sourced value is covered, not just the env var.
-if _GA_CREW_OPENAI_API_KEY:
-    _security.register_secret(_GA_CREW_OPENAI_API_KEY)
 
 # ── Transport security ───────────────────────────────────────────────
 # TLS is terminated at the edge (see design.md); the app still emits HSTS and
@@ -630,16 +604,7 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 # When set, kiro-cli authenticates via this API key and the device-code auth
 # flow is skipped entirely. Injected as an env var into crew
 # containers; unset (default) => existing device-code flow is used.
-KIRO_API_KEY = cfg.kiro_api_key
-_secret_value = _read_podman_secret("ga-kiro-api-key")
-if _secret_value:
-    KIRO_API_KEY = _secret_value
-# Register KIRO_API_KEY with the redaction filter
-# so the value is scrubbed from logs if it appears in an error or log record,
-# consistent with the GA_API_KEY pattern in _load_api_key(). Registered after
-# the secret-file read so the file-sourced value is covered, not just the env var.
-if KIRO_API_KEY:
-    _security.register_secret(KIRO_API_KEY)
+KIRO_API_KEY = _security.get_secret("ga-kiro-api-key", env_var="KIRO_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -705,7 +670,6 @@ try:
         _write_codex_auth_file,
         _initiate_login,
         _initiate_claude_login,
-        _initiate_claude_setup_token,
         _initiate_codex_login,
         _poll_claude_login_container,
         _poll_codex_login_container,
@@ -795,7 +759,6 @@ except ModuleNotFoundError:
         _write_codex_auth_file,
         _initiate_login,
         _initiate_claude_login,
-        _initiate_claude_setup_token,
         _initiate_codex_login,
         _poll_claude_login_container,
         _poll_codex_login_container,
@@ -1864,7 +1827,15 @@ def _warn_inert_backend_settings() -> None:
             ("ga-codex-auth", _codex_auth_exists()),
         ) if present
     )
-    for name in inert_backend_settings(cfg, stored):
+    # cfg holds only env values, which are "" in production for the secret-
+    # delivered credentials; check what the transport actually resolved.
+    resolved = dataclasses.replace(
+        cfg,
+        ga_crew_anthropic_api_key=_GA_CREW_ANTHROPIC_API_KEY,
+        claude_code_oauth_token=_CLAUDE_CODE_OAUTH_TOKEN,
+        ga_crew_openai_api_key=_GA_CREW_OPENAI_API_KEY,
+    )
+    for name in inert_backend_settings(resolved, stored):
         logger.warning(
             "%s is set but its backend is not enabled in GA_CREW_AGENT; it has no effect.", name
         )
@@ -2050,51 +2021,6 @@ async def _handle_claude_login_code_post(request: Request) -> Response:
         return JSONResponse({"error": "The login session closed before the code was written."},
                             status_code=500)
     return JSONResponse({"status": "submitted"}, status_code=202)
-
-
-async def _handle_claude_setup_token_post(request: Request) -> Response:
-    """POST /login/claude/setup-token — synchronous headless Claude auth.
-
-    Runs ``claude setup-token`` via non-interactive container exec inside a
-    ga-claude-login-* container, writes the resulting credential to ga-claude-auth,
-    and returns ``{"status": "complete"}`` on success.
-
-    Guard order:
-      - 400 if claude is not an enabled backend
-      - 409 if ga-claude-auth already exists (already authenticated)
-      - 409 if a Claude OAuth flow is already in progress
-      - Calls _initiate_claude_setup_token; returns 200 on success, 500 on error
-    """
-    if not _backend_enabled("claude"):
-        return PlainTextResponse(_backend_not_enabled_message("claude"), status_code=400)
-
-    with _lifecycle._claude_login_pending_lock:
-        if _claude_auth_exists():
-            return PlainTextResponse(
-                "Already authenticated with Claude. POST /logout/claude first.",
-                status_code=409,
-            )
-        if _lifecycle._claude_login_pending is not None:
-            return PlainTextResponse(
-                "Claude login already in progress. POST /logout/claude or wait for it to complete.",
-                status_code=409,
-            )
-
-    try:
-        podman = _get_podman()
-    except Exception as e:
-        return PlainTextResponse(str(e), status_code=500)
-
-    result = _initiate_claude_setup_token(podman)
-    if "error" in result:
-        return JSONResponse({"error": result["error"]}, status_code=500)
-
-    _security.audit_auth_event(
-        action="login", outcome="success", account="claude",
-        source=_request_source(request),
-        emit=logger.info,
-    )
-    return JSONResponse({"status": "complete"})
 
 
 async def _handle_claude_logout_post(request: Request) -> Response:
@@ -2622,10 +2548,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             "instructions": _backend_not_enabled_message(GA_CREW_ACP_BACKEND),
         }
     if GA_CREW_ACP_BACKEND == "claude":
-        # Task 3.3: Claude backend — require either API key or OAuth credential.
+        # Task 3.3: Claude backend — require an API key, a setup-token (TRN-226) or
+        # an OAuth credential.
         # If neither is present, initiate the Claude login flow and return
         # not_authenticated with the login URL (identical behaviour to kiro path).
-        if not _GA_CREW_ANTHROPIC_API_KEY and not _claude_auth_exists():
+        if (not _GA_CREW_ANTHROPIC_API_KEY and not _CLAUDE_CODE_OAUTH_TOKEN
+                and not _claude_auth_exists()):
             result = _initiate_claude_login(podman)
             if result.get("login_pending"):
                 return {
@@ -2786,6 +2714,11 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             container_env["ANTHROPIC_API_KEY"] = _GA_CREW_ANTHROPIC_API_KEY
             if _GA_CREW_ANTHROPIC_BASE_URL:
                 container_env["ANTHROPIC_BASE_URL"] = _GA_CREW_ANTHROPIC_BASE_URL
+        # No API key: the setup-token is next in precedence (TRN-226). With it
+        # set, _finish_crew_setup skips ga-claude-auth injection, so the crew
+        # gets exactly one Claude credential.
+        elif GA_CREW_ACP_BACKEND == "claude" and _CLAUDE_CODE_OAUTH_TOKEN:
+            container_env["CLAUDE_CODE_OAUTH_TOKEN"] = _CLAUDE_CODE_OAUTH_TOKEN
         # When the Codex ACP backend is selected, inject OPENAI_API_KEY into the
         # crew container so codex-acp can authenticate against api.openai.com
         # (API-key path). The kiro auth path is skipped for Codex-backend crews
@@ -4973,7 +4906,6 @@ if __name__ == "__main__":
         ("POST", "/login/claude"): _handle_claude_login_post,
         ("GET",  "/login/claude"): _handle_claude_login_get,
         ("POST", "/login/claude/code"): _handle_claude_login_code_post,
-        ("POST", "/login/claude/setup-token"): _handle_claude_setup_token_post,
         ("POST", "/logout/claude"): _handle_claude_logout_post,
         ("POST", "/login/codex"): _handle_codex_login_post,
         ("GET",  "/login/codex"): _handle_codex_login_get,
@@ -5013,7 +4945,6 @@ if __name__ == "__main__":
             ("POST", "/login/claude"): _handle_claude_login_post,
             ("GET",  "/login/claude"): _handle_claude_login_get,
             ("POST", "/login/claude/code"): _handle_claude_login_code_post,
-            ("POST", "/login/claude/setup-token"): _handle_claude_setup_token_post,
             ("POST", "/logout/claude"): _handle_claude_logout_post,
             ("POST", "/login/codex"): _handle_codex_login_post,
             ("GET",  "/login/codex"): _handle_codex_login_get,

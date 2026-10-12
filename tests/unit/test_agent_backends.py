@@ -152,8 +152,11 @@ class TestInertSettings(unittest.TestCase):
         self.assertEqual(inert_backend_settings(cfg, frozenset({"ga-claude-auth"})), [])
 
     def test_warning_names_the_setting_once_and_never_its_value(self):
-        cfg = Config(ga_crew_anthropic_api_key=self.SECRET)
+        # The warning checks the resolved (secret-file) value, not cfg, which is
+        # "" in production for secret-delivered keys (TRN-226).
+        cfg = Config()
         with patch.object(server, "cfg", cfg), \
+             patch.object(server, "_GA_CREW_ANTHROPIC_API_KEY", self.SECRET), \
              patch.object(server, "_claude_auth_exists", return_value=False), \
              patch.object(server, "_codex_auth_exists", return_value=False), \
              self.assertLogs(server.logger, level=logging.WARNING) as logs:

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **Removed `POST /login/claude/setup-token` (TRN-226).** The route could never complete. `claude setup-token` asks for an interactive browser approval and prints its token to stdout; it does not write `~/.claude/.credentials.json`, which the route waited for. The route also ran blocking work on the transport's event loop, so a single call hung every other request until the transport was restarted. The route now returns 404. To migrate, run `claude setup-token` on your own machine, set `CLAUDE_CODE_OAUTH_TOKEN="<token>"` in `ghostship.conf`, and re-run `ghostship install`.
+
+### Features
+
+- **Headless Claude auth with `CLAUDE_CODE_OAUTH_TOKEN` (TRN-226).** The long-lived token from `claude setup-token` is now set in `ghostship.conf`, delivered as the `ga-claude-code-oauth-token` Podman secret, and injected into Claude-backend crews as `CLAUDE_CODE_OAUTH_TOKEN`. Every crew uses the same token, so the OAuth refresh-staleness limitation (see v0.6.0) does not apply. Each Claude crew gets exactly one credential, in this order: `GA_CREW_ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. See [docs/auth.md](docs/auth.md#claude-headless-auth-recommended).
+
+### Fixes
+
+- **API keys now suppress stored OAuth credentials as documented (TRN-226).** `transport/lifecycle.py` read `KIRO_API_KEY`, `GA_CREW_ANTHROPIC_API_KEY` and `GA_CREW_OPENAI_API_KEY` from environment values that are always empty in production (the keys exist only as Podman secrets). As a result, a crew with an API key still received `ga-kiro-auth`, `ga-claude-auth` or `ga-codex-auth` alongside it. Both `server.py` and `lifecycle.py` now resolve all crew credentials from their secrets through `security.get_secret`, and the inert-setting warning checks the resolved values.
+- **`install.sh` ignores the invoking shell's environment for every setting.** Fifteen settings had no built-in default, so a value exported in the operator's shell (for example `HOST`, `GA_CREW_ANTHROPIC_BASE_URL`, `GA_RATE_LIMIT_ENABLED` or `GA_DASHBOARD_DEFAULT`) reached the transport without being in `ghostship.conf`. All now have defaults equal to their previous fallbacks, so the documented precedence (built-in default, then config file, then CLI flag) holds.
+
 ## KiroCrew 0.8.0 → 0.9.0 upgrade
 
 - **TRN-220 — internal-API peer-cred validation (PR #2424) does not affect ghostship; transport uses the cookie path. Guardrail test added.** KiroCrew 0.9.0 (`0.9.0-insider.4`) adds unix-socket peer-credential validation to the gateway's internal-secret API path (`X-Internal-Secret` / `X-Session-Key`): a caller whose OS UID differs from the gateway's `kirocrew` process is now rejected even with a valid shared secret. The transport authenticates to crew gateways on the external dashboard-cookie path only (`Cookie` + `Origin`), so this is a no-op for ghostship today. `transport/lifecycle.py::_crew_api` now documents the invariant, carries `_FORBIDDEN_INTERNAL_HEADERS`, and refuses the internal-secret headers if a caller ever passes them via `headers=`; `tests/unit/test_trn220_crew_api_headers.py` asserts the cookie-only contract so a future change that routes an internal-API call across the UID boundary fails loudly in CI.

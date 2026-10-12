@@ -171,7 +171,7 @@ def _read_ga_crew_agent() -> str:
 # Settings that only apply to one optional backend, for the inert-setting
 # warnings. Kiro's settings are never inert because kiro is always enabled.
 _BACKEND_SETTINGS: dict[str, tuple[str, ...]] = {
-    "claude": ("GA_CREW_ANTHROPIC_API_KEY", "GA_CREW_ANTHROPIC_BASE_URL"),
+    "claude": ("GA_CREW_ANTHROPIC_API_KEY", "GA_CREW_ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"),
     "codex": ("GA_CREW_OPENAI_API_KEY", "GA_CREW_OPENAI_BASE_URL"),
 }
 _BACKEND_CREDENTIAL_FILES: dict[str, str] = {
@@ -319,6 +319,13 @@ class Config:
     # Has no effect when GA_CREW_ACP_BACKEND != "claude". Default: unset.
     ga_crew_anthropic_base_url: str = ""
 
+    # CLAUDE_CODE_OAUTH_TOKEN: long-lived token from `claude setup-token`,
+    # delivered as the ga-claude-code-oauth-token Podman secret and injected into
+    # Claude-backend crews when GA_CREW_ANTHROPIC_API_KEY is unset. Takes
+    # precedence over ga-claude-auth (TRN-226). "" in production; the transport
+    # reads the secret file. Kept here for the inert-setting warning.
+    claude_code_oauth_token: str = ""
+
     # GA_CREW_OPENAI_API_KEY: OpenAI API key injected as OPENAI_API_KEY into crew
     # containers when GA_CREW_ACP_BACKEND=codex. Optional when using Codex OAuth
     # login (ga-codex-auth). When set, takes precedence over OAuth credentials.
@@ -400,6 +407,7 @@ class Config:
             ga_crew_agent=ga_crew_agent,
             ga_crew_anthropic_api_key=os.environ.get("GA_CREW_ANTHROPIC_API_KEY", ""),
             ga_crew_anthropic_base_url=os.environ.get("GA_CREW_ANTHROPIC_BASE_URL", "").strip(),
+            claude_code_oauth_token=os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""),
             ga_crew_openai_api_key=os.environ.get("GA_CREW_OPENAI_API_KEY", ""),
             ga_crew_openai_base_url=os.environ.get("GA_CREW_OPENAI_BASE_URL", "").strip(),
         )
