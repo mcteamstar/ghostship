@@ -79,6 +79,8 @@
       `GA_DASHBOARD_PORT_RANGE_SIZE`, `GA_RATE_LIMIT_LOGIN_GET`,
       `GA_RATE_LIMIT_LOGIN_POST`, `GA_RATE_LIMIT_MCP`, `GA_RATE_LIMIT_FILES`,
       `GA_RATE_LIMIT_CREW_API`.
+      Keep `GA_RATE_LIMIT_ENABLED` — it is the master kill-switch and is legitimately
+      useful to operators; the per-endpoint vars are the noise.
 - [ ] 6.2 Add `GA_CREW_AGENT` to `ghostship.conf.example` in the agent backends section,
       replacing the `GA_AGENT_BACKENDS` + `GA_CREW_ACP_BACKEND` block. Document values:
       `kiro` (default), `claude`, `codex`, `opencode`. Note that `GA_CREW_ACP_BACKEND`
@@ -94,9 +96,11 @@
 ## 7. Tests and verification
 
 - [ ] 7.1 Run `tests/run.sh --unit` — must pass after all changes.
-- [ ] 7.2 Verify install.sh deprecation path: set `GA_CREW_ACP_BACKEND=claude` in env,
-      run `install.sh --dry-run` (or check), assert warning is printed and
-      `GA_CREW_AGENT=claude` is used.
+- [ ] 7.2 Verify install.sh deprecation path: set `GA_CREW_ACP_BACKEND=claude` in the
+      environment and source the relevant install.sh parsing section in a subshell;
+      assert the deprecation warning is printed and `GA_CREW_AGENT` is set to `claude`.
+      Alternatively verify via the existing `tests/unit/test_agent_backends_parity.py`
+      once it is updated in task 2.4.
 - [ ] 7.3 Verify hardcoding: grep for `GA_CREW_AGENT\b`, `TRANSPORT_DATA_DIR`,
       `GA_ENABLE_SECURITY_HEADERS`, `GA_TLS_MIN_VERSION`, `GA_PREWARM_ENABLED`,
       `GA_PREWARM_TTL_SECS`, `GA_SUBAGENT_MAX_TURNS` in transport/*.py — none should

@@ -7,7 +7,8 @@
 1. **Hardcode candidates** — values fixed in the standard install that should never be
    env-overridable (`GA_CREW_AGENT` as KiroCrew's internal agent name, `TRANSPORT_DATA_DIR`,
    `GA_ENABLE_SECURITY_HEADERS`, `GA_TLS_MIN_VERSION`, `GA_PREWARM_ENABLED`,
-   `GA_PREWARM_TTL_SECS`, `GA_SUBAGENT_MAX_TURNS`).
+   `GA_PREWARM_TTL_SECS`, `GA_SUBAGENT_MAX_TURNS`, `GA_COMPOSE_RETRY_ATTEMPTS`,
+   `GA_COMPOSE_RETRY_DELAY_SECS`).
 2. **Redundant backend vars** — `GA_CREW_ACP_BACKEND` + `GA_AGENT_BACKENDS` both exist
    because Ghostship builds multi-toolchain images, but KiroCrew is strictly one backend
    per gateway (confirmed from 0.9.0rc4 source: `acp_backend` is a plain `str`, no
@@ -20,7 +21,7 @@
 ## Goals / Non-Goals
 
 **Goals:**
-- Hardcode 7 vars that should never have been configurable
+- Hardcode 9 vars that should never have been configurable
 - Consolidate `GA_CREW_ACP_BACKEND` + `GA_AGENT_BACKENDS` → `GA_CREW_AGENT`
 - Fix `GA_ORDERS_DIR` and TLS cert/key volume mounts
 - Prune `ghostship.conf.example` to ~30 genuine operator vars
@@ -33,7 +34,7 @@
 
 ## Decisions
 
-### D1 — Hardcode 7 vars
+### D1 — Hardcode 9 vars
 
 Remove from `Config` dataclass and `Config.from_env()`. Replace usages with literals or
 module-level constants. Remove from compose template.

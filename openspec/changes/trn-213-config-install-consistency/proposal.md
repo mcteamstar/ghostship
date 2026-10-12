@@ -7,7 +7,7 @@ of a clear operator concept.
 
 This change does four things:
 
-1. **Hardcode** 7 vars that should never have been configurable — eliminate them from
+1. **Hardcode** 9 vars that should never have been configurable — eliminate them from
    `config.py` and compose entirely.
 2. **Consolidate** `GA_CREW_ACP_BACKEND` + `GA_AGENT_BACKENDS` into a single
    `GA_CREW_AGENT` var — clear name, one concept, replaces both.
@@ -28,7 +28,7 @@ values become Python literals or module-level constants:
 | `TRANSPORT_DATA_DIR` | `"/data"` literal |
 | `GA_ENABLE_SECURITY_HEADERS` | always `True` |
 | `GA_TLS_MIN_VERSION` | `"1.2"` literal |
-| `GA_PREWARM_ENABLED` | always `False` (prewarm is implicit since TRN-194) |
+| `GA_PREWARM_ENABLED` | gate removed; prewarm always fires when triggered |
 | `GA_PREWARM_TTL_SECS` | `300` module-level constant in lifecycle.py |
 | `GA_SUBAGENT_MAX_TURNS` | `200` module-level constant |
 | `GA_COMPOSE_RETRY_ATTEMPTS` | `3` constant in install.sh |

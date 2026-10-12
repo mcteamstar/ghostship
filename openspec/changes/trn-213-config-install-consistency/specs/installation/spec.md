@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: Seven internal vars hardcoded as constants
+### Requirement: Nine internal vars hardcoded as constants
 
 The following environment variables SHALL be removed from `Config.from_env()` and from
 the `compose.yml` template. Their values SHALL be hardcoded as Python literals or
@@ -19,7 +19,7 @@ module-level constants:
 | `GA_COMPOSE_RETRY_DELAY_SECS` | `2` constant in install.sh |
 
 #### Scenario: Removed vars have no effect when set in environment
-- **WHEN** any of the seven removed vars is set in the environment or `ghostship.conf`
+- **WHEN** any of the nine removed vars is set in the environment or `ghostship.conf`
 - **THEN** the transport ignores it and uses the hardcoded value; install.sh does not
   pass it through to compose
 
