@@ -33,39 +33,141 @@ gs = _load_ghostship()
 # ---------------------------------------------------------------------------
 
 class TestCmdStop(unittest.TestCase):
+    """Tests for cmd_stop.
 
-    def _run(self, run_results: list) -> tuple[int, str]:
-        """Run cmd_stop with a mocked subprocess.run chain, capture stdout."""
+    cmd_stop now stops ga-transport + ga-portal, then the Podman machine
+    (macOS) or dedicated service (Linux). subprocess.run is mocked with a
+    dispatcher keyed on the command so each test controls only the calls it
+    cares about and records the full call sequence.
+    """
+
+    def _dispatch(self, container_rc=0, container_stderr="",
+                  inspect_rc=1, machine_rc=0, machine_stderr=""):
+        """Build a subprocess.run side_effect that routes by argv.
+
+        Returns (side_effect, calls) where ``calls`` accumulates every argv
+        list subprocess.run was invoked with.
+        """
+        calls: list = []
+
+        def _run(cmd, *a, **kw):
+            calls.append(list(cmd))
+            res = MagicMock()
+            res.stdout = ""
+            if "machine" in cmd and "stop" in cmd:
+                res.returncode = machine_rc
+                res.stderr = machine_stderr
+            elif cmd[:3] == ["systemctl", "--user", "stop"]:
+                res.returncode = machine_rc
+                res.stderr = machine_stderr
+            elif "inspect" in cmd:
+                res.returncode = inspect_rc
+                res.stderr = ""
+            else:  # container stop
+                res.returncode = container_rc
+                res.stderr = container_stderr
+            return res
+
+        return _run, calls
+
+    def _run(self, side_effect, env=None, system="Darwin"):
+        env = env or {}
+        import os as _os
         with patch("shutil.which", return_value="/usr/bin/podman"), \
-             patch("subprocess.run", side_effect=run_results), \
+             patch("platform.system", return_value=system), \
+             patch.dict(_os.environ, env, clear=False), \
+             patch("subprocess.run", side_effect=side_effect), \
              patch("sys.stdout", new_callable=StringIO) as mock_out:
             code = gs.cmd_stop([])
             return code, mock_out.getvalue()
 
+    # -- existing behaviour, updated for the new sequence -------------------
+
     def test_stop_success(self):
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr = ""
-        code, out = self._run([result])
+        side_effect, calls = self._dispatch(container_rc=0, machine_rc=0)
+        code, out = self._run(side_effect, env={"GA_DEDICATED_MACHINE": "true"},
+                              system="Darwin")
         self.assertEqual(code, 0)
         self.assertIn("stopped", out)
 
     def test_container_not_found_exits_zero(self):
-        stop_result = MagicMock()
-        stop_result.returncode = 1
-        stop_result.stderr = "Error: no such container: ga-transport"
-        inspect_result = MagicMock()
-        inspect_result.returncode = 1  # inspect also fails → truly not found
-        code, out = self._run([stop_result, inspect_result])
+        # container stop fails, inspect fails → truly not found; machine stop ok
+        side_effect, calls = self._dispatch(
+            container_rc=1,
+            container_stderr="Error: no such container: ga-transport",
+            inspect_rc=1,
+            machine_rc=0,
+        )
+        code, out = self._run(side_effect, env={"GA_DEDICATED_MACHINE": "true"},
+                              system="Darwin")
         self.assertEqual(code, 0)
         self.assertIn("not found", out)
 
     def test_podman_not_installed(self):
+        import os as _os
         with patch("shutil.which", return_value=None), \
+             patch("platform.system", return_value="Darwin"), \
+             patch.dict(_os.environ, {"GA_DEDICATED_MACHINE": "false"}, clear=False), \
              patch("sys.stdout", new_callable=StringIO) as mock_out:
             code = gs.cmd_stop([])
         self.assertEqual(code, 0)
         self.assertIn("not found", mock_out.getvalue())
+
+    def test_help_flag_exits_zero(self):
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            code = gs.cmd_stop(["--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("Usage", mock_out.getvalue())
+
+    # -- task 2.1: macOS stops the machine ----------------------------------
+
+    def test_macos_stops_machine(self):
+        side_effect, calls = self._dispatch(container_rc=0, machine_rc=0)
+        code, out = self._run(
+            side_effect,
+            env={"GA_DEDICATED_MACHINE": "true", "GA_MACHINE_NAME": "ghost-academy"},
+            system="Darwin",
+        )
+        self.assertEqual(code, 0)
+        # The machine stop must happen AFTER the container stop.
+        machine_calls = [c for c in calls if "machine" in c and "stop" in c]
+        self.assertTrue(machine_calls, "podman machine stop was never called")
+        self.assertIn(["podman", "machine", "stop", "ghost-academy"], calls)
+        container_idx = next(i for i, c in enumerate(calls) if "stop" in c and "ga-transport" in c)
+        machine_idx = next(i for i, c in enumerate(calls) if "machine" in c and "stop" in c)
+        self.assertLess(container_idx, machine_idx)
+
+    # -- task 2.2: Linux dedicated stops the systemd service ----------------
+
+    def test_linux_dedicated_stops_service(self):
+        side_effect, calls = self._dispatch(container_rc=0, machine_rc=0)
+        code, out = self._run(
+            side_effect,
+            env={"GA_DEDICATED_MACHINE": "true", "GA_MACHINE_NAME": "ghost-academy"},
+            system="Linux",
+        )
+        self.assertEqual(code, 0)
+        self.assertIn(
+            ["systemctl", "--user", "stop", "podman-ghost-academy.service"],
+            calls,
+        )
+
+    # -- task 2.3: already-stopped machine → exit 0 -------------------------
+
+    def test_machine_already_stopped_exits_zero(self):
+        # Container stop ok, but machine stop returns non-zero (already stopped).
+        side_effect, calls = self._dispatch(
+            container_rc=0,
+            machine_rc=1,
+            machine_stderr="Error: machine ghost-academy is not running",
+        )
+        code, out = self._run(
+            side_effect,
+            env={"GA_DEDICATED_MACHINE": "true", "GA_MACHINE_NAME": "ghost-academy"},
+            system="Darwin",
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("already stopped or not found", out)
 
 
 # ---------------------------------------------------------------------------
