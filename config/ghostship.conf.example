@@ -165,25 +165,6 @@
 # GA_CREW_OPENAI_API_KEY=""   # optional when using Codex OAuth login
 # GA_CREW_OPENAI_BASE_URL=""
 
-# ── OpenCode backend (Preview) ───────────────────────────────────────────────
-# To use the OpenCode ACP runtime inside crews:
-#   1. Enable it: GA_CREW_AGENT=opencode (see Agent backend above). The toolchain
-#      is ONE npm package, opencode-ai: the `opencode` CLI ships its own
-#      `opencode acp` subcommand, so there is no separate ACP adapter.
-#   2. A credential via login flow only (no API-key env var, unlike Codex):
-#      OpenCode login via POST /login/opencode runs `opencode auth login` in an
-#      ephemeral container; approve in the browser, then poll
-#      GET /login/opencode until "complete". Credentials are stored in
-#      ga-opencode-auth and injected automatically into new crew containers.
-#      launch() returns not_authenticated with a login URL until ga-opencode-auth
-#      exists.
-#
-# NOTE: OpenCode is Preview status in KiroCrew and requires Developer Mode on the
-# gateway. The signed security policy ceiling (academy/policies/default.json) is
-# still enforced. Outbound access to the configured OpenCode provider is required.
-#
-# GA_CREW_AGENT=opencode
-
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────
 # Path to a host directory of operator-managed standing-order template .md files.
 # Must be an absolute path. When set and the directory exists, its templates are

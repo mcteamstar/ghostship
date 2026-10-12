@@ -1,7 +1,3 @@
-## RENAMED Requirements
-
-- GA_AGENT_BACKENDS selects the enabled agent backends -> GA_CREW_AGENT selects the enabled agent backends
-
 ## MODIFIED Requirements
 
 ### Requirement: GA_CREW_AGENT selects the enabled agent backends

@@ -67,22 +67,12 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(parse_agent_backends(" Kiro, CODEX,,claude,codex"), ("codex", "claude"))
         self.assertEqual(parse_agent_backends(""), ())
 
-    def test_opencode_is_a_valid_backend(self):
-        cfg = _from_env({"GA_CREW_AGENT": "claude,opencode"})
-        self.assertEqual(_enabled_backends(cfg), frozenset({"kiro", "claude", "opencode"}))
-
-    def test_opencode_case_normalised(self):
-        cfg = _from_env({"GA_CREW_AGENT": " OpenCode "})
-        self.assertEqual(_enabled_backends(cfg), frozenset({"kiro", "opencode"}))
-        # First listed entry is the runtime default
-        self.assertEqual(cfg.ga_crew_agent.split(",")[0].strip(), "opencode")
-
     def test_unknown_backend_rejected(self):
         with self.assertRaises(ConfigError) as ctx:
-            _from_env({"GA_CREW_AGENT": "claude,nonesuch"})
+            _from_env({"GA_CREW_AGENT": "claude,opencode"})
         message = str(ctx.exception)
-        self.assertIn("nonesuch", message)
-        self.assertIn("opencode", message)  # names the valid backends (now incl. opencode)
+        self.assertIn("opencode", message)
+        self.assertIn("codex", message)  # names the valid backends
 
 
 class TestKiroAlwaysEnabled(unittest.TestCase):
@@ -156,17 +146,6 @@ class TestInertSettings(unittest.TestCase):
             ["GA_CREW_ANTHROPIC_API_KEY", "GA_CREW_OPENAI_BASE_URL", "ga-codex-auth"],
         )
 
-    def test_opencode_credential_is_inert_when_disabled(self):
-        cfg = Config(ga_crew_agent="kiro")
-        self.assertEqual(
-            inert_backend_settings(cfg, frozenset({"ga-opencode-auth"})),
-            ["ga-opencode-auth"],
-        )
-
-    def test_opencode_credential_not_inert_when_enabled(self):
-        cfg = Config(ga_crew_agent="kiro,opencode")
-        self.assertEqual(inert_backend_settings(cfg, frozenset({"ga-opencode-auth"})), [])
-
     def test_no_inert_settings_for_an_enabled_backend(self):
         cfg = Config(ga_crew_agent="kiro,claude",
                      ga_crew_anthropic_api_key=self.SECRET)
@@ -198,8 +177,7 @@ def _run(coro):
 class TestLoginGating(unittest.TestCase):
     def setUp(self):
         for lock_name, attr in (("_claude_login_pending_lock", "_claude_login_pending"),
-                                ("_codex_login_pending_lock", "_codex_login_pending"),
-                                ("_opencode_login_pending_lock", "_opencode_login_pending")):
+                                ("_codex_login_pending_lock", "_codex_login_pending")):
             with getattr(_lifecycle, lock_name):
                 setattr(_lifecycle, attr, None)
 
@@ -244,46 +222,6 @@ class TestLoginGating(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertFalse(auth.exists())
 
-    def test_opencode_login_refused_for_backend_not_in_set(self):
-        with patch.object(server.cfg, "ga_crew_agent", "kiro"), \
-             patch.object(server, "_initiate_opencode_login") as initiate:
-            response = _run(server._handle_opencode_login_post(Mock()))
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(b"GA_CREW_AGENT", response.body)
-        initiate.assert_not_called()
-
-    def test_opencode_login_allowed_for_enabled_backend_launches_container(self):
-        with patch.object(server.cfg, "ga_crew_agent", "kiro,opencode"), \
-             patch.object(server, "GA_CREW_ACP_BACKEND", "kiro"), \
-             patch.object(server, "_opencode_auth_exists", return_value=False), \
-             patch.object(server, "_get_podman", return_value=Mock()), \
-             patch.object(server, "_initiate_opencode_login",
-                          return_value={"login_url": "https://opencode.ai/x", "code": None}) as initiate:
-            response = _run(server._handle_opencode_login_post(Mock()))
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"login_url", response.body)
-        initiate.assert_called_once()
-
-    def test_opencode_logout_deletes_credential_regardless_of_enabled(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            auth = Path(tmp) / "ga-opencode-auth"
-            auth.write_bytes(b"x")
-            with patch.object(server.cfg, "ga_crew_agent", "kiro"), \
-                 patch.object(server, "_opencode_auth_exists", return_value=True), \
-                 patch.object(server, "_opencode_auth_file_path", return_value=auth), \
-                 patch.object(server, "_get_podman", return_value=Mock()), \
-                 patch.object(server, "_registry_lock", threading.Lock()), \
-                 patch.object(server, "_load_registry", return_value={"crews": {}}):
-                response = _run(server._handle_opencode_logout_post(Mock()))
-            self.assertEqual(response.status_code, 200)
-            self.assertFalse(auth.exists())
-
-    def test_opencode_logout_idempotent_when_unauthenticated(self):
-        with patch.object(server, "_opencode_auth_exists", return_value=False):
-            response = _run(server._handle_opencode_logout_post(Mock()))
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b"logged_out", response.body)
-
     def test_kiro_is_never_refused(self):
         for value in ("", "claude", "codex", "claude,codex"):
             cfg = _from_env({"GA_CREW_AGENT": value})
@@ -302,23 +240,6 @@ class TestLaunchGuard(unittest.TestCase):
         self.assertEqual(result.get("error"), "backend_not_enabled")
         self.assertIn("GA_CREW_AGENT", result.get("instructions", ""))
         initiate.assert_not_called()
-
-    def test_opencode_launch_without_credential_initiates_login_and_does_not_start(self):
-        # GA_CREW_AGENT=opencode with no ga-opencode-auth → launch returns
-        # not_authenticated with the login step, and the crew is not created.
-        with patch.object(server.cfg, "ga_crew_agent", "opencode,kiro"), \
-             patch.object(server, "GA_CREW_ACP_BACKEND", "opencode"), \
-             patch.object(server, "_get_podman", return_value=Mock()), \
-             patch.object(server, "_opencode_auth_exists", return_value=False), \
-             patch.object(server, "_initiate_opencode_login",
-                          return_value={"login_url": "https://opencode.ai/x", "code": None}) as initiate, \
-             patch.object(server, "_load_registry") as load_reg:
-            result = server.launch("opencode-guard-test")
-        self.assertEqual(result.get("error"), "not_authenticated")
-        self.assertIn("opencode", result.get("instructions", "").lower())
-        initiate.assert_called_once()
-        # Crew must not be registered — the guard returns before registry writes.
-        load_reg.assert_not_called()
 
 
 if __name__ == "__main__":
