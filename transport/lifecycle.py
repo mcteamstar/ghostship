@@ -191,6 +191,8 @@ GA_CLAUDE_LOGIN_CONTAINER_PREFIX = "ga-claude-login-"
 GA_CLAUDE_AUTH_FILE = "ga-claude-auth"
 GA_CODEX_LOGIN_CONTAINER_PREFIX = "ga-codex-login-"
 GA_CODEX_AUTH_FILE = "ga-codex-auth"
+GA_OPENCODE_LOGIN_CONTAINER_PREFIX = "ga-opencode-login-"
+GA_OPENCODE_AUTH_FILE = "ga-opencode-auth"
 
 # ── Config-driven constants ───────────────────────────────────────────────────
 KC_IMAGE = cfg.kc_image
@@ -2183,6 +2185,32 @@ def _finish_crew_setup(
         # If neither API key nor ga-codex-auth is present, this path is
         # unreachable: launch() blocks before reaching _finish_crew_setup
         # when no Codex credential is available (task 3.3).
+    elif GA_CREW_ACP_BACKEND == "opencode":
+        # opencode path: skip all kiro-cli auth injection. OpenCode authenticates
+        # from ~/.local/share/opencode/auth.json (login-flow only — no API-key
+        # env var path, unlike Claude/Codex). Inject the OAuth credentials from
+        # ga-opencode-auth into the crew container.
+        #
+        # Warn at launch time that outbound access to the provider endpoint is
+        # required (OpenCode talks to whichever provider the stored credential
+        # targets; endpoint is credential-defined, so we warn generically).
+        logger.warning(
+            "GA_CREW_ACP_BACKEND=opencode: crew %s requires outbound access to "
+            "its configured OpenCode provider to function",
+            crew_id,
+        )
+        if _opencode_auth_exists():
+            try:
+                _inject_opencode_auth(podman, container)
+            except Exception as e:
+                logger.warning(
+                    "OpenCode credential injection failed for crew %s: %s — crew may be "
+                    "unable to authenticate against its OpenCode provider",
+                    crew_id, e,
+                )
+        # If ga-opencode-auth is not present, this path is unreachable: launch()
+        # blocks before reaching _finish_crew_setup when no OpenCode credential
+        # is available (task 4.2).
     else:
         # kiro path: inject auth rows (or skip when KIRO_API_KEY is set).
         if not KIRO_API_KEY:
@@ -3532,6 +3560,341 @@ def _abort_codex_pending_login(podman: "PodmanClient") -> bool:
             logger.warning("Could not nuke Codex login container %s: %s", container, e)
     else:
         logger.info("Aborted pending Codex login (container not yet started)")
+    return True
+
+
+# ── OpenCode login container helpers ──────────────────────────────────────────
+
+
+def _start_opencode_login_container(podman: PodmanClient) -> str:
+    """Create and start an ephemeral ga-opencode-login-<token> container.
+
+    Uses KC_IMAGE (the local spec-ops image built with the opencode toolchain)
+    because the ``opencode`` CLI is only present in that image. Fails with a
+    clear error naming GA_CREW_AGENT if the image cannot start.
+    The actual binary check happens after start in _initiate_opencode_login.
+    Returns the container name.
+    """
+    token = secrets.token_hex(8)
+    name = f"{GA_OPENCODE_LOGIN_CONTAINER_PREFIX}{token}"
+    podman.network_create(GA_STARBOARD_NETWORK)
+    try:
+        podman._req("POST", "/libpod/containers/create", json={
+            "name": name,
+            "image": KC_IMAGE,
+            "netns": {"nsmode": "bridge"},
+            "Networks": {GA_STARBOARD_NETWORK: {}},
+            # No volumes — ephemeral writable layer only. The container runs the
+            # gateway entrypoint like the kiro/claude/codex login containers; the
+            # gateway stalls on AcpAuthRequired but that's fine — we only need
+            # the container running long enough to exec the opencode login flow.
+        })
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to create OpenCode login container from image {KC_IMAGE!r}: {e}. "
+            "Enable opencode in GA_CREW_AGENT and re-run `ghostship install`."
+        ) from e
+    podman.container_start(name)
+    logger.info("Started ephemeral OpenCode login container %s", name)
+    return name
+
+
+def _nuke_opencode_login_container(podman: PodmanClient, name: str) -> None:
+    """Best-effort stop and remove a ga-opencode-login-* container."""
+    if not name.startswith(GA_OPENCODE_LOGIN_CONTAINER_PREFIX):
+        raise RuntimeError(f"Refusing to nuke non-OpenCode-login container: {name!r}")
+    try:
+        podman.container_stop(name)
+    except Exception:
+        pass
+    try:
+        podman.container_remove(name)
+    except Exception:
+        pass
+    logger.info("Nuked OpenCode login container %s", name)
+
+
+# ── OpenCode auth file helpers ────────────────────────────────────────────────
+
+# OpenCode stores its credential at ~/.local/share/opencode/auth.json (written
+# by `opencode auth login`), matching the path KiroCrew's opencode harness reads.
+_OPENCODE_CONFIG_DIR_IN_CONTAINER = "/home/kirocrew/.local/share/opencode"
+OPENCODE_CREDENTIAL_FILE = "auth.json"
+
+
+def _opencode_auth_file_path() -> Path:
+    """Return the OpenCode credential tar archive path under the data mount."""
+    return DATA_DIR / GA_OPENCODE_AUTH_FILE
+
+
+def _opencode_auth_exists() -> bool:
+    """Return True if the ga-opencode-auth credential archive exists and is non-empty."""
+    p = _opencode_auth_file_path()
+    return p.is_file() and p.stat().st_size > 0
+
+
+def _write_opencode_auth_file(data: bytes, _path: Path | None = None) -> None:
+    """Persist the OpenCode auth tar archive (mode 0600).
+
+    _path: override the default path (for testing only).
+    """
+    path = _path if _path is not None else _opencode_auth_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, "wb")
+        fd = -1
+        with f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if fd != -1:
+            os.close(fd)
+    os.chmod(path, 0o600)
+
+
+def _inject_opencode_auth(podman: "PodmanClient", container: str) -> None:
+    """Inject the ga-opencode-auth tar archive into container's
+    ~/.local/share/opencode/.
+
+    Reads the host-side ga-opencode-auth file (a tar of
+    ~/.local/share/opencode/, holding auth.json) and untars it into
+    /home/kirocrew/.local/share/opencode/ inside the crew container, matching
+    the path OpenCode reads for credentials.
+
+    Injection strategy mirrors _inject_codex_auth: split the base64-encoded
+    archive into fixed-width lines written via separate container_exec calls to
+    stay under ARG_MAX, then pipe the assembled file through
+    ``base64 -d | tar -xf -``. The chunk alphabet is base64 [A-Za-z0-9+/=] only,
+    so no shell quoting/injection is possible.
+    """
+    import base64 as _b64
+    auth_path = _opencode_auth_file_path()
+    if not auth_path.is_file():
+        raise RuntimeError("ga-opencode-auth not found — OpenCode login required first")
+
+    # Ensure the target directory exists in the container
+    podman.container_exec(container, ["mkdir", "-p", _OPENCODE_CONFIG_DIR_IN_CONTAINER])
+
+    tar_bytes = auth_path.read_bytes()
+    tar_b64 = _b64.b64encode(tar_bytes).decode()
+
+    CHUNK = 4096
+    tmp = "/tmp/_ga_opencode_auth.b64"
+    podman.container_exec(container, ["sh", "-c", f"> {tmp}"])
+    for i in range(0, len(tar_b64), CHUNK):
+        chunk = tar_b64[i : i + CHUNK]
+        podman.container_exec(container, ["sh", "-c", f"printf '%s' '{chunk}' >> {tmp}"])
+
+    podman.container_exec(
+        container,
+        ["sh", "-c",
+         f"base64 -d < {tmp} | tar -xf - -C {_OPENCODE_CONFIG_DIR_IN_CONTAINER}/ && rm -f {tmp}"],
+    )
+    logger.info("Injected OpenCode credentials into crew container %s", container)
+
+
+# ── OpenCode login device-flow state ──────────────────────────────────────────
+# _opencode_login_pending mirrors _codex_login_pending:
+#   container:  str   — ephemeral ga-opencode-login-* container name
+#   state:      str   — "starting" | "started"
+#   exec_id:    str   — Podman exec session id (informational)
+#   started_at: float — time.time() when the flow started
+_opencode_login_pending: dict | None = None
+_opencode_login_pending_lock = threading.Lock()
+
+
+def _initiate_opencode_login(podman: "PodmanClient") -> dict:
+    """Start an OpenCode login flow and return the login URL.
+
+    Mirrors _initiate_codex_login: acquires _opencode_login_pending_lock, applies
+    TOCTOU-safe guards, starts the ephemeral ga-opencode-login-* container from
+    KC_IMAGE (spec-ops with the opencode toolchain), runs ``opencode auth login``
+    via container_exec_pty_stdin, reads the 45-second PTY stream with select(),
+    extracts the verification URL, drains the PTY in background, and stores
+    pending state in _opencode_login_pending.
+
+    OpenCode is Preview in KiroCrew; a short code alongside the login_url is
+    optional, so a missing code is not an error.
+
+    Returns one of:
+      {"login_url": str, "code": str | None}  — flow started successfully
+      {"login_pending": True}                 — a flow is already in progress
+      {"error": str}                          — hard failure
+    """
+    global _opencode_login_pending
+    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
+    with _opencode_login_pending_lock:
+        if _opencode_login_pending is not None:
+            return {"login_pending": True}
+        _opencode_login_pending = {
+            "container": None,
+            "started_at": time.time(),
+            "state": "starting",
+        }
+
+    # ── Phase: start OpenCode login container ─────────────────────────────────
+    try:
+        container = _start_opencode_login_container(podman)
+    except Exception as e:
+        logger.error("Failed to start OpenCode login container: %s", e)
+        with _opencode_login_pending_lock:
+            _opencode_login_pending = None
+        return {"error": str(e)}
+
+    with _opencode_login_pending_lock:
+        _opencode_login_pending = {
+            "container": container,
+            "started_at": _opencode_login_pending["started_at"] if _opencode_login_pending else time.time(),
+            "state": "started",
+        }
+
+    # ── Phase: wait for opencode binary ───────────────────────────────────────
+    # Poll briefly for the opencode binary. Its absence means the image was
+    # not built with the opencode toolchain — fail with an actionable error.
+    for _ in range(10):
+        try:
+            check = podman.container_exec(container, ["which", "opencode"])
+            if "opencode" in check:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        _nuke_opencode_login_container(podman, container)
+        with _opencode_login_pending_lock:
+            _opencode_login_pending = None
+        return {
+            "error": (
+                f"'opencode' CLI not found in image {KC_IMAGE!r}. "
+                "Enable opencode in GA_CREW_AGENT and re-run `ghostship install`."
+            )
+        }
+
+    # ── Phase: PTY exec ───────────────────────────────────────────────────────
+    cmd = ["opencode", "auth", "login"]
+    try:
+        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
+    except Exception as e:
+        _nuke_opencode_login_container(podman, container)
+        with _opencode_login_pending_lock:
+            _opencode_login_pending = None
+        return {"error": f"Failed to start opencode auth login: {e}"}
+
+    pty_sock.setblocking(False)
+
+    # ── Phase: PTY read loop ──────────────────────────────────────────────────
+    # Prompt patterns: answer a generic yes/no or "Continue?" prompt with a
+    # newline. URL patterns: any https URL after a "URL"/"browser" cue, then any
+    # long https URL as a last resort.
+    # NOTE: no re.MULTILINE — $ must match only at the end of the entire
+    # accumulated text, mirroring the codex guard.
+    opencode_prompt_patterns = [
+        (re.compile(r"\?\s*$"), b"\n"),
+    ]
+    opencode_url_patterns = [
+        re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
+        re.compile(r"(https?://\S{20,})"),
+    ]
+    # Code is optional for OpenCode. Prefer a user_code= query param in the URL;
+    # fall back to a "Code: XXXX" line in the output text.
+    opencode_code_pattern = re.compile(r"(?:[?&]user_code=|[Cc]ode[:\s]+)([A-Za-z0-9_-]{4,})")
+
+    login_url, login_code = _run_pty_login_flow(
+        pty_sock=pty_sock,
+        prompt_patterns=opencode_prompt_patterns,
+        url_patterns=opencode_url_patterns,
+        code_pattern=opencode_code_pattern,
+        deadline_secs=45.0,
+    )
+
+    if not login_url:
+        try:
+            pty_sock.close()
+        except Exception:
+            pass
+        _nuke_opencode_login_container(podman, container)
+        with _opencode_login_pending_lock:
+            _opencode_login_pending = None
+        return {
+            "error": "opencode auth login did not produce a login URL within 45s."
+        }
+
+    # ── Phase: finalise ────────────────────────────────────────────────────────
+    # Drain thread already started by _run_pty_login_flow.
+    with _opencode_login_pending_lock:
+        if _opencode_login_pending is not None:
+            _opencode_login_pending["exec_id"] = exec_id
+
+    logger.info("OpenCode login flow started in %s, URL extracted", container)
+    return {"login_url": login_url, "code": login_code}
+
+
+def _poll_opencode_login_container(podman: "PodmanClient", container: str) -> bytes | None:
+    """Poll container for completed OpenCode credentials.
+
+    Completion is OpenCode's credential file (~/.local/share/opencode/auth.json)
+    being present and non-empty. Only then is ~/.local/share/opencode/ tarred and
+    returned. Any other file is not evidence of login: an any-file check would
+    store an archive with no credential and then report "Already authenticated".
+    Returns None when the credential is not yet present, or when the archive
+    would not contain it.
+
+    On completion: the caller writes the tar to ga-opencode-auth (mode 0600) and
+    nukes the login container.
+    """
+    try:
+        check = podman.container_exec(
+            container,
+            [
+                "sh", "-c",
+                f"test -s {_OPENCODE_CONFIG_DIR_IN_CONTAINER}/{OPENCODE_CREDENTIAL_FILE} && echo present",
+            ],
+        )
+        if not check or "present" not in check:
+            return None
+        tar_b64_result = podman.container_exec(
+            container,
+            ["sh", "-c", f"tar -cf - -C {_OPENCODE_CONFIG_DIR_IN_CONTAINER}/ . 2>/dev/null | base64"],
+        )
+        if not tar_b64_result or not tar_b64_result.strip():
+            return None
+        tar_bytes = base64.b64decode(tar_b64_result.strip())
+        if not _archive_has_file(tar_bytes, OPENCODE_CREDENTIAL_FILE):
+            logger.warning("OpenCode login archive did not contain %s; not completing", OPENCODE_CREDENTIAL_FILE)
+            return None
+        return tar_bytes
+    except Exception as e:
+        logger.warning("Error polling OpenCode login container: %s", e)
+    return None
+
+
+def _abort_opencode_pending_login(podman: "PodmanClient") -> bool:
+    """Abort an in-progress OpenCode login flow, if any.
+
+    Mirrors _abort_codex_pending_login. Acquires _opencode_login_pending_lock,
+    nukes the login container (best-effort), and clears _opencode_login_pending.
+
+    Returns True if a flow was aborted, False if nothing was pending.
+    """
+    global _opencode_login_pending
+    with _opencode_login_pending_lock:
+        pending = _opencode_login_pending
+        if pending is None:
+            return False
+        _opencode_login_pending = None
+
+    container = pending.get("container")
+    if container:
+        try:
+            _nuke_opencode_login_container(podman, container)
+            logger.info("Aborted pending OpenCode login in container %s", container)
+        except Exception as e:
+            logger.warning("Could not nuke OpenCode login container %s: %s", container, e)
+    else:
+        logger.info("Aborted pending OpenCode login (container not yet started)")
     return True
 
 

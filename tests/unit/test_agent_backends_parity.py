@@ -38,6 +38,8 @@ VECTORS = [
     "codex",
     "claude,codex",
     "codex,claude",
+    "opencode",
+    "claude,opencode",
     " Claude,,claude , CODEX",
     " Kiro, CODEX,,claude,codex",
     ",,,",
@@ -63,8 +65,8 @@ class TestParserParity(unittest.TestCase):
 
     def test_both_reject_an_unknown_name(self):
         with self.assertRaises(ConfigError):
-            parse_agent_backends("claude,opencode")
-        normalised = _shell("agent_backends_normalise", "claude,opencode").stdout
+            parse_agent_backends("claude,nonesuch")
+        normalised = _shell("agent_backends_normalise", "claude,nonesuch").stdout
         self.assertNotEqual(
             _shell("agent_backends_validate", normalised, str(TOOLCHAINS)).returncode, 0
         )

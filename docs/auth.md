@@ -333,6 +333,77 @@ unauthenticated (nothing to clear).
 
 ---
 
+## OpenCode login (Preview)
+
+OpenCode is a **Preview** backend. It authenticates from a stored credential
+file — there is no API-key env-var path (unlike Codex). `ga-opencode-auth` is a
+tar archive of `~/.local/share/opencode/` (the credential directory holding
+`auth.json`, written by `opencode auth login`), stored at
+`DATA_DIR/ga-opencode-auth` and injected into every OpenCode-backend crew's
+`~/.local/share/opencode/` at launch.
+
+### Enable and log in
+
+1. Enable the OpenCode backend: add `opencode` to `GA_CREW_AGENT` in your
+   `ghostship.conf` and re-run `ghostship install`, which builds the toolchain
+   (one npm package, `opencode-ai`; the `opencode` CLI ships its own
+   `opencode acp` subcommand — no separate adapter).
+2. To make OpenCode the default for new crews, list it first:
+   `GA_CREW_AGENT=opencode`. Login works whenever `opencode` is enabled, even
+   while another backend is the runtime default.
+
+```bash
+# 1. Start the login flow — runs `opencode auth login` in an ephemeral container
+curl -sX POST http://localhost:64057/login/opencode | jq
+# → {"status": "pending", "login_url": "https://..."}
+
+# 2. Open login_url in a browser and approve.
+
+# 3. Poll completion
+curl -s http://localhost:64057/login/opencode | jq .status
+# → "complete"
+```
+
+**4. Launch** — the transport is ready. Each new crew receives
+`~/.local/share/opencode/` injected from `ga-opencode-auth`.
+
+### Log out
+
+```bash
+curl -sX POST http://localhost:64057/logout/opencode
+```
+
+This deletes `ga-opencode-auth` and runs `rm -rf ~/.local/share/opencode/`
+inside every running OpenCode-backend crew.
+
+### OpenCode login API
+
+Three HTTP endpoints on the MCP port. Require `Authorization: Bearer <key>` when
+`GA_API_KEY` is set. `POST /login/opencode` is available only while `opencode`
+is in `GA_CREW_AGENT`; otherwise it returns 400 naming `GA_CREW_AGENT`. Logout
+always works.
+
+```
+UNAUTHENTICATED  ──[POST /login/opencode]──►  PENDING  ──[GET /login/opencode → complete]──►  AUTHENTICATED
+                                                                                                    │
+              ◄──────────────────────────────────────[POST /logout/opencode]────────────────────────┘
+```
+
+**`POST /login/opencode`** — starts the OpenCode login flow inside an ephemeral
+`ga-opencode-login-*` container. Returns `{"status": "pending", "login_url": "..."}`.
+Returns 409 if already authenticated or a flow is in progress, and 400 if
+`opencode` is not in `GA_CREW_AGENT` (checked before any body validation).
+
+**`GET /login/opencode`** — polls completion. On success writes `ga-opencode-auth`
+and returns `{"status": "complete"}`. Returns `{"status": "pending"}` while
+waiting. Returns 404 if no flow is in progress.
+
+**`POST /logout/opencode`** — deletes `ga-opencode-auth` and wipes
+`~/.local/share/opencode/` from every running OpenCode-backend crew. Idempotent:
+returns 200 even when already unauthenticated (nothing to clear).
+
+---
+
 An optional static bearer credential protecting the MCP endpoint.
 
 ```bash
