@@ -3191,6 +3191,83 @@ def _abort_claude_pending_login(podman: "PodmanClient") -> bool:
     return True
 
 
+def _initiate_claude_setup_token(podman: "PodmanClient") -> dict:
+    """Run ``claude setup-token`` non-interactively and write ``ga-claude-auth``.
+
+    Starts an ephemeral ga-claude-login-* container, execs ``claude setup-token``
+    (non-interactive — no PTY needed), waits up to 60 s for
+    ``~/.claude/.credentials.json`` to appear, tars ``~/.claude/``, and writes
+    the archive to ``ga-claude-auth`` via ``_write_claude_auth_file``.
+
+    Returns one of:
+      {"status": "complete"}  — credential written successfully
+      {"error": str}          — failure (container always nuked on error)
+    """
+    # ── Phase: start Claude login container ──────────────────────────────────
+    try:
+        container = _start_claude_login_container(podman)
+    except Exception as e:
+        logger.error("setup-token: failed to start Claude login container: %s", e)
+        return {"error": str(e)}
+
+    # ── Phase: verify claude binary ───────────────────────────────────────────
+    for _ in range(10):
+        try:
+            check = podman.container_exec(container, ["which", "claude"])
+            if "claude" in check:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        _nuke_claude_login_container(podman, container)
+        return {
+            "error": (
+                f"'claude' CLI not found in image {KC_IMAGE!r}. "
+                "Enable claude in GA_CREW_AGENT and re-run `ghostship install`."
+            )
+        }
+
+    # ── Phase: exec claude setup-token ───────────────────────────────────────
+    try:
+        podman.container_exec(container, ["claude", "setup-token"])
+    except Exception as e:
+        logger.error("setup-token: claude setup-token exec failed: %s", e)
+        _nuke_claude_login_container(podman, container)
+        return {"error": f"claude setup-token failed: {e}"}
+
+    # ── Phase: poll for credential file (up to 60 s) ─────────────────────────
+    deadline = time.time() + 60.0
+    tar_bytes: bytes | None = None
+    while time.time() < deadline:
+        tar_bytes = _poll_claude_login_container(podman, container)
+        if tar_bytes is not None:
+            break
+        time.sleep(1.0)
+
+    if tar_bytes is None:
+        _nuke_claude_login_container(podman, container)
+        return {
+            "error": (
+                f"claude setup-token did not produce {CLAUDE_CREDENTIAL_FILE} "
+                "within 60 seconds."
+            )
+        }
+
+    # ── Phase: write ga-claude-auth ───────────────────────────────────────────
+    try:
+        _write_claude_auth_file(tar_bytes)
+        logger.info("ga-claude-auth written after claude setup-token completion")
+    except Exception as e:
+        logger.error("setup-token: could not write ga-claude-auth: %s", e)
+        _nuke_claude_login_container(podman, container)
+        return {"error": f"credential obtained but could not be saved: {e}"}
+
+    # ── Phase: nuke login container ───────────────────────────────────────────
+    _nuke_claude_login_container(podman, container)
+    return {"status": "complete"}
+
+
 # ── Codex login container helpers ─────────────────────────────────────────────
 
 

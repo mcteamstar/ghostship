@@ -705,6 +705,7 @@ try:
         _write_codex_auth_file,
         _initiate_login,
         _initiate_claude_login,
+        _initiate_claude_setup_token,
         _initiate_codex_login,
         _poll_claude_login_container,
         _poll_codex_login_container,
@@ -794,6 +795,7 @@ except ModuleNotFoundError:
         _write_codex_auth_file,
         _initiate_login,
         _initiate_claude_login,
+        _initiate_claude_setup_token,
         _initiate_codex_login,
         _poll_claude_login_container,
         _poll_codex_login_container,
@@ -2048,6 +2050,51 @@ async def _handle_claude_login_code_post(request: Request) -> Response:
         return JSONResponse({"error": "The login session closed before the code was written."},
                             status_code=500)
     return JSONResponse({"status": "submitted"}, status_code=202)
+
+
+async def _handle_claude_setup_token_post(request: Request) -> Response:
+    """POST /login/claude/setup-token — synchronous headless Claude auth.
+
+    Runs ``claude setup-token`` via non-interactive container exec inside a
+    ga-claude-login-* container, writes the resulting credential to ga-claude-auth,
+    and returns ``{"status": "complete"}`` on success.
+
+    Guard order:
+      - 400 if claude is not an enabled backend
+      - 409 if ga-claude-auth already exists (already authenticated)
+      - 409 if a Claude OAuth flow is already in progress
+      - Calls _initiate_claude_setup_token; returns 200 on success, 500 on error
+    """
+    if not _backend_enabled("claude"):
+        return PlainTextResponse(_backend_not_enabled_message("claude"), status_code=400)
+
+    with _lifecycle._claude_login_pending_lock:
+        if _claude_auth_exists():
+            return PlainTextResponse(
+                "Already authenticated with Claude. POST /logout/claude first.",
+                status_code=409,
+            )
+        if _lifecycle._claude_login_pending is not None:
+            return PlainTextResponse(
+                "Claude login already in progress. POST /logout/claude or wait for it to complete.",
+                status_code=409,
+            )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _initiate_claude_setup_token(podman)
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=500)
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="claude",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
 
 
 async def _handle_claude_logout_post(request: Request) -> Response:
@@ -4926,6 +4973,7 @@ if __name__ == "__main__":
         ("POST", "/login/claude"): _handle_claude_login_post,
         ("GET",  "/login/claude"): _handle_claude_login_get,
         ("POST", "/login/claude/code"): _handle_claude_login_code_post,
+        ("POST", "/login/claude/setup-token"): _handle_claude_setup_token_post,
         ("POST", "/logout/claude"): _handle_claude_logout_post,
         ("POST", "/login/codex"): _handle_codex_login_post,
         ("GET",  "/login/codex"): _handle_codex_login_get,
@@ -4965,6 +5013,7 @@ if __name__ == "__main__":
             ("POST", "/login/claude"): _handle_claude_login_post,
             ("GET",  "/login/claude"): _handle_claude_login_get,
             ("POST", "/login/claude/code"): _handle_claude_login_code_post,
+            ("POST", "/login/claude/setup-token"): _handle_claude_setup_token_post,
             ("POST", "/logout/claude"): _handle_claude_logout_post,
             ("POST", "/login/codex"): _handle_codex_login_post,
             ("GET",  "/login/codex"): _handle_codex_login_get,
