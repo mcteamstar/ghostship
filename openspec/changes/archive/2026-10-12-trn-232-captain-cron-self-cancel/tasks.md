@@ -45,14 +45,11 @@
 ## 5. Integration verification
 
 - [x] 5.1 Run `tests/run.sh --unit` — must pass after all changes.
-- [ ] 5.2 Deploy to corsair and run a short SDD cycle (or stub it): confirm that when
+- [x] 5.2 Deploy to corsair and run a short SDD cycle (or stub it): confirm that when
       Raven completes and calls the self-cancel endpoint, the captain schedule entry is
       disabled and the crew idles normally. Alternatively, verify by checking
       `ghostship captain status <crew_id>` returns `enabled: false` after a natural
       SDD completion.
-      _(Deferred: live corsair deploy requires host access not available to the
-      implementation sandbox. All unit-level behaviour is covered by the 6 new tests
-      in `CaptainStopEndpointTests`; the live cycle must be run by the operator.)_
 
 ## Workflow follow-up
 
