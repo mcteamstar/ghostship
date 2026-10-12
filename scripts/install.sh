@@ -1038,7 +1038,7 @@ cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
 ${_AUTH_ROUTES}
             {
               "@id": "ga-transport-misc",
-              "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout", "/logout*"]}],
+              "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout", "/logout*", "/crews/*/captain/stop"]}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
             }
           ]
