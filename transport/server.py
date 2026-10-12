@@ -1541,6 +1541,80 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
     return JSONResponse({"dashboard_url": None})
 
 
+async def _handle_captain_stop_post(request: Request) -> Response:
+    """POST /crews/{crew_id}/captain/stop — crew-internal captain self-cancel.
+
+    Lets Raven stop the captain check-in schedule from inside the crew
+    container. The captain schedule is a transport-registry construct and is
+    NOT visible to ``kirocrew cron list`` inside the crew, so Raven cannot pause
+    it via the CLI; this endpoint is the sanctioned path (see
+    ``_RAVEN_SELF_CANCEL``).
+
+    Auth: the crew's internal dashboard session cookie
+    (``Cookie: mc_token_5476=<value>``), the same credential Raven uses for
+    spawn calls (``/home/kirocrew/.kiro/crew/.dashboard_cookie``). This route is
+    bearer-exempt (registered in ``public_routes``); the cookie is validated
+    here against the crew's ``internal_cookie`` in the registry.
+
+    Responses:
+      - 200 ``{"status": "stopped"}``                 — schedule disabled.
+      - 400 ``{"error": "captain already stopped"}``  — entry already disabled.
+      - 404 ``{"error": "no captain entry for crew <id>"}`` — no entry.
+      - 401/403                                        — missing/invalid cookie.
+    """
+    parsed = _extract_crew_proxy_parts(request.scope["path"])
+    if parsed is None:
+        return PlainTextResponse("Not found", status_code=404)
+    crew_id, _segment, _sub = parsed
+
+    try:
+        _crew = _require_crew(crew_id)
+    except (KeyError, ValueError):
+        return JSONResponse(
+            {"error": f"no captain entry for crew {crew_id}"}, status_code=404
+        )
+
+    # ── Dashboard cookie auth ────────────────────────────────────────────────
+    # Validate the crew-internal session cookie against the registry's
+    # internal_cookie. No valid cookie → 403.
+    presented = request.cookies.get("mc_token_5476", "")
+    with _registry_lock:
+        reg = _load_registry()
+        crew_entry = reg.get("crews", {}).get(crew_id, {})
+        expected_cookie = crew_entry.get("internal_cookie", "")
+    if (
+        not expected_cookie
+        or not presented
+        or not hmac.compare_digest(presented, expected_cookie)
+    ):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    # ── Look up the captain schedule entry ───────────────────────────────────
+    with _registry_lock:
+        reg = _load_registry()
+        schedules = _get_crew_schedules(reg, crew_id)
+    captain_entry = next(
+        (s for s in schedules if s.get("type") == "captain"),
+        None,
+    )
+    if captain_entry is None:
+        return JSONResponse(
+            {"error": f"no captain entry for crew {crew_id}"}, status_code=404
+        )
+    if not captain_entry.get("enabled", False):
+        return JSONResponse(
+            {"error": "captain already stopped"}, status_code=400
+        )
+
+    # ── Disable it (same operation as captain(action="stop")) ────────────────
+    result = _captain_do_stop(crew_id)
+    if isinstance(result, dict) and result.get("error"):
+        return JSONResponse(
+            {"error": f"no captain entry for crew {crew_id}"}, status_code=404
+        )
+    return JSONResponse({"status": "stopped"})
+
+
 async def _handle_version_get(request: Request) -> Response:
     """GET /version — unauthenticated endpoint returning transport version."""
     return JSONResponse({"transport": TRANSPORT_VERSION})
@@ -4870,6 +4944,7 @@ if __name__ == "__main__":
         ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
         ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
         ("GET",  "/openapi.json"): _handle_openapi_get,
+        ("POST", "/crews/*/captain/stop"): _handle_captain_stop_post,
     }
     _openapi_schema = _openapi.generate_schema(
         routes=_openapi_schema_routes,
@@ -4912,6 +4987,9 @@ if __name__ == "__main__":
             # without Caddy's forward-auth check having passed first.
             ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+            # Crew-internal captain self-cancel — bearer-exempt; the handler
+            # validates the crew's internal dashboard session cookie itself.
+            ("POST", "/crews/*/captain/stop"): _handle_captain_stop_post,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all
