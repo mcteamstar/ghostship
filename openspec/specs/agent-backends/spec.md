@@ -5,36 +5,40 @@ Defines the set of agent backends a Ghost Academy transport enables, the default
 
 ## Requirements
 
-### Requirement: GA_AGENT_BACKENDS selects the enabled agent backends
+### Requirement: GA_CREW_AGENT selects the enabled agent backends
 
-The transport SHALL read `GA_AGENT_BACKENDS` at startup as a comma-separated list of backend names. Valid names are `kiro`, `claude` and `codex`. Names SHALL be matched case-insensitively with surrounding whitespace ignored. Empty entries and duplicates SHALL be ignored. The enabled set SHALL always contain `kiro`, plus each valid name listed.
+The transport SHALL read `GA_CREW_AGENT` at startup as a comma-separated list of backend names. Valid names are `kiro`, `claude`, `codex` and `opencode`. Names SHALL be matched case-insensitively with surrounding whitespace ignored. Empty entries and duplicates SHALL be ignored. The enabled set SHALL always contain `kiro`, plus each valid name listed. The first entry is the runtime default backend.
 
 #### Scenario: Default set is kiro only
-- **WHEN** `GA_AGENT_BACKENDS` is unset or empty
-- **THEN** the enabled set is `{kiro}`, and no Claude or Codex login or default backend is accepted
+- **WHEN** `GA_CREW_AGENT` is unset or empty
+- **THEN** the enabled set is `{kiro}`, and no Claude, Codex, or OpenCode login or default backend is accepted
 
 #### Scenario: Multiple backends enabled
-- **WHEN** `GA_AGENT_BACKENDS=claude, codex` is set
+- **WHEN** `GA_CREW_AGENT=claude,codex` is set
 - **THEN** the enabled set is `{kiro, claude, codex}`
+
+#### Scenario: OpenCode backend enabled
+- **WHEN** `GA_CREW_AGENT=opencode` is set
+- **THEN** the enabled set is `{kiro, opencode}`
 
 #### Scenario: Empty entries, duplicates and case are normalised
-- **WHEN** `GA_AGENT_BACKENDS=" Claude,,claude , CODEX"` is set
-- **THEN** the enabled set is `{kiro, claude, codex}`
+- **WHEN** `GA_CREW_AGENT=" Claude,,claude , CODEX, OpenCode"` is set
+- **THEN** the enabled set is `{kiro, claude, codex, opencode}`
 
 #### Scenario: Unknown backend name rejected at startup
-- **WHEN** `GA_AGENT_BACKENDS` contains a name outside `kiro`, `claude`, `codex`
+- **WHEN** `GA_CREW_AGENT` contains a name outside `kiro`, `claude`, `codex`, `opencode`
 - **THEN** the transport raises a `ConfigError` naming the unknown value and the valid names, and does not start
 
 ### Requirement: Kiro is always enabled
 
-The kiro backend SHALL be enabled regardless of `GA_AGENT_BACKENDS`, because KiroCrew bundles kiro in every crew image. Listing `kiro` SHALL have no effect, and omitting it SHALL NOT disable kiro.
+The kiro backend SHALL be enabled regardless of `GA_CREW_AGENT`, because KiroCrew bundles kiro in every crew image. Listing `kiro` SHALL have no effect, and omitting it SHALL NOT disable kiro.
 
 #### Scenario: Omitting kiro does not disable it
-- **WHEN** `GA_AGENT_BACKENDS=claude` is set and `GA_CREW_ACP_BACKEND` is unset, and a crew is launched
+- **WHEN** `GA_CREW_AGENT=claude` is set and `GA_CREW_ACP_BACKEND` is unset, and a crew is launched
 - **THEN** the crew launches on kiro without error
 
 #### Scenario: Listing kiro changes nothing
-- **WHEN** the transport is started once with `GA_AGENT_BACKENDS=kiro,claude` and once with `GA_AGENT_BACKENDS=claude`
+- **WHEN** the transport is started once with `GA_CREW_AGENT=kiro,claude` and once with `GA_CREW_AGENT=claude`
 - **THEN** the enabled set is `{kiro, claude}` both times
 
 ### Requirement: The default backend must be an enabled backend
@@ -42,11 +46,11 @@ The kiro backend SHALL be enabled regardless of `GA_AGENT_BACKENDS`, because Kir
 `GA_CREW_ACP_BACKEND` SHALL select the default backend for new crews, and SHALL default to `kiro` when unset. If it names a backend outside the enabled set, the transport SHALL raise a `ConfigError` at startup that names both settings and states that `ghostship install` must be re-run after changing them.
 
 #### Scenario: Default backend outside the set
-- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `GA_AGENT_BACKENDS` does not list `claude`
-- **THEN** the transport raises a `ConfigError` naming `GA_CREW_ACP_BACKEND` and `GA_AGENT_BACKENDS`, and does not start
+- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `GA_CREW_AGENT` does not list `claude`
+- **THEN** the transport raises a `ConfigError` naming `GA_CREW_ACP_BACKEND` and `GA_CREW_AGENT`, and does not start
 
 #### Scenario: Default backend inside the set
-- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `GA_AGENT_BACKENDS=claude`
+- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `GA_CREW_AGENT=claude`
 - **THEN** the transport starts with claude as the default backend
 
 ### Requirement: Settings for disabled backends are reported as inert
@@ -67,36 +71,52 @@ Once per transport start, the transport SHALL log one warning per inert setting:
 
 ### Requirement: Login is available only for enabled backends
 
-`POST /login/claude` and `POST /login/claude/code` SHALL be available when claude is enabled, and `POST /login/codex` when codex is enabled, whether or not it is the default. Otherwise they SHALL return HTTP 400 naming `GA_AGENT_BACKENDS` and the install re-run, checked before the body or pending flow, and create no login container. Kiro's `POST /login` and every `POST /logout/<backend>` SHALL stay available.
+`POST /login/claude` and `POST /login/claude/code` SHALL be available when claude is enabled, and `POST /login/codex` when codex is enabled, whether or not it is the default. Otherwise they SHALL return HTTP 400 naming `GA_CREW_AGENT` and the install re-run, checked before the body or pending flow, and create no login container. Kiro's `POST /login` and every `POST /logout/<backend>` SHALL stay available.
 
 #### Scenario: Login refused for a backend not in the set
-- **WHEN** `GA_AGENT_BACKENDS` is unset and `POST /login/claude` is called
-- **THEN** the transport returns HTTP 400 naming `GA_AGENT_BACKENDS`, and no login container is created
+- **WHEN** `GA_CREW_AGENT` is unset and `POST /login/claude` is called
+- **THEN** the transport returns HTTP 400 naming `GA_CREW_AGENT`, and no login container is created
 
 #### Scenario: Login allowed for an enabled backend that is not the default
-- **WHEN** `GA_AGENT_BACKENDS=claude`, `GA_CREW_ACP_BACKEND` is unset, and `POST /login/claude` is called
+- **WHEN** `GA_CREW_AGENT=claude`, `GA_CREW_ACP_BACKEND` is unset, and `POST /login/claude` is called
 - **THEN** the Claude login flow starts and the response contains a `login_url`
 
 #### Scenario: Disabled-backend check precedes body validation
 - **WHEN** claude is not enabled and `POST /login/claude/code` is called with a malformed body
-- **THEN** the transport returns HTTP 400 naming `GA_AGENT_BACKENDS`, not the malformed-body error
+- **THEN** the transport returns HTTP 400 naming `GA_CREW_AGENT`, not the malformed-body error
 
 #### Scenario: Logout works for a disabled backend
 - **WHEN** claude is not enabled, `ga-claude-auth` exists, and `POST /logout/claude` is called
 - **THEN** `ga-claude-auth` is deleted
 
+### Requirement: Login is available for the opencode backend when enabled
+
+`POST /login/opencode` SHALL be available when opencode is enabled. Otherwise it SHALL return HTTP 400 naming `GA_CREW_AGENT` and the install re-run, checked before the body or pending flow, and create no login container. `POST /logout/opencode` SHALL stay available regardless of whether opencode is enabled.
+
+#### Scenario: Login refused when opencode is not enabled
+- **WHEN** `GA_CREW_AGENT` does not include `opencode` and `POST /login/opencode` is called
+- **THEN** the transport returns HTTP 400 naming `GA_CREW_AGENT`, and no login container is created
+
+#### Scenario: Login allowed when opencode is enabled
+- **WHEN** `GA_CREW_AGENT=opencode` and `POST /login/opencode` is called
+- **THEN** the OpenCode login flow starts
+
+#### Scenario: Logout works when opencode is not enabled
+- **WHEN** opencode is not enabled, `ga-opencode-auth` exists, and `POST /logout/opencode` is called
+- **THEN** `ga-opencode-auth` is deleted
+
 ### Requirement: Retired include flags are rejected
 
-`GA_INCLUDE_CLAUDE_AGENT` and `GA_INCLUDE_CODEX_AGENT` are retired. If either is present with a non-empty value, the transport SHALL raise a `ConfigError` at startup, and `install.sh` SHALL exit with an error. Both messages SHALL name the variable and its replacement, `GA_AGENT_BACKENDS`. Neither variable SHALL change the enabled set.
+`GA_INCLUDE_CLAUDE_AGENT` and `GA_INCLUDE_CODEX_AGENT` are retired. If either is present with a non-empty value, the transport SHALL raise a `ConfigError` at startup, and `install.sh` SHALL exit with an error. Both messages SHALL name the variable and its replacement, `GA_CREW_AGENT`. Neither variable SHALL change the enabled set.
 
 #### Scenario: Retired Claude flag stops startup
 - **WHEN** `GA_INCLUDE_CLAUDE_AGENT=true` is set
-- **THEN** the transport raises a `ConfigError` naming `GA_INCLUDE_CLAUDE_AGENT` and `GA_AGENT_BACKENDS`, and does not start
+- **THEN** the transport raises a `ConfigError` naming `GA_INCLUDE_CLAUDE_AGENT` and `GA_CREW_AGENT`, and does not start
 
 #### Scenario: Retired flag set to false still stops startup
 - **WHEN** `GA_INCLUDE_CODEX_AGENT=false` is set
-- **THEN** the transport raises a `ConfigError` naming `GA_INCLUDE_CODEX_AGENT` and `GA_AGENT_BACKENDS`, and does not start
+- **THEN** the transport raises a `ConfigError` naming `GA_INCLUDE_CODEX_AGENT` and `GA_CREW_AGENT`, and does not start
 
 #### Scenario: install.sh refuses a retired flag
 - **WHEN** `ghostship.conf` sets `GA_INCLUDE_CLAUDE_AGENT=true` and `install.sh` runs
-- **THEN** `install.sh` exits non-zero before building, with a message naming `GA_INCLUDE_CLAUDE_AGENT` and `GA_AGENT_BACKENDS`
+- **THEN** `install.sh` exits non-zero before building, with a message naming `GA_INCLUDE_CLAUDE_AGENT` and `GA_CREW_AGENT`
