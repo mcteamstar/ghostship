@@ -7,7 +7,7 @@ Usage:
 Subcommands:
     install    [flags]   Install or update the transport (runs scripts/install.sh)
     start      [flags]   Start the transport (runs scripts/start.sh)
-    stop                 Stop the ga-transport container
+    stop                 Stop the transport, portal, and Podman machine/service
     upgrade    [flags]   Rebuild and restart the transport (runs scripts/install.sh)
     uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
     status               Show transport status (container running, port, uptime)
@@ -144,33 +144,111 @@ def _podman_cmd() -> list:
     return ["podman"]
 
 
+def _stop_machine(machine: str) -> None:
+    """Stop the underlying Podman machine (macOS) or dedicated service (Linux).
+
+    Mirrors the start-side logic in scripts/start.sh. A machine that is already
+    stopped or not found is reported, never raised — a non-zero return from the
+    stop command in that case is expected and must not fail `ghostship stop`.
+
+    macOS + dedicated           → podman machine stop <machine>
+    Linux + dedicated           → systemctl --user stop podman-<machine>.service
+    Linux non-dedicated         → systemctl --user stop podman.socket
+    (dedicated defaults to true; set GA_DEDICATED_MACHINE=false to opt out)
+    """
+    import platform
+
+    dedicated = os.environ.get("GA_DEDICATED_MACHINE", "true").lower() != "false"
+
+    if platform.system() == "Darwin":
+        if not dedicated:
+            print("  (shared Podman machine left running)")
+            return
+        cmd = ["podman", "machine", "stop", machine]
+        label = f"podman machine '{machine}'"
+    else:
+        # Linux
+        if dedicated:
+            cmd = ["systemctl", "--user", "stop", f"podman-{machine}.service"]
+            label = f"podman-{machine}.service"
+        else:
+            cmd = ["systemctl", "--user", "stop", "podman.socket"]
+            label = "podman.socket"
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        print(f"  ({cmd[0]} not found — {label} left as-is)")
+        return
+
+    if result.returncode == 0:
+        print(f"✓ {label} stopped")
+        return
+    # Already stopped / not found is not an error — exit gracefully.
+    stderr = (result.stderr or "").strip()
+    print(f"  {label} already stopped or not found — nothing to do")
+    if stderr:
+        print(f"  ({stderr})")
+
+
 def cmd_stop(args: list) -> int:
+    if "--help" in args or "-h" in args:
+        print(
+            "Usage: ghostship stop\n"
+            "\n"
+            "  Put the fleet to sleep, freeing RAM while preserving all state.\n"
+            "  Stops, in order:\n"
+            "    1. the ga-transport container\n"
+            "    2. the ga-portal container\n"
+            "    3. the underlying Podman machine (macOS) or dedicated\n"
+            "       service (Linux) — unless GA_DEDICATED_MACHINE=false.\n"
+            "\n"
+            "  Crew containers and all volumes are preserved; 'ghostship start'\n"
+            "  brings the machine and transport back and crews restart on next\n"
+            "  use. If the machine is already stopped it exits 0.\n"
+        )
+        return 0
+
     podman = _podman_cmd()
+    machine = os.environ.get("GA_MACHINE_NAME", "ghost-academy")
+
     if not shutil.which(podman[0]):
         print("ga-transport container not found — nothing to stop")
+        # Still attempt the machine/service stop below is pointless without
+        # podman on macOS, but on Linux the service stop uses systemctl.
+        _stop_machine(machine)
         return 0
+
+    # 1 + 2. Stop both containers in a single call. Podman stops each named
+    # container it finds and reports the others as missing; a non-zero return
+    # here just means one or both were not running, which is fine.
     result = subprocess.run(
-        podman + ["stop", "ga-transport"],
+        podman + ["stop", "ga-transport", "ga-portal"],
         capture_output=True,
         text=True,
     )
     if result.returncode == 0:
-        print("✓ ga-transport stopped")
-        return 0
-    # Container not found → exit 0 with a message
-    stderr_lower = result.stderr.lower()
-    if "no such container" in stderr_lower or "no container" in stderr_lower or "error" in stderr_lower:
-        # Check if it truly doesn't exist
-        check = subprocess.run(
-            podman + ["inspect", "ga-transport", "--format", "{{.State.Status}}"],
-            capture_output=True,
-            text=True,
-        )
-        if check.returncode != 0:
-            print("ga-transport container not found — nothing to stop")
-            return 0
-    print(result.stderr.strip(), file=sys.stderr)
-    return result.returncode
+        print("✓ ga-transport and ga-portal stopped")
+    else:
+        stderr_lower = (result.stderr or "").lower()
+        if "no such container" in stderr_lower or "no container" in stderr_lower or "error" in stderr_lower:
+            # Confirm neither container exists before treating as a no-op.
+            check = subprocess.run(
+                podman + ["inspect", "ga-transport", "--format", "{{.State.Status}}"],
+                capture_output=True,
+                text=True,
+            )
+            if check.returncode != 0:
+                print("ga-transport container not found — nothing to stop")
+            else:
+                print(result.stderr.strip(), file=sys.stderr)
+        else:
+            print(result.stderr.strip(), file=sys.stderr)
+
+    # 3. Stop the Podman machine / dedicated service. Always exit 0 from here
+    # on — a missing or already-stopped machine is not a failure.
+    _stop_machine(machine)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +611,7 @@ Usage: ghostship <subcommand> [flags]
 Subcommands:
   install    [flags]   Install or update the transport (runs scripts/install.sh)
   start      [flags]   Start the transport (runs scripts/start.sh)
-  stop                 Stop the ga-transport container
+  stop                 Stop the transport + portal, then the Podman machine/service (frees RAM, preserves state)
   upgrade    [flags]   Rebuild and restart the transport (same as install)
   uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
   status               Show transport status
