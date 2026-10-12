@@ -1718,6 +1718,15 @@ def _reconcile_registry() -> None:
                 _nuke_codex_login_container(podman, cname.lstrip("/"))
     except Exception as e:
         logger.warning("Login container sweep failed: %s", e)
+
+    # Sweep any pending login flows that have exceeded their TTL.  This runs
+    # independently of polling so an abandoned flow does not keep its container
+    # running until the next poll (or until a restart).
+    try:
+        _sweep_expired_logins(podman)
+    except Exception as e:
+        logger.warning("Login expiry sweep failed: %s", e)
+
     # Snapshot the registry under the lock, then release it before the
     # per-crew restart loop so the lock is not held across gateway waits
     # (up to 30s each).  Per-crew write-backs re-acquire the lock individually.
@@ -2580,6 +2589,7 @@ def _run_pty_login_flow(
     url_patterns: "list[re.Pattern]",
     code_pattern: "re.Pattern | None",
     deadline_secs: float = 45.0,
+    initial_bytes: bytes = b"",
 ) -> "tuple[str | None, str | None]":
     """Run a PTY select-loop and extract a login URL and optional code.
 
@@ -2608,49 +2618,71 @@ def _run_pty_login_flow(
         Pass ``None`` when the backend does not surface a code.
     deadline_secs:
         Wall-clock budget for the loop.  Default 45 s.
+    initial_bytes:
+        PTY bytes already received (leftover from the HTTP upgrade read in
+        ``container_exec_pty_stdin``).  Pre-populated into the accumulator so
+        no early output is lost before the select-loop starts.
     """
     deadline = time.time() + deadline_secs
-    collected = bytearray()
+    # Pre-seed the accumulator with any bytes already received during the
+    # HTTP-to-PTY upgrade handshake so they are not lost.
+    collected = bytearray(initial_bytes)
     login_url: str | None = None
     login_code: str | None = None
     answered: set[int] = set()  # indices into prompt_patterns already sent
 
-    try:
-        while time.time() < deadline:
-            ready, _, _ = select.select([pty_sock], [], [], 0.1)
-            if ready:
+    def _process_collected() -> bool:
+        """Process current contents of ``collected``; return True when a URL is found."""
+        nonlocal login_url, login_code
+        raw_text = collected.decode("utf-8", errors="replace")
+        text = _strip_terminal_sequences(raw_text)
+        url_ready = not _OPEN_SEQUENCE_RE.search(raw_text)
+
+        for idx, (pattern, answer) in enumerate(prompt_patterns):
+            if idx in answered:
+                continue
+            if pattern.search(text):
                 try:
-                    chunk = pty_sock.recv(4096)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    break
-                collected.extend(chunk)
-                raw_text = collected.decode("utf-8", errors="replace")
-                text = _strip_terminal_sequences(raw_text)
-                url_ready = not _OPEN_SEQUENCE_RE.search(raw_text)
+                    pty_sock.sendall(answer)
+                except Exception:
+                    pass
+                answered.add(idx)
 
-                for idx, (pattern, answer) in enumerate(prompt_patterns):
-                    if idx in answered:
+        for pat in url_patterns if url_ready else ():
+            m = pat.search(text)
+            if m:
+                login_url = (m.group(1) if m.lastindex else m.group(0)).rstrip(").,")
+                if code_pattern:
+                    cm = code_pattern.search(login_url) or code_pattern.search(text)
+                    if cm:
+                        # Support two-branch patterns: group(1) is the URL-param
+                        # branch; group(2) is the prose branch.  Use whichever
+                        # branch matched (the other will be None).
+                        login_code = cm.group(1) or (
+                            cm.group(2) if cm.lastindex and cm.lastindex >= 2 else None
+                        )
+                return True
+        return False
+
+    try:
+        # If initial_bytes already contain the URL, return without entering the
+        # select loop.  This is the common case when PTY output arrives in the
+        # same recv() chunk as the 101 Switching Protocols headers.
+        if collected and _process_collected():
+            pass  # login_url is set; the ``if login_url`` branch below handles drain.
+        else:
+            while time.time() < deadline:
+                ready, _, _ = select.select([pty_sock], [], [], 0.1)
+                if ready:
+                    try:
+                        chunk = pty_sock.recv(4096)
+                    except BlockingIOError:
                         continue
-                    if pattern.search(text):
-                        try:
-                            pty_sock.sendall(answer)
-                        except Exception:
-                            pass
-                        answered.add(idx)
-
-                for pat in url_patterns if url_ready else ():
-                    m = pat.search(text)
-                    if m:
-                        login_url = (m.group(1) if m.lastindex else m.group(0)).rstrip(").,")
-                        if code_pattern:
-                            cm = code_pattern.search(login_url) or code_pattern.search(text)
-                            if cm:
-                                login_code = cm.group(1)
+                    if not chunk:
                         break
-                if login_url:
-                    break
+                    collected.extend(chunk)
+                    if _process_collected():
+                        break
     except Exception as e:
         logger.warning("PTY read error in _run_pty_login_flow: %s", e)
 
@@ -2768,7 +2800,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
         ["--license", KIRO_LICENSE] if KIRO_LICENSE else []
     )
     try:
-        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
+        exec_id, pty_sock, leftover = podman.container_exec_pty_stdin(container, cmd)
     except Exception as e:
         _nuke_login_container(podman, container)
         with _login_pending_lock:
@@ -2808,6 +2840,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
         url_patterns=kiro_url_patterns,
         code_pattern=_kiro_code_re,
         deadline_secs=45.0,
+        initial_bytes=leftover,
     )
 
     if not login_url:
@@ -2958,7 +2991,7 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
     # any https:// URL if no more specific match is found within 45 seconds.
     cmd = ["claude", "auth", "login"]
     try:
-        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
+        exec_id, pty_sock, leftover = podman.container_exec_pty_stdin(container, cmd)
     except Exception as e:
         _nuke_claude_login_container(podman, container)
         with _claude_login_pending_lock:
@@ -2993,6 +3026,7 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
         url_patterns=claude_url_patterns,
         code_pattern=None,
         deadline_secs=45.0,
+        initial_bytes=leftover,
     )
 
     if not login_url:
@@ -3027,6 +3061,12 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
 # How long a submitted code may take to complete the exchange before the flow is
 # abandoned. The exchange is a single network round-trip, so this is generous.
 CLAUDE_LOGIN_CODE_DEADLINE_SECS = 120.0
+
+# TTLs for kiro and Codex device flows.  Matches CLAUDE_LOGIN_APPROVAL_DEADLINE_SECS —
+# same device-flow window.  An abandoned flow exceeding this limit is expired by
+# _sweep_expired_logins regardless of polling activity.
+KIRO_LOGIN_TTL_SECS = 900.0
+CODEX_LOGIN_TTL_SECS = 900.0
 
 
 def _submit_claude_login_code(code: str) -> dict:
@@ -3082,6 +3122,98 @@ def _claude_login_code_expired(pending: dict) -> bool:
         return submitted_at is not None and now - submitted_at > CLAUDE_LOGIN_CODE_DEADLINE_SECS
     return False
 
+
+def _kiro_login_expired(pending: dict) -> bool:
+    """True when a kiro device flow has exceeded KIRO_LOGIN_TTL_SECS."""
+    started_at = pending.get("started_at")
+    return started_at is not None and time.time() - started_at > KIRO_LOGIN_TTL_SECS
+
+
+def _codex_login_expired(pending: dict) -> bool:
+    """True when a Codex device flow has exceeded CODEX_LOGIN_TTL_SECS."""
+    started_at = pending.get("started_at")
+    return started_at is not None and time.time() - started_at > CODEX_LOGIN_TTL_SECS
+
+
+def _sweep_expired_logins(podman: "PodmanClient") -> None:
+    """Expire pending login flows that have exceeded their TTL.
+
+    Inspects the pending-login dicts for all three backends (kiro, Claude,
+    Codex) under their respective locks and expires any flow whose deadline has
+    passed.  On expiry: nukes the login container (best-effort) and clears the
+    pending dict so a fresh login can be started.
+
+    Must be called from a context that already holds the ``podman`` client (e.g.
+    the startup sweep in ``_reconcile_registry``).  The function is intentionally
+    coarse-grained: each backend's check acquires and releases its own lock
+    independently so a slow nuke does not hold an unrelated backend's lock.
+    """
+    global _login_pending, _claude_login_pending, _codex_login_pending
+
+    # ── kiro ──────────────────────────────────────────────────────────────────
+    with _login_pending_lock:
+        kiro_pending = _login_pending
+    if kiro_pending is not None and _kiro_login_expired(kiro_pending):
+        container = kiro_pending.get("container")
+        logger.warning(
+            "Expiring stale kiro login flow (started_at=%.0f, container=%s)",
+            kiro_pending.get("started_at", 0),
+            container,
+        )
+        if container:
+            try:
+                _nuke_login_container(podman, container)
+            except Exception as e:
+                logger.warning("Failed to nuke stale kiro login container %s: %s", container, e)
+        with _login_pending_lock:
+            # Re-check under lock to avoid a race with a concurrent poll completing.
+            if _login_pending is kiro_pending:
+                _login_pending = None
+
+    # ── Claude ────────────────────────────────────────────────────────────────
+    with _claude_login_pending_lock:
+        claude_pending = _claude_login_pending
+    if claude_pending is not None and _claude_login_code_expired(claude_pending):
+        container = claude_pending.get("container")
+        sock = claude_pending.get("pty_sock")
+        logger.warning(
+            "Expiring stale Claude login flow (state=%s, started_at=%.0f, container=%s)",
+            claude_pending.get("state"),
+            claude_pending.get("started_at", 0),
+            container,
+        )
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        if container:
+            try:
+                _nuke_claude_login_container(podman, container)
+            except Exception as e:
+                logger.warning("Failed to nuke stale Claude login container %s: %s", container, e)
+        with _claude_login_pending_lock:
+            if _claude_login_pending is claude_pending:
+                _claude_login_pending = None
+
+    # ── Codex ─────────────────────────────────────────────────────────────────
+    with _codex_login_pending_lock:
+        codex_pending = _codex_login_pending
+    if codex_pending is not None and _codex_login_expired(codex_pending):
+        container = codex_pending.get("container")
+        logger.warning(
+            "Expiring stale Codex login flow (started_at=%.0f, container=%s)",
+            codex_pending.get("started_at", 0),
+            container,
+        )
+        if container:
+            try:
+                _nuke_codex_login_container(podman, container)
+            except Exception as e:
+                logger.warning("Failed to nuke stale Codex login container %s: %s", container, e)
+        with _codex_login_pending_lock:
+            if _codex_login_pending is codex_pending:
+                _codex_login_pending = None
 
 
 CLAUDE_CREDENTIAL_FILE = ".credentials.json"
@@ -3403,7 +3535,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
     # ── Phase: PTY exec ───────────────────────────────────────────────────────
     cmd = ["codex-acp", "login"]
     try:
-        exec_id, pty_sock = podman.container_exec_pty_stdin(container, cmd)
+        exec_id, pty_sock, leftover = podman.container_exec_pty_stdin(container, cmd)
     except Exception as e:
         _nuke_codex_login_container(podman, container)
         with _codex_login_pending_lock:
@@ -3431,7 +3563,11 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
     # Combined pattern: prefer user_code= query param in the URL; fall back to a
     # "Code: XXXX" line in the output text.  The helper searches URL first, then
     # full accumulated text, preserving original priority.
-    codex_code_pattern = re.compile(r"(?:[?&]user_code=|[Cc]ode[:\s]+)([A-Za-z0-9_-]{4,})")
+    # The prose branch is restricted to uppercase-or-digit tokens of 4–8 chars
+    # with a word boundary to avoid matching prose words like "will" or "expire".
+    codex_code_pattern = re.compile(
+        r"(?:[?&]user_code=([A-Za-z0-9_-]{4,})|[Cc]ode[:\s]+([A-Z0-9]{4,8})\b)"
+    )
 
     login_url, login_code = _run_pty_login_flow(
         pty_sock=pty_sock,
@@ -3439,6 +3575,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
         url_patterns=codex_url_patterns,
         code_pattern=codex_code_pattern,
         deadline_secs=45.0,
+        initial_bytes=leftover,
     )
 
     if not login_url:

@@ -699,7 +699,7 @@ class LoginConcurrencyTests(unittest.TestCase):
         mock_sock = MagicMock()
         mock_sock.recv.return_value = b"Open this URL: https://example.com/device?user_code=TEST-1234"
         mock_sock.setblocking = MagicMock()
-        mock_podman.container_exec_pty_stdin.return_value = ("exec-123", mock_sock)
+        mock_podman.container_exec_pty_stdin.return_value = ("exec-123", mock_sock, b"")
 
         def run_login(idx):
             barrier.wait()
