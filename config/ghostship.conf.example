@@ -200,6 +200,9 @@
 # Master switch — set to "false" to disable all rate limiting entirely.
 # Per-endpoint limits and other knobs are in docs/configuration.md (advanced).
 # GA_RATE_LIMIT_ENABLED=true
+# /dashboard/auth is Caddy's per-request forward_auth check, so its limit is set
+# high (requests:window_seconds). Default below; others are in docs/configuration.md.
+# GA_RATE_LIMIT_DASHBOARD_AUTH=600:60
 
 # ── Crew UI port allocation (TRN-80 / TRN-101) ───────────────────────────────
 # Each crew launched with dashboard=True is assigned a host port from the range
