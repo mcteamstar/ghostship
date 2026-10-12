@@ -1904,8 +1904,6 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
     # ghostship's per-call kiro approval gate does not apply (see crew-governance).
     elif GA_CREW_ACP_BACKEND == "codex":
         agent_overrides["acp_backend"] = "codex"
-    elif GA_CREW_ACP_BACKEND == "opencode":
-        agent_overrides["acp_backend"] = "opencode"
     # KC_MODEL_DEFAULT sets agent.default_model — a global fallback that applies
     # when no per-agent model field overrides it. Precedence (high→low):
     #   KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
