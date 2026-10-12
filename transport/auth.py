@@ -402,8 +402,11 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
         """Serve a registered public route without any authentication check.
 
         Returns True if a public route handled the request.
-        Supports exact path keys and ``/crews/*/ui`` wildcard pattern
-        (crew UI paths are gated by Caddy's gs_session forward-auth, not bearer).
+        Supports exact path keys, the ``/crews/*/ui`` wildcard pattern (crew UI
+        paths are gated by Caddy's gs_session forward-auth, not bearer), and the
+        ``POST /crews/*/captain/stop`` crew-internal self-cancel endpoint (the
+        handler validates the crew's dashboard session cookie itself, so it is
+        bearer-exempt but not unauthenticated).
         """
         from starlette.requests import Request
 
@@ -422,6 +425,22 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             if ui_handler is not None:
                 request = Request(scope, receive)
                 response = await ui_handler(request)
+                await response(scope, receive, send)
+                return True
+
+        # Pattern match for POST /crews/{id}/captain/stop — bearer-exempt; the
+        # handler validates the crew's internal dashboard cookie itself.
+        if (
+            scope["method"] == "POST"
+            and len(_parts) == 4
+            and _parts[0] == "crews"
+            and _parts[2] == "captain"
+            and _parts[3] == "stop"
+        ):
+            stop_handler = self._public_routes.get(("POST", "/crews/*/captain/stop"))
+            if stop_handler is not None:
+                request = Request(scope, receive)
+                response = await stop_handler(request)
                 await response(scope, receive, send)
                 return True
 
