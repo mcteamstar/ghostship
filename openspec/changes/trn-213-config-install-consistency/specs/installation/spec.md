@@ -15,6 +15,8 @@ module-level constants:
 | `GA_PREWARM_ENABLED` | removed; prewarm always runs when triggered |
 | `GA_PREWARM_TTL_SECS` | `300` module-level constant |
 | `GA_SUBAGENT_MAX_TURNS` | `200` module-level constant |
+| `GA_COMPOSE_RETRY_ATTEMPTS` | `3` constant in install.sh |
+| `GA_COMPOSE_RETRY_DELAY_SECS` | `2` constant in install.sh |
 
 #### Scenario: Removed vars have no effect when set in environment
 - **WHEN** any of the seven removed vars is set in the environment or `ghostship.conf`

@@ -47,6 +47,8 @@ module-level constants. Remove from compose template.
 | `GA_PREWARM_ENABLED` | remove field; `_prewarm_crew` always runs when called |
 | `GA_PREWARM_TTL_SECS` | `_PREWARM_TTL_SECS = 300` constant in lifecycle.py |
 | `GA_SUBAGENT_MAX_TURNS` | `_SUBAGENT_MAX_TURNS = 200` constant in lifecycle.py |
+| `GA_COMPOSE_RETRY_ATTEMPTS` | `_COMPOSE_RETRY_ATTEMPTS = 3` in install.sh |
+| `GA_COMPOSE_RETRY_DELAY_SECS` | `_COMPOSE_RETRY_DELAY_SECS = 2` in install.sh |
 
 **Note:** `GA_PREWARM_ENABLED=False` is the current default and the correct behaviour
 (prewarm is implicit since TRN-194). Hardcoding removes the disabled gate — prewarm now

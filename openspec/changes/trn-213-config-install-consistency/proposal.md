@@ -31,6 +31,8 @@ values become Python literals or module-level constants:
 | `GA_PREWARM_ENABLED` | always `False` (prewarm is implicit since TRN-194) |
 | `GA_PREWARM_TTL_SECS` | `300` module-level constant in lifecycle.py |
 | `GA_SUBAGENT_MAX_TURNS` | `200` module-level constant |
+| `GA_COMPOSE_RETRY_ATTEMPTS` | `3` constant in install.sh |
+| `GA_COMPOSE_RETRY_DELAY_SECS` | `2` constant in install.sh |
 
 ### 2. GA_CREW_AGENT — single backend var (rename + consolidation)
 

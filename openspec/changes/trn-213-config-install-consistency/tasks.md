@@ -17,7 +17,11 @@
       `GA_TLS_MIN_VERSION`, `GA_SUBAGENT_MAX_TURNS` module-level reads with the
       corresponding constants/literals. `_TLS_MIN_VERSION = "1.2"`. Remove the
       `GA_ENABLE_SECURITY_HEADERS` conditional — `SecurityHeadersMiddleware` always active.
-- [ ] 1.4 Verify: `python3 -c "import transport.config; import transport.lifecycle; import transport.server"` passes cleanly.
+- [ ] 1.4 In `scripts/install.sh`, replace `GA_COMPOSE_RETRY_ATTEMPTS` and
+      `GA_COMPOSE_RETRY_DELAY_SECS` reads with hardcoded constants
+      `_COMPOSE_RETRY_ATTEMPTS=3` and `_COMPOSE_RETRY_DELAY_SECS=2`. Remove them
+      from the defaults block and any compose env passthrough.
+- [ ] 1.5 Verify: `python3 -c "import transport.config; import transport.lifecycle; import transport.server"` passes cleanly.
 
 ## 2. Consolidate GA_CREW_AGENT (rename + replace GA_CREW_ACP_BACKEND + GA_AGENT_BACKENDS)
 
