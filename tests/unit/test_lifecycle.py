@@ -675,12 +675,23 @@ class ActiveCrewLimitTests(unittest.TestCase):
         startup_events: dict[str, threading.Event] = {}
         crew = self._make_crew(status="stopped", container="gs-failing")
 
+        # TRN-238 QA-2: _ensure_crew_running now re-reads the registry right
+        # after container_start to detect a concurrent nuke. The crew under
+        # restart MUST be present (it is a registered, stopped crew), so patch
+        # _load_registry to include it — otherwise the new existence check would
+        # short-circuit before reaching _wait_gateway, which is the failure this
+        # test exercises.
+        target_registry = {"crews": {"target": crew}}
+
         with (
             patch.object(lifecycle, "_get_podman", return_value=FailingRestartPodman()),
+            patch.object(lifecycle, "_load_registry", return_value=target_registry),
+            patch.object(lifecycle, "_save_registry"),
             patch.object(lifecycle, "_startup_events", startup_events),
             patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
+            patch.object(lifecycle, "_patch_crew_config"),
             patch.object(lifecycle, "_wait_gateway", side_effect=RuntimeError("restart failed")),
         ):
             with self.assertRaisesRegex(RuntimeError, "restart failed"):
@@ -3304,4 +3315,164 @@ class RegistryWriteFailureCleanupTests(unittest.TestCase):
             podman.stopped, podman.started,
             "container must be stopped on registry-write failure so its state "
             "matches the stale 'stopped' registry entry (cleanup stop missing)",
+        )
+
+
+# ── TRN-238 QA-2: registry existence check after container_start ─────────────
+
+
+class NukeDuringRestartTests(unittest.TestCase):
+    """TRN-238 QA-2: _ensure_crew_running must detect a concurrent nuke() that
+    removes the crew's registry entry between container_start and post-start
+    setup, log at INFO, and return the _NUKED_DURING_RESTART sentinel without
+    raising or proceeding to post-start setup (cookie write / member enroll).
+    """
+
+    def test_nuke_between_start_and_setup_returns_sentinel_and_logs(self) -> None:
+        crew = {"container": "gs-demo", "cookie": "cookie"}
+        fake_podman = FakePodmanClient([int(8 * 1024**3)])
+        # Container is stopped so the leader restart path runs; after
+        # container_start it is "running".
+        fake_podman.container_is_running = lambda name: False  # type: ignore[method-assign]
+
+        # Registry loads: the leader path reads the registry at least twice.
+        # Every load returns a registry WITHOUT the crew — i.e. a nuke() removed
+        # it. (The active-limit gate is disabled below so no earlier load cares
+        # about the crew being present.)
+        nuked_registry = {"crews": {}}
+
+        patch_calls = {"patch_config": 0, "mint": 0, "enroll": 0}
+
+        def _patch_config(*a, **k):
+            patch_calls["patch_config"] += 1
+
+        def _mint(*a, **k):
+            patch_calls["mint"] += 1
+            return "new-cookie"
+
+        def _enroll(*a, **k):
+            patch_calls["enroll"] += 1
+
+        orig_max = lifecycle.GA_MAX_ACTIVE_CREWS
+        orig_min = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MAX_ACTIVE_CREWS = 0  # disable active-limit registry read
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0  # disable memory gate
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(lifecycle, "_get_podman", return_value=fake_podman))
+                stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+                stack.enter_context(patch.object(lifecycle, "_load_registry", return_value=nuked_registry))
+                stack.enter_context(patch.object(lifecycle, "_save_registry"))
+                stack.enter_context(patch.object(lifecycle, "_patch_crew_config", side_effect=_patch_config))
+                stack.enter_context(patch.object(lifecycle, "_mint_cookie", side_effect=_mint))
+                stack.enter_context(patch.object(lifecycle, "_mint_internal_cookie", side_effect=_mint))
+                stack.enter_context(patch.object(lifecycle, "_enroll_crew_members", side_effect=_enroll))
+                stack.enter_context(patch.object(lifecycle, "_touch_crew"))
+                stack.enter_context(patch.object(lifecycle, "_probe_gateway", return_value=True))
+
+                with self.assertLogs("transport", level="INFO") as logctx:
+                    # Must NOT raise.
+                    result = lifecycle._ensure_crew_running(crew, "demo", touch=False)
+
+        finally:
+            lifecycle.GA_MAX_ACTIVE_CREWS = orig_max
+            lifecycle.GA_MIN_FREE_MEM_GB = orig_min
+
+        # Returned the nuke sentinel, not a crew dict.
+        self.assertIs(result, lifecycle._NUKED_DURING_RESTART)
+        # INFO log emitted mentioning the nuke-during-restart.
+        self.assertTrue(
+            any("nuked during restart" in m.lower() for m in logctx.output),
+            f"expected an INFO log about nuke-during-restart; got {logctx.output}",
+        )
+        # Post-start setup must NOT have run (the check short-circuits before it).
+        self.assertEqual(patch_calls["patch_config"], 0,
+                         "config patch ran despite the crew being nuked")
+        self.assertEqual(patch_calls["mint"], 0,
+                         "cookie mint ran despite the crew being nuked")
+        self.assertEqual(patch_calls["enroll"], 0,
+                         "member enrollment ran despite the crew being nuked")
+
+
+# ── TRN-238 QA-2 (Banshee fix): waiter path propagates nuke-during-restart ──
+
+
+class NukeDuringRestartWaiterTests(unittest.TestCase):
+    """TRN-238 QA-2 (waiter path): when the restart leader returns
+    _NUKED_DURING_RESTART because a concurrent nuke() removed the crew between
+    container_start and post-start setup, a concurrent waiter that woke on the
+    same event MUST also receive _NUKED_DURING_RESTART — not a KeyError from
+    _get_crew (which raises because the crew is no longer in the registry).
+
+    Prior to the Banshee fix the leader set _outcome=(True, None) to signal
+    "restart succeeded", but the crew was gone, so the waiter's _get_crew call
+    raised KeyError — an opaque error that no call site handled cleanly.
+    """
+
+    def test_waiter_returns_sentinel_when_crew_nuked_during_leader_restart(self) -> None:
+        """Simulate the race:
+        1. Leader starts, acquires the startup event slot.
+        2. Waiter arrives, elects itself a waiter, calls event.wait().
+        3. Leader detects nuke, records _outcome=(True, None), fires event.
+        4. Waiter wakes, calls _get_crew → KeyError (crew gone).
+        5. Banshee fix: the waiter catches KeyError and returns the sentinel.
+
+        We simulate the in-flight leader by injecting the startup event and
+        outcome before calling _ensure_crew_running, so the function takes the
+        waiter path immediately after the _early_in_progress check.
+        """
+        import threading as _th
+
+        crew_id = "nuke-waiter-test"
+
+        # The crew entry is present so the waiter path is entered (status=stopped).
+        stopped_crew = {"container": "gs-nuke-waiter-test", "status": "stopped", "cookie": "c"}
+
+        # After the leader fires, _get_crew should raise KeyError (crew nuked).
+        def fake_get_crew(cid: str) -> dict:
+            raise KeyError(f"Crew '{cid}' not found.")
+
+        # _get_podman is called at the very top of _ensure_crew_running before the
+        # leader/waiter branching; mock it with a client that reports containers stopped.
+        fake_podman = FakePodmanClient([])
+
+        # Manually inject a startup event and outcome to simulate the leader
+        # already having finished with the nuke sentinel.
+        evt = _th.Event()
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events[crew_id] = evt
+            lifecycle._startup_generation[crew_id] = 1
+            # Record the leader's outcome — (True, None) as nuked-during-restart path sets.
+            lifecycle._crew_restart_outcomes[crew_id] = (True, None)
+        # Fire the event so the waiter unblocks immediately.
+        evt.set()
+
+        orig_max = lifecycle.GA_MAX_ACTIVE_CREWS
+        orig_min = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MAX_ACTIVE_CREWS = 0
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
+            with patch.object(lifecycle, "_get_podman", return_value=fake_podman):
+                with patch.object(lifecycle, "_get_crew", side_effect=fake_get_crew):
+                    with self.assertLogs("transport", level="INFO") as logctx:
+                        result = lifecycle._ensure_crew_running(stopped_crew, crew_id)
+        finally:
+            lifecycle.GA_MAX_ACTIVE_CREWS = orig_max
+            lifecycle.GA_MIN_FREE_MEM_GB = orig_min
+            # Clean up injected state.
+            with lifecycle._startup_events_lock:
+                lifecycle._startup_events.pop(crew_id, None)
+                lifecycle._startup_generation.pop(crew_id, None)
+                lifecycle._crew_restart_outcomes.pop(crew_id, None)
+
+        # Must return the sentinel, not raise.
+        self.assertIs(
+            result, lifecycle._NUKED_DURING_RESTART,
+            "waiter must return _NUKED_DURING_RESTART when _get_crew raises KeyError "
+            "(crew was nuked during leader restart)",
+        )
+        # Must log at INFO mentioning the nuke-during-restart.
+        self.assertTrue(
+            any("nuked during restart" in m.lower() for m in logctx.output),
+            f"expected INFO log mentioning nuke-during-restart; got {logctx.output}",
         )

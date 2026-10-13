@@ -548,33 +548,61 @@ def _idle_monitor() -> None:
                     "Crew %s idle for %.0fs — stopping container",
                     crew_id, idle_secs,
                 )
-                # TOCTOU guard: re-read last_used from the live registry and
-                # perform the stop while the lock is held, so a _touch_crew
-                # call that lands between our HTTP checks and the stop cannot
-                # race us.  The design (D3) requires the re-check AND the stop
-                # to be atomic with respect to _touch_crew (which also acquires
-                # _registry_lock).  Holding the lock across container_stop adds
-                # latency bounded by Podman's stop timeout — acceptable per the
-                # design risk analysis.
+                # TRN-238 QA-1: do NOT hold _registry_lock across
+                # container_stop. The TOCTOU re-check (that no _touch_crew
+                # landed during the HTTP checks) and the double-stop guard are
+                # performed under the lock, but the lock is RELEASED before the
+                # potentially slow podman.container_stop call so a concurrent
+                # registry reader (e.g. crews(), a dispatch, or another monitor)
+                # is never blocked for the duration of a Podman stop timeout.
+                #
+                # Atomicity vs _touch_crew is preserved differently: inside the
+                # lock we re-read last_used AND set an in-flight ``_stopping``
+                # flag on the registry entry. The flag both (a) marks the entry
+                # so a second concurrent idle tick targeting the same crew skips
+                # it (double-stop prevention), and (b) lets the post-stop
+                # write-back distinguish a crew that is still mid-stop. After
+                # container_stop returns we re-acquire the lock to write back
+                # ``status: stopped`` and clear ``_stopping``.
                 stop_failed = False
                 with _registry_lock:
                     live_reg = _load_registry()
-                    live_last_used = live_reg.get("crews", {}).get(crew_id, {}).get("last_used", 0)
+                    live_entry = live_reg.get("crews", {}).get(crew_id, {})
+                    live_last_used = live_entry.get("last_used", 0)
                     if now - live_last_used < GA_IDLE_TIMEOUT_SECS:
                         _note_idle_skip(crew_id, "last_used advanced during checks — skipping stop")
                         continue
-                    try:
-                        podman.container_stop(info["container"])
-                    except Exception as e:
-                        # One crew's stop failure must not end idle reaping for every crew.
-                        logger.warning("Could not stop idle crew %s: %s", crew_id, e)
-                        stop_failed = True
-                    if not stop_failed:
-                        _idle_skip_reasons.pop(crew_id, None)
-                        reg = _load_registry()
-                        if crew_id in reg["crews"]:
+                    # Double-stop guard: another idle tick already claimed this
+                    # crew and is mid-stop. Skip rather than issue a second
+                    # container_stop.
+                    if live_entry.get("_stopping"):
+                        _note_idle_skip(crew_id, "stop already in progress — skipping")
+                        continue
+                    # Claim the stop by marking the entry in-flight, then release
+                    # the lock. Persist so a concurrent reader observes the flag.
+                    if crew_id in live_reg["crews"]:
+                        live_reg["crews"][crew_id]["_stopping"] = True
+                        _save_registry(live_reg)
+
+                # Lock released — perform the (potentially slow) stop WITHOUT it.
+                try:
+                    podman.container_stop(info["container"])
+                except Exception as e:
+                    # One crew's stop failure must not end idle reaping for every crew.
+                    logger.warning("Could not stop idle crew %s: %s", crew_id, e)
+                    stop_failed = True
+
+                # Re-acquire the lock to write back the result and clear the
+                # in-flight flag.
+                with _registry_lock:
+                    reg = _load_registry()
+                    if crew_id in reg["crews"]:
+                        reg["crews"][crew_id].pop("_stopping", None)
+                        if not stop_failed:
                             reg["crews"][crew_id]["status"] = "stopped"
-                            _save_registry(reg)
+                        _save_registry(reg)
+                if not stop_failed:
+                    _idle_skip_reasons.pop(crew_id, None)
                 if stop_failed:
                     continue
         except Exception:

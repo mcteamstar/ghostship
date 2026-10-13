@@ -232,15 +232,16 @@ class IdleMonitorTests(unittest.TestCase):
             f"crew was stopped despite being touched during checks: {saved_regs}",
         )
 
-    def test_stop_is_atomic_with_recheck_under_lock(self) -> None:
-        """3.2 (D3): the container_stop call must happen while _registry_lock is
-        held, so a concurrent _touch_crew (which also acquires the same lock) cannot
-        slip between the re-check and the stop.
+    def test_lock_released_during_container_stop(self) -> None:
+        """TRN-238 QA-1: the registry lock must NOT be held across
+        container_stop. The slow Podman stop must run with the lock RELEASED so
+        a concurrent registry reader is not blocked for the stop's duration. The
+        re-check and the in-flight ``_stopping`` claim are performed under the
+        lock, but the stop itself runs without it.
 
-        The test verifies that when container_stop is invoked the registry lock is
-        already held: we replace _registry_lock with a real threading.Lock, then
-        record inside container_stop whether the lock is currently held by checking
-        lock.locked(). If the stop is outside the lock, locked() returns False.
+        The test replaces _registry_lock with a real threading.Lock, then
+        records inside container_stop whether the lock is currently held via
+        lock.locked(). Under the QA-1 contract this MUST be False.
         """
         podman = IdleMonitorPodman(containers_running={"gs-atomic": True})
         spawn_resp = MockHTTPResponse(200, {"agents": []})
@@ -303,12 +304,171 @@ class IdleMonitorTests(unittest.TestCase):
         # The stop should have happened (crew was genuinely idle).
         self.assertIn("gs-atomic", atomic_podman.stops,
                       "expected the idle crew to be stopped")
-        # The decisive assertion: the lock must have been held when stop ran.
-        self.assertTrue(
+        # The decisive assertion: the lock must have been RELEASED when stop ran
+        # (QA-1 — do not hold _registry_lock across container_stop).
+        self.assertFalse(
             lock_held_during_stop[0],
-            "container_stop was called OUTSIDE _registry_lock — the re-check and "
-            "stop are not atomic; a concurrent _touch_crew can slip between them "
-            "(task 3.2 / D3 design requirement)",
+            "container_stop was called while _registry_lock was HELD — QA-1 "
+            "requires the lock to be released before the (slow) container_stop "
+            "so a concurrent registry reader is not blocked for its duration.",
+        )
+
+    def test_concurrent_registry_read_proceeds_during_stop(self) -> None:
+        """TRN-238 QA-1 (task 1.1): a concurrent registry read can proceed while
+        a simulated container_stop is in progress, because the idle monitor
+        releases _registry_lock before calling container_stop.
+
+        We use a real lock and, from inside the (slow) container_stop, attempt a
+        non-blocking acquire of that same lock. If the monitor still held the
+        lock across the stop the acquire would fail; under QA-1 it succeeds.
+        """
+        spawn_resp = MockHTTPResponse(200, {"agents": []})
+        cron_resp = MockHTTPResponse(200, {"jobs": []})
+        fake_http = FakeHTTP([spawn_resp, cron_resp], default=FakeResponse(500))
+
+        idle = {"crews": {"c1": {
+            "container": "gs-c1", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+
+        def load_side_effect():
+            return idle
+
+        real_lock = threading.Lock()
+        reader_acquired = [None]  # True/False
+
+        class _SlowStopPodman:
+            stops: list[str] = []
+
+            def container_is_running(self, name: str) -> bool:
+                return True
+
+            def container_stop(self, name: str) -> None:
+                # Simulate a concurrent reader acquiring the registry lock while
+                # the stop is in progress. Non-blocking acquire must succeed
+                # because the monitor released the lock before this call.
+                got = real_lock.acquire(blocking=False)
+                reader_acquired[0] = got
+                if got:
+                    real_lock.release()
+                self.stops.append(name)
+
+        podman = _SlowStopPodman()
+        sleep_called = [False]
+
+        def fake_sleep(secs):
+            if sleep_called[0]:
+                raise StopIteration()
+            sleep_called[0] = True
+
+        with (
+            patch.object(monitors, "_get_podman", return_value=podman),
+            patch.object(monitors, "_http", fake_http),
+            patch.object(monitors, "_touch_crew"),
+            patch.object(monitors, "_load_registry", side_effect=load_side_effect),
+            patch.object(monitors, "_save_registry"),
+            patch.object(monitors, "_mint_cookie", return_value=None),
+            patch.object(monitors, "_registry_lock", real_lock),
+            patch.object(monitors, "GA_IDLE_TIMEOUT_SECS", 300.0),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+            patch.object(monitors.time, "time", return_value=1000.0),
+        ):
+            try:
+                server._idle_monitor()
+            except StopIteration:
+                pass
+
+        self.assertIn("gs-c1", podman.stops)
+        self.assertTrue(
+            reader_acquired[0],
+            "a concurrent registry read could NOT proceed while container_stop "
+            "was running — the lock was still held across the stop (QA-1 broken).",
+        )
+
+    def test_double_stop_prevention(self) -> None:
+        """TRN-238 QA-1 (task 1.2): two concurrent idle ticks targeting the same
+        crew must call container_stop exactly once. The first tick marks the
+        registry entry with an in-flight ``_stopping`` flag; the second tick
+        observes the flag and skips.
+
+        We simulate the two ticks sequentially: the first iteration persists
+        ``_stopping`` on the entry (captured via a mutable registry), and the
+        second iteration reads that same mutated entry and must skip the stop.
+        """
+        # One shared mutable registry so a write-back from the first tick is
+        # visible to the second tick (models the real on-disk registry).
+        shared = {"crews": {"c1": {
+            "container": "gs-c1", "status": "running", "cookie": "c", "last_used": 0,
+        }}}
+
+        def load_side_effect():
+            # Return the live shared dict so _stopping writes persist across ticks.
+            return shared
+
+        def save_side_effect(reg):
+            # Emulate persistence: copy mutations into the shared registry.
+            shared["crews"] = {k: dict(v) for k, v in reg["crews"].items()}
+
+        real_lock = threading.Lock()
+
+        class _CountingPodman:
+            def __init__(self) -> None:
+                self.stops: list[str] = []
+
+            def container_is_running(self, name: str) -> bool:
+                return True
+
+            def container_stop(self, name: str) -> None:
+                self.stops.append(name)
+
+        podman = _CountingPodman()
+
+        def run_one_tick():
+            # Fresh HTTP script per tick (spawn + cron both empty → idle).
+            fake_http = FakeHTTP(
+                [MockHTTPResponse(200, {"agents": []}),
+                 MockHTTPResponse(200, {"jobs": []})],
+                default=FakeResponse(500),
+            )
+            sleep_called = [False]
+
+            def fake_sleep(secs):
+                if sleep_called[0]:
+                    raise StopIteration()
+                sleep_called[0] = True
+
+            with (
+                patch.object(monitors, "_get_podman", return_value=podman),
+                patch.object(monitors, "_http", fake_http),
+                patch.object(monitors, "_touch_crew"),
+                patch.object(monitors, "_load_registry", side_effect=load_side_effect),
+                patch.object(monitors, "_save_registry", side_effect=save_side_effect),
+                patch.object(monitors, "_mint_cookie", return_value=None),
+                patch.object(monitors, "_registry_lock", real_lock),
+                patch.object(monitors, "GA_IDLE_TIMEOUT_SECS", 300.0),
+                patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+                patch.object(monitors.time, "time", return_value=1000.0),
+            ):
+                try:
+                    server._idle_monitor()
+                except StopIteration:
+                    pass
+
+        # First tick: claims the stop (sets _stopping), performs container_stop,
+        # then clears _stopping and marks status=stopped.
+        run_one_tick()
+        # After the first tick the crew is marked stopped and the flag cleared,
+        # so simulate the race by re-marking it running WITH the in-flight flag
+        # still set — i.e. a second concurrent tick that observes the first
+        # tick mid-stop (flag present, stop not yet written back).
+        shared["crews"]["c1"]["status"] = "running"
+        shared["crews"]["c1"]["_stopping"] = True
+        run_one_tick()
+
+        # container_stop must have been called exactly once across both ticks.
+        self.assertEqual(
+            podman.stops, ["gs-c1"],
+            "container_stop was called more than once for the same crew — the "
+            "_stopping in-flight guard did not prevent a double stop.",
         )
 
     def test_recently_used_crew_skipped(self) -> None:

@@ -622,5 +622,88 @@ class TestIntegrationDoubleFailure(unittest.TestCase):
         self.assertNotIn("Traceback", msg)
 
 
+class TestContinuePathDetection(unittest.TestCase):
+    """TRN-238 QA-3: the /continue 400 session-gone bypass must match ONLY a
+    path whose final segment is 'continue' (path.endswith('/continue')), not any
+    path that merely contains the substring 'continue'.
+    """
+
+    def _make_crew(self, crew_id="cont-crew"):
+        return {
+            "container": f"gs-{crew_id}",
+            "cookie": "session-cookie",
+            "volume": f"gs-vol-{crew_id}",
+            "status": "running",
+        }
+
+    def test_continue_suffix_400_reraises_without_cookie_refresh(self):
+        """A 400 on a path ENDING in /continue is 'session gone' — re-raised
+        directly, no phase-1 cookie refresh attempted."""
+        crew = self._make_crew()
+        refresh_called = [False]
+
+        def mock_crew_api(c, method, path, **kw):
+            resp = FakeResponse(400)
+            raise httpx.HTTPStatusError("400", request=MagicMock(), response=resp)
+
+        def mock_refresh(*a, **k):
+            refresh_called[0] = True
+            return True
+
+        with (
+            patch.object(lifecycle, "_crew_api", side_effect=mock_crew_api),
+            patch.object(server, "_crew_api", side_effect=mock_crew_api),
+            patch.object(lifecycle, "_refresh_cookie", side_effect=mock_refresh),
+            patch.object(server, "_refresh_cookie", side_effect=mock_refresh),
+        ):
+            with self.assertRaises(httpx.HTTPStatusError):
+                server._crew_api_with_recovery(
+                    crew, "cont-crew", "POST", "/api/sessions/abc/continue",
+                )
+        self.assertFalse(
+            refresh_called[0],
+            "cookie refresh must NOT run for a genuine /continue 400 (session gone)",
+        )
+
+    def test_continue_substring_400_does_not_trigger_bypass(self):
+        """A 400 on a path that merely CONTAINS 'continue' (e.g.
+        /api/continue-session/abc) must NOT hit the session-gone bypass — it is
+        treated as a stale-cookie 400 and recovered via phase-1 cookie refresh.
+        """
+        crew = self._make_crew()
+        refresh_called = [False]
+        call_count = [0]
+
+        def mock_crew_api(c, method, path, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                resp = FakeResponse(400)
+                raise httpx.HTTPStatusError("400", request=MagicMock(), response=resp)
+            # Retry after cookie refresh succeeds.
+            return {"ok": True}
+
+        def mock_refresh(*a, **k):
+            refresh_called[0] = True
+            return True
+
+        with (
+            patch.object(lifecycle, "_crew_api", side_effect=mock_crew_api),
+            patch.object(server, "_crew_api", side_effect=mock_crew_api),
+            patch.object(lifecycle, "_refresh_cookie", side_effect=mock_refresh),
+            patch.object(server, "_refresh_cookie", side_effect=mock_refresh),
+        ):
+            result = server._crew_api_with_recovery(
+                crew, "cont-crew", "GET", "/api/continue-session/abc",
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertTrue(
+            refresh_called[0],
+            "a path merely containing 'continue' must fall through to phase-1 "
+            "cookie refresh, not the session-gone bypass",
+        )
+        self.assertEqual(call_count[0], 2, "expected initial call + one retry")
+
+
 if __name__ == "__main__":
     unittest.main()
