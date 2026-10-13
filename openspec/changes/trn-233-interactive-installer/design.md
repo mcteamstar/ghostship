@@ -2,67 +2,122 @@
 
 ## Context
 
-See proposal.md. Adds an interactive guided setup mode to `install.sh` triggered when no `ghostship.conf` exists.
+See proposal.md. Adds an interactive guided setup mode to `scripts/install.sh`. The key insight: `GA_CREW_AGENT` is comma-separated and the transport holds secrets for all configured backends simultaneously — you can launch a kiro crew, a claude crew, and a codex crew from the same transport at the same time. The interactive installer surfaces this capability and stocks all requested backends upfront.
 
 ## Goals
 
-- Zero friction first-run: backend chosen, credentials collected, images built, login done, harness wired — all in one `./install.sh`
-- Non-interactive path unchanged for existing operators
+- Surface the multi-backend topology at install time
+- Zero friction first-run: all desired backends configured, images built, kiro authenticated, others stubbed — in one `./install.sh`
+- Non-interactive path completely unchanged
 
 ## Non-Goals
 
-- TUI (dialog/whiptail) — plain read prompts only
-- Multi-backend interactive setup (stretch goal for later)
-- Windows/WSL support (out of scope for this change)
+- Secret collection (API keys, OAuth tokens) — deferred to `ghostship auth login <backend>` (next ticket)
+- TUI (plain `read` prompts only)
+- Windows/WSL interactive support
+
+## Existing structure (relevant)
+
+`scripts/install.sh` already has:
+- Config auto-detection: `for _candidate in ghostship.conf config/ghostship.conf` — sources the first one found (~line 130)
+- Standalone `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` read prompts when vars unset and `-t 0` (~line 200) — subsumed by interactive mode
+- `GA_CREW_AGENT` comma-separated normalisation via `agent_backends_normalise` — already handles multi-backend
+- Full post-install block: prints `kiro-cli mcp add` instructions, links `ghostship` CLI
+- `ghostship auth login` — fully implemented device flow in the Python CLI
 
 ## Decisions
 
 ### D1 — Detection trigger
 
+After the auto-detect config block. Set `_FOUND_CONFIG` when the loop sources a file. Check after:
+
 ```bash
-if [[ ! -f ghostship.conf && ! -f config/ghostship.conf ]] || [[ "${1:-}" == "--setup" ]]; then
-    _interactive_setup
+_INTERACTIVE_MODE=false
+if [[ -z "${_FOUND_CONFIG:-}" && -t 0 ]] || [[ "${_WIZARD_FLAG:-false}" == "true" ]]; then
+    _INTERACTIVE_MODE=true
 fi
 ```
 
-Checked before any other processing. `--setup` forces interactive mode even with an existing conf (useful for re-configuring).
+`--wizard` threaded through the existing flag-parsing loop as `--wizard) _WIZARD_FLAG=true; shift ;;`.
 
-### D2 — Prompt helper pattern
+### D2 — _prompt helper
 
 ```bash
 _prompt() {
     local prompt="$1" default="$2" var_name="$3"
+    local value
     read -r -p "${prompt} [${default}]: " value
     value="${value:-$default}"
     printf -v "$var_name" '%s' "$value"
 }
 ```
 
-All prompts use `read -r -p`. Defaults shown in brackets. Empty input accepts default.
+`printf -v` writes into the named variable without eval.
 
-### D3 — Credential prompts per backend
+### D3 — Backend selection (multi)
 
-| Backend | Prompts |
-|---------|---------|
-| kiro | `KIRO_IDENTITY_PROVIDER` (builderid/sso/idc), `KIRO_REGION` |
-| claude | Choose: `CLAUDE_CODE_OAUTH_TOKEN` (recommended) or `ANTHROPIC_API_KEY`. If token: instructions to run `claude setup-token` first. |
-| codex | `OPENAI_API_KEY`, optional `OPENAI_BASE_URL` |
+`_interactive_setup` opens with a banner and two prompts:
 
-### D4 — ghostship.conf write
+1. Default backend: `_prompt "Default agent backend (kiro/claude/codex)" "kiro" GA_CREW_AGENT`
+2. Additional backends: `_prompt "Additional backends to enable, comma-separated (or blank)" "" _extra_backends`
 
-Collected values written to `config/ghostship.conf` (creating `config/` if needed) using `>>` to append only the collected settings. Existing file not overwritten — the detection check ensures we only reach here when no conf exists.
+If `_extra_backends` is non-empty, append to `GA_CREW_AGENT`: `GA_CREW_AGENT="${GA_CREW_AGENT},${_extra_backends}"`. Validate the combined list against known backends; re-prompt on unknown value.
 
-### D5 — Login flow after transport starts
+Result feeds directly into the existing `agent_backends_normalise` call — no extra plumbing needed.
 
-After the transport reaches the "ready" health-check, call `ghostship auth login` (which is `scripts/install.sh`'s own login trigger, not a separate process). This reuses the existing `_wait_for_login` infrastructure already in install.sh.
+### D4 — Non-secret config per backend
 
-### D6 — Harness registration
+After backend selection, iterate over selected backends and collect only non-secret config:
+
+| Backend | Config collected |
+|---------|-----------------|
+| kiro | `KIRO_IDENTITY_PROVIDER` (optional), `KIRO_REGION` (if provider set) |
+| claude | nothing — no non-secret config at this stage |
+| codex | `OPENAI_BASE_URL` (optional, default blank = OpenAI; can point at litellm or any OpenAI-compatible proxy) |
+
+Secrets (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, KIRO_API_KEY) are never touched here.
+
+### D5 — ghostship.conf write
+
+`${GHOSTSHIP_DIR}/config/ghostship.conf`, `chmod 600`. Only non-empty vars written:
 
 ```bash
-_prompt "Register MCP server with detected harnesses? (kiro-cli, claude, opencode)" "y" confirm
-if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-    ghostship setup
+mkdir -p "${GHOSTSHIP_DIR}/config"
+{
+    echo "# Generated by ./install.sh --wizard on $(date)"
+    echo "GA_CREW_AGENT=${GA_CREW_AGENT}"
+    [[ -n "${KIRO_IDENTITY_PROVIDER:-}" ]] && echo "KIRO_IDENTITY_PROVIDER=${KIRO_IDENTITY_PROVIDER}"
+    [[ -n "${KIRO_REGION:-}" ]]            && echo "KIRO_REGION=${KIRO_REGION}"
+    [[ -n "${OPENAI_BASE_URL:-}" ]]        && echo "OPENAI_BASE_URL=${OPENAI_BASE_URL}"
+} > "${GHOSTSHIP_DIR}/config/ghostship.conf"
+chmod 600 "${GHOSTSHIP_DIR}/config/ghostship.conf"
+```
+
+No secrets, no blank lines. The existing auto-detect loop will source this on every subsequent `./install.sh`.
+
+### D6 — Post-install auth
+
+After `✓ Transport is ready`, in interactive mode only:
+
+- **kiro in selected backends**: call `"${GHOSTSHIP_DIR}/ghostship" auth login` — existing device flow
+- **claude in selected backends**: print `"  To authenticate: ghostship auth login anthropic  (coming soon)"`
+- **codex in selected backends**: print `"  To authenticate: ghostship auth login openai  (coming soon)"`
+
+The "coming soon" stubs are honest — the key injection path (`ghostship auth login <backend>` writing directly to Podman secrets) is the next ticket.
+
+### D7 — Harness registration
+
+After auth step:
+
+```bash
+_prompt "Register MCP server with detected harnesses? (kiro-cli, claude, opencode)" "y" _register
+if [[ "${_register}" == "y" || "${_register}" == "Y" ]]; then
+    "${GHOSTSHIP_DIR}/ghostship" setup
 fi
 ```
 
-`ghostship setup` is idempotent — safe to skip or re-run.
+Existing non-interactive post-install instruction block suppressed when `_INTERACTIVE_MODE=true`.
+
+### D8 — Standalone KIRO prompts
+
+The existing standalone `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` prompts at ~line 200 are naturally suppressed in interactive mode because those vars are already set by `_interactive_setup`. No code change needed.
