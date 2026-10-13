@@ -262,6 +262,15 @@ def _secret_identifier(value: str) -> str:
 
 # ── Lifecycle globals ─────────────────────────────────────────────────────────
 
+# TRN-238 QA-2: sentinel returned by _ensure_crew_running when a concurrent
+# nuke() removes the crew's registry entry between container_start and
+# post-start setup. Callers compare identity (``is _NUKED_DURING_RESTART``) and
+# treat it as an expected, non-error outcome (the crew is gone — nothing more to
+# do) rather than proceeding against a crew dict for a crew that no longer
+# exists. It is a distinct sentinel object, never a crew dict, so a normal
+# successful restart (which returns a dict) can never be mistaken for it.
+_NUKED_DURING_RESTART: object = object()
+
 # Per-crew startup locks: prevent concurrent restarts racing each other.
 # Maps crew_id → threading.Event that is set once the crew is running.
 _startup_events: dict[str, threading.Event] = {}
@@ -549,6 +558,12 @@ def _phase1_stale_cookie(
             f"did not recover. Suggestion: check crew status with "
             f"crews() or try again in a moment."
         )
+    # TRN-238 QA-2: crew was nuked during the restart — the registry entry is
+    # gone, so there is nothing to call the API against. Surface a clear error.
+    if crew is _NUKED_DURING_RESTART:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} was removed (nuked) during restart — no longer exists."
+        )
     try:
         return _crew_api(crew, method, path, **kw)
     except Exception:
@@ -609,6 +624,11 @@ def _phase2_dead_gateway(
             f"container restart but the gateway did not recover. "
             f"Suggestion: check crew status with crews() or try "
             f"again in a moment."
+        )
+    # TRN-238 QA-2: crew was nuked during the restart — nothing to call against.
+    if crew is _NUKED_DURING_RESTART:
+        raise CrewUnresponsiveError(
+            f"crew {crew_id} was removed (nuked) during restart — no longer exists."
         )
     if method.upper() not in _IDEMPOTENT_METHODS:
         raise CrewUnresponsiveError(
@@ -681,7 +701,11 @@ def _crew_api_with_recovery(
             # ── TRN-230: 400 on /continue means session is gone, not a stale cookie.
             # Phase-1 cookie refresh cannot recover a finished session — re-raise so
             # the caller (_steer_captain_checkin) can handle it as "session gone".
-            if status == 400 and "/continue" in path:
+            # TRN-238 QA-3: match only a path whose final segment is "continue"
+            # (path.endswith("/continue")), not any path merely containing the
+            # substring "continue". A route like /api/continue-session/abc or
+            # /api/foo?note=continue must NOT trigger this session-gone bypass.
+            if status == 400 and path.endswith("/continue"):
                 raise
             # ── Phase 1: stale cookie ─────────────────────────────────────────
             return _phase1_stale_cookie(crew, crew_id, method, path, **kw)
@@ -911,6 +935,25 @@ def _ensure_crew_running(
         podman.container_start(crew["container"])
         crew_url = _crew_url(crew)
 
+        # TRN-238 QA-2: a concurrent nuke() can remove this crew's registry
+        # entry between the container_start above and the post-start setup
+        # below (cookie write, member enrollment). Detect that here —
+        # immediately after container_start returns and before any post-start
+        # setup — and bail out cleanly rather than proceeding to mint cookies
+        # and enroll members against a crew that no longer exists. Returning the
+        # _NUKED_DURING_RESTART sentinel (not raising) lets callers treat this as
+        # an expected, non-error outcome.
+        with _registry_lock:
+            reg = _load_registry()
+            crew_still_registered = crew_id in reg["crews"]
+        if not crew_still_registered:
+            logger.info(
+                "Crew %s was nuked during restart (registry entry gone after "
+                "container_start) — aborting post-start setup",
+                crew_id,
+            )
+            _outcome = (True, None)
+            return _NUKED_DURING_RESTART
         # Apply config overrides on every stopped-crew restart, then a single
         # restart cycle so the gateway loads them. KiroCrew 0.4.0 requires a
         # non-empty `agent` field in config.local.json; crew creation fails at
@@ -1083,6 +1126,11 @@ def _prewarm_crew(crew: dict, crew_id: str) -> dict:
         else:
             gate = "start-failed"
         return {"crew_id": crew_id, "status": f"blocked:{gate}"}
+
+    # TRN-238 QA-2: crew was nuked during restart — report a clean status and
+    # do not attempt to warm a crew that no longer exists.
+    if crew is _NUKED_DURING_RESTART:
+        return {"crew_id": crew_id, "status": "nuked_during_restart"}
 
     # 2.5 / 2.6: issue the session warm-up (D1). On success record the marker
     # and report warmed; on failure report error and leave dispatch unchanged.

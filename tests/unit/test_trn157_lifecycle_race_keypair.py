@@ -198,6 +198,16 @@ class GenerationCounterTests(unittest.TestCase):
             patch.object(lifecycle, "_startup_generation", generation_dict),
             patch.object(lifecycle, "_crew_restart_outcomes", {}),
             patch.object(lifecycle, "_get_podman", return_value=ImmediateErrorPodman()),
+            # TRN-238 QA-2: the restart path re-reads the registry after
+            # container_start to detect a concurrent nuke; the crew must be
+            # present so the leader reaches _wait_gateway (the "boom" failure
+            # this test exercises) instead of short-circuiting on the nuke check.
+            patch.object(
+                lifecycle, "_load_registry",
+                return_value={"crews": {crew_id: _make_stopped_crew()}},
+            ),
+            patch.object(lifecycle, "_save_registry"),
+            patch.object(lifecycle, "_patch_crew_config"),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
             patch.object(lifecycle, "_wait_gateway", side_effect=RuntimeError("boom")),
