@@ -159,7 +159,7 @@ For unattended or server deployments, prefer the headless auth path above.
 1. Enable the Claude backend: add `claude` to `GA_CREW_AGENT` in your
    `ghostship.conf` and re-run `ghostship install`, which builds the `claude` CLI
    into the crew image.
-2. To make Claude the default for new crews, also set `GA_CREW_ACP_BACKEND=claude`.
+2. To make Claude the default for new crews, also set `GA_CREW_AGENT=claude` (deprecated alias: `GA_CREW_ACP_BACKEND=claude`).
    Login works whenever `claude` is enabled, even while another backend is the
    default.
 
@@ -297,7 +297,7 @@ ChatGPT subscription who prefer not to maintain a separate API-tier account.
 1. Enable the Codex backend: add `codex` to `GA_CREW_AGENT` in your
    `ghostship.conf` and re-run `ghostship install`, which builds the `codex-acp`
    adapter into the crew image (ONE package — it ships its own Codex binary).
-2. To make Codex the default for new crews, also set `GA_CREW_ACP_BACKEND=codex`.
+2. To make Codex the default for new crews, also set `GA_CREW_AGENT=codex` (deprecated alias: `GA_CREW_ACP_BACKEND=codex`).
    Login works whenever `codex` is enabled, even while another backend is the
    default.
 

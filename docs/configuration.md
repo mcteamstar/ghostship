@@ -237,16 +237,21 @@ Rate limit exceeded. Retry after <window_secs> seconds.
 
 ## Extending the crew image
 
-Edit `crews/spec-ops/Containerfile` and re-run `./install.sh`:
+The crew image is built in three stages at install time:
+
+1. **`base-admission`** — extends the upstream KiroCrew image; adds the mail stack, auth scripts, and Maildir structure.
+2. **`spec-ops` (mid-stage)** — extends `base-admission`; adds Node.js 24 LTS, the `openspec` CLI, and any optional backend toolchains (`claude`, `codex`).
+3. **`base-graduation`** — extends the mid-stage image; pre-seeds the kiro-cli SQLite migration schema.
+
+To add packages, edit `crews/spec-ops/Containerfile` (which extends `localhost/base-admission:latest`) and re-run `./install.sh`:
 
 ```dockerfile
-FROM ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009
+FROM localhost/base-admission:latest
+
 USER root
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-    nodejs npm \   # already included
     your-package \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-USER kirocrew
 ```
 
 The new image is built at install time. Existing crews use the old image until nuked and re-called-down.

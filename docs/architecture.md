@@ -9,7 +9,7 @@
 **Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4` (Debian 12, Python 3.12, git, curl). Adds Node.js 24 LTS and the `openspec` CLI. Built locally at install time as `localhost/spec-ops:latest` via three stages:
 
 1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`. Extends `ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4`.
-2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. When `GA_AGENT_BACKENDS` includes optional backends (`claude`, `codex`), the corresponding toolchain scripts are run here. Extends `base-admission`.
+2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. When `GA_CREW_AGENT` includes optional backends (`claude`, `codex`), the corresponding toolchain scripts are run here. Extends `base-admission`.
 3. **`base-graduation`** — pre-seeds the kiro-cli SQLite DB schema (`seed_kiro_db.py`) so auth injection works without migrations at every launch. Extends the `spec-ops` intermediate image.
 
 See [configuration.md](configuration.md#extending-the-crew-image) to add packages.
@@ -265,29 +265,29 @@ Policy injection failure is logged but never aborts launch.
 
 ### Claude backend governance gap (TRN-167)
 
-When `GA_CREW_ACP_BACKEND=claude`, the Claude Code ACP server (`claude-agent-acp`) runs inside each crew container instead of `kiro-cli`. This changes the trust model in one important way:
+When `GA_CREW_AGENT=claude` (deprecated: `GA_CREW_ACP_BACKEND=claude`), the Claude Code ACP server (`claude-agent-acp`) runs inside each crew container instead of `kiro-cli`. This changes the trust model in one important way:
 
 - **KiroCrew's per-call tool approval gate is bypassed.** kiro-cli normally blocks individual tool calls until they are approved by the approval policy (or automatically approved under `dangerously_skip_permissions=true`). `claude-agent-acp` does not route through this gate; all tool calls are executed without a KiroCrew-level checkpoint. Headless auto-approval is achieved via the `CLAUDE_CODE_HEADLESS=1` environment variable injected into crew containers at launch.
 
-- **The signed security policy ceiling is still enforced.** The operator governance policy (`academy/policies/default.json` or a custom template) is HMAC-signed and injected as `security_policy.json` + `admission_policy.json` into every crew at setup time, regardless of backend. The gateway enforces this ceiling and a tampered policy causes a signature mismatch at startup. Crew images are built with `claude-agent-acp` only when `claude` is in `GA_AGENT_BACKENDS`; the transport refuses to start with `claude` as the default backend otherwise, so a crew never starts without it. Without that check it would fail to spawn agents.
+- **The signed security policy ceiling is still enforced.** The operator governance policy (`academy/policies/default.json` or a custom template) is HMAC-signed and injected as `security_policy.json` + `admission_policy.json` into every crew at setup time, regardless of backend. The gateway enforces this ceiling and a tampered policy causes a signature mismatch at startup. Crew images are built with `claude-agent-acp` only when `claude` is in `GA_CREW_AGENT`; the transport refuses to start with `claude` as the default backend otherwise, so a crew never starts without it. Without that check it would fail to spawn agents.
 
 ### Claude backend external network requirement (TRN-167)
 
-Crews running with `GA_CREW_ACP_BACKEND=claude` require outbound HTTPS access to **`api.anthropic.com`**. The transport emits a `WARNING`-level log entry naming this host at every `launch()` call when the Claude backend is selected. Deployments with egress firewalls must add `api.anthropic.com:443` to their allow list before launching Claude-backend crews.
+Crews running with `GA_CREW_AGENT=claude` require outbound HTTPS access to **`api.anthropic.com`**. The transport emits a `WARNING`-level log entry naming this host at every `launch()` call when the Claude backend is selected. Deployments with egress firewalls must add `api.anthropic.com:443` to their allow list before launching Claude-backend crews.
 
 ### Codex backend governance model (TRN-172)
 
-When `GA_CREW_ACP_BACKEND=codex`, the Codex ACP adapter (`codex-acp`) runs inside each crew container instead of `kiro-cli`. Its trust model parallels the Claude backend but rests on a different mechanism:
+When `GA_CREW_AGENT=codex` (deprecated: `GA_CREW_ACP_BACKEND=codex`), the Codex ACP adapter (`codex-acp`) runs inside each crew container instead of `kiro-cli`. Its trust model parallels the Claude backend but rests on a different mechanism:
 
 - **KiroCrew's per-call tool approval gate is bypassed** — but by design, not by an approval-suppression flag. KiroCrew verifies at `session/new` that the codex session advertises `mode=read-only` before the first prompt; the read-only mode is the mechanism, so there is no ghostship-side approval-suppression environment variable to inject (unlike the Claude backend's `CLAUDE_CODE_HEADLESS=1`). ghostship's job is simply not to fight this — the per-call kiro approval gate does not apply to a codex session.
 
-- **The signed security policy ceiling is still enforced.** As with every backend, the HMAC-signed operator governance policy is injected as `security_policy.json` + `admission_policy.json` into every crew at setup time and enforced at the gateway; a tampered policy causes a signature mismatch at startup. Crew images are built with `codex-acp` only when `codex` is in `GA_AGENT_BACKENDS`; the transport refuses to start with `codex` as the default backend otherwise, so a crew never starts without it.
+- **The signed security policy ceiling is still enforced.** As with every backend, the HMAC-signed operator governance policy is injected as `security_policy.json` + `admission_policy.json` into every crew at setup time and enforced at the gateway; a tampered policy causes a signature mismatch at startup. Crew images are built with `codex-acp` only when `codex` is in `GA_CREW_AGENT`; the transport refuses to start with `codex` as the default backend otherwise, so a crew never starts without it.
 
 - **The ACP-v1 read-visibility gap is compensated, not fixed.** ghostship's sensitive-path read block cannot see reads the codex adapter performs. This gap is closed by KiroCrew's OS-boundary credential mask (`adapter_hidden_credential_dirs`), which covers `~/.codex/auth.json` — this is KiroCrew's control at the OS boundary, not something ghostship re-implements. ghostship does not weaken the container's standard credential-tier confinement.
 
 ### Codex backend external network requirement (TRN-172)
 
-Crews running with `GA_CREW_ACP_BACKEND=codex` require outbound HTTPS access to **`api.openai.com`** (or the endpoint configured via `OPENAI_BASE_URL`). The transport emits a `WARNING`-level log entry naming the effective endpoint at every `launch()` call when the Codex backend is selected. Deployments with egress firewalls must add `api.openai.com:443` (or the configured base URL's host) to their allow list before launching Codex-backend crews.
+Crews running with `GA_CREW_AGENT=codex` require outbound HTTPS access to **`api.openai.com`** (or the endpoint configured via `OPENAI_BASE_URL`). The transport emits a `WARNING`-level log entry naming the effective endpoint at every `launch()` call when the Codex backend is selected. Deployments with egress firewalls must add `api.openai.com:443` (or the configured base URL's host) to their allow list before launching Codex-backend crews.
 
 ## Networking
 

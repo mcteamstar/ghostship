@@ -13,7 +13,7 @@ Every ghostship ships the same six KiroCrew agent personas, defined in
 | **Wraith** | Recon/docs operative — research and docs writing; read-only over code | explore |
 | **Raven** | Watcher/coordinator — skims mailboxes, checks task state, dispatches bounded next steps. Captain-loop behaviour injected via standing-order template. | dispatch via `kirocrew` CLI + gateway REST API |
 
-All five workers share the same tool set (`read grep glob write code shell web_search web_fetch`); Raven has `read grep glob shell` only.
+Tool grants differ per worker. Ghost, Spectre, and Banshee have the full set (`read grep glob write code shell web_search web_fetch`); Reaper has all except `code` (`read grep glob write shell web_search web_fetch`); Wraith has `read grep glob shell web_search web_fetch` (no `write`, no `code`). Raven has `read grep glob shell` only.
 
 The five workers form the OpenSpec cycle: Spectre explores and proposes, Ghost implements, Banshee reviews and fixes independently, Reaper syncs and archives, Wraith researches and documents. Raven is outside that cycle — it's the persona the Captain check-in loop dispatches each tick.
 
