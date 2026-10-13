@@ -556,35 +556,43 @@ The spec-ops image SHALL record its toolchain list in the `org.ghostship.toolcha
 - **WHEN** the existing image's label equals the new `AGENT_TOOLCHAINS` value and the version is unchanged
 - **THEN** `install.sh` does not force a cache-less spec-ops build on account of the toolchains
 
-### Requirement: Unauthenticated non-loopback bind warning
+### Requirement: GA_REQUIRE_API_KEY defaults to error on non-loopback installs
+The `GA_REQUIRE_API_KEY` setting SHALL default to `error` (changed from `warn`). When `HOST` is unset or `127.0.0.1`, the check SHALL be skipped entirely — no API key is required for loopback installs. When `HOST` is any non-loopback value and `GA_API_KEY` is not set, the install SHALL abort with an error message directing the operator to set `GA_API_KEY` or use `GA_REQUIRE_API_KEY=off`. Setting `GA_REQUIRE_API_KEY=off` SHALL allow unauthenticated remote access (for deployments that place their own auth layer in front). The `warn` mode MAY be removed in a future release.
+
 `install.sh` SHALL emit a prominent `WARNING` to stderr when `GA_API_KEY` is not
 set (or empty) **and** the published host port maps to a non-loopback address
 (i.e. anything other than `127.0.0.1` or `::1`). The default published address
-is `0.0.0.0`, which triggers the warning. The warning SHALL name the port, state
+is `0.0.0.0`, which triggers the check. The warning SHALL name the port, state
 that MCP endpoints are accessible to any host that can reach the machine, and
 direct the operator to pass `--api-key` or set `GA_REQUIRE_API_KEY=off` to
 silence it.
 
 `GA_REQUIRE_API_KEY` controls the severity of the check:
-- `warn` (default) — print warning and continue.
-- `error` — print warning and exit non-zero.
+- `error` (default) — print warning and exit non-zero.
+- `warn` — print warning and continue (deprecated; may be removed in a future release).
 - `off` — skip the check entirely.
 
 The transport process SHALL also log a `WARNING`-level message at startup when
 `GA_API_KEY` is absent and the `HOST` environment variable is not a loopback
 address (`127.0.0.1` or `::1`).
 
-#### Scenario: Default install without API key on non-loopback address emits warning
-- **WHEN** `install.sh` runs without `--api-key`, `GA_REQUIRE_API_KEY` is unset
-  or `warn`, and the published port maps to `0.0.0.0`
+#### Scenario: Remote install without API key aborts
+- **WHEN** `install.sh` is run with `HOST=0.0.0.0` and `GA_API_KEY` is not set and `GA_REQUIRE_API_KEY` is not `off`
+- **THEN** the install aborts with a non-zero exit code before starting any containers, and the error message names `GA_API_KEY` and `GA_REQUIRE_API_KEY=off` as the resolution paths
+
+#### Scenario: Local install without API key succeeds
+- **WHEN** `install.sh` is run with `HOST=127.0.0.1` (or `HOST` unset) and `GA_API_KEY` is not set
+- **THEN** the install completes normally and the transport starts without authentication
+
+#### Scenario: Remote install with GA_REQUIRE_API_KEY=off succeeds
+- **WHEN** `install.sh` is run with `HOST=0.0.0.0`, `GA_API_KEY` not set, and `GA_REQUIRE_API_KEY=off`
+- **THEN** the install completes normally with a warning logged that the transport is unauthenticated
+
+#### Scenario: GA_REQUIRE_API_KEY=warn without API key on non-loopback address emits warning and continues
+- **WHEN** `install.sh` runs without `--api-key`, `GA_REQUIRE_API_KEY=warn`,
+  and the published port maps to `0.0.0.0`
 - **THEN** `install.sh` prints a WARNING to stderr naming the port and stating
   that unauthenticated access is enabled, and installation continues
-
-#### Scenario: GA_REQUIRE_API_KEY=error without API key exits
-- **WHEN** `install.sh` runs without `--api-key`, `GA_REQUIRE_API_KEY=error`,
-  and the published port maps to a non-loopback address
-- **THEN** `install.sh` prints the same WARNING to stderr and exits non-zero
-  before writing compose.yml
 
 #### Scenario: GA_REQUIRE_API_KEY=off suppresses the check
 - **WHEN** `install.sh` runs without `--api-key` and `GA_REQUIRE_API_KEY=off`
@@ -600,6 +608,13 @@ address (`127.0.0.1` or `::1`).
   to a non-loopback address
 - **THEN** the transport logs a `WARNING`-level message stating that no API key
   is configured and MCP endpoints are accessible without authentication
+
+### Requirement: Transport startup enforces GA_REQUIRE_API_KEY=error
+The transport SHALL re-check the `GA_REQUIRE_API_KEY` constraint at startup. If `GA_REQUIRE_API_KEY` is `error` (or unset, i.e. default) and the bind address is non-loopback and no API key secret is present, the transport SHALL refuse to start and exit with a non-zero code.
+
+#### Scenario: Transport refuses to start unauthenticated on non-loopback
+- **WHEN** the transport starts with a non-loopback bind address and no `ga-api-key` secret and `GA_REQUIRE_API_KEY` is not `off`
+- **THEN** the transport exits immediately with a logged error naming the missing API key
 
 ### Requirement: GA_REQUIRE_API_KEY and GA_TRUSTED_PROXY documented in configuration docs
 `docs/configuration.md` SHALL include entries for `GA_REQUIRE_API_KEY` (its three
