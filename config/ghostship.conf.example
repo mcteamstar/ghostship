@@ -23,10 +23,14 @@
 # API key for MCP endpoint auth. Leave unset for local/trusted installs.
 # GA_API_KEY=""
 
-# Bind-address warning mode. When GA_API_KEY is unset and the transport is
-# bound to a non-loopback address, install.sh and the transport emit a warning.
-# warn (default) — print warning. error — abort install. off — silence.
-# GA_REQUIRE_API_KEY=warn
+# Bind-address enforcement mode. When GA_API_KEY is unset and the transport is
+# bound to a non-loopback address, install.sh aborts and the transport refuses
+# to start. error (default) — abort/refuse. warn — print warning, continue
+# (still accepted for backward compatibility). off — allow unauthenticated
+# remote access, for proxy-protected deployments that place their own auth
+# layer in front (Tailscale, VPN, reverse proxy). Loopback installs
+# (HOST=127.0.0.1 or unset) are never subject to this check.
+# GA_REQUIRE_API_KEY=error
 
 # Two auth paths for kiro-cli inside crews:
 #   Option A — API key (Pro+, headless): set KIRO_API_KEY to skip the device-code

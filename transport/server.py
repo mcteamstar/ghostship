@@ -538,10 +538,14 @@ def _load_api_key() -> str:
     )
 
     # Additional bind-address warning when running on a non-loopback interface.
+    # Hard enforcement (refusing to start when GA_REQUIRE_API_KEY=error) lives in
+    # _enforce_require_api_key(), called from the transport startup path — never
+    # here, so that merely importing this module (tests, tooling) cannot abort
+    # the process.
     import os as _os
     _host = _os.environ.get("HOST", "0.0.0.0")
     if _host not in ("127.0.0.1", "::1", "localhost"):
-        _require = _os.environ.get("GA_REQUIRE_API_KEY", "warn")
+        _require = _os.environ.get("GA_REQUIRE_API_KEY", "error")
         if _require != "off":
             _logger.warning(
                 "Transport is bound on %s with no API key — anyone who can "
@@ -551,6 +555,42 @@ def _load_api_key() -> str:
             )
 
     return ""
+
+
+def _enforce_require_api_key(api_key: str) -> None:
+    """Refuse to start the transport unauthenticated on a non-loopback bind.
+
+    Honours GA_REQUIRE_API_KEY (default: ``error``):
+
+    - ``error`` (default) — on a non-loopback bind with no API key, log an
+      error and exit non-zero.
+    - ``warn`` — log a warning and continue (backward compatibility).
+    - ``off`` — skip the check entirely (for proxy-protected deployments).
+
+    Loopback binds (127.0.0.1/::1/localhost) are never subject to the check.
+    Called from the transport startup path, not at import time, so importing
+    this module never terminates the process.
+    """
+    _logger = logging.getLogger(__name__)
+    import os as _os
+    import sys as _sys
+
+    if api_key:
+        return
+    _host = _os.environ.get("HOST", "0.0.0.0")
+    if _host in ("127.0.0.1", "::1", "localhost"):
+        return
+    _require = _os.environ.get("GA_REQUIRE_API_KEY", "error")
+    if _require in ("off", "warn"):
+        # off: silent. warn: _load_api_key already logged the warning.
+        return
+    _logger.error(
+        "Refusing to start: transport is bound on %s with no GA_API_KEY. "
+        "Set GA_API_KEY, or set GA_REQUIRE_API_KEY=off to allow "
+        "unauthenticated remote access (for proxy-protected deployments).",
+        _host,
+    )
+    _sys.exit(1)
 
 
 GA_API_KEY = _load_api_key()
@@ -4859,6 +4899,9 @@ if __name__ == "__main__":
     except Exception as _cfg_err:
         logger.error("Transport startup aborted — config error: %s", _cfg_err)
         raise SystemExit(1) from _cfg_err
+
+    # Refuse to start unauthenticated on a non-loopback bind (GA_REQUIRE_API_KEY).
+    _enforce_require_api_key(GA_API_KEY)
 
     logger.info("Starting transport MCP server on %s:%d", HOST, PORT)
     logger.info("Idle timeout: %ds", GA_IDLE_TIMEOUT_SECS)
