@@ -350,18 +350,21 @@ def _write_dashboard_cookie(podman: "PodmanClient", container: str, cookie: str)
     Parallel to ``.local_secret`` which the gateway writes itself at startup.
     """
     try:
-        podman.container_exec(
-            container,
-            [
-                "python3", "-c",
-                (
-                    f"import os; "
-                    f"p = {_DASHBOARD_COOKIE_PATH!r}; "
-                    f"open(p, 'w').write({cookie!r}); "
-                    f"os.chmod(p, 0o600)"
-                ),
-            ],
-        )
+        # SEC-2: build a minimal in-memory tar holding the cookie value as a
+        # single member with mode 0600, and untar it into the target directory
+        # via container_archive_put. The cookie value never passes through a
+        # shell, so no interpolation/injection surface exists.
+        dest_dir = os.path.dirname(_DASHBOARD_COOKIE_PATH)
+        member_name = os.path.basename(_DASHBOARD_COOKIE_PATH)
+        payload = cookie.encode("utf-8")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            info = tarfile.TarInfo(name=member_name)
+            info.size = len(payload)
+            info.mode = 0o600
+            tar.addfile(info, io.BytesIO(payload))
+        buf.seek(0)
+        podman.container_archive_put(container, dest_dir, buf.read())
         logger.debug("Dashboard cookie written to %s in %s", _DASHBOARD_COOKIE_PATH, container)
         return True
     except Exception as exc:
@@ -2594,14 +2597,13 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
     into /home/kirocrew/.claude/ inside the crew container, matching the path
     that the claude-agent-acp server reads for OAuth credentials.
 
-    Injection strategy: split the base64-encoded archive into fixed-width lines
-    and write each line via a separate container_exec echo, then pipe the
-    assembled file through ``base64 -d | tar -xf -``.  This avoids both the
-    ARG_MAX ceiling (Linux typically ~2 MB per argv entry) and any shell quoting
-    issues that arise from embedding the raw base64 string in an f-string passed
-    to ``sh -c``.
+    Injection strategy (SEC-1): the host-side ga-claude-auth file is already a
+    tar of ``~/.claude/``, so its bytes are streamed straight into the container
+    via a single ``container_archive_put`` call whose target path untars the
+    archive in place.  No base64 encoding, no chunking, no temp file, and no
+    ``sh -c`` exec — the credential bytes never pass through a shell, so no
+    future non-base64 payload can open a shell-injection surface.
     """
-    import base64 as _b64
     auth_path = _claude_auth_file_path()
     if not auth_path.is_file():
         raise RuntimeError("ga-claude-auth not found — Claude login required first")
@@ -2609,29 +2611,10 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
     # Ensure the target directory exists in the container
     podman.container_exec(container, ["mkdir", "-p", "/home/kirocrew/.claude"])
 
-    # Encode the archive and write it in chunks to a temp file inside the
-    # container, then decode and untar.  Each chunk is a small, safe exec.
+    # The auth file is a tar of ~/.claude/ — hand the raw tar bytes to the
+    # archive-put endpoint, which untars them directly at the target path.
     tar_bytes = auth_path.read_bytes()
-    tar_b64 = _b64.b64encode(tar_bytes).decode()
-
-    # Write base64 in 4 KB chunks using echo >> to a temp file.
-    # 4 KB is well under any reasonable ARG_MAX.
-    CHUNK = 4096
-    tmp = "/tmp/_ga_claude_auth.b64"
-    # Start fresh (truncate)
-    podman.container_exec(container, ["sh", "-c", f"> {tmp}"])
-    for i in range(0, len(tar_b64), CHUNK):
-        chunk = tar_b64[i : i + CHUNK]
-        # printf is used here to avoid echo interpreting backslashes; the chunk
-        # contains only base64 alphabet characters [A-Za-z0-9+/=] so no quoting
-        # or shell-injection is possible.
-        podman.container_exec(container, ["sh", "-c", f"printf '%s' '{chunk}' >> {tmp}"])
-
-    # Decode and untar, then remove the temp file
-    podman.container_exec(
-        container,
-        ["sh", "-c", f"base64 -d < {tmp} | tar -xf - -C /home/kirocrew/.claude/ && rm -f {tmp}"],
-    )
+    podman.container_archive_put(container, "/home/kirocrew/.claude/", tar_bytes)
     logger.info("Injected Claude OAuth credentials into crew container %s", container)
 
 
@@ -3500,13 +3483,13 @@ def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
     container, matching the path that codex-acp reads for OAuth credentials
     (relocatable via CODEX_HOME, but ghostship uses the default location).
 
-    Injection strategy mirrors _inject_claude_auth: split the base64-encoded
-    archive into fixed-width lines written via separate container_exec calls to
-    stay under ARG_MAX, then pipe the assembled file through
-    ``base64 -d | tar -xf -``. The chunk alphabet is base64 [A-Za-z0-9+/=] only,
-    so no shell quoting/injection is possible.
+    Injection strategy mirrors _inject_claude_auth (SEC-1): the host-side
+    ga-codex-auth file is already a tar of ``~/.codex/``, so its bytes stream
+    straight into the container via a single ``container_archive_put`` call that
+    untars the archive at the target path.  No base64 encoding, no chunking, no
+    temp file, and no ``sh -c`` exec — the credential bytes never pass through a
+    shell.
     """
-    import base64 as _b64
     auth_path = _codex_auth_file_path()
     if not auth_path.is_file():
         raise RuntimeError("ga-codex-auth not found — Codex login required first")
@@ -3515,19 +3498,7 @@ def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
     podman.container_exec(container, ["mkdir", "-p", "/home/kirocrew/.codex"])
 
     tar_bytes = auth_path.read_bytes()
-    tar_b64 = _b64.b64encode(tar_bytes).decode()
-
-    CHUNK = 4096
-    tmp = "/tmp/_ga_codex_auth.b64"
-    podman.container_exec(container, ["sh", "-c", f"> {tmp}"])
-    for i in range(0, len(tar_b64), CHUNK):
-        chunk = tar_b64[i : i + CHUNK]
-        podman.container_exec(container, ["sh", "-c", f"printf '%s' '{chunk}' >> {tmp}"])
-
-    podman.container_exec(
-        container,
-        ["sh", "-c", f"base64 -d < {tmp} | tar -xf - -C /home/kirocrew/.codex/ && rm -f {tmp}"],
-    )
+    podman.container_archive_put(container, "/home/kirocrew/.codex/", tar_bytes)
     logger.info("Injected Codex OAuth credentials into crew container %s", container)
 
 

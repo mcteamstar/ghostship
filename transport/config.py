@@ -355,6 +355,28 @@ class Config:
     # It is NOT part of the Config dataclass — keeping it out of Config avoids
     # accidental logging or serialisation of the plaintext secret value.
 
+    # ── Fields whose values must never appear in logs or repr ────────────────
+    # SEC-3: non-empty values of these fields are masked by __repr__ so that any
+    # log call including repr(cfg)/str(cfg) emits "***" instead of a live
+    # credential.
+    _SECRET_FIELDS = (
+        "kiro_api_key",
+        "anthropic_api_key",
+        "openai_api_key",
+        "claude_code_oauth_token",
+    )
+
+    def __repr__(self) -> str:
+        import dataclasses as _dc
+
+        parts = []
+        for f in _dc.fields(self):
+            value = getattr(self, f.name)
+            if f.name in self._SECRET_FIELDS and value:
+                value = "***"
+            parts.append(f"{f.name}={value!r}")
+        return f"{type(self).__name__}({', '.join(parts)})"
+
     @classmethod
     def from_env(cls) -> "Config":
         """Read every configured env var and construct a Config instance.
