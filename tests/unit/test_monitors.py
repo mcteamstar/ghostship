@@ -1832,3 +1832,325 @@ class IdleMonitorResilienceTests(unittest.TestCase):
             monitors._note_idle_skip("a", "tasks running")
         kept = [m for m in logs.output if "kept running" in m]
         self.assertEqual(len(kept), 2)
+
+
+class TestCaptainMonitor(unittest.TestCase):
+    """Tests for _captain_monitor.
+
+    Loop-break mechanism: _captain_monitor sleeps at the END of every iteration
+    (same as _idle_monitor). Raising StopIteration from the patched time.sleep
+    exits the while True loop after one full work cycle.
+
+    Patch targets follow the call-site principle:
+    - _steer_captain_checkin / _dispatch_captain_checkin are imported from server
+      inside the loop — patch them as attributes on the server module.
+    - _ensure_crew_running is injected via bind_lifecycle() into monitors — patch
+      as monitors._ensure_crew_running.
+    - Registry helpers (_load_registry, _save_registry, _get_crew_schedules,
+      _registry_lock) are imported directly into monitors — patch on monitors.
+    """
+
+    CREW = {"container": "gs-demo", "cookie": "cookie", "enrolled_agents": ["raven"]}
+
+    def _make_reg(self, next_fire_at: float, enabled: bool = True) -> dict:
+        return {
+            "crews": {
+                "demo": {
+                    "container": "gs-demo",
+                    "cookie": "cookie",
+                    "schedules": [{
+                        "type": "captain",
+                        "name": "captain",
+                        "interval_secs": 300,
+                        "enabled": enabled,
+                        "next_fire_at": next_fire_at,
+                        "current_task_id": "task-1",
+                    }],
+                }
+            }
+        }
+
+    def _run_one_iteration(
+        self,
+        reg: dict,
+        *,
+        ensure_side_effect=None,
+        steer_side_effect=None,
+    ):
+        """Run one iteration of _captain_monitor with standard mocks.
+
+        Returns (steer_mock, dispatch_mock, save_calls).
+        """
+        save_calls = []
+
+        def fake_sleep(_secs: float) -> None:
+            raise StopIteration("break after one iteration")
+
+        steer_mock = MagicMock(side_effect=steer_side_effect)
+        dispatch_mock = MagicMock(return_value="task-new")
+
+        ensure_mock = MagicMock(
+            side_effect=ensure_side_effect,
+            return_value=self.CREW,
+        )
+
+        with (
+            patch.object(monitors, "_load_registry", return_value=reg),
+            patch.object(monitors, "_save_registry", side_effect=lambda r: save_calls.append(json.loads(json.dumps(r)))),
+            patch.object(monitors, "_ensure_crew_running", ensure_mock),
+            patch.object(monitors, "_get_crew_schedules", return_value=reg["crews"]["demo"]["schedules"]),
+            patch.object(server, "_steer_captain_checkin", steer_mock),
+            patch.object(server, "_dispatch_captain_checkin", dispatch_mock),
+            patch.object(monitors.time, "sleep", side_effect=fake_sleep),
+        ):
+            try:
+                monitors._captain_monitor()
+            except StopIteration:
+                pass
+
+        return steer_mock, dispatch_mock, save_calls
+
+    def test_fire_condition_met_steer_called(self) -> None:
+        """Captain monitor calls _steer_captain_checkin when entry is due and crew is running."""
+        now = time.time()
+        reg = self._make_reg(next_fire_at=now - 10)  # past — due
+
+        steer, dispatch, saves = self._run_one_iteration(reg)
+
+        steer.assert_called_once()
+        call_args = steer.call_args
+        # Called with (crew, crew_id)
+        self.assertEqual(call_args.args[1], "demo")
+        dispatch.assert_not_called()
+
+    def test_fire_condition_not_met_neither_called(self) -> None:
+        """Captain monitor skips when next_fire_at is in the future."""
+        now = time.time()
+        reg = self._make_reg(next_fire_at=now + 9999)  # future — not due
+
+        steer, dispatch, saves = self._run_one_iteration(reg)
+
+        steer.assert_not_called()
+        dispatch.assert_not_called()
+
+    def test_ensure_crew_running_raises_error_logged_next_fire_advances(self) -> None:
+        """_ensure_crew_running raises → error logged, next_fire_at advanced, registry saved."""
+        now = time.time()
+        reg = self._make_reg(next_fire_at=now - 10)
+
+        with self.assertLogs(monitors.logger, level="WARNING") as log_ctx:
+            steer, dispatch, saves = self._run_one_iteration(
+                reg,
+                ensure_side_effect=RuntimeError("container unreachable"),
+            )
+
+        steer.assert_not_called()
+        dispatch.assert_not_called()
+        # Registry was saved with advanced next_fire_at
+        self.assertTrue(len(saves) > 0, "Registry should be saved after _ensure_crew_running failure")
+        # At least one warning about the crew
+        self.assertTrue(
+            any("won't start" in m or "captain" in m.lower() for m in log_ctx.output),
+            f"Expected a warning about the crew; got: {log_ctx.output}",
+        )
+        # next_fire_at was advanced beyond now
+        sched = saves[-1]["crews"]["demo"]["schedules"][0]
+        self.assertGreater(sched["next_fire_at"], now)
+
+    def test_steer_returns_400_fallback_to_dispatch(self) -> None:
+        """When _steer_captain_checkin raises 400, the monitor logs the error.
+
+        In _captain_monitor the exception from _steer_captain_checkin is caught
+        inside the try block and logged; _dispatch_captain_checkin is NOT called
+        by the monitor itself — fallback to dispatch is _steer_captain_checkin's
+        own responsibility.  This test verifies the monitor survives the failure
+        without crashing.
+        """
+        now = time.time()
+        reg = self._make_reg(next_fire_at=now - 10)
+
+        class Fake400Error(Exception):
+            pass
+
+        with self.assertLogs(monitors.logger, level="ERROR") as log_ctx:
+            steer, dispatch, saves = self._run_one_iteration(
+                reg,
+                steer_side_effect=Fake400Error("400 Bad Request"),
+            )
+
+        steer.assert_called_once()
+        # Monitor catches the exception and logs an error
+        self.assertTrue(
+            any("check-in failed" in m or "400" in m for m in log_ctx.output),
+            f"Expected error log for failed check-in; got: {log_ctx.output}",
+        )
+
+    def test_disabled_entry_skipped(self) -> None:
+        """Disabled captain entry is skipped — neither steer nor dispatch called."""
+        now = time.time()
+        reg = self._make_reg(next_fire_at=now - 10, enabled=False)
+
+        steer, dispatch, saves = self._run_one_iteration(reg)
+
+        steer.assert_not_called()
+        dispatch.assert_not_called()
+
+    def test_non_captain_entry_skipped(self) -> None:
+        """Schedule entries that are not type 'captain' are skipped."""
+        now = time.time()
+        reg = {
+            "crews": {
+                "demo": {
+                    "container": "gs-demo",
+                    "cookie": "cookie",
+                    "schedules": [{
+                        "type": "schedule",
+                        "name": "daily",
+                        "interval_secs": 86400,
+                        "enabled": True,
+                        "next_fire_at": now - 10,
+                    }],
+                }
+            }
+        }
+        steer, dispatch, saves = self._run_one_iteration(reg)
+
+        steer.assert_not_called()
+        dispatch.assert_not_called()
+
+
+class ReseedCaptainBranchTests(unittest.TestCase):
+    """Tests for _reseed_crew_schedules captain schedule type branches.
+
+    Covers the three captain branches in the reseed pass:
+    1. No existing task (current_task_id=None) → _dispatch_captain_checkin called
+    2. Living task (GET /api/spawn/{id} succeeds) → no dispatch, no clear
+    3. Session gone (GET /api/spawn/{id} raises 404) → re-dispatch, current_task_id cleared
+    """
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+
+    def _make_reg(self, current_task_id=None) -> dict:
+        return {"crews": {"demo": {
+            "container": "gs-demo",
+            "cookie": "cookie",
+            "schedules": [{
+                "type": "captain",
+                "name": "captain",
+                "interval_secs": 300,
+                "enabled": True,
+                "current_task_id": current_task_id,
+                "model": None,
+            }],
+        }}}
+
+    def _crons_then(self, *extra_responses):
+        """Build an api side_effect: first call returns empty crons, then extra_responses."""
+        calls = [0]
+        extras = list(extra_responses)
+
+        def api(_crew, method, path, **kwargs):
+            calls[0] += 1
+            if method == "GET" and path == "/api/crons":
+                return {"jobs": []}
+            if extras:
+                r = extras.pop(0)
+                if isinstance(r, Exception):
+                    raise r
+                return r
+            return {}
+
+        return api
+
+    def test_no_task_dispatches_captain_checkin(self) -> None:
+        """No current_task_id → _dispatch_captain_checkin called and task_id stored."""
+        reg = self._make_reg(current_task_id=None)
+        saved = []
+        dispatch_calls = []
+
+        def fake_dispatch(_crew, _crew_id, model=None):
+            dispatch_calls.append((_crew_id, model))
+            return "task-new"
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(lifecycle, "_crew_api", side_effect=self._crons_then()),
+            patch.object(server, "_crew_api", side_effect=self._crons_then()),
+            patch.object(lifecycle, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_dispatch_captain_checkin", side_effect=fake_dispatch),
+        ):
+            server._reseed_crew_schedules(self.CREW, "demo", reg["crews"]["demo"])
+
+        self.assertEqual(len(dispatch_calls), 1, "Expected exactly one dispatch call")
+        self.assertEqual(dispatch_calls[0][0], "demo")
+        # Registry should have been saved with the new task_id
+        captain_scheds = [
+            s for save in saved
+            for s in save.get("crews", {}).get("demo", {}).get("schedules", [])
+            if s.get("type") == "captain"
+        ]
+        self.assertTrue(
+            any(s.get("current_task_id") == "task-new" for s in captain_scheds),
+            f"Expected current_task_id='task-new' in a saved registry; got schedules: {captain_scheds}",
+        )
+
+    def test_living_task_no_dispatch(self) -> None:
+        """Living task (GET /api/spawn/{id} succeeds) → no dispatch, registry unchanged."""
+        reg = self._make_reg(current_task_id="task-existing")
+        saved = []
+        dispatch_mock = MagicMock()
+
+        # GET /api/crons → empty, GET /api/spawn/task-existing → task exists (living)
+        task_alive_response = {"id": "task-existing", "done": False}
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(lifecycle, "_crew_api", side_effect=self._crons_then(task_alive_response)),
+            patch.object(server, "_crew_api", side_effect=self._crons_then(task_alive_response)),
+            patch.object(lifecycle, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_dispatch_captain_checkin", dispatch_mock),
+        ):
+            server._reseed_crew_schedules(self.CREW, "demo", reg["crews"]["demo"])
+
+        dispatch_mock.assert_not_called()
+
+    def test_session_gone_redispatches_and_clears_task_id(self) -> None:
+        """Session gone (404 from GET /api/spawn/{id}) → re-dispatch, current_task_id cleared."""
+        reg = self._make_reg(current_task_id="task-dead")
+        saved = []
+        dispatch_calls = []
+
+        def fake_dispatch(_crew, _crew_id, model=None):
+            dispatch_calls.append((_crew_id, model))
+            return "task-reborn"
+
+        # GET /api/spawn/task-dead raises with "404" in message
+        gone_error = RuntimeError("404 session not found")
+
+        with (
+            patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(lifecycle, "_crew_api", side_effect=self._crons_then(gone_error)),
+            patch.object(server, "_crew_api", side_effect=self._crons_then(gone_error)),
+            patch.object(lifecycle, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_dispatch_captain_checkin", side_effect=fake_dispatch),
+        ):
+            server._reseed_crew_schedules(self.CREW, "demo", reg["crews"]["demo"])
+
+        self.assertEqual(len(dispatch_calls), 1, "Expected re-dispatch after session gone")
+        self.assertEqual(dispatch_calls[0][0], "demo")
+        # current_task_id should be updated to the new task
+        captain_scheds = [
+            s for save in saved
+            for s in save.get("crews", {}).get("demo", {}).get("schedules", [])
+            if s.get("type") == "captain"
+        ]
+        self.assertTrue(
+            any(s.get("current_task_id") == "task-reborn" for s in captain_scheds),
+            f"Expected current_task_id='task-reborn' after re-dispatch; got: {captain_scheds}",
+        )
