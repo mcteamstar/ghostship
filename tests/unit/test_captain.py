@@ -1954,3 +1954,663 @@ class CaptainStopEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
         do_stop.assert_not_called()
+
+
+class AppendCaptainMailTests(unittest.TestCase):
+    """Tests for _append_captain_mail I/O path.
+
+    Covers:
+    - Signing secret present → mail contains valid X-Admiral-Sig header
+    - No signing secret → unsigned mail (no X-Admiral-Sig header)
+
+    _append_captain_mail reads the signing secret via _read_crew_secret
+    (patched on captain_mod) and writes via podman.container_exec_checked.
+    We capture the payload argument to assert on the formatted mail content.
+    """
+
+    CONTAINER = "gs-demo"
+    CREW_ID = "demo"
+    BODY = "Standing order: conduct the SDD lifecycle."
+
+    @staticmethod
+    def _gen_signing_secret() -> str:
+        """Generate a valid hex-encoded 32-byte Ed25519 private seed."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding as _Enc,
+            PrivateFormat as _PrivFmt,
+            NoEncryption as _NoEnc,
+        )
+        private_key = Ed25519PrivateKey.generate()
+        seed = private_key.private_bytes(_Enc.Raw, _PrivFmt.Raw, _NoEnc())
+        return seed.hex()
+
+    def _run_append(
+        self,
+        signing_secret: str | None,
+        supersedes_id: str | None = None,
+    ) -> str:
+        """Run _append_captain_mail and return the decoded mail content."""
+        import base64 as _base64
+
+        podman = Mock()
+        captured_args: list[list] = []
+
+        def fake_exec(container, cmd, **kwargs):
+            captured_args.append(list(cmd))
+            return ""
+
+        podman.container_exec_checked.side_effect = fake_exec
+
+        reg = {
+            "crews": {
+                self.CREW_ID: {
+                    "container": self.CONTAINER,
+                    "last_captain_message_id": supersedes_id,
+                }
+            }
+        }
+
+        with (
+            patch.object(captain_mod, "_read_crew_secret", return_value=signing_secret),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+            patch.object(captain_mod, "_save_registry"),
+        ):
+            captain_mod._append_captain_mail(
+                podman, self.CONTAINER, self.BODY, crew_id=self.CREW_ID
+            )
+
+        self.assertEqual(len(captured_args), 1, "Expected exactly one container_exec_checked call")
+        cmd = captured_args[0]
+        # The payload is the last argument (base64-encoded mail message)
+        payload_b64 = cmd[-1]
+        return _base64.b64decode(payload_b64).decode("utf-8")
+
+    def test_signed_mail_contains_x_admiral_sig(self) -> None:
+        """When signing secret is present → X-Admiral-Sig header appears in the written mail."""
+        secret = self._gen_signing_secret()
+        mail = self._run_append(signing_secret=secret)
+        self.assertIn("X-Admiral-Sig:", mail, f"Expected X-Admiral-Sig header; mail:\n{mail}")
+
+    def test_signed_mail_hmac_is_valid(self) -> None:
+        """The X-Admiral-Sig in the written mail is a valid Ed25519 signature."""
+        import base64 as _base64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding as _Enc,
+            PrivateFormat as _PrivFmt,
+            NoEncryption as _NoEnc,
+            PublicFormat as _PubFmt,
+        )
+
+        # Generate keypair and signing secret
+        private_key = Ed25519PrivateKey.generate()
+        seed = private_key.private_bytes(_Enc.Raw, _PrivFmt.Raw, _NoEnc())
+        secret = seed.hex()
+        pub_bytes = private_key.public_key().public_bytes(_Enc.Raw, _PubFmt.Raw)
+
+        mail = self._run_append(signing_secret=secret)
+
+        # Extract X-Admiral-Sig value from mail headers
+        sig_line = next(
+            (line for line in mail.splitlines() if line.startswith("X-Admiral-Sig:")),
+            None,
+        )
+        self.assertIsNotNone(sig_line, f"No X-Admiral-Sig header found; mail:\n{mail}")
+        sig_b64 = sig_line.split(":", 1)[1].strip()
+        # Restore padding stripped by urlsafe_b64encode().rstrip(b"=")
+        padding = "=" * ((-len(sig_b64)) % 4)
+        sig_bytes = _base64.urlsafe_b64decode(sig_b64 + padding)
+
+        # Re-derive the signed payload the same way _format_captain_mail does
+        # (length-prefixed subject + from + body)
+        import email as _email
+        msg = _email.message_from_string(mail)
+        subject = msg["Subject"]
+        sender = "admiral@localhost"
+        # Body is the payload after the blank line separator
+        body_part = mail.split("\n\n", 1)[1]
+        subject_utf8 = subject.encode("utf-8")
+        from_utf8 = sender.encode("utf-8")
+        body_bytes = body_part.encode("utf-8")
+        payload = (
+            f"{len(subject_utf8)}\n".encode("ascii")
+            + subject_utf8
+            + f"{len(from_utf8)}\n".encode("ascii")
+            + from_utf8
+            + body_bytes
+        )
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        pub_key = Ed25519PublicKey.from_public_bytes(pub_bytes)
+        try:
+            pub_key.verify(sig_bytes, payload)
+        except Exception as exc:
+            self.fail(f"Signature verification failed: {exc}\nmail:\n{mail}")
+
+    def test_unsigned_mail_no_x_admiral_sig(self) -> None:
+        """When signing secret is absent → no X-Admiral-Sig header in the written mail."""
+        mail = self._run_append(signing_secret=None)
+        self.assertNotIn("X-Admiral-Sig:", mail, f"Expected no X-Admiral-Sig header; mail:\n{mail}")
+
+    def test_unsigned_mail_still_has_standard_headers(self) -> None:
+        """Unsigned mail contains From, To, Subject, Message-ID headers."""
+        mail = self._run_append(signing_secret=None)
+        for header in ("From:", "To:", "Subject:", "Message-ID:"):
+            self.assertIn(header, mail, f"Expected {header} in mail:\n{mail}")
+
+    def test_mail_body_contains_order_text(self) -> None:
+        """Mail body contains the original standing order text."""
+        mail = self._run_append(signing_secret=None)
+        self.assertIn(self.BODY, mail)
+
+    def test_supersedes_header_included_when_previous_id_present(self) -> None:
+        """When a previous message_id exists in registry → Supersedes header appears."""
+        mail = self._run_append(signing_secret=None, supersedes_id="<prev@localhost>")
+        self.assertIn("Supersedes:", mail, f"Expected Supersedes header; mail:\n{mail}")
+        self.assertIn("<prev@localhost>", mail)
+
+    def test_no_supersedes_header_when_no_previous_id(self) -> None:
+        """When no prior message_id → no Supersedes header."""
+        mail = self._run_append(signing_secret=None, supersedes_id=None)
+        self.assertNotIn("Supersedes:", mail)
+
+
+class MailCountTests(unittest.TestCase):
+    """Tests for _mail_count mailbox counting helper.
+
+    _mail_count calls container_exec_checked with a sh script
+    that returns 'new_count cur_count' for Maildir format or a
+    single count for mbox format.
+    """
+
+    CONTAINER = "gs-demo"
+    MAILBOX = "/var/mail/captain"
+
+    def _run(self, exec_return: str) -> int:
+        podman = Mock()
+        podman.container_exec_checked.return_value = exec_return
+        return captain_mod._mail_count(podman, self.CONTAINER, self.MAILBOX)
+
+    def test_empty_mailbox_returns_zero(self) -> None:
+        """Empty mailbox (0 0) → 0."""
+        self.assertEqual(self._run("0 0"), 0)
+
+    def test_single_message_new_dir(self) -> None:
+        """Single message in new/ → 1."""
+        self.assertEqual(self._run("1 0"), 1)
+
+    def test_multi_message_new_and_cur(self) -> None:
+        """3 messages: 2 in new/ and 1 in cur/ → 3."""
+        self.assertEqual(self._run("2 1"), 3)
+
+    def test_mbox_single_count(self) -> None:
+        """mbox-format single number → returned as-is."""
+        self.assertEqual(self._run("5"), 5)
+
+    def test_empty_mailbox_zero_zero_string(self) -> None:
+        """'0 0' string → 0."""
+        self.assertEqual(self._run("0 0\n"), 0)
+
+    def test_garbage_returns_zero(self) -> None:
+        """Garbage output → 0 (safe fallback)."""
+        self.assertEqual(self._run("oops"), 0)
+
+    def test_mailbox_path_passed_as_positional_arg(self) -> None:
+        """container_exec_checked is called with mailbox_path as a positional sh arg (not interpolated)."""
+        podman = Mock()
+        podman.container_exec_checked.return_value = "0 0"
+        captain_mod._mail_count(podman, self.CONTAINER, "/var/mail/captain")
+        call_args = podman.container_exec_checked.call_args
+        cmd = call_args.args[1]
+        # Expect ['sh', '-c', <script>, '--', '/var/mail/captain']
+        self.assertEqual(cmd[0], "sh")
+        self.assertEqual(cmd[-1], "/var/mail/captain")
+        # Path must not appear inside the script string (injection safety)
+        script = cmd[2]
+        self.assertNotIn("/var/mail/captain", script)
+
+
+class ReadAllMailCountsTests(unittest.TestCase):
+    """Tests for _read_all_mail_counts.
+
+    _read_all_mail_counts calls container_exec_checked once with a Python script
+    and returns a dict of mailbox → count.
+    """
+
+    CONTAINER = "gs-demo"
+
+    def _run(self, exec_return: str) -> dict:
+        podman = Mock()
+        podman.container_exec_checked.return_value = exec_return
+        return captain_mod._read_all_mail_counts(podman, self.CONTAINER)
+
+    def test_empty_mailboxes_returns_empty_dict(self) -> None:
+        """All counts zero → dict with all-zero entries (implementation includes zeros)."""
+        data = {name: 0 for name in captain_mod._ALL_MAIL_MAILBOXES}
+        result = self._run(json.dumps(data))
+        # Implementation returns all entries including zeros
+        for name in captain_mod._ALL_MAIL_MAILBOXES:
+            self.assertIn(name, result)
+            self.assertEqual(result[name], 0)
+
+    def test_single_message_in_captain(self) -> None:
+        """One message in captain → captain count is 1."""
+        data = {name: 0 for name in captain_mod._ALL_MAIL_MAILBOXES}
+        data["captain"] = 1
+        result = self._run(json.dumps(data))
+        self.assertEqual(result.get("captain"), 1)
+
+    def test_multi_mailbox_counts(self) -> None:
+        """Multiple non-zero counts are all returned correctly."""
+        data = {name: 0 for name in captain_mod._ALL_MAIL_MAILBOXES}
+        data["ghost"] = 3
+        data["captain"] = 2
+        data["raven"] = 1
+        result = self._run(json.dumps(data))
+        self.assertEqual(result["ghost"], 3)
+        self.assertEqual(result["captain"], 2)
+        self.assertEqual(result["raven"], 1)
+
+    def test_invalid_json_returns_empty_dict(self) -> None:
+        """Invalid JSON from exec → empty dict (safe fallback)."""
+        result = self._run("not-json")
+        self.assertEqual(result, {})
+
+    def test_makes_single_exec_call(self) -> None:
+        """Only one container_exec_checked call is made."""
+        podman = Mock()
+        podman.container_exec_checked.return_value = json.dumps({"ghost": 1})
+        captain_mod._read_all_mail_counts(podman, self.CONTAINER)
+        self.assertEqual(podman.container_exec_checked.call_count, 1)
+
+
+class CaptainDoOrderTests(unittest.TestCase):
+    """Tests for _captain_do_order helper.
+
+    Covers:
+    - Free-form message → _append_captain_mail called, registry updated
+    - Template resolution → correct template body delivered
+    - Active existing task (resume path) → no immediate dispatch, current_task_id returned
+    """
+
+    CREW = {"container": "gs-demo", "cookie": "cookie", "enrolled_agents": ["raven"]}
+    CREW_ID = "demo"
+
+    def _base_reg(self, schedules=None):
+        return {"crews": {self.CREW_ID: {
+            "container": "gs-demo",
+            "cookie": "cookie",
+            "enrolled_agents": ["raven"],
+            "schedules": schedules or [],
+        }}}
+
+    def test_free_form_message_calls_append_captain_mail(self) -> None:
+        """Free-form message → _append_captain_mail called with the message body."""
+        reg = self._base_reg()
+        podman = Mock()
+        append_calls = []
+
+        def fake_append(_podman, _container, body, crew_id=None):
+            append_calls.append(body)
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_append_captain_mail", side_effect=fake_append),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
+        ):
+            result = server._captain_do_order(
+                self.CREW_ID,
+                message="Deploy the new feature branch.",
+                template=None,
+                change_name=None,
+                cron=None,
+                interval=300,
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+        self.assertEqual(result.get("action"), "order")
+        self.assertEqual(result.get("status"), "ordered")
+        self.assertEqual(len(append_calls), 1)
+        self.assertIn("Deploy the new feature branch.", append_calls[0])
+
+    def test_template_resolution_delivers_correct_body(self) -> None:
+        """Template 'sdd' is resolved and the resolved text is delivered via _append_captain_mail."""
+        reg = self._base_reg()
+        podman = Mock()
+        expected_body = server._resolve_order_template("sdd", "my-change")
+        append_calls = []
+
+        def fake_append(_podman, _container, body, crew_id=None):
+            append_calls.append(body)
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_append_captain_mail", side_effect=fake_append),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry"),
+            patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
+        ):
+            result = server._captain_do_order(
+                self.CREW_ID,
+                message=None,
+                template="sdd",
+                change_name="my-change",
+                cron=None,
+                interval=300,
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+        self.assertEqual(result.get("status"), "ordered")
+        self.assertEqual(len(append_calls), 1)
+        self.assertEqual(append_calls[0], expected_body)
+        # Ensure template placeholder was substituted
+        self.assertNotIn("<change>", append_calls[0])
+        self.assertIn("my-change", append_calls[0])
+
+    def test_registry_updated_with_schedule_entry(self) -> None:
+        """A new captain schedule entry is written to the registry."""
+        reg = self._base_reg()
+        saved = []
+        podman = Mock()
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_append_captain_mail"),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
+        ):
+            server._captain_do_order(
+                self.CREW_ID,
+                message="Routine review.",
+                template=None,
+                change_name=None,
+                cron=None,
+                interval=600,
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+        # Registry should have been saved with a captain schedule entry
+        captain_scheds = [
+            s for save in saved
+            for s in save.get("crews", {}).get(self.CREW_ID, {}).get("schedules", [])
+            if s.get("type") == "captain"
+        ]
+        self.assertTrue(len(captain_scheds) > 0, f"Expected captain schedule saved; got saved={saved}")
+        self.assertTrue(captain_scheds[-1].get("enabled"))
+
+    def test_active_existing_task_no_immediate_dispatch(self) -> None:
+        """Resume path: existing entry with current_task_id → no dispatch, task_id returned."""
+        existing_sched = {
+            "type": "captain",
+            "name": "captain",
+            "interval_secs": 300,
+            "cron_expr": None,
+            "next_fire_at": time.time() + 300,
+            "enabled": True,
+            "current_task_id": "task-existing",
+            "model": None,
+        }
+        reg = self._base_reg(schedules=[existing_sched])
+        podman = Mock()
+        dispatch_mock = Mock(return_value="task-new")
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_append_captain_mail"),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry"),
+            patch.object(server, "_dispatch_captain_checkin", dispatch_mock),
+            patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
+        ):
+            result = server._captain_do_order(
+                self.CREW_ID,
+                message="Resume standing orders.",
+                template=None,
+                change_name=None,
+                cron=None,
+                interval=None,
+                timezone="UTC",
+                fire_immediately=False,  # explicitly not firing immediately
+                model=None,
+            )
+
+        # No immediate dispatch when fire_immediately=False and resuming
+        dispatch_mock.assert_not_called()
+        self.assertEqual(result.get("status"), "ordered")
+        # current_task_id is the existing one (not re-dispatched)
+        self.assertEqual(result.get("current_task_id"), "task-existing")
+
+    def test_error_requires_message_or_template(self) -> None:
+        """Providing both message and template → error returned."""
+        result = server._captain_do_order(
+            self.CREW_ID,
+            message="test",
+            template="sdd",
+            change_name=None,
+            cron=None,
+            interval=300,
+            timezone="UTC",
+            fire_immediately=False,
+            model=None,
+        )
+        self.assertIn("error", result)
+
+
+class CaptainDoStatusTests(unittest.TestCase):
+    """Tests for _captain_do_status helper.
+
+    Covers:
+    - Enabled schedule → returns enabled=True and mailbox counts
+    - Disabled schedule → returns enabled=False
+    - No captain entry → status=dormant
+    """
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+    CREW_ID = "demo"
+
+    def _reg(self, *, enabled: bool, current_task_id: str | None = None) -> dict:
+        return {"crews": {self.CREW_ID: {
+            "container": "gs-demo",
+            "cookie": "cookie",
+            "schedules": [{
+                "type": "captain",
+                "name": "captain",
+                "interval_secs": 300,
+                "enabled": enabled,
+                "current_task_id": current_task_id,
+            }],
+        }}}
+
+    def test_enabled_schedule_returns_enabled_true(self) -> None:
+        """Enabled captain schedule → result['enabled'] is True."""
+        reg = self._reg(enabled=True)
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        skim_result = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        skim_result["captain"] = [{"subject": "Standing order", "received_at": None}]
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
+            patch.object(captain_mod, "_mail_count", return_value=1),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+        ):
+            result = server._captain_do_status(self.CREW_ID)
+
+        self.assertTrue(result.get("enabled"), f"Expected enabled=True; got {result}")
+        self.assertEqual(result.get("action"), "status")
+
+    def test_disabled_schedule_returns_enabled_false(self) -> None:
+        """Disabled captain schedule → result['enabled'] is False."""
+        reg = self._reg(enabled=False)
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        skim_result = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+        ):
+            result = server._captain_do_status(self.CREW_ID)
+
+        self.assertFalse(result.get("enabled"), f"Expected enabled=False; got {result}")
+
+    def test_no_captain_entry_returns_dormant(self) -> None:
+        """No captain entry → status=dormant, enabled=False."""
+        reg = {"crews": {self.CREW_ID: {
+            "container": "gs-demo",
+            "cookie": "cookie",
+            "schedules": [],
+        }}}
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        skim_result = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+        ):
+            result = server._captain_do_status(self.CREW_ID)
+
+        self.assertEqual(result.get("status"), "dormant")
+        self.assertFalse(result.get("enabled"))
+
+    def test_status_includes_mailbox_counts(self) -> None:
+        """_captain_do_status includes captain_mail count in result."""
+        reg = self._reg(enabled=True)
+        podman = Mock()
+        podman.container_is_running.return_value = False
+        skim_result = {name: [] for name in captain_mod._ALL_MAIL_MAILBOXES}
+        skim_result["captain"] = [
+            {"subject": "Order A", "received_at": None},
+            {"subject": "Order B", "received_at": None},
+        ]
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
+            patch.object(captain_mod, "_mail_count", return_value=2),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+        ):
+            result = server._captain_do_status(self.CREW_ID)
+
+        self.assertEqual(result.get("captain_mail"), 2)
+        self.assertEqual(len(result.get("captain_subjects", [])), 2)
+
+
+class CaptainDoStopTests(unittest.TestCase):
+    """Tests for _captain_do_stop helper.
+
+    Covers:
+    - Schedule disabled in registry and enabled=False returned
+    - No captain entry → dormant response without saving
+    """
+
+    CREW = {"container": "gs-demo", "cookie": "cookie"}
+    CREW_ID = "demo"
+
+    def _reg(self, *, enabled: bool) -> dict:
+        return {"crews": {self.CREW_ID: {
+            "container": "gs-demo",
+            "cookie": "cookie",
+            "schedules": [{
+                "type": "captain",
+                "name": "captain",
+                "interval_secs": 300,
+                "enabled": enabled,
+                "current_task_id": "task-1",
+            }],
+        }}}
+
+    def test_stop_disables_schedule_in_registry(self) -> None:
+        """_captain_do_stop sets enabled=False in the registry."""
+        reg = self._reg(enabled=True)
+        saved = []
+        podman = Mock()
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+        ):
+            result = server._captain_do_stop(self.CREW_ID)
+
+        self.assertFalse(result.get("enabled"), f"Expected enabled=False; got {result}")
+        # Registry was saved with enabled=False
+        captain_scheds = [
+            s for save in saved
+            for s in save.get("crews", {}).get(self.CREW_ID, {}).get("schedules", [])
+            if s.get("type") == "captain"
+        ]
+        self.assertTrue(
+            any(not s.get("enabled") for s in captain_scheds),
+            f"Expected saved registry to have enabled=False; got {captain_scheds}",
+        )
+
+    def test_stop_returns_enabled_false(self) -> None:
+        """_captain_do_stop result has enabled=False."""
+        reg = self._reg(enabled=True)
+        podman = Mock()
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(server, "_save_registry"),
+            patch.object(captain_mod, "_mail_count", return_value=0),
+            patch.object(captain_mod, "_load_registry", return_value=reg),
+        ):
+            result = server._captain_do_stop(self.CREW_ID)
+
+        self.assertFalse(result.get("enabled"))
+
+    def test_stop_no_captain_entry_returns_dormant(self) -> None:
+        """No captain entry → dormant response."""
+        reg = {"crews": {self.CREW_ID: {
+            "container": "gs-demo",
+            "cookie": "cookie",
+            "schedules": [],
+        }}}
+        podman = Mock()
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_get_podman", return_value=podman),
+            patch.object(server, "_load_registry", return_value=reg),
+        ):
+            result = server._captain_do_stop(self.CREW_ID)
+
+        self.assertEqual(result.get("status"), "dormant")
+        self.assertFalse(result.get("enabled"))
