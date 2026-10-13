@@ -839,7 +839,23 @@ def _ensure_crew_running(
             raise exc if exc is not None else RuntimeError(
                 f"Crew {crew_id} restart (concurrent) failed"
             )
-        crew_after = _get_crew(crew_id)
+        # TRN-238 QA-2 (waiter path): the leader may have returned
+        # _NUKED_DURING_RESTART — a concurrent nuke() removed the crew between
+        # container_start and post-start setup.  The leader records success=(True,
+        # None) so waiters are not told "restart failed", but the crew entry is
+        # gone.  Propagate the sentinel here so the waiter's own caller handles it
+        # identically to the leader's caller (nuke is an expected outcome, not an
+        # error).  A plain KeyError from _get_crew would be confusing and would
+        # surface differently at call sites that only catch RuntimeError.
+        try:
+            crew_after = _get_crew(crew_id)
+        except KeyError:
+            logger.info(
+                "Crew %s was nuked during restart (registry entry gone after "
+                "waiter woke) — returning _NUKED_DURING_RESTART sentinel",
+                crew_id,
+            )
+            return _NUKED_DURING_RESTART
         if crew_after.get("status") in ("stopped", "launching", None):
             raise RuntimeError(
                 f"Crew {crew_id} restart (concurrent) failed -- status is still "

@@ -3392,3 +3392,87 @@ class NukeDuringRestartTests(unittest.TestCase):
                          "cookie mint ran despite the crew being nuked")
         self.assertEqual(patch_calls["enroll"], 0,
                          "member enrollment ran despite the crew being nuked")
+
+
+# ── TRN-238 QA-2 (Banshee fix): waiter path propagates nuke-during-restart ──
+
+
+class NukeDuringRestartWaiterTests(unittest.TestCase):
+    """TRN-238 QA-2 (waiter path): when the restart leader returns
+    _NUKED_DURING_RESTART because a concurrent nuke() removed the crew between
+    container_start and post-start setup, a concurrent waiter that woke on the
+    same event MUST also receive _NUKED_DURING_RESTART — not a KeyError from
+    _get_crew (which raises because the crew is no longer in the registry).
+
+    Prior to the Banshee fix the leader set _outcome=(True, None) to signal
+    "restart succeeded", but the crew was gone, so the waiter's _get_crew call
+    raised KeyError — an opaque error that no call site handled cleanly.
+    """
+
+    def test_waiter_returns_sentinel_when_crew_nuked_during_leader_restart(self) -> None:
+        """Simulate the race:
+        1. Leader starts, acquires the startup event slot.
+        2. Waiter arrives, elects itself a waiter, calls event.wait().
+        3. Leader detects nuke, records _outcome=(True, None), fires event.
+        4. Waiter wakes, calls _get_crew → KeyError (crew gone).
+        5. Banshee fix: the waiter catches KeyError and returns the sentinel.
+
+        We simulate the in-flight leader by injecting the startup event and
+        outcome before calling _ensure_crew_running, so the function takes the
+        waiter path immediately after the _early_in_progress check.
+        """
+        import threading as _th
+
+        crew_id = "nuke-waiter-test"
+
+        # The crew entry is present so the waiter path is entered (status=stopped).
+        stopped_crew = {"container": "gs-nuke-waiter-test", "status": "stopped", "cookie": "c"}
+
+        # After the leader fires, _get_crew should raise KeyError (crew nuked).
+        def fake_get_crew(cid: str) -> dict:
+            raise KeyError(f"Crew '{cid}' not found.")
+
+        # _get_podman is called at the very top of _ensure_crew_running before the
+        # leader/waiter branching; mock it with a client that reports containers stopped.
+        fake_podman = FakePodmanClient([])
+
+        # Manually inject a startup event and outcome to simulate the leader
+        # already having finished with the nuke sentinel.
+        evt = _th.Event()
+        with lifecycle._startup_events_lock:
+            lifecycle._startup_events[crew_id] = evt
+            lifecycle._startup_generation[crew_id] = 1
+            # Record the leader's outcome — (True, None) as nuked-during-restart path sets.
+            lifecycle._crew_restart_outcomes[crew_id] = (True, None)
+        # Fire the event so the waiter unblocks immediately.
+        evt.set()
+
+        orig_max = lifecycle.GA_MAX_ACTIVE_CREWS
+        orig_min = lifecycle.GA_MIN_FREE_MEM_GB
+        try:
+            lifecycle.GA_MAX_ACTIVE_CREWS = 0
+            lifecycle.GA_MIN_FREE_MEM_GB = 0.0
+            with patch.object(lifecycle, "_get_podman", return_value=fake_podman):
+                with patch.object(lifecycle, "_get_crew", side_effect=fake_get_crew):
+                    with self.assertLogs("transport", level="INFO") as logctx:
+                        result = lifecycle._ensure_crew_running(stopped_crew, crew_id)
+        finally:
+            lifecycle.GA_MAX_ACTIVE_CREWS = orig_max
+            lifecycle.GA_MIN_FREE_MEM_GB = orig_min
+            # Clean up injected state.
+            with lifecycle._startup_events_lock:
+                lifecycle._startup_events.pop(crew_id, None)
+                lifecycle._startup_generation.pop(crew_id, None)
+                lifecycle._crew_restart_outcomes.pop(crew_id, None)
+
+        # Must return the sentinel, not raise.
+        self.assertIs(
+            result, lifecycle._NUKED_DURING_RESTART,
+            "waiter must return _NUKED_DURING_RESTART when _get_crew raises KeyError "
+            "(crew was nuked during leader restart)",
+        )
+        # Must log at INFO mentioning the nuke-during-restart.
+        self.assertTrue(
+            any("nuked during restart" in m.lower() for m in logctx.output),
+            f"expected INFO log mentioning nuke-during-restart; got {logctx.output}",
+        )

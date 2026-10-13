@@ -663,6 +663,7 @@ try:
         CREW_HOME_VOLUME_PREFIX,
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
+        _NUKED_DURING_RESTART,
         GA_LOGIN_CONTAINER_PREFIX,
         GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
         GA_CODEX_LOGIN_CONTAINER_PREFIX,
@@ -752,6 +753,7 @@ except ModuleNotFoundError:
         CREW_HOME_VOLUME_PREFIX,
         CREW_VOLUME_PREFIX,
         CrewUnresponsiveError,
+        _NUKED_DURING_RESTART,
         GA_LOGIN_CONTAINER_PREFIX,
         GA_CLAUDE_LOGIN_CONTAINER_PREFIX,
         GA_CODEX_LOGIN_CONTAINER_PREFIX,
@@ -1115,6 +1117,15 @@ async def _resolve_crew_for_proxy(
                 crew = await asyncio.to_thread(_ensure_crew_running, crew, crew_id)
         except RuntimeError as e:
             return PlainTextResponse(str(e), status_code=502)
+        # TRN-238 QA-2: _ensure_crew_running returns _NUKED_DURING_RESTART when a
+        # concurrent nuke() removed the crew's registry entry between container_start
+        # and post-start setup. The crew no longer exists — return 410 Gone so
+        # callers (UI, WS, API proxy handlers) never receive the sentinel as a dict.
+        if crew is _NUKED_DURING_RESTART:
+            return PlainTextResponse(
+                f"Crew '{crew_id}' was removed while being started",
+                status_code=410,
+            )
 
     return crew_id, sub_path, crew
 
@@ -3045,6 +3056,9 @@ def supply(
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
+    # TRN-238 QA-2: crew was nuked during restart — it no longer exists.
+    if crew is _NUKED_DURING_RESTART:
+        return {"error": f"Crew '{crew_id}' was removed while being started"}
 
     url = _sign_upload_url(crew_id, clean, unpack=unpack, bundle=bundle, force=force)
     if unpack:

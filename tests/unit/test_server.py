@@ -4097,3 +4097,57 @@ class Trn190LoginGetHtmlTests(unittest.IsolatedAsyncioTestCase):
         """JS adds .show class to reveal the error paragraph on failure."""
         html = await self._get_html()
         self.assertIn("classList.add('show')", html)
+
+
+# ── TRN-238 QA-2 (Banshee fix): _resolve_crew_for_proxy handles sentinel ─────
+
+
+class NukeDuringProxyAutoWakeTests(unittest.IsolatedAsyncioTestCase):
+    """TRN-238 QA-2 (Banshee fix): _resolve_crew_for_proxy must return a 410
+    Gone response (not crash with AttributeError) when _ensure_crew_running
+    returns _NUKED_DURING_RESTART after a concurrent nuke() removed the crew
+    between container_start and post-start setup.
+
+    Without the fix, the sentinel object (not a dict) is returned as the
+    ``crew`` element of the tuple, and callers immediately crash on
+    ``crew.get("cookie", "")``.
+    """
+
+    CREW = {"container": "gs-proxy-nuke-test", "cookie": "test-cookie", "status": "stopped"}
+
+    async def test_resolve_crew_for_proxy_returns_410_on_nuked_sentinel(self) -> None:
+        """auto_wake=True path: when _ensure_crew_running returns
+        _NUKED_DURING_RESTART, _resolve_crew_for_proxy must return a 410 Response
+        rather than passing the sentinel through as a crew dict."""
+        # _ensure_crew_running is invoked via asyncio.to_thread; it must be a
+        # synchronous callable so to_thread returns its return value directly.
+        def fake_ensure(crew, crew_id):
+            return lifecycle._NUKED_DURING_RESTART
+
+        with (
+            patch.object(server, "_require_crew", return_value=self.CREW),
+            patch.object(server, "_ensure_crew_running", side_effect=fake_ensure),
+            patch.object(server, "_get_ensure_running_lock") as mock_lock,
+        ):
+            # _get_ensure_running_lock must behave as an async context manager.
+            class _FakeLock:
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *a):
+                    pass
+            mock_lock.return_value = _FakeLock()
+
+            result = await server._resolve_crew_for_proxy("/crews/proxy-nuke-test/ui")
+
+        # Must NOT return a tuple (which would pass the sentinel as the crew dict
+        # to the caller and crash on crew.get("cookie", "")).
+        self.assertNotIsInstance(
+            result, tuple,
+            "_resolve_crew_for_proxy must return a Response, not a (crew_id, sub_path, crew) "
+            "tuple, when _ensure_crew_running returns the nuke sentinel",
+        )
+        # Must carry a 410 status code.
+        self.assertEqual(
+            getattr(result, "status_code", None), 410,
+            "expected 410 Gone when the crew was nuked during auto-wake",
+        )
