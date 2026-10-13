@@ -58,6 +58,8 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 
 Builds crew images, starts the transport and Caddy proxy on port 64057 (published on all interfaces — set `GA_API_KEY` if the host is reachable from other machines). Then connect your harness:
 
+> **First install?** When no `ghostship.conf` is present, `install.sh` runs an **interactive guided setup** automatically: it walks you through choosing a default agent backend (`kiro`/`claude`/`codex`) plus any additional backends, collects non-secret config, writes `ghostship.conf`, then builds, authenticates, and offers harness registration. Force it any time with `./install.sh --wizard`. When a `ghostship.conf` already exists, the install runs non-interactively as before.
+
 **Kiro (via Power):**
 
 Install the ghostship power from the Powers panel → Add Custom Power → Import from GitHub:

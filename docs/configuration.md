@@ -118,6 +118,23 @@ Common patterns:
 - **Per-agent with fallback**: leave `KC_MODEL_OVERRIDE` unset, set `KC_MODEL_DEFAULT` as the baseline, add per-agent model fields where needed.
 - **KiroCrew default everywhere**: leave both unset.
 
+## Interactive setup
+
+On a first install — when no `ghostship.conf` is found (neither `./ghostship.conf` nor `config/ghostship.conf`) and stdin is a tty — `install.sh` runs an **interactive guided setup** automatically. Pass `--wizard` to force it even when a config exists; when a config is present and `--wizard` is not passed, the install runs non-interactively with no prompts.
+
+The wizard:
+
+1. Prompts for a default agent backend (`kiro`/`claude`/`codex`, default `kiro`) and optional comma-separated additional backends.
+2. Collects **non-secret** config only: `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` for kiro, `OPENAI_BASE_URL` for codex (claude needs none). Secrets are deferred to `ghostship auth login <backend>`.
+3. Writes a `config/ghostship.conf` (mode `600`, non-empty vars only), then builds and starts the transport.
+4. After the transport is ready, runs `ghostship auth login` for kiro and prints the follow-up `ghostship auth login <backend>` commands for claude/codex, then offers to run `ghostship setup` for harness registration.
+
+Multiple backends can be enabled at once — the transport holds config for all of them simultaneously, and the first entry is the runtime default:
+
+```conf
+GA_CREW_AGENT=kiro,claude,codex
+```
+
 ## Config file
 
 `install.sh` accepts `--config <path>` pointing to a shell file that sets default values. The file is sourced before argument parsing, so **CLI flags always win over config-file values**.

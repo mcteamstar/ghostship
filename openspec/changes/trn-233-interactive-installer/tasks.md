@@ -2,13 +2,13 @@
 
 ## 1. Detection and mode switching
 
-- [ ] 1.1 In `scripts/install.sh`, set `_FOUND_CONFIG=true` inside the existing `for _candidate in ghostship.conf config/ghostship.conf` auto-detect block when a file is sourced. Add `--wizard` to the flag-parsing `while [[ $# -gt 0 ]]` loop: `--wizard) _WIZARD_FLAG=true; shift ;;`. After the auto-detect block, add: `_INTERACTIVE_MODE=false; if [[ -z "${_FOUND_CONFIG:-}" && -t 0 ]] || [[ "${_WIZARD_FLAG:-false}" == "true" ]]; then _INTERACTIVE_MODE=true; fi`. Verify: existing conf → `_INTERACTIVE_MODE=false`; no conf + tty → true; `--wizard` → true regardless of conf.
+- [x] 1.1 In `scripts/install.sh`, set `_FOUND_CONFIG=true` inside the existing `for _candidate in ghostship.conf config/ghostship.conf` auto-detect block when a file is sourced. Add `--wizard` to the flag-parsing `while [[ $# -gt 0 ]]` loop: `--wizard) _WIZARD_FLAG=true; shift ;;`. After the auto-detect block, add: `_INTERACTIVE_MODE=false; if [[ -z "${_FOUND_CONFIG:-}" && -t 0 ]] || [[ "${_WIZARD_FLAG:-false}" == "true" ]]; then _INTERACTIVE_MODE=true; fi`. Verify: existing conf → `_INTERACTIVE_MODE=false`; no conf + tty → true; `--wizard` → true regardless of conf.
 
-- [ ] 1.2 Just before the existing standalone `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` read prompts (~line 200), add: `if [[ "${_INTERACTIVE_MODE:-false}" == "true" ]]; then _interactive_setup; fi`. The standalone prompts are naturally suppressed in interactive mode because those vars are already set by `_interactive_setup`. No further change needed to that block.
+- [x] 1.2 Just before the existing standalone `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` read prompts (~line 200), add: `if [[ "${_INTERACTIVE_MODE:-false}" == "true" ]]; then _interactive_setup; fi`. The standalone prompts are naturally suppressed in interactive mode because those vars are already set by `_interactive_setup`. No further change needed to that block.
 
 ## 2. Prompt helper and _interactive_setup function
 
-- [ ] 2.1 Add `_prompt` helper near the top of the script (after `set -eo pipefail`, before the defaults section):
+- [x] 2.1 Add `_prompt` helper near the top of the script (after `set -eo pipefail`, before the defaults section):
   ```bash
   _prompt() {
       local prompt="$1" default="$2" var_name="$3"
@@ -19,7 +19,7 @@
   }
   ```
 
-- [ ] 2.2 Add `_interactive_setup` function. Opens with `echo "=== Ghostship Interactive Setup ==="`. Uses `_prompt` for:
+- [x] 2.2 Add `_interactive_setup` function. Opens with `echo "=== Ghostship Interactive Setup ==="`. Uses `_prompt` for:
   1. Default backend: `_prompt "Default agent backend (kiro/claude/codex)" "kiro" GA_CREW_AGENT` — validate against known values, re-prompt on unknown.
   2. Additional backends: `_prompt "Additional backends to enable, comma-separated (blank = none)" "" _extra_backends` — if non-empty, append: `GA_CREW_AGENT="${GA_CREW_AGENT},${_extra_backends}"`.
   
@@ -27,14 +27,14 @@
 
 ## 3. Non-secret config collection per backend
 
-- [ ] 3.1 Inside `_interactive_setup`, after backend selection, iterate over the selected backends and collect non-secret config only. Use a `case` or series of `[[ $GA_CREW_AGENT == *kiro* ]]` checks:
+- [x] 3.1 Inside `_interactive_setup`, after backend selection, iterate over the selected backends and collect non-secret config only. Use a `case` or series of `[[ $GA_CREW_AGENT == *kiro* ]]` checks:
   - **kiro**: `_prompt "kiro-cli identity provider URL (blank = Builder ID)" "" KIRO_IDENTITY_PROVIDER`. If non-empty: `_prompt "AWS region for that identity provider" "" KIRO_REGION`.
   - **claude**: print `"  Claude: no config needed here — run 'ghostship auth login anthropic' after install to set your key."` No prompts.
   - **codex**: `_prompt "OpenAI-compatible base URL (blank = https://api.openai.com/v1)" "" OPENAI_BASE_URL`. Print `"  Codex: run 'ghostship auth login openai' after install to set your API key."`. Note in the prompt text that this can point at a local proxy (litellm, etc.).
 
 ## 4. Write ghostship.conf
 
-- [ ] 4.1 At the end of `_interactive_setup`, write `${GHOSTSHIP_DIR}/config/ghostship.conf`:
+- [x] 4.1 At the end of `_interactive_setup`, write `${GHOSTSHIP_DIR}/config/ghostship.conf`:
   ```bash
   mkdir -p "${GHOSTSHIP_DIR}/config"
   local _conf="${GHOSTSHIP_DIR}/config/ghostship.conf"
@@ -52,7 +52,7 @@
 
 ## 5. Post-install auth and harness registration
 
-- [ ] 5.1 After `✓ Transport is ready`, add an interactive-mode auth block:
+- [x] 5.1 After `✓ Transport is ready`, add an interactive-mode auth block:
   ```bash
   if [[ "${_INTERACTIVE_MODE:-false}" == "true" ]]; then
       echo ""
@@ -65,7 +65,7 @@
   fi
   ```
 
-- [ ] 5.2 After the auth block, add the harness registration prompt (interactive mode only):
+- [x] 5.2 After the auth block, add the harness registration prompt (interactive mode only):
   ```bash
   if [[ "${_INTERACTIVE_MODE:-false}" == "true" ]]; then
       _prompt "Register MCP server with detected harnesses? (kiro-cli, claude, opencode)" "y" _register
@@ -78,11 +78,11 @@
 
 ## 6. Spec delta and docs
 
-- [ ] 6.1 Write spec delta at `openspec/changes/trn-233-interactive-installer/specs/installation/spec.md`. Add section `## Interactive Setup Mode` covering: trigger (no conf + tty, or `--wizard`), the seven steps, multi-backend topology (kiro+claude+codex simultaneously, default via first entry in `GA_CREW_AGENT`), and the invariant that non-interactive path is unchanged. Note that secret injection is deferred to `ghostship auth login <backend>`.
+- [x] 6.1 Write spec delta at `openspec/changes/trn-233-interactive-installer/specs/installation/spec.md`. Add section `## Interactive Setup Mode` covering: trigger (no conf + tty, or `--wizard`), the seven steps, multi-backend topology (kiro+claude+codex simultaneously, default via first entry in `GA_CREW_AGENT`), and the invariant that non-interactive path is unchanged. Note that secret injection is deferred to `ghostship auth login <backend>`.
 
-- [ ] 6.2 Update `README.md` Setup section: after `./install.sh`, note that interactive mode runs automatically on first install (no conf present) and walks through backend selection. Update `docs/configuration.md`: add `## Interactive setup` section before `## Config file` noting the auto-detection trigger, `--wizard` flag, and multi-backend example (`GA_CREW_AGENT=kiro,claude,codex`).
+- [x] 6.2 Update `README.md` Setup section: after `./install.sh`, note that interactive mode runs automatically on first install (no conf present) and walks through backend selection. Update `docs/configuration.md`: add `## Interactive setup` section before `## Config file` noting the auto-detection trigger, `--wizard` flag, and multi-backend example (`GA_CREW_AGENT=kiro,claude,codex`).
 
-- [ ] 6.3 Run `bash scripts/tests/run.sh --unit` to confirm no regressions. The interactive path requires a tty so is not covered by the unit suite — verify manually with `./install.sh --wizard` on a clean system (rename or remove `config/ghostship.conf` first).
+- [x] 6.3 Run `bash scripts/tests/run.sh --unit` to confirm no regressions. The interactive path requires a tty so is not covered by the unit suite — verify manually with `./install.sh --wizard` on a clean system (rename or remove `config/ghostship.conf` first).
 
 ## Workflow follow-up
 
