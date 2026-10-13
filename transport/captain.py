@@ -60,7 +60,7 @@ _RAVEN_SELF_CANCEL = """Once you're genuinely satisfied the standing orders are 
 crew_id="$KIROCREW_CREW_ID"
 cookie=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
 curl -s -o /dev/null -w '%{http_code}' -X POST \\
-  "http://localhost:64057/crews/${crew_id}/captain/stop" \\
+  "http://ga-transport:64057/crews/${crew_id}/captain/stop" \\
   -H "Cookie: mc_token_5476=${cookie}" \\
   -H "Origin: $(echo $KIROCREW_CORS_ORIGINS | cut -d, -f1)"
 ```
