@@ -29,7 +29,9 @@
 # (still accepted for backward compatibility). off — allow unauthenticated
 # remote access, for proxy-protected deployments that place their own auth
 # layer in front (Tailscale, VPN, reverse proxy). Loopback installs
-# (HOST=127.0.0.1 or unset) are never subject to this check.
+# (HOST=127.0.0.1, ::1, or localhost) are never subject to this check.
+# The install.sh default is HOST=0.0.0.0 (all interfaces), so a plain install
+# without setting HOST=127.0.0.1 is treated as non-loopback.
 # GA_REQUIRE_API_KEY=error
 
 # Two auth paths for kiro-cli inside crews:

@@ -542,11 +542,14 @@ def _load_api_key() -> str:
     # _enforce_require_api_key(), called from the transport startup path — never
     # here, so that merely importing this module (tests, tooling) cannot abort
     # the process.
+    # Only emit the informational warning for warn mode; error mode will produce a
+    # proper error message and exit via _enforce_require_api_key, so an extra
+    # warning here would just add noise before the exit.
     import os as _os
     _host = _os.environ.get("HOST", "0.0.0.0")
     if _host not in ("127.0.0.1", "::1", "localhost"):
         _require = _os.environ.get("GA_REQUIRE_API_KEY", "error")
-        if _require != "off":
+        if _require == "warn":
             _logger.warning(
                 "Transport is bound on %s with no API key — anyone who can "
                 "reach this host can use every MCP tool. Set GA_API_KEY in "

@@ -830,9 +830,10 @@ echo "✓ academy/ (agents, skills, steering, policies, orders, mcp) and crews/ 
 # ── Bind-address enforcement ─────────────────────────────────────────────────
 # Abort (or warn) when the transport is exposed on a non-loopback address with
 # no API key. GA_REQUIRE_API_KEY controls severity: error (default), warn, or
-# off. When HOST is unset or loopback, the check is skipped entirely — no key
-# required for local installs.
-_bind_host="${HOST:-127.0.0.1}"
+# off. When HOST is 127.0.0.1, ::1, or localhost, the check is skipped entirely
+# — no key required for loopback installs. The script default is HOST=0.0.0.0
+# (all interfaces), so a bare ./install.sh without setting HOST is non-loopback.
+_bind_host="${HOST:-0.0.0.0}"
 _require_api_key="${GA_REQUIRE_API_KEY:-error}"
 if [[ "$_require_api_key" != "off" && -z "${GA_API_KEY:-}" ]]; then
   if [[ "$_bind_host" != "127.0.0.1" && "$_bind_host" != "::1" && "$_bind_host" != "localhost" ]]; then
