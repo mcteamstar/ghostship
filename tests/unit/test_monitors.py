@@ -1957,14 +1957,16 @@ class TestCaptainMonitor(unittest.TestCase):
         sched = saves[-1]["crews"]["demo"]["schedules"][0]
         self.assertGreater(sched["next_fire_at"], now)
 
-    def test_steer_returns_400_fallback_to_dispatch(self) -> None:
-        """When _steer_captain_checkin raises 400, the monitor logs the error.
+    def test_steer_raises_error_logged_next_fire_advances(self) -> None:
+        """When _steer_captain_checkin raises, the monitor logs the error and
+        advances next_fire_at.
 
-        In _captain_monitor the exception from _steer_captain_checkin is caught
-        inside the try block and logged; _dispatch_captain_checkin is NOT called
-        by the monitor itself — fallback to dispatch is _steer_captain_checkin's
-        own responsibility.  This test verifies the monitor survives the failure
-        without crashing.
+        Note on naming: the fallback-to-dispatch behaviour on a 400/404 stale
+        session is handled *inside* _steer_captain_checkin, not by the monitor.
+        The monitor's job is to catch any exception from _steer_captain_checkin,
+        log an error, and still advance next_fire_at so the entry isn't retried
+        immediately on the very next tick.  This test covers all three of those
+        monitor-level behaviours.
         """
         now = time.time()
         reg = self._make_reg(next_fire_at=now - 10)
@@ -1983,6 +1985,19 @@ class TestCaptainMonitor(unittest.TestCase):
         self.assertTrue(
             any("check-in failed" in m or "400" in m for m in log_ctx.output),
             f"Expected error log for failed check-in; got: {log_ctx.output}",
+        )
+        # Monitor still advances next_fire_at so the entry isn't immediately
+        # retried on the very next tick (production lines after the inner
+        # try/except always run _advance_next_fire_at + _save_registry).
+        self.assertTrue(
+            len(saves) > 0,
+            "Registry should be saved with advanced next_fire_at even after steer failure",
+        )
+        sched = saves[-1]["crews"]["demo"]["schedules"][0]
+        self.assertGreater(
+            sched["next_fire_at"],
+            now,
+            "next_fire_at should be advanced beyond now even when steer raises",
         )
 
     def test_disabled_entry_skipped(self) -> None:

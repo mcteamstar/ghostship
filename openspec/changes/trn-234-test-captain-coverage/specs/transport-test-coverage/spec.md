@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: _captain_monitor test coverage
-The test suite SHALL include a `TestCaptainMonitor` test class that exercises `_captain_monitor` for at least one complete iteration cycle using mocked crew state and mocked `_steer_captain_checkin` / `_dispatch_captain_checkin`. The class SHALL cover: fire condition met → steer or dispatch called; fire condition not met → neither called; `_ensure_crew_running` raises → error logged, `next_fire_at` advances; stale `current_task_id` cleared on fallback to dispatch.
+The test suite SHALL include a `TestCaptainMonitor` test class that exercises `_captain_monitor` for at least one complete iteration cycle using mocked crew state and mocked `_steer_captain_checkin` / `_dispatch_captain_checkin`. The class SHALL cover: fire condition met → steer or dispatch called; fire condition not met → neither called; `_ensure_crew_running` raises → error logged, `next_fire_at` advances; `_steer_captain_checkin` raises → error logged and `next_fire_at` still advances (the monitor always advances `next_fire_at` after a due entry regardless of steer outcome; fallback-to-dispatch on stale sessions is delegated to `_steer_captain_checkin` itself, not the monitor).
 
 #### Scenario: Captain monitor fires when scheduled
 - **WHEN** the captain monitor ticks and `next_fire_at` is in the past and the crew is running
