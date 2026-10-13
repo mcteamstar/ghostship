@@ -47,11 +47,13 @@ OS="$(uname -s)"
 
 # ── Interactive setup helpers (TRN-233) ──────────────────────────────────────
 # _prompt reads one value with a default. `printf -v` writes into the named
-# variable without eval.
+# variable without eval. The `|| true` keeps a read failure (EOF when stdin is
+# not a tty, e.g. `--wizard </dev/null` or a piped install) from aborting the
+# script under `set -e`; the value falls back to the default in that case.
 _prompt() {
     local prompt="$1" default="$2" var_name="$3"
     local value
-    read -r -p "${prompt} [${default}]: " value
+    read -r -p "${prompt} [${default}]: " value || true
     value="${value:-$default}"
     printf -v "$var_name" '%s' "$value"
 }
