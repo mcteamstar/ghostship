@@ -2050,6 +2050,16 @@ class FinishCrewSetupOrderingTests(unittest.TestCase):
                 _stack.enter_context(patch.object(server, "_inject_auth", side_effect=inject_auth))
                 _stack.enter_context(patch.object(lifecycle, "_patch_crew_config", side_effect=patch_config))
                 _stack.enter_context(patch.object(server, "_patch_crew_config", side_effect=patch_config))
+                # _finish_crew_setup now calls AcademyLoader.copy_all() directly.
+                # Mock it to record the same steps as the old individual patches.
+                def _copy_all_mock(self_loader):
+                    steps.append("copy_agents")
+                    steps.append("copy_skills")
+                    steps.append("copy_steering")
+                    return {"agents": [], "skills": [], "steering": []}
+                _stack.enter_context(patch.object(academy.AcademyLoader, "copy_all", _copy_all_mock))
+                # Keep individual copy function patches for call sites that may still
+                # use them directly (one-line wrappers remain in lifecycle.py).
                 _stack.enter_context(patch.object(lifecycle, "_copy_agents", side_effect=copy_agents))
                 _stack.enter_context(patch.object(server, "_copy_agents", side_effect=copy_agents))
                 _stack.enter_context(patch.object(lifecycle, "_copy_skills", side_effect=copy_skills))

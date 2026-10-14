@@ -144,7 +144,7 @@ for the next).
   source directory, unknown kind raises ValueError, `copy_all` calls all three.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 4.2  **Update `_finish_crew_setup` and `_reconcile_registry` call sites.**
+- [x] 4.2  **Update `_finish_crew_setup` and `_reconcile_registry` call sites.**
   In `lifecycle.py`, replace the three separate calls
   `_copy_agents(podman, container, composition_entry)`,
   `_copy_skills(podman, container, composition_entry)`,

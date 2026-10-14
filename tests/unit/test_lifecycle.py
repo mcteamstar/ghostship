@@ -1226,10 +1226,10 @@ class CopyAgentsMcpTests(unittest.TestCase):
 
             try:
                 with (
-                    patch.object(lifecycle, "_load_crew_manifest", return_value=manifest),
-                    patch.object(lifecycle, "MCP_CATALOGUE_DIR", mcp_dir),
+                    patch.object(academy, "_load_crew_manifest", return_value=manifest),
+                    patch.object(academy, "_MCP_CATALOGUE_DIR", mcp_dir),
                     patch.dict(os.environ, env or {}, clear=False),
-                    patch("transport.lifecycle.Path", side_effect=_path_factory),
+                    patch("transport.academy.Path", side_effect=_path_factory),
                 ):
                     server._copy_agents(mock_podman, "gs-test", None)
             finally:

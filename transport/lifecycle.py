@@ -105,6 +105,7 @@ except ModuleNotFoundError:
 
 try:
     from academy import (  # container: flat /app/
+        AcademyLoader,
         COMPOSITION_REGISTRY,
         _AGENTS_DIR,
         _CREW_REGISTRY_PATH,
@@ -124,6 +125,7 @@ except ImportError:
     # ModuleNotFoundError. The container image is flat (/app/academy.py) and
     # has no such directory, so the try branch wins there.
     from transport.academy import (  # local dev
+        AcademyLoader,
         COMPOSITION_REGISTRY,
         _AGENTS_DIR,
         _CREW_REGISTRY_PATH,
@@ -1252,162 +1254,22 @@ def _wait_gateway(url: str, timeout: int = 30) -> bool:
 
 
 def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
-    """Copy the agent JSONs selected by the crew type's manifest from the
-    Academy agents pool (academy/agents/, bind-mounted from the host) into
-    the crew container.
+    """Wrapper delegating to AcademyLoader.copy('agents').
 
-    Also writes ~/.kiro/mcp.json from the manifest's mcpServers array, if
-    present, by resolving each name against the /mcp catalogue, substituting
-    ${VAR} references from the transport environment, and setting
-    poolable: false on entries that contain a headers field.
+    Kept as a one-line wrapper so existing call sites and test patches on
+    ``lifecycle._copy_agents`` continue to resolve (TRN-240 task 4.1).
     """
-    agents_src = Path("/agents")
-    if not agents_src.exists():
-        logger.warning("No /agents dir in transport container — skipping agent copy")
-        return []
-    manifest = _load_crew_manifest(composition_entry)
-    selection = manifest["agents"]
-    copied = []
-    for af in agents_src.glob("*.json"):
-        if not _manifest_selects(selection, af.name):
-            continue
-        try:
-            data = af.read_bytes()
-            buf = io.BytesIO()
-            with tarfile.open(fileobj=buf, mode="w") as tar:
-                info = tarfile.TarInfo(name=af.name)
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-            buf.seek(0)
-            podman.container_archive_put(container, KIRO_AGENTS_DIR, buf.read())
-            copied.append(af.name)
-        except Exception as e:
-            logger.warning("Failed to copy agent %s: %s", af.name, e)
-    logger.info("Copied agents to %s: %s", container, copied)
-
-    # ── Write mcp.json from manifest.mcpServers ───────────────────────────────
-    mcp_servers_list = manifest.get("mcpServers")
-    if not mcp_servers_list:
-        # No mcpServers declared — skip mcp.json creation
-        return copied
-
-    env = dict(os.environ)
-    resolved_entries: dict[str, Any] = {}
-
-    for server_name in mcp_servers_list:
-        catalogue_path = MCP_CATALOGUE_DIR / f"{server_name}.json"
-        if not catalogue_path.is_file():
-            logger.warning(
-                "mcp.json: server %r not found in catalogue at %s — skipping",
-                server_name, catalogue_path,
-            )
-            continue
-        try:
-            entry = json.loads(catalogue_path.read_text())
-        except Exception as e:
-            logger.warning(
-                "mcp.json: failed to parse catalogue entry %s: %s — skipping",
-                catalogue_path, e,
-            )
-            continue
-
-        # Substitute ${VAR} references from transport environment
-        entry = _substitute_env_vars(entry, env)
-
-        # Auto-set poolable: false for entries with a headers field
-        if "headers" in entry:
-            entry["poolable"] = False
-
-        resolved_entries[server_name] = entry
-
-    if not resolved_entries:
-        logger.info("mcp.json: no valid server entries resolved — skipping write")
-        return copied
-
-    # Write ~/.kiro/mcp.json into the crew container
-    mcp_json_data = json.dumps({"mcpServers": resolved_entries}, indent=2).encode()
-    try:
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tar:
-            info = tarfile.TarInfo(name="mcp.json")
-            info.size = len(mcp_json_data)
-            tar.addfile(info, io.BytesIO(mcp_json_data))
-        buf.seek(0)
-        mcp_dest_dir = str(Path(KIRO_MCP_JSON).parent)
-        podman.container_archive_put(container, mcp_dest_dir, buf.read())
-        logger.info(
-            "Wrote mcp.json to %s with servers: %s",
-            container, list(resolved_entries.keys()),
-        )
-    except Exception as e:
-        logger.warning("Failed to write mcp.json to %s: %s", container, e)
-
-    return copied
+    return AcademyLoader(podman, container, composition_entry).copy("agents")
 
 
 def _copy_skills(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
-    """Copy the skill directories selected by the crew type's manifest from
-    the Academy skills pool (academy/skills/, bind-mounted from the host)
-    into the crew container at ~/.kiro/crew/skills/."""
-    skills_src = Path("/skills")
-    if not skills_src.exists():
-        logger.warning("No /skills dir in transport container — skipping skill copy")
-        return []
-    selection = _load_crew_manifest(composition_entry)["skills"]
-    copied = []
-    for skill_dir in skills_src.iterdir():
-        if not _manifest_selects(selection, skill_dir.name):
-            continue
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.exists():
-            continue
-        try:
-            data = skill_md.read_bytes()
-            dest_dir = f"{KIRO_SKILLS_DIR}/{skill_dir.name}"
-            # Ensure the skill subdirectory exists before writing into it.
-            podman.container_exec(container, ["mkdir", "-p", dest_dir])
-            buf = io.BytesIO()
-            with tarfile.open(fileobj=buf, mode="w") as tar:
-                info = tarfile.TarInfo(name="SKILL.md")
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-            buf.seek(0)
-            podman.container_archive_put(container, dest_dir, buf.read())
-            copied.append(skill_dir.name)
-        except Exception as e:
-            logger.warning("Failed to copy skill %s: %s", skill_dir.name, e)
-    logger.info("Copied skills to %s: %s", container, copied)
-    return copied
+    """Wrapper delegating to AcademyLoader.copy('skills')."""
+    return AcademyLoader(podman, container, composition_entry).copy("skills")
 
 
 def _copy_steering(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
-    """Copy the steering docs selected by the crew type's manifest from the
-    Academy steering pool (academy/steering/, bind-mounted from the host)
-    into the crew container at ~/.kiro/steering/ — kiro-cli loads every .md
-    file there for every session, regardless of working directory, which is
-    what makes this the right place for crew-wide facts every dispatched
-    task needs (see academy/steering/STANDING_ORDERS.md for what that
-    covers)."""
-    steering_src = Path("/steering")
-    if not steering_src.exists():
-        logger.warning("No /steering dir in transport container — skipping steering copy")
-        return []
-    selection = _load_crew_manifest(composition_entry)["steering"]
-    copied = []
-    for doc in steering_src.glob("*.md"):
-        if not _manifest_selects(selection, doc.name):
-            continue
-        try:
-            b64 = base64.b64encode(doc.read_bytes()).decode()
-            podman.container_exec(container, [
-                "python3", f"{SCRIPTS_DIR}/copy_steering.py",
-                KIRO_STEERING_DIR, doc.name, b64,
-            ])
-            copied.append(doc.name)
-        except Exception as e:
-            logger.warning("Failed to copy steering doc %s: %s", doc.name, e)
-    logger.info("Copied steering docs to %s: %s", container, copied)
-    return copied
+    """Wrapper delegating to AcademyLoader.copy('steering')."""
+    return AcademyLoader(podman, container, composition_entry).copy("steering")
 
 
 def _seed_openspec_store(podman: PodmanClient, container: str) -> None:
@@ -2336,11 +2198,9 @@ def _finish_crew_setup(
         return {"error": f"Gateway did not recover after auth restart for crew {crew_id}"}
 
     # depends on: gateway (post-restart)
-    copied_agents = _copy_agents(podman, container, composition_entry)
-    # depends on: gateway (post-restart)
-    _copy_skills(podman, container, composition_entry)
-    # depends on: gateway (post-restart)
-    _copy_steering(podman, container, composition_entry)
+    _loader = AcademyLoader(podman, container, composition_entry)
+    _loader_result = _loader.copy_all()
+    copied_agents = _loader_result["agents"]
     # depends on: gateway (post-restart)
     _seed_openspec_store(podman, container)
 
