@@ -359,3 +359,159 @@ class TestNukedDuringRestartSentinel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFinishSetup(unittest.TestCase):
+    """CrewLauncher.finish_setup tests (task 6.3)."""
+
+    def _make_finish_setup_patches(self, *, cookie: str = "test-cookie", gateway_ok: bool = True):
+        """Return a list of patches suitable for a successful finish_setup run."""
+        return [
+            patch.object(lifecycle, "CREW_GATEWAY_PORT", 5476),
+            patch.object(lifecycle, "GA_CREW_ACP_BACKEND", "kiro"),
+            patch.object(lifecycle, "ANTHROPIC_BASE_URL", ""),
+            patch.object(lifecycle, "ANTHROPIC_API_KEY", ""),
+            patch.object(lifecycle, "CLAUDE_CODE_OAUTH_TOKEN", ""),
+            patch.object(lifecycle, "OPENAI_BASE_URL", ""),
+            patch.object(lifecycle, "OPENAI_API_KEY", ""),
+            patch.object(lifecycle, "KIRO_API_KEY", ""),
+            patch.object(lifecycle, "KIRO_AGENTS_DIR", "/kiro/agents"),
+            patch.object(lifecycle, "SCRIPTS_DIR", "/scripts"),
+            patch.object(lifecycle, "_wait_gateway", return_value=gateway_ok),
+            patch.object(lifecycle, "_cleanup_crew"),
+            patch.object(lifecycle, "_inject_auth"),
+            patch.object(lifecycle, "_patch_crew_config"),
+            patch.object(lifecycle, "_seed_openspec_store"),
+            patch.object(lifecycle, "_inject_policy", return_value="v1"),
+            patch.object(lifecycle, "_patch_models"),
+            patch.object(lifecycle, "_mint_cookie", return_value=cookie),
+            patch.object(lifecycle, "_mint_internal_cookie", return_value="int-tok"),
+            patch.object(lifecycle, "_write_dashboard_cookie", return_value=True),
+            patch.object(lifecycle, "_enroll_crew_members"),
+            patch.object(lifecycle, "_prewarm_crew", return_value={"status": "ok"}),
+            patch.object(lifecycle, "_secret_identifier", side_effect=lambda s: s[:8]),
+        ]
+
+    def test_registry_put_called_with_crew_fields(self) -> None:
+        """finish_setup calls registry.put with the correct Crew fields."""
+        launcher = _make_launcher()
+        put_calls: list = []
+
+        def fake_put(crew) -> None:
+            put_calls.append(crew)
+
+        podman = Mock()
+        podman.container_stop.return_value = None
+        podman.container_start.return_value = None
+        podman.container_exec.return_value = "ready"
+        podman.container_inspect.return_value = {
+            "Config": {"Labels": {"org.ghostship.version": "1.2.3"}}
+        }
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in self._make_finish_setup_patches():
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.object(_registry_mod, "_load_registry",
+                             return_value={"crews": {}})
+            )
+            stack.enter_context(patch.object(_registry_mod, "_save_registry"))
+            stack.enter_context(
+                patch.object(_registry_mod.registry, "put", side_effect=fake_put)
+            )
+
+            result = launcher.finish_setup(
+                podman,
+                "tc1",
+                "gs-tc1",
+                "vol-tc1",
+                "home-tc1",
+                "auth-b64",
+                "spec-ops",
+                None,
+                admiral_secret="a" * 64,
+            )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(len(put_calls), 1)
+        crew = put_calls[0]
+        self.assertEqual(crew.crew_id, "tc1")
+        self.assertEqual(crew.container, "gs-tc1")
+        self.assertEqual(crew.volume, "vol-tc1")
+        self.assertEqual(crew.status, "running")
+        self.assertEqual(crew.cookie, "test-cookie")
+        self.assertEqual(crew.crew_image_version, "1.2.3")
+
+    def test_prewarm_called_at_end(self) -> None:
+        """finish_setup calls _prewarm_crew after registry put."""
+        launcher = _make_launcher()
+
+        podman = Mock()
+        podman.container_stop.return_value = None
+        podman.container_start.return_value = None
+        podman.container_exec.return_value = "ready"
+        podman.container_inspect.return_value = {"Config": {"Labels": {}}}
+
+        prewarm_mock = Mock(return_value={"status": "ok", "pre_warm_task_id": "ptid1"})
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in self._make_finish_setup_patches():
+                stack.enter_context(p)
+            stack.enter_context(patch.object(lifecycle, "_prewarm_crew", prewarm_mock))
+            stack.enter_context(
+                patch.object(_registry_mod, "_load_registry",
+                             return_value={"crews": {}})
+            )
+            stack.enter_context(patch.object(_registry_mod, "_save_registry"))
+
+            result = launcher.finish_setup(
+                podman,
+                "tc2",
+                "gs-tc2",
+                "vol-tc2",
+                "home-tc2",
+                "auth-b64",
+                "spec-ops",
+                None,
+                admiral_secret="b" * 64,
+            )
+
+        prewarm_mock.assert_called_once()
+        self.assertIn("pre_warm_task_id", result)
+        self.assertEqual(result["pre_warm_task_id"], "ptid1")
+        self.assertEqual(result["pre_warm_status"], "ok")
+
+    def test_returns_error_on_gateway_failure(self) -> None:
+        """finish_setup returns error dict when gateway does not recover."""
+        launcher = _make_launcher()
+        podman = Mock()
+        podman.container_stop.return_value = None
+        podman.container_start.return_value = None
+        cleanup_mock = Mock()
+
+        with (
+            patch.object(lifecycle, "CREW_GATEWAY_PORT", 5476),
+            patch.object(lifecycle, "_wait_gateway", return_value=False),
+            patch.object(lifecycle, "_cleanup_crew", cleanup_mock),
+        ):
+            result = launcher.finish_setup(
+                podman,
+                "tc3",
+                "gs-tc3",
+                "vol-tc3",
+                "home-tc3",
+                "auth-b64",
+                "spec-ops",
+                None,
+                admiral_secret="c" * 64,
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("tc3", result["error"])
+        cleanup_mock.assert_called_once_with(podman, "gs-tc3", "vol-tc3", "home-tc3")
+
+
+if __name__ == "__main__":
+    unittest.main()

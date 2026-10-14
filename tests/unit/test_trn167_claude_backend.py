@@ -307,7 +307,7 @@ class TestFinishCrewSetupClaudeAuthBranch(unittest.TestCase):
         try:
             with stack:
                 _lifecycle.GA_CREW_ACP_BACKEND = "claude"
-                with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+                with self.assertLogs("transport", level="WARNING") as log_ctx:
                     _lifecycle._finish_crew_setup(
                         podman, "test-crew", "gs-test-crew",
                         "gs-vol-test", "gs-home-test",

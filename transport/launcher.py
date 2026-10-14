@@ -472,6 +472,270 @@ class CrewLauncher:
                 self._startup_events.pop(crew_id, None)
             event.set()
 
+    # ── finish_setup ──────────────────────────────────────────────────────────
+
+    def finish_setup(
+        self,
+        podman,
+        crew_id: str,
+        container: str,
+        volume: str,
+        home_volume: str,
+        auth_b64: str,
+        composition: str = "spec-ops",
+        composition_entry: dict | None = None,
+        *,
+        admiral_secret: str,
+        dashboard: bool = False,
+    ) -> dict:
+        """Complete crew setup after auth is confirmed.
+
+        Ports ``lifecycle._finish_crew_setup``: copy agents/skills/steering,
+        patch config, mint cookie, write registry entry, enroll members, prewarm.
+
+        Returns a result dict on success; ``{"error": ...}`` on failure.
+        """
+        try:
+            from lifecycle import (  # container
+                GA_CREW_ACP_BACKEND,
+                CREW_GATEWAY_PORT,
+                ANTHROPIC_BASE_URL,
+                ANTHROPIC_API_KEY,
+                CLAUDE_CODE_OAUTH_TOKEN,
+                OPENAI_BASE_URL,
+                OPENAI_API_KEY,
+                KIRO_API_KEY,
+                KIRO_AGENTS_DIR,
+                SCRIPTS_DIR,
+                _wait_gateway,
+                _cleanup_crew,
+                _inject_auth,
+                _inject_claude_auth,
+                _inject_codex_auth,
+                _claude_auth_exists,
+                _codex_auth_exists,
+                _patch_crew_config,
+                _seed_openspec_store,
+                _inject_policy,
+                _patch_models,
+                _mint_cookie,
+                _mint_internal_cookie,
+                _write_dashboard_cookie,
+                _enroll_crew_members,
+                _prewarm_crew,
+                _secret_identifier,
+            )
+            from academy import AcademyLoader  # container
+        except ModuleNotFoundError:
+            from transport.lifecycle import (  # local dev
+                GA_CREW_ACP_BACKEND,
+                CREW_GATEWAY_PORT,
+                ANTHROPIC_BASE_URL,
+                ANTHROPIC_API_KEY,
+                CLAUDE_CODE_OAUTH_TOKEN,
+                OPENAI_BASE_URL,
+                OPENAI_API_KEY,
+                KIRO_API_KEY,
+                KIRO_AGENTS_DIR,
+                SCRIPTS_DIR,
+                _wait_gateway,
+                _cleanup_crew,
+                _inject_auth,
+                _inject_claude_auth,
+                _inject_codex_auth,
+                _claude_auth_exists,
+                _codex_auth_exists,
+                _patch_crew_config,
+                _seed_openspec_store,
+                _inject_policy,
+                _patch_models,
+                _mint_cookie,
+                _mint_internal_cookie,
+                _write_dashboard_cookie,
+                _enroll_crew_members,
+                _prewarm_crew,
+                _secret_identifier,
+            )
+            from transport.academy import AcademyLoader  # local dev
+
+        try:
+            from crew import Crew  # container
+            from datetime import datetime, timezone  # always available
+        except ModuleNotFoundError:
+            from transport.crew import Crew
+            from datetime import datetime, timezone
+
+        crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+
+        # depends on: container running (pre-restart)
+        if not _wait_gateway(crew_url, timeout=10):
+            podman.container_stop(container)
+            podman.container_start(container)
+            if not _wait_gateway(crew_url, timeout=60):
+                _cleanup_crew(podman, container, volume, home_volume)
+                return {"error": f"Gateway did not recover for crew {crew_id}"}
+
+        # Auth injection (backend-specific)
+        if GA_CREW_ACP_BACKEND == "claude":
+            _effective_endpoint = ANTHROPIC_BASE_URL or "api.anthropic.com"
+            logger.warning(
+                "GA_CREW_ACP_BACKEND=claude: crew %s requires outbound access to "
+                "%s to function", crew_id, _effective_endpoint,
+            )
+            if (not ANTHROPIC_API_KEY and not CLAUDE_CODE_OAUTH_TOKEN
+                    and _claude_auth_exists()):
+                try:
+                    _inject_claude_auth(podman, container)
+                except Exception as e:
+                    logger.warning(
+                        "Claude OAuth auth injection failed for crew %s: %s — "
+                        "crew may be unable to authenticate against "
+                        "api.anthropic.com", crew_id, e,
+                    )
+        elif GA_CREW_ACP_BACKEND == "codex":
+            _effective_endpoint = OPENAI_BASE_URL or "api.openai.com"
+            logger.warning(
+                "GA_CREW_ACP_BACKEND=codex: crew %s requires outbound access to "
+                "%s to function", crew_id, _effective_endpoint,
+            )
+            if not OPENAI_API_KEY and _codex_auth_exists():
+                try:
+                    _inject_codex_auth(podman, container)
+                except Exception as e:
+                    logger.warning(
+                        "Codex OAuth auth injection failed for crew %s: %s — "
+                        "crew may be unable to authenticate against "
+                        "api.openai.com", crew_id, e,
+                    )
+        else:
+            # kiro path
+            if not KIRO_API_KEY:
+                _inject_auth(podman, container, auth_b64)
+
+        policy_signing_key = __import__("secrets").token_hex(32)
+
+        _patch_crew_config(podman, container, composition_entry)
+
+        podman.container_stop(container)
+        podman.container_start(container)
+        if not _wait_gateway(crew_url, timeout=60):
+            _cleanup_crew(podman, container, volume, home_volume)
+            return {
+                "error": f"Gateway did not recover after auth restart for crew {crew_id}"
+            }
+
+        # Copy agents/skills/steering via AcademyLoader
+        _loader = AcademyLoader(podman, container, composition_entry)
+        _loader_result = _loader.copy_all()
+        copied_agents = _loader_result["agents"]
+
+        _seed_openspec_store(podman, container)
+
+        policy_version = None
+        policy_warning: str | None = None
+        try:
+            policy_version = _inject_policy(
+                podman, container, composition, policy_signing_key
+            )
+        except Exception as e:
+            policy_warning = str(e)
+            logger.error(
+                "Policy injection failed for %s: %s — continuing without policy",
+                container, e,
+            )
+
+        for _ in range(20):
+            check = podman.container_exec(container, [
+                "python3", f"{SCRIPTS_DIR}/check_gateway_ready.py", KIRO_AGENTS_DIR,
+            ])
+            if "ready" in check:
+                break
+            time.sleep(0.5)
+
+        _patch_models(podman, container)
+
+        cookie = _mint_cookie(podman, container, crew_url)
+        if not cookie:
+            _cleanup_crew(podman, container, volume, home_volume)
+            return {"error": f"Failed to mint session cookie for crew {crew_id}"}
+
+        internal_cookie = _mint_internal_cookie(podman, container)
+        if internal_cookie:
+            _write_dashboard_cookie(podman, container, internal_cookie)
+        else:
+            logger.warning(
+                "Could not mint internal cookie for crew %s — spawn auth unavailable",
+                crew_id,
+            )
+
+        crew_image_version = "unknown"
+        try:
+            inspect_data = podman.container_inspect(container)
+            labels = inspect_data.get("Config", {}).get("Labels", {})
+            crew_image_version = labels.get("org.ghostship.version", "unknown")
+        except Exception as e:
+            logger.warning("Could not read version label from %s: %s", container, e)
+
+        # Build the Crew object and write it to the registry
+        crew_obj = Crew(
+            crew_id=crew_id,
+            container=container,
+            volume=volume,
+            home_volume=home_volume,
+            port=5476,
+            cookie=cookie,
+            internal_cookie=internal_cookie or "",
+            status="running",
+            composition=composition,
+            acp_backend=GA_CREW_ACP_BACKEND,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            last_used=time.time(),
+            enrolled_agents=[n.removesuffix(".json") for n in copied_agents],
+            admiral_secret_id=_secret_identifier(admiral_secret),
+            crew_image_version=crew_image_version,
+        )
+        if policy_version is not None:
+            crew_obj.policy_version = policy_version
+            crew_obj.policy_signing_key_id = _secret_identifier(policy_signing_key)
+
+        with registry:
+            registry.put(crew_obj)
+
+        # Also build the crew_entry dict for callers that expect it
+        crew_entry = crew_obj.to_dict()
+        if internal_cookie:
+            crew_entry["internal_cookie"] = internal_cookie
+        if policy_version is not None:
+            crew_entry["policy_version"] = policy_version
+            crew_entry["policy_signing_key_id"] = _secret_identifier(policy_signing_key)
+
+        _enroll_crew_members(crew_entry, crew_id, copied_agents)
+        logger.info("Crew %s ready", crew_id)
+        result = {
+            "crew_id": crew_id,
+            "container": container,
+            "gateway_url": crew_url,
+            "status": "ready",
+        }
+        if policy_version is not None:
+            result["policy_version"] = policy_version
+        if policy_warning is not None:
+            result["policy_warning"] = (
+                f"Policy injection failed — crew is ungoverned: {policy_warning}"
+            )
+
+        # ACP prewarm — fire-and-report, non-fatal
+        try:
+            pw = _prewarm_crew(crew_entry, crew_id)
+            if pw.get("pre_warm_task_id"):
+                result["pre_warm_task_id"] = pw["pre_warm_task_id"]
+            result["pre_warm_status"] = pw.get("status", "unknown")
+        except Exception as exc:
+            logger.warning("Crew %s prewarm failed (non-fatal): %s", crew_id, exc)
+            result["pre_warm_status"] = "error"
+
+        return result
+
 
 # ── Module-level singleton ────────────────────────────────────────────────────
 # Initialised after the class definition so that it is available to lifecycle.py

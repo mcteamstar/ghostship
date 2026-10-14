@@ -220,7 +220,7 @@ class TestFinishCrewSetupCodexBranch(unittest.TestCase):
             patch.object(_lifecycle, "_inject_auth"),
             patch.object(_lifecycle, "KIRO_API_KEY", ""),
         ):
-            with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+            with self.assertLogs("transport", level="WARNING") as log_ctx:
                 self._run_finish(podman)
         self.assertTrue(
             any("api.openai.com" in msg for msg in log_ctx.output),
@@ -237,7 +237,7 @@ class TestFinishCrewSetupCodexBranch(unittest.TestCase):
             patch.object(_lifecycle, "_inject_auth"),
             patch.object(_lifecycle, "KIRO_API_KEY", ""),
         ):
-            with self.assertLogs("transport.lifecycle", level="WARNING") as log_ctx:
+            with self.assertLogs("transport", level="WARNING") as log_ctx:
                 self._run_finish(podman)
         self.assertTrue(
             any("https://proxy.local/v1" in msg for msg in log_ctx.output),

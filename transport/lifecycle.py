@@ -1764,230 +1764,28 @@ def _finish_crew_setup(
     admiral_secret: str,
     dashboard: bool = False,
 ) -> dict:
-    """Complete crew setup after auth is confirmed: copy agents, patch, mint cookie."""
-    crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+    """Complete crew setup after auth is confirmed.
 
-    # depends on: container running (pre-restart)
-    if not _wait_gateway(crew_url, timeout=10):
-        podman.container_stop(container)
-        podman.container_start(container)
-        if not _wait_gateway(crew_url, timeout=60):
-            _cleanup_crew(podman, container, volume, home_volume)
-            return {"error": f"Gateway did not recover for crew {crew_id}"}
-
-    # depends on: gateway (pre-restart)
-    # Backend branch: kiro (default) vs claude.
-    #
-    # kiro path: inject kiro-cli auth rows into the crew's SQLite DB, unless
-    # KIRO_API_KEY is set (API-key path skips the DB injection entirely).
-    #
-    # claude path: skip all kiro-cli auth injection; ANTHROPIC_API_KEY was
-    # already injected as a container env var at container_create time (see
-    # launch() in server.py).
-    #
-    # Headless tool-approval suppression (claude path): KiroCrew's AcpClient
-    # writes <work_dir>/.claude/settings.local.json with
-    # permissions.defaultMode="bypassPermissions" at session spawn time
-    # (_write_claude_local_settings), driven by dangerously_skip_permissions=True
-    # already set in _patch_crew_config. No ghostship-side env var injection is
-    # needed — the suppression is owned by KiroCrew.
-    if GA_CREW_ACP_BACKEND == "claude":
-        # Task 3.4: warn at launch time that outbound access is required.
-        # Use the override endpoint when set, otherwise api.anthropic.com.
-        _effective_endpoint = ANTHROPIC_BASE_URL or "api.anthropic.com"
-        logger.warning(
-            "GA_CREW_ACP_BACKEND=claude: crew %s requires outbound access to "
-            "%s to function",
-            crew_id,
-            _effective_endpoint,
-        )
-        # Task 3.2: API key path (env var injected at container_create) takes
-        # precedence over OAuth path, then CLAUDE_CODE_OAUTH_TOKEN (TRN-226).
-        # Only with neither set, inject OAuth credentials from ga-claude-auth
-        # into ~/.claude/, so a crew never holds two Claude credentials.
-        if (not ANTHROPIC_API_KEY and not CLAUDE_CODE_OAUTH_TOKEN
-                and _claude_auth_exists()):
-            try:
-                _inject_claude_auth(podman, container)
-            except Exception as e:
-                logger.warning(
-                    "Claude OAuth auth injection failed for crew %s: %s — crew may be "
-                    "unable to authenticate against api.anthropic.com",
-                    crew_id, e,
-                )
-        # If ANTHROPIC_API_KEY is set, the env var was already injected
-        # at container_create time (server.py launch()); nothing more to do here.
-        # If neither API key nor ga-claude-auth is present, this path is
-        # unreachable: launch() blocks before reaching _finish_crew_setup
-        # when no Claude credential is available (task 3.3).
-    elif GA_CREW_ACP_BACKEND == "codex":
-        # codex path: skip all kiro-cli auth injection. OPENAI_API_KEY and
-        # OPENAI_BASE_URL were already injected as container env vars at
-        # container_create time (see launch() in server.py). codex-acp
-        # advertises a verified read-only mode, so no ghostship-side
-        # approval-suppression env var is needed (see crew-governance).
-        #
-        # Task 3.5: warn at launch time that outbound access to the effective
-        # OpenAI endpoint is required. Use OPENAI_BASE_URL when set,
-        # otherwise api.openai.com.
-        _effective_endpoint = OPENAI_BASE_URL or "api.openai.com"
-        logger.warning(
-            "GA_CREW_ACP_BACKEND=codex: crew %s requires outbound access to "
-            "%s to function",
-            crew_id,
-            _effective_endpoint,
-        )
-        # Task 3.3: API key path (OPENAI_API_KEY env var injected at
-        # container_create) takes precedence over OAuth path. If no API key,
-        # inject OAuth credentials from ga-codex-auth into the crew container's
-        # ~/.codex/ directory (the path codex-acp reads).
-        if not OPENAI_API_KEY and _codex_auth_exists():
-            try:
-                _inject_codex_auth(podman, container)
-            except Exception as e:
-                logger.warning(
-                    "Codex OAuth auth injection failed for crew %s: %s — crew may be "
-                    "unable to authenticate against api.openai.com",
-                    crew_id, e,
-                )
-        # If OPENAI_API_KEY is set, the env var was already injected
-        # at container_create time (server.py launch()); nothing more to do here.
-        # If neither API key nor ga-codex-auth is present, this path is
-        # unreachable: launch() blocks before reaching _finish_crew_setup
-        # when no Codex credential is available (task 3.3).
-    else:
-        # kiro path: inject auth rows (or skip when KIRO_API_KEY is set).
-        if not KIRO_API_KEY:
-            _inject_auth(podman, container, auth_b64)
-
-    # depends on: container running (pre-restart); must be written before restart
-    # so the secret is on the home volume before the post-restart gateway starts
-    #
-    # The Admiral keypair is generated in server.py before container_create —
-    # the private seed (``admiral_secret``, hex-encoded) has
-    # already been persisted host-side via _write_crew_secret, and the public
-    # key is mounted read-only as a Podman secret at .admiral_public_key. There
-    # is no longer a container-exec injection step for the Admiral key; only the
-    # policy signing key is generated and injected here.
-    policy_signing_key = secrets.token_hex(32)
-
-    # depends on: gateway (pre-restart); gateway seeds config on first start
-    _patch_crew_config(podman, container, composition_entry)
-
-    # depends on: auth + admiral_secret + config all committed before workers start
-    podman.container_stop(container)
-    podman.container_start(container)
-    if not _wait_gateway(crew_url, timeout=60):
-        _cleanup_crew(podman, container, volume, home_volume)
-        return {"error": f"Gateway did not recover after auth restart for crew {crew_id}"}
-
-    # depends on: gateway (post-restart)
-    _loader = AcademyLoader(podman, container, composition_entry)
-    _loader_result = _loader.copy_all()
-    copied_agents = _loader_result["agents"]
-    # depends on: gateway (post-restart)
-    _seed_openspec_store(podman, container)
-
-    # depends on: policy_signing_key (already generated above), filesystem
-    policy_version = None
-    policy_warning: str | None = None
+    Delegates to ``_launcher.finish_setup`` (transport/launcher.py).
+    Kept as a module-level wrapper so existing call sites and test patches
+    on ``lifecycle._finish_crew_setup`` continue to resolve.
+    """
     try:
-        policy_version = _inject_policy(podman, container, composition, policy_signing_key)
-    except Exception as e:
-        policy_warning = str(e)
-        logger.error("Policy injection failed for %s: %s — continuing without policy", container, e)
-
-    # depends on: gateway (post-restart); poll until gateway writes built-in kirocrew*.json files before patching
-    for _ in range(20):
-        check = podman.container_exec(container, [
-            "python3", f"{SCRIPTS_DIR}/check_gateway_ready.py", KIRO_AGENTS_DIR,
-        ])
-        if "ready" in check:
-            break
-        time.sleep(0.5)
-
-    # depends on: gateway (post-restart), agent files present
-    _patch_models(podman, container)
-
-    # depends on: gateway (post-restart), fully configured
-    cookie = _mint_cookie(podman, container, crew_url)
-    if not cookie:
-        _cleanup_crew(podman, container, volume, home_volume)
-        return {"error": f"Failed to mint session cookie for crew {crew_id}"}
-
-    # Mint an internally-bound cookie (exchange from inside container → 127.0.0.1)
-    # so crew members can use cookie auth for spawning without IP-mismatch errors.
-    internal_cookie = _mint_internal_cookie(podman, container)
-    if internal_cookie:
-        _write_dashboard_cookie(podman, container, internal_cookie)
-    else:
-        logger.warning("Could not mint internal cookie for crew %s — spawn auth unavailable", crew_id)
-
-    # Read crew image version from OCI label
-    crew_image_version = "unknown"
-    try:
-        inspect_data = podman.container_inspect(container)
-        labels = inspect_data.get("Config", {}).get("Labels", {})
-        crew_image_version = labels.get("org.ghostship.version", "unknown")
-    except Exception as e:
-        logger.warning("Could not read version label from %s: %s", container, e)
-
-    with registry:
-        crew_entry = {
-            "container": container,
-            "volume": volume,
-            "home_volume": home_volume,
-            "port": 5476,
-            "cookie": cookie,
-            "status": "running",
-            "composition": composition,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "last_used": time.time(),
-            # Store non-reversible identifiers only — plaintext secrets are not
-            # needed after injection and must not persist in crews.json.
-            "admiral_secret_id": _secret_identifier(admiral_secret),
-            "crew_image_version": crew_image_version,
-            # ACP backend used for this crew — "kiro" (default) or "claude".
-            # Persisted so crews() can surface it per crew without re-reading config.
-            "acp_backend": GA_CREW_ACP_BACKEND,
-            # Enrolled agent slugs — used by dispatch slot routing to auto-route
-            # to member DM slots. Populated from _copy_agents at launch.
-            "enrolled_agents": [n.removesuffix(".json") for n in copied_agents],
-        }
-        if internal_cookie:
-            crew_entry["internal_cookie"] = internal_cookie
-        if policy_version is not None:
-            crew_entry["policy_version"] = policy_version
-            crew_entry["policy_signing_key_id"] = _secret_identifier(policy_signing_key)
-        registry._reg["crews"][crew_id] = crew_entry
-
-    _enroll_crew_members(crew_entry, crew_id, copied_agents)
-    logger.info("Crew %s ready", crew_id)
-    result = {
-        "crew_id": crew_id,
-        "container": container,
-        "gateway_url": crew_url,
-        "status": "ready",
-    }
-    if policy_version is not None:
-        result["policy_version"] = policy_version
-    if policy_warning is not None:
-        result["policy_warning"] = f"Policy injection failed — crew is ungoverned: {policy_warning}"
-
-    # ── ACP prewarm ─────────────────────────────────────────────────
-    # Fire-and-report: non-fatal. AcpProcessDied on the prewarm is acceptable —
-    # it still expands the balloon. Errors are logged but never bubble up to the
-    # caller so launch always succeeds even if prewarm fails.
-    try:
-        pw = _prewarm_crew(crew_entry, crew_id)
-        if pw.get("pre_warm_task_id"):
-            result["pre_warm_task_id"] = pw["pre_warm_task_id"]
-        result["pre_warm_status"] = pw.get("status", "unknown")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Crew %s prewarm failed (non-fatal): %s", crew_id, exc)
-        result["pre_warm_status"] = "error"
-
-    return result
+        from launcher import _launcher  # container: flat /app/
+    except ModuleNotFoundError:
+        from transport.launcher import _launcher  # local dev
+    return _launcher.finish_setup(
+        podman,
+        crew_id,
+        container,
+        volume,
+        home_volume,
+        auth_b64,
+        composition,
+        composition_entry,
+        admiral_secret=admiral_secret,
+        dashboard=dashboard,
+    )
 
 
 # ── Login container helpers ───────────────────────────────────────────────────
