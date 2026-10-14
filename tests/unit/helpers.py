@@ -35,6 +35,7 @@ import transport.captain as captain_mod  # noqa: F401  (re-exported)
 import transport.academy as academy  # noqa: F401  (re-exported)
 import transport.lifecycle as lifecycle  # noqa: F401  (re-exported)
 import transport.monitors as monitors  # noqa: F401  (re-exported)
+import transport.launcher as launcher_mod  # noqa: F401  (re-exported)
 
 
 class Request:

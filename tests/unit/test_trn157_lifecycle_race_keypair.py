@@ -12,7 +12,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch, call
 
-from tests.unit.helpers import server, lifecycle
+from tests.unit.helpers import server, lifecycle, launcher_mod
 import transport.registry as _registry_mod  # noqa: F401
 
 
@@ -94,10 +94,10 @@ class GenerationCounterTests(unittest.TestCase):
         crew = _make_stopped_crew()
 
         with (
-            patch.object(lifecycle, "_startup_events", startup_events_bump),
-            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
-            patch.object(lifecycle, "_startup_generation", generation_dict),
-            patch.object(lifecycle, "_crew_restart_outcomes", {crew_id: (True, None)}),
+            patch.object(launcher_mod._launcher, "_startup_events", startup_events_bump),
+            patch.object(launcher_mod._launcher, "_startup_events_lock", threading.Lock()),
+            patch.object(launcher_mod._launcher, "_startup_generation", generation_dict),
+            patch.object(launcher_mod._launcher, "_crew_restart_outcomes", {crew_id: (True, None)}),
             patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
@@ -131,10 +131,10 @@ class GenerationCounterTests(unittest.TestCase):
         crew = _make_stopped_crew()
 
         with (
-            patch.object(lifecycle, "_startup_events", startup_events),
-            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
-            patch.object(lifecycle, "_startup_generation", dict(startup_generation)),
-            patch.object(lifecycle, "_crew_restart_outcomes", dict(crew_restart_outcomes)),
+            patch.object(launcher_mod._launcher, "_startup_events", startup_events),
+            patch.object(launcher_mod._launcher, "_startup_events_lock", threading.Lock()),
+            patch.object(launcher_mod._launcher, "_startup_generation", dict(startup_generation)),
+            patch.object(launcher_mod._launcher, "_crew_restart_outcomes", dict(crew_restart_outcomes)),
             patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
@@ -164,10 +164,10 @@ class GenerationCounterTests(unittest.TestCase):
         crew = _make_stopped_crew()
 
         with (
-            patch.object(lifecycle, "_startup_events", startup_events),
-            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
-            patch.object(lifecycle, "_startup_generation", dict(startup_generation)),
-            patch.object(lifecycle, "_crew_restart_outcomes", dict(crew_restart_outcomes)),
+            patch.object(launcher_mod._launcher, "_startup_events", startup_events),
+            patch.object(launcher_mod._launcher, "_startup_events_lock", threading.Lock()),
+            patch.object(launcher_mod._launcher, "_startup_generation", dict(startup_generation)),
+            patch.object(launcher_mod._launcher, "_crew_restart_outcomes", dict(crew_restart_outcomes)),
             patch.object(lifecycle, "_get_podman", return_value=Mock()),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
@@ -194,10 +194,10 @@ class GenerationCounterTests(unittest.TestCase):
                 pass
 
         with (
-            patch.object(lifecycle, "_startup_events", {}),
-            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
-            patch.object(lifecycle, "_startup_generation", generation_dict),
-            patch.object(lifecycle, "_crew_restart_outcomes", {}),
+            patch.object(launcher_mod._launcher, "_startup_events", {}),
+            patch.object(launcher_mod._launcher, "_startup_events_lock", threading.Lock()),
+            patch.object(launcher_mod._launcher, "_startup_generation", generation_dict),
+            patch.object(launcher_mod._launcher, "_crew_restart_outcomes", {}),
             patch.object(lifecycle, "_get_podman", return_value=ImmediateErrorPodman()),
             # TRN-238 QA-2: the restart path re-reads the registry after
             # container_start to detect a concurrent nuke; the crew must be

@@ -44,6 +44,7 @@ from unittest.mock import Mock, patch
 from tests.unit.helpers import (  # noqa: F401
     FakePodmanClient,
     academy,
+    launcher_mod,
     lifecycle,
     monitors,
     server,
@@ -2608,12 +2609,16 @@ class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         # Clear any leftover leader-election state between tests.
-        with lifecycle._startup_events_lock:
-            lifecycle._startup_events.clear()
+        with launcher_mod._launcher._startup_events_lock:
+            launcher_mod._launcher._startup_events.clear()
+            launcher_mod._launcher._crew_restart_outcomes.clear()
+            launcher_mod._launcher._startup_generation.clear()
 
     def tearDown(self) -> None:
-        with lifecycle._startup_events_lock:
-            lifecycle._startup_events.clear()
+        with launcher_mod._launcher._startup_events_lock:
+            launcher_mod._launcher._startup_events.clear()
+            launcher_mod._launcher._crew_restart_outcomes.clear()
+            launcher_mod._launcher._startup_generation.clear()
 
     async def test_same_crew_starts_container_exactly_once(self) -> None:
         """6.1: two coroutines calling _ensure_crew_running for the same stopped
@@ -2807,14 +2812,14 @@ class EnsureCrewRunningWaiterPropagationTests(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self) -> None:
-        with lifecycle._startup_events_lock:
-            lifecycle._startup_events.clear()
-            lifecycle._crew_restart_outcomes.clear()
+        with launcher_mod._launcher._startup_events_lock:
+            launcher_mod._launcher._startup_events.clear()
+            launcher_mod._launcher._crew_restart_outcomes.clear()
 
     def tearDown(self) -> None:
-        with lifecycle._startup_events_lock:
-            lifecycle._startup_events.clear()
-            lifecycle._crew_restart_outcomes.clear()
+        with launcher_mod._launcher._startup_events_lock:
+            launcher_mod._launcher._startup_events.clear()
+            launcher_mod._launcher._crew_restart_outcomes.clear()
 
     async def _run_leader_and_waiter(self, leader_exc: Exception) -> BaseException:
         """Start a leader whose restart raises ``leader_exc`` and a waiter that
@@ -3226,10 +3231,10 @@ class RestartRaceGuardTests(unittest.TestCase):
 
         with (
             patch.object(lifecycle, "_get_podman", return_value=_RecordingPodman()),
-            patch.object(lifecycle, "_startup_events", startup_events),
-            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
-            patch.object(lifecycle, "_crew_restart_outcomes", {crew_id: (True, None)}),
-            patch.object(lifecycle, "_startup_generation", {crew_id: 0}),
+            patch.object(launcher_mod._launcher, "_startup_events", startup_events),
+            patch.object(launcher_mod._launcher, "_startup_events_lock", threading.Lock()),
+            patch.object(launcher_mod._launcher, "_crew_restart_outcomes", {crew_id: (True, None)}),
+            patch.object(launcher_mod._launcher, "_startup_generation", {crew_id: 0}),
             patch.object(lifecycle, "_get_crew", return_value=running_crew),
         ):
             result = lifecycle._ensure_crew_running(crew, crew_id)
@@ -3361,10 +3366,10 @@ class RegistryWriteFailureCleanupTests(unittest.TestCase):
             patch.object(_registry_mod, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_save_registry", side_effect=_save),
             patch.object(lifecycle, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_startup_events", {}),
-            patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
-            patch.object(lifecycle, "_crew_restart_outcomes", {}),
-            patch.object(lifecycle, "_startup_generation", {}),
+            patch.object(launcher_mod._launcher, "_startup_events", {}),
+            patch.object(launcher_mod._launcher, "_startup_events_lock", threading.Lock()),
+            patch.object(launcher_mod._launcher, "_crew_restart_outcomes", {}),
+            patch.object(launcher_mod._launcher, "_startup_generation", {}),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),
             patch.object(lifecycle, "_wait_gateway", return_value=True),
@@ -3511,11 +3516,11 @@ class NukeDuringRestartWaiterTests(unittest.TestCase):
         # Manually inject a startup event and outcome to simulate the leader
         # already having finished with the nuke sentinel.
         evt = _th.Event()
-        with lifecycle._startup_events_lock:
-            lifecycle._startup_events[crew_id] = evt
-            lifecycle._startup_generation[crew_id] = 1
+        with launcher_mod._launcher._startup_events_lock:
+            launcher_mod._launcher._startup_events[crew_id] = evt
+            launcher_mod._launcher._startup_generation[crew_id] = 1
             # Record the leader's outcome — (True, None) as nuked-during-restart path sets.
-            lifecycle._crew_restart_outcomes[crew_id] = (True, None)
+            launcher_mod._launcher._crew_restart_outcomes[crew_id] = (True, None)
         # Fire the event so the waiter unblocks immediately.
         evt.set()
 
@@ -3532,10 +3537,10 @@ class NukeDuringRestartWaiterTests(unittest.TestCase):
             lifecycle.GA_MAX_ACTIVE_CREWS = orig_max
             lifecycle.GA_MIN_FREE_MEM_GB = orig_min
             # Clean up injected state.
-            with lifecycle._startup_events_lock:
-                lifecycle._startup_events.pop(crew_id, None)
-                lifecycle._startup_generation.pop(crew_id, None)
-                lifecycle._crew_restart_outcomes.pop(crew_id, None)
+            with launcher_mod._launcher._startup_events_lock:
+                launcher_mod._launcher._startup_events.pop(crew_id, None)
+                launcher_mod._launcher._startup_generation.pop(crew_id, None)
+                launcher_mod._launcher._crew_restart_outcomes.pop(crew_id, None)
 
         # Must return the sentinel, not raise.
         self.assertIs(
