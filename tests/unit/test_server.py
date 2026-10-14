@@ -304,6 +304,8 @@ class ModelOverrideTests(unittest.TestCase):
             ) as api,
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.schedule(
                 name="job", message="do work", crew_id="demo", **kwargs
@@ -369,6 +371,8 @@ class ModelOverrideTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.captain(
                 "demo",
@@ -414,6 +418,8 @@ class ModelOverrideTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.captain(
                 "demo", "order", message="resume", model="claude-opus-5"
@@ -795,6 +801,8 @@ class ResourceJobsTests(unittest.TestCase):
 
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_crew_api", side_effect=api),
         ):
             result = server.resource_jobs()
@@ -811,6 +819,8 @@ class ResourceJobsTests(unittest.TestCase):
         reg = {"crews": {"stopped": {"container": "gs-stopped", "status": "stopped"}}}
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.resource_jobs()
 
@@ -823,6 +833,8 @@ class ResourceJobsTests(unittest.TestCase):
 
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_crew_api", side_effect=RuntimeError("connection refused")),
         ):
             result = server.resource_jobs()
@@ -836,6 +848,8 @@ class ResourceJobsTests(unittest.TestCase):
         reg = {"crews": {"empty": {"container": "gs-empty", "status": "running", "cookie": "c"}}}
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_crew_api", return_value={"jobs": []}),
         ):
             result = server.resource_jobs()
@@ -878,6 +892,8 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_initiate_login", return_value={
@@ -910,6 +926,8 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_initiate_login", return_value={
@@ -932,6 +950,8 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_initiate_login", return_value={"login_pending": True}),
@@ -956,6 +976,8 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(lifecycle, "_load_registry", return_value=registry),
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry", side_effect=mock_save),
             patch.object(server, "_save_registry", side_effect=mock_save),
             patch.object(server, "_initiate_login", return_value={
@@ -1001,6 +1023,8 @@ class GatewayTokenAndProjectionTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(server, "_read_auth_file", return_value=auth_file),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
@@ -1612,6 +1636,8 @@ class TestPolicyInjection(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(lifecycle, "_crew_api", return_value=[]),
@@ -1642,6 +1668,8 @@ class TestPolicyInjection(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(lifecycle, "_crew_api", return_value=[]),
@@ -1681,6 +1709,8 @@ class TestPolicyInjection(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(lifecycle, "_crew_api", return_value=agents),
@@ -1719,6 +1749,8 @@ class TestPolicyInjection(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(lifecycle, "_crew_api", return_value=[]),
@@ -1759,6 +1791,8 @@ class TestPolicyInjection(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
             patch.object(lifecycle, "_crew_api", return_value=[]),
@@ -2313,6 +2347,8 @@ class LoginGuardClearTests(unittest.TestCase):
                 patch.object(server, "_write_auth_file"),
                 patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
                 patch.object(server, "_load_registry", return_value={"crews": {}}),
+                patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(lifecycle, "_inject_auth"),
                 patch.object(server, "_inject_auth"),
                 patch.object(lifecycle, "_nuke_login_container", side_effect=fake_nuke),
@@ -2978,6 +3014,8 @@ class GitIdentityInjectionTests(unittest.TestCase):
             patch.object(server, "_registry_lock"),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
@@ -3056,6 +3094,8 @@ class Trn89TaskTimestampTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-1"}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.dispatch("do work", agent="ghost", crew_id="demo")
 
@@ -3177,6 +3217,8 @@ class Trn89CrewTimestampTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "task-ts"}),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_save_registry", side_effect=fake_save),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
@@ -3211,6 +3253,8 @@ class Trn89CrewTimestampTests(unittest.TestCase):
         }
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(lifecycle, "_probe_gateway", return_value=True),
@@ -3506,6 +3550,8 @@ class DashboardPortCrewLockTests(unittest.IsolatedAsyncioTestCase):
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", side_effect=_fake_load_registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server._caddy_portal, "allocate_port", side_effect=_fake_allocate_port),
             patch.object(server._caddy_portal, "register_crew"),
         ):
@@ -3842,7 +3888,11 @@ class Trn138RegistryCorruptGuardTests(unittest.TestCase):
                 "registry corrupt — crews.json.corrupt preserved for inspection"
             )
 
-        with patch.object(server, "_load_registry", side_effect=_raise_corrupt):
+        with (
+            patch.object(server, "_load_registry", side_effect=_raise_corrupt),
+            patch.object(_registry_mod, "_load_registry", side_effect=_raise_corrupt),
+            patch.object(_registry_mod, "_save_registry"),
+        ):
             # crews() acquires _registry_lock then calls _load_registry — the
             # guard must catch and convert, not propagate.
             result = server.crews()

@@ -101,7 +101,7 @@ for the next).
   monitors.py and tests that import them directly continue to work.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.3  **Migrate the 43 `with _registry_lock:` blocks in `server.py`.**
+- [x] 3.3  **Migrate the 43 `with _registry_lock:` blocks in `server.py`.**
   Replace each `with _registry_lock: reg = _load_registry(); ...; _save_registry(reg)`
   block with a `with registry:` context manager call on the singleton, using
   `registry.get(cid)`, `registry.put(crew)`, `registry.remove(cid)`, etc.

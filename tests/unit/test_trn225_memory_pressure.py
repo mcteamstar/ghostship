@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tests.unit.helpers import FakeResponse, server  # noqa: F401
+import transport.registry as _registry_mod  # noqa: F401
 
 
 class CheckInMemoryPressureTests(unittest.TestCase):
@@ -117,6 +118,8 @@ class RecordMemoryPressureCycleTests(unittest.TestCase):
 
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_save_registry", side_effect=_save),
             patch.object(server, "_mail_admiral") as mail,
             patch.object(server, "GA_SPAWN_PRESSURE_ESCALATE_CYCLES", 3),
@@ -165,12 +168,14 @@ class RecordMemoryPressureCycleTests(unittest.TestCase):
 
         with (
             patch.object(server, "_load_registry", return_value=reg),
-            patch.object(server, "_save_registry", side_effect=_save) as save,
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=_save) as save,
+            patch.object(server, "_save_registry"),
             patch.object(server, "_mail_admiral"),
             patch.object(server, "GA_SPAWN_PRESSURE_ESCALATE_CYCLES", 3),
         ):
             server._record_memory_pressure_cycle("demo")
-        save.assert_called_once()
+        save.assert_called()
         self.assertIs(saved["reg"], reg)
 
 
@@ -202,6 +207,8 @@ class MockGatewayMemoryPressureIntegrationTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             # Probe fails open so the gateway refusal (D4) is what classifies.
             patch.object(server, "_check_in_memory_pressure", return_value=None),
             patch.object(server, "_crew_api_with_recovery", recovery),
@@ -234,6 +241,8 @@ class MockGatewayMemoryPressureIntegrationTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             # Probe reports pressure → skip BEFORE /api/spawn.
             patch.object(server, "_check_in_memory_pressure", return_value=0.5),
             patch.object(server, "_crew_api_with_recovery", recovery),

@@ -1465,9 +1465,8 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     # to prevent a TOCTOU race that could duplicate port allocation.
     _crew_cookie_val = ""
     dashboard_port: int | None = None
-    with _registry_lock:
-        reg = _load_registry()
-        crew_entry = reg["crews"].get(crew_id)
+    with registry:
+        crew_entry = registry._reg["crews"].get(crew_id)
         if crew_entry is None:
             return PlainTextResponse(f"Crew '{crew_id}' not found", status_code=404)
 
@@ -1491,10 +1490,9 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
         except RuntimeError as e:
             return JSONResponse({"error": str(e)}, status_code=409)
 
-        reg["crews"][crew_id]["dashboard_port"] = dashboard_port
+        registry._reg["crews"][crew_id]["dashboard_port"] = dashboard_port
         # Extract cookie value now, while still holding the lock.
-        _crew_cookie_val = reg["crews"][crew_id].get("cookie", "")
-        _save_registry(reg)
+        _crew_cookie_val = registry._reg["crews"][crew_id].get("cookie", "")
 
     # C-1: Call _caddy_register_crew AFTER releasing _registry_lock.
     # This avoids holding the lock across up to 7 s of blocking I/O.
@@ -1543,10 +1541,9 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
     if existing_port is None:
         return JSONResponse({"dashboard_url": None})
 
-    with _registry_lock:
+    with registry:
         # Re-check under the lock to prevent double-stop from concurrent DELETEs.
-        reg = _load_registry()
-        existing_port = reg["crews"].get(crew_id, {}).get("dashboard_port")
+        existing_port = registry._reg["crews"].get(crew_id, {}).get("dashboard_port")
         if existing_port is None:
             return JSONResponse({"dashboard_url": None})
         # C-1: Extract all needed values and mutate registry under the lock,
@@ -1554,9 +1551,8 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
         # the lock across blocking I/O.
         _dashboard_gate.release_port(int(existing_port))
         _caddy_portal.release_port(int(existing_port))
-        reg["crews"][crew_id].pop("dashboard_port", None)
-        reg["crews"][crew_id]["dashboard_url"] = None
-        _save_registry(reg)
+        registry._reg["crews"][crew_id].pop("dashboard_port", None)
+        registry._reg["crews"][crew_id]["dashboard_url"] = None
 
     # C-1: Deregister from Caddy after releasing _registry_lock.
     _caddy_portal.deregister_crew(crew_id)
@@ -1605,9 +1601,8 @@ async def _handle_captain_stop_post(request: Request) -> Response:
     # Validate the crew-internal session cookie against the registry's
     # internal_cookie. No valid cookie → 403.
     presented = request.cookies.get("mc_token_5476", "")
-    with _registry_lock:
-        reg = _load_registry()
-        crew_entry = reg.get("crews", {}).get(crew_id, {})
+    with registry:
+        crew_entry = registry._reg.get("crews", {}).get(crew_id, {})
         expected_cookie = crew_entry.get("internal_cookie", "")
     if (
         not expected_cookie
@@ -1617,9 +1612,8 @@ async def _handle_captain_stop_post(request: Request) -> Response:
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     # ── Look up the captain schedule entry ───────────────────────────────────
-    with _registry_lock:
-        reg = _load_registry()
-        schedules = _get_crew_schedules(reg, crew_id)
+    with registry:
+        schedules = registry.get_schedules(crew_id)
     captain_entry = next(
         (s for s in schedules if s.get("type") == "captain"),
         None,
@@ -1779,15 +1773,18 @@ async def _handle_login_get(request: Request) -> Response:
         )
 
     # Inject all currently running crews
-    with _registry_lock:
-        reg = _load_registry()
-    for cid, info in reg["crews"].items():
-        if info.get("status") == "running":
-            try:
-                _inject_auth(podman, info["container"], auth_b64)
-                logger.info("Injected fresh auth into running crew %s", cid)
-            except Exception as e:
-                logger.warning("Could not inject auth into crew %s: %s", cid, e)
+    with registry:
+        _running_crews = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running"
+        }
+    for cid, info in _running_crews.items():
+        try:
+            _inject_auth(podman, info["container"], auth_b64)
+            logger.info("Injected fresh auth into running crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not inject auth into crew %s: %s", cid, e)
 
     # Nuke temp container and clear pending state (guarded)
     _nuke_login_container(podman, pending["container"])
@@ -1846,19 +1843,22 @@ async def _handle_logout_post(request: Request) -> Response:
 
     # Wipe auth rows from all running crews
     wipe_failed: list[str] = []
-    with _registry_lock:
-        reg = _load_registry()
-    for cid, info in reg["crews"].items():
-        if info.get("status") == "running":
-            try:
-                podman.container_exec(
-                    info["container"],
-                    ["python3", f"{SCRIPTS_DIR}/wipe_auth.py", KIRO_CLI_DB],
-                )
-                logger.info("Cleared auth_kv from crew %s", cid)
-            except Exception as e:
-                logger.warning("Could not clear auth from crew %s: %s", cid, e)
-                wipe_failed.append(cid)
+    with registry:
+        _running_crews_info = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running"
+        }
+    for cid, info in _running_crews_info.items():
+        try:
+            podman.container_exec(
+                info["container"],
+                ["python3", f"{SCRIPTS_DIR}/wipe_auth.py", KIRO_CLI_DB],
+            )
+            logger.info("Cleared auth_kv from crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not clear auth from crew %s: %s", cid, e)
+            wipe_failed.append(cid)
 
     # Abort any in-progress login flow so the transport is in a clean
     # unauthenticated state immediately after logout (TRN-205).
@@ -2126,19 +2126,22 @@ async def _handle_claude_logout_post(request: Request) -> Response:
 
     # Wipe ~/.claude/ from all running Claude-backend crews
     wipe_failed: list[str] = []
-    with _registry_lock:
-        reg = _load_registry()
-    for cid, info in reg["crews"].items():
-        if info.get("status") == "running" and info.get("acp_backend") == "claude":
-            try:
-                podman.container_exec(
-                    info["container"],
-                    ["sh", "-c", "rm -rf /home/kirocrew/.claude/"],
-                )
-                logger.info("Wiped ~/.claude/ from crew %s", cid)
-            except Exception as e:
-                logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
-                wipe_failed.append(cid)
+    with registry:
+        _claude_crews = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running" and info.get("acp_backend") == "claude"
+        }
+    for cid, info in _claude_crews.items():
+        try:
+            podman.container_exec(
+                info["container"],
+                ["sh", "-c", "rm -rf /home/kirocrew/.claude/"],
+            )
+            logger.info("Wiped ~/.claude/ from crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
+            wipe_failed.append(cid)
 
     # Abort any in-progress Claude login flow (TRN-205).
     aborted = _lifecycle._abort_claude_pending_login(podman)
@@ -2306,19 +2309,22 @@ async def _handle_codex_logout_post(request: Request) -> Response:
 
     # Wipe ~/.codex/ from all running Codex-backend crews
     wipe_failed: list[str] = []
-    with _registry_lock:
-        reg = _load_registry()
-    for cid, info in reg["crews"].items():
-        if info.get("status") == "running" and info.get("acp_backend") == "codex":
-            try:
-                podman.container_exec(
-                    info["container"],
-                    ["sh", "-c", "rm -rf /home/kirocrew/.codex/"],
-                )
-                logger.info("Wiped ~/.codex/ from crew %s", cid)
-            except Exception as e:
-                logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
-                wipe_failed.append(cid)
+    with registry:
+        _codex_crews = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running" and info.get("acp_backend") == "codex"
+        }
+    for cid, info in _codex_crews.items():
+        try:
+            podman.container_exec(
+                info["container"],
+                ["sh", "-c", "rm -rf /home/kirocrew/.codex/"],
+            )
+            logger.info("Wiped ~/.codex/ from crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
+            wipe_failed.append(cid)
 
     # Abort any in-progress Codex login flow (TRN-205).
     aborted = _lifecycle._abort_codex_pending_login(podman)
@@ -2370,8 +2376,8 @@ def crews() -> dict:
     tool, latest output) use `pickup`, not this overview.
     Also: list crews, show workspaces, what's running, sitrep.
     """
-    with _registry_lock:
-        reg = _load_registry()
+    with registry:
+        _crews_data = dict(registry._reg.get("crews", {}))
 
     # Host memory visibility
     podman = None
@@ -2383,7 +2389,7 @@ def crews() -> dict:
 
     result = []
     corrections: list[str] = []  # crew_ids registered running but not actually running
-    for cid, info in reg["crews"].items():
+    for cid, info in _crews_data.items():
         # Determine gateway health: stopped containers are unhealthy without
         # probing; running containers get a liveness probe — but only after
         # confirming with Podman that the container is actually running. A
@@ -2489,16 +2495,11 @@ def crews() -> dict:
     # "running" in the registry to avoid clobbering a concurrent legitimate
     # state change.
     if corrections:
-        with _registry_lock:
-            reg2 = _load_registry()
-            changed = False
+        with registry:
             for cid in corrections:
-                entry2 = reg2["crews"].get(cid)
+                entry2 = registry._reg["crews"].get(cid)
                 if entry2 is not None and entry2.get("status") == "running":
                     entry2["status"] = "stopped"
-                    changed = True
-            if changed:
-                _save_registry(reg2)
 
     # active_crews reflects containers actually confirmed running by Podman:
     # each result entry's status has already been corrected to "stopped" for
@@ -2713,16 +2714,14 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                     "instructions": "Open login_url to authenticate, then call launch again.",
                 }
 
-    with _registry_lock:
-        reg = _load_registry()
-        existing = reg["crews"].get(crew_id)
+    with registry:
+        existing = registry._reg["crews"].get(crew_id)
         if existing:
             return {"error": f"Crew '{crew_id}' already exists. Nuke it first to recreate."}
-        if len(reg["crews"]) >= GA_MAX_CREWS:
+        if len(registry._reg["crews"]) >= GA_MAX_CREWS:
             return {"error": f"Registered crew limit ({GA_MAX_CREWS}) reached. Nuke one first."}
         # Pre-insert a placeholder to prevent concurrent launches with the same id
-        reg["crews"][crew_id] = {"status": "launching", "container": container}
-        _save_registry(reg)
+        registry._reg["crews"][crew_id] = {"status": "launching", "container": container}
 
     # Initialised before the try so the except block can reference it.
     dashboard_port: int | None = None
@@ -2809,14 +2808,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # gated only on the per-launch dashboard flag.
         dashboard_url: str | None = None
         if effective_dashboard:
-            with _registry_lock:
+            with registry:
                 try:
                     dashboard_port = _caddy_portal.allocate_port()
                 except RuntimeError as _err:
                     _cleanup_crew(podman, container, volume, home_volume)
-                    reg = _load_registry()
-                    reg["crews"].pop(crew_id, None)
-                    _save_registry(reg)
+                    registry._reg["crews"].pop(crew_id, None)
                     return {"error": str(_err)}
             # Portal (Caddy) is the sole dashboard proxy. Scheme depends on TLS mode.
             _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
@@ -2901,10 +2898,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 _delete_crew_secret(crew_id)
             except Exception:
                 pass
-            with _registry_lock:
-                reg = _load_registry()
-                reg["crews"].pop(crew_id, None)
-                _save_registry(reg)
+            with registry:
+                registry._reg["crews"].pop(crew_id, None)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard)
@@ -2912,10 +2907,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # (removing the admiral secret and Podman resources). The registry placeholder
         # entry written before the try block still exists and must be removed here.
         if "error" in result:
-            with _registry_lock:
-                reg = _load_registry()
-                reg["crews"].pop(crew_id, None)
-                _save_registry(reg)
+            with registry:
+                registry._reg["crews"].pop(crew_id, None)
             # D7c: _finish_crew_setup's error paths call _cleanup_crew (which
             # removes the Podman public-key secret) but not the host-side
             # admiral seed file written here before setup. Remove it too.
@@ -2933,13 +2926,11 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # Portal is the sole dashboard proxy.
         if dashboard_port is not None and "error" not in result:
             _crew_cookie_for_caddy = ""
-            with _registry_lock:
-                reg = _load_registry()
-                if crew_id in reg["crews"]:
-                    reg["crews"][crew_id]["dashboard_port"] = dashboard_port
-                    _save_registry(reg)
+            with registry:
+                if crew_id in registry._reg["crews"]:
+                    registry._reg["crews"][crew_id]["dashboard_port"] = dashboard_port
                 # Extract cookie value under the lock; register AFTER releasing it.
-                _crew_cookie_for_caddy = reg["crews"].get(crew_id, {}).get("cookie", "")
+                _crew_cookie_for_caddy = registry._reg["crews"].get(crew_id, {}).get("cookie", "")
             # C-1: Call _caddy_register_crew AFTER releasing _registry_lock to
             # avoid holding the lock across up to 7 s of blocking I/O.
             _caddy_portal.register_crew(crew_id, dashboard_port, crew_cookie=_crew_cookie_for_caddy)
@@ -2971,10 +2962,8 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 _caddy_portal.release_port(dashboard_port)
         except Exception:
             pass
-        with _registry_lock:
-            reg = _load_registry()
-            reg["crews"].pop(crew_id, None)
-            _save_registry(reg)
+        with registry:
+            registry._reg["crews"].pop(crew_id, None)
         return {"error": f"Launch failed: {e}"}
 
 
@@ -3202,9 +3191,8 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             active = [a for a in tasks.get("agents", []) if not a.get("done")]
         except Exception:
             pass
-        with _registry_lock:
-            reg = _load_registry()
-        schedules = _get_crew_schedules(reg, crew_id)
+        with registry:
+            schedules = registry.get_schedules(crew_id)
         return {
             "warning": f"Pass confirm=True to tear down crew '{crew_id}'",
             "container": c_nuke.container or f"{CREW_CONTAINER_PREFIX}{crew_id}",
@@ -3235,9 +3223,8 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     # Cancel gateway cron jobs before teardown (best-effort). Use bare _crew_api
     # (not _crew_api_with_recovery) to avoid restarting a container we are about
     # to destroy.
-    with _registry_lock:
-        reg = _load_registry()
-    schedules = _get_crew_schedules(reg, crew_id)
+    with registry:
+        schedules = registry.get_schedules(crew_id)
     for sched in schedules:
         job_id = sched.get("job_id", "")
         if not job_id:
@@ -3250,11 +3237,10 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     _cleanup_crew(podman, container, vol, home_vol)
 
-    with _registry_lock:
-        reg = _load_registry()
+    with registry:
         # Deregister from Caddy and release the port before removing the registry
         # entry. Portal is the sole dashboard proxy.
-        _ui_p = reg["crews"].get(crew_id, {}).get("dashboard_port")
+        _ui_p = registry._reg["crews"].get(crew_id, {}).get("dashboard_port")
         if _ui_p is not None:
             _caddy_portal.deregister_crew(crew_id)
             _dashboard_gate.release_port(int(_ui_p))
@@ -3263,11 +3249,10 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         # survives a nuke. Popping the crew entry below already removes them,
         # but clearing here keeps the intent explicit and in the same atomic
         # write that removes the crew.
-        _crew_entry = reg["crews"].get(crew_id)
+        _crew_entry = registry._reg["crews"].get(crew_id)
         if _crew_entry is not None:
             _crew_entry.pop("batches", None)
-        reg["crews"].pop(crew_id, None)
-        _save_registry(reg)
+        registry._reg["crews"].pop(crew_id, None)
 
     with _captain_order_locks_lock:
         _captain_order_locks.pop(crew_id, None)
@@ -3368,14 +3353,12 @@ def _record_memory_pressure_cycle(crew_id: str) -> None:
     GA_SPAWN_PRESSURE_ESCALATE_CYCLES (so it mails exactly once on the crossing,
     not on every subsequent cycle while the counter stays at/above the bound)."""
     n = 0
-    with _registry_lock:
-        reg = _load_registry()
-        for s in _get_crew_schedules(reg, crew_id):
+    with registry:
+        for s in registry.get_schedules(crew_id):
             if s.get("type") == "captain":
                 n = int(s.get("consecutive_memory_pressure_skips", 0) or 0) + 1
                 s["consecutive_memory_pressure_skips"] = n
                 break
-        _save_registry(reg)
     if n == GA_SPAWN_PRESSURE_ESCALATE_CYCLES:
         _mail_admiral(
             crew_id,
@@ -3411,9 +3394,8 @@ def _dispatch_captain_checkin(
         # Fallback: read enrolled_agents from registry (crew may be a stale
         # minimal copy from _require_crew before _ensure_crew_running enriched it)
         try:
-            with _registry_lock:
-                reg = _load_registry()
-                crew_info = reg.get("crews", {}).get(crew_id, {})
+            with registry:
+                crew_info = registry._reg.get("crews", {}).get(crew_id, {})
                 enrolled = frozenset(crew_info.get("enrolled_agents") or [])
         except Exception:
             pass
@@ -3427,9 +3409,8 @@ def _dispatch_captain_checkin(
     # loopback-bound and safe to use from inside the container. If absent (old
     # registry row), skip silently — _refresh_cookie will populate it next cycle.
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
+        with registry:
+            internal_cookie = registry._reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
         if internal_cookie:
             podman = _get_podman()
             _write_dashboard_cookie(podman, c.container, internal_cookie)
@@ -3456,9 +3437,8 @@ def _dispatch_captain_checkin(
         if not crew_backend or crew_model is None:
             # read authoritative values from the registry
             try:
-                with _registry_lock:
-                    reg = _load_registry()
-                    crew_info = reg.get("crews", {}).get(crew_id, {})
+                with registry:
+                    crew_info = registry._reg.get("crews", {}).get(crew_id, {})
                 if not crew_backend:
                     crew_backend = crew_info.get("acp_backend")
                 if crew_model is None:
@@ -3536,9 +3516,8 @@ def _steer_captain_checkin(
 
     Returns the (possibly new) task_id.
     """
-    with _registry_lock:
-        reg = _load_registry()
-        schedules = _get_crew_schedules(reg, crew_id)
+    with registry:
+        schedules = registry.get_schedules(crew_id)
     captain_sched = next(
         (s for s in schedules if s.get("type") == "captain"),
         None,
@@ -3554,9 +3533,8 @@ def _steer_captain_checkin(
     # Refresh .dashboard_cookie so Raven's cookie auth stays current before continuing.
     # Use internal_cookie (loopback-bound) — skip if absent, _refresh_cookie will populate.
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
+        with registry:
+            internal_cookie = registry._reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
         if internal_cookie:
             podman = _get_podman()
             _write_dashboard_cookie(podman, _to_crew(crew_id, crew).container, internal_cookie)
@@ -3589,13 +3567,11 @@ def _steer_captain_checkin(
             # Clear the stale current_task_id so the next monitor tick doesn't
             # retry this dead session.
             try:
-                with _registry_lock:
-                    reg = _load_registry()
-                    for s in _get_crew_schedules(reg, crew_id):
+                with registry:
+                    for s in registry.get_schedules(crew_id):
                         if s.get("type") == "captain":
                             s["current_task_id"] = None
                             break
-                    _save_registry(reg)
             except Exception as clear_exc:
                 logger.warning(
                     "Captain check-in: could not clear current_task_id for crew %s: %s",
@@ -3622,16 +3598,13 @@ def _steer_captain_checkin(
 
     # Persist the new task_id
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            crew_scheds = _get_crew_schedules(reg, crew_id)
-            for s in crew_scheds:
+        with registry:
+            for s in registry.get_schedules(crew_id):
                 if s.get("type") == "captain":
                     s["current_task_id"] = new_task_id
                     from datetime import datetime as _dt, timezone as _tz
                     s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
                     break
-            _save_registry(reg)
     except Exception as exc:
         logger.warning(
             "Captain check-in: could not persist new task_id %s for crew %s: %s",
@@ -3695,9 +3668,8 @@ def _captain_do_order(
 
     with _captain_order_lock(crew_id):
         # Check registry for an existing captain entry
-        with _registry_lock:
-            reg = _load_registry()
-            existing_schedules = _get_crew_schedules(reg, crew_id)
+        with registry:
+            existing_schedules = registry.get_schedules(crew_id)
         existing_entry = next(
             (s for s in existing_schedules if s.get("type") == "captain"),
             None,
@@ -3746,10 +3718,8 @@ def _captain_do_order(
         }
 
         try:
-            with _registry_lock:
-                reg = _load_registry()
-                _upsert_crew_schedule(reg, crew_id, schedule_entry)
-                _save_registry(reg)
+            with registry:
+                registry.upsert_schedule(crew_id, schedule_entry)
         except Exception as exc:
             logger.warning("Could not persist captain schedule entry: %s", exc)
 
@@ -3788,9 +3758,8 @@ def _captain_do_order(
                     fired_next = time.time() + effective_interval
                 else:
                     fired_next = time.time() + 60
-                with _registry_lock:
-                    reg = _load_registry()
-                    for s in _get_crew_schedules(reg, crew_id):
+                with registry:
+                    for s in registry.get_schedules(crew_id):
                         if s.get("type") == "captain":
                             s["current_task_id"] = new_task_id
                             s["next_fire_at"] = fired_next
@@ -3801,7 +3770,6 @@ def _captain_do_order(
                             from datetime import datetime as _dt, timezone as _tz
                             s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
                             break
-                    _save_registry(reg)
                 result["current_task_id"] = new_task_id
             except _MemoryPressureSkip as exc:
                 # Memory-pressure skip/refusal: do NOT advance current_task_id
@@ -3846,9 +3814,8 @@ def _captain_do_status(crew_id: str) -> dict:
     admiral_mail = len(admiral_subjects)
 
     # Read captain state from registry — no need to wake the crew
-    with _registry_lock:
-        reg = _load_registry()
-        schedules = _get_crew_schedules(reg, crew_id)
+    with registry:
+        schedules = registry.get_schedules(crew_id)
     captain_entry = next(
         (s for s in schedules if s.get("type") == "captain"),
         None,
@@ -3931,9 +3898,8 @@ def _captain_do_stop(crew_id: str) -> dict:
     podman = _get_podman()
 
     # Read captain entry from registry — no need to wake the crew
-    with _registry_lock:
-        reg = _load_registry()
-        schedules = _get_crew_schedules(reg, crew_id)
+    with registry:
+        schedules = registry.get_schedules(crew_id)
     captain_entry = next(
         (s for s in schedules if s.get("type") == "captain"),
         None,
@@ -3953,10 +3919,9 @@ def _captain_do_stop(crew_id: str) -> dict:
     # Mark disabled in registry — this is the only action needed.
     # The _captain_monitor will skip disabled entries on its next tick.
     try:
-        with _registry_lock:
-            reg = _load_registry()
+        with registry:
             matched = False
-            for sched in _get_crew_schedules(reg, crew_id):
+            for sched in registry.get_schedules(crew_id):
                 if sched.get("type") == "captain":
                     sched["enabled"] = False
                     matched = True
@@ -3966,7 +3931,6 @@ def _captain_do_stop(crew_id: str) -> dict:
                     "captain stop: no captain registry entry found for crew %s",
                     crew_id,
                 )
-            _save_registry(reg)
     except Exception as exc:
         logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
 
@@ -4206,10 +4170,8 @@ def schedule(
             "one_shot": True,
         }
         try:
-            with _registry_lock:
-                reg = _load_registry()
-                _upsert_crew_schedule(reg, crew_id, schedule_entry)
-                _save_registry(reg)
+            with registry:
+                registry.upsert_schedule(crew_id, schedule_entry)
         except Exception as exc:
             logger.warning("Could not persist one-shot schedule entry: %s", exc)
 
@@ -4247,10 +4209,8 @@ def schedule(
         "model": model,
     }
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            _upsert_crew_schedule(reg, crew_id, schedule_entry)
-            _save_registry(reg)
+        with registry:
+            registry.upsert_schedule(crew_id, schedule_entry)
     except Exception as exc:
         logger.warning("Could not persist schedule entry: %s", exc)
 
@@ -4305,9 +4265,8 @@ def _schedule_cancel(job_id: str | None, crew_id: str | None) -> dict:
 
     # Check registry for captain guard before touching gateway
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            schedules = _get_crew_schedules(reg, crew_id)
+        with registry:
+            schedules = registry.get_schedules(crew_id)
             for sched in schedules:
                 if sched.get("job_id") == job_id:
                     if (
@@ -4357,10 +4316,8 @@ def _schedule_cancel(job_id: str | None, crew_id: str | None) -> dict:
 
     # Remove from registry
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            _remove_crew_schedule(reg, crew_id, job_id)
-            _save_registry(reg)
+        with registry:
+            registry.remove_schedule(crew_id, job_id)
     except Exception as exc:
         logger.warning("Could not remove schedule entry from registry: %s", exc)
 
@@ -4377,9 +4334,8 @@ def _schedule_list(crew_id: str | None) -> dict:
         return {"error": "crew_id is required"}
 
     # Read from registry first
-    with _registry_lock:
-        reg = _load_registry()
-        schedules = _get_crew_schedules(reg, crew_id)
+    with registry:
+        schedules = registry.get_schedules(crew_id)
 
     if schedules:
         result_jobs = []
@@ -4824,10 +4780,10 @@ def resource_orders_by_name(name: str) -> str:
 )
 def resource_version() -> str:
     """Return transport version and per-crew image versions from registry."""
-    with _registry_lock:
-        reg = _load_registry()
+    with registry:
+        _crews_snapshot = dict(registry._reg.get("crews", {}))
     crews_versions = {}
-    for cid, info in reg["crews"].items():
+    for cid, info in _crews_snapshot.items():
         crews_versions[cid] = {
             "crew_image_version": info.get("crew_image_version", "unknown")
         }
@@ -4850,14 +4806,14 @@ def resource_jobs() -> str:
     Includes delay-type (one-shot) jobs from the transport registry alongside
     recurring jobs from the gateway.
     """
-    with _registry_lock:
-        reg = _load_registry()
+    with registry:
+        _crews_snapshot = dict(registry._reg.get("crews", {}))
 
-    if not reg["crews"]:
+    if not _crews_snapshot:
         return "No running crews found."
 
     sections = []
-    for crew_id, info in reg["crews"].items():
+    for crew_id, info in _crews_snapshot.items():
         lines = [f"## {crew_id}"]
         gateway_jobs_shown = set()
 
@@ -4946,9 +4902,8 @@ if __name__ == "__main__":
     _reconcile_registry()
     # Restore UI port allocations from persisted registry so restarts
     # don't re-allocate ports already claimed by existing crews.
-    with _registry_lock:
-        _reg = _load_registry()
-        for _cid, _info in _reg["crews"].items():
+    with registry:
+        for _cid, _info in registry._reg["crews"].items():
             _p = _info.get("dashboard_port")
             if _p is not None:
                 _dashboard_ports_in_use.add(int(_p))
@@ -5131,15 +5086,14 @@ if __name__ == "__main__":
         # On restart, re-register all existing crew servers with Caddy (idempotent
         # — Caddy's --resume may have already loaded them, but we call again so a
         # fresh data-volume wipe is handled gracefully).
-        with _registry_lock:
-            _restored_reg = _load_registry()
-        for _cid, _info in _restored_reg["crews"].items():
+        with registry:
+            _restored_crews = dict(registry._reg.get("crews", {}))
+        for _cid, _info in _restored_crews.items():
             _p = _info.get("dashboard_port")
             if _p is not None:
                 _dashboard_gate.register_port(_cid, int(_p))
-                with _registry_lock:
-                    _crew_cookie_val = _restored_reg["crews"].get(_cid, {}).get("cookie", "")
-                    _caddy_portal.register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
+                _crew_cookie_val = _info.get("cookie", "")
+                _caddy_portal.register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
         logger.info("Portal (Caddy) is the sole dashboard proxy")
         await server.serve()
 

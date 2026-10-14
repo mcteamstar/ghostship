@@ -23,6 +23,7 @@ from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
 from tests.unit.helpers import academy, lifecycle, server  # noqa: F401
+import transport.registry as _registry_mod  # noqa: F401
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -280,6 +281,8 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}) as mock_setup,
@@ -325,6 +328,8 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_finish_crew_setup", return_value={"status": "ready"}),
@@ -376,6 +381,8 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=mock_podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
@@ -413,6 +420,8 @@ class TestLaunchCrewType(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=mock_podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(server, "_read_auth_file", return_value="dGVzdA=="),

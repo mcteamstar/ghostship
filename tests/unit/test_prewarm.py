@@ -22,6 +22,7 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 from tests.unit.helpers import lifecycle, server
+import transport.registry as _registry_mod  # noqa: F401
 
 
 class _RecordingPodman:
@@ -331,6 +332,8 @@ class TestPrewarmImplicitTriggers(unittest.TestCase):
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_upsert_crew_schedule"),
             patch.object(server, "time") if hasattr(server, "time") else
                 patch("time.time", return_value=1000.0),
@@ -356,6 +359,8 @@ class TestPrewarmImplicitTriggers(unittest.TestCase):
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_upsert_crew_schedule"),
             patch.object(server, "_bg_prewarm", side_effect=fake_bg_prewarm),
         ):
@@ -390,6 +395,8 @@ class TestPrewarmImplicitTriggers(unittest.TestCase):
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_upsert_crew_schedule"),
             patch.object(server, "_prewarm_crew", side_effect=raising_prewarm),
         ):

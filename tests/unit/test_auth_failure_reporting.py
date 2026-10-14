@@ -19,6 +19,7 @@ from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
 import transport.lifecycle as _lifecycle  # noqa: E402 (after stub install)
+import transport.registry as _registry_mod  # noqa: E402
 import transport.server as server  # noqa: E402
 
 
@@ -80,6 +81,8 @@ class TestLogoutDeleteFailure(unittest.TestCase):
              patch.object(server, "_auth_file_path", return_value=path), \
              patch.object(server, "_registry_lock", threading.Lock()), \
              patch.object(server, "_load_registry", return_value={"crews": {}}), \
+             patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}), \
+             patch.object(_registry_mod, "_save_registry"), \
              patch.object(server._security, "audit_auth_event",
                           side_effect=lambda **kw: order.append(kw["outcome"])):
             response = _run(server._handle_logout_post(Mock()))
@@ -105,6 +108,9 @@ class TestLogoutDeleteFailure(unittest.TestCase):
              patch.object(server, "_registry_lock", threading.Lock()), \
              patch.object(server, "_load_registry", return_value={"crews": {
                  "c1": {"status": "running", "acp_backend": "claude", "container": "gs-c1"}}}), \
+             patch.object(_registry_mod, "_load_registry", return_value={"crews": {
+                 "c1": {"status": "running", "acp_backend": "claude", "container": "gs-c1"}}}), \
+             patch.object(_registry_mod, "_save_registry"), \
              patch.object(server._security, "audit_auth_event"):
             response = _run(server._handle_claude_logout_post(Mock()))
         self.assertEqual(response.status_code, 200)

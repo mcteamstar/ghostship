@@ -493,6 +493,8 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry_state),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry_state),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_write_crew_secret"),
@@ -542,6 +544,8 @@ class CaddyLaunchNukeTests(unittest.TestCase):
             patch.object(server, "_cleanup_crew"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server._caddy_portal, "deregister_crew") as mock_deregister,
             patch.object(server, "_delete_crew_secret"),
@@ -756,6 +760,8 @@ class UiPortLaunchTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_save_registry", side_effect=lambda r: None),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
@@ -803,6 +809,8 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_write_crew_secret"),
@@ -832,6 +840,8 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_write_crew_secret"),
@@ -866,6 +876,8 @@ class UiPortLaunchTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_write_crew_secret"),
@@ -912,6 +924,8 @@ class UiPortNukeTests(unittest.TestCase):
             patch.object(server, "_get_crew_schedules", return_value=[]),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_cleanup_crew"),
             patch.object(server, "_captain_order_locks_lock", threading.Lock()),
             patch.object(server, "_captain_order_locks", {}),
@@ -932,6 +946,8 @@ class CrewsListUiUrlTests(unittest.TestCase):
         registry = {"crews": crews_data}
         with (
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(server, "_crew_api", return_value=[]),
             patch.object(server, "_get_podman", return_value=Mock(
@@ -1057,6 +1073,8 @@ class TRN101LaunchPortalTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_save_registry", side_effect=lambda r: None),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
@@ -1115,6 +1133,8 @@ class LaunchDashboardParamTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_save_registry", side_effect=lambda r: None),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
@@ -1167,6 +1187,8 @@ class LaunchDashboardParamTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_write_crew_secret"),
@@ -1209,6 +1231,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
                 patch.object(server._caddy_portal, "_range_size", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(server._caddy_portal, "register_crew") as mock_caddy,
                 patch.object(server, "cfg") as mock_cfg,
             ):
@@ -1235,6 +1259,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
             with (
                 patch.object(server, "_require_crew", return_value=crew),
                 patch.object(server, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(server._caddy_portal, "register_crew") as mock_caddy,
                 patch.object(server, "cfg") as mock_cfg,
             ):
@@ -1277,6 +1303,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
                 patch.object(server._caddy_portal, "_range_start", 9000),
                 patch.object(server._caddy_portal, "_range_size", 2),
                 patch.object(server, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(server._caddy_portal, "register_crew"),
                 patch.object(server, "cfg") as mock_cfg,
             ):
@@ -1304,6 +1332,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
                 patch.object(server._caddy_portal, "_range_size", 50),
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(server._caddy_portal, "register_crew") as mock_caddy,
                 patch.object(server, "cfg") as mock_cfg,
             ):
@@ -1334,6 +1364,8 @@ class DashboardRestEndpointTests(unittest.TestCase):
                 patch.object(server._caddy_portal, "deregister_crew") as mock_deregister,
                 patch.object(server, "_load_registry", return_value=registry),
                 patch.object(server, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
             ):
                 request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
                 resp = await server._handle_crew_dashboard_delete(request)
@@ -1383,9 +1415,11 @@ class DashboardRestEndpointTests(unittest.TestCase):
                 patch.object(server, "_require_crew", return_value=crew),
                 patch.object(server._caddy_portal, "deregister_crew"),
                 patch.object(server, "_load_registry", return_value=registry),
-                patch.object(server, "_save_registry", side_effect=lambda r: save_calls.append(
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry", side_effect=lambda r: save_calls.append(
                     json.loads(json.dumps(r))
                 )),
+                patch.object(server, "_save_registry"),
             ):
                 request = _FakeStreamRequest(method="DELETE", path="/crews/demo/dashboard")
                 return await server._handle_crew_dashboard_delete(request)
@@ -1497,6 +1531,8 @@ class CorsOriginInjectionTests(unittest.TestCase):
             patch.object(server, "_read_auth_file", return_value="auth-b64"),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_wait_gateway", return_value=True),
             patch.object(server, "_write_crew_secret"),

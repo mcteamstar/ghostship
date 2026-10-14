@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, Mock, patch
 import tempfile
 
 from tests.unit.helpers import lifecycle, server  # noqa: F401
+import transport.registry as _registry_mod  # noqa: F401
 
 
 class AbortPendingLoginTests(unittest.TestCase):
@@ -185,6 +186,8 @@ class LogoutAbortsKiroPendingLoginTests(unittest.TestCase):
                 patch.object(server, "_read_auth_file", return_value="dGVzdA=="),
                 patch.object(server, "_get_podman", return_value=podman),
                 patch.object(server, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(
                     server._lifecycle,
                     "_abort_pending_login",
@@ -224,6 +227,8 @@ class LogoutAbortsClaudePendingLoginTests(unittest.TestCase):
                 patch.object(server, "_claude_auth_file_path", return_value=auth_path),
                 patch.object(server, "_get_podman", return_value=podman),
                 patch.object(server, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(
                     server._lifecycle,
                     "_abort_claude_pending_login",
@@ -263,6 +268,8 @@ class LogoutAbortsCodexPendingLoginTests(unittest.TestCase):
                 patch.object(server, "_codex_auth_file_path", return_value=auth_path),
                 patch.object(server, "_get_podman", return_value=podman),
                 patch.object(server, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_load_registry", return_value=registry),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(
                     server._lifecycle,
                     "_abort_codex_pending_login",

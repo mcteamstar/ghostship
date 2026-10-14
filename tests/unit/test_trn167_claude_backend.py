@@ -27,6 +27,7 @@ from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
 import transport.lifecycle as _lifecycle  # noqa: E402 (after stub install)
+import transport.registry as _registry_mod  # noqa: E402
 import transport.server as _server       # noqa: E402
 
 
@@ -376,6 +377,8 @@ class TestCrewsResponseAcpBackend(unittest.TestCase):
         reg = {"crews": {"test-crew": crew_entry}}
         with (
             patch.object(_server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(_server, "_get_podman", return_value=None),
         ):
             result = _server.crews()

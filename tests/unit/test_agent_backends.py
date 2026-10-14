@@ -32,6 +32,7 @@ from transport.config import (  # noqa: E402 (after stub install)
     parse_agent_backends,
 )
 import transport.lifecycle as _lifecycle  # noqa: E402
+import transport.registry as _registry_mod  # noqa: E402
 import transport.server as server  # noqa: E402
 
 
@@ -220,7 +221,9 @@ class TestLoginGating(unittest.TestCase):
                  patch.object(server, "_claude_auth_file_path", return_value=auth), \
                  patch.object(server, "_get_podman", return_value=Mock()), \
                  patch.object(server, "_registry_lock", threading.Lock()), \
-                 patch.object(server, "_load_registry", return_value={"crews": {}}):
+                 patch.object(server, "_load_registry", return_value={"crews": {}}), \
+                 patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}), \
+                 patch.object(_registry_mod, "_save_registry"):
                 response = _run(server._handle_claude_logout_post(Mock()))
             self.assertEqual(response.status_code, 200)
             self.assertFalse(auth.exists())

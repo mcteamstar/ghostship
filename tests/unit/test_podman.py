@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from tests.unit.helpers import podman, server, FakePodmanClient  # noqa: F401
+import transport.registry as _registry_mod  # noqa: F401
 
 
 class MemoryGateTests(unittest.TestCase):
@@ -78,6 +79,8 @@ class CrewsMemoryFieldTests(unittest.TestCase):
         podman._host_memory_cache = None
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=fake),
         ):
             result = server.crews()
@@ -96,6 +99,8 @@ class CrewsMemoryFieldTests(unittest.TestCase):
         podman._host_memory_cache = None
         with (
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=BrokenPodman()),
         ):
             result = server.crews()

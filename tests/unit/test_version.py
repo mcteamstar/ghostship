@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import patch, MagicMock
 
 from tests.unit.test_file_transfer import server
+import transport.registry as _registry_mod  # noqa: F401
 
 
 class TestReadTransportVersion(unittest.TestCase):
@@ -97,7 +98,11 @@ class TestCrewsVersionField(unittest.TestCase):
                 }
             }
         }
-        with patch.object(server, "_load_registry", return_value=fake_registry):
+        with (
+            patch.object(server, "_load_registry", return_value=fake_registry),
+            patch.object(_registry_mod, "_load_registry", return_value=fake_registry),
+            patch.object(_registry_mod, "_save_registry"),
+        ):
             result = server.crews()
 
         self.assertEqual(len(result["crews"]), 1)
@@ -118,7 +123,11 @@ class TestCrewsVersionField(unittest.TestCase):
                 }
             }
         }
-        with patch.object(server, "_load_registry", return_value=fake_registry):
+        with (
+            patch.object(server, "_load_registry", return_value=fake_registry),
+            patch.object(_registry_mod, "_load_registry", return_value=fake_registry),
+            patch.object(_registry_mod, "_save_registry"),
+        ):
             result = server.crews()
 
         self.assertEqual(len(result["crews"]), 1)
@@ -156,7 +165,11 @@ class TestResourceVersion(unittest.TestCase):
                 "crew-b": {},
             }
         }
-        with patch.object(server, "_load_registry", return_value=fake_registry):
+        with (
+            patch.object(server, "_load_registry", return_value=fake_registry),
+            patch.object(_registry_mod, "_load_registry", return_value=fake_registry),
+            patch.object(_registry_mod, "_save_registry"),
+        ):
             result = json.loads(server.resource_version())
 
         self.assertEqual(result["crews"]["crew-a"]["crew_image_version"], "0.1.1")

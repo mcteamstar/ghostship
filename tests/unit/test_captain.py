@@ -30,6 +30,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 from tests.unit.helpers import captain_mod, lifecycle, server  # noqa: F401
+import transport.registry as _registry_mod  # noqa: F401
 
 
 class CaptainStandingOrdersTests(unittest.TestCase):
@@ -47,6 +48,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail") as append,
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api",
                          return_value={"id": "task-1"}) as api,
         ):
@@ -90,6 +93,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail", side_effect=append),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
         ):
             result = server.captain(
@@ -134,6 +139,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
         ):
             threads = [threading.Thread(target=invoke) for _ in range(2)]
@@ -154,6 +161,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_append_captain_mail") as append,
         ):
             result = server.captain("demo", "order", message="hold")
@@ -172,6 +181,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail") as append,
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api",
                          return_value={"id": "task-1"}) as api,
         ):
@@ -206,7 +217,9 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=reg),
-            patch.object(server, "_save_registry", side_effect=save_reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=save_reg),
+            patch.object(server, "_save_registry"),
         ):
             result = server.captain(
                 "demo",
@@ -241,6 +254,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail") as append,
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.captain("demo", "order", message="new order")
 
@@ -264,7 +279,9 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry") as save_reg,
+            patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry") as save_reg,
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(captain_mod, "_mail_count", return_value=2),
         ):
@@ -272,7 +289,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
 
         self.assertFalse(result["enabled"])
         self.assertEqual(result["status"], "stopped")
-        save_reg.assert_called_once()
+        save_reg.assert_called()
         self.assertFalse(registry["crews"]["demo"]["schedules"][0]["enabled"])
 
     def test_standing_stop_gateway_not_found_still_returns_stopped(self) -> None:
@@ -291,7 +308,9 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry") as save_reg,
+            patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry") as save_reg,
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(captain_mod, "_mail_count", return_value=1),
         ):
@@ -300,7 +319,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result["status"], "stopped")
         self.assertFalse(result["enabled"])
-        save_reg.assert_called_once()
+        save_reg.assert_called()
 
     def test_stop_when_already_disabled_in_gateway_still_updates_registry(self) -> None:
         existing_entry = {
@@ -318,7 +337,9 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry") as save_reg,
+            patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry") as save_reg,
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(captain_mod, "_mail_count", return_value=1),
         ):
@@ -327,7 +348,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result["status"], "stopped")
         self.assertFalse(result["enabled"])
-        save_reg.assert_called_once()
+        save_reg.assert_called()
         self.assertFalse(registry["crews"]["demo"]["schedules"][0]["enabled"])
 
     def test_stop_when_gateway_api_raises_exception_still_updates_registry(self) -> None:
@@ -346,7 +367,9 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=registry),
-            patch.object(server, "_save_registry") as save_reg,
+            patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry") as save_reg,
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(captain_mod, "_mail_count", return_value=1),
         ):
@@ -355,7 +378,7 @@ class CaptainStandingOrdersTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result["status"], "stopped")
         self.assertFalse(result["enabled"])
-        save_reg.assert_called_once()
+        save_reg.assert_called()
         self.assertFalse(registry["crews"]["demo"]["schedules"][0]["enabled"])
 
     def test_standing_stop_uses_refreshed_crew_after_restart(self) -> None:
@@ -376,6 +399,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=stale),
             patch.object(server, "_load_registry", return_value=registry),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(captain_mod, "_mail_count", return_value=1),
         ):
@@ -400,6 +425,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(captain_mod, "_mail_count", side_effect=[3, 2]) as mail_count,
             patch.object(server, "_skim_all_mailboxes", return_value={
                 name: [] for name in captain_mod._ALL_MAIL_MAILBOXES
@@ -437,6 +464,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail") as append,
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.captain("demo", "order", message="resume this")
 
@@ -456,6 +485,8 @@ class CaptainStandingOrdersTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.captain(
                 "demo", "order", message="try to fire", interval=120,
@@ -781,6 +812,8 @@ class CaptainStatusArchiveTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running") as ensure,
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.captain("demo", "status")
 
@@ -801,6 +834,8 @@ class CaptainStatusArchiveTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_ensure_crew_running") as ensure,
             patch.object(server, "_get_podman", return_value=podman),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.captain("demo", "status")
 
@@ -835,6 +870,8 @@ class CaptainStatusArchiveTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(captain_mod, "_mail_count", return_value=0),
             patch.object(lifecycle, "_crew_api", return_value={"done": False}),
         ):
@@ -960,6 +997,8 @@ class CaptainLastCheckinAtTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(captain_mod, "_load_registry", return_value=reg),
             patch.object(captain_mod, "_mail_count", return_value=0),
         ):
@@ -990,6 +1029,8 @@ class CaptainLastCheckinAtTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(captain_mod, "_load_registry", return_value=reg),
             patch.object(captain_mod, "_mail_count", return_value=0),
         ):
@@ -1407,6 +1448,8 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_write_dashboard_cookie", side_effect=fake_write),
             patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(
                 server, "_crew_api_with_recovery",
@@ -1434,6 +1477,8 @@ class CaptainCookieInjectionTests(unittest.TestCase):
         with (
             patch.object(server, "_get_podman", side_effect=RuntimeError("podman down")),
             patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(
                 server, "_crew_api_with_recovery",
@@ -1463,16 +1508,17 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             "model": None,
         }
         reg_data = {
-            "crews": {"demo": {"cookie": "xyz789", "internal_cookie": "int-xyz789", "container": "gs-demo"}},
-            "schedules": {"demo": [captain_entry]},
+            "crews": {"demo": {"cookie": "xyz789", "internal_cookie": "int-xyz789", "container": "gs-demo",
+                               "schedules": [captain_entry]}},
         }
 
         with (
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_write_dashboard_cookie", side_effect=fake_write),
             patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
-            patch.object(server, "_get_crew_schedules", return_value=[captain_entry]),
             patch.object(
                 server, "_crew_api_with_recovery",
                 return_value={"id": "new-task"},
@@ -1495,15 +1541,16 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             "model": None,
         }
         reg_data = {
-            "crews": {"demo": {"cookie": "xyz789", "container": "gs-demo"}},
-            "schedules": {"demo": [captain_entry]},
+            "crews": {"demo": {"cookie": "xyz789", "container": "gs-demo",
+                               "schedules": [captain_entry]}},
         }
 
         with (
             patch.object(server, "_get_podman", side_effect=RuntimeError("podman down")),
             patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
-            patch.object(server, "_get_crew_schedules", return_value=[captain_entry]),
             patch.object(
                 server, "_crew_api_with_recovery",
                 return_value={"id": "new-task-2"},
@@ -1525,8 +1572,8 @@ class CaptainCookieInjectionTests(unittest.TestCase):
         }
         saved_regs: list[dict] = []
         reg_data = {
-            "crews": {"demo": {"cookie": "abc", "container": "gs-demo"}},
-            "schedules": {"demo": [captain_entry]},
+            "crews": {"demo": {"cookie": "abc", "container": "gs-demo",
+                               "schedules": [captain_entry]}},
         }
 
         # Simulate _crew_api_with_recovery re-raising a raw 400 HTTPStatusError
@@ -1549,9 +1596,10 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_write_dashboard_cookie", return_value=True),
             patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_save_registry", side_effect=lambda r: saved_regs.append(dict(r))),
             patch.object(server, "_registry_lock", threading.Lock()),
-            patch.object(server, "_get_crew_schedules", return_value=[captain_entry]),
-            patch.object(server, "_save_registry", side_effect=lambda r: saved_regs.append(dict(r))),
+            patch.object(server, "_save_registry"),
             patch.object(server, "_crew_api_with_recovery", side_effect=http_err),
             patch.object(server, "_dispatch_captain_checkin", side_effect=fake_dispatch),
         ):
@@ -1563,7 +1611,7 @@ class CaptainCookieInjectionTests(unittest.TestCase):
         # current_task_id should be cleared in registry
         self.assertTrue(any(
             s.get("current_task_id") is None
-            for s in saved_regs[-1].get("schedules", {}).get("demo", [])
+            for s in saved_regs[-1].get("crews", {}).get("demo", {}).get("schedules", [])
             if s.get("type") == "captain"
         ), "current_task_id should be cleared after 400 fallback")
 
@@ -1578,8 +1626,8 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             "model": None,
         }
         reg_data = {
-            "crews": {"demo": {"cookie": "abc", "container": "gs-demo"}},
-            "schedules": {"demo": [captain_entry]},
+            "crews": {"demo": {"cookie": "abc", "container": "gs-demo",
+                               "schedules": [captain_entry]}},
         }
 
         mock_resp = Mock()
@@ -1594,8 +1642,9 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_write_dashboard_cookie", return_value=True),
             patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
-            patch.object(server, "_get_crew_schedules", return_value=[captain_entry]),
             patch.object(server, "_crew_api_with_recovery", side_effect=http_err),
         ):
             with self.assertRaises(httpx.HTTPStatusError):
@@ -1633,6 +1682,8 @@ class CaptainCookieInjectionTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_write_dashboard_cookie", return_value=True),
             patch.object(server, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_data),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_get_crew_schedules", return_value=[captain_entry]),
             patch.object(server, "_save_registry"),
@@ -1668,6 +1719,8 @@ class CaptainClaudeModelDefaultingTests(unittest.TestCase):
         with (
             patch.object(server, "_get_podman", side_effect=RuntimeError("skip cookie")),
             patch.object(server, "_load_registry", return_value=self._reg()),
+            patch.object(_registry_mod, "_load_registry", return_value=self._reg()),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_crew_api_with_recovery", side_effect=fake_api),
         ):
@@ -1752,6 +1805,8 @@ class CaptainClaudeModelDefaultingTests(unittest.TestCase):
         with (
             patch.object(server, "_get_podman", side_effect=RuntimeError("skip cookie")),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_crew_api_with_recovery", side_effect=fake_api),
         ):
@@ -1850,6 +1905,8 @@ class CaptainStopEndpointTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_captain_do_stop",
                          wraps=server._captain_do_stop) as do_stop,
@@ -1872,6 +1929,8 @@ class CaptainStopEndpointTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_captain_do_stop") as do_stop,
         ):
             response = asyncio.run(
@@ -1896,6 +1955,8 @@ class CaptainStopEndpointTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_captain_do_stop") as do_stop,
         ):
             response = asyncio.run(
@@ -1930,6 +1991,8 @@ class CaptainStopEndpointTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_captain_do_stop") as do_stop,
         ):
             response = asyncio.run(
@@ -1946,6 +2009,8 @@ class CaptainStopEndpointTests(unittest.TestCase):
         with (
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_captain_do_stop") as do_stop,
         ):
             response = asyncio.run(
@@ -2261,6 +2326,8 @@ class CaptainDoOrderTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail", side_effect=fake_append),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
         ):
             result = server._captain_do_order(
@@ -2297,6 +2364,8 @@ class CaptainDoOrderTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail", side_effect=fake_append),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
         ):
             result = server._captain_do_order(
@@ -2330,7 +2399,9 @@ class CaptainDoOrderTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=reg),
-            patch.object(server, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
         ):
             server._captain_do_order(
@@ -2377,6 +2448,8 @@ class CaptainDoOrderTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_dispatch_captain_checkin", dispatch_mock),
             patch.object(lifecycle, "_crew_api", return_value={"id": "task-1"}),
         ):
@@ -2451,6 +2524,8 @@ class CaptainDoStatusTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
             patch.object(captain_mod, "_mail_count", return_value=1),
             patch.object(captain_mod, "_load_registry", return_value=reg),
@@ -2471,6 +2546,8 @@ class CaptainDoStatusTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
             patch.object(captain_mod, "_mail_count", return_value=0),
             patch.object(captain_mod, "_load_registry", return_value=reg),
@@ -2494,6 +2571,8 @@ class CaptainDoStatusTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
             patch.object(captain_mod, "_mail_count", return_value=0),
         ):
@@ -2517,6 +2596,8 @@ class CaptainDoStatusTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_skim_all_mailboxes", return_value=skim_result),
             patch.object(captain_mod, "_mail_count", return_value=2),
             patch.object(captain_mod, "_load_registry", return_value=reg),
@@ -2561,7 +2642,9 @@ class CaptainDoStopTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
-            patch.object(server, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
+            patch.object(server, "_save_registry"),
             patch.object(captain_mod, "_mail_count", return_value=0),
             patch.object(captain_mod, "_load_registry", return_value=reg),
         ):
@@ -2589,6 +2672,8 @@ class CaptainDoStopTests(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(server, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(captain_mod, "_mail_count", return_value=0),
             patch.object(captain_mod, "_load_registry", return_value=reg),
         ):
@@ -2609,6 +2694,8 @@ class CaptainDoStopTests(unittest.TestCase):
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server._captain_do_stop(self.CREW_ID)
 

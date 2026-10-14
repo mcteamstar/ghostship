@@ -31,6 +31,7 @@ install_import_stubs()
 
 from transport.config import Config, ConfigError  # noqa: E402 (after stub install)
 import transport.lifecycle as _lifecycle  # noqa: E402
+import transport.registry as _registry_mod  # noqa: E402
 import transport.server as server  # noqa: E402
 
 
@@ -290,6 +291,8 @@ class TestHandleClaudeLogoutPost(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=podman),
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", return_value=mock_reg),
+            patch.object(_registry_mod, "_load_registry", return_value=mock_reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_claude_auth_file_path", return_value=mock_path),
             patch.object(server, "_security") as mock_sec,
         ):
@@ -321,6 +324,8 @@ class TestHandleClaudeLogoutPost(unittest.TestCase):
             patch.object(server, "_get_podman", return_value=Mock()),
             patch.object(server, "_registry_lock", threading.Lock()),
             patch.object(server, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_claude_auth_file_path", return_value=mock_path),
             patch.object(server, "_security") as mock_sec,
         ):

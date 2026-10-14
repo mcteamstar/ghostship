@@ -868,6 +868,8 @@ class ScheduleMonitorTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
@@ -920,8 +922,10 @@ class ScheduleCancelTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=fake_save),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry"),
         ):
             result = server.schedule(action="cancel", job_id="job-abc", crew_id="demo")
 
@@ -957,6 +961,8 @@ class ScheduleCancelTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
             patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
@@ -1067,6 +1073,8 @@ class ScheduleListTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg_empty),
             patch.object(server, "_load_registry", return_value=reg_empty),
+            patch.object(_registry_mod, "_load_registry", return_value=reg_empty),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_require_crew", return_value=self.CREW),
             patch.object(server, "_require_crew", return_value=self.CREW),
             patch.object(lifecycle, "_ensure_crew_running", return_value=self.CREW),
@@ -1120,8 +1128,10 @@ class SchedulePersistenceTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=fake_save),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_get_podman", return_value=fake_podman),
             patch.object(server, "_get_podman", return_value=fake_podman),
             patch.object(server, "_append_captain_mail"),
@@ -1155,6 +1165,8 @@ class SchedulePersistenceTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server._schedule_list("demo")
 
@@ -1195,8 +1207,10 @@ class SchedulePersistenceTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", side_effect=api),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=fake_save),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry"),
         ):
             result = server._schedule_cancel("j1", "demo")
 
@@ -1224,8 +1238,10 @@ class SchedulePersistenceTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "delay-job-1"}),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=fake_save),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry"),
         ):
             result = server.schedule(
                 name="cleanup", message="run cleanup", agent="ghost",
@@ -1291,8 +1307,10 @@ class SchedulePersistenceTests(unittest.TestCase):
             patch.object(server, "_ensure_crew_running", return_value=self.CREW),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=fake_save),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
-            patch.object(server, "_save_registry", side_effect=fake_save),
+            patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_get_podman", return_value=fake_podman),
             patch.object(server, "_get_podman", return_value=fake_podman),
             patch.object(server, "_append_captain_mail"),
@@ -1348,6 +1366,8 @@ class ReseedCronReconcileTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
             patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
@@ -1392,6 +1412,8 @@ class ReseedCronReconcileTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
             patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
@@ -1430,6 +1452,8 @@ class ReseedCronReconcileTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
             patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
@@ -1462,6 +1486,8 @@ class ReseedCronReconcileTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
             patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(server, "_crew_api", side_effect=api),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
@@ -1503,6 +1529,8 @@ class NukeScheduleTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value={"agents": []}),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.nuke("demo", confirm=False)
 
@@ -1523,6 +1551,8 @@ class NukeScheduleTests(unittest.TestCase):
             patch.object(server, "_crew_api", return_value={"agents": []}),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             result = server.nuke("demo", confirm=False)
 
@@ -1561,6 +1591,8 @@ class NukeScheduleTests(unittest.TestCase):
             patch.object(server, "_crew_api", side_effect=fake_crew_api),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_cleanup_crew", side_effect=fake_cleanup),
@@ -1600,6 +1632,8 @@ class NukeScheduleTests(unittest.TestCase):
             patch.object(server, "_crew_api", side_effect=failing_crew_api),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_cleanup_crew") as cleanup,
@@ -1633,6 +1667,8 @@ class NukeScheduleTests(unittest.TestCase):
             patch.object(server, "_crew_api", side_effect=fake_crew_api),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_cleanup_crew") as cleanup,
@@ -1809,6 +1845,8 @@ class FireImmediatelyTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
@@ -1858,6 +1896,8 @@ class FireImmediatelyTests(unittest.TestCase):
             patch.object(server, "_append_captain_mail"),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(lifecycle, "_crew_api_with_recovery", side_effect=api),
@@ -1884,6 +1924,8 @@ class DispatchFireAfterTests(unittest.TestCase):
             patch.object(server, "_crew_api_with_recovery", return_value={"id": "delayed-job-1"}) as api,
             patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
             patch.object(server, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {"demo": {"schedules": []}}}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
@@ -2250,6 +2292,8 @@ class ReseedCaptainBranchTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
             patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=self._crons_then()),
             patch.object(server, "_crew_api", side_effect=self._crons_then()),
             patch.object(lifecycle, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
@@ -2283,6 +2327,8 @@ class ReseedCaptainBranchTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
             patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=self._crons_then(task_alive_response)),
             patch.object(server, "_crew_api", side_effect=self._crons_then(task_alive_response)),
             patch.object(lifecycle, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),
@@ -2309,6 +2355,8 @@ class ReseedCaptainBranchTests(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=json.loads(json.dumps(reg))),
             patch.object(server, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_load_registry", return_value=json.loads(json.dumps(reg))),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=self._crons_then(gone_error)),
             patch.object(server, "_crew_api", side_effect=self._crons_then(gone_error)),
             patch.object(lifecycle, "_save_registry", side_effect=lambda r: saved.append(json.loads(json.dumps(r)))),

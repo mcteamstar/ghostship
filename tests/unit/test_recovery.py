@@ -105,6 +105,8 @@ class TestRefreshCookie(unittest.TestCase):
             patch.object(server, "_mint_cookie", return_value="new-cookie"),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
         ):
@@ -146,6 +148,8 @@ class TestRefreshCookie(unittest.TestCase):
             patch.object(server, "_mint_cookie", return_value="refreshed-cookie"),
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry", side_effect=capture_save),
             patch.object(server, "_save_registry", side_effect=capture_save),
         ):
@@ -409,6 +413,9 @@ class TestCallSiteMigration(unittest.TestCase):
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_save_registry"),
             patch.object(server, "_save_registry"),
             patch.object(_registry_mod, "_save_registry"),
@@ -457,6 +464,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway", return_value=True),
             patch.object(server, "_probe_gateway", return_value=True),
             patch.object(lifecycle, "_crew_api", return_value=[]),
@@ -481,6 +490,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway", return_value=False),
             patch.object(server, "_probe_gateway", return_value=False),
             patch.object(lifecycle, "_crew_api", side_effect=Exception("dead")),
@@ -505,6 +516,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(server, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_probe_gateway") as mock_probe,
             patch.object(server, "_probe_gateway") as mock_probe,
             patch.object(lifecycle, "_crew_api", side_effect=Exception("stopped")),
