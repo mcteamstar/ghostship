@@ -216,7 +216,7 @@ for the next).
   forwarding to the flow singletons: `_login_pending = property(lambda: KIRO_FLOW._pending_dict())`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 5.4  **Migrate `server.py` HTTP login handlers to use `LoginFlow` singletons.**
+- [x] 5.4  **Migrate `server.py` HTTP login handlers to use `LoginFlow` singletons.**
   Replace `_lifecycle._login_pending` attribute reads with `login.KIRO_FLOW.state`
   etc. Replace `_initiate_login(podman)` with `login.KIRO_FLOW.initiate(podman)`.
   Replace `_poll_claude_login_container` call chain with `login.CLAUDE_FLOW.poll(podman)`.
@@ -245,7 +245,7 @@ for the next).
   No tests yet (next task adds logic). Verify: module imports clean; no test
   regressions from import changes. `pytest tests/unit/ -q` green.
 
-- [ ] 6.2  **Implement `CrewLauncher.ensure_running`.**
+- [x] 6.2  **Implement `CrewLauncher.ensure_running`.**
   Port `lifecycle._ensure_crew_running` (lines 747–1065) as
   `CrewLauncher.ensure_running(self, crew: Crew, crew_id: str, *, touch: bool = True) -> Crew`.
   The concurrency logic (startup events, leader/waiter pattern, generation counter,
@@ -261,7 +261,7 @@ for the next).
   memory gate, `_NUKED_DURING_RESTART` sentinel propagation. Tests use mocked
   podman and registry. Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 6.3  **Implement `CrewLauncher.finish_setup`.**
+- [x] 6.3  **Implement `CrewLauncher.finish_setup`.**
   Port `lifecycle._finish_crew_setup` (lines 2168–2408) as
   `CrewLauncher.finish_setup(self, podman, crew_id, container, volume, home_volume,
   auth_b64, composition, composition_entry, *, admiral_secret, dashboard) -> dict`.
@@ -273,7 +273,7 @@ for the next).
   called with correct Crew fields; verify prewarm called at end.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 6.4  **Extract `CrewLauncher._run_restart_cycle` and fold into `_reconcile_registry`.**
+- [x] 6.4  **Extract `CrewLauncher._run_restart_cycle` and fold into `_reconcile_registry`.**
   The restart logic in `_reconcile_registry` (lifecycle.py:1840–1880) is
   structurally identical to the restart cycle inside `_ensure_crew_running`.
   Extract it as `self._run_restart_cycle(crew: Crew, crew_id: str) -> Crew | None`

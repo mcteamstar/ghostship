@@ -2361,22 +2361,6 @@ def _abort_claude_pending_login(podman: "PodmanClient") -> bool:
 # ── Codex login container helpers ─────────────────────────────────────────────
 
 
-def _start_codex_login_container(podman: PodmanClient) -> str:
-    """Create and start an ephemeral ga-codex-login-<token> container.
-
-    Uses KC_IMAGE (the local spec-ops image built with the codex toolchain)
-    because the ``codex-acp`` adapter is only present in that image. Fails with a
-    clear error naming GA_CREW_AGENT if the image cannot start.
-    The actual adapter-binary check happens after start in _initiate_codex_login.
-    Returns the container name.
-    """
-    try:
-        from login import CODEX_FLOW  # container
-    except ModuleNotFoundError:
-        from transport.login import CODEX_FLOW  # local dev
-    return CODEX_FLOW.start_container(podman)
-
-
 def _nuke_codex_login_container(podman: PodmanClient, name: str) -> None:
     """Best-effort stop and remove a ga-codex-login-* container."""
     try:
