@@ -75,7 +75,7 @@ for the next).
 
 ## 3. `CrewRegistry` class
 
-- [ ] 3.1  **Add `CrewRegistry` to `transport/registry.py`.**
+- [x] 3.1  **Add `CrewRegistry` to `transport/registry.py`.**
   Implement the class with `__init__(path: Path)`, context-manager
   `__enter__` / `__exit__` (acquire `_registry_lock`, load on enter, save on
   clean exit, release on exit), `get(crew_id) -> Crew | None`,

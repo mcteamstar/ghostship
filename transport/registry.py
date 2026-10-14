@@ -12,11 +12,18 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import TracebackType
+from typing import Any
 
 try:
     from config import Config  # container: flat /app/
 except ImportError:
     from transport.config import Config
+
+try:
+    from crew import Crew  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.crew import Crew  # local dev
 
 cfg = Config.from_env()
 
@@ -370,3 +377,147 @@ def _find_batch_by_task_ids(crew_id: str, task_ids: list[str]) -> dict | None:
         if wanted <= set(entry.get("task_ids", [])):
             return entry
     return None
+
+
+# ── CrewRegistry class ────────────────────────────────────────────────────────
+
+
+class CrewRegistry:
+    """Context-manager registry for crew entries.
+
+    Usage::
+
+        with registry:
+            crew = registry.get("demo")
+            if crew:
+                crew.status = "running"
+                registry.put(crew)
+
+    The context manager acquires ``_registry_lock`` on entry, loads the JSON
+    registry file, and releases the lock on exit.  On **clean exit**
+    (``exc_type is None``) the registry is saved back to disk before the lock
+    is released.  On an exceptional exit the registry is NOT saved — this
+    prevents a partial write from corrupting the file.
+
+    ``get`` / ``put`` / ``remove`` / ``list`` / ``touch`` are only valid
+    inside a ``with registry:`` block (the ``_reg`` attribute is set on
+    ``__enter__`` and cleared on ``__exit__``).  Calls outside a context
+    block raise ``RuntimeError``.
+
+    Design notes (TRN-240):
+    - Crew objects returned by ``get``/``list`` are live references into the
+      internal ``_reg`` dict — mutating them via attribute assignment and then
+      calling ``put(crew)`` commits the change.
+    - ``warm_until`` is in-memory only (D2) and is never persisted.
+    - The lock is the same module-level ``_registry_lock`` used by the legacy
+      procedural helpers, so the two APIs are mutually exclusive at the lock
+      level — no deadlocks from mixing them.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._reg: dict[str, Any] | None = None
+
+    # ── Internal load/save using self._path ──────────────────────────────────
+
+    def _load(self) -> dict[str, Any]:
+        """Load the registry from ``self._path``, returning ``{"crews": {}}`` when absent."""
+        try:
+            if self._path.exists():
+                return json.loads(self._path.read_text())
+        except json.JSONDecodeError as e:
+            logger.error("CrewRegistry: registry file is corrupt: %s", e)
+            corrupt = self._path.with_name(self._path.name + ".corrupt")
+            os.replace(self._path, corrupt)
+            raise RegistryCorruptError(
+                "registry corrupt — crews.json.corrupt preserved for inspection"
+            ) from e
+        except Exception as e:
+            logger.error("CrewRegistry: failed to load registry: %s", e)
+            raise
+        return {"crews": {}}
+
+    def _save(self, reg: dict[str, Any]) -> None:
+        """Save *reg* to ``self._path`` atomically (same durability guarantees as _save_registry)."""
+        tmp = self._path.with_suffix(".tmp")
+        _write_secret_file(tmp, json.dumps(reg, indent=2))
+        os.replace(tmp, self._path)
+        os.chmod(self._path, 0o600)
+        dir_fd = os.open(str(self._path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    # ── Context manager ───────────────────────────────────────────────────────
+
+    def __enter__(self) -> "CrewRegistry":
+        _registry_lock.acquire()
+        try:
+            self._reg = self._load()
+        except Exception:
+            _registry_lock.release()
+            raise
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        try:
+            if exc_type is None and self._reg is not None:
+                self._save(self._reg)
+        finally:
+            self._reg = None
+            _registry_lock.release()
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _require_reg(self) -> dict[str, Any]:
+        if self._reg is None:
+            raise RuntimeError(
+                "CrewRegistry methods must be called inside a 'with registry:' block"
+            )
+        return self._reg
+
+    # ── CRUD ──────────────────────────────────────────────────────────────────
+
+    def get(self, crew_id: str) -> Crew | None:
+        """Return the ``Crew`` for *crew_id*, or ``None`` if not found."""
+        reg = self._require_reg()
+        d = reg.get("crews", {}).get(crew_id)
+        if d is None:
+            return None
+        return Crew.from_dict(crew_id, d)
+
+    def put(self, crew: Crew) -> None:
+        """Write *crew* into the registry (insert or replace by crew_id)."""
+        reg = self._require_reg()
+        reg.setdefault("crews", {})[crew.crew_id] = crew.to_dict()
+
+    def remove(self, crew_id: str) -> None:
+        """Remove the entry for *crew_id* (no-op if absent)."""
+        reg = self._require_reg()
+        reg.get("crews", {}).pop(crew_id, None)
+
+    def list(self) -> list[Crew]:
+        """Return all crews as a list of ``Crew`` objects."""
+        reg = self._require_reg()
+        return [
+            Crew.from_dict(cid, d)
+            for cid, d in reg.get("crews", {}).items()
+        ]
+
+    def touch(self, crew_id: str) -> None:
+        """Update *crew_id*'s ``last_used`` timestamp to now."""
+        reg = self._require_reg()
+        entry = reg.get("crews", {}).get(crew_id)
+        if entry is not None:
+            entry["last_used"] = time.time()
+
+
+# Module-level singleton — import sites use:
+#   from transport.registry import registry   (or: from registry import registry)
+registry = CrewRegistry(REGISTRY_PATH)

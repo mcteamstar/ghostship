@@ -507,5 +507,181 @@ class WriteSecretFileTests(unittest.TestCase):
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
 
+class CrewRegistryTests(unittest.TestCase):
+    """Tests for CrewRegistry (TRN-240 task 3.1).
+
+    All tests use a temporary directory for the registry path to avoid touching
+    real disk state.  The module-level singleton is NOT used here to keep tests
+    isolated — each test constructs its own CrewRegistry instance pointing at
+    a temp file.
+    """
+
+    def _make_crew(self, crew_id: str = "demo", **kwargs):
+        from transport.crew import Crew
+        return Crew(
+            crew_id=crew_id,
+            container=f"gs-{crew_id}",
+            volume=f"gs-vol-{crew_id}",
+            home_volume=f"gs-home-{crew_id}",
+            cookie="abc",
+            status="running",
+            **kwargs,
+        )
+
+    # ── missing crew returns None ─────────────────────────────────────────────
+
+    def test_get_missing_crew_returns_none(self) -> None:
+        """get() returns None for an unknown crew_id."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            cr = registry.CrewRegistry(reg_path)
+            with cr:
+                result = cr.get("nonexistent")
+        self.assertIsNone(result)
+
+    # ── round-trip save/load ──────────────────────────────────────────────────
+
+    def test_put_and_get_roundtrip(self) -> None:
+        """put() persists a Crew; get() reads it back correctly."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            crew = self._make_crew("alpha")
+            cr = registry.CrewRegistry(reg_path)
+            with cr:
+                cr.put(crew)
+            # After the context exits (clean), the registry is saved.
+            # Re-open to read back from disk.
+            with cr:
+                retrieved = cr.get("alpha")
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.container, "gs-alpha")
+        self.assertEqual(retrieved.cookie, "abc")
+        self.assertEqual(retrieved.status, "running")
+
+    # ── context manager auto-save ─────────────────────────────────────────────
+
+    def test_context_manager_saves_on_clean_exit(self) -> None:
+        """Changes inside 'with registry:' are persisted on clean exit."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            crew = self._make_crew("beta")
+            cr = registry.CrewRegistry(reg_path)
+            with cr:
+                cr.put(crew)
+            # Read the raw file to confirm it was saved
+            saved = json.loads(reg_path.read_text())
+        self.assertIn("beta", saved["crews"])
+        self.assertEqual(saved["crews"]["beta"]["container"], "gs-beta")
+
+    def test_context_manager_does_not_save_on_exception(self) -> None:
+        """Changes inside 'with registry:' are NOT persisted when an exception occurs."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            crew = self._make_crew("gamma")
+            cr = registry.CrewRegistry(reg_path)
+            try:
+                with cr:
+                    cr.put(crew)
+                    raise ValueError("intentional error")
+            except ValueError:
+                pass
+            # File should not exist (no put succeeded before the exception path)
+            # or if it exists, gamma shouldn't be in it
+            if reg_path.exists():
+                saved = json.loads(reg_path.read_text())
+                self.assertNotIn("gamma", saved.get("crews", {}))
+
+    # ── remove ────────────────────────────────────────────────────────────────
+
+    def test_remove_deletes_crew(self) -> None:
+        """remove() deletes the crew entry; subsequent get() returns None."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            crew = self._make_crew("delta")
+            cr = registry.CrewRegistry(reg_path)
+            with cr:
+                cr.put(crew)
+            with cr:
+                cr.remove("delta")
+            with cr:
+                result = cr.get("delta")
+        self.assertIsNone(result)
+
+    # ── list ──────────────────────────────────────────────────────────────────
+
+    def test_list_returns_all_crews(self) -> None:
+        """list() returns all stored Crew objects."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            cr = registry.CrewRegistry(reg_path)
+            with cr:
+                cr.put(self._make_crew("e1"))
+                cr.put(self._make_crew("e2"))
+            with cr:
+                crews = cr.list()
+        self.assertEqual({c.crew_id for c in crews}, {"e1", "e2"})
+
+    # ── touch ─────────────────────────────────────────────────────────────────
+
+    def test_touch_updates_last_used(self) -> None:
+        """touch() updates last_used to approximately now."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            crew = self._make_crew("zeta")
+            cr = registry.CrewRegistry(reg_path)
+            before = time.time()
+            with cr:
+                cr.put(crew)
+            with cr:
+                cr.touch("zeta")
+            with cr:
+                updated = cr.get("zeta")
+        self.assertIsNotNone(updated)
+        self.assertGreaterEqual(updated.last_used, before)
+
+    # ── concurrent put/get ────────────────────────────────────────────────────
+
+    def test_concurrent_put_get(self) -> None:
+        """Concurrent put and get operations serialize correctly via lock."""
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as td:
+            reg_path = Path(td) / "crews.json"
+            cr = registry.CrewRegistry(reg_path)
+            errors: list[str] = []
+
+            def writer() -> None:
+                for i in range(5):
+                    try:
+                        with cr:
+                            cr.put(self._make_crew(f"w{i}"))
+                    except Exception as e:
+                        errors.append(str(e))
+
+            def reader() -> None:
+                for i in range(5):
+                    try:
+                        with cr:
+                            cr.list()  # just needs to not raise
+                    except Exception as e:
+                        errors.append(str(e))
+
+            t1 = threading.Thread(target=writer)
+            t2 = threading.Thread(target=reader)
+            t1.start()
+            t2.start()
+            t1.join(timeout=10)
+            t2.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Concurrent errors: {errors}")
+
+
 if __name__ == "__main__":
     unittest.main()
