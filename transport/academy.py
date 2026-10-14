@@ -8,17 +8,21 @@ lives in ``lifecycle.py``.
 
 Extracted from ``lifecycle.py``.
 
-Depends only on: stdlib and ``config.Config`` (the bottom of the transport
-dependency graph) plus ``captain._resolve_orders_dir`` for the order-template
-validation pass. It does NOT import from ``lifecycle``, ``server``,
-``registry``, ``podman``, or ``files`` — there is no circular-import risk.
+Depends only on: stdlib, ``config.Config``, ``constants``, and ``podman``
+(for ``PodmanClient`` in ``AcademyLoader``). It does NOT import from
+``lifecycle``, ``server``, ``registry``, or ``files`` — there is no
+circular-import risk.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
+import os
 import re
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +35,16 @@ try:
     from captain import _resolve_orders_dir  # container: flat /app/
 except ModuleNotFoundError:
     from transport.captain import _resolve_orders_dir  # local dev
+
+try:
+    from constants import SCRIPTS_DIR  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.constants import SCRIPTS_DIR  # local dev
+
+try:
+    from podman import PodmanClient  # container: flat /app/  # noqa: F401
+except ModuleNotFoundError:
+    from transport.podman import PodmanClient  # local dev  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +59,15 @@ _CREW_REGISTRY_PATH = Path("/crews/registry.json")
 
 # Academy agents pool (bind-mounted from the host at /agents).
 _AGENTS_DIR = Path("/agents")
+
+# ── Container-side paths (must match Containerfile/crew image layout) ─────────
+# These mirror the constants in lifecycle.py. They are defined here so
+# AcademyLoader can use them without a circular import from lifecycle.
+_KIRO_AGENTS_DIR = "/home/kirocrew/.kiro/agents"
+_KIRO_SKILLS_DIR = "/home/kirocrew/.kiro/crew/skills"
+_KIRO_STEERING_DIR = "/home/kirocrew/.kiro/steering"
+_KIRO_MCP_JSON = "/home/kirocrew/.kiro/mcp.json"
+_MCP_CATALOGUE_DIR = Path("/mcp")
 
 
 # ── Composition registry ──────────────────────────────────────────────────────
@@ -309,3 +332,212 @@ def _validate_academy() -> list[str]:
                 )
 
     return warnings
+
+
+# ── AcademyLoader ─────────────────────────────────────────────────────────────
+
+
+class AcademyLoader:
+    """Parameterised copier for Academy assets into a running crew container.
+
+    ``AcademyLoader(podman, container, composition_entry=None)`` holds the three
+    copy operations (``agents``, ``skills``, ``steering``) that were previously
+    module-level functions in ``lifecycle.py``.  After TRN-240 task 4.2, each
+    of those functions becomes a one-line wrapper delegating here; until then,
+    both exist side-by-side.
+
+    Usage::
+
+        loader = AcademyLoader(podman, container, composition_entry)
+        result = loader.copy_all()
+        # result == {"agents": [...], "skills": [...], "steering": [...]}
+    """
+
+    _KINDS = ("agents", "skills", "steering")
+
+    def __init__(
+        self,
+        podman: "PodmanClient",
+        container: str,
+        composition_entry: dict | None = None,
+    ) -> None:
+        self._podman = podman
+        self._container = container
+        self._composition_entry = composition_entry
+
+    # ── Public interface ──────────────────────────────────────────────────────
+
+    def copy(self, kind: str) -> list[str]:
+        """Copy Academy assets of *kind* into the crew container.
+
+        *kind* must be one of ``"agents"``, ``"skills"``, or ``"steering"``.
+        Returns the list of copied asset names (filenames / directory names).
+        Raises ``ValueError`` for unknown kinds.
+        """
+        if kind == "agents":
+            return self._copy_agents()
+        if kind == "skills":
+            return self._copy_skills()
+        if kind == "steering":
+            return self._copy_steering()
+        raise ValueError(
+            f"Unknown AcademyLoader kind {kind!r}. "
+            f"Valid kinds: {self._KINDS!r}"
+        )
+
+    def copy_all(self) -> dict[str, list[str]]:
+        """Copy all three Academy asset kinds and return their results.
+
+        Returns ``{"agents": [...], "skills": [...], "steering": [...]}``.
+        """
+        return {kind: self.copy(kind) for kind in self._KINDS}
+
+    # ── Per-kind implementations ──────────────────────────────────────────────
+
+    def _copy_agents(self) -> list[str]:
+        """Copy agent JSONs selected by the crew manifest, plus write mcp.json."""
+        agents_src = Path("/agents")
+        if not agents_src.exists():
+            logger.warning(
+                "No /agents dir in transport container — skipping agent copy"
+            )
+            return []
+        manifest = _load_crew_manifest(self._composition_entry)
+        selection = manifest["agents"]
+        copied: list[str] = []
+        for af in agents_src.glob("*.json"):
+            if not _manifest_selects(selection, af.name):
+                continue
+            try:
+                data = af.read_bytes()
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w") as tar:
+                    ti = tarfile.TarInfo(name=af.name)
+                    ti.size = len(data)
+                    tar.addfile(ti, io.BytesIO(data))
+                buf.seek(0)
+                self._podman.container_archive_put(
+                    self._container, _KIRO_AGENTS_DIR, buf.read()
+                )
+                copied.append(af.name)
+            except Exception as e:
+                logger.warning("Failed to copy agent %s: %s", af.name, e)
+        logger.info("Copied agents to %s: %s", self._container, copied)
+
+        # ── Write mcp.json from manifest.mcpServers ───────────────────────────
+        mcp_servers_list = manifest.get("mcpServers")
+        if not mcp_servers_list:
+            return copied
+
+        env = dict(os.environ)
+        resolved_entries: dict[str, Any] = {}
+
+        for server_name in mcp_servers_list:
+            catalogue_path = _MCP_CATALOGUE_DIR / f"{server_name}.json"
+            if not catalogue_path.is_file():
+                logger.warning(
+                    "mcp.json: server %r not found in catalogue at %s — skipping",
+                    server_name, catalogue_path,
+                )
+                continue
+            try:
+                entry = json.loads(catalogue_path.read_text())
+            except Exception as e:
+                logger.warning(
+                    "mcp.json: failed to parse catalogue entry %s: %s — skipping",
+                    catalogue_path, e,
+                )
+                continue
+            entry = _substitute_env_vars(entry, env)
+            if "headers" in entry:
+                entry["poolable"] = False
+            resolved_entries[server_name] = entry
+
+        if not resolved_entries:
+            logger.info("mcp.json: no valid server entries resolved — skipping write")
+            return copied
+
+        mcp_json_data = json.dumps({"mcpServers": resolved_entries}, indent=2).encode()
+        try:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                ti = tarfile.TarInfo(name="mcp.json")
+                ti.size = len(mcp_json_data)
+                tar.addfile(ti, io.BytesIO(mcp_json_data))
+            buf.seek(0)
+            mcp_dest_dir = str(Path(_KIRO_MCP_JSON).parent)
+            self._podman.container_archive_put(
+                self._container, mcp_dest_dir, buf.read()
+            )
+            logger.info(
+                "Wrote mcp.json to %s with servers: %s",
+                self._container, list(resolved_entries.keys()),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to write mcp.json to %s: %s", self._container, e
+            )
+
+        return copied
+
+    def _copy_skills(self) -> list[str]:
+        """Copy skill SKILL.md files selected by the crew manifest."""
+        skills_src = Path("/skills")
+        if not skills_src.exists():
+            logger.warning(
+                "No /skills dir in transport container — skipping skill copy"
+            )
+            return []
+        selection = _load_crew_manifest(self._composition_entry)["skills"]
+        copied: list[str] = []
+        for skill_dir in skills_src.iterdir():
+            if not _manifest_selects(selection, skill_dir.name):
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            try:
+                data = skill_md.read_bytes()
+                dest_dir = f"{_KIRO_SKILLS_DIR}/{skill_dir.name}"
+                self._podman.container_exec(
+                    self._container, ["mkdir", "-p", dest_dir]
+                )
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w") as tar:
+                    ti = tarfile.TarInfo(name="SKILL.md")
+                    ti.size = len(data)
+                    tar.addfile(ti, io.BytesIO(data))
+                buf.seek(0)
+                self._podman.container_archive_put(
+                    self._container, dest_dir, buf.read()
+                )
+                copied.append(skill_dir.name)
+            except Exception as e:
+                logger.warning("Failed to copy skill %s: %s", skill_dir.name, e)
+        logger.info("Copied skills to %s: %s", self._container, copied)
+        return copied
+
+    def _copy_steering(self) -> list[str]:
+        """Copy steering .md files selected by the crew manifest."""
+        steering_src = Path("/steering")
+        if not steering_src.exists():
+            logger.warning(
+                "No /steering dir in transport container — skipping steering copy"
+            )
+            return []
+        selection = _load_crew_manifest(self._composition_entry)["steering"]
+        copied: list[str] = []
+        for doc in steering_src.glob("*.md"):
+            if not _manifest_selects(selection, doc.name):
+                continue
+            try:
+                b64 = base64.b64encode(doc.read_bytes()).decode()
+                self._podman.container_exec(self._container, [
+                    "python3", f"{SCRIPTS_DIR}/copy_steering.py",
+                    _KIRO_STEERING_DIR, doc.name, b64,
+                ])
+                copied.append(doc.name)
+            except Exception as e:
+                logger.warning("Failed to copy steering doc %s: %s", doc.name, e)
+        logger.info("Copied steering docs to %s: %s", self._container, copied)
+        return copied

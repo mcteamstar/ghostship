@@ -130,7 +130,7 @@ for the next).
 
 ## 4. `AcademyLoader` class
 
-- [ ] 4.1  **Add `AcademyLoader` to `transport/academy.py`.**
+- [x] 4.1  **Add `AcademyLoader` to `transport/academy.py`.**
   Implement `AcademyLoader(podman, container, composition_entry=None)` with
   `copy(kind: str) -> list[str]` and `copy_all() -> dict[str, list[str]]`.
   `copy("agents")` runs the body of `_copy_agents` (lifecycle.py:1217–1308),
