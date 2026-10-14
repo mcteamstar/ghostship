@@ -158,7 +158,7 @@ for the next).
 
 ## 5. `LoginFlow` class hierarchy
 
-- [ ] 5.1  **Create `transport/login.py` with the abstract base class.**
+- [x] 5.1  **Create `transport/login.py` with the abstract base class.**
   Define `LoginFlow(ABC)` with: `backend: ClassVar[str]`,
   `container_prefix: ClassVar[str]`, `image_key: ClassVar[str]`
   (either `"kc_base_image"` for kiro or `"kc_image"` for claude/codex),
@@ -176,7 +176,7 @@ for the next).
   `inject_auth`, `poll(podman)`.
   No tests yet (subclasses tested in 5.2).
 
-- [ ] 5.2  **Implement `KiroLoginFlow`, `ClaudeLoginFlow`, `CodexLoginFlow`.**
+- [x] 5.2  **Implement `KiroLoginFlow`, `ClaudeLoginFlow`, `CodexLoginFlow`.**
   `KiroLoginFlow`: backend="kiro", container_prefix=GA_LOGIN_CONTAINER_PREFIX,
   image=kc_base_image, binary="kiro-cli", cmd=["kiro-cli","login","--use-device-flow"],
   prompt_patterns and url_patterns from `_initiate_login` (lifecycle.py:2861–2890),
