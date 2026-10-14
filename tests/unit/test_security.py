@@ -380,5 +380,77 @@ class TestAuditLogging(unittest.TestCase):
         self.assertNotIn(secret_token, captured[0])
 
 
+# ── trn-237: CSP nonce support ────────────────────────────────────────────────
+
+class TestCspNonce(unittest.TestCase):
+    """Tests for generate_csp_nonce() and nonce-bearing security_headers()."""
+
+    def test_generate_csp_nonce_returns_different_values(self):
+        """Two calls to generate_csp_nonce() return distinct values."""
+        n1 = sec.generate_csp_nonce()
+        n2 = sec.generate_csp_nonce()
+        self.assertNotEqual(n1, n2)
+
+    def test_generate_csp_nonce_alphabet_is_url_safe_base64(self):
+        """generate_csp_nonce() returns only URL-safe base64 characters (no +/=)."""
+        import base64
+        for _ in range(20):
+            nonce = sec.generate_csp_nonce()
+            # URL-safe base64 uses A-Z, a-z, 0-9, -, _ and optional = padding.
+            # secrets.token_urlsafe strips padding, so only A-Za-z0-9-_ expected.
+            try:
+                # Re-pad and decode to confirm it is valid base64 content.
+                padded = nonce + "=" * (-len(nonce) % 4)
+                base64.urlsafe_b64decode(padded)
+            except Exception as e:
+                self.fail(f"nonce {nonce!r} is not valid URL-safe base64: {e}")
+            # Confirm no '+' or '/' (non-URL-safe standard base64 chars)
+            self.assertNotIn("+", nonce)
+            self.assertNotIn("/", nonce)
+
+    def test_generate_csp_nonce_min_entropy(self):
+        """generate_csp_nonce() produces at least 16 URL-safe base64 characters (128 bits)."""
+        nonce = sec.generate_csp_nonce()
+        # 16 raw bytes → ceil(16*8/6) = 22 base64 chars (no padding)
+        self.assertGreaterEqual(len(nonce), 22)
+
+    def test_security_headers_with_nonce_contains_script_and_style_src(self):
+        """security_headers(nonce=...) emits script-src and style-src with the nonce."""
+        nonce = "testNonce123"
+        headers = dict(sec.security_headers(https=False, csp_report_only=True, nonce=nonce))
+        csp_value = headers.get(
+            b"content-security-policy-report-only", b""
+        ).decode("latin-1")
+        self.assertIn(f"script-src 'self' 'nonce-{nonce}'", csp_value)
+        self.assertIn(f"style-src 'self' 'nonce-{nonce}'", csp_value)
+
+    def test_security_headers_with_nonce_omits_unsafe_inline_and_eval(self):
+        """Nonce-bearing CSP must NOT include 'unsafe-inline' or 'unsafe-eval'."""
+        nonce = "testNonce456"
+        headers = dict(sec.security_headers(https=False, csp_report_only=True, nonce=nonce))
+        csp_value = headers.get(
+            b"content-security-policy-report-only", b""
+        ).decode("latin-1")
+        self.assertNotIn("'unsafe-inline'", csp_value)
+        self.assertNotIn("'unsafe-eval'", csp_value)
+
+    def test_security_headers_without_nonce_unchanged(self):
+        """security_headers() with no nonce emits DEFAULT_CSP unchanged."""
+        headers_no_nonce = dict(sec.security_headers(https=False, csp_report_only=True))
+        csp_value = headers_no_nonce.get(
+            b"content-security-policy-report-only", b""
+        ).decode("latin-1")
+        self.assertEqual(csp_value, sec.DEFAULT_CSP)
+
+    def test_security_headers_enforce_with_nonce(self):
+        """Enforce mode + nonce uses content-security-policy (not report-only)."""
+        nonce = "enforceNonce789"
+        headers = dict(sec.security_headers(https=False, csp_report_only=False, nonce=nonce))
+        self.assertIn(b"content-security-policy", headers)
+        self.assertNotIn(b"content-security-policy-report-only", headers)
+        csp_value = headers[b"content-security-policy"].decode("latin-1")
+        self.assertIn(f"'nonce-{nonce}'", csp_value)
+
+
 if __name__ == "__main__":
     unittest.main()

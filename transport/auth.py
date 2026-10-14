@@ -763,9 +763,13 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
+        nonce = _security.generate_csp_nonce()
+        scope["csp_nonce"] = nonce
+
         extra = _security.security_headers(
             https=https,
             csp_report_only=not self._csp_enforce,
+            nonce=nonce,
         )
 
         async def send_wrapper(message):
