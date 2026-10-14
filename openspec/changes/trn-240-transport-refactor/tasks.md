@@ -229,7 +229,7 @@ for the next).
 
 ## 6. `CrewLauncher` class
 
-- [ ] 6.1  **Create `transport/launcher.py` with `CrewLauncher` skeleton.**
+- [x] 6.1  **Create `transport/launcher.py` with `CrewLauncher` skeleton.**
   Define `CrewLauncher(registry: CrewRegistry, podman: PodmanClient, cfg: Config)`.
   Move the per-crew concurrency state dicts from `lifecycle.py` globals into
   `CrewLauncher` instance attributes: `_startup_events`, `_startup_events_lock`,
