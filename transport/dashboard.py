@@ -292,6 +292,13 @@ class DashboardGate:
         # it. encode_html_attr applied for defence-in-depth (hex output is already
         # safe, but the pattern matches next_url_escaped usage above).
         csrf_token_escaped = _security.encode_html_attr(self._csrf_token)
+        # Read the per-request CSP nonce from the ASGI scope (D2). When
+        # SecurityHeadersMiddleware ran, it stored a fresh CSPRNG token at
+        # scope["csp_nonce"]. In contexts without the middleware (unit tests,
+        # GA_ENABLE_SECURITY_HEADERS off) the key is absent and nonce_attr
+        # is empty — the page still works; browsers simply have no nonce to match.
+        nonce = request.scope.get("csp_nonce") if hasattr(request, "scope") else None
+        nonce_attr = f' nonce="{nonce}"' if nonce else ""
         # Simple HTML login page — no external dependencies. All CSS/JS inline.
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -299,7 +306,7 @@ class DashboardGate:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ghost Academy — Login</title>
-<style>
+<style{nonce_attr}>
   body {{ font-family: sans-serif; display: flex; align-items: center;
          justify-content: center; min-height: 100vh; margin: 0;
          background: #0f0f0f; color: #e8e8e8; }}
@@ -368,7 +375,7 @@ class DashboardGate:
     <p class="err" id="err" role="alert">Invalid API key.</p>
   </form>
 </div>
-<script>
+<script{nonce_attr}>
   const f = document.getElementById('f');
   const err = document.getElementById('err');
   const key = document.getElementById('k');

@@ -477,7 +477,34 @@ def encode_url_component(value: str) -> str:
 # In production server.py passes csp_enforce=True → csp_report_only=False, so
 # the Content-Security-Policy header is enforced, not report-only, at runtime.
 DEFAULT_CSP = "default-src 'self'; frame-ancestors 'none'; object-src 'none'"
+
+
+def generate_csp_nonce() -> str:
+    """Return a fresh 128-bit URL-safe nonce for a single response.
+
+    Uses ``secrets.token_urlsafe(16)`` — 16 bytes = 128 bits of CSPRNG entropy,
+    encoded as URL-safe base64. The result is valid verbatim in a CSP
+    ``'nonce-...'`` source expression and in an HTML ``nonce="..."`` attribute.
+    A fresh value is generated for every call; never persisted, logged, or
+    reused across responses.
+    """
+    return secrets.token_urlsafe(16)
 DEFAULT_HSTS = "max-age=63072000; includeSubDomains"
+
+
+def _csp_with_nonce(nonce: str) -> str:
+    """Build a nonce-bearing CSP policy string.
+
+    Adds explicit ``script-src`` and ``style-src`` directives that allow 'self'
+    and the given nonce; ``default-src 'self'`` remains the fallback for all
+    other fetch directives. Never includes ``'unsafe-inline'`` or ``'unsafe-eval'``.
+    """
+    return (
+        f"default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}'; "
+        f"style-src 'self' 'nonce-{nonce}'; "
+        f"frame-ancestors 'none'; object-src 'none'"
+    )
 
 
 def security_headers(
@@ -486,6 +513,7 @@ def security_headers(
     csp_report_only: bool = True,
     csp: str = DEFAULT_CSP,
     hsts: str = DEFAULT_HSTS,
+    nonce: "str | None" = None,
 ) -> list[tuple[bytes, bytes]]:
     """Return the baseline security response headers as ASGI (bytes, bytes) pairs.
 
@@ -494,14 +522,20 @@ def security_headers(
     -Policy. HSTS is added only on HTTPS responses (a non-zero max-age).
     CSP ships report-only first and flips to enforce once violations are
     triaged.
+
+    When ``nonce`` is provided, the CSP is built with explicit ``script-src``
+    and ``style-src`` directives that allowlist the nonce (D3). When ``None``,
+    the ``csp`` argument (defaulting to ``DEFAULT_CSP``) is emitted unchanged.
+    Neither path ever includes ``'unsafe-inline'`` or ``'unsafe-eval'``.
     """
     headers: list[tuple[bytes, bytes]] = [
         (b"x-content-type-options", b"nosniff"),
         (b"x-frame-options", b"DENY"),
         (b"referrer-policy", b"no-referrer"),
     ]
+    effective_csp = _csp_with_nonce(nonce) if nonce is not None else csp
     csp_header = b"content-security-policy-report-only" if csp_report_only else b"content-security-policy"
-    headers.append((csp_header, csp.encode("latin-1")))
+    headers.append((csp_header, effective_csp.encode("latin-1")))
     if https:
         headers.append((b"strict-transport-security", hsts.encode("latin-1")))
     return headers
