@@ -27,7 +27,7 @@ for the next).
 
 ## 2. `Crew` dataclass
 
-- [ ] 2.1  **Create `transport/crew.py` with the `Crew` dataclass.**
+- [x] 2.1  **Create `transport/crew.py` with the `Crew` dataclass.**
   Fields: `crew_id: str`, `container: str`, `volume: str`, `home_volume: str`,
   `port: int = 5476`, `cookie: str = ""`, `internal_cookie: str = ""`,
   `status: str = "stopped"`, `composition: str = "spec-ops"`,

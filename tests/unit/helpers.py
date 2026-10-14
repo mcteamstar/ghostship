@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, Mock
 from tests.unit.test_file_transfer import server  # noqa: F401  (re-exported)
 
 import transport.registry as registry  # noqa: F401  (re-exported)
+import transport.crew as crew_mod  # noqa: F401  (re-exported)
 import transport.podman as podman  # noqa: F401  (re-exported)
 import transport.files as files_mod  # noqa: F401  (re-exported)
 import transport.captain as captain_mod  # noqa: F401  (re-exported)
