@@ -187,6 +187,7 @@ try:
         _update_batch_status,
         _delete_batch,
         _find_batch_by_task_ids,
+        registry,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -208,6 +209,7 @@ except ModuleNotFoundError:
         _update_batch_status,
         _delete_batch,
         _find_batch_by_task_ids,
+        registry,
     )
 
 # Named exception raised by _load_registry() on a corrupt registry.
