@@ -513,7 +513,11 @@ class CrewRegistryTests(unittest.TestCase):
     All tests use a temporary directory for the registry path to avoid touching
     real disk state.  The module-level singleton is NOT used here to keep tests
     isolated — each test constructs its own CrewRegistry instance pointing at
-    a temp file.
+    a temp file, with REGISTRY_PATH and DATA_DIR patched.
+
+    The context manager uses the module-level _load_registry()/_save_registry()
+    functions so that server.py tests can continue mocking those functions after
+    task 3.3 migrates the lock blocks.
     """
 
     def _make_crew(self, crew_id: str = "demo", **kwargs):
@@ -536,8 +540,12 @@ class CrewRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             reg_path = Path(td) / "crews.json"
             cr = registry.CrewRegistry(reg_path)
-            with cr:
-                result = cr.get("nonexistent")
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                with cr:
+                    result = cr.get("nonexistent")
         self.assertIsNone(result)
 
     # ── round-trip save/load ──────────────────────────────────────────────────
@@ -549,12 +557,16 @@ class CrewRegistryTests(unittest.TestCase):
             reg_path = Path(td) / "crews.json"
             crew = self._make_crew("alpha")
             cr = registry.CrewRegistry(reg_path)
-            with cr:
-                cr.put(crew)
-            # After the context exits (clean), the registry is saved.
-            # Re-open to read back from disk.
-            with cr:
-                retrieved = cr.get("alpha")
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                with cr:
+                    cr.put(crew)
+                # After the context exits (clean), the registry is saved.
+                # Re-open to read back from disk.
+                with cr:
+                    retrieved = cr.get("alpha")
         self.assertIsNotNone(retrieved)
         self.assertEqual(retrieved.container, "gs-alpha")
         self.assertEqual(retrieved.cookie, "abc")
@@ -569,8 +581,12 @@ class CrewRegistryTests(unittest.TestCase):
             reg_path = Path(td) / "crews.json"
             crew = self._make_crew("beta")
             cr = registry.CrewRegistry(reg_path)
-            with cr:
-                cr.put(crew)
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                with cr:
+                    cr.put(crew)
             # Read the raw file to confirm it was saved
             saved = json.loads(reg_path.read_text())
         self.assertIn("beta", saved["crews"])
@@ -583,17 +599,20 @@ class CrewRegistryTests(unittest.TestCase):
             reg_path = Path(td) / "crews.json"
             crew = self._make_crew("gamma")
             cr = registry.CrewRegistry(reg_path)
-            try:
-                with cr:
-                    cr.put(crew)
-                    raise ValueError("intentional error")
-            except ValueError:
-                pass
-            # File should not exist (no put succeeded before the exception path)
-            # or if it exists, gamma shouldn't be in it
-            if reg_path.exists():
-                saved = json.loads(reg_path.read_text())
-                self.assertNotIn("gamma", saved.get("crews", {}))
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                try:
+                    with cr:
+                        cr.put(crew)
+                        raise ValueError("intentional error")
+                except ValueError:
+                    pass
+                # File should not exist or gamma shouldn't be in it
+                if reg_path.exists():
+                    saved = json.loads(reg_path.read_text())
+                    self.assertNotIn("gamma", saved.get("crews", {}))
 
     # ── remove ────────────────────────────────────────────────────────────────
 
@@ -604,12 +623,16 @@ class CrewRegistryTests(unittest.TestCase):
             reg_path = Path(td) / "crews.json"
             crew = self._make_crew("delta")
             cr = registry.CrewRegistry(reg_path)
-            with cr:
-                cr.put(crew)
-            with cr:
-                cr.remove("delta")
-            with cr:
-                result = cr.get("delta")
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                with cr:
+                    cr.put(crew)
+                with cr:
+                    cr.remove("delta")
+                with cr:
+                    result = cr.get("delta")
         self.assertIsNone(result)
 
     # ── list ──────────────────────────────────────────────────────────────────
@@ -620,11 +643,15 @@ class CrewRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             reg_path = Path(td) / "crews.json"
             cr = registry.CrewRegistry(reg_path)
-            with cr:
-                cr.put(self._make_crew("e1"))
-                cr.put(self._make_crew("e2"))
-            with cr:
-                crews = cr.list()
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                with cr:
+                    cr.put(self._make_crew("e1"))
+                    cr.put(self._make_crew("e2"))
+                with cr:
+                    crews = cr.list()
         self.assertEqual({c.crew_id for c in crews}, {"e1", "e2"})
 
     # ── touch ─────────────────────────────────────────────────────────────────
@@ -637,19 +664,28 @@ class CrewRegistryTests(unittest.TestCase):
             crew = self._make_crew("zeta")
             cr = registry.CrewRegistry(reg_path)
             before = time.time()
-            with cr:
-                cr.put(crew)
-            with cr:
-                cr.touch("zeta")
-            with cr:
-                updated = cr.get("zeta")
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                with cr:
+                    cr.put(crew)
+                with cr:
+                    cr.touch("zeta")
+                with cr:
+                    updated = cr.get("zeta")
         self.assertIsNotNone(updated)
         self.assertGreaterEqual(updated.last_used, before)
 
     # ── concurrent put/get ────────────────────────────────────────────────────
 
     def test_concurrent_put_get(self) -> None:
-        """Concurrent put and get operations serialize correctly via lock."""
+        """Concurrent put and get operations serialize correctly via lock.
+
+        Uses a real temp-file registry (no mocking) to verify locking.
+        Patches are applied to the global REGISTRY_PATH/DATA_DIR for the
+        duration of the test, then threads operate under that single patch.
+        """
         import tempfile
         import threading
         with tempfile.TemporaryDirectory() as td:
@@ -673,12 +709,17 @@ class CrewRegistryTests(unittest.TestCase):
                     except Exception as e:
                         errors.append(str(e))
 
-            t1 = threading.Thread(target=writer)
-            t2 = threading.Thread(target=reader)
-            t1.start()
-            t2.start()
-            t1.join(timeout=10)
-            t2.join(timeout=10)
+            # Apply the patch in the main thread so all threads see the same state.
+            with (
+                patch.object(registry, "REGISTRY_PATH", reg_path),
+                patch.object(registry, "DATA_DIR", Path(td)),
+            ):
+                t1 = threading.Thread(target=writer)
+                t2 = threading.Thread(target=reader)
+                t1.start()
+                t2.start()
+                t1.join(timeout=10)
+                t2.join(timeout=10)
 
         self.assertEqual(errors, [], f"Concurrent errors: {errors}")
 

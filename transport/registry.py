@@ -454,7 +454,7 @@ class CrewRegistry:
     def __enter__(self) -> "CrewRegistry":
         _registry_lock.acquire()
         try:
-            self._reg = self._load()
+            self._reg = _load_registry()
         except Exception:
             _registry_lock.release()
             raise
@@ -468,7 +468,7 @@ class CrewRegistry:
     ) -> None:
         try:
             if exc_type is None and self._reg is not None:
-                self._save(self._reg)
+                _save_registry(self._reg)
         finally:
             self._reg = None
             _registry_lock.release()
