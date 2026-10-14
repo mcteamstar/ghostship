@@ -567,13 +567,15 @@ async def _handle_file_get(request: Request) -> Response:
     podman = _get_podman()
     ws = KIRO_WORKSPACE_ROOT
 
+    c = _lifecycle._to_crew(crew_id, crew)
+
     # ── Stopped-crew path ─────────────────────────────────────────────────────
     # If the crew container is not running, serve the read via a disposable
     # worker container mounting the crew volume read-only. This does NOT wake
     # the crew container and does NOT update its idle timestamp (no _touch_crew,
     # no _ensure_crew_running).
     try:
-        running = podman.container_is_running(crew["container"])
+        running = podman.container_is_running(c.container)
     except Exception:
         running = False
 
@@ -598,7 +600,7 @@ async def _handle_file_get(request: Request) -> Response:
                 # via the overlay filesystem. No worker container needed — a
                 # directory tar requires no git process.
                 archive_response = podman.container_archive_get(
-                    crew["container"], f"{ws}/{clean}"
+                    c.container, f"{ws}/{clean}"
                 )
                 return StreamingResponse(
                     archive_response.iter_bytes(), media_type="application/x-tar"
@@ -607,7 +609,7 @@ async def _handle_file_get(request: Request) -> Response:
             # no _ensure_crew_running). The Podman archive API works on both
             # running and stopped containers via the overlay filesystem.
             archive_response = podman.container_archive_get(
-                crew["container"], f"{ws}/{clean}"
+                c.container, f"{ws}/{clean}"
             )
             archive_stream = _TarMemberStream(archive_response, clean)
             ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
@@ -639,6 +641,8 @@ async def _handle_file_get(request: Request) -> Response:
     except (ValueError, KeyError, RuntimeError) as e:
         return PlainTextResponse(str(e), status_code=404)
 
+    c = _lifecycle._to_crew(crew_id, crew)
+
     try:
         if bundle:
             repo_root = os.path.join(ws, clean)
@@ -649,16 +653,16 @@ async def _handle_file_get(request: Request) -> Response:
                 # processing; injection is prevented by _validate_ref validating
                 # `ref` before any git invocation.
                 podman.container_exec_checked(
-                    crew["container"],
+                    c.container,
                     ["git", "-C", repo_root, "bundle", "create", bundle_path, bundle_ref],
                 )
                 archive_response = podman.container_archive_get(
-                    crew["container"], bundle_path
+                    c.container, bundle_path
                 )
             except Exception:
                 try:
                     podman.container_exec_checked(
-                        crew["container"], ["rm", "-f", bundle_path]
+                        c.container, ["rm", "-f", bundle_path]
                     )
                 except Exception:
                     pass
@@ -671,7 +675,7 @@ async def _handle_file_get(request: Request) -> Response:
             except Exception:
                 try:
                     podman.container_exec_checked(
-                        crew["container"], ["rm", "-f", bundle_path]
+                        c.container, ["rm", "-f", bundle_path]
                     )
                 except Exception:
                     pass
@@ -684,7 +688,7 @@ async def _handle_file_get(request: Request) -> Response:
                     archive_stream.close()
                     try:
                         podman.container_exec_checked(
-                            crew["container"], ["rm", "-f", bundle_path]
+                            c.container, ["rm", "-f", bundle_path]
                         )
                     except Exception as cleanup_error:
                         logger.warning(
@@ -701,19 +705,19 @@ async def _handle_file_get(request: Request) -> Response:
             if repo_path == "repo":
                 repo_path = "."
             out = podman.container_exec(
-                crew["container"],
+                c.container,
                 ["git", "-C", os.path.join(ws, "repo"), "diff", ref, "--", repo_path],
             )
             return PlainTextResponse(out, media_type="text/plain")
         if pack:
             archive_response = podman.container_archive_get(
-                crew["container"], f"{ws}/{clean}"
+                c.container, f"{ws}/{clean}"
             )
             return StreamingResponse(
                 archive_response.iter_bytes(), media_type="application/x-tar"
             )
         archive_response = podman.container_archive_get(
-            crew["container"], f"{ws}/{clean}"
+            c.container, f"{ws}/{clean}"
         )
         archive_stream = _TarMemberStream(archive_response, clean)
         # Guess content type from extension
@@ -800,7 +804,7 @@ async def _handle_file_put(request: Request) -> Response:
     try:
         result = _transfer_upload(
             podman,
-            crew["container"],
+            _lifecycle._to_crew(crew_id, crew).container,
             ws,
             destination,
             body,

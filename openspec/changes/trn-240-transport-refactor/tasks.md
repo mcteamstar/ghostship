@@ -65,7 +65,7 @@ for the next).
   `_crew_cookie(crew)` calls working by delegating to `crew.gateway_url()` etc.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.4  **Migrate crew dict accesses in `files.py` to use `Crew` objects.**
+- [x] 2.4  **Migrate crew dict accesses in `files.py` to use `Crew` objects.**
   Replace all 12 `crew["container"]` / `crew.get(...)` accesses.
   `files.py` receives crew dicts from callers; update the relevant function
   signatures to accept `Crew` objects, and update their call sites in
