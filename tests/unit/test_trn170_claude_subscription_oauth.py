@@ -30,7 +30,8 @@ from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
 from transport.config import Config, ConfigError  # noqa: E402 (after stub install)
-import transport.lifecycle as _lifecycle  # noqa: E402
+import transport.lifecycle as _lifecycle
+import transport.login as _login  # noqa: F401  # noqa: E402
 import transport.registry as _registry_mod  # noqa: E402
 import transport.server as server  # noqa: E402
 
@@ -84,16 +85,16 @@ class TestHandleClaudeLoginPost(unittest.TestCase):
 
     def setUp(self) -> None:
         # Ensure clean state
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
         # Claude is opt-in via GA_AGENT_BACKENDS: these tests exercise the Claude path, so enable it.
         patcher = patch.object(server.cfg, "ga_crew_agent", "kiro,claude")
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
 
     def test_returns_200_with_login_url_when_unauthenticated(self) -> None:
         """POST /login/claude returns 200 + login_url when not authenticated."""
@@ -130,8 +131,8 @@ class TestHandleClaudeLoginPost(unittest.TestCase):
             patch.object(server, "GA_CREW_ACP_BACKEND", "claude"),
             patch.object(server, "_claude_auth_exists", return_value=False),
         ):
-            with _lifecycle._claude_login_pending_lock:
-                _lifecycle._claude_login_pending = {
+            with _login.CLAUDE_FLOW._lock:
+                _login.CLAUDE_FLOW._pending = {
                     "container": "ga-claude-login-abc",
                     "state": "started",
                     "started_at": 0.0,
@@ -176,24 +177,24 @@ class TestHandleClaudeLoginGet(unittest.TestCase):
         return asyncio.run(server._handle_claude_login_get(request))
 
     def setUp(self) -> None:
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
 
     def tearDown(self) -> None:
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
 
     def test_returns_404_when_no_flow(self) -> None:
         """GET /login/claude returns 404 when no Claude login is in progress."""
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
         response = self._run()
         self.assertEqual(response.status_code, 404)
 
     def test_returns_pending_while_waiting(self) -> None:
         """GET /login/claude returns pending while credentials not yet ready."""
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-abc",
                 "state": "started",
                 "started_at": 0.0,
@@ -201,7 +202,7 @@ class TestHandleClaudeLoginGet(unittest.TestCase):
             }
         with (
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_poll_claude_login_container", return_value=None),
+            patch.object(_login.CLAUDE_FLOW, "poll", return_value=None),
         ):
             response = self._run()
         self.assertEqual(response.status_code, 200)
@@ -210,8 +211,8 @@ class TestHandleClaudeLoginGet(unittest.TestCase):
 
     def test_returns_complete_on_auth_success(self) -> None:
         """GET /login/claude returns complete when credentials are ready."""
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-abc",
                 "state": "started",
                 "started_at": 0.0,
@@ -219,9 +220,9 @@ class TestHandleClaudeLoginGet(unittest.TestCase):
         fake_tar = b"PK fake tar content"
         with (
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_poll_claude_login_container", return_value=fake_tar),
+            patch.object(_login.CLAUDE_FLOW, "poll", return_value=fake_tar),
             patch.object(server, "_write_claude_auth_file"),
-            patch.object(server, "_nuke_claude_login_container"),
+            patch.object(_login.CLAUDE_FLOW, "abort"),
             patch.object(server, "_security") as mock_sec,
         ):
             mock_sec.audit_auth_event = Mock()
@@ -232,8 +233,8 @@ class TestHandleClaudeLoginGet(unittest.TestCase):
 
     def test_clears_pending_on_completion(self) -> None:
         """GET /login/claude clears _claude_login_pending after completion."""
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-xyz",
                 "state": "started",
                 "started_at": 0.0,
@@ -241,9 +242,8 @@ class TestHandleClaudeLoginGet(unittest.TestCase):
         fake_tar = b"some tar bytes"
         with (
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_poll_claude_login_container", return_value=fake_tar),
+            patch.object(_login.CLAUDE_FLOW, "poll", return_value=fake_tar),
             patch.object(server, "_write_claude_auth_file"),
-            patch.object(server, "_nuke_claude_login_container"),
             patch.object(server, "_security") as mock_sec,
         ):
             mock_sec.audit_auth_event = Mock()

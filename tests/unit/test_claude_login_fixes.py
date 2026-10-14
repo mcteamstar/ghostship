@@ -27,7 +27,8 @@ from unittest.mock import Mock, patch
 from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
-import transport.lifecycle as _lifecycle  # noqa: E402 (after stub install)
+import transport.lifecycle as _lifecycle
+import transport.login as _login  # noqa: F401  # noqa: E402 (after stub install)
 import transport.server as server  # noqa: E402
 
 
@@ -46,8 +47,8 @@ BACKUP_JSON = json.dumps({"firstStartTime": "x"}).encode()
 
 
 def _reset_pending():
-    with _lifecycle._claude_login_pending_lock:
-        _lifecycle._claude_login_pending = None
+    with _login.CLAUDE_FLOW._lock:
+        _login.CLAUDE_FLOW._pending = None
 
 
 class TestArchiveHasCredential(unittest.TestCase):
@@ -113,8 +114,8 @@ class TestSubmitClaudeLoginCode(unittest.TestCase):
         self.addCleanup(self.writer_end.close)
 
     def _set_awaiting(self):
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-test",
                 "state": "awaiting_code",
                 "pty_sock": self.helper_end,
@@ -225,8 +226,8 @@ class TestCodeEndpoint(unittest.TestCase):
         helper_end, writer_end = socket.socketpair()
         self.addCleanup(helper_end.close)
         self.addCleanup(writer_end.close)
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-test",
                 "state": "awaiting_code",
                 "pty_sock": helper_end,
@@ -243,8 +244,8 @@ class TestExpiredCodeOnPoll(unittest.TestCase):
         self.addCleanup(_reset_pending)
 
     def test_expired_flow_is_abandoned_with_410_and_failure_audit(self):
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-test",
                 "state": "code_submitted",
                 "code_submitted_at": time.time() - _lifecycle.CLAUDE_LOGIN_CODE_DEADLINE_SECS - 5,
@@ -252,15 +253,13 @@ class TestExpiredCodeOnPoll(unittest.TestCase):
             }
         request = _FakeRequest()
         with patch.object(server, "_get_podman", return_value=Mock()), \
-             patch.object(server, "_nuke_claude_login_container") as nuke, \
-             patch.object(server._security, "audit_auth_event") as audit, \
-             patch.object(server, "_poll_claude_login_container") as poll:
+             patch.object(_login.CLAUDE_FLOW, "poll") as poll, \
+             patch.object(server._security, "audit_auth_event") as audit:
             response = asyncio.run(server._handle_claude_login_get(request))
         self.assertEqual(response.status_code, 410)
-        nuke.assert_called_once()
         poll.assert_not_called()
         self.assertEqual(audit.call_args.kwargs["outcome"], "failure")
-        self.assertIsNone(_lifecycle._claude_login_pending)
+        self.assertIsNone(_login.CLAUDE_FLOW.state)
 
 
 class TestClaudeOptIn(unittest.TestCase):

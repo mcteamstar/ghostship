@@ -895,6 +895,11 @@ except ModuleNotFoundError:
     from transport import lifecycle as _lifecycle  # local dev
 
 try:
+    import login  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import login  # local dev
+
+try:
     import openapi as _openapi  # container: flat /app/
 except ModuleNotFoundError:
     from transport import openapi as _openapi  # local dev
@@ -1697,17 +1702,16 @@ async def _handle_login_post(request: Request) -> Response:
     Delegates to _initiate_login() for the actual container start and PTY flow.
     Returns the URL and code immediately so the operator can open the browser.
     """
-    with _lifecycle._login_pending_lock:
-        if _read_auth_file():
-            return PlainTextResponse(
-                "Already authenticated. POST /logout first.",
-                status_code=409,
-            )
-        if _lifecycle._login_pending is not None:
-            return PlainTextResponse(
-                "Login already in progress. Poll GET /login for status.",
-                status_code=409,
-            )
+    if _read_auth_file():
+        return PlainTextResponse(
+            "Already authenticated. POST /logout first.",
+            status_code=409,
+        )
+    if login.KIRO_FLOW.state is not None:
+        return PlainTextResponse(
+            "Login already in progress. Poll GET /login for status.",
+            status_code=409,
+        )
 
     try:
         podman = _get_podman()
@@ -1739,8 +1743,7 @@ async def _handle_login_get(request: Request) -> Response:
     nukes the temp container, clears _login_pending, returns {status: "complete"}.
     Returns 404 if no login flow is in progress.
     """
-    with _lifecycle._login_pending_lock:
-        pending = _lifecycle._login_pending
+    pending = login.KIRO_FLOW.state
 
     if pending is None:
         return PlainTextResponse("No login in progress.", status_code=404)
@@ -1786,16 +1789,8 @@ async def _handle_login_get(request: Request) -> Response:
         except Exception as e:
             logger.warning("Could not inject auth into crew %s: %s", cid, e)
 
-    # Nuke temp container and clear pending state (guarded)
-    _nuke_login_container(podman, pending["container"])
-    with _lifecycle._login_pending_lock:
-        # Only clear if the pending login is the one we just completed;
-        # a new concurrent login may have started between nuke and here.
-        if (
-            _lifecycle._login_pending is not None
-            and _lifecycle._login_pending.get("container") == pending["container"]
-        ):
-            _lifecycle._login_pending = None
+    # Nuke temp container and clear pending state via flow singleton abort
+    login.KIRO_FLOW.abort(podman)
 
     _security.audit_auth_event(
         action="login", outcome="success", account="academy",
@@ -1935,17 +1930,16 @@ async def _handle_claude_login_post(request: Request) -> Response:
     if not _backend_enabled("claude"):
         return PlainTextResponse(_backend_not_enabled_message("claude"), status_code=400)
 
-    with _lifecycle._claude_login_pending_lock:
-        if _claude_auth_exists():
-            return PlainTextResponse(
-                "Already authenticated. POST /logout/claude first.",
-                status_code=409,
-            )
-        if _lifecycle._claude_login_pending is not None:
-            return PlainTextResponse(
-                "Claude login already in progress. Poll GET /login/claude for status.",
-                status_code=409,
-            )
+    if _claude_auth_exists():
+        return PlainTextResponse(
+            "Already authenticated. POST /logout/claude first.",
+            status_code=409,
+        )
+    if login.CLAUDE_FLOW.state is not None:
+        return PlainTextResponse(
+            "Claude login already in progress. Poll GET /login/claude for status.",
+            status_code=409,
+        )
 
     try:
         podman = _get_podman()
@@ -1978,8 +1972,7 @@ async def _handle_claude_login_get(request: Request) -> Response:
     returns {"status": "complete"}.
     Returns 404 if no Claude login flow is in progress.
     """
-    with _lifecycle._claude_login_pending_lock:
-        pending = _lifecycle._claude_login_pending
+    pending = login.CLAUDE_FLOW.state
 
     if pending is None:
         return PlainTextResponse("No Claude login in progress.", status_code=404)
@@ -1990,14 +1983,8 @@ async def _handle_claude_login_get(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=500)
 
     # A submitted code that never completed the exchange abandons the flow.
-    if _lifecycle._claude_login_code_expired(pending):
-        _nuke_claude_login_container(podman, pending["container"])
-        with _lifecycle._claude_login_pending_lock:
-            if (
-                _lifecycle._claude_login_pending is not None
-                and _lifecycle._claude_login_pending.get("container") == pending["container"]
-            ):
-                _lifecycle._claude_login_pending = None
+    if login.CLAUDE_FLOW.is_expired():
+        login.CLAUDE_FLOW.abort(podman)
         _security.audit_auth_event(
             action="login", outcome="failure", account="claude",
             source=_request_source(request),
@@ -2006,7 +1993,7 @@ async def _handle_claude_login_get(request: Request) -> Response:
         return JSONResponse({"status": "expired"}, status_code=410)
 
     # Poll the login container for the completed Claude credential.
-    tar_bytes = _poll_claude_login_container(podman, pending["container"])
+    tar_bytes = login.CLAUDE_FLOW.poll(podman)
     if not tar_bytes:
         return JSONResponse({
             "status": "pending",
@@ -2032,13 +2019,7 @@ async def _handle_claude_login_get(request: Request) -> Response:
         )
 
     # Nuke temp container and clear pending state (guarded)
-    _nuke_claude_login_container(podman, pending["container"])
-    with _lifecycle._claude_login_pending_lock:
-        if (
-            _lifecycle._claude_login_pending is not None
-            and _lifecycle._claude_login_pending.get("container") == pending["container"]
-        ):
-            _lifecycle._claude_login_pending = None
+    _lifecycle._abort_claude_pending_login(podman)
 
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
@@ -2173,17 +2154,16 @@ async def _handle_codex_login_post(request: Request) -> Response:
     if not _backend_enabled("codex"):
         return PlainTextResponse(_backend_not_enabled_message("codex"), status_code=400)
 
-    with _lifecycle._codex_login_pending_lock:
-        if _codex_auth_exists():
-            return PlainTextResponse(
-                "Already authenticated. POST /logout/codex first.",
-                status_code=409,
-            )
-        if _lifecycle._codex_login_pending is not None:
-            return PlainTextResponse(
-                "Codex login already in progress. Poll GET /login/codex for status.",
-                status_code=409,
-            )
+    if _codex_auth_exists():
+        return PlainTextResponse(
+            "Already authenticated. POST /logout/codex first.",
+            status_code=409,
+        )
+    if login.CODEX_FLOW.state is not None:
+        return PlainTextResponse(
+            "Codex login already in progress. Poll GET /login/codex for status.",
+            status_code=409,
+        )
 
     try:
         podman = _get_podman()
@@ -2216,8 +2196,7 @@ async def _handle_codex_login_get(request: Request) -> Response:
     returns {"status": "complete"}.
     Returns 404 if no Codex login flow is in progress.
     """
-    with _lifecycle._codex_login_pending_lock:
-        pending = _lifecycle._codex_login_pending
+    pending = login.CODEX_FLOW.state
 
     if pending is None:
         return PlainTextResponse("No Codex login in progress.", status_code=404)
@@ -2228,7 +2207,7 @@ async def _handle_codex_login_get(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=500)
 
     # Poll the login container for completed ~/.codex/ credentials.
-    tar_bytes = _poll_codex_login_container(podman, pending["container"])
+    tar_bytes = login.CODEX_FLOW.poll(podman)
     if not tar_bytes:
         return JSONResponse({
             "status": "pending",
@@ -2254,13 +2233,7 @@ async def _handle_codex_login_get(request: Request) -> Response:
         )
 
     # Nuke temp container and clear pending state (guarded)
-    _nuke_codex_login_container(podman, pending["container"])
-    with _lifecycle._codex_login_pending_lock:
-        if (
-            _lifecycle._codex_login_pending is not None
-            and _lifecycle._codex_login_pending.get("container") == pending["container"]
-        ):
-            _lifecycle._codex_login_pending = None
+    _lifecycle._abort_codex_pending_login(podman)
 
     _security.audit_auth_event(
         action="login", outcome="success", account="codex",
@@ -2661,8 +2634,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             # If a login is already in progress, poll the DB before giving up —
             # the user may have just completed the device flow but GET /login
             # hasn't been called yet to write the auth file.
-            with _lifecycle._login_pending_lock:
-                pending = _lifecycle._login_pending
+            pending = login.KIRO_FLOW.state
             if pending is not None:
                 _poll_consumed = False
                 try:
@@ -2671,12 +2643,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                         _write_auth_file(auth_b64)
                         _nuke_login_container(podman, pending["container"])
                         _poll_consumed = True
-                        with _lifecycle._login_pending_lock:
-                            if (
-                                _lifecycle._login_pending is not None
-                                and _lifecycle._login_pending.get("container") == pending["container"]
-                            ):
-                                _lifecycle._login_pending = None
+                        login.KIRO_FLOW.abort(podman)
                         logger.info("Auth completed via launch poll — login container cleaned up")
                 except Exception as e:
                     logger.warning("Auth poll in launch failed: %s", e)
@@ -2691,12 +2658,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                             _nuke_login_container(podman, pending["container"])
                         except Exception:
                             pass
-                        with _lifecycle._login_pending_lock:
-                            if (
-                                _lifecycle._login_pending is not None
-                                and _lifecycle._login_pending.get("container") == pending["container"]
-                            ):
-                                _lifecycle._login_pending = None
+                        login.KIRO_FLOW.abort(podman)
             if not auth_b64:
                 result = _initiate_login(podman)
                 if result.get("login_pending"):

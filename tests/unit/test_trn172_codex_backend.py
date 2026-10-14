@@ -31,7 +31,8 @@ from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
 from transport.config import Config, ConfigError  # noqa: E402 (after stub install)
-import transport.lifecycle as _lifecycle  # noqa: E402
+import transport.lifecycle as _lifecycle
+import transport.login as _login  # noqa: F401  # noqa: E402
 import transport.registry as _registry_mod  # noqa: E402
 import transport.server as server  # noqa: E402
 
@@ -444,16 +445,16 @@ class TestHandleCodexLoginPost(unittest.TestCase):
         return asyncio.run(server._handle_codex_login_post(request or Mock()))
 
     def setUp(self) -> None:
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = None
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = None
         # Codex is opt-in via GA_AGENT_BACKENDS: enable it for these tests.
         patcher = patch.object(server.cfg, "ga_crew_agent", "kiro,codex")
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = None
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = None
 
     def test_returns_200_with_login_url_when_unauthenticated(self) -> None:
         with (
@@ -485,8 +486,8 @@ class TestHandleCodexLoginPost(unittest.TestCase):
             patch.object(server, "GA_CREW_ACP_BACKEND", "codex"),
             patch.object(server, "_codex_auth_exists", return_value=False),
         ):
-            with _lifecycle._codex_login_pending_lock:
-                _lifecycle._codex_login_pending = {
+            with _login.CODEX_FLOW._lock:
+                _login.CODEX_FLOW._pending = {
                     "container": "ga-codex-login-abc",
                     "state": "started",
                     "started_at": 0.0,
@@ -519,20 +520,20 @@ class TestHandleCodexLoginGet(unittest.TestCase):
         return asyncio.run(server._handle_codex_login_get(request or Mock()))
 
     def setUp(self) -> None:
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = None
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = None
 
     def tearDown(self) -> None:
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = None
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = None
 
     def test_returns_404_when_no_flow(self) -> None:
         response = self._run()
         self.assertEqual(response.status_code, 404)
 
     def test_returns_pending_while_waiting(self) -> None:
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = {
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = {
                 "container": "ga-codex-login-abc",
                 "state": "started",
                 "started_at": 0.0,
@@ -540,15 +541,15 @@ class TestHandleCodexLoginGet(unittest.TestCase):
             }
         with (
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_poll_codex_login_container", return_value=None),
+            patch.object(_login.CODEX_FLOW, "poll", return_value=None),
         ):
             response = self._run()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.body)["status"], "pending")
 
     def test_returns_complete_and_writes_auth_on_success(self) -> None:
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = {
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = {
                 "container": "ga-codex-login-abc",
                 "state": "started",
                 "started_at": 0.0,
@@ -556,9 +557,9 @@ class TestHandleCodexLoginGet(unittest.TestCase):
         fake_tar = b"PK fake codex tar"
         with (
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_poll_codex_login_container", return_value=fake_tar),
+            patch.object(_login.CODEX_FLOW, "poll", return_value=fake_tar),
             patch.object(server, "_write_codex_auth_file") as mock_write,
-            patch.object(server, "_nuke_codex_login_container"),
+            patch.object(_login.CODEX_FLOW, "abort"),
             patch.object(server, "_security") as mock_sec,
         ):
             mock_sec.audit_auth_event = Mock()
@@ -568,17 +569,16 @@ class TestHandleCodexLoginGet(unittest.TestCase):
         mock_write.assert_called_once_with(fake_tar)
 
     def test_clears_pending_on_completion(self) -> None:
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = {
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = {
                 "container": "ga-codex-login-xyz",
                 "state": "started",
                 "started_at": 0.0,
             }
         with (
             patch.object(server, "_get_podman", return_value=Mock()),
-            patch.object(server, "_poll_codex_login_container", return_value=b"tar"),
+            patch.object(_login.CODEX_FLOW, "poll", return_value=b"tar"),
             patch.object(server, "_write_codex_auth_file"),
-            patch.object(server, "_nuke_codex_login_container"),
             patch.object(server, "_security") as mock_sec,
         ):
             mock_sec.audit_auth_event = Mock()

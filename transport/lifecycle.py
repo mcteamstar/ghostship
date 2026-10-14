@@ -2685,6 +2685,10 @@ CODEX_LOGIN_TTL_SECS = 900.0
 def _submit_claude_login_code(code: str) -> dict:
     """Write the user's pasted authorisation code to the pending login's PTY.
 
+    Delegates to CLAUDE_FLOW.submit_code() and keeps the lifecycle-level
+    _claude_login_pending mirror in sync so existing test assertions on
+    ``lifecycle._claude_login_pending["state"]`` continue to work.
+
     Returns one of:
       {"ok": True}                 — code written; the exchange is in progress
       {"error": "no_pending"}      — no Claude login flow is awaiting a code
@@ -2693,23 +2697,15 @@ def _submit_claude_login_code(code: str) -> dict:
 
     The code is never logged or returned.
     """
+    try:
+        from login import CLAUDE_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CLAUDE_FLOW  # local dev
+    result = CLAUDE_FLOW.submit_code(code)
+    global _claude_login_pending, _claude_login_pending_lock
     with _claude_login_pending_lock:
-        pending = _claude_login_pending
-        if pending is None or pending.get("state") not in ("awaiting_code", "code_submitted"):
-            return {"error": "no_pending"}
-        if pending["state"] == "code_submitted":
-            return {"error": "already_submitted"}
-        sock = pending.get("pty_sock")
-        if sock is None:
-            return {"error": "no_pending"}
-        try:
-            sock.sendall((code + "\n").encode())
-        except Exception as e:
-            logger.warning("Could not write Claude login code to PTY: %s", type(e).__name__)
-            return {"error": "pty_write_failed"}
-        pending["state"] = "code_submitted"
-        pending["code_submitted_at"] = time.time()
-    return {"ok": True}
+        _claude_login_pending = CLAUDE_FLOW._pending
+    return result
 
 
 # How long a login may wait for the user to approve in the browser and paste the

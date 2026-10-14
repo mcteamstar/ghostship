@@ -56,6 +56,7 @@ import httpx2 as httpx
 import transport.registry as _registry_mod  # noqa: F401
 
 from tests.unit.helpers import Request, server, lifecycle, monitors, academy  # noqa: F401
+import transport.login as _login  # noqa: F401
 # Async proxy HTTP mock consolidated in tests.unit.helpers.
 from tests.unit.helpers import FakeAsyncHTTP  # noqa: F401
 
@@ -2333,13 +2334,15 @@ class LoginGuardClearTests(unittest.TestCase):
     def setUp(self) -> None:
         with lifecycle._login_pending_lock:
             lifecycle._login_pending = None
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = None
 
     def test_guard_clear_ordering_verified(self) -> None:
         """8.1: _login_pending is cleared ONLY AFTER _nuke_login_container completes."""
-        # Set up a pending login
+        # Set up a pending login via the flow singleton
         pending_container = "ga-login-test1234"
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = {
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = {
                 "container": pending_container,
                 "exec_id": "exec-1",
                 "started_at": time.time(),
@@ -2349,10 +2352,9 @@ class LoginGuardClearTests(unittest.TestCase):
         cleared_before_nuke = {"seen": False}
 
         def fake_nuke(podman, container):
-            # At the point nuke is called, _login_pending must NOT yet be None
-            with lifecycle._login_pending_lock:
-                if lifecycle._login_pending is None:
-                    cleared_before_nuke["seen"] = True
+            # At the point nuke is called, KIRO_FLOW._pending must NOT yet be None
+            if _login.KIRO_FLOW._pending is None:
+                cleared_before_nuke["seen"] = True
             nuked_flag["done"] = True
 
         fake_podman = Mock()
@@ -2365,16 +2367,12 @@ class LoginGuardClearTests(unittest.TestCase):
                 patch.object(lifecycle, "_read_auth_from_crew", return_value="dGVzdA=="),
                 patch.object(server, "_read_auth_from_crew", return_value="dGVzdA=="),
                 patch.object(server, "_write_auth_file"),
-                patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
-                patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
-                patch.object(_registry_mod, "_save_registry"),
                 patch.object(server, "_load_registry", return_value={"crews": {}}),
                 patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
                 patch.object(_registry_mod, "_save_registry"),
                 patch.object(lifecycle, "_inject_auth"),
                 patch.object(server, "_inject_auth"),
-                patch.object(lifecycle, "_nuke_login_container", side_effect=fake_nuke),
-                patch.object(server, "_nuke_login_container", side_effect=fake_nuke),
+                patch.object(_login.KIRO_FLOW, "_nuke_container", side_effect=fake_nuke),
             ):
                 asyncio.run(server._handle_login_get(Mock()))
         except Exception:
@@ -2387,17 +2385,16 @@ class LoginGuardClearTests(unittest.TestCase):
             cleared_before_nuke["seen"],
             "_login_pending was cleared before _nuke_login_container returned",
         )
-        # After the function returns, _login_pending should be None
-        with lifecycle._login_pending_lock:
-            self.assertIsNone(lifecycle._login_pending, "_login_pending should be None after cleanup")
+        # After the function returns, KIRO_FLOW._pending should be None
+        self.assertIsNone(_login.KIRO_FLOW._pending, "_pending should be None after cleanup")
 
     def test_concurrent_post_during_cleanup_window_returns_409(self) -> None:
         """8.2: concurrent POST /login during cleanup window receives 409."""
         # Simulate the scenario where _handle_login_get has detected auth and
         # is between nuke and guard-clear. If a POST /login arrives at this
-        # moment, the _login_pending is still set so the POST should get 409.
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = {
+        # moment, the _pending is still set so the POST should get 409.
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = {
                 "container": "ga-login-completing",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -2410,8 +2407,8 @@ class LoginGuardClearTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 409)
         finally:
-            with lifecycle._login_pending_lock:
-                lifecycle._login_pending = None
+            with _login.KIRO_FLOW._lock:
+                _login.KIRO_FLOW._pending = None
 class ProxyHandlerTests(unittest.TestCase):
     """Tests for _handle_crew_ui_proxy and _handle_crew_api_proxy."""
 

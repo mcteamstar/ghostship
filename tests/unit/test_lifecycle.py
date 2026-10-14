@@ -1581,10 +1581,9 @@ class LoginLogoutTests(unittest.TestCase):
     def test_post_login_returns_409_when_login_already_in_progress(self) -> None:
         with (
             patch.object(server, "_read_auth_file", return_value=""),
-            patch.object(lifecycle, "_login_pending_lock"),
         ):
-            with lifecycle._login_pending_lock:
-                lifecycle._login_pending = {
+            with _login_mod.KIRO_FLOW._lock:
+                _login_mod.KIRO_FLOW._pending = {
                     "container": "ga-login-existing",
                     "exec_id": "x",
                     "started_at": 999.0,
@@ -1592,8 +1591,8 @@ class LoginLogoutTests(unittest.TestCase):
             request = Mock()
             response = asyncio.run(server._handle_login_post(request))
 
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = None
+        with _login_mod.KIRO_FLOW._lock:
+            _login_mod.KIRO_FLOW._pending = None
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("Login already in progress", response.body.decode())
@@ -1632,8 +1631,8 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertIn("No login in progress", response.body.decode())
 
     def test_get_login_returns_pending_when_auth_not_complete(self) -> None:
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = {
+        with _login_mod.KIRO_FLOW._lock:
+            _login_mod.KIRO_FLOW._pending = {
                 "container": "ga-login-abcd",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1647,8 +1646,8 @@ class LoginLogoutTests(unittest.TestCase):
             request = Mock()
             response = asyncio.run(server._handle_login_get(request))
 
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = None
+        with _login_mod.KIRO_FLOW._lock:
+            _login_mod.KIRO_FLOW._pending = None
 
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.body)
@@ -1659,8 +1658,8 @@ class LoginLogoutTests(unittest.TestCase):
         running_crew = {"status": "running", "container": "gs-crew1"}
         registry = {"crews": {"crew1": running_crew}}
 
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = {
+        with _login_mod.KIRO_FLOW._lock:
+            _login_mod.KIRO_FLOW._pending = {
                 "container": "ga-login-done",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1675,7 +1674,7 @@ class LoginLogoutTests(unittest.TestCase):
             patch.object(_registry_mod, "_load_registry", return_value=registry),
             patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_inject_auth") as inject,
-            patch.object(server, "_nuke_login_container") as nuke,
+            patch.object(_login_mod.KIRO_FLOW, "_nuke_container") as nuke,
         ):
             request = Mock()
             response = asyncio.run(server._handle_login_get(request))
@@ -1687,8 +1686,7 @@ class LoginLogoutTests(unittest.TestCase):
         inject.assert_called_once_with(podman, "gs-crew1", auth_b64)
         nuke.assert_called_once_with(podman, "ga-login-done")
 
-        with lifecycle._login_pending_lock:
-            self.assertIsNone(lifecycle._login_pending)
+        self.assertIsNone(_login_mod.KIRO_FLOW._pending)
 
     def test_post_logout_returns_404_when_not_authenticated(self) -> None:
         with patch.object(server, "_read_auth_file", return_value=""):
@@ -1814,8 +1812,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
 
     def test_concurrent_post_login_while_pending_returns_409(self) -> None:
         """7.3: concurrent POST /login while _login_pending is set returns 409."""
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = {
+        with _login_mod.KIRO_FLOW._lock:
+            _login_mod.KIRO_FLOW._pending = {
                 "container": "ga-login-existing",
                 "exec_id": "x",
                 "started_at": 999.0,
@@ -1829,8 +1827,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
             self.assertEqual(response.status_code, 409)
             self.assertIn("Login already in progress", response.body.decode())
         finally:
-            with lifecycle._login_pending_lock:
-                lifecycle._login_pending = None
+            with _login_mod.KIRO_FLOW._lock:
+                _login_mod.KIRO_FLOW._pending = None
 
     def test_login_pty_timeout_45s_returns_error_and_nukes_container(self) -> None:
         """F-4: when the 45s PTY deadline fires without a URL appearing,

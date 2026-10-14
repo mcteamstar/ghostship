@@ -283,13 +283,18 @@ class LoginFlow(ABC):
     def abort(self, podman) -> bool:
         """Abort an in-progress flow, if any.
 
+        Nuke the container first, then clear ``_pending``.  Nuke-before-clear
+        preserves the original ordering guarantee: if the process crashes
+        between nuke and clear, a stale ``_pending`` is harmless (the
+        container is already gone); clear-before-nuke would leave an orphaned
+        running container.
+
         Returns True if a flow was aborted, False if there was nothing to abort.
         """
         with self._lock:
             pending = self._pending
             if pending is None:
                 return False
-            self._pending = None
 
         container = pending.get("container")
         if container:
@@ -308,6 +313,12 @@ class LoginFlow(ABC):
             logger.info(
                 "[%s] Aborted pending login (container not yet started)", self.backend
             )
+
+        with self._lock:
+            # Only clear if the pending dict we just nuked is still current;
+            # a concurrent new flow may have started between nuke and here.
+            if self._pending is pending:
+                self._pending = None
         return True
 
 

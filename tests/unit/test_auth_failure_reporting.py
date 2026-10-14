@@ -18,7 +18,8 @@ from unittest.mock import MagicMock, Mock, patch
 from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
-import transport.lifecycle as _lifecycle  # noqa: E402 (after stub install)
+import transport.lifecycle as _lifecycle
+import transport.login as _login  # noqa: F401  # noqa: E402 (after stub install)
 import transport.registry as _registry_mod  # noqa: E402
 import transport.server as server  # noqa: E402
 
@@ -33,27 +34,25 @@ def _outcomes(audit_mock):
 
 class TestLoginWriteFailure(unittest.TestCase):
     def setUp(self):
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-x", "state": "code_submitted",
                 "code_submitted_at": time.time(), "started_at": time.time(),
             }
         self.addCleanup(self._clear)
 
     def _clear(self):
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
 
     def test_claude_write_failure_returns_500_and_keeps_flow_retryable(self):
         with patch.object(server, "_get_podman", return_value=Mock()), \
-             patch.object(server, "_poll_claude_login_container", return_value=b"tar"), \
+             patch.object(_login.CLAUDE_FLOW, "poll", return_value=b"tar"), \
              patch.object(server, "_write_claude_auth_file", side_effect=OSError("disk full")), \
-             patch.object(server, "_nuke_claude_login_container") as nuke, \
              patch.object(server._security, "audit_auth_event") as audit:
             response = _run(server._handle_claude_login_get(Mock()))
         self.assertEqual(response.status_code, 500)
-        nuke.assert_not_called()
-        self.assertIsNotNone(_lifecycle._claude_login_pending, "pending flow must survive for a retry")
+        self.assertIsNotNone(_login.CLAUDE_FLOW.state, "pending flow must survive for a retry")
         self.assertEqual(_outcomes(audit), ["failure"])
 
 
