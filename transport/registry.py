@@ -517,6 +517,70 @@ class CrewRegistry:
         if entry is not None:
             entry["last_used"] = time.time()
 
+    # ── Schedule methods ──────────────────────────────────────────────────────
+
+    def get_schedules(self, crew_id: str) -> list:
+        """Return the schedules list for *crew_id* (defaults to [])."""
+        reg = self._require_reg()
+        return _get_crew_schedules(reg, crew_id)
+
+    def upsert_schedule(self, crew_id: str, job: dict) -> None:
+        """Insert or update a schedule entry by job_id (or type for captain entries)."""
+        reg = self._require_reg()
+        _upsert_crew_schedule(reg, crew_id, job)
+
+    def remove_schedule(self, crew_id: str, job_id: str) -> None:
+        """Remove a schedule entry by job_id."""
+        reg = self._require_reg()
+        _remove_crew_schedule(reg, crew_id, job_id)
+
+    def advance_next_fire_at(self, job: dict) -> None:
+        """Mutate next_fire_at based on interval_secs or next cron tick."""
+        _advance_next_fire_at(job)
+
+    # ── Batch methods ─────────────────────────────────────────────────────────
+
+    def write_batch(
+        self,
+        crew_id: str,
+        batch_id: str,
+        task_ids: list,
+        status: str,
+        created_at: str | None = None,
+    ) -> dict | None:
+        """Write (upsert) a batch entry. Delegates to ``_write_batch``."""
+        return _write_batch(crew_id, batch_id, task_ids, status, created_at)
+
+    def get_batch(self, crew_id: str, batch_id: str) -> dict | None:
+        """Return the batch entry dict for *batch_id*, or None if not found."""
+        return _get_batch(crew_id, batch_id)
+
+    def update_batch_status(self, crew_id: str, batch_id: str, status: str) -> dict | None:
+        """Update the ``status`` field of a batch entry atomically."""
+        return _update_batch_status(crew_id, batch_id, status)
+
+    def delete_batch(self, crew_id: str, batch_id: str) -> bool:
+        """Remove a single batch entry by batch_id. Returns True if removed."""
+        return _delete_batch(crew_id, batch_id)
+
+    def find_batch_by_task_ids(self, crew_id: str, task_ids: list) -> dict | None:
+        """Return the first batch entry whose task_ids set contains *task_ids*, or None."""
+        return _find_batch_by_task_ids(crew_id, task_ids)
+
+    # ── Secret methods ────────────────────────────────────────────────────────
+
+    def write_secret(self, crew_id: str, secret: str) -> None:
+        """Write the admiral signing secret for *crew_id*."""
+        _write_crew_secret(crew_id, secret)
+
+    def read_secret(self, crew_id: str) -> str | None:
+        """Return the admiral signing secret for *crew_id*, or None if absent."""
+        return _read_crew_secret(crew_id)
+
+    def delete_secret(self, crew_id: str) -> None:
+        """Remove the admiral signing-secret file for *crew_id*."""
+        _delete_crew_secret(crew_id)
+
 
 # Module-level singleton — import sites use:
 #   from transport.registry import registry   (or: from registry import registry)

@@ -90,7 +90,7 @@ for the next).
   crew returns `None`, round-trip save/load, context-manager auto-save.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.2  **Migrate schedule and batch methods onto `CrewRegistry`.**
+- [x] 3.2  **Migrate schedule and batch methods onto `CrewRegistry`.**
   Add `upsert_schedule`, `remove_schedule`, `get_schedules`, `advance_next_fire_at`,
   `write_batch`, `get_batch`, `update_batch_status`, `delete_batch`,
   `find_batch_by_task_ids` as methods. Each delegates to the existing
