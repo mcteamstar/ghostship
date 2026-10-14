@@ -285,7 +285,7 @@ for the next).
 
 ## 7. Cleanup and docs
 
-- [ ] 7.1  **Audit and remove dead code in `lifecycle.py` and `server.py`.**
+- [x] 7.1  **Audit and remove dead code in `lifecycle.py` and `server.py`.**
   After all wrappers are in place, identify functions in `lifecycle.py` that are
   now empty wrappers with no direct test coverage (only covered via their
   delegating implementation). Mark them for removal. Check that removing each
