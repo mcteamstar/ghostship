@@ -1414,48 +1414,31 @@ def _reconcile_registry() -> None:
                 logger.warning("Reconcile: transient Podman error checking running state for crew %s — skipping: %s", cid, e)
                 continue
             if not running:
-                # Container exists but stopped (e.g. VM reboot) — restart it
+                # Container exists but stopped (e.g. VM reboot) — restart it.
+                # Delegates to _launcher._run_restart_cycle for the
+                # patch-config → stop → start → wait-gateway → mint-cookie cycle.
                 logger.info("Restarting stopped crew on startup: %s", cid)
                 try:
-                    podman.container_start(container)
-                    crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-                    # D-07: Apply config overrides before the gateway reads them,
-                    # then restart so the gateway loads the patched values.
-                    # Must mirror the _ensure_crew_running pattern:
-                    #   patch → stop → start → wait
-                    # Writing config after _wait_gateway means the gateway has
-                    # already loaded config.local.json and will not see the patch
-                    # until the next restart.
-                    _patch_crew_config(podman, container)
-                    podman.container_stop(container)
-                    podman.container_start(container)
-                    if _wait_gateway(crew_url, timeout=60):
-                        new_cookie = _mint_cookie(podman, container, crew_url)
-                        updates[cid] = {
-                            "status": "running",
-                            "last_used": time.time(),
-                            **({} if not new_cookie else {"cookie": new_cookie}),
-                        }
-                        logger.info("Crew %s restored", cid)
-                        # Re-seed gateway schedules from registry
-                        restored_crew = dict(info)
-                        if new_cookie:
-                            restored_crew["cookie"] = new_cookie
-                        deployed = _deployed_agent_names(podman, container)
-                        _enroll_crew_members(restored_crew, cid, deployed)
-                        updates[cid]["enrolled_agents"] = [
-                            n.removesuffix(".json") for n in deployed
-                        ]
-                        try:
-                            _reseed_crew_schedules(restored_crew, cid, info)
-                        except Exception as e:
-                            logger.warning("Schedule re-seed failed for crew %s: %s", cid, e)
-                    else:
-                        logger.warning("Crew %s gateway not ready after restart — leaving stopped", cid)
-                        updates[cid] = {"status": "stopped"}
-                except Exception as e:
-                    logger.warning("Could not restart crew %s: %s", cid, e)
-                    updates[cid] = {"status": "stopped"}
+                    from launcher import _launcher  # container: flat /app/
+                except ModuleNotFoundError:
+                    from transport.launcher import _launcher  # local dev
+                cycle_result = _launcher._run_restart_cycle(info, cid)
+                updates[cid] = cycle_result
+                if cycle_result.get("status") == "running":
+                    logger.info("Crew %s restored", cid)
+                    # Re-seed gateway schedules from registry
+                    restored_crew = dict(info)
+                    if cycle_result.get("cookie"):
+                        restored_crew["cookie"] = cycle_result["cookie"]
+                    deployed = _deployed_agent_names(podman, container)
+                    _enroll_crew_members(restored_crew, cid, deployed)
+                    updates[cid]["enrolled_agents"] = [
+                        n.removesuffix(".json") for n in deployed
+                    ]
+                    try:
+                        _reseed_crew_schedules(restored_crew, cid, info)
+                    except Exception as e:
+                        logger.warning("Schedule re-seed failed for crew %s: %s", cid, e)
 
     # Write all changes back under the lock in one pass
     try:

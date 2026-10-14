@@ -736,6 +736,74 @@ class CrewLauncher:
 
         return result
 
+    # ── _run_restart_cycle ────────────────────────────────────────────────────
+
+    def _run_restart_cycle(self, crew, crew_id: str):
+        """Run the patch-config → stop → start → wait-gateway → mint-cookie cycle.
+
+        Used by ``_reconcile_registry`` for stopped crews on startup.  Mirrors
+        the restart body inside ``ensure_running``:
+            patch config → stop → start → wait_gateway → mint cookie → update registry
+
+        Returns an update-dict ``{"status": "running", ...}`` on success,
+        or ``{"status": "stopped"}`` on failure (gateway timeout, exception, …).
+
+        On success the caller is also responsible for calling
+        ``_enroll_crew_members`` and ``_reseed_crew_schedules`` — those require
+        the updated crew dict and are orchestration concerns outside this method.
+        """
+        try:
+            from lifecycle import (  # container
+                _get_podman,
+                _to_crew,
+                _patch_crew_config,
+                _wait_gateway,
+                _mint_cookie,
+                CREW_GATEWAY_PORT,
+            )
+        except ModuleNotFoundError:
+            from transport.lifecycle import (  # local dev
+                _get_podman,
+                _to_crew,
+                _patch_crew_config,
+                _wait_gateway,
+                _mint_cookie,
+                CREW_GATEWAY_PORT,
+            )
+
+        try:
+            podman = _get_podman()
+        except Exception as e:
+            logger.warning("Reconcile restart: could not get Podman client for crew %s: %s", crew_id, e)
+            return {"status": "stopped"}
+
+        c = _to_crew(crew_id, crew)
+        container = c.container
+        crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
+
+        try:
+            podman.container_start(container)
+            _patch_crew_config(podman, container)
+            podman.container_stop(container)
+            podman.container_start(container)
+            if _wait_gateway(crew_url, timeout=60):
+                new_cookie = _mint_cookie(podman, container, crew_url)
+                update = {
+                    "status": "running",
+                    "last_used": time.time(),
+                    **({} if not new_cookie else {"cookie": new_cookie}),
+                }
+                return update
+            else:
+                logger.warning(
+                    "Crew %s gateway not ready after restart — leaving stopped",
+                    crew_id,
+                )
+                return {"status": "stopped"}
+        except Exception as e:
+            logger.warning("Could not restart crew %s: %s", crew_id, e)
+            return {"status": "stopped"}
+
 
 # ── Module-level singleton ────────────────────────────────────────────────────
 # Initialised after the class definition so that it is available to lifecycle.py
