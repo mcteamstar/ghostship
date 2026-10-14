@@ -662,6 +662,7 @@ try:
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
         CREW_VOLUME_PREFIX,
+        Crew,
         CrewUnresponsiveError,
         _NUKED_DURING_RESTART,
         GA_LOGIN_CONTAINER_PREFIX,
@@ -742,6 +743,7 @@ try:
         _start_codex_login_container,
         _startup_events,
         _startup_events_lock,
+        _to_crew,
         _validate_agent,
         _wait_gateway,
         _write_dashboard_cookie,
@@ -752,6 +754,7 @@ except ModuleNotFoundError:
         CREW_GATEWAY_PORT,
         CREW_HOME_VOLUME_PREFIX,
         CREW_VOLUME_PREFIX,
+        Crew,
         CrewUnresponsiveError,
         _NUKED_DURING_RESTART,
         GA_LOGIN_CONTAINER_PREFIX,
@@ -832,6 +835,7 @@ except ModuleNotFoundError:
         _start_codex_login_container,
         _startup_events,
         _startup_events_lock,
+        _to_crew,
         _validate_agent,
         _wait_gateway,
         _write_dashboard_cookie,
@@ -1157,7 +1161,8 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
     # browser session never sees a "Session expired" prompt. Best-effort: a
     # failed refresh falls through to the existing (possibly stale) cookie,
     # and the 401/403 retry below still recovers.
-    if _cookie_near_expiry(crew.get("cookie", "")):
+    c = _to_crew(crew_id, crew)
+    if _cookie_near_expiry(c.cookie):
         logger.info("UI proxy: cookie near expiry for crew %s — refreshing", crew_id)
         _refresh_cookie(crew, crew_id)
 
@@ -1260,7 +1265,8 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
         return
     crew_id, sub_path, crew = resolved
 
-    if _cookie_near_expiry(crew.get("cookie", "")):
+    c_ws = _to_crew(crew_id, crew)
+    if _cookie_near_expiry(c_ws.cookie):
         _refresh_cookie(crew, crew_id)
 
     upstream_path = f"/{sub_path}" if sub_path else "/"
@@ -3185,6 +3191,8 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     except KeyError as e:
         return {"error": str(e)}
 
+    c_nuke = _to_crew(crew_id, crew)
+
     if not confirm:
         active: list = []
         try:
@@ -3197,8 +3205,8 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         schedules = _get_crew_schedules(reg, crew_id)
         return {
             "warning": f"Pass confirm=True to tear down crew '{crew_id}'",
-            "container": crew.get("container", f"{CREW_CONTAINER_PREFIX}{crew_id}"),
-            "volumes": [crew.get("volume", f"{CREW_VOLUME_PREFIX}{crew_id}"), crew.get("home_volume", f"{CREW_HOME_VOLUME_PREFIX}{crew_id}")],
+            "container": c_nuke.container or f"{CREW_CONTAINER_PREFIX}{crew_id}",
+            "volumes": [c_nuke.volume or f"{CREW_VOLUME_PREFIX}{crew_id}", c_nuke.home_volume or f"{CREW_HOME_VOLUME_PREFIX}{crew_id}"],
             "active_tasks": len(active),
             "scheduled_jobs": len(schedules),
             "scheduled_job_names": [s.get("name", "") for s in schedules],
@@ -3211,9 +3219,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
 
     # A failed launch may leave a partial registry entry with only 'container'
     # and 'status: launching' — fall back to conventional names for anything missing.
-    container = crew.get("container", f"{CREW_CONTAINER_PREFIX}{crew_id}")
-    vol = crew.get("volume", f"{CREW_VOLUME_PREFIX}{crew_id}")
-    home_vol = crew.get("home_volume", f"{CREW_HOME_VOLUME_PREFIX}{crew_id}")
+    container = c_nuke.container or f"{CREW_CONTAINER_PREFIX}{crew_id}"
+    vol = c_nuke.volume or f"{CREW_VOLUME_PREFIX}{crew_id}"
+    home_vol = c_nuke.home_volume or f"{CREW_HOME_VOLUME_PREFIX}{crew_id}"
     try:
         if not container.startswith(CREW_CONTAINER_PREFIX):
             raise RuntimeError(f"Refusing to nuke non-crew container: {container!r}")
@@ -3324,7 +3332,7 @@ def _mail_admiral(crew_id: str, subject: str, body: str) -> None:
     raised, so an escalation attempt cannot break the fire path."""
     try:
         crew = _require_crew(crew_id)
-        container = crew.get("container")
+        container = _to_crew(crew_id, crew).container
         if not container:
             logger.warning("Admiral escalation for crew %s: no container to deliver mail", crew_id)
             return
@@ -3380,7 +3388,7 @@ def _record_memory_pressure_cycle(crew_id: str) -> None:
 
 
 def _dispatch_captain_checkin(
-    crew: dict,
+    crew,
     crew_id: str,
     model: str | None = None,
 ) -> str:
@@ -3395,9 +3403,10 @@ def _dispatch_captain_checkin(
     exist).  Verifies enrollment before dispatching; raises ValueError if
     raven is not enrolled.
     """
-    enrolled: frozenset[str] = frozenset(crew.get("enrolled_agents") or [])
+    c = _to_crew(crew_id, crew)
+    enrolled: frozenset[str] = frozenset(c.enrolled_agents or [])
     if "raven" not in enrolled:
-        # Fallback: read enrolled_agents from registry (crew dict may be a stale
+        # Fallback: read enrolled_agents from registry (crew may be a stale
         # minimal copy from _require_crew before _ensure_crew_running enriched it)
         try:
             with _registry_lock:
@@ -3421,7 +3430,7 @@ def _dispatch_captain_checkin(
             internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
         if internal_cookie:
             podman = _get_podman()
-            _write_dashboard_cookie(podman, crew["container"], internal_cookie)
+            _write_dashboard_cookie(podman, c.container, internal_cookie)
     except Exception as exc:
         logger.warning("Captain dispatch: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
     spawn_body: dict[str, Any] = {
@@ -3438,16 +3447,17 @@ def _dispatch_captain_checkin(
     # string) and the caller supplied no model, pass the crew's configured model
     # explicitly so Raven is always dispatched on a compatible model.
     if model is None:
-        crew_backend = crew.get("acp_backend")
-        crew_model = crew.get("model")
-        if crew_backend is None or crew_model is None:
-            # crew may be a stale minimal copy — read authoritative values from
-            # the registry (mirrors the enrolled_agents fallback above).
+        crew_backend = c.acp_backend or None
+        # model is not a standard Crew field — read from the dict if available,
+        # otherwise fall through to the registry fallback.
+        crew_model: str | None = crew.get("model") if isinstance(crew, dict) else None
+        if not crew_backend or crew_model is None:
+            # read authoritative values from the registry
             try:
                 with _registry_lock:
                     reg = _load_registry()
                     crew_info = reg.get("crews", {}).get(crew_id, {})
-                if crew_backend is None:
+                if not crew_backend:
                     crew_backend = crew_info.get("acp_backend")
                 if crew_model is None:
                     crew_model = crew_info.get("model")
@@ -3508,7 +3518,7 @@ def _dispatch_captain_checkin(
 
 
 def _steer_captain_checkin(
-    crew: dict,
+    crew,
     crew_id: str,
     model: str | None = None,
 ) -> str:
@@ -3547,7 +3557,7 @@ def _steer_captain_checkin(
             internal_cookie = reg.get("crews", {}).get(crew_id, {}).get("internal_cookie", "")
         if internal_cookie:
             podman = _get_podman()
-            _write_dashboard_cookie(podman, crew["container"], internal_cookie)
+            _write_dashboard_cookie(podman, _to_crew(crew_id, crew).container, internal_cookie)
     except Exception as exc:
         logger.warning("Captain steer: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
 
@@ -3745,7 +3755,7 @@ def _captain_do_order(
         # failed provisioning call must not leave mail that no Raven can read.
         try:
             podman = _get_podman()
-            _append_captain_mail(podman, crew["container"], order_message, crew_id=crew_id)
+            _append_captain_mail(podman, _to_crew(crew_id, crew).container, order_message, crew_id=crew_id)
         except Exception as exc:
             return {"error": f"Could not write Captain order: {exc}"}
 
@@ -3822,11 +3832,12 @@ def _captain_do_status(crew_id: str) -> dict:
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
 
+    c_status = _to_crew(crew_id, crew)
     action = "status"
     podman = _get_podman()
     # Single call — covers all 8 mailboxes; falls back to archive API on
     # stopped containers.
-    agent_mail = _skim_all_mailboxes(podman, crew["container"])
+    agent_mail = _skim_all_mailboxes(podman, c_status.container)
     captain_subjects = agent_mail.get("captain", [])
     admiral_subjects = agent_mail.get("admiral", [])
     captain_mail = len(captain_subjects)
@@ -3870,7 +3881,7 @@ def _captain_do_status(crew_id: str) -> dict:
     }
     # If the crew is running, check if the current task is still alive
     try:
-        is_running = podman.container_is_running(crew["container"])
+        is_running = podman.container_is_running(c_status.container)
     except Exception:
         is_running = False
 
@@ -3891,7 +3902,7 @@ def _captain_do_status(crew_id: str) -> dict:
         action,
         synthetic_job,
         podman,
-        crew["container"],
+        c_status.container,
     )
     status_result["captain_subjects"] = captain_subjects
     status_result["admiral_subjects"] = admiral_subjects
@@ -3914,6 +3925,7 @@ def _captain_do_stop(crew_id: str) -> dict:
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
 
+    c_stop = _to_crew(crew_id, crew)
     podman = _get_podman()
 
     # Read captain entry from registry — no need to wake the crew
@@ -3964,7 +3976,7 @@ def _captain_do_stop(crew_id: str) -> dict:
         "stop",
         stopped_entry,
         podman,
-        crew["container"],
+        c_stop.container,
     )
     result["status"] = "stopped"
     return result
@@ -4693,7 +4705,7 @@ def pickup(
     except Exception as e:
         return {"error": str(e)}
 
-    container = crew["container"]
+    container = _to_crew(crew_id, crew).container
     effective_timeout = min(max(0, timeout_secs), 30) if timeout_secs > 0 else 0
 
     if task_ids is not None:

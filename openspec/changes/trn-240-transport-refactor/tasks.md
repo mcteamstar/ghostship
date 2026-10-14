@@ -58,7 +58,7 @@ for the next).
   inline uses of `_crew_url(crew)` and `_crew_cookie(crew)` with the dataclass
   methods. Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.3  **Migrate crew dict accesses in `server.py` to use `Crew` objects.**
+- [x] 2.3  **Migrate crew dict accesses in `server.py` to use `Crew` objects.**
   Replace all 20 `crew["..."]` / `crew.get("...")` accesses (lines ~1087–4554).
   Where `server.py` constructs crew dicts inline (e.g. in the `launch` function
   body), replace with `Crew(...)` construction. Keep `_crew_url(crew)` and
