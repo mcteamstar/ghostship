@@ -25,13 +25,14 @@ except ModuleNotFoundError:
     from transport.podman import PodmanClient  # local dev
 
 try:
-    from registry import _load_registry, _registry_lock, _save_registry, _read_crew_secret  # container
+    from registry import _load_registry, _registry_lock, _save_registry, _read_crew_secret, registry  # container
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
         _load_registry,
         _registry_lock,
         _save_registry,
         _read_crew_secret,
+        registry,
     )
 
 logger = logging.getLogger(__name__)
@@ -436,9 +437,8 @@ def _append_captain_mail(
     signing_secret: str | None = None
     supersedes_id: str | None = None
     if crew_id:
-        with _registry_lock:
-            reg = _load_registry()
-            crew_entry = reg["crews"].get(crew_id, {})
+        with registry:
+            crew_entry = registry._reg["crews"].get(crew_id, {})
             supersedes_id = crew_entry.get("last_captain_message_id")
         # Read the admiral_secret from the per-crew secrets file written by
         # lifecycle._finish_crew_setup.
@@ -451,11 +451,9 @@ def _append_captain_mail(
 
     # Store the new Message-ID for the next order's Supersedes header
     if crew_id:
-        with _registry_lock:
-            reg = _load_registry()
-            if crew_id in reg["crews"]:
-                reg["crews"][crew_id]["last_captain_message_id"] = message_id
-                _save_registry(reg)
+        with registry:
+            if crew_id in registry._reg["crews"]:
+                registry._reg["crews"][crew_id]["last_captain_message_id"] = message_id
 
     # Pipe through sendmail inside the container for Maildir delivery (I/O — outside lock)
     payload = base64.b64encode(message.encode("utf-8")).decode("ascii")
@@ -768,9 +766,8 @@ def _captain_standing_view(
     last_checkin_at: str | None = None
     current_task_id: str | None = None
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            crew_entry = reg.get("crews", {}).get(crew_id, {})
+        with registry:
+            crew_entry = registry._reg.get("crews", {}).get(crew_id, {})
             for sched in crew_entry.get("schedules", []):
                 # Match on type==captain (new model) or legacy job_id match
                 if sched.get("type") == "captain" or sched.get("job_id") == job.get("id"):

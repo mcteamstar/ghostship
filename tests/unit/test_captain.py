@@ -2080,6 +2080,8 @@ class AppendCaptainMailTests(unittest.TestCase):
             patch.object(captain_mod, "_read_crew_secret", return_value=signing_secret),
             patch.object(captain_mod, "_load_registry", return_value=reg),
             patch.object(captain_mod, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
         ):
             captain_mod._append_captain_mail(
                 podman, self.CONTAINER, self.BODY, crew_id=self.CREW_ID

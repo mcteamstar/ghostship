@@ -123,7 +123,7 @@ for the next).
   the registry singleton (monitors already imports from `registry` directly).
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.6  **Migrate the 3 `with _registry_lock:` blocks in `captain.py`.**
+- [x] 3.6  **Migrate the 3 `with _registry_lock:` blocks in `captain.py`.**
   Same pattern. Verify: `pytest tests/unit/ -q` green.
 
 ---
