@@ -324,3 +324,80 @@ Ghost Academy uses two static Podman networks:
 - Mounted into `ga-portal`; Caddy reads it via `{file./run/secrets/ga-transport-secret}` in the reverse proxy config.
 - Registered with the transport's log redaction filter at startup; never appears in logs or errors.
 
+
+## Transport module class model (TRN-240)
+
+The transport layer was refactored from pure functions operating on raw dicts to
+a set of typed domain classes. The class model is documented here for reference.
+
+### `Crew` dataclass  (`transport/crew.py`)
+
+The typed counterpart to the raw `crews[crew_id]` dict stored in `crews.json`.
+Carries all crew identity, runtime state, and scheduling state.
+
+Key fields: `crew_id`, `container`, `volume`, `home_volume`, `port`, `cookie`,
+`internal_cookie`, `status`, `composition`, `acp_backend`, `created_at`,
+`last_used`, `enrolled_agents`, `schedules`, `batches`.
+
+In-memory only (D2, never serialised): `warm_until` (ACP prewarm marker).
+
+Methods: `gateway_url()` → `http://{container}:{port}`, `cookie_header()`,
+`is_idle(timeout_secs)`, `is_warm()`, `to_dict()` (JSON-serialisable),
+`from_dict(crew_id, d)` (classmethod).
+
+### `CrewRegistry`  (`transport/registry.py`)
+
+Context-manager CRUD registry over `crews.json`. Acquires `_registry_lock`
+on `__enter__`, loads the JSON file, saves on clean `__exit__` (never on
+exception — prevents corrupt partial writes), releases the lock in `finally`.
+
+```python
+with registry:
+    crew = registry.get("demo")
+    crew.status = "running"
+    registry.put(crew)
+```
+
+Methods: `get(crew_id) -> Crew | None`, `put(crew)`, `remove(crew_id)`,
+`list() -> list[Crew]`, `touch(crew_id)`.
+
+Delegation methods (route to module-level implementations): `get_schedules`,
+`upsert_schedule`, `remove_schedule`, `advance_next_fire_at`, `write_batch`,
+`get_batch`, `update_batch_status`, `delete_batch`, `find_batch_by_task_ids`,
+`write_secret`, `read_secret`, `delete_secret`.
+
+Singleton: `registry = CrewRegistry(REGISTRY_PATH)` (importable from
+`transport.registry`).
+
+### `AcademyLoader`  (`transport/academy.py`)
+
+Parameterised copier for Academy assets (agents, skills, steering) into a
+running crew container.
+
+```python
+loader = AcademyLoader(podman, container, composition_entry)
+result = loader.copy_all()  # {"agents": [...], "skills": [...], "steering": [...]}
+```
+
+`copy(kind)` → `_copy_agents()` / `_copy_skills()` / `_copy_steering()`.
+Unknown kind raises `ValueError`. `copy_all()` calls all three and returns the
+combined result dict. The existing `_copy_agents`, `_copy_skills`,
+`_copy_steering` module-level functions in `lifecycle.py` are one-line
+wrappers delegating here.
+
+### Key design invariants (design.md)
+
+- **D1 non-reentrant lock**: `_crew_api_with_recovery` holds the per-crew
+  recovery lock for the whole call including any phase-2 restart into
+  `_ensure_crew_running`. Code reached while this lock is held must call
+  `_crew_api` directly (not `_crew_api_with_recovery`) to avoid a deadlock.
+- **D2 warm_until**: `warm_until` is in-memory only — it is never serialised
+  by `Crew.to_dict()` and is always initialised to `0.0` by `from_dict()`.
+- **D3 singleton registry**: `registry = CrewRegistry(REGISTRY_PATH)` at
+  module level in `registry.py`; import sites use `from transport.registry
+  import registry`.
+- **D4 _NUKED_DURING_RESTART sentinel**: returned by `_ensure_crew_running`
+  when a concurrent `nuke()` removes the crew's registry entry between
+  `container_start` and post-start setup. Callers compare identity
+  (`is _NUKED_DURING_RESTART`) and treat it as a normal expected outcome.
+

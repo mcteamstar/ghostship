@@ -295,7 +295,7 @@ for the next).
   Target: meaningful line-count reduction in `lifecycle.py`. Do not remove
   anything tested by name. Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 7.2  **Update `docs/architecture.md`.**
+- [x] 7.2  **Update `docs/architecture.md`.**
   Replace the current module-level function descriptions in the transport section
   with a class model diagram and descriptions:
   - `Crew` — data class; `to_dict/from_dict`, `is_idle`, `is_warm`, `gateway_url`
