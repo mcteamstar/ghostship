@@ -262,43 +262,45 @@ class LifecycleRegressionTests(unittest.TestCase):
         # by _save_registry (registry.py) → patch _registry_mod. server.supply
         # is not involved here.
         podman = SetupPodman()
-        with tempfile.TemporaryDirectory() as temporary:
-            data_dir = Path(temporary)
-            registry = data_dir / "crews.json"
-            before = time.time()
-            with (
-                patch.object(_registry_mod, "DATA_DIR", data_dir),
-                patch.object(_registry_mod, "REGISTRY_PATH", registry),
-            ):
-                _patches = [
-                    patch.object(lifecycle, "_wait_gateway", return_value=True),
-                    patch.object(lifecycle, "_inject_auth"),
-                    patch.object(lifecycle, "_patch_crew_config"),
-                    patch.object(lifecycle, "_copy_agents"),
-                    patch.object(lifecycle, "_copy_skills"),
-                    patch.object(lifecycle, "_copy_steering"),
-                    patch.object(lifecycle, "_seed_openspec_store"),
-                    patch.object(lifecycle, "_patch_models"),
-                    patch.object(lifecycle, "_mint_cookie", return_value="cookie"),
-                ]
-                with contextlib.ExitStack() as stack:
-                    for p in _patches:
-                        stack.enter_context(p)
-                    result = server._finish_crew_setup(
-                        podman,
-                        "demo",
-                        "gs-demo",
-                        "gs-vol-demo",
-                        "gs-home-demo",
-                        "auth-b64",
-                        admiral_secret="ab" * 32,
-                    )
+        saved: dict = {}
 
-            self.assertEqual(result["status"], "ready")
-            record = registry.read_text()
-            self.assertIn('"last_used"', record)
-            last_used = json.loads(record)["crews"]["demo"]["last_used"]
-            self.assertGreaterEqual(last_used, before)
+        def capture_save(r):
+            import json as _json
+            saved["reg"] = _json.loads(_json.dumps(r))
+
+        before = time.time()
+        with (
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry", side_effect=capture_save),
+        ):
+            _patches = [
+                patch.object(lifecycle, "_wait_gateway", return_value=True),
+                patch.object(lifecycle, "_inject_auth"),
+                patch.object(lifecycle, "_patch_crew_config"),
+                patch.object(lifecycle, "_copy_agents"),
+                patch.object(lifecycle, "_copy_skills"),
+                patch.object(lifecycle, "_copy_steering"),
+                patch.object(lifecycle, "_seed_openspec_store"),
+                patch.object(lifecycle, "_patch_models"),
+                patch.object(lifecycle, "_mint_cookie", return_value="cookie"),
+            ]
+            with contextlib.ExitStack() as stack:
+                for p in _patches:
+                    stack.enter_context(p)
+                result = server._finish_crew_setup(
+                    podman,
+                    "demo",
+                    "gs-demo",
+                    "gs-vol-demo",
+                    "gs-home-demo",
+                    "auth-b64",
+                    admiral_secret="ab" * 32,
+                )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertIn("reg", saved, "registry must have been saved")
+        last_used = saved["reg"]["crews"]["demo"]["last_used"]
+        self.assertGreaterEqual(last_used, before)
 
     def test_nuke_clears_captain_order_lock(self) -> None:
         # ``server.nuke`` body resolves its deps from server's namespace.
@@ -389,6 +391,8 @@ class ReconcileRegistryTests(unittest.TestCase):
                 patch.object(lifecycle, "_nuke_login_container") as nuke,
                 patch.object(lifecycle, "_load_registry", return_value={"crews": {}}),
                 patch.object(lifecycle, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+                patch.object(_registry_mod, "_save_registry"),
             ):
                 server._reconcile_registry()
 
@@ -410,6 +414,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(lifecycle, "_save_registry", side_effect=save_reg),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(_registry_mod, "_save_registry", side_effect=save_reg),
         ):
             server._reconcile_registry()
 
@@ -432,6 +438,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(lifecycle, "_save_registry", side_effect=save_reg),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(_registry_mod, "_save_registry", side_effect=save_reg),
             patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"),
         ):
@@ -459,6 +467,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(lifecycle, "_save_registry", side_effect=save_reg),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(_registry_mod, "_save_registry", side_effect=save_reg),
             patch.object(lifecycle, "_wait_gateway", return_value=False),
         ):
             server._reconcile_registry()
@@ -483,6 +493,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(lifecycle, "_save_registry", side_effect=save_reg),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(_registry_mod, "_save_registry", side_effect=save_reg),
         ):
             server._reconcile_registry()
 
@@ -506,6 +518,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(lifecycle, "_save_registry", side_effect=save_reg),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(_registry_mod, "_save_registry", side_effect=save_reg),
         ):
             server._reconcile_registry()
 
@@ -535,6 +549,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_load_registry", side_effect=load_registry),
             patch.object(lifecycle, "_save_registry", side_effect=save_reg),
+            patch.object(_registry_mod, "_load_registry", side_effect=load_registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_wait_gateway", return_value=True),
             patch.object(lifecycle, "_mint_cookie", return_value="new"),
         ):
@@ -572,6 +588,8 @@ class ReconcileRegistryTests(unittest.TestCase):
 
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_crew_api", side_effect=api),
             patch.object(lifecycle, "_save_registry", side_effect=fake_save),
         ):
@@ -616,6 +634,8 @@ class ReconcileRegistryTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_load_registry", return_value={"crews": dict(crews)}),
             patch.object(lifecycle, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": dict(crews)}),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_patch_crew_config", side_effect=patched_patch),
             patch.object(lifecycle, "_wait_gateway", side_effect=wait_gateway),
             patch.object(lifecycle, "_mint_cookie", side_effect=mint_cookie),
@@ -691,6 +711,8 @@ class ActiveCrewLimitTests(unittest.TestCase):
             patch.object(lifecycle, "_get_podman", return_value=FailingRestartPodman()),
             patch.object(lifecycle, "_load_registry", return_value=target_registry),
             patch.object(lifecycle, "_save_registry"),
+            patch.object(_registry_mod, "_load_registry", return_value=target_registry),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_startup_events", startup_events),
             patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
@@ -722,6 +744,8 @@ class ActiveCrewLimitTests(unittest.TestCase):
             with (
                 patch.object(lifecycle, "_load_registry", return_value=reg),
                 patch.object(lifecycle, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value=reg),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(lifecycle, "_get_podman", return_value=StoppedPodman()),
                 patch.object(lifecycle, "_startup_events", {}),
                 patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
@@ -763,6 +787,8 @@ class ActiveCrewLimitTests(unittest.TestCase):
             with contextlib.ExitStack() as _stack:
                 _stack.enter_context(patch.object(lifecycle, "_load_registry", return_value=reg))
                 _stack.enter_context(patch.object(lifecycle, "_save_registry"))
+                _stack.enter_context(patch.object(_registry_mod, "_load_registry", return_value=reg))
+                _stack.enter_context(patch.object(_registry_mod, "_save_registry"))
                 _stack.enter_context(patch.object(lifecycle, "_get_podman", return_value=podman))
                 _stack.enter_context(patch.object(lifecycle, "_startup_events", {}))
                 _stack.enter_context(patch.object(lifecycle, "_startup_events_lock", threading.Lock()))
@@ -816,6 +842,8 @@ class ActiveCrewLimitTests(unittest.TestCase):
             with (
                 patch.object(lifecycle, "_load_registry", return_value=reg),
                 patch.object(lifecycle, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value=reg),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(lifecycle, "_get_podman", return_value=StoppedRestartPodman()),
                 patch.object(lifecycle, "_startup_events", {}),
                 patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
@@ -983,6 +1011,8 @@ class StaleActiveCrewTests(unittest.TestCase):
             with (
                 patch.object(lifecycle, "_load_registry", return_value=reg),
                 patch.object(lifecycle, "_save_registry", side_effect=_save),
+                patch.object(_registry_mod, "_load_registry", return_value=reg),
+                patch.object(_registry_mod, "_save_registry", side_effect=_save),
                 patch.object(lifecycle, "_get_podman", return_value=podman),
                 patch.object(lifecycle, "_startup_events", {}),
                 patch.object(lifecycle, "_startup_events_lock", threading.Lock()),
@@ -1909,9 +1939,17 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data_dir = Path(temporary)
             registry = data_dir / "crews.json"
+            saved_reg: dict = {}
+
+            def capture_save(r):
+                import json as _json
+                saved_reg.update(_json.loads(_json.dumps(r)))
+
             with (
                 patch.object(_registry_mod, "DATA_DIR", data_dir),
                 patch.object(_registry_mod, "REGISTRY_PATH", registry),
+                patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+                patch.object(_registry_mod, "_save_registry", side_effect=capture_save),
                 patch.object(lifecycle, "_wait_gateway", return_value=True),
                 patch.object(lifecycle, "_inject_auth"),
                 patch.object(lifecycle, "_patch_crew_config"),
@@ -1933,8 +1971,7 @@ class AdmiralSecretHardeningTests(unittest.TestCase):
                     admiral_secret="ab" * 32,
                 )
 
-            registry_data = json.loads(registry.read_text()) if registry.exists() else {}
-        return registry_data, result
+        return saved_reg, result
 
     def test_two_distinct_secrets_generated_and_policy_signing_key_forwarded(self) -> None:
         """4.3: policy_signing_key (not the admiral secret) is passed to
@@ -2592,6 +2629,8 @@ class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(lifecycle, "_probe_gateway", return_value=True),
                 patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": crew}}),
                 patch.object(lifecycle, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value={"crews": {"demo": crew}}),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(
                     lifecycle,
                     "_get_crew",
@@ -2622,6 +2661,7 @@ class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         crew_a = {"container": "gs-a", "status": "stopped", "cookie": "a"}
         crew_b = {"container": "gs-b", "status": "stopped", "cookie": "b"}
         original = lifecycle.GA_MIN_FREE_MEM_GB
+        _reg = {"crews": {"a": crew_a, "b": crew_b}}
         try:
             lifecycle.GA_MIN_FREE_MEM_GB = 0.0
             with (
@@ -2634,9 +2674,11 @@ class EnsureCrewRunningConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     lifecycle,
                     "_load_registry",
-                    return_value={"crews": {"a": crew_a, "b": crew_b}},
+                    return_value=_reg,
                 ),
                 patch.object(lifecycle, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value=_reg),
+                patch.object(_registry_mod, "_save_registry"),
                 patch.object(
                     lifecycle,
                     "_get_crew",
@@ -2808,6 +2850,8 @@ class EnsureCrewRunningWaiterPropagationTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch.object(lifecycle, "_load_registry", return_value={"crews": {"demo": crew}}),
                 patch.object(lifecycle, "_save_registry"),
+                patch.object(_registry_mod, "_load_registry", return_value={"crews": {"demo": crew}}),
+                patch.object(_registry_mod, "_save_registry"),
             ):
                 async def leader():
                     return await asyncio.to_thread(
@@ -2882,38 +2926,39 @@ class FinishCrewSetupCookieTests(unittest.TestCase):
             def container_inspect(self, c): return {"Config": {"Labels": {}}}
 
         podman = SimplePodman()
+        saved_reg: dict = {}
 
-        with tempfile.TemporaryDirectory() as td:
-            data_dir = Path(td)
-            registry_path = data_dir / "crews.json"
-            with (
-                patch.object(_registry_mod, "DATA_DIR", data_dir),
-                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
-                patch.object(lifecycle, "_wait_gateway", return_value=True),
-                patch.object(lifecycle, "_inject_auth"),
-                patch.object(lifecycle, "_patch_crew_config"),
-                patch.object(lifecycle, "_copy_agents"),
-                patch.object(lifecycle, "_copy_skills"),
-                patch.object(lifecycle, "_copy_steering"),
-                patch.object(lifecycle, "_seed_openspec_store"),
-                patch.object(lifecycle, "_patch_models"),
-                patch.object(lifecycle, "_inject_policy", return_value="1"),
-                patch.object(lifecycle, "_mint_cookie", return_value="tok-abc"),
-                patch.object(lifecycle, "_mint_internal_cookie", return_value=internal_cookie_returns),
-                patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
-            ):
-                result = lifecycle._finish_crew_setup(
-                    podman,
-                    "demo",
-                    "gs-demo",
-                    "gs-vol-demo",
-                    "gs-home-demo",
-                    "auth-b64",
-                    admiral_secret="ab" * 32,
-                )
+        def capture_save(r):
+            import json as _json
+            saved_reg.update(_json.loads(_json.dumps(r)))
 
-            registry_data = json.loads(registry_path.read_text()) if registry_path.exists() else {}
-        return cookie_write_calls, result, registry_data
+        with (
+            patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
+            patch.object(_registry_mod, "_save_registry", side_effect=capture_save),
+            patch.object(lifecycle, "_wait_gateway", return_value=True),
+            patch.object(lifecycle, "_inject_auth"),
+            patch.object(lifecycle, "_patch_crew_config"),
+            patch.object(lifecycle, "_copy_agents"),
+            patch.object(lifecycle, "_copy_skills"),
+            patch.object(lifecycle, "_copy_steering"),
+            patch.object(lifecycle, "_seed_openspec_store"),
+            patch.object(lifecycle, "_patch_models"),
+            patch.object(lifecycle, "_inject_policy", return_value="1"),
+            patch.object(lifecycle, "_mint_cookie", return_value="tok-abc"),
+            patch.object(lifecycle, "_mint_internal_cookie", return_value=internal_cookie_returns),
+            patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
+        ):
+            result = lifecycle._finish_crew_setup(
+                podman,
+                "demo",
+                "gs-demo",
+                "gs-vol-demo",
+                "gs-home-demo",
+                "auth-b64",
+                admiral_secret="ab" * 32,
+            )
+
+        return cookie_write_calls, result, saved_reg
 
     def test_finish_crew_setup_writes_dashboard_cookie(self) -> None:
         """4.1: _finish_crew_setup calls _write_dashboard_cookie with internal cookie."""
@@ -3028,34 +3073,30 @@ class RefreshCookieInternalTests(unittest.TestCase):
             return True
 
         crew = {"container": "gs-demo", "cookie": "old-ext"}
+        reg = {"crews": {"demo": {"cookie": "old-ext", "container": "gs-demo"}}}
+        saved: dict = {}
 
-        with tempfile.TemporaryDirectory() as td:
-            data_dir = Path(td)
-            registry_path = data_dir / "crews.json"
-            # Pre-populate registry
-            registry_path.write_text(
-                json.dumps({"crews": {"demo": {"cookie": "old-ext", "container": "gs-demo"}},
-                            "schedules": {}})
-            )
-            with (
-                patch.object(_registry_mod, "DATA_DIR", data_dir),
-                patch.object(_registry_mod, "REGISTRY_PATH", registry_path),
-                patch.object(lifecycle, "_get_podman", return_value=Mock()),
-                patch.object(lifecycle, "_mint_cookie", return_value="new-ext"),
-                patch.object(lifecycle, "_mint_internal_cookie", return_value="new-int"),
-                patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
-                patch.object(lifecycle, "_crew_url", return_value="http://gs-demo:5476"),
-            ):
-                result = lifecycle._refresh_cookie(crew, "demo")
+        def capture_save(r):
+            import json as _json
+            saved["reg"] = _json.loads(_json.dumps(r))
 
-            registry_data = json.loads(registry_path.read_text())
+        with (
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=capture_save),
+            patch.object(lifecycle, "_get_podman", return_value=Mock()),
+            patch.object(lifecycle, "_mint_cookie", return_value="new-ext"),
+            patch.object(lifecycle, "_mint_internal_cookie", return_value="new-int"),
+            patch.object(lifecycle, "_write_dashboard_cookie", side_effect=fake_write),
+            patch.object(lifecycle, "_crew_url", return_value="http://gs-demo:5476"),
+        ):
+            result = lifecycle._refresh_cookie(crew, "demo")
 
         self.assertTrue(result)
         self.assertEqual(crew["cookie"], "new-ext")
         self.assertEqual(crew.get("internal_cookie"), "new-int")
         self.assertEqual(len(write_calls), 1)
         self.assertEqual(write_calls[0], ("gs-demo", "new-int"))
-        crew_reg = registry_data["crews"]["demo"]
+        crew_reg = saved["reg"]["crews"]["demo"]
         self.assertEqual(crew_reg["cookie"], "new-ext")
         self.assertEqual(crew_reg.get("internal_cookie"), "new-int")
 
@@ -3298,17 +3339,23 @@ class RegistryWriteFailureCleanupTests(unittest.TestCase):
 
         podman = _Podman()
 
-        # _save_registry raises on the FIRST call (the status=running write
-        # inside the cookie-refresh block). _load_registry succeeds.
+        # _save_registry raises only when the registry contains the status=running
+        # write (the cookie-refresh block), not on the preceding read-only
+        # registry accesses (which also call __exit__ → _save_registry with the
+        # CrewRegistry context manager).
         save_calls = [0]
 
         def _save(_r):
             save_calls[0] += 1
-            raise PermissionError("registry write denied")
+            crew_data = _r.get("crews", {}).get(crew_id, {})
+            if crew_data.get("status") == "running":
+                raise PermissionError("registry write denied")
 
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
             patch.object(lifecycle, "_save_registry", side_effect=_save),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry", side_effect=_save),
             patch.object(lifecycle, "_get_podman", return_value=podman),
             patch.object(lifecycle, "_startup_events", {}),
             patch.object(lifecycle, "_startup_events_lock", threading.Lock()),

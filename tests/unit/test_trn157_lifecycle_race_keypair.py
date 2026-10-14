@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import Mock, patch, call
 
 from tests.unit.helpers import server, lifecycle
+import transport.registry as _registry_mod  # noqa: F401
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -207,6 +208,11 @@ class GenerationCounterTests(unittest.TestCase):
                 return_value={"crews": {crew_id: _make_stopped_crew()}},
             ),
             patch.object(lifecycle, "_save_registry"),
+            patch.object(
+                _registry_mod, "_load_registry",
+                return_value={"crews": {crew_id: _make_stopped_crew()}},
+            ),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(lifecycle, "_patch_crew_config"),
             patch.object(lifecycle, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(lifecycle, "GA_MIN_FREE_MEM_GB", 0.0),

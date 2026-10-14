@@ -104,6 +104,8 @@ class TestRefreshCookie(unittest.TestCase):
             patch.object(lifecycle, "_mint_cookie", return_value="new-cookie"),
             patch.object(server, "_mint_cookie", return_value="new-cookie"),
             patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_save_registry"),
@@ -147,11 +149,11 @@ class TestRefreshCookie(unittest.TestCase):
             patch.object(lifecycle, "_mint_cookie", return_value="refreshed-cookie"),
             patch.object(server, "_mint_cookie", return_value="refreshed-cookie"),
             patch.object(lifecycle, "_load_registry", return_value=reg),
-            patch.object(server, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_load_registry", return_value=reg),
-            patch.object(_registry_mod, "_save_registry"),
-            patch.object(lifecycle, "_save_registry", side_effect=capture_save),
-            patch.object(server, "_save_registry", side_effect=capture_save),
+            patch.object(_registry_mod, "_save_registry", side_effect=capture_save),
+            patch.object(server, "_load_registry", return_value=reg),
+            patch.object(lifecycle, "_save_registry"),
+            patch.object(server, "_save_registry"),
         ):
             server._refresh_cookie(crew, "test-crew")
 
@@ -411,6 +413,8 @@ class TestCallSiteMigration(unittest.TestCase):
             patch.object(lifecycle, "_get_podman") as mock_podman_fn,
             patch.object(server, "_get_podman") as mock_podman_fn,
             patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_save_registry"),
@@ -463,6 +467,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         })
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_save_registry"),
@@ -489,6 +495,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         })
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_save_registry"),
@@ -515,6 +523,8 @@ class TestCrewsGatewayHealthy(unittest.TestCase):
         })
         with (
             patch.object(lifecycle, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(server, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_load_registry", return_value=reg),
             patch.object(_registry_mod, "_save_registry"),

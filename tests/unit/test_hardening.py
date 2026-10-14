@@ -112,28 +112,31 @@ class TestCrewsJsonHygiene(unittest.TestCase):
         podman.container_stop = MagicMock()
         podman.container_start = MagicMock()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            registry_path = Path(tmp) / "crews.json"
-            from contextlib import ExitStack
-            with ExitStack() as stack:
-                stack.enter_context(patch.object(_registry_mod, "DATA_DIR", Path(tmp)))
-                stack.enter_context(patch.object(_registry_mod, "REGISTRY_PATH", registry_path))
-                stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
-                stack.enter_context(patch.object(lifecycle, "_inject_auth"))
-                stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
-                stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
-                stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
-                stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
-                stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
-                stack.enter_context(patch.object(lifecycle, "_patch_models"))
-                stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
-                stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
-                lifecycle._finish_crew_setup(
-                    podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth",
-                    admiral_secret="cd" * 32,
-                )
-            registry_data = json.loads(registry_path.read_text())
-        return registry_data.get("crews", {}).get("demo", {})
+        saved_reg: dict = {}
+
+        def capture_save(r):
+            import json as _json
+            saved_reg.update(_json.loads(_json.dumps(r)))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}))
+            stack.enter_context(patch.object(_registry_mod, "_save_registry", side_effect=capture_save))
+            stack.enter_context(patch.object(lifecycle, "_wait_gateway", return_value=True))
+            stack.enter_context(patch.object(lifecycle, "_inject_auth"))
+            stack.enter_context(patch.object(lifecycle, "_patch_crew_config"))
+            stack.enter_context(patch.object(lifecycle, "_copy_agents", return_value=[]))
+            stack.enter_context(patch.object(lifecycle, "_copy_skills", return_value=[]))
+            stack.enter_context(patch.object(lifecycle, "_copy_steering", return_value=[]))
+            stack.enter_context(patch.object(lifecycle, "_seed_openspec_store"))
+            stack.enter_context(patch.object(lifecycle, "_patch_models"))
+            stack.enter_context(patch.object(lifecycle, "_inject_policy", return_value="1"))
+            stack.enter_context(patch.object(lifecycle, "_mint_cookie", return_value="cookie"))
+            lifecycle._finish_crew_setup(
+                podman, "demo", "gs-demo", "gs-vol-demo", "gs-home-demo", "auth",
+                admiral_secret="cd" * 32,
+            )
+        return saved_reg.get("crews", {}).get("demo", {})
 
     def test_admiral_secret_absent_from_crews_json(self) -> None:
         """crews.json must not contain the plaintext admiral_secret field."""

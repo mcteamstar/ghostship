@@ -70,6 +70,7 @@ try:
         _touch_crew,
         _write_batch,
         _write_secret_file,
+        registry,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -83,6 +84,7 @@ except ModuleNotFoundError:
         _touch_crew,
         _write_batch,
         _write_secret_file,
+        registry,
     )
 
 try:
@@ -473,13 +475,11 @@ def _refresh_cookie(crew, crew_id: str) -> bool:
     # Also mint an internally-bound cookie for crew member spawn auth.
     new_internal = _mint_internal_cookie(podman, c.container)
 
-    with _registry_lock:
-        reg = _load_registry()
-        if crew_id in reg["crews"]:
-            reg["crews"][crew_id]["cookie"] = new_cookie
+    with registry:
+        if crew_id in registry._reg["crews"]:
+            registry._reg["crews"][crew_id]["cookie"] = new_cookie
             if new_internal:
-                reg["crews"][crew_id]["internal_cookie"] = new_internal
-            _save_registry(reg)
+                registry._reg["crews"][crew_id]["internal_cookie"] = new_internal
 
     # Update the in-memory crew so the caller can use it immediately.
     # Both the Crew view (c) and the original dict (if crew is a dict) are
@@ -754,9 +754,8 @@ def _crew_api_with_recovery(
 def _require_crew(crew_id: str | None) -> dict:
     """Return the crew dict or raise a clear error."""
     if not crew_id:
-        with _registry_lock:
-            reg = _load_registry()
-        names = list(reg["crews"].keys())
+        with registry:
+            names = list(registry._reg["crews"].keys())
         if names:
             raise ValueError(
                 f"crew_id required. Live crews: {names}. "
@@ -922,11 +921,10 @@ def _ensure_crew_running(
         # release → probe Podman outside the lock → re-acquire → write back
         # any stale "running"→"stopped" corrections → release, then decide.
         if GA_MAX_ACTIVE_CREWS > 0:
-            with _registry_lock:
-                reg = _load_registry()
+            with registry:
                 running_snapshot = [
                     (cid, entry.get("container"))
-                    for cid, entry in reg["crews"].items()
+                    for cid, entry in registry._reg["crews"].items()
                     if entry.get("status") == "running"
                 ]
 
@@ -953,16 +951,11 @@ def _ensure_crew_running(
                     active += 1  # assume still running to avoid under-counting
 
             if corrections:
-                with _registry_lock:
-                    reg = _load_registry()
-                    changed = False
+                with registry:
                     for cid in corrections:
-                        entry = reg["crews"].get(cid)
+                        entry = registry._reg["crews"].get(cid)
                         if entry is not None and entry.get("status") == "running":
                             entry["status"] = "stopped"
-                            changed = True
-                    if changed:
-                        _save_registry(reg)
                 logger.info(
                     "Active-limit check corrected %d stale running entr%s to stopped: %s",
                     len(corrections),
@@ -997,9 +990,8 @@ def _ensure_crew_running(
         # and enroll members against a crew that no longer exists. Returning the
         # _NUKED_DURING_RESTART sentinel (not raising) lets callers treat this as
         # an expected, non-error outcome.
-        with _registry_lock:
-            reg = _load_registry()
-            crew_still_registered = crew_id in reg["crews"]
+        with registry:
+            crew_still_registered = crew_id in registry._reg["crews"]
         if not crew_still_registered:
             logger.info(
                 "Crew %s was nuked during restart (registry entry gone after "
@@ -1026,13 +1018,11 @@ def _ensure_crew_running(
         new_cookie = _mint_cookie(podman, c.container, crew_url)
         if new_cookie:
             try:
-                with _registry_lock:
-                    reg = _load_registry()
-                    if crew_id in reg["crews"]:
-                        reg["crews"][crew_id]["cookie"] = new_cookie
-                        reg["crews"][crew_id]["status"] = "running"
-                        reg["crews"][crew_id]["last_used"] = time.time()
-                        _save_registry(reg)
+                with registry:
+                    if crew_id in registry._reg["crews"]:
+                        registry._reg["crews"][crew_id]["cookie"] = new_cookie
+                        registry._reg["crews"][crew_id]["status"] = "running"
+                        registry._reg["crews"][crew_id]["last_used"] = time.time()
             except Exception as reg_exc:
                 # D7b: the container is running but we could not persist the
                 # "running" status (registry I/O error — e.g. EACCES, now that
@@ -1061,11 +1051,9 @@ def _ensure_crew_running(
             # Also refresh the internally-bound cookie for crew member spawn auth
             new_internal = _mint_internal_cookie(podman, c.container)
             if new_internal:
-                with _registry_lock:
-                    reg = _load_registry()
-                    if crew_id in reg["crews"]:
-                        reg["crews"][crew_id]["internal_cookie"] = new_internal
-                        _save_registry(reg)
+                with registry:
+                    if crew_id in registry._reg["crews"]:
+                        registry._reg["crews"][crew_id]["internal_cookie"] = new_internal
                 c.internal_cookie = new_internal
                 crew = {**crew, "internal_cookie": new_internal} if isinstance(crew, dict) else c
                 _write_dashboard_cookie(podman, c.container, new_internal)
@@ -1075,13 +1063,11 @@ def _ensure_crew_running(
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
         deployed = _deployed_agent_names(podman, c.container)
         _enroll_crew_members(crew, crew_id, deployed)
-        with _registry_lock:
-            reg = _load_registry()
-            if crew_id in reg["crews"]:
-                reg["crews"][crew_id]["enrolled_agents"] = [
+        with registry:
+            if crew_id in registry._reg["crews"]:
+                registry._reg["crews"][crew_id]["enrolled_agents"] = [
                     n.removesuffix(".json") for n in deployed
                 ]
-                _save_registry(reg)
         _touch_crew(crew_id)
         _outcome = (True, None)
         return crew
@@ -1483,9 +1469,8 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
     except ModuleNotFoundError:
         from transport.captain import _captain_jobs  # local dev  # type: ignore[no-redef]
 
-    with _registry_lock:
-        reg = _load_registry()
-        schedules = _get_crew_schedules(reg, crew_id)
+    with registry:
+        schedules = registry.get_schedules(crew_id)
 
     if not schedules:
         return
@@ -1504,9 +1489,8 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
     gateway_map = {j.get("id"): j for j in gateway_jobs if j.get("id")}
 
     registry_changed = False
-    with _registry_lock:
-        reg = _load_registry()
-        crew_scheds = _get_crew_schedules(reg, crew_id)
+    with registry:
+        crew_scheds = registry.get_schedules(crew_id)
         for sched in crew_scheds:
             job_id = sched.get("job_id")
             if job_id not in gateway_map:
@@ -1542,9 +1526,9 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
                 )
 
         if registry_changed:
-            _save_registry(reg)
+            pass  # registry auto-saves on clean exit via CrewRegistry.__exit__
         # Reload schedules for the reseed pass (may have been mutated above).
-        schedules = _get_crew_schedules(reg, crew_id)
+        schedules = registry.get_schedules(crew_id)
 
     # ── Reseed pass: registry → gateway (bootstrap only) ──────────────────────
     for sched in schedules:
@@ -1564,13 +1548,11 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
                     new_task_id = _dispatch_captain_checkin(
                         crew, crew_id, model=sched.get("model")
                     )
-                    with _registry_lock:
-                        reg2 = _load_registry()
-                        for s in _get_crew_schedules(reg2, crew_id):
+                    with registry:
+                        for s in registry.get_schedules(crew_id):
                             if s.get("type") == "captain":
                                 s["current_task_id"] = new_task_id
                                 break
-                        _save_registry(reg2)
                     logger.info(
                         "Re-seeded captain check-in for crew %s (new task %s)",
                         crew_id, new_task_id,
@@ -1605,13 +1587,11 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
                             new_task_id = _dispatch_captain_checkin(
                                 crew, crew_id, model=sched.get("model")
                             )
-                            with _registry_lock:
-                                reg2 = _load_registry()
-                                for s in _get_crew_schedules(reg2, crew_id):
+                            with registry:
+                                for s in registry.get_schedules(crew_id):
                                     if s.get("type") == "captain":
                                         s["current_task_id"] = new_task_id
                                         break
-                                _save_registry(reg2)
                             logger.info(
                                 "Re-dispatched captain check-in for crew %s (new task %s)",
                                 crew_id, new_task_id,
@@ -1652,14 +1632,11 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
             # Update registry with new gateway job_id if it changed
             new_id = r.get("id") if isinstance(r, dict) else None
             if new_id and new_id != job_id:
-                with _registry_lock:
-                    reg = _load_registry()
-                    crew_scheds = _get_crew_schedules(reg, crew_id)
-                    for s in crew_scheds:
+                with registry:
+                    for s in registry.get_schedules(crew_id):
                         if s.get("job_id") == job_id:
                             s["job_id"] = new_id
                             break
-                    _save_registry(reg)
             logger.info("Re-seeded job %s on crew %s", sched.get("name"), crew_id)
         except Exception as e:
             logger.warning("Failed to re-seed job %s on crew %s: %s", sched.get("name"), crew_id, e)
@@ -1704,9 +1681,8 @@ def _reconcile_registry() -> None:
     # Snapshot the registry under the lock, then release it before the
     # per-crew restart loop so the lock is not held across gateway waits
     # (up to 30s each).  Per-crew write-backs re-acquire the lock individually.
-    with _registry_lock:
-        reg = _load_registry()
-        snapshot = dict(reg["crews"])
+    with registry:
+        snapshot = dict(registry._reg["crews"])
 
     to_remove = []
     updates: dict[str, dict] = {}  # cid -> fields to merge back
@@ -1772,21 +1748,19 @@ def _reconcile_registry() -> None:
                     updates[cid] = {"status": "stopped"}
 
     # Write all changes back under the lock in one pass
-    with _registry_lock:
-        try:
-            reg = _load_registry()
-        except Exception as e:
-            logger.error(
-                "Registry I/O error during reconcile write-back — skipping write to avoid data loss: %s", e
-            )
-            return
-        for cid in to_remove:
-            reg["crews"].pop(cid, None)
-        for cid, fields in updates.items():
-            if cid in reg["crews"]:
-                reg["crews"][cid].update(fields)
-        _save_registry(reg)
-    logger.info("Registry reconciled. Live crews: %s", list(reg["crews"].keys()))
+    try:
+        with registry:
+            for cid in to_remove:
+                registry._reg["crews"].pop(cid, None)
+            for cid, fields in updates.items():
+                if cid in registry._reg["crews"]:
+                    registry._reg["crews"][cid].update(fields)
+    except Exception as e:
+        logger.error(
+            "Registry I/O error during reconcile write-back — skipping write to avoid data loss: %s", e
+        )
+        return
+    logger.info("Registry reconciled. Live crews: %s", list(snapshot.keys()))
 
 
 def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> None:
@@ -2248,8 +2222,7 @@ def _finish_crew_setup(
     except Exception as e:
         logger.warning("Could not read version label from %s: %s", container, e)
 
-    with _registry_lock:
-        reg = _load_registry()
+    with registry:
         crew_entry = {
             "container": container,
             "volume": volume,
@@ -2276,8 +2249,7 @@ def _finish_crew_setup(
         if policy_version is not None:
             crew_entry["policy_version"] = policy_version
             crew_entry["policy_signing_key_id"] = _secret_identifier(policy_signing_key)
-        reg["crews"][crew_id] = crew_entry
-        _save_registry(reg)
+        registry._reg["crews"][crew_id] = crew_entry
 
     _enroll_crew_members(crew_entry, crew_id, copied_agents)
     logger.info("Crew %s ready", crew_id)
@@ -3734,11 +3706,9 @@ _task_timestamps_lock = threading.Lock()
 def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
     """Write last_task_at to the crew's registry entry (best-effort)."""
     try:
-        with _registry_lock:
-            reg = _load_registry()
-            if crew_id in reg["crews"]:
-                reg["crews"][crew_id]["last_task_at"] = created_at
-                _save_registry(reg)
+        with registry:
+            if crew_id in registry._reg["crews"]:
+                registry._reg["crews"][crew_id]["last_task_at"] = created_at
     except Exception as exc:
         logger.warning("Could not update last_task_at for crew %s: %s", crew_id, exc)
 

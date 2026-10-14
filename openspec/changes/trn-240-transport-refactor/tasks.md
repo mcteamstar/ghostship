@@ -109,7 +109,7 @@ for the next).
   compound read-modify-write blocks in `launch`, `nuke`, `crews`, `schedule`.
   Verify: `pytest tests/unit/ -q` green after each logical sub-group.
 
-- [ ] 3.4  **Migrate the 17 `with _registry_lock:` blocks in `lifecycle.py`.**
+- [x] 3.4  **Migrate the 17 `with _registry_lock:` blocks in `lifecycle.py`.**
   Same pattern as 3.3. Key sites: `_refresh_cookie` (lines ~425–466),
   `_ensure_crew_running` (lines ~747–1065), `_finish_crew_setup`
   (lines ~2168–2408), `_reconcile_registry` (lines ~1769–1890).
