@@ -49,7 +49,7 @@ for the next).
   Add `tests/unit/test_crew.py`: test round-trip `Crew.from_dict(crew_id, crew.to_dict()) == crew`,
   `is_idle` with times, `is_warm` with times, `gateway_url`. Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.2  **Migrate crew dict accesses in `lifecycle.py` to use `Crew` objects.**
+- [x] 2.2  **Migrate crew dict accesses in `lifecycle.py` to use `Crew` objects.**
   Replace all `crew["container"]`, `crew.get("cookie", "")`, `crew["status"]`,
   etc. (19 accesses at lines ~330–1065 and ~1504–1535) with attribute access on
   a `Crew` instance. The load/save boundary: `_load_registry()` returns raw

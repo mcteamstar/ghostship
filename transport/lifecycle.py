@@ -86,6 +86,11 @@ except ModuleNotFoundError:
     )
 
 try:
+    from crew import Crew  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.crew import Crew  # local dev
+
+try:
     from captain import (  # container: flat /app/
         _resolve_orders_dir,
         _read_all_mail_counts,
@@ -329,11 +334,29 @@ _SCHEDULE_MONITOR_INTERVAL = 30  # seconds
 
 # ── Crew URL / cookie / API helpers ──────────────────────────────────────────
 
-def _crew_url(crew: dict) -> str:
+def _to_crew(crew_id: str, crew) -> Crew:
+    """Return *crew* as a ``Crew`` instance.
+
+    If *crew* is already a ``Crew`` the object is returned unchanged.
+    If *crew* is a plain dict (legacy caller path — callers in server.py and
+    test suites still pass raw dicts until tasks 2.3/2.4 migrate them) it is
+    converted via ``Crew.from_dict``.  This lets lifecycle.py use attribute
+    access internally while remaining compatible with dict-passing callers.
+    """
+    if isinstance(crew, Crew):
+        return crew
+    return Crew.from_dict(crew_id, crew)
+
+
+def _crew_url(crew) -> str:
+    if isinstance(crew, Crew):
+        return crew.gateway_url()
     return f"http://{crew['container']}:{CREW_GATEWAY_PORT}"
 
 
-def _crew_cookie(crew: dict) -> str:
+def _crew_cookie(crew) -> str:
+    if isinstance(crew, Crew):
+        return crew.cookie_header()
     return f"mc_token_{CREW_GATEWAY_PORT}={crew['cookie']}"
 
 
@@ -424,7 +447,7 @@ def _probe_gateway(crew_url: str) -> bool:
         return False
 
 
-def _refresh_cookie(crew: dict, crew_id: str) -> bool:
+def _refresh_cookie(crew, crew_id: str) -> bool:
     """Re-mint the session cookie and update the registry.
 
     Returns True on success, False on failure. On success the registry is
@@ -440,13 +463,13 @@ def _refresh_cookie(crew: dict, crew_id: str) -> bool:
     except Exception:
         return False
 
-    crew_url = _crew_url(crew)
-    new_cookie = _mint_cookie(podman, crew["container"], crew_url)
+    c = _to_crew(crew_id, crew)
+    new_cookie = _mint_cookie(podman, c.container, c.gateway_url())
     if not new_cookie:
         return False
 
     # Also mint an internally-bound cookie for crew member spawn auth.
-    new_internal = _mint_internal_cookie(podman, crew["container"])
+    new_internal = _mint_internal_cookie(podman, c.container)
 
     with _registry_lock:
         reg = _load_registry()
@@ -456,11 +479,17 @@ def _refresh_cookie(crew: dict, crew_id: str) -> bool:
                 reg["crews"][crew_id]["internal_cookie"] = new_internal
             _save_registry(reg)
 
-    # Update the in-memory crew dict so the caller can use it immediately
-    crew["cookie"] = new_cookie
+    # Update the in-memory crew so the caller can use it immediately.
+    # Both the Crew view (c) and the original dict (if crew is a dict) are
+    # updated for backward compatibility with callers that still pass plain dicts.
+    c.cookie = new_cookie
+    if isinstance(crew, dict):
+        crew["cookie"] = new_cookie
     if new_internal:
-        crew["internal_cookie"] = new_internal
-        _write_dashboard_cookie(podman, crew["container"], new_internal)
+        c.internal_cookie = new_internal
+        if isinstance(crew, dict):
+            crew["internal_cookie"] = new_internal
+        _write_dashboard_cookie(podman, c.container, new_internal)
     else:
         logger.warning("Internal cookie refresh failed for crew %s", crew_id)
 
@@ -747,7 +776,7 @@ def _validate_agent(agent: str) -> None:
 
 
 def _ensure_crew_running(
-    crew: dict,
+    crew,
     crew_id: str,
     *,
     touch: bool = True,
@@ -768,6 +797,8 @@ def _ensure_crew_running(
     except Exception as e:
         raise RuntimeError(str(e))
 
+    c = _to_crew(crew_id, crew)
+
     # D5: Check for an in-progress restart BEFORE probing/stopping the container.
     # If a concurrent leader is already restarting this crew, go straight to
     # the waiter path — probing or stopping the container mid-restart is wrong.
@@ -775,10 +806,9 @@ def _ensure_crew_running(
         _early_in_progress = crew_id in _startup_events
 
     if not _early_in_progress:
-        if podman.container_is_running(crew["container"]):
+        if podman.container_is_running(c.container):
             # Gateway liveness probe: a running container may have a dead gateway
-            crew_url = _crew_url(crew)
-            if _probe_gateway(crew_url):
+            if _probe_gateway(c.gateway_url()):
                 if touch:
                     _touch_crew(crew_id)
                 return crew
@@ -787,7 +817,7 @@ def _ensure_crew_running(
                 "Crew %s container running but gateway probe failed — restarting",
                 crew_id,
             )
-            podman.container_stop(crew["container"])
+            podman.container_stop(c.container)
 
     # Serialise concurrent restarts for this crew
     with _startup_events_lock:
@@ -861,10 +891,11 @@ def _ensure_crew_running(
                 crew_id,
             )
             return _NUKED_DURING_RESTART
-        if crew_after.get("status") in ("stopped", "launching", None):
+        crew_after_obj = _to_crew(crew_id, crew_after)
+        if crew_after_obj.status in ("stopped", "launching", None):
             raise RuntimeError(
                 f"Crew {crew_id} restart (concurrent) failed -- status is still "
-                f"{crew_after.get('status')!r}"
+                f"{crew_after_obj.status!r}"
             )
         return crew_after
 
@@ -892,9 +923,9 @@ def _ensure_crew_running(
             with _registry_lock:
                 reg = _load_registry()
                 running_snapshot = [
-                    (cid, c.get("container"))
-                    for cid, c in reg["crews"].items()
-                    if c.get("status") == "running"
+                    (cid, entry.get("container"))
+                    for cid, entry in reg["crews"].items()
+                    if entry.get("status") == "running"
                 ]
 
             active = 0
@@ -953,8 +984,8 @@ def _ensure_crew_running(
                     f"Retry in a moment."
                 )
 
-        podman.container_start(crew["container"])
-        crew_url = _crew_url(crew)
+        podman.container_start(c.container)
+        crew_url = c.gateway_url()
 
         # TRN-238 QA-2: a concurrent nuke() can remove this crew's registry
         # entry between the container_start above and the post-start setup
@@ -983,14 +1014,14 @@ def _ensure_crew_running(
         # Note: only _patch_crew_config (a config file write) runs here — no
         # agent JSON files are written on restart, so the 0.4.0 runtime
         # write-protection of the agents directory is not a concern on this path.
-        _patch_crew_config(podman, crew["container"])
-        podman.container_stop(crew["container"])
-        podman.container_start(crew["container"])
+        _patch_crew_config(podman, c.container)
+        podman.container_stop(c.container)
+        podman.container_start(c.container)
         if not _wait_gateway(crew_url, timeout=60):
             raise RuntimeError(f"Gateway did not recover after config re-patch for crew {crew_id}")
 
         # Refresh cookie (old one may have expired)
-        new_cookie = _mint_cookie(podman, crew["container"], crew_url)
+        new_cookie = _mint_cookie(podman, c.container, crew_url)
         if new_cookie:
             try:
                 with _registry_lock:
@@ -1015,30 +1046,32 @@ def _ensure_crew_running(
                     crew_id, reg_exc,
                 )
                 try:
-                    podman.container_stop(crew["container"])
+                    podman.container_stop(c.container)
                 except Exception as stop_exc:
                     logger.error(
                         "Crew %s: container_stop during registry-failure cleanup "
                         "also failed: %s", crew_id, stop_exc,
                     )
                 raise
-            crew = {**crew, "cookie": new_cookie}
+            c.cookie = new_cookie
+            crew = {**crew, "cookie": new_cookie} if isinstance(crew, dict) else c
             logger.info("Crew %s restarted and cookie refreshed", crew_id)
             # Also refresh the internally-bound cookie for crew member spawn auth
-            new_internal = _mint_internal_cookie(podman, crew["container"])
+            new_internal = _mint_internal_cookie(podman, c.container)
             if new_internal:
                 with _registry_lock:
                     reg = _load_registry()
                     if crew_id in reg["crews"]:
                         reg["crews"][crew_id]["internal_cookie"] = new_internal
                         _save_registry(reg)
-                crew = {**crew, "internal_cookie": new_internal}
-                _write_dashboard_cookie(podman, crew["container"], new_internal)
+                c.internal_cookie = new_internal
+                crew = {**crew, "internal_cookie": new_internal} if isinstance(crew, dict) else c
+                _write_dashboard_cookie(podman, c.container, new_internal)
             else:
                 logger.warning("Crew %s restarted but internal cookie refresh failed", crew_id)
         else:
             logger.warning("Crew %s restarted but cookie refresh failed", crew_id)
-        deployed = _deployed_agent_names(podman, crew["container"])
+        deployed = _deployed_agent_names(podman, c.container)
         _enroll_crew_members(crew, crew_id, deployed)
         with _registry_lock:
             reg = _load_registry()
@@ -1100,7 +1133,7 @@ def _issue_warmup(crew: dict, crew_id: str) -> None:
     _crew_api_with_recovery(crew, crew_id, "GET", _PREWARM_WARMUP_PATH)
 
 
-def _prewarm_crew(crew: dict, crew_id: str) -> dict:
+def _prewarm_crew(crew, crew_id: str) -> dict:
     """Pre-establish a crew's ACP session ahead of an expected dispatch.
 
     Returns ``{"crew_id": crew_id, "status": <status>}`` where status is one of:
@@ -1120,10 +1153,12 @@ def _prewarm_crew(crew: dict, crew_id: str) -> dict:
     """
     ttl = _effective_prewarm_ttl()
 
+    c = _to_crew(crew_id, crew)
+
     # 2.3: idempotency — a fresh warm marker on a running container is a no-op.
     try:
         podman = _get_podman()
-        container_running = podman.container_is_running(crew["container"])
+        container_running = podman.container_is_running(c.container)
     except Exception:
         container_running = False
 
@@ -2055,7 +2090,7 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
 def _resolve_dispatch_slot(
     agent: str,
     slot: bool | None,
-    crew: dict,
+    crew,
 ) -> tuple[str | None, str | None]:
     """Resolve the effective slot and parent_session for a dispatch.
 
@@ -2075,7 +2110,10 @@ def _resolve_dispatch_slot(
     fall through to the member-slot path, because the member-slot guard checks
     ``slot is None`` explicitly.
     """
-    enrolled: frozenset[str] = frozenset(crew.get("enrolled_agents") or [])
+    if isinstance(crew, Crew):
+        enrolled: frozenset[str] = frozenset(crew.enrolled_agents or [])
+    else:
+        enrolled = frozenset(crew.get("enrolled_agents") or [])
     if slot is None and agent in enrolled:
         # Echo the agent name (clean) not "member-<agent>" (implementation detail).
         return agent, f"dashboard:member-{agent}"
