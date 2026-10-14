@@ -198,7 +198,7 @@ for the next).
   (`flow.abort(podman) if flow.is_expired()`) hits all three.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 5.3  **Migrate `lifecycle.py` to delegate to `LoginFlow` singletons.**
+- [x] 5.3  **Migrate `lifecycle.py` to delegate to `LoginFlow` singletons.**
   Replace `_initiate_login`, `_initiate_claude_login`, `_initiate_codex_login`,
   `_abort_pending_login`, `_abort_claude_pending_login`, `_abort_codex_pending_login`,
   `_sweep_expired_logins`, `_start_login_container`, `_nuke_login_container`,

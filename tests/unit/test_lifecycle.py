@@ -50,6 +50,7 @@ from tests.unit.helpers import (  # noqa: F401
 )
 import transport.registry as _registry_mod
 import transport.files as _files_mod
+import transport.login as _login_mod
 
 
 # ── Support fakes (migrated from test_transport.py) ──────────────────────────
@@ -1456,6 +1457,9 @@ class LoginLogoutTests(unittest.TestCase):
     def setUp(self) -> None:
         with lifecycle._login_pending_lock:
             lifecycle._login_pending = None
+        # Also reset flow singleton state (task 5.3: lifecycle wrappers delegate to flows)
+        with _login_mod.KIRO_FLOW._lock:
+            _login_mod.KIRO_FLOW._pending = None
 
     def test_post_login_happy_path_sets_pending_and_returns_url(self) -> None:
         podman = Mock()
@@ -1483,7 +1487,7 @@ class LoginLogoutTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_start_login_container", return_value=container_name),
+            patch.object(_login_mod.KIRO_FLOW, "start_container", return_value=container_name),
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=(exec_id, fake_sock, b"")),
@@ -1498,11 +1502,9 @@ class LoginLogoutTests(unittest.TestCase):
         self.assertIn("https://device.auth.example.com", body["login_url"])
         self.assertEqual(body["code"], "ABCD-1234")
 
-        with lifecycle._login_pending_lock:
-            pending = lifecycle._login_pending
-        self.assertIsNotNone(pending)
-        self.assertEqual(pending["container"], container_name)
-        self.assertEqual(pending["exec_id"], exec_id)
+        # Check flow singleton state (lifecycle wrapper syncs it)
+        self.assertIsNotNone(_login_mod.KIRO_FLOW._pending)
+        self.assertEqual(_login_mod.KIRO_FLOW._pending["container"], container_name)
 
     def test_post_login_answers_builder_id_login_method_menu(self) -> None:
         """Builder ID fallback accepts kiro-cli's highlighted default option."""
@@ -1607,8 +1609,8 @@ class LoginLogoutTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_start_login_container", return_value=container_name),
-            patch.object(lifecycle, "_nuke_login_container") as nuke,
+            patch.object(_login_mod.KIRO_FLOW, "start_container", return_value=container_name),
+            patch.object(_login_mod.KIRO_FLOW, "_nuke_container") as nuke,
             patch.object(server, "time") as mock_time,
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
@@ -1621,8 +1623,7 @@ class LoginLogoutTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 500)
         nuke.assert_called_once_with(podman, container_name)
-        with lifecycle._login_pending_lock:
-            self.assertIsNone(lifecycle._login_pending)
+        self.assertIsNone(_login_mod.KIRO_FLOW._pending)
 
     def test_get_login_returns_404_when_no_pending_flow(self) -> None:
         request = Mock()
@@ -1746,6 +1747,9 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
     def setUp(self) -> None:
         with lifecycle._login_pending_lock:
             lifecycle._login_pending = None
+        # Also reset flow singleton state (task 5.3: lifecycle wrappers delegate to flows)
+        with _login_mod.KIRO_FLOW._lock:
+            _login_mod.KIRO_FLOW._pending = None
 
     def test_pty_exec_no_url_within_15s_returns_500_and_cleans_up(self) -> None:
         """7.1: PTY exec with no URL within 15s returns 500 and cleans up container."""
@@ -1757,8 +1761,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_start_login_container", return_value="ga-login-timeout"),
-            patch.object(lifecycle, "_nuke_login_container") as nuke,
+            patch.object(_login_mod.KIRO_FLOW, "start_container", return_value="ga-login-timeout"),
+            patch.object(_login_mod.KIRO_FLOW, "_nuke_container") as nuke,
             patch.object(server, "time") as mock_time,
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),
@@ -1791,8 +1795,9 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_start_login_container", return_value="ga-login-region"),
+            patch.object(_login_mod.KIRO_FLOW, "start_container", return_value="ga-login-region"),
             patch.object(lifecycle, "select") as mock_select,
+            patch.object(_login_mod.cfg, "kiro_region", "us-west-2"),
             patch.object(lifecycle, "KIRO_REGION", "us-west-2"),
             patch.object(podman, "container_exec", return_value="kiro-cli"),
             patch.object(podman, "container_exec_pty_stdin", return_value=("exec-r", fake_sock, b"")),
@@ -1840,8 +1845,8 @@ class LoginFlowEdgeCaseTests(unittest.TestCase):
         with (
             patch.object(server, "_read_auth_file", return_value=""),
             patch.object(server, "_get_podman", return_value=podman),
-            patch.object(lifecycle, "_start_login_container", return_value="ga-login-pty45"),
-            patch.object(lifecycle, "_nuke_login_container") as nuke,
+            patch.object(_login_mod.KIRO_FLOW, "start_container", return_value="ga-login-pty45"),
+            patch.object(_login_mod.KIRO_FLOW, "_nuke_container") as nuke,
             patch.object(server, "time") as mock_time,
             patch.object(lifecycle, "select") as mock_select,
             patch.object(podman, "container_exec", return_value="kiro-cli"),

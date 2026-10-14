@@ -2293,39 +2293,20 @@ def _start_login_container(podman: PodmanClient) -> str:
     container's ephemeral writable layer. The container is NOT registered in the
     crew registry and is invisible to MCP tools. Returns the container name.
     """
-    token = secrets.token_hex(8)
-    name = f"{GA_LOGIN_CONTAINER_PREFIX}{token}"
-    podman.network_create(GA_STARBOARD_NETWORK)
-    podman._req("POST", "/libpod/containers/create", json={
-        "name": name,
-        "image": cfg.kc_base_image,
-        "netns": {"nsmode": "bridge"},
-        "Networks": {GA_STARBOARD_NETWORK: {}},
-        # Use the default gateway command — kirocrew-entrypoint seeds
-        # ~/.kiro/crew/config.json which kiro-cli requires. The gateway will
-        # stall on AcpAuthRequired (no auth yet) and the loop watchdog will
-        # recycle it after a timeout, but GET /login polls the auth DB
-        # continuously and will catch a completed auth before that window.
-        # No volumes — ephemeral writable layer only
-    })
-    podman.container_start(name)
-    logger.info("Started ephemeral login container %s", name)
-    return name
+    try:
+        from login import KIRO_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import KIRO_FLOW  # local dev
+    return KIRO_FLOW.start_container(podman)
 
 
 def _nuke_login_container(podman: PodmanClient, name: str) -> None:
     """Best-effort stop and remove a ga-login-* container."""
-    if not name.startswith(GA_LOGIN_CONTAINER_PREFIX):
-        raise RuntimeError(f"Refusing to nuke non-login container: {name!r}")
     try:
-        podman.container_stop(name)
-    except Exception:
-        pass
-    try:
-        podman.container_remove(name)
-    except Exception:
-        pass
-    logger.info("Nuked login container %s", name)
+        from login import KIRO_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import KIRO_FLOW  # local dev
+    KIRO_FLOW._nuke_container(podman, name)
 
 
 # ── Claude login container helpers ────────────────────────────────────────────
@@ -2339,47 +2320,20 @@ def _start_claude_login_container(podman: PodmanClient) -> str:
     error if the image is not found or does not have ``claude`` installed.
     Returns the container name.
     """
-    # Verify the spec-ops image has `claude` available before starting.
-    # We do a quick inspection check; the actual binary check happens after
-    # container start in _initiate_claude_login.
-    token = secrets.token_hex(8)
-    name = f"{GA_CLAUDE_LOGIN_CONTAINER_PREFIX}{token}"
-    podman.network_create(GA_STARBOARD_NETWORK)
     try:
-        podman._req("POST", "/libpod/containers/create", json={
-            "name": name,
-            "image": KC_IMAGE,
-            "netns": {"nsmode": "bridge"},
-            "Networks": {GA_STARBOARD_NETWORK: {}},
-            # No volumes — ephemeral writable layer only.
-            # The container runs the gateway entrypoint like the kiro login
-            # container, which seeds ~/.kiro/crew/config.json. The gateway
-            # will stall on AcpAuthRequired but that's fine — we only need
-            # the container running long enough to exec `claude auth login`.
-        })
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to create Claude login container from image {KC_IMAGE!r}: {e}. "
-            "Enable claude in GA_CREW_AGENT and re-run `ghostship install`."
-        ) from e
-    podman.container_start(name)
-    logger.info("Started ephemeral Claude login container %s", name)
-    return name
+        from login import CLAUDE_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CLAUDE_FLOW  # local dev
+    return CLAUDE_FLOW.start_container(podman)
 
 
 def _nuke_claude_login_container(podman: PodmanClient, name: str) -> None:
     """Best-effort stop and remove a ga-claude-login-* container."""
-    if not name.startswith(GA_CLAUDE_LOGIN_CONTAINER_PREFIX):
-        raise RuntimeError(f"Refusing to nuke non-Claude-login container: {name!r}")
     try:
-        podman.container_stop(name)
-    except Exception:
-        pass
-    try:
-        podman.container_remove(name)
-    except Exception:
-        pass
-    logger.info("Nuked Claude login container %s", name)
+        from login import CLAUDE_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CLAUDE_FLOW  # local dev
+    CLAUDE_FLOW._nuke_container(podman, name)
 
 
 # ── kiro-cli auth file helpers ──────────────────────────────────────
@@ -2638,132 +2592,15 @@ def _initiate_login(podman: "PodmanClient") -> dict:
 
     Callers must NOT hold _login_pending_lock when calling this.
     """
-    global _login_pending
-    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
-    # _login_pending_lock serialises concurrent callers: the first one through
-    # sets the sentinel immediately before releasing the lock, so any race
-    # between "is flow pending?" and "start a flow" is eliminated.
-    with _login_pending_lock:
-        if _login_pending is not None:
-            return {"login_pending": True}
-        # Set lightweight sentinel immediately to prevent concurrent starts
-        _login_pending = {
-            "container": None,
-            "started_at": time.time(),
-            "state": "starting",
-        }
-
-    # ── Phase: start login container ──────────────────────────────────────────
     try:
-        container = _start_login_container(podman)
-    except Exception as e:
-        logger.error("Failed to start login container: %s", e)
-        with _login_pending_lock:
-            _login_pending = None
-        return {"error": f"Failed to start login container: {e}"}
-
-    # Update sentinel with real container name
+        from login import KIRO_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import KIRO_FLOW  # local dev
+    global _login_pending, _login_pending_lock
+    result = KIRO_FLOW.initiate(podman)
     with _login_pending_lock:
-        _login_pending = {
-            "container": container,
-            "started_at": _login_pending["started_at"] if _login_pending else time.time(),
-            "state": "started",
-        }
-
-    # ── Phase: wait for kiro-cli ───────────────────────────────────────────────
-    for _ in range(10):
-        try:
-            check = podman.container_exec(container, ["which", "kiro-cli"])
-            if "kiro-cli" in check:
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-
-    # ── Phase: PTY exec + prompt loop ─────────────────────────────────────────
-    # kiro-cli ignores --identity-provider / --region flags in interactive/PTY
-    # mode (upstream bug kiro#6120). Use a raw-socket exec so we can write
-    # stdin answers to the interactive prompts automatically.
-    # With --license pro the provider-selection menu is skipped; kiro-cli goes
-    # straight to Start URL → Region, then makes a network round-trip to AWS
-    # to register the device (which takes a few seconds) before printing the
-    # URL.
-    #
-    # Deadline is 45 seconds to accommodate the AWS IAM Identity Center
-    # round-trip that happens after the user answers the Region prompt.  The
-    # device-registration call can take several seconds on a warm network; 45s
-    # gives comfortable headroom without leaving users waiting indefinitely on
-    # a failed flow.
-    #
-    # The read loop uses select() rather than a blocking recv() so it can poll
-    # for the URL without blocking the event loop thread.  PTY sockets are set
-    # non-blocking; select() with a 0.1s timeout yields control between chunks
-    # so the outer deadline check and prompt-matching logic run frequently.
-    cmd = ["kiro-cli", "login", "--use-device-flow"] + (
-        ["--license", KIRO_LICENSE] if KIRO_LICENSE else []
-    )
-    try:
-        exec_id, pty_sock, leftover = podman.container_exec_pty_stdin(container, cmd)
-    except Exception as e:
-        _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
-        return {"error": f"Failed to start kiro-cli login: {e}"}
-
-    pty_sock.setblocking(False)
-
-    # ── Phase: PTY read loop ───────────────────────────────────────────────────
-    # Prompt patterns for the kiro-cli interactive device flow.
-    # Each tuple is (compiled_regex, answer_bytes); patterns are answered in
-    # order and at most once.  The Select-login-method menu is answered with a
-    # bare newline to accept the highlighted Builder-ID default; Start URL and
-    # Region answers come from the KIRO_* env vars.
-    # NOTE: the Select-login-method guard (skip if Start URL already seen) that
-    # the old inline loop used is intentionally omitted here — in practice the
-    # menu always appears before the Start URL prompt, and the helper answers
-    # each pattern at most once, so double-answering cannot happen.
-    kiro_prompt_patterns = [
-        (re.compile(r"Select login method"), b"\n"),
-        (re.compile(r"Start URL"), (KIRO_IDENTITY_PROVIDER.rstrip("/") + "/\n").encode()),
-        (re.compile(r"Region"), (KIRO_REGION + "\n").encode()),
-    ]
-    kiro_url_patterns = [
-        re.compile(r"Open this URL[:\s]+(https?://\S+)"),
-        re.compile(r"(https?://\S+user_code=\S+)"),
-    ]
-    # Code extraction: prefer user_code= query param in the URL; fall back to a
-    # "Code: XXXX" line printed by kiro-cli before the URL.  A combined pattern
-    # handles both cases — the helper tries it against the URL first, then the
-    # full accumulated text, so the original priority is preserved.
-    _kiro_code_re = re.compile(r"(?:user_code=|[Cc]ode[:\s]+)([A-Z0-9-]{4,})")
-
-    login_url, login_code = _run_pty_login_flow(
-        pty_sock=pty_sock,
-        prompt_patterns=kiro_prompt_patterns,
-        url_patterns=kiro_url_patterns,
-        code_pattern=_kiro_code_re,
-        deadline_secs=45.0,
-        initial_bytes=leftover,
-    )
-
-    if not login_url:
-        try:
-            pty_sock.close()
-        except Exception:
-            pass
-        _nuke_login_container(podman, container)
-        with _login_pending_lock:
-            _login_pending = None
-        return {"error": "kiro-cli did not produce a login URL within 45s."}
-
-    # ── Phase: finalise ────────────────────────────────────────────────────────
-    # Drain thread already started by _run_pty_login_flow.
-    with _login_pending_lock:
-        if _login_pending is not None:
-            _login_pending["exec_id"] = exec_id
-
-    logger.info("Login flow started in %s, URL extracted", container)
-    return {"login_url": login_url, "code": login_code}
+        _login_pending = KIRO_FLOW._pending
+    return result
 
 
 def _abort_pending_login(podman: "PodmanClient") -> bool:
@@ -2778,25 +2615,15 @@ def _abort_pending_login(podman: "PodmanClient") -> bool:
     Safe to call from the logout handler regardless of whether a flow is
     pending.
     """
-    global _login_pending
+    try:
+        from login import KIRO_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import KIRO_FLOW  # local dev
+    global _login_pending, _login_pending_lock
+    result = KIRO_FLOW.abort(podman)
     with _login_pending_lock:
-        pending = _login_pending
-        if pending is None:
-            return False
-        # Clear state immediately under the lock so concurrent callers see no
-        # pending flow even if the container nuke takes a moment.
-        _login_pending = None
-
-    container = pending.get("container")
-    if container:
-        try:
-            _nuke_login_container(podman, container)
-            logger.info("Aborted pending kiro login in container %s", container)
-        except Exception as e:
-            logger.warning("Could not nuke login container %s: %s", container, e)
-    else:
-        logger.info("Aborted pending kiro login (container not yet started)")
-    return True
+        _login_pending = KIRO_FLOW._pending
+    return result
 
 
 # ── Claude OAuth device-flow state ────────────────────────────────────────────
@@ -2833,132 +2660,15 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
       {"login_pending": True}                 — a flow is already in progress
       {"error": str}                          — hard failure
     """
-    global _claude_login_pending
-    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
-    with _claude_login_pending_lock:
-        if _claude_login_pending is not None:
-            return {"login_pending": True}
-        # Lightweight sentinel to prevent concurrent starts
-        _claude_login_pending = {
-            "container": None,
-            "started_at": time.time(),
-            "state": "starting",
-        }
-
-    # ── Phase: start Claude login container ──────────────────────────────────
     try:
-        container = _start_claude_login_container(podman)
-    except Exception as e:
-        logger.error("Failed to start Claude login container: %s", e)
-        with _claude_login_pending_lock:
-            _claude_login_pending = None
-        return {"error": str(e)}
-
-    # Update sentinel with real container name
+        from login import CLAUDE_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CLAUDE_FLOW  # local dev
+    global _claude_login_pending, _claude_login_pending_lock
+    result = CLAUDE_FLOW.initiate(podman)
     with _claude_login_pending_lock:
-        _claude_login_pending = {
-            "container": container,
-            "started_at": _claude_login_pending["started_at"] if _claude_login_pending else time.time(),
-            "state": "started",
-        }
-
-    # ── Phase: wait for claude CLI ────────────────────────────────────────────
-    # Poll briefly for the claude binary to be accessible in the container.
-    for _ in range(10):
-        try:
-            check = podman.container_exec(container, ["which", "claude"])
-            if "claude" in check:
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-    else:
-        _nuke_claude_login_container(podman, container)
-        with _claude_login_pending_lock:
-            _claude_login_pending = None
-        return {
-            "error": (
-                f"'claude' CLI not found in image {KC_IMAGE!r}. "
-                "Enable claude in GA_CREW_AGENT and re-run `ghostship install`."
-            )
-        }
-
-    # ── Phase: PTY exec ───────────────────────────────────────────────────────
-    # claude auth login opens a browser-based device-code flow and prints a URL.
-    # PTY URL extraction note (task 1.2): the URL pattern for claude auth login
-    # is one of:
-    #   "Open the following URL in your browser: https://..."
-    #   "https://claude.ai/..." or "https://console.anthropic.com/..."
-    # We match with re.search(r'https?://\S+', text) and accept the first URL
-    # that looks like an Anthropic/Claude auth URL. A generic fallback accepts
-    # any https:// URL if no more specific match is found within 45 seconds.
-    cmd = ["claude", "auth", "login"]
-    try:
-        exec_id, pty_sock, leftover = podman.container_exec_pty_stdin(container, cmd)
-    except Exception as e:
-        _nuke_claude_login_container(podman, container)
-        with _claude_login_pending_lock:
-            _claude_login_pending = None
-        return {"error": f"Failed to start claude auth login: {e}"}
-
-    pty_sock.setblocking(False)
-
-    # ── Phase: PTY read loop ──────────────────────────────────────────────────
-    # Prompt patterns: answer a "Continue?" / "Yes/No" / bare "?" prompt with
-    # a newline.  URL patterns: Anthropic/Claude auth URLs first, then generic.
-    # NOTE: no re.MULTILINE — $ must match only at the end of the entire
-    # accumulated text (after rstrip equivalence via select-loop framing), which
-    # mirrors the original guard: only answer when '?' is the last meaningful
-    # character, not merely when some earlier line happened to end with '?'.
-    claude_prompt_patterns = [
-        (re.compile(r"\?\s*$"), b"\n"),
-    ]
-    claude_url_patterns = [
-        re.compile(
-            r"https?://(?:claude\.ai|console\.anthropic\.com|auth\.anthropic\.com)\S*"
-        ),
-        re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
-        re.compile(r"(https?://\S{20,})"),
-    ]
-    # No code is extracted from the URL: its `code=true` parameter is a flag, not
-    # the authorisation code. The user's code is shown in the browser after
-    # approval and pasted back through POST /login/claude/code.
-    login_url, _ = _run_pty_login_flow(
-        pty_sock=pty_sock,
-        prompt_patterns=claude_prompt_patterns,
-        url_patterns=claude_url_patterns,
-        code_pattern=None,
-        deadline_secs=45.0,
-        initial_bytes=leftover,
-    )
-
-    if not login_url:
-        try:
-            pty_sock.close()
-        except Exception:
-            pass
-        _nuke_claude_login_container(podman, container)
-        with _claude_login_pending_lock:
-            _claude_login_pending = None
-        return {
-            "error": "claude auth login did not produce a login URL within 45s."
-        }
-
-    # ── Phase: finalise ────────────────────────────────────────────────────────
-    # The drain thread started by _run_pty_login_flow keeps reading so the CLI
-    # never blocks on a full PTY buffer. The socket stays writable so
-    # _submit_claude_login_code can deliver the pasted code.
-    with _claude_login_pending_lock:
-        if _claude_login_pending is not None:
-            _claude_login_pending.update(
-                exec_id=exec_id,
-                login_url=login_url,
-                pty_sock=pty_sock,
-                state="awaiting_code",
-            )
-
-    logger.info("Claude login flow started in %s, URL extracted", container)
-    return {"login_url": login_url, "code": None}
+        _claude_login_pending = CLAUDE_FLOW._pending
+    return result
 
 
 # How long a submitted code may take to complete the exchange before the flow is
@@ -3051,80 +2761,13 @@ def _sweep_expired_logins(podman: "PodmanClient") -> None:
     coarse-grained: each backend's check acquires and releases its own lock
     independently so a slow nuke does not hold an unrelated backend's lock.
     """
-    global _login_pending, _claude_login_pending, _codex_login_pending
-
-    # ── kiro ──────────────────────────────────────────────────────────────────
-    with _login_pending_lock:
-        kiro_pending = _login_pending
-    if kiro_pending is not None and _kiro_login_expired(kiro_pending):
-        container = kiro_pending.get("container")
-        logger.warning(
-            "Expiring stale kiro login flow (started_at=%.0f, container=%s)",
-            kiro_pending.get("started_at", 0),
-            container,
-        )
-        if container:
-            try:
-                _nuke_login_container(podman, container)
-            except Exception as e:
-                logger.warning("Failed to nuke stale kiro login container %s: %s", container, e)
-        with _login_pending_lock:
-            # Re-check under lock to avoid a race with a concurrent poll completing.
-            if _login_pending is kiro_pending:
-                _login_pending = None
-
-    # ── Claude ────────────────────────────────────────────────────────────────
-    with _claude_login_pending_lock:
-        claude_pending = _claude_login_pending
-    if claude_pending is not None and _claude_login_code_expired(claude_pending):
-        container = claude_pending.get("container")
-        sock = claude_pending.get("pty_sock")
-        logger.warning(
-            "Expiring stale Claude login flow (state=%s, started_at=%.0f, container=%s)",
-            claude_pending.get("state"),
-            claude_pending.get("started_at", 0),
-            container,
-        )
-        if sock is not None:
-            try:
-                sock.close()
-            except Exception:
-                pass
-        if container:
-            try:
-                _nuke_claude_login_container(podman, container)
-            except Exception as e:
-                logger.warning("Failed to nuke stale Claude login container %s: %s", container, e)
-        with _claude_login_pending_lock:
-            if _claude_login_pending is claude_pending:
-                _claude_login_pending = None
-        # Spec (claude-auth): on sweep expiry the transport SHALL record
-        # action=login outcome=failure in the audit log, mirroring the
-        # poll-driven expiry path in server.py.  No HTTP request here, so
-        # source is None.
-        _security.audit_auth_event(
-            action="login", outcome="failure", account="claude",
-            source=None, emit=logger.info,
-        )
-
-    # ── Codex ─────────────────────────────────────────────────────────────────
-    with _codex_login_pending_lock:
-        codex_pending = _codex_login_pending
-    if codex_pending is not None and _codex_login_expired(codex_pending):
-        container = codex_pending.get("container")
-        logger.warning(
-            "Expiring stale Codex login flow (started_at=%.0f, container=%s)",
-            codex_pending.get("started_at", 0),
-            container,
-        )
-        if container:
-            try:
-                _nuke_codex_login_container(podman, container)
-            except Exception as e:
-                logger.warning("Failed to nuke stale Codex login container %s: %s", container, e)
-        with _codex_login_pending_lock:
-            if _codex_login_pending is codex_pending:
-                _codex_login_pending = None
+    try:
+        from login import ALL_FLOWS  # container
+    except ModuleNotFoundError:
+        from transport.login import ALL_FLOWS  # local dev
+    for flow in ALL_FLOWS:
+        if flow.is_expired():
+            flow.abort(podman)
 
 
 CLAUDE_CREDENTIAL_FILE = ".credentials.json"
@@ -3207,31 +2850,25 @@ def _abort_claude_pending_login(podman: "PodmanClient") -> bool:
 
     Returns True if a flow was aborted, False if nothing was pending.
     """
-    global _claude_login_pending
-    with _claude_login_pending_lock:
-        pending = _claude_login_pending
-        if pending is None:
-            return False
-        _claude_login_pending = None
-
-    # Close PTY socket if present (best-effort)
-    pty_sock = pending.get("pty_sock")
+    try:
+        from login import CLAUDE_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CLAUDE_FLOW  # local dev
+    global _claude_login_pending, _claude_login_pending_lock
+    # Capture the pty_sock BEFORE abort() clears _pending
+    with CLAUDE_FLOW._lock:
+        pending = CLAUDE_FLOW._pending
+        pty_sock = pending.get("pty_sock") if pending else None
+    result = CLAUDE_FLOW.abort(podman)
+    # Close the PTY socket if present (abort() does not close it)
     if pty_sock is not None:
         try:
             pty_sock.close()
         except Exception:
             pass
-
-    container = pending.get("container")
-    if container:
-        try:
-            _nuke_claude_login_container(podman, container)
-            logger.info("Aborted pending Claude login in container %s", container)
-        except Exception as e:
-            logger.warning("Could not nuke Claude login container %s: %s", container, e)
-    else:
-        logger.info("Aborted pending Claude login (container not yet started)")
-    return True
+    with _claude_login_pending_lock:
+        _claude_login_pending = CLAUDE_FLOW._pending
+    return result
 
 
 # ── Codex login container helpers ─────────────────────────────────────────────
@@ -3246,43 +2883,20 @@ def _start_codex_login_container(podman: PodmanClient) -> str:
     The actual adapter-binary check happens after start in _initiate_codex_login.
     Returns the container name.
     """
-    token = secrets.token_hex(8)
-    name = f"{GA_CODEX_LOGIN_CONTAINER_PREFIX}{token}"
-    podman.network_create(GA_STARBOARD_NETWORK)
     try:
-        podman._req("POST", "/libpod/containers/create", json={
-            "name": name,
-            "image": KC_IMAGE,
-            "netns": {"nsmode": "bridge"},
-            "Networks": {GA_STARBOARD_NETWORK: {}},
-            # No volumes — ephemeral writable layer only. The container runs the
-            # gateway entrypoint like the kiro/claude login containers; the
-            # gateway stalls on AcpAuthRequired but that's fine — we only need
-            # the container running long enough to exec the codex login flow.
-        })
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to create Codex login container from image {KC_IMAGE!r}: {e}. "
-            "Enable codex in GA_CREW_AGENT and re-run `ghostship install`."
-        ) from e
-    podman.container_start(name)
-    logger.info("Started ephemeral Codex login container %s", name)
-    return name
+        from login import CODEX_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CODEX_FLOW  # local dev
+    return CODEX_FLOW.start_container(podman)
 
 
 def _nuke_codex_login_container(podman: PodmanClient, name: str) -> None:
     """Best-effort stop and remove a ga-codex-login-* container."""
-    if not name.startswith(GA_CODEX_LOGIN_CONTAINER_PREFIX):
-        raise RuntimeError(f"Refusing to nuke non-Codex-login container: {name!r}")
     try:
-        podman.container_stop(name)
-    except Exception:
-        pass
-    try:
-        podman.container_remove(name)
-    except Exception:
-        pass
-    logger.info("Nuked Codex login container %s", name)
+        from login import CODEX_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CODEX_FLOW  # local dev
+    CODEX_FLOW._nuke_container(podman, name)
 
 
 # ── Codex OAuth auth file helpers ─────────────────────────────────────────────
@@ -3369,121 +2983,15 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
       {"login_pending": True}                 — a flow is already in progress
       {"error": str}                          — hard failure
     """
-    global _codex_login_pending
-    # ── Phase: acquire lock / TOCTOU guard ───────────────────────────────────
-    with _codex_login_pending_lock:
-        if _codex_login_pending is not None:
-            return {"login_pending": True}
-        _codex_login_pending = {
-            "container": None,
-            "started_at": time.time(),
-            "state": "starting",
-        }
-
-    # ── Phase: start Codex login container ────────────────────────────────────
     try:
-        container = _start_codex_login_container(podman)
-    except Exception as e:
-        logger.error("Failed to start Codex login container: %s", e)
-        with _codex_login_pending_lock:
-            _codex_login_pending = None
-        return {"error": str(e)}
-
+        from login import CODEX_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CODEX_FLOW  # local dev
+    global _codex_login_pending, _codex_login_pending_lock
+    result = CODEX_FLOW.initiate(podman)
     with _codex_login_pending_lock:
-        _codex_login_pending = {
-            "container": container,
-            "started_at": _codex_login_pending["started_at"] if _codex_login_pending else time.time(),
-            "state": "started",
-        }
-
-    # ── Phase: wait for codex-acp adapter (task 3.6) ──────────────────────────
-    # Poll briefly for the codex-acp binary. Its absence means the image was
-    # not built with the codex toolchain — fail with an actionable error.
-    for _ in range(10):
-        try:
-            check = podman.container_exec(container, ["which", "codex-acp"])
-            if "codex-acp" in check:
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-    else:
-        _nuke_codex_login_container(podman, container)
-        with _codex_login_pending_lock:
-            _codex_login_pending = None
-        return {
-            "error": (
-                f"'codex-acp' adapter not found in image {KC_IMAGE!r}. "
-                "Enable codex in GA_CREW_AGENT and re-run `ghostship install`."
-            )
-        }
-
-    # ── Phase: PTY exec ───────────────────────────────────────────────────────
-    cmd = ["codex-acp", "login"]
-    try:
-        exec_id, pty_sock, leftover = podman.container_exec_pty_stdin(container, cmd)
-    except Exception as e:
-        _nuke_codex_login_container(podman, container)
-        with _codex_login_pending_lock:
-            _codex_login_pending = None
-        return {"error": f"Failed to start codex-acp login: {e}"}
-
-    pty_sock.setblocking(False)
-
-    # ── Phase: PTY read loop ──────────────────────────────────────────────────
-    # Prompt patterns: answer a generic yes/no or "Continue?" prompt with a
-    # newline.  URL patterns: OpenAI/ChatGPT auth URLs first, then generic.
-    # NOTE: no re.MULTILINE — $ must match only at the end of the entire
-    # accumulated text, mirroring the original guard (see claude comment above).
-    codex_prompt_patterns = [
-        (re.compile(r"\?\s*$"), b"\n"),
-    ]
-    codex_url_patterns = [
-        re.compile(
-            r"https?://(?:auth\.openai\.com|platform\.openai\.com|chatgpt\.com|chat\.openai\.com)\S*"
-        ),
-        re.compile(r"(?:URL|browser)[:\s]+(https?://\S+)", re.IGNORECASE),
-        re.compile(r"(https?://\S{20,})"),
-    ]
-    # Code is optional for Codex — spec permits a code-less login_url.
-    # Combined pattern: prefer user_code= query param in the URL; fall back to a
-    # "Code: XXXX" line in the output text.  The helper searches URL first, then
-    # full accumulated text, preserving original priority.
-    # The prose branch is restricted to uppercase-or-digit tokens of 4–8 chars
-    # with a word boundary to avoid matching prose words like "will" or "expire".
-    codex_code_pattern = re.compile(
-        r"(?:[?&]user_code=([A-Za-z0-9_-]{4,})|[Cc]ode[:\s]+([A-Z0-9]{4,8})\b)"
-    )
-
-    login_url, login_code = _run_pty_login_flow(
-        pty_sock=pty_sock,
-        prompt_patterns=codex_prompt_patterns,
-        url_patterns=codex_url_patterns,
-        code_pattern=codex_code_pattern,
-        deadline_secs=45.0,
-        initial_bytes=leftover,
-    )
-
-    if not login_url:
-        try:
-            pty_sock.close()
-        except Exception:
-            pass
-        _nuke_codex_login_container(podman, container)
-        with _codex_login_pending_lock:
-            _codex_login_pending = None
-        return {
-            "error": "codex-acp login did not produce a login URL within 45s."
-        }
-
-    # ── Phase: finalise ────────────────────────────────────────────────────────
-    # Drain thread already started by _run_pty_login_flow.
-    with _codex_login_pending_lock:
-        if _codex_login_pending is not None:
-            _codex_login_pending["exec_id"] = exec_id
-
-    logger.info("Codex login flow started in %s, URL extracted", container)
-    return {"login_url": login_url, "code": login_code}
+        _codex_login_pending = CODEX_FLOW._pending
+    return result
 
 
 
@@ -3539,23 +3047,15 @@ def _abort_codex_pending_login(podman: "PodmanClient") -> bool:
 
     Returns True if a flow was aborted, False if nothing was pending.
     """
-    global _codex_login_pending
+    try:
+        from login import CODEX_FLOW  # container
+    except ModuleNotFoundError:
+        from transport.login import CODEX_FLOW  # local dev
+    global _codex_login_pending, _codex_login_pending_lock
+    result = CODEX_FLOW.abort(podman)
     with _codex_login_pending_lock:
-        pending = _codex_login_pending
-        if pending is None:
-            return False
-        _codex_login_pending = None
-
-    container = pending.get("container")
-    if container:
-        try:
-            _nuke_codex_login_container(podman, container)
-            logger.info("Aborted pending Codex login in container %s", container)
-        except Exception as e:
-            logger.warning("Could not nuke Codex login container %s: %s", container, e)
-    else:
-        logger.info("Aborted pending Codex login (container not yet started)")
-    return True
+        _codex_login_pending = CODEX_FLOW._pending
+    return result
 
 
 # ── Schedule / idle monitors ───────────────────────────────────────

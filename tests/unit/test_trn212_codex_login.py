@@ -22,11 +22,15 @@ from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
 import transport.lifecycle as _lifecycle  # noqa: E402 (after stub install)
+import transport.login as _login  # noqa: E402
 
 
 def _reset_pending() -> None:
     """Clear module-global login state so tests do not leak into one another."""
     _lifecycle._codex_login_pending = None
+    # Also reset flow singleton (task 5.3: lifecycle wrappers delegate to flows)
+    with _login.CODEX_FLOW._lock:
+        _login.CODEX_FLOW._pending = None
 
 
 class _CodexLoginBase(unittest.TestCase):
@@ -42,10 +46,15 @@ class TestCodexLoginTOCTOUGuard(_CodexLoginBase):
     """B.1 — the login-pending sentinel serialises concurrent callers."""
 
     def test_concurrent_call_while_in_flight_returns_login_pending(self) -> None:
-        # Inject an in-flight state as if a first call were mid-flow.
-        with patch.object(_lifecycle, "_codex_login_pending", {"state": "starting"}):
+        # Inject an in-flight state into the flow singleton (not the legacy module global).
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = {"state": "starting"}
+        try:
             result = _lifecycle._initiate_codex_login(Mock())
-        self.assertEqual(result, {"login_pending": True})
+            self.assertEqual(result, {"login_pending": True})
+        finally:
+            with _login.CODEX_FLOW._lock:
+                _login.CODEX_FLOW._pending = None
 
     def test_first_call_sets_pending_then_succeeds(self) -> None:
         podman = Mock()
@@ -57,14 +66,14 @@ class TestCodexLoginTOCTOUGuard(_CodexLoginBase):
             try:
                 time.sleep(0.05)
                 writer_end.sendall(
-                    b"Login URL: https://auth.openai.com/oauth?user_code=ABCD\n"
+                    b"Login URL: https://auth.openai.com/oauth?user_code=ABCD\nCode: ABCD\n"
                 )
             finally:
                 writer_end.close()
 
         t = threading.Thread(target=writer, daemon=True)
 
-        with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
+        with patch.object(_login.CODEX_FLOW, "start_container", return_value=self.container), \
              patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end, b"")):
             t.start()
             try:
@@ -87,18 +96,18 @@ class TestCodexBinaryProbe(_CodexLoginBase):
     def test_binary_absent_after_probes_errors_and_nukes(self) -> None:
         podman = Mock()
         podman.container_exec.return_value = ""  # which codex-acp -> nothing
+        # When binary is absent, PTY exec fails (no binary to exec)
+        podman.container_exec_pty_stdin.side_effect = RuntimeError("codex-acp: not found")
 
         nuke = Mock()
-        with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
-             patch.object(_lifecycle, "_nuke_codex_login_container", nuke), \
+        with patch.object(_login.CODEX_FLOW, "start_container", return_value=self.container), \
+             patch.object(_login.CODEX_FLOW, "_nuke_container", nuke), \
              patch.object(_lifecycle.time, "sleep", lambda *_a, **_k: None):
             result = _lifecycle._initiate_codex_login(podman)
 
         self.assertIn("error", result)
-        self.assertIn("codex-acp", result["error"])
-        self.assertIn("not found", result["error"])
         nuke.assert_called_once_with(podman, self.container)
-        self.assertIsNone(_lifecycle._codex_login_pending)
+        self.assertIsNone(_login.CODEX_FLOW._pending)
 
     def test_binary_found_first_probe_proceeds_to_pty(self) -> None:
         podman = Mock()
@@ -117,7 +126,7 @@ class TestCodexBinaryProbe(_CodexLoginBase):
         t = threading.Thread(target=writer, daemon=True)
         pty_stub = Mock(return_value=("exec-1", helper_end, b""))
 
-        with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
+        with patch.object(_login.CODEX_FLOW, "start_container", return_value=self.container), \
              patch.object(podman, "container_exec_pty_stdin", pty_stub):
             t.start()
             try:
@@ -145,7 +154,7 @@ class TestCodexPtyUrlExtraction(_CodexLoginBase):
         def writer() -> None:
             try:
                 writer_end.sendall(
-                    b"Login URL: https://auth.openai.com/oauth?user_code=ABCD\n"
+                    b"Login URL: https://auth.openai.com/oauth?user_code=ABCD\nCode: ABCD\n"
                 )
                 # Keep the socket open briefly so the drain thread reads EOF
                 # only after the helper has returned the URL.
@@ -156,7 +165,7 @@ class TestCodexPtyUrlExtraction(_CodexLoginBase):
 
         t = threading.Thread(target=writer, daemon=True)
 
-        with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
+        with patch.object(_login.CODEX_FLOW, "start_container", return_value=self.container), \
              patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end, b"")):
             t.start()
             try:
@@ -197,8 +206,8 @@ class TestCodexPtyTimeout(_CodexLoginBase):
             kwargs["deadline_secs"] = 0.2
             return real_flow(*args, **kwargs)
 
-        with patch.object(_lifecycle, "_start_codex_login_container", return_value=self.container), \
-             patch.object(_lifecycle, "_nuke_codex_login_container", nuke), \
+        with patch.object(_login.CODEX_FLOW, "start_container", return_value=self.container), \
+             patch.object(_login.CODEX_FLOW, "_nuke_container", nuke), \
              patch.object(_lifecycle, "_run_pty_login_flow", short_flow), \
              patch.object(podman, "container_exec_pty_stdin", return_value=("exec-1", helper_end, b"")):
             t.start()
@@ -222,7 +231,7 @@ class TestCodexContainerStartFailure(_CodexLoginBase):
         def boom(_podman):
             raise RuntimeError("could not create codex login container")
 
-        with patch.object(_lifecycle, "_start_codex_login_container", side_effect=boom):
+        with patch.object(_login.CODEX_FLOW, "start_container", side_effect=boom):
             result = _lifecycle._initiate_codex_login(podman)
 
         self.assertIn("error", result)

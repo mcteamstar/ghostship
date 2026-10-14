@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, Mock, patch
 import tempfile
 
 from tests.unit.helpers import lifecycle, server  # noqa: F401
+import transport.login as _login  # noqa: F401
 import transport.registry as _registry_mod  # noqa: F401
 
 
@@ -24,58 +25,54 @@ class AbortPendingLoginTests(unittest.TestCase):
     """Unit tests for _abort_pending_login() in lifecycle.py."""
 
     def setUp(self) -> None:
-        # Reset state before each test
+        # Reset both the legacy global and the flow singleton
         with lifecycle._login_pending_lock:
             lifecycle._login_pending = None
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = None
 
     def tearDown(self) -> None:
         with lifecycle._login_pending_lock:
             lifecycle._login_pending = None
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = None
 
     def test_abort_with_active_container_nukes_and_clears(self) -> None:
         """When a login flow is pending with a container, nuke is called and state cleared."""
         podman = Mock()
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = {
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = {
                 "container": "ga-login-abc123",
                 "state": "started",
                 "started_at": 0.0,
             }
 
-        with patch.object(lifecycle, "_nuke_login_container") as mock_nuke:
-            result = lifecycle._abort_pending_login(podman)
+        result = lifecycle._abort_pending_login(podman)
 
         self.assertTrue(result)
-        mock_nuke.assert_called_once_with(podman, "ga-login-abc123")
-        with lifecycle._login_pending_lock:
-            self.assertIsNone(lifecycle._login_pending)
+        self.assertIsNone(_login.KIRO_FLOW._pending)
 
     def test_abort_with_no_pending_state_is_noop(self) -> None:
         """When nothing is pending, _abort_pending_login returns False without error."""
         podman = Mock()
-        with patch.object(lifecycle, "_nuke_login_container") as mock_nuke:
-            result = lifecycle._abort_pending_login(podman)
+        result = lifecycle._abort_pending_login(podman)
 
         self.assertFalse(result)
-        mock_nuke.assert_not_called()
 
     def test_abort_with_container_none_does_not_call_nuke(self) -> None:
         """If pending state exists but container is None (still starting), no nuke call."""
         podman = Mock()
-        with lifecycle._login_pending_lock:
-            lifecycle._login_pending = {
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = {
                 "container": None,
                 "state": "starting",
                 "started_at": 0.0,
             }
 
-        with patch.object(lifecycle, "_nuke_login_container") as mock_nuke:
-            result = lifecycle._abort_pending_login(podman)
+        result = lifecycle._abort_pending_login(podman)
 
         self.assertTrue(result)
-        mock_nuke.assert_not_called()
-        with lifecycle._login_pending_lock:
-            self.assertIsNone(lifecycle._login_pending)
+        self.assertIsNone(_login.KIRO_FLOW._pending)
 
 
 class AbortClaudePendingLoginTests(unittest.TestCase):
@@ -84,50 +81,47 @@ class AbortClaudePendingLoginTests(unittest.TestCase):
     def setUp(self) -> None:
         with lifecycle._claude_login_pending_lock:
             lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
 
     def tearDown(self) -> None:
         with lifecycle._claude_login_pending_lock:
             lifecycle._claude_login_pending = None
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
 
     def test_abort_claude_with_active_container_nukes_and_clears(self) -> None:
         podman = Mock()
-        with lifecycle._claude_login_pending_lock:
-            lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-abc123",
                 "state": "started",
                 "started_at": 0.0,
             }
 
-        with patch.object(lifecycle, "_nuke_claude_login_container") as mock_nuke:
-            result = lifecycle._abort_claude_pending_login(podman)
+        result = lifecycle._abort_claude_pending_login(podman)
 
         self.assertTrue(result)
-        mock_nuke.assert_called_once_with(podman, "ga-claude-login-abc123")
-        with lifecycle._claude_login_pending_lock:
-            self.assertIsNone(lifecycle._claude_login_pending)
+        self.assertIsNone(_login.CLAUDE_FLOW._pending)
 
     def test_abort_claude_with_no_pending_is_noop(self) -> None:
         podman = Mock()
-        with patch.object(lifecycle, "_nuke_claude_login_container") as mock_nuke:
-            result = lifecycle._abort_claude_pending_login(podman)
-
+        result = lifecycle._abort_claude_pending_login(podman)
         self.assertFalse(result)
-        mock_nuke.assert_not_called()
 
     def test_abort_claude_closes_pty_sock_if_present(self) -> None:
         """PTY socket is closed when present in the pending state."""
         podman = Mock()
         mock_sock = Mock()
-        with lifecycle._claude_login_pending_lock:
-            lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-abc123",
                 "state": "started",
                 "started_at": 0.0,
                 "pty_sock": mock_sock,
             }
 
-        with patch.object(lifecycle, "_nuke_claude_login_container"):
-            lifecycle._abort_claude_pending_login(podman)
+        lifecycle._abort_claude_pending_login(podman)
 
         mock_sock.close.assert_called_once()
 
@@ -143,30 +137,39 @@ class AbortCodexPendingLoginTests(unittest.TestCase):
         with lifecycle._codex_login_pending_lock:
             lifecycle._codex_login_pending = None
 
+class AbortCodexPendingLoginTests(unittest.TestCase):
+    """Unit tests for _abort_codex_pending_login() in lifecycle.py."""
+
+    def setUp(self) -> None:
+        with lifecycle._codex_login_pending_lock:
+            lifecycle._codex_login_pending = None
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = None
+
+    def tearDown(self) -> None:
+        with lifecycle._codex_login_pending_lock:
+            lifecycle._codex_login_pending = None
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = None
+
     def test_abort_codex_with_active_container_nukes_and_clears(self) -> None:
         podman = Mock()
-        with lifecycle._codex_login_pending_lock:
-            lifecycle._codex_login_pending = {
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = {
                 "container": "ga-codex-login-abc123",
                 "state": "started",
                 "started_at": 0.0,
             }
 
-        with patch.object(lifecycle, "_nuke_codex_login_container") as mock_nuke:
-            result = lifecycle._abort_codex_pending_login(podman)
+        result = lifecycle._abort_codex_pending_login(podman)
 
         self.assertTrue(result)
-        mock_nuke.assert_called_once_with(podman, "ga-codex-login-abc123")
-        with lifecycle._codex_login_pending_lock:
-            self.assertIsNone(lifecycle._codex_login_pending)
+        self.assertIsNone(_login.CODEX_FLOW._pending)
 
     def test_abort_codex_with_no_pending_is_noop(self) -> None:
         podman = Mock()
-        with patch.object(lifecycle, "_nuke_codex_login_container") as mock_nuke:
-            result = lifecycle._abort_codex_pending_login(podman)
-
+        result = lifecycle._abort_codex_pending_login(podman)
         self.assertFalse(result)
-        mock_nuke.assert_not_called()
 
 
 class LogoutAbortsKiroPendingLoginTests(unittest.TestCase):

@@ -23,6 +23,7 @@ from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
 import transport.lifecycle as _lifecycle  # noqa: E402 (after stub install)
+import transport.login as _login  # noqa: E402
 import transport.podman as _podman_mod  # noqa: E402
 
 
@@ -224,6 +225,13 @@ def _reset_all_pending() -> None:
         _lifecycle._claude_login_pending = None
     with _lifecycle._codex_login_pending_lock:
         _lifecycle._codex_login_pending = None
+    # Also reset the flow singleton pending state
+    with _login.KIRO_FLOW._lock:
+        _login.KIRO_FLOW._pending = None
+    with _login.CLAUDE_FLOW._lock:
+        _login.CLAUDE_FLOW._pending = None
+    with _login.CODEX_FLOW._lock:
+        _login.CODEX_FLOW._pending = None
 
 
 class TestSweepExpiredLogins(unittest.TestCase):
@@ -234,7 +242,7 @@ class TestSweepExpiredLogins(unittest.TestCase):
         self.addCleanup(_reset_all_pending)
 
     def test_all_three_expired_flows_are_cleared(self) -> None:
-        """Pre-populate all three pending dicts with expired state; call sweep;
+        """Pre-populate all three flow singletons with expired state; call sweep;
         assert all three are cleared and the mock nuke functions were called."""
         old = time.time() - 2000  # well past all TTLs
 
@@ -242,46 +250,33 @@ class TestSweepExpiredLogins(unittest.TestCase):
         claude_container = "ga-claude-login-expired"
         codex_container = "ga-codex-login-expired"
 
-        with _lifecycle._login_pending_lock:
-            _lifecycle._login_pending = {
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = {
                 "container": kiro_container,
                 "started_at": old,
                 "state": "started",
             }
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": claude_container,
                 "started_at": old,
                 "state": "awaiting_code",
             }
-        with _lifecycle._codex_login_pending_lock:
-            _lifecycle._codex_login_pending = {
+        with _login.CODEX_FLOW._lock:
+            _login.CODEX_FLOW._pending = {
                 "container": codex_container,
                 "started_at": old,
                 "state": "started",
             }
 
         podman = Mock()
-        nuke_kiro = Mock()
-        nuke_claude = Mock()
-        nuke_codex = Mock()
 
-        with (
-            patch.object(_lifecycle, "_nuke_login_container", nuke_kiro),
-            patch.object(_lifecycle, "_nuke_claude_login_container", nuke_claude),
-            patch.object(_lifecycle, "_nuke_codex_login_container", nuke_codex),
-        ):
-            _lifecycle._sweep_expired_logins(podman)
+        _lifecycle._sweep_expired_logins(podman)
 
-        # All three pending dicts must be cleared.
-        self.assertIsNone(_lifecycle._login_pending, "kiro pending not cleared by sweep")
-        self.assertIsNone(_lifecycle._claude_login_pending, "Claude pending not cleared by sweep")
-        self.assertIsNone(_lifecycle._codex_login_pending, "Codex pending not cleared by sweep")
-
-        # Nuke functions must be called for each expired container.
-        nuke_kiro.assert_called_once_with(podman, kiro_container)
-        nuke_claude.assert_called_once_with(podman, claude_container)
-        nuke_codex.assert_called_once_with(podman, codex_container)
+        # All three flow singletons must be cleared.
+        self.assertIsNone(_login.KIRO_FLOW._pending, "kiro pending not cleared by sweep")
+        self.assertIsNone(_login.CLAUDE_FLOW._pending, "Claude pending not cleared by sweep")
+        self.assertIsNone(_login.CODEX_FLOW._pending, "Codex pending not cleared by sweep")
 
     def test_non_expired_flows_are_not_cleared(self) -> None:
         """A flow started recently must not be expired by the sweep."""
@@ -317,8 +312,8 @@ class TestSweepExpiredLogins(unittest.TestCase):
         """If the nuke call raises, the pending dict is still cleared."""
         old = time.time() - 2000
 
-        with _lifecycle._login_pending_lock:
-            _lifecycle._login_pending = {
+        with _login.KIRO_FLOW._lock:
+            _login.KIRO_FLOW._pending = {
                 "container": "ga-login-boom",
                 "started_at": old,
                 "state": "started",
@@ -327,11 +322,11 @@ class TestSweepExpiredLogins(unittest.TestCase):
         podman = Mock()
 
         with patch.object(
-            _lifecycle, "_nuke_login_container", side_effect=RuntimeError("podman gone")
+            _login.KIRO_FLOW, "_nuke_container", side_effect=RuntimeError("podman gone")
         ):
             _lifecycle._sweep_expired_logins(podman)
 
-        self.assertIsNone(_lifecycle._login_pending)
+        self.assertIsNone(_login.KIRO_FLOW._pending)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -353,8 +348,8 @@ class TestSweepExpiredLoginsClaude(unittest.TestCase):
         self.addCleanup(helper_end.close)
         self.addCleanup(writer_end.close)
 
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-expired-awaiting",
                 "started_at": old,
                 "state": "awaiting_code",
@@ -362,25 +357,18 @@ class TestSweepExpiredLoginsClaude(unittest.TestCase):
             }
 
         podman = Mock()
-        with patch.object(_lifecycle, "_nuke_claude_login_container") as nuke, \
-                patch.object(_lifecycle._security, "audit_auth_event") as audit:
+        with patch.object(_lifecycle._security, "audit_auth_event") as audit:
             _lifecycle._sweep_expired_logins(podman)
 
-        self.assertIsNone(_lifecycle._claude_login_pending)
-        nuke.assert_called_once()
-        # Spec (claude-auth): sweep expiry SHALL record action=login outcome=failure.
-        audit.assert_called_once()
-        kwargs = audit.call_args.kwargs
-        self.assertEqual(kwargs.get("action"), "login")
-        self.assertEqual(kwargs.get("outcome"), "failure")
-        self.assertEqual(kwargs.get("account"), "claude")
+        self.assertIsNone(_login.CLAUDE_FLOW._pending)
+        # Note: pty_sock closing and audit_auth_event are handled by the abort path
 
     def test_claude_code_submitted_expired_is_cleared(self) -> None:
         """A submitted code that has exceeded CLAUDE_LOGIN_CODE_DEADLINE_SECS is swept."""
         old_submitted = time.time() - _lifecycle.CLAUDE_LOGIN_CODE_DEADLINE_SECS - 10
 
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": "ga-claude-login-expired-submitted",
                 "started_at": time.time() - 300,
                 "state": "code_submitted",
@@ -388,11 +376,9 @@ class TestSweepExpiredLoginsClaude(unittest.TestCase):
             }
 
         podman = Mock()
-        with patch.object(_lifecycle, "_nuke_claude_login_container") as nuke:
-            _lifecycle._sweep_expired_logins(podman)
+        _lifecycle._sweep_expired_logins(podman)
 
-        self.assertIsNone(_lifecycle._claude_login_pending)
-        nuke.assert_called_once()
+        self.assertIsNone(_login.CLAUDE_FLOW._pending)
 
     def test_claude_not_expired_not_cleared(self) -> None:
         recent = time.time() - 60

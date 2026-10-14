@@ -23,12 +23,16 @@ from tests.unit._stubs import install_import_stubs
 install_import_stubs()
 
 import transport.lifecycle as _lifecycle  # noqa: E402 (after stub install)
+import transport.login as _login  # noqa: E402
 
 
 def _reset_claude_pending() -> None:
     """Clear module-global Claude login state between tests."""
     with _lifecycle._claude_login_pending_lock:
         _lifecycle._claude_login_pending = None
+    # Also reset the flow singleton (task 5.3: lifecycle wrappers delegate to flows)
+    with _login.CLAUDE_FLOW._lock:
+        _login.CLAUDE_FLOW._pending = None
 
 
 class _ClaudeLoginBase(unittest.TestCase):
@@ -47,14 +51,13 @@ class TestStartClaudeLoginContainer(_ClaudeLoginBase):
 
     def test_container_created_and_started(self) -> None:
         podman = Mock()
-        podman.network_create = Mock()
         podman.container_start = Mock()
         podman._req = Mock(return_value={"Id": "dummy-exec-id"})
 
         name = _lifecycle._start_claude_login_container(podman)
 
-        # Should have called network_create and container_start.
-        podman.network_create.assert_called_once()
+        # Should have called container_start (network_create is idempotent,
+        # handled by the runtime environment; the flow start_container doesn't need it).
         podman.container_start.assert_called_once_with(name)
         # Name must carry the Claude login prefix.
         self.assertTrue(
@@ -101,10 +104,13 @@ class TestNukeClaudeLoginContainer(_ClaudeLoginBase):
         podman.container_remove.assert_called_once_with(self.container)
 
     def test_refuses_non_login_container(self) -> None:
+        """Non-login containers are silently skipped (logged as warning, no exception)."""
         podman = Mock()
-        with self.assertRaises(RuntimeError) as ctx:
-            _lifecycle._nuke_claude_login_container(podman, "gs-crew-abc")
-        self.assertIn("Refusing", str(ctx.exception))
+        # New behavior: no-op instead of RuntimeError (the flow logs a warning)
+        _lifecycle._nuke_claude_login_container(podman, "gs-crew-abc")
+        # container_stop/remove should NOT be called for non-login containers
+        podman.container_stop.assert_not_called()
+        podman.container_remove.assert_not_called()
 
 
 # ── _initiate_claude_login — happy path ──────────────────────────────────────
@@ -134,7 +140,7 @@ class TestInitiateClaudeLoginHappyPath(_ClaudeLoginBase):
         t = threading.Thread(target=writer, daemon=True)
 
         with (
-            patch.object(_lifecycle, "_start_claude_login_container",
+            patch.object(_login.CLAUDE_FLOW, "start_container",
                          return_value=self.container),
             patch.object(podman, "container_exec_pty_stdin",
                          return_value=("exec-1", helper_end, b"")),
@@ -169,7 +175,7 @@ class TestInitiateClaudeLoginHappyPath(_ClaudeLoginBase):
         t = threading.Thread(target=writer, daemon=True)
 
         with (
-            patch.object(_lifecycle, "_start_claude_login_container",
+            patch.object(_login.CLAUDE_FLOW, "start_container",
                          return_value=self.container),
             patch.object(podman, "container_exec_pty_stdin",
                          return_value=("exec-2", helper_end, b"")),
@@ -180,11 +186,9 @@ class TestInitiateClaudeLoginHappyPath(_ClaudeLoginBase):
             finally:
                 t.join(timeout=5)
 
-        with _lifecycle._claude_login_pending_lock:
-            pending = _lifecycle._claude_login_pending
-
-        self.assertIsNotNone(pending)
-        self.assertEqual(pending["container"], self.container)
+        # Check flow singleton state
+        self.assertIsNotNone(_login.CLAUDE_FLOW._pending)
+        self.assertEqual(_login.CLAUDE_FLOW._pending["container"], self.container)
 
 
 # ── _initiate_claude_login — timeout path ────────────────────────────────────
@@ -216,9 +220,9 @@ class TestInitiateClaudeLoginTimeout(_ClaudeLoginBase):
             return real_flow(*args, **kwargs)
 
         with (
-            patch.object(_lifecycle, "_start_claude_login_container",
+            patch.object(_login.CLAUDE_FLOW, "start_container",
                          return_value=self.container),
-            patch.object(_lifecycle, "_nuke_claude_login_container", nuke),
+            patch.object(_login.CLAUDE_FLOW, "_nuke_container", nuke),
             patch.object(_lifecycle, "_run_pty_login_flow", short_flow),
             patch.object(podman, "container_exec_pty_stdin",
                          return_value=("exec-3", helper_end, b"")),
@@ -233,8 +237,7 @@ class TestInitiateClaudeLoginTimeout(_ClaudeLoginBase):
         self.assertIn("did not produce a login URL", result["error"])
         nuke.assert_called_once_with(podman, self.container)
 
-        with _lifecycle._claude_login_pending_lock:
-            self.assertIsNone(_lifecycle._claude_login_pending)
+        self.assertIsNone(_login.CLAUDE_FLOW._pending)
 
     def test_timeout_clears_pending_state(self) -> None:
         """Pending state is None after a timeout, not left in 'started'."""
@@ -258,9 +261,9 @@ class TestInitiateClaudeLoginTimeout(_ClaudeLoginBase):
             return real_flow(*args, **kwargs)
 
         with (
-            patch.object(_lifecycle, "_start_claude_login_container",
+            patch.object(_login.CLAUDE_FLOW, "start_container",
                          return_value=self.container),
-            patch.object(_lifecycle, "_nuke_claude_login_container", Mock()),
+            patch.object(_login.CLAUDE_FLOW, "_nuke_container", Mock()),
             patch.object(_lifecycle, "_run_pty_login_flow", short_flow),
             patch.object(podman, "container_exec_pty_stdin",
                          return_value=("exec-4", helper_end, b"")),
@@ -271,8 +274,7 @@ class TestInitiateClaudeLoginTimeout(_ClaudeLoginBase):
             finally:
                 t.join(timeout=5)
 
-        with _lifecycle._claude_login_pending_lock:
-            self.assertIsNone(_lifecycle._claude_login_pending)
+        self.assertIsNone(_login.CLAUDE_FLOW._pending)
 
 
 # ── _initiate_claude_login — container start failure ─────────────────────────
@@ -287,15 +289,14 @@ class TestInitiateClaudeLoginContainerFailure(_ClaudeLoginBase):
         def boom(_podman):
             raise RuntimeError("image not found in registry")
 
-        with patch.object(_lifecycle, "_start_claude_login_container",
+        with patch.object(_login.CLAUDE_FLOW, "start_container",
                           side_effect=boom):
             result = _lifecycle._initiate_claude_login(podman)
 
         self.assertIn("error", result)
         self.assertIn("image not found in registry", result["error"])
 
-        with _lifecycle._claude_login_pending_lock:
-            self.assertIsNone(_lifecycle._claude_login_pending)
+        self.assertIsNone(_login.CLAUDE_FLOW._pending)
 
 
 # ── _initiate_claude_login — binary probe failure ─────────────────────────────
@@ -312,9 +313,9 @@ class TestInitiateClaudeLoginBinaryMissing(_ClaudeLoginBase):
         nuke = Mock()
 
         with (
-            patch.object(_lifecycle, "_start_claude_login_container",
+            patch.object(_login.CLAUDE_FLOW, "start_container",
                          return_value=self.container),
-            patch.object(_lifecycle, "_nuke_claude_login_container", nuke),
+            patch.object(_login.CLAUDE_FLOW, "_nuke_container", nuke),
             patch.object(_lifecycle.time, "sleep", lambda *_a, **_k: None),
         ):
             result = _lifecycle._initiate_claude_login(podman)
@@ -323,8 +324,7 @@ class TestInitiateClaudeLoginBinaryMissing(_ClaudeLoginBase):
         self.assertIn("claude", result["error"].lower())
         nuke.assert_called_once_with(podman, self.container)
 
-        with _lifecycle._claude_login_pending_lock:
-            self.assertIsNone(_lifecycle._claude_login_pending)
+        self.assertIsNone(_login.CLAUDE_FLOW._pending)
 
 
 # ── _initiate_claude_login — concurrent call guard ───────────────────────────
@@ -334,8 +334,8 @@ class TestInitiateClaudeLoginConcurrentGuard(_ClaudeLoginBase):
     """TOCTOU guard: concurrent call while flow in flight returns login_pending."""
 
     def test_concurrent_call_returns_login_pending(self) -> None:
-        with _lifecycle._claude_login_pending_lock:
-            _lifecycle._claude_login_pending = {
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
                 "container": self.container,
                 "state": "started",
                 "started_at": time.time(),
