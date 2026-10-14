@@ -288,24 +288,28 @@ class SaveRegistryDirFsyncTests(unittest.TestCase):
 
 
 class SaveRegistryFdSentinelTests(unittest.TestCase):
-    """Regression test for the fd-sentinel fix in _save_registry().
+    """Regression test for the fd-sentinel fix in the atomic write path.
 
     Before the fix, ``fd = -1`` was set inside the ``with os.fdopen()`` block
     body.  The fix moves the sentinel to immediately after the ``os.fdopen()``
     call so the ``finally`` guard cannot double-close an already-owned fd.
+
+    After the TRN-240 refactor the fd operations live in the shared
+    ``_write_secret_file`` utility (``_save_registry`` delegates to it), so the
+    structural guard is applied there.
     """
 
     def test_fd_sentinel_placement_in_source(self) -> None:
         """Structural guard: fd = -1 must appear on the line immediately after os.fdopen()."""
         import inspect
 
-        src = inspect.getsource(registry._save_registry)
+        src = inspect.getsource(registry._write_secret_file)
         lines = [l.strip() for l in src.splitlines()]
         fdopen_idx = next(
             (i for i, l in enumerate(lines) if "os.fdopen" in l and not l.startswith("with ")),
             None,
         )
-        self.assertIsNotNone(fdopen_idx, "Expected bare os.fdopen() call in _save_registry")
+        self.assertIsNotNone(fdopen_idx, "Expected bare os.fdopen() call in _write_secret_file")
         next_nonempty = next(
             (i for i in range(fdopen_idx + 1, len(lines)) if lines[i]),
             None,
@@ -463,6 +467,44 @@ class FindBatchByTaskIdsTests(unittest.TestCase):
             with p1, p2:
                 result = registry._find_batch_by_task_ids(crew_id, provided_task_ids)
         self.assertIsNone(result)
+
+
+class WriteSecretFileTests(unittest.TestCase):
+    """Tests for the shared _write_secret_file atomic 0600 write utility."""
+
+    def test_write_secret_file_creates_with_mode_0600(self) -> None:
+        """_write_secret_file creates a new file with mode 0600 and the data."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "nested" / "secret.bin"
+            registry._write_secret_file(path, b"super-secret-bytes")
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.read_bytes(), b"super-secret-bytes")
+            mode = os.stat(path).st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+    def test_write_secret_file_accepts_str(self) -> None:
+        """A str payload is encoded as UTF-8."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "secret.txt"
+            registry._write_secret_file(path, "héllo")
+            self.assertEqual(path.read_text(encoding="utf-8"), "héllo")
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_write_secret_file_overwrites_and_forces_mode(self) -> None:
+        """An existing file is truncated and re-chmodded to 0600."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "secret.bin"
+            path.write_bytes(b"old-and-longer-content")
+            os.chmod(path, 0o644)
+            registry._write_secret_file(path, b"new")
+            self.assertEqual(path.read_bytes(), b"new")
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

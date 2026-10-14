@@ -9,7 +9,7 @@ for the next).
 
 ## 1. Atomic file write utility
 
-- [ ] 1.1  **Extract `_write_secret_file` utility.**
+- [x] 1.1  **Extract `_write_secret_file` utility.**
   In `transport/registry.py`, add a module-level function
   `_write_secret_file(path: Path, data: bytes | str) -> None` that performs the
   atomic 0600 write pattern (os.open with O_WRONLY|O_CREAT|O_TRUNC, 0o600 →

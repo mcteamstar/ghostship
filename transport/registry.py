@@ -33,6 +33,43 @@ _NEVER_FIRE_AT: float = 9_999_999_999.0
 _registry_lock = threading.Lock()
 
 
+def _write_secret_file(path: Path, data: bytes | str) -> None:
+    """Atomically write *data* to *path* with mode 0600.
+
+    Performs the full secret-write pattern used across the transport layer:
+    ``os.open`` with ``O_WRONLY|O_CREAT|O_TRUNC`` at 0o600, ``fchmod`` to
+    guarantee the mode even if the file pre-existed, ``fdopen`` + write +
+    ``flush`` + ``fsync`` of the file, a defensive ``os.chmod`` on the path,
+    and finally an ``fsync`` of the parent directory so the file's metadata
+    is durable. The parent directory is created if absent.
+
+    Accepts ``bytes`` or ``str``; a ``str`` is encoded as UTF-8.
+    """
+    if isinstance(data, str):
+        payload = data.encode("utf-8")
+    else:
+        payload = data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, "wb")
+        fd = -1
+        with f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if fd != -1:
+            os.close(fd)
+    os.chmod(path, 0o600)
+    dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 class RegistryCorruptError(RuntimeError):
     """Raised when the registry file exists but cannot be parsed as JSON.
 
@@ -72,17 +109,11 @@ def _load_registry() -> dict:
 def _save_registry(reg: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = REGISTRY_PATH.with_suffix(".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        f = os.fdopen(fd, "w")
-        fd = -1
-        with f:
-            f.write(json.dumps(reg, indent=2))
-            f.flush()
-            os.fsync(f.fileno())
-    finally:
-        if fd != -1:
-            os.close(fd)
+    # Write the serialised registry to the temp file using the shared atomic
+    # 0600 write pattern, then atomically rename it into place. The rename and
+    # the post-rename durability steps (chmod + directory fsync) are kept here
+    # because they are specific to the temp-file swap _save_registry performs.
+    _write_secret_file(tmp, json.dumps(reg, indent=2))
     os.replace(tmp, REGISTRY_PATH)
     os.chmod(REGISTRY_PATH, 0o600)
     dir_fd = os.open(str(REGISTRY_PATH.parent), os.O_RDONLY)
@@ -202,18 +233,7 @@ def _write_crew_secret(crew_id: str, secret: str) -> None:
     never stored in crews.json.
     """
     secret_path = _crew_secret_path(crew_id)
-    secret_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, secret.encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    dir_fd = os.open(str(secret_path.parent), os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    _write_secret_file(secret_path, secret)
 
 
 def _read_crew_secret(crew_id: str) -> str | None:

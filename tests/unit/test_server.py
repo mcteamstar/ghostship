@@ -1100,14 +1100,14 @@ class WriteAuthFileFdSentinelTests(unittest.TestCase):
         """
         import inspect
 
-        src = inspect.getsource(server._write_auth_file)
+        src = inspect.getsource(lifecycle._write_secret_file)
         lines = [l.strip() for l in src.splitlines()]
         # Find the bare os.fdopen call (not 'with os.fdopen')
         fdopen_idx = next(
             (i for i, l in enumerate(lines) if "os.fdopen" in l and not l.startswith("with ")),
             None,
         )
-        self.assertIsNotNone(fdopen_idx, "Expected bare os.fdopen() call in _write_auth_file")
+        self.assertIsNotNone(fdopen_idx, "Expected bare os.fdopen() call in _write_secret_file")
         # The very next non-empty line must be the sentinel assignment.
         next_nonempty = next(
             (i for i in range(fdopen_idx + 1, len(lines)) if lines[i]),
@@ -1121,28 +1121,46 @@ class WriteAuthFileFdSentinelTests(unittest.TestCase):
         )
 
     def test_write_auth_file_does_not_double_close_fd(self) -> None:
-        """The raw fd must not be explicitly closed after fdopen takes ownership.
+        """The raw file fd must not be explicitly closed after fdopen takes ownership.
 
         After os.fdopen() succeeds the file object owns the fd; the sentinel
         fd = -1 ensures the finally guard skips the explicit os.close.  Assert
-        the raw fd integer is NOT passed to os.close during a normal write.
+        the raw file fd integer is NOT passed to os.close while it still refers
+        to the auth file.
+
+        After the TRN-240 refactor the write runs through the shared
+        ``_write_secret_file`` utility, which also fsyncs the parent directory —
+        opening (and closing) a directory fd *after* the file fd is released by
+        ``f.close()``. Because the kernel may reuse the released fd number for
+        that directory fd, the test keys on the fd's *identity window*: it only
+        flags a close of the file fd that occurs before the file object has
+        released it.
         """
         import tempfile
 
         with tempfile.TemporaryDirectory() as td:
             test_path = Path(td) / "auth"
-            raw_fd: list[int] = []
-            close_calls: list[int] = []
+            file_fd: list[int] = []
+            file_fd_closed_early: list[int] = []
+            dir_opened: list[bool] = []
             real_os_open = os.open
             real_os_close = os.close
 
             def capturing_open(path: str, flags: int, mode: int = 0o777) -> int:
                 fd = real_os_open(path, flags, mode)
-                raw_fd.append(fd)
+                if os.path.isdir(path):
+                    dir_opened.append(True)
+                elif not file_fd:
+                    file_fd.append(fd)
                 return fd
 
             def capturing_close(fd: int) -> None:
-                close_calls.append(fd)
+                # A close of the file fd BEFORE the directory fd was opened would
+                # be the real double-close hazard (the file object releases the
+                # fd via f.close(), not os.close()). Once the directory fd has
+                # been opened the number may legitimately be reused.
+                if file_fd and fd == file_fd[0] and not dir_opened:
+                    file_fd_closed_early.append(fd)
                 real_os_close(fd)
 
             with (
@@ -1154,12 +1172,11 @@ class WriteAuthFileFdSentinelTests(unittest.TestCase):
             ):
                 server._write_auth_file("testvalue", _path=test_path)
 
-            if raw_fd:
-                self.assertNotIn(
-                    raw_fd[0],
-                    close_calls,
-                    "fd must not be explicitly os.close'd after fdopen — double-close hazard",
-                )
+            self.assertEqual(
+                file_fd_closed_early,
+                [],
+                "file fd must not be explicitly os.close'd after fdopen — double-close hazard",
+            )
 
 
 class StartupWiringTests(unittest.TestCase):

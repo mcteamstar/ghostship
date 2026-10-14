@@ -69,6 +69,7 @@ try:
         _get_crew,
         _touch_crew,
         _write_batch,
+        _write_secret_file,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -81,6 +82,7 @@ except ModuleNotFoundError:
         _get_crew,
         _touch_crew,
         _write_batch,
+        _write_secret_file,
     )
 
 try:
@@ -2538,20 +2540,7 @@ def _write_auth_file(value: str, _path: Path | None = None) -> None:
     _path: override the default path (for testing only).
     """
     path = _path if _path is not None else _auth_file_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        f = os.fdopen(fd, "w")
-        fd = -1
-        with f:
-            f.write(value)
-            f.flush()
-            os.fsync(f.fileno())
-    finally:
-        if fd != -1:
-            os.close(fd)
-    os.chmod(path, 0o600)
+    _write_secret_file(path, value)
 
 
 # ── Claude OAuth auth file helpers ────────────────────────────────────────────
@@ -2574,20 +2563,7 @@ def _write_claude_auth_file(data: bytes, _path: Path | None = None) -> None:
     _path: override the default path (for testing only).
     """
     path = _path if _path is not None else _claude_auth_file_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        f = os.fdopen(fd, "wb")
-        fd = -1
-        with f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-    finally:
-        if fd != -1:
-            os.close(fd)
-    os.chmod(path, 0o600)
+    _write_secret_file(path, data)
 
 
 def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
@@ -3459,20 +3435,7 @@ def _write_codex_auth_file(data: bytes, _path: Path | None = None) -> None:
     _path: override the default path (for testing only).
     """
     path = _path if _path is not None else _codex_auth_file_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        f = os.fdopen(fd, "wb")
-        fd = -1
-        with f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-    finally:
-        if fd != -1:
-            os.close(fd)
-    os.chmod(path, 0o600)
+    _write_secret_file(path, data)
 
 
 def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
