@@ -2749,6 +2749,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
 
         container_env: dict[str, str] = {
             "KIROCREW_CORS_ORIGINS": _cors_origins,
+            # Injected so crew-internal scripts (e.g. Raven self-cancel) can
+            # address the transport at /crews/{crew_id}/... without parsing
+            # KIROCREW_CORS_ORIGINS (TRN-241).
+            "KIROCREW_CREW_ID": crew_id,
             # Sandbox mode is controlled via the crew's sandbox: config key;
             # KIROCREW_ALLOW_UNSANDBOXED was removed (replaced by sandbox: off).
         }
