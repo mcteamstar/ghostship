@@ -671,9 +671,13 @@ class LoginConcurrencyTests(unittest.TestCase):
         import asyncio
         import threading
         import time
+        import transport.login as login
 
-        # Reset module state
+        # Reset module state — both the lifecycle mirror and the KIRO_FLOW singleton.
+        # After TRN-240 task 5.3, the concurrency guard lives in KIRO_FLOW._pending;
+        # lifecycle._login_pending is a post-call mirror for backward-compat reads.
         lifecycle._login_pending = None
+        login.KIRO_FLOW._pending = None
 
         results = [None, None]
         barrier = threading.Barrier(2, timeout=5)
@@ -685,6 +689,11 @@ class LoginConcurrencyTests(unittest.TestCase):
         container_counter = [0]
         counter_lock = threading.Lock()
 
+        # After TRN-240 task 5.3, the login path goes through
+        # KIRO_FLOW.initiate() → self.start_container() directly; the
+        # lifecycle._start_login_container wrapper is no longer on the hot path.
+        # Patch at the flow level instead so the slow-start delay is visible to
+        # the concurrency guard inside KIRO_FLOW.initiate().
         def slow_start(podman):
             with counter_lock:
                 container_counter[0] += 1
@@ -698,8 +707,12 @@ class LoginConcurrencyTests(unittest.TestCase):
         def mock_get_podman():
             return mock_podman
 
-        # Mock the pty exec to return a fake URL
+        # Mock the pty exec to return a fake URL.
+        # fileno() must return a real integer so select.select() does not raise
+        # a TypeError; the value is arbitrary since the recv mock short-circuits
+        # the initial_bytes processing path before select() is called.
         mock_sock = MagicMock()
+        mock_sock.fileno.return_value = 999
         mock_sock.recv.return_value = b"Open this URL: https://example.com/device?user_code=TEST-1234"
         mock_sock.setblocking = MagicMock()
         mock_podman.container_exec_pty_stdin.return_value = ("exec-123", mock_sock, b"")
@@ -710,8 +723,8 @@ class LoginConcurrencyTests(unittest.TestCase):
             try:
                 with patch.object(server, "_read_auth_file", mock_read_auth), \
                      patch.object(server, "_get_podman", mock_get_podman), \
-                     patch.object(lifecycle, "_start_login_container", slow_start), \
-                     patch.object(lifecycle, "_nuke_login_container"):
+                     patch.object(login.KIRO_FLOW, "start_container", slow_start), \
+                     patch.object(login.KIRO_FLOW, "_nuke_container"):
                     request = MagicMock()
                     resp = loop.run_until_complete(server._handle_login_post(request))
                     results[idx] = resp.status_code
@@ -738,6 +751,7 @@ class LoginConcurrencyTests(unittest.TestCase):
 
         # Clean up
         lifecycle._login_pending = None
+        login.KIRO_FLOW._pending = None
 
     def test_does_not_clear_if_different_container(self):
         """_login_pending with different container name is NOT cleared."""
