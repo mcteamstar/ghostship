@@ -115,7 +115,7 @@ for the next).
   (lines ~2168–2408), `_reconcile_registry` (lines ~1769–1890).
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.5  **Migrate the 13 `with _registry_lock:` blocks in `monitors.py`.**
+- [x] 3.5  **Migrate the 13 `with _registry_lock:` blocks in `monitors.py`.**
   Monitors imports `_registry_lock`, `_load_registry`, `_save_registry`,
   `_touch_crew` directly from `registry`. After introducing the singleton,
   monitors can import `registry` from `registry` and call its methods instead.

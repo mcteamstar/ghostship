@@ -2484,8 +2484,9 @@ class ScheduleMonitorGatewayTests(unittest.TestCase):
         with (
             patch.object(monitors, "time") as time_mock,
             patch.object(monitors, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(_registry_mod, "_load_registry", side_effect=_fake_load_registry),
+            patch.object(_registry_mod, "_save_registry", save_mock),
             patch.object(monitors, "_save_registry", save_mock),
-            patch.object(monitors, "_get_crew_schedules", return_value=[sched]),
             patch.object(monitors, "_ensure_crew_running", ensure_mock),
             patch.object(monitors, "_crew_api", crew_api_mock),
             patch.object(monitors, "_crew_api_with_recovery", spawn_mock),

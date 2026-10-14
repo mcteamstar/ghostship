@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from tests.unit.helpers import server, lifecycle, monitors  # noqa: F401
+import transport.registry as _registry_mod  # noqa: F401
 
 
 def _iso(dt: datetime) -> str:
@@ -220,6 +221,8 @@ class OneShotRegistryFirstTests(unittest.TestCase):
 
         with (
             patch.object(monitors, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_load_registry", return_value=reg),
+            patch.object(_registry_mod, "_save_registry"),
             patch.object(monitors, "_ensure_crew_running", return_value=self.CREW),
             patch.object(monitors, "_crew_api_with_recovery", side_effect=api),
             patch.object(monitors, "_crew_api", side_effect=crew_api),
