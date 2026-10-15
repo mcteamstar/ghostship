@@ -1,4 +1,4 @@
-"""LoginFlow class hierarchy for the three ACP backend device-code auth flows.
+"""LoginFlow class hierarchy and HTTP handlers for ACP backend auth flows.
 
 Each backend (kiro, claude, codex) has a concrete ``LoginFlow`` subclass with
 backend-specific configuration and hooks. The shared state machine and lifecycle
@@ -12,6 +12,23 @@ the classes co-exist alongside the existing functions.
 Design note: the three module-level singletons (KIRO_FLOW, CLAUDE_FLOW,
 CODEX_FLOW) hold state for in-progress flows. Each singleton is not reentrant
 — concurrent callers are serialised by the per-flow ``_lock``.
+
+HTTP handlers (extracted from server.py, TRN-242)
+--------------------------------------------------
+The ten Starlette route handlers for the three login/logout flows live here
+alongside the ``LoginFlow`` singletons they delegate to:
+
+  kiro:   _handle_login_post, _handle_login_get, _handle_logout_post
+  claude: _handle_claude_login_post, _handle_claude_login_get,
+          _handle_claude_login_code_post, _handle_claude_logout_post
+  codex:  _handle_codex_login_post, _handle_codex_login_get,
+          _handle_codex_logout_post
+
+Three backend-check helpers used only by the handlers also live here:
+  _warn_inert_backend_settings, _backend_enabled, _backend_not_enabled_message
+
+``server.py`` imports all thirteen names for its ``BearerAuthMiddleware`` route
+table; it no longer defines them itself.
 """
 
 from __future__ import annotations

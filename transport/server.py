@@ -6,24 +6,40 @@ created on demand via launch.
 
 The client (on macOS) connects as "ghostship".
 
-Tools:
+Post-modularisation scope (TRN-242)
+------------------------------------
+This file owns the thin integration layer:
+  - MCP instance creation and ``register_tools`` wiring (tools live in
+    ``transport.tools``; captain dispatch/steer lives in
+    ``transport.captain_engine``; login HTTP handlers live in
+    ``transport.login``).
+  - Middleware stack: ``TransportSecretMiddleware``, ``RateLimitMiddleware``,
+    ``SecurityHeadersMiddleware``, ``BearerAuthMiddleware`` (imported from
+    ``transport.auth``).
+  - Proxy HTTP handlers for the Caddy portal and the MCP session gate
+    (``_proxy_*``).
+  - Route assembly and the Starlette app object.
+  - Health endpoint.
+  - ``__main__`` entry point: config validation, TLS wiring, uvicorn startup,
+    and Caddy/dashboard re-registration on restart.
+
+MCP tools and resources (registered by ``transport.tools.register_tools``):
   crews      — list live crews
   launch     — summon a new crew container + workspace
-  dispatch  — send a task to an agent in a named crew (C)
-  pickup    — check progress or collect result (R)
-  captain   — supervise standing orders inside one crew
-  steer     — redirect a running task or continue a completed one (U)
-  nuke      — tear down a crew container + volumes (D)
-  schedule  — create a recurring task on a named crew
-  evac      — extract files, diffs, or git bundles from a crew workspace
-  supply    — get a presigned URL to deliver files, tar archives, or git bundles into a crew workspace
+  dispatch   — send a task to an agent in a named crew
+  pickup     — check progress or collect result
+  captain    — supervise standing orders inside one crew
+  steer      — redirect a running task or continue a completed one
+  nuke       — tear down a crew container + volumes
+  schedule   — create a recurring task on a named crew
+  evac       — extract files, diffs, or git bundles from a crew workspace
+  supply     — get a presigned URL to deliver files into a crew workspace
 
-Resources:
-  transport://agents — available agents and their roles (read before dispatching)
+  transport://agents       — available agents and their roles
   transport://compositions — available crew compositions for launch
-  transport://orders — built-in standing-order templates (read before ordering)
-  transport://version — transport version and per-crew image versions
-  transport://jobs — scheduled jobs across all running crews
+  transport://orders       — built-in standing-order templates
+  transport://version      — transport version and per-crew image versions
+  transport://jobs         — scheduled jobs across all running crews
 
 Auth flow:
   On first launch (no ga-kiro-auth file), the crew container initiates

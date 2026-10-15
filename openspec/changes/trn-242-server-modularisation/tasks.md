@@ -235,7 +235,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   that appear nowhere in tests. Document which re-exports were retained and why.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 4.2  **Update module-level docstrings.**
+- [x] 4.2  **Update module-level docstrings.**
   - `server.py`: update to describe its remaining scope (proxy handlers, mcp
     wiring, middleware stack, `__main__`). Remove references to MCP tools,
     captain engine, or login handlers.

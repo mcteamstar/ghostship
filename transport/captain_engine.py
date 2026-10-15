@@ -5,6 +5,16 @@ classification helpers, the Admiral escalation mail path, and the
 dispatch/steer/order/status/stop engine that the ``captain()`` MCP tool
 and ``monitors.py::_captain_monitor`` delegate to.
 
+Key exports:
+  _dispatch_captain_checkin   — dispatch a new captain check-in task
+  _steer_captain_checkin      — steer a running captain check-in task
+  _captain_do_order           — implement the ``order`` sub-command
+  _captain_do_status          — implement the ``status`` sub-command
+  _captain_do_stop            — implement the ``stop`` sub-command
+  _check_in_memory_pressure   — probe for memory pressure before check-in
+  _mail_admiral               — send an escalation mail to admiral@localhost
+  _record_memory_pressure_cycle — persist a memory-pressure skip cycle
+
 Dependency boundary: this module is a leaf below ``server``/``tools`` — it
 imports only from ``config``, ``registry``, ``captain``, ``lifecycle`` and
 ``podman``. It must NOT import from ``server`` or ``tools``. Extracting it
