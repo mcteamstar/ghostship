@@ -561,5 +561,207 @@ class TestAppendCaptainMail(unittest.TestCase):
         self.assertTrue(podman.was_called("container_exec_checked"))
 
 
+# ── 9.1 _parse_order_front_matter ──────────────────────────────────────────────
+
+class TestParseOrderFrontMatter(unittest.TestCase):
+    """_parse_order_front_matter: YAML front-matter split (description, aliases, body)."""
+
+    def _parse(self, content):
+        from transport.captain import _parse_order_front_matter
+        return _parse_order_front_matter(content)
+
+    def test_no_front_matter_returns_whole_body(self):
+        content = "just a plain body\nwith two lines"
+        description, aliases, body = self._parse(content)
+        self.assertEqual(body, content)
+        self.assertEqual(description, "")
+        self.assertEqual(aliases, [])
+
+    def test_description_quotes_stripped(self):
+        content = '---\ndescription: "Some text"\n---\nbody here\n'
+        description, _aliases, _body = self._parse(content)
+        self.assertEqual(description, "Some text")
+
+    def test_aliases_parsed_as_list(self):
+        content = '---\naliases: ["a", "b"]\n---\nbody\n'
+        _description, aliases, _body = self._parse(content)
+        self.assertEqual(aliases, ["a", "b"])
+
+    def test_body_excludes_front_matter_block(self):
+        content = '---\ndescription: "d"\n---\nthe real body\n'
+        _description, _aliases, body = self._parse(content)
+        self.assertNotIn("---", body)
+        self.assertNotIn("description:", body)
+        self.assertIn("the real body", body)
+
+    def test_unclosed_fence_treated_as_no_front_matter(self):
+        content = "---\ndescription: \"never closed\"\nstill body"
+        description, _aliases, body = self._parse(content)
+        self.assertEqual(body, content)
+        self.assertEqual(description, "")
+
+
+# ── 9.2 _validate_captain_change_name ───────────────────────────────────────────
+
+class TestValidateCaptainChangeName(unittest.TestCase):
+    """_validate_captain_change_name: kebab-case acceptance / rejection."""
+
+    def _validate(self, name):
+        from transport.captain import _validate_captain_change_name
+        return _validate_captain_change_name(name)
+
+    def test_valid_kebab_case_passes(self):
+        # Should not raise.
+        self.assertIsNone(self._validate("trn-245-test-captain"))
+
+    def test_uppercase_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate("TRN-245")
+
+    def test_trailing_hyphen_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate("trn-245-")
+
+    def test_double_hyphen_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate("trn--245")
+
+    def test_none_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate(None)
+
+
+# ── 9.3 _format_captain_mail ────────────────────────────────────────────────────
+
+class TestFormatCaptainMail(unittest.TestCase):
+    """_format_captain_mail: RFC 5322 message rendering, with/without signing.
+
+    Signing is exercised against the conftest ``cryptography`` stub, so only
+    header *presence* is asserted — not the (non-real-curve) signature bytes.
+    """
+
+    SEED = "ab" * 32  # 32-byte hex Ed25519 seed
+
+    def _format(self, body, **kwargs):
+        from transport.captain import _format_captain_mail
+        return _format_captain_mail(body, **kwargs)
+
+    def test_required_headers_present(self):
+        message, _mid = self._format("order body line\nmore")
+        self.assertIn("From: admiral@localhost", message)
+        self.assertIn("To: captain@localhost", message)
+        self.assertIn("Subject:", message)
+        self.assertIn("Message-ID:", message)
+        self.assertIn("Date:", message)
+
+    def test_message_id_shape(self):
+        _message, mid = self._format("subject line\nbody")
+        self.assertTrue(mid.startswith("<"))
+        self.assertTrue(mid.endswith("@localhost>"))
+
+    def test_subject_from_first_non_empty_line(self):
+        message, _mid = self._format("This is the subject\nmore body")
+        self.assertIn("Subject: This is the subject", message)
+
+    def test_subject_truncated_to_72_chars(self):
+        long_line = "x" * 200
+        message, _mid = self._format(long_line + "\nbody")
+        # Extract the Subject header value.
+        subject_line = next(
+            ln for ln in message.splitlines() if ln.startswith("Subject: ")
+        )
+        subject_val = subject_line[len("Subject: "):]
+        self.assertLessEqual(len(subject_val), 72)
+
+    def test_signing_secret_adds_sig_header(self):
+        message, _mid = self._format("order body\nmore", signing_secret=self.SEED)
+        self.assertIn("X-Admiral-Sig:", message)
+
+    def test_signing_clean_multiline_body_does_not_raise(self):
+        # Spec §6.6 names a ValueError guard for a newline in the derived
+        # Subject on the signing path. In the current implementation that guard
+        # is UNREACHABLE through the public ``body`` argument: _format_captain_mail
+        # derives the subject with str.splitlines()/strip(), which removes every
+        # newline before the guard runs, so no caller-supplied body can carry a
+        # newline into the subject. (Recorded as finding F2.) The observable,
+        # reachable contract is the negative control: signing a clean multi-line
+        # body succeeds and emits the signature header.
+        message, _mid = self._format(
+            "clean subject\nsecond line\nthird", signing_secret=self.SEED
+        )
+        self.assertIn("X-Admiral-Sig:", message)
+        self.assertIn("Subject: clean subject", message)
+
+    def test_supersedes_header_present(self):
+        prior = "<prior-uuid@localhost>"
+        message, _mid = self._format("body", supersedes_id=prior)
+        self.assertIn(f"Supersedes: {prior}", message)
+
+    def test_blank_line_separates_headers_and_body(self):
+        message, _mid = self._format("subject\nthe body")
+        self.assertIn("\n\n", message)
+        headers, _, body = message.partition("\n\n")
+        self.assertIn("From: admiral@localhost", headers)
+        self.assertIn("the body", body)
+
+
+# ── 9.4 _parse_sentinel_file ────────────────────────────────────────────────────
+
+class TestParseSentinelFile(unittest.TestCase):
+    """_parse_sentinel_file: key=value lines → dict."""
+
+    def _parse(self, content):
+        from transport.captain import _parse_sentinel_file
+        return _parse_sentinel_file(content)
+
+    def test_valid_key_value_content(self):
+        content = "captain_id=test-crew\ncompleted_at=2026-01-01T00:00:00Z\n"
+        result = self._parse(content)
+        self.assertEqual(result["captain_id"], "test-crew")
+        self.assertEqual(result["completed_at"], "2026-01-01T00:00:00Z")
+
+    def test_empty_content_returns_empty_dict(self):
+        self.assertEqual(self._parse(""), {})
+
+    def test_lines_without_equals_skipped(self):
+        content = "captain_id=test-crew\nno-equals-here\nmode=done\n"
+        result = self._parse(content)
+        self.assertIn("captain_id", result)
+        self.assertIn("mode", result)
+        self.assertNotIn("no-equals-here", result)
+
+
+# ── 9.5 _read_sentinel_file (FakePodmanClient) ──────────────────────────────────
+
+class TestReadSentinelFile(unittest.TestCase):
+    """_read_sentinel_file: decode sentinel via Podman archive API, None on failure."""
+
+    CONTAINER = "gs-test-crew"
+
+    def _sentinel_path(self):
+        from transport.captain import _SENTINEL_WORKSPACE_PATH
+        return _SENTINEL_WORKSPACE_PATH
+
+    def test_returns_decoded_content_when_sentinel_exists(self):
+        from transport.captain import _read_sentinel_file
+        podman = FakePodmanClient()
+        podman.set_archive_file(
+            self.CONTAINER,
+            self._sentinel_path(),
+            b"captain_id=test-crew\ncompleted_at=2026-01-01T00:00:00Z\n",
+        )
+        result = _read_sentinel_file(podman, self.CONTAINER)
+        self.assertIsNotNone(result)
+        self.assertIn("captain_id=test-crew", result)
+
+    def test_returns_none_when_archive_api_raises(self):
+        from transport.captain import _read_sentinel_file
+        podman = FakePodmanClient()
+        podman.set_archive_error(
+            self.CONTAINER, self._sentinel_path(), RuntimeError("no such container")
+        )
+        self.assertIsNone(_read_sentinel_file(podman, self.CONTAINER))
+
+
 if __name__ == "__main__":
     unittest.main()
