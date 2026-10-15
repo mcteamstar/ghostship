@@ -11,7 +11,7 @@ numbered groups must be done in order.
 Moves the captain dispatch/steer engine out of `server.py`, breaking the
 `monitors.py → server` deferred call-time import.
 
-- [ ] 1.1  **Create `transport/captain_engine.py`.**
+- [x] 1.1  **Create `transport/captain_engine.py`.**
   Move the following from `transport/server.py` to `captain_engine.py`:
   - `_MEMORY_PRESSURE_MARKER` (str constant, line ~3232)
   - `class _MemoryPressureSkip(RuntimeError)` (line ~3235)
@@ -49,7 +49,7 @@ Moves the captain dispatch/steer engine out of `server.py`, breaking the
   Verify: `python3 -c "import transport.captain_engine"` exits 0.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 1.2  **Update `monitors.py` to import from `captain_engine` directly.**
+- [x] 1.2  **Update `monitors.py` to import from `captain_engine` directly.**
   In `monitors.py::_captain_monitor`, replace the deferred call-time import:
   ```python
   # OLD (call-time)

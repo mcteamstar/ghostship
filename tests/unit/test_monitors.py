@@ -18,9 +18,7 @@ Registry state is provided by patching _load_registry to return controlled data.
 
 from __future__ import annotations
 
-import sys
 import time
-import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -722,14 +720,14 @@ class TestCaptainMonitorIteration(unittest.TestCase):
         self._ensure = stubs["ensure_crew_running"]
         monitors.bind_lifecycle(**stubs)
 
-        # Install a stub transport.server in sys.modules so the lazy import works
+        # TRN-242: _steer_captain_checkin / _dispatch_captain_checkin are now
+        # imported at monitors module top from captain_engine (no longer a
+        # call-time import from server), so patch them on the monitors module.
         self._fake_steer = MagicMock()
-        self._fake_server = types.SimpleNamespace(
-            _steer_captain_checkin=self._fake_steer,
-            _dispatch_captain_checkin=MagicMock(),
-        )
-        self._orig_server = sys.modules.get("transport.server")
-        sys.modules["transport.server"] = self._fake_server
+        self._orig_steer = monitors._steer_captain_checkin
+        self._orig_dispatch = monitors._dispatch_captain_checkin
+        monitors._steer_captain_checkin = self._fake_steer
+        monitors._dispatch_captain_checkin = MagicMock()
 
         # FakePodmanClient (no sentinel by default)
         self._podman = FakePodmanClient()
@@ -738,10 +736,8 @@ class TestCaptainMonitorIteration(unittest.TestCase):
         monitors._idle_skip_reasons.clear()
 
     def tearDown(self):
-        if self._orig_server is None:
-            sys.modules.pop("transport.server", None)
-        else:
-            sys.modules["transport.server"] = self._orig_server
+        monitors._steer_captain_checkin = self._orig_steer
+        monitors._dispatch_captain_checkin = self._orig_dispatch
         monitors._idle_skip_reasons.clear()
 
     def _run_one_tick(self, crews):
