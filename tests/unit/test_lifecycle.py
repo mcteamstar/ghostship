@@ -376,6 +376,59 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         self.assertIsInstance(errors[0], RuntimeError)
         self.assertIn("gen", str(errors[0]).lower())
 
+    def test_waiter_sees_nuked_crew_after_waking(self):
+        # Spec scenario: waiter wakes after a successful leader restart but the
+        # crew registry entry has been removed by a concurrent nuke() between
+        # container_start and post-start setup.  The waiter path calls
+        # _get_crew(crew_id); if it raises KeyError the waiter should return
+        # _NUKED_DURING_RESTART rather than raising or returning stale data.
+        results: list = []
+        leader_in_start = threading.Event()
+        real_start = self.podman.container_start
+
+        def _slow_start(name):
+            leader_in_start.set()
+            __import__("time").sleep(0.3)
+            real_start(name)
+        self.podman.container_start = _slow_start
+
+        def _leader():
+            try:
+                crew = dict(self.crews[CREW_ID])
+                results.append(self.launcher.ensure_running(crew, CREW_ID))
+            except Exception as exc:  # noqa: BLE001
+                results.append(exc)
+
+        def _waiter():
+            # Enter after leader is mid-restart; then nuke the registry entry
+            # before the waiter wakes, so _get_crew raises KeyError.
+            leader_in_start.wait(timeout=5)
+            # Remove the crew entry — the leader will finish and write outcome,
+            # then the waiter wakes and tries _get_crew which should KeyError.
+            self.crews.pop(CREW_ID, None)
+            try:
+                crew = dict({
+                    "container": CONTAINER,
+                    "volume": "gs-vol-test",
+                    "home_volume": "gs-home-test",
+                    "cookie": "old-cookie",
+                    "status": "stopped",
+                })
+                results.append(self.launcher.ensure_running(crew, CREW_ID))
+            except Exception as exc:  # noqa: BLE001
+                results.append(exc)
+
+        self._run_threads([_leader, _waiter])
+
+        # The leader may return a dict or sentinel; the waiter must specifically
+        # return _NUKED_DURING_RESTART because the registry was empty when it
+        # looked up the crew after waking.
+        nuked_results = [r for r in results if r is self.life._NUKED_DURING_RESTART]
+        self.assertGreaterEqual(
+            len(nuked_results), 1,
+            f"expected at least one _NUKED_DURING_RESTART result; got {results!r}",
+        )
+
 
 # ── TestActiveLimit ───────────────────────────────────────────────────────────
 
