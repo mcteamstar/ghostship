@@ -613,11 +613,10 @@ def _captain_monitor() -> None:
     registry; there is no gateway cron job for Captain.  This loop is the
     replacement for the gateway cron timer.
     """
-    # Import here to avoid circular import (same pattern as _schedule_monitor).
-    # These are injected via bind_lifecycle() for _crew_api_with_recovery and
-    # _ensure_crew_running.  For _steer_captain_checkin and
-    # _dispatch_captain_checkin we import from server at call time (they are
-    # defined there, not in lifecycle) to avoid a module-load cycle.
+    # _crew_api_with_recovery and _ensure_crew_running are injected via
+    # bind_lifecycle() — see the module-level comment above for why.
+    # _steer_captain_checkin and _dispatch_captain_checkin are top-level
+    # imports from captain_engine (TRN-242); no deferred import needed here.
     while True:
         next_wakeup = time.time() + _CAPTAIN_MONITOR_INTERVAL  # initialised before try so sleep line is always defined
         try:

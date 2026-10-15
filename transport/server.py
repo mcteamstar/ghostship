@@ -383,7 +383,7 @@ HOST = cfg.host  # Binds all interfaces inside the container.
 # non-containerised installs where you want loopback-only binding.
 PORT = cfg.port
 
-DATA_DIR = Path("/data")
+# DATA_DIR moved to lifecycle.py (owned there; not used in server.py post-TRN-242).
 # REGISTRY_PATH is imported from transport.registry
 
 
@@ -411,19 +411,6 @@ except ModuleNotFoundError:
         GA_STARBOARD_NETWORK,
         PERSONA_NAMES,
     )
-
-PODMAN_SOCK = cfg.podman_socket
-
-KC_IMAGE = cfg.kc_image
-# Upstream image used for ephemeral containers that only need kiro-cli (e.g.
-# Login containers use the upstream base image directly — see lifecycle.py.
-GA_MAX_CREWS = cfg.ga_max_crews
-GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
-GA_AUTH_FILE = "ga-kiro-auth"
-PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
-_MODEL_MAX_LENGTH = 500
-_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
-
 
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 # KiroCrew agent name written to config.local.json inside each crew.
