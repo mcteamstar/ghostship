@@ -170,7 +170,7 @@ caddy_portal, dashboard_gate)`.
 Moves the ten HTTP route handlers and their local helpers out of `server.py`
 and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
 
-- [ ] 3.1  **Move login helper functions to `login.py`.**
+- [x] 3.1  **Move login helper functions to `login.py`.**
   Move from `server.py` to `login.py`:
   - `_warn_inert_backend_settings()` (line ~1873)
   - `_backend_enabled(backend)` (line ~1899)
@@ -180,7 +180,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   `server.py` adds re-exports for these three names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.2  **Move kiro login/logout handlers to `login.py`.**
+- [x] 3.2  **Move kiro login/logout handlers to `login.py`.**
   Move from `server.py`:
   - `_handle_login_post(request)` (line ~1693)
   - `_handle_login_get(request)` (line ~1736)
@@ -196,7 +196,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   Verify: `pytest tests/unit/test_lifecycle.py -q` green.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.3  **Move claude login/logout handlers to `login.py`.**
+- [x] 3.3  **Move claude login/logout handlers to `login.py`.**
   Move from `server.py`:
   - `_handle_claude_login_post(request)` (line ~1917)
   - `_handle_claude_login_get(request)` (line ~1964)
@@ -207,7 +207,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   `server.py` re-exports all four handler names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.4  **Move codex login/logout handlers to `login.py`.**
+- [x] 3.4  **Move codex login/logout handlers to `login.py`.**
   Move from `server.py`:
   - `_handle_codex_login_post(request)` (line ~2141)
   - `_handle_codex_login_get(request)` (line ~2188)
