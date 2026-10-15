@@ -113,6 +113,70 @@ def _install_transport_stubs() -> None:
         # Re-export as httpx so `import httpx` also resolves our stub
         sys.modules["httpx"] = httpx
 
+    # ── starlette (used by transport/auth.py for ASGI response helpers) ──────
+    if "starlette" not in sys.modules:
+        starlette_mod = types.ModuleType("starlette")
+        starlette_responses = types.ModuleType("starlette.responses")
+        starlette_requests = types.ModuleType("starlette.requests")
+
+        class Response:
+            """Minimal ASGI-callable response stub matching starlette.responses.Response."""
+
+            def __init__(self, content: str = "", status_code: int = 200,
+                         headers: dict | None = None, media_type: str = "text/plain") -> None:
+                self.status_code = status_code
+                self.body = content.encode("utf-8") if isinstance(content, str) else content
+                raw_headers: list[tuple[bytes, bytes]] = []
+                for k, v in (headers or {}).items():
+                    raw_headers.append((k.lower().encode("latin-1"), v.encode("latin-1")))
+                self._raw_headers = raw_headers
+
+            async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+                await send({
+                    "type": "http.response.start",
+                    "status": self.status_code,
+                    "headers": self._raw_headers,
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": self.body,
+                })
+
+        class PlainTextResponse(Response):
+            """Minimal stub for starlette.responses.PlainTextResponse."""
+
+            def __init__(self, content: str = "", status_code: int = 200,
+                         headers: dict | None = None) -> None:
+                super().__init__(content=content, status_code=status_code,
+                                 headers=headers, media_type="text/plain")
+
+        class Request:
+            """Minimal stub for starlette.requests.Request.
+
+            auth.py constructs ``Request(scope, receive)`` then passes the
+            instance to route handlers. The stub does not need to implement
+            body parsing — handlers in test_auth.py only check whether they
+            were called, not the request content.
+            """
+
+            def __init__(self, scope: Any, receive: Any) -> None:
+                self.scope = scope
+                self._receive = receive
+                self.method: str = scope.get("method", "GET")
+                self.url = type("URL", (), {"path": scope.get("path", "/")})()
+
+        starlette_responses.Response = Response  # type: ignore[attr-defined]
+        starlette_responses.PlainTextResponse = PlainTextResponse  # type: ignore[attr-defined]
+        starlette_requests.Request = Request  # type: ignore[attr-defined]
+        starlette_mod.responses = starlette_responses  # type: ignore[attr-defined]
+        starlette_mod.requests = starlette_requests  # type: ignore[attr-defined]
+        starlette_mod._unit_test_stub = True  # type: ignore[attr-defined]
+        sys.modules.update({
+            "starlette": starlette_mod,
+            "starlette.responses": starlette_responses,
+            "starlette.requests": starlette_requests,
+        })
+
     # ── cryptography (used by captain._format_captain_mail with signing) ─────
     if "cryptography" not in sys.modules:
         crypto = types.ModuleType("cryptography")
