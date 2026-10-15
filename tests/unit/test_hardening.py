@@ -1,11 +1,13 @@
 """Unit tests for container hardening -- stdin secret delivery, crews.json hygiene, container flags, file transfer audit, and admiral signing secret."""
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import importlib
 import io
 import json
 import logging
+import re
 import sys
 import tempfile
 import time
@@ -904,10 +906,6 @@ class InstallCaddyAuthRouteTests(unittest.TestCase):
     )
 
     def test_public_route_matches_every_auth_route(self):
-        import fnmatch
-        import json
-        import re
-
         install_path = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
         if not install_path.exists():
             self.skipTest("scripts/install.sh not found relative to test")
@@ -928,3 +926,33 @@ class InstallCaddyAuthRouteTests(unittest.TestCase):
                         any(fnmatch.fnmatchcase(route, p) for p in patterns),
                         f"{route} is not proxied to the transport by {patterns}",
                     )
+
+
+# ── Static-analysis guard: no hardcoded pre-0.9.0 SEL key path ───────────────
+# Merged from test_trn_221_no_hardcoded_sel_path.py (TRN-244 consolidation).
+# TRN-221: KiroCrew 0.9.0 relocated the SEL signing key to $KIROCREW_HOME/trust/.
+# No ghostship transport code should ever re-introduce a hardcoded pre-0.9.0 path.
+
+_SEL_FORBIDDEN = re.compile(
+    r"""(?xi)
+        (?:['"][^'"]*/)?            # optional path prefix in a string literal
+        sel[_.-]?key                # sel_key / sel-key / sel.key / selkey
+      | /sel/                       # a /sel/ path segment
+    """
+)
+_TRANSPORT_SRC = Path(__file__).resolve().parents[2] / "transport"
+
+
+def test_no_hardcoded_sel_key_path():
+    """No pre-0.9.0 SEL key path literal may appear in transport/ source code."""
+    assert _TRANSPORT_SRC.is_dir(), f"transport/ not found at {_TRANSPORT_SRC}"
+    offenders = []
+    for py in sorted(_TRANSPORT_SRC.rglob("*.py")):
+        text = py.read_text(encoding="utf-8")
+        for i, line in enumerate(text.splitlines(), 1):
+            if _SEL_FORBIDDEN.search(line):
+                offenders.append(f"{py}:{i}: {line.strip()}")
+    assert not offenders, (
+        "SEL key must be read from $KIROCREW_HOME/trust/ (KiroCrew 0.9.0+); "
+        "no hardcoded pre-0.9.0 SEL path is allowed:\n" + "\n".join(offenders)
+    )

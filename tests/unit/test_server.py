@@ -4253,3 +4253,83 @@ class NukeDuringProxyAutoWakeTests(unittest.IsolatedAsyncioTestCase):
             getattr(result, "status_code", None), 410,
             "expected 410 Gone when the crew was nuked during auto-wake",
         )
+
+
+# ── TRN-226: setup-token route permanently removed (merged from test_trn226_claude_setup_token_removed.py) ──
+# POST /login/claude/setup-token was removed because the blocking exec hung the event loop.
+# These tests keep the route from coming back.
+
+_SERVER_SRC_TRN226 = Path(server.__file__).read_text()
+
+
+class TestSetupTokenRouteRemoved(unittest.TestCase):
+    """TRN-226: POST /login/claude/setup-token route is permanently removed."""
+
+    def test_route_not_registered(self) -> None:
+        """No route table maps /login/claude/setup-token — falls through to 404."""
+        self.assertNotIn('"/login/claude/setup-token"', _SERVER_SRC_TRN226)
+
+    def test_handler_removed(self) -> None:
+        self.assertFalse(hasattr(server, "_handle_claude_setup_token_post"))
+
+    def test_lifecycle_function_removed(self) -> None:
+        """No code path starts a login container to run ``claude setup-token``."""
+        self.assertFalse(hasattr(lifecycle, "_initiate_claude_setup_token"))
+        self.assertFalse(hasattr(server, "_initiate_claude_setup_token"))
+
+    def test_interactive_oauth_routes_unchanged(self) -> None:
+        for route in ('"/login/claude"', '"/login/claude/code"', '"/logout/claude"'):
+            self.assertIn(route, _SERVER_SRC_TRN226)
+
+
+# ── TRN-231: GA_REQUIRE_API_KEY startup gate (merged from test_trn231_require_api_key.py) ──
+
+
+class RequireApiKeyStartupGate(unittest.TestCase):
+    """TRN-231: GA_REQUIRE_API_KEY defaults to error on non-loopback installs.
+
+    Covers transport.server._enforce_require_api_key.
+    """
+
+    def _enforce(self, api_key: str, env: dict) -> None:
+        """Call the gate with a clean environment (only the given keys set)."""
+        clean = {k: v for k, v in {
+            "HOST": None,
+            "GA_REQUIRE_API_KEY": None,
+            **env,
+        }.items() if v is not None}
+        with patch.dict("os.environ", clean, clear=False):
+            import os as _os
+            if "HOST" not in env:
+                _os.environ.pop("HOST", None)
+            if "GA_REQUIRE_API_KEY" not in env:
+                _os.environ.pop("GA_REQUIRE_API_KEY", None)
+            server._enforce_require_api_key(api_key)
+
+    def test_a_error_nonloopback_no_key_exits(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._enforce("", {"HOST": "0.0.0.0", "GA_REQUIRE_API_KEY": "error"})
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_a_default_nonloopback_no_key_exits(self):
+        # GA_REQUIRE_API_KEY unset → defaults to error → exits.
+        with self.assertRaises(SystemExit) as cm:
+            self._enforce("", {"HOST": "0.0.0.0"})
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_b_loopback_no_key_starts(self):
+        for host in ("127.0.0.1", "::1", "localhost"):
+            with self.subTest(host=host):
+                self._enforce("", {"HOST": host, "GA_REQUIRE_API_KEY": "error"})
+
+    def test_b_loopback_default_starts(self):
+        self._enforce("", {"HOST": "127.0.0.1"})
+
+    def test_c_off_nonloopback_no_key_starts(self):
+        self._enforce("", {"HOST": "0.0.0.0", "GA_REQUIRE_API_KEY": "off"})
+
+    def test_d_warn_nonloopback_no_key_starts(self):
+        self._enforce("", {"HOST": "0.0.0.0", "GA_REQUIRE_API_KEY": "warn"})
+
+    def test_e_present_key_never_exits(self):
+        self._enforce("secret", {"HOST": "0.0.0.0", "GA_REQUIRE_API_KEY": "error"})

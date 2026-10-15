@@ -33,6 +33,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import re
 import tempfile
 import threading
 import time
@@ -3126,4 +3127,45 @@ class NukeDuringRestartWaiterTests(unittest.TestCase):
         self.assertTrue(
             any("nuked during restart" in m.lower() for m in logctx.output),
             f"expected INFO log mentioning nuke-during-restart; got {logctx.output}",
+        )
+
+
+# ── TRN-241: KIROCREW_CREW_ID env injection (merged from test_trn241_crew_id_env.py) ──
+
+_SERVER_PY_TRN241 = (Path(__file__).resolve().parents[2] / "transport" / "server.py").read_text()
+
+
+class TestKirocrewCrewIdInjection(unittest.TestCase):
+    """TRN-241: KIROCREW_CREW_ID must be injected into the crew container env.
+
+    The Raven self-cancel script reads $KIROCREW_CREW_ID to build the transport URL.
+    """
+
+    def test_kirocrew_crew_id_in_server_source(self) -> None:
+        """server.py must assign KIROCREW_CREW_ID to container_env in the launch path."""
+        self.assertIn(
+            '"KIROCREW_CREW_ID"',
+            _SERVER_PY_TRN241,
+            "server.py must set KIROCREW_CREW_ID in the crew container environment",
+        )
+
+    def test_kirocrew_crew_id_assigned_with_crew_id_value(self) -> None:
+        """KIROCREW_CREW_ID must be set to the crew_id variable, not a constant."""
+        pattern = re.compile(r'"KIROCREW_CREW_ID"\s*:\s*crew_id\b')
+        self.assertRegex(
+            _SERVER_PY_TRN241,
+            pattern,
+            'server.py must map "KIROCREW_CREW_ID" to the crew_id variable',
+        )
+
+    def test_kirocrew_crew_id_adjacent_to_cors_origins(self) -> None:
+        """KIROCREW_CREW_ID should be set in the same container_env block as KIROCREW_CORS_ORIGINS."""
+        cors_pos = _SERVER_PY_TRN241.find('"KIROCREW_CORS_ORIGINS"')
+        crew_id_pos = _SERVER_PY_TRN241.find('"KIROCREW_CREW_ID"')
+        self.assertGreater(cors_pos, 0, "KIROCREW_CORS_ORIGINS must be in server.py")
+        self.assertGreater(crew_id_pos, 0, "KIROCREW_CREW_ID must be in server.py")
+        self.assertLess(
+            abs(cors_pos - crew_id_pos),
+            500,
+            "KIROCREW_CREW_ID should be set near KIROCREW_CORS_ORIGINS in the same env dict",
         )

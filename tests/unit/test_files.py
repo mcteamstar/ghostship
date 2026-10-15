@@ -15,8 +15,10 @@ binary is absent.
 from __future__ import annotations
 
 import asyncio
+import io
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import unittest
@@ -24,7 +26,7 @@ import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tests.unit.helpers import Request, files_mod, lifecycle, server  # noqa: F401
 
@@ -1093,6 +1095,170 @@ class ValidateRefTests(unittest.TestCase):
     def test_valid_commit_hash_accepted(self) -> None:
         sha = "a" * 40
         self.assertEqual(files_mod._validate_ref(sha), sha)
+
+
+# ── Streaming transfer helpers (merged from test_streaming_transfer.py) ──────
+# Covers _ResponseChunkReader, _TarMemberStream, and the slash-ref upload path.
+
+
+def _make_response_chunks(chunks: list[bytes]) -> MagicMock:
+    resp = MagicMock()
+    resp.iter_bytes.return_value = iter(chunks)
+    return resp
+
+
+def _make_tar_bytes(filename: str, content: bytes) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo(name=filename)
+        info.size = len(content)
+        tf.addfile(info, io.BytesIO(content))
+    return buf.getvalue()
+
+
+class TestResponseChunkReader(unittest.TestCase):
+
+    def _make(self, chunks: list[bytes]):
+        resp = _make_response_chunks(chunks)
+        return files_mod._ResponseChunkReader(resp.iter_bytes())
+
+    def test_read_all_single_chunk(self):
+        r = self._make([b"hello world"])
+        self.assertEqual(r.read(-1), b"hello world")
+
+    def test_read_all_multiple_chunks(self):
+        r = self._make([b"foo", b"bar", b"baz"])
+        self.assertEqual(r.read(-1), b"foobarbaz")
+
+    def test_read_sized(self):
+        r = self._make([b"abcdefgh"])
+        self.assertEqual(r.read(3), b"abc")
+        self.assertEqual(r.read(3), b"def")
+        self.assertEqual(r.read(-1), b"gh")
+
+    def test_read_zero(self):
+        r = self._make([b"data"])
+        self.assertEqual(r.read(0), b"")
+
+    def test_read_empty_stream(self):
+        r = self._make([])
+        self.assertEqual(r.read(-1), b"")
+        self.assertEqual(r.read(5), b"")
+
+    def test_read_across_chunk_boundary(self):
+        r = self._make([b"ab", b"cd", b"ef"])
+        self.assertEqual(r.read(4), b"abcd")
+        self.assertEqual(r.read(-1), b"ef")
+
+    def test_partial_read_then_eof(self):
+        r = self._make([b"abc"])
+        self.assertEqual(r.read(10), b"abc")
+        self.assertEqual(r.read(1), b"")
+
+
+class TestTarMemberStream(unittest.TestCase):
+
+    def _make(self, filename: str, content: bytes, request_path: str):
+        tar_bytes = _make_tar_bytes(filename, content)
+        resp = MagicMock()
+        resp.iter_bytes.return_value = iter([tar_bytes])
+        return files_mod._TarMemberStream(resp, request_path)
+
+    def test_read_member_by_exact_path(self):
+        stream = self._make("data.txt", b"hello", "data.txt")
+        self.assertEqual(b"".join(stream), b"hello")
+
+    def test_read_member_by_basename(self):
+        stream = self._make("data.txt", b"world", "/some/dir/data.txt")
+        self.assertEqual(b"".join(stream), b"world")
+
+    def test_missing_member_raises(self):
+        tar_bytes = _make_tar_bytes("other.txt", b"x")
+        resp = MagicMock()
+        resp.iter_bytes.return_value = iter([tar_bytes])
+        with self.assertRaises(ValueError):
+            files_mod._TarMemberStream(resp, "missing.txt")
+
+    def test_empty_archive_raises(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w"):
+            pass
+        resp = MagicMock()
+        resp.iter_bytes.return_value = iter([buf.getvalue()])
+        with self.assertRaises(ValueError):
+            files_mod._TarMemberStream(resp, "any.txt")
+
+    def test_truncated_tar_raises(self):
+        resp = MagicMock()
+        resp.iter_bytes.return_value = iter([b"not a tar file at all"])
+        with self.assertRaises(Exception):
+            files_mod._TarMemberStream(resp, "file.txt")
+
+    def test_close_idempotent(self):
+        stream = self._make("f.txt", b"data", "f.txt")
+        stream.close()
+        stream.close()
+
+    def test_context_manager(self):
+        """_TarMemberStream: data is readable and close works without error."""
+        tar_bytes = _make_tar_bytes("f.txt", b"ctx")
+        resp = MagicMock()
+        resp.iter_bytes.return_value = iter([tar_bytes])
+        stream = files_mod._TarMemberStream(resp, "f.txt")
+        data = b"".join(stream)
+        stream.close()
+        self.assertEqual(data, b"ctx")
+
+
+class TestTransferUploadSlashRef(unittest.TestCase):
+
+    def _make_podman_slash_ref(self) -> MagicMock:
+        podman = MagicMock()
+
+        def _exec(container, cmd, **kwargs):
+            joined = " ".join(cmd)
+            if "rev-parse" in joined and "HEAD" in joined:
+                raise RuntimeError("fatal: ambiguous argument 'HEAD'")
+            if "branch" in joined and "-r" in joined:
+                return "  origin/release/0.5.0\n  origin/HEAD -> origin/main\n"
+            return ""
+
+        podman.container_exec_checked.side_effect = _exec
+        return podman
+
+    def _call(self, podman):
+        from unittest.mock import patch as _patch
+        with _patch.object(files_mod, "_build_outer_transfer_tar",
+                           return_value=("/stage", "/stage/bundle.bundle", b"tar")), \
+             _patch.object(files_mod, "_cleanup_transfer_stage"):
+            files_mod._transfer_upload(
+                podman,
+                container="test-container",
+                workspace="/workspace",
+                destination="/workspace/repo",
+                body=b"fake bundle bytes",
+                unpack=False,
+                bundle=True,
+            )
+
+    def test_slash_ref_triggers_checkout(self):
+        podman = self._make_podman_slash_ref()
+        self._call(podman)
+        calls = [str(c) for c in podman.container_exec_checked.call_args_list]
+        self.assertTrue(
+            any("checkout" in c for c in calls),
+            f"Expected a checkout call, got: {calls}",
+        )
+
+    def test_normal_head_skips_checkout(self):
+        podman = MagicMock()
+        podman.container_exec_checked.return_value = "abc1234\n"
+        self._call(podman)
+        calls = [str(c) for c in podman.container_exec_checked.call_args_list]
+        self.assertFalse(
+            any("checkout" in c for c in calls),
+            f"Unexpected checkout call: {calls}",
+        )
 
 
 if __name__ == "__main__":

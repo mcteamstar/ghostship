@@ -1572,3 +1572,85 @@ class CorsOriginInjectionTests(unittest.TestCase):
         origins = env.get("KIROCREW_CORS_ORIGINS", "")
         parts = [p.strip() for p in origins.split(",")]
         self.assertGreaterEqual(len(parts), 2)
+
+
+# ── GA_DASHBOARD_DEFAULT config flag (merged from test_dashboard_default.py) ──
+
+
+class DashboardDefaultConfigTests(unittest.TestCase):
+    """GA_DASHBOARD_DEFAULT resolves the effective dashboard value.
+
+    Formula: explicit if explicit is not None else cfg.ga_dashboard_default.
+    Merged from test_dashboard_default.py (TRN-244 consolidation).
+    """
+
+    def _resolve(self, cfg_default: bool, explicit_arg) -> bool:
+        """Replicate the resolution formula from launch()."""
+        dashboard = explicit_arg
+        ga_dashboard_default = cfg_default
+        return dashboard if dashboard is not None else ga_dashboard_default
+
+    def test_default_false_no_explicit_arg(self) -> None:
+        """GA_DASHBOARD_DEFAULT=false, no explicit → headless."""
+        self.assertFalse(self._resolve(cfg_default=False, explicit_arg=None))
+
+    def test_default_true_no_explicit_arg(self) -> None:
+        """GA_DASHBOARD_DEFAULT=true, no explicit → dashboard."""
+        self.assertTrue(self._resolve(cfg_default=True, explicit_arg=None))
+
+    def test_default_true_explicit_false_overrides(self) -> None:
+        """GA_DASHBOARD_DEFAULT=true, explicit False → headless."""
+        self.assertFalse(self._resolve(cfg_default=True, explicit_arg=False))
+
+    def test_default_false_explicit_true_overrides(self) -> None:
+        """GA_DASHBOARD_DEFAULT=false, explicit True → dashboard."""
+        self.assertTrue(self._resolve(cfg_default=False, explicit_arg=True))
+
+    def test_cfg_field_exists(self) -> None:
+        """GA_DASHBOARD_DEFAULT config field is present and defaults to False."""
+        self.assertFalse(server.cfg.ga_dashboard_default)
+
+    def test_resolution_matches_launch_formula(self) -> None:
+        """The formula in launch() matches the spec for all four cases."""
+        cases = [
+            (False, None, False),
+            (True, None, True),
+            (True, False, False),
+            (False, True, True),
+        ]
+        for cfg_default, explicit, expected in cases:
+            result = explicit if explicit is not None else cfg_default
+            self.assertEqual(result, expected,
+                f"cfg_default={cfg_default}, explicit={explicit}: "
+                f"expected {expected}, got {result}")
+
+
+# ── Dashboard next-URL validation (merged from test_review_quick_fixes.py) ──
+
+
+import transport.dashboard as _dashboard  # noqa: E402 (after helpers import)
+
+
+class TestDashboardNextUrl(unittest.TestCase):
+    """_validate_next_url rejects backslash redirects and control characters.
+
+    Merged from test_review_quick_fixes.TestNextUrl (TRN-244 consolidation).
+    """
+
+    def test_backslash_redirects_are_rejected(self):
+        for url in ("/\\evil.com", "/\\\\evil.com", "/a\\b"):
+            with self.subTest(url=url):
+                self.assertEqual(_dashboard._validate_next_url(url), "/")
+
+    def test_control_characters_are_rejected(self):
+        self.assertEqual(_dashboard._validate_next_url("/a\nb"), "/")
+
+    def test_normal_paths_are_kept(self):
+        for url in ("/", "/crews/x/ui", "/dashboard?tab=1"):
+            with self.subTest(url=url):
+                self.assertEqual(_dashboard._validate_next_url(url), url)
+
+    def test_existing_protections_still_hold(self):
+        for url in ("//evil.com", "https://evil.com", "javascript:alert(1)", ""):
+            with self.subTest(url=url):
+                self.assertEqual(_dashboard._validate_next_url(url), "/")

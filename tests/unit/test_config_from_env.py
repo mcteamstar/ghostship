@@ -1,17 +1,23 @@
-"""Unit tests for Config.from_env() error handling.
+"""Unit tests for Config.from_env() error handling and conf.example sync.
 
 Covers:
 - ConfigError raised with clear message on invalid int/float env vars
 - Each numeric env var individually
 - Valid values still parse correctly
 - Default (no env var) still works
+- Every Config field has a commented entry in ghostship.conf.example (merged
+  from test_config_sync.py)
 """
 from __future__ import annotations
 
+import dataclasses
+import re
+import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from transport.config import Config, ConfigError  # noqa: E402
+from transport.config import Config, ConfigError, parse_agent_backends  # noqa: E402
 
 
 class TestConfigEnvIntErrors(unittest.TestCase):
@@ -216,5 +222,132 @@ class TestConfigTLSDefault(unittest.TestCase):
         self.assertEqual(cfg.ga_portal_tls_mode, "off")
 
 
+class TestConfigConfExampleSync(unittest.TestCase):
+    """Every Config field must have a commented entry in ghostship.conf.example.
+
+    Merged from test_config_sync.py (TRN-244 consolidation).
+    """
+
+    def test_every_config_field_present_in_conf_example(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        conf_example = repo_root / "config" / "ghostship.conf.example"
+        text = conf_example.read_text()
+        # An entry looks like a commented assignment: "# GA_MAX_CREWS=..." —
+        # match the env var name at the start of a commented line, allowing
+        # for leading whitespace, so we don't get fooled by prose mentions.
+        present = set(
+            re.findall(r"(?m)^\s*#\s*([A-Z][A-Z0-9_]*)\s*=", text)
+        )
+        missing = []
+        for f in dataclasses.fields(Config):
+            env_name = f.name.upper()
+            if env_name not in present:
+                missing.append(env_name)
+        self.assertEqual(
+            missing,
+            [],
+            "Config fields missing a commented entry in "
+            f"{conf_example.name}: {missing}. Add each as a commented-out line "
+            "(e.g. '# GA_FOO=default').",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Config.__repr__ secret masking (merged from test_trn235_config_repr_masking.py) ──
+# TRN-235 (SEC-3): Config.__repr__ must never emit live credentials.
+
+_SECRET_FIELDS = (
+    "kiro_api_key",
+    "anthropic_api_key",
+    "openai_api_key",
+    "claude_code_oauth_token",
+)
+
+
+class TestConfigReprMasking(unittest.TestCase):
+    """Config.__repr__ replaces non-empty secret fields with '***'."""
+
+    def test_nonempty_secrets_masked(self) -> None:
+        cfg = Config(
+            kiro_api_key="kiro-SECRET-1",
+            anthropic_api_key="anthropic-SECRET-2",
+            openai_api_key="openai-SECRET-3",
+            claude_code_oauth_token="oauth-SECRET-4",
+        )
+        r = repr(cfg)
+        for value in (
+            "kiro-SECRET-1",
+            "anthropic-SECRET-2",
+            "openai-SECRET-3",
+            "oauth-SECRET-4",
+        ):
+            self.assertNotIn(value, r)
+        self.assertIn("***", r)
+        for field in _SECRET_FIELDS:
+            self.assertIn(f"{field}='***'", r)
+
+    def test_empty_secret_fields_not_masked(self) -> None:
+        r = repr(Config())
+        for field in _SECRET_FIELDS:
+            self.assertIn(f"{field}=''", r)
+        self.assertNotIn("***", r)
+
+    def test_nonsecret_fields_rendered(self) -> None:
+        cfg = Config(host="127.0.0.1", port=12345, kiro_api_key="x")
+        r = repr(cfg)
+        self.assertIn("host='127.0.0.1'", r)
+        self.assertIn("port=12345", r)
+        self.assertNotIn("kiro_api_key='x'", r)
+        self.assertIn("kiro_api_key='***'", r)
+
+    def test_str_also_masks(self) -> None:
+        cfg = Config(anthropic_api_key="live-token")
+        self.assertNotIn("live-token", str(cfg))
+
+    def test_repr_marker_not_a_dataclass_field(self) -> None:
+        names = {f.name for f in dataclasses.fields(Config())}
+        self.assertNotIn("_SECRET_FIELDS", names)
+
+
+# ── Finite-float and backend-list line-break guards ───────────────────────────
+# Merged from test_review_quick_fixes.py (TRN-244 consolidation).
+
+_AGENT_BACKENDS_SH = (
+    Path(__file__).resolve().parents[2] / "scripts" / "lib" / "agent_backends.sh"
+)
+
+
+class TestFiniteFloats(unittest.TestCase):
+    """NaN and Inf are rejected by Config.from_env() for float fields."""
+
+    def test_nan_and_inf_are_rejected(self):
+        for value in ("nan", "NaN", "inf", "-inf"):
+            with self.subTest(value=value):
+                with patch.dict("os.environ", {"GA_MIN_FREE_MEM_GB": value}, clear=True):
+                    with self.assertRaises(ConfigError):
+                        Config.from_env()
+
+    def test_normal_float_accepted(self):
+        with patch.dict("os.environ", {"GA_MIN_FREE_MEM_GB": "1.5"}, clear=True):
+            self.assertEqual(Config.from_env().ga_min_free_mem_gb, 1.5)
+
+
+class TestBackendListLineBreak(unittest.TestCase):
+    """Both the Python and shell backend parsers reject a line break in the list."""
+
+    def test_both_parsers_reject_a_line_break(self):
+        raw = "claude,codex\nbogus"
+        with self.assertRaises(ConfigError):
+            parse_agent_backends(raw)
+        if not _AGENT_BACKENDS_SH.exists():
+            return  # skip shell half when scripts/ is absent
+        result = subprocess.run(
+            ["bash", "-c", f'source "{_AGENT_BACKENDS_SH}"; agent_backends_normalise "$1"',
+             "bash", raw],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("single line", result.stderr)

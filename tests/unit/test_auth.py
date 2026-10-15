@@ -953,3 +953,101 @@ class PresignedFileBearerBypassTests(unittest.TestCase):
         code_body = "\n".join(code_lines).lower()
         self.assertNotIn("authorization", code_body,
                           "_dispatch_file must not check Authorization header in code")
+
+
+# ── Login/logout write-failure reporting (merged from test_auth_failure_reporting.py) ──
+
+
+import transport.login as _login  # noqa: E402 (after stubs, below helpers import)
+
+
+def _outcomes(audit_mock):
+    return [c.kwargs.get("outcome") for c in audit_mock.call_args_list]
+
+
+class TestLoginWriteFailure(unittest.TestCase):
+    """Login completion must not report success after a failed credential write."""
+
+    def setUp(self):
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = {
+                "container": "ga-claude-login-x", "state": "code_submitted",
+                "code_submitted_at": time.time(), "started_at": time.time(),
+            }
+        self.addCleanup(self._clear)
+
+    def _clear(self):
+        with _login.CLAUDE_FLOW._lock:
+            _login.CLAUDE_FLOW._pending = None
+
+    def test_claude_write_failure_returns_500_and_keeps_flow_retryable(self):
+        with patch.object(server, "_get_podman", return_value=Mock()), \
+             patch.object(_login.CLAUDE_FLOW, "poll", return_value=b"tar"), \
+             patch.object(server, "_write_claude_auth_file", side_effect=OSError("disk full")), \
+             patch.object(server._security, "audit_auth_event") as audit:
+            response = asyncio.run(server._handle_claude_login_get(Mock()))
+        self.assertEqual(response.status_code, 500)
+        self.assertIsNotNone(_login.CLAUDE_FLOW.state, "pending flow must survive for a retry")
+        self.assertEqual(_outcomes(audit), ["failure"])
+
+
+class TestLogoutDeleteFailure(unittest.TestCase):
+    """Logout must not report success after a failed credential delete."""
+
+    def _failing_path(self):
+        path = MagicMock()
+        path.unlink.side_effect = OSError("read-only file system")
+        return path
+
+    def test_kiro_logout_delete_failure_returns_500_without_success_audit(self):
+        with patch.object(server, "_read_auth_file", return_value="x"), \
+             patch.object(server, "_get_podman", return_value=Mock()), \
+             patch.object(server, "_auth_file_path", return_value=self._failing_path()), \
+             patch.object(server._security, "audit_auth_event") as audit:
+            response = asyncio.run(server._handle_logout_post(Mock()))
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(_outcomes(audit), ["failure"])
+
+    def test_kiro_logout_audits_success_only_after_delete(self):
+        order = []
+        path = MagicMock()
+        path.unlink.side_effect = lambda **kw: order.append("unlink")
+        with patch.object(server, "_read_auth_file", return_value="x"), \
+             patch.object(server, "_get_podman", return_value=Mock()), \
+             patch.object(server, "_auth_file_path", return_value=path), \
+             patch.object(server, "_registry_lock", threading.Lock()), \
+             patch.object(server, "_load_registry", return_value={"crews": {}}), \
+             patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}), \
+             patch.object(_registry_mod, "_save_registry"), \
+             patch.object(server._security, "audit_auth_event",
+                          side_effect=lambda **kw: order.append(kw["outcome"])):
+            response = asyncio.run(server._handle_logout_post(Mock()))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(order, ["unlink", "success"])
+
+    def test_claude_logout_delete_failure_returns_500(self):
+        with patch.object(server, "_claude_auth_exists", return_value=True), \
+             patch.object(server, "_get_podman", return_value=Mock()), \
+             patch.object(server, "_claude_auth_file_path", return_value=self._failing_path()), \
+             patch.object(server._security, "audit_auth_event") as audit:
+            response = asyncio.run(server._handle_claude_logout_post(Mock()))
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(_outcomes(audit), ["failure"])
+
+    def test_logout_lists_crews_whose_wipe_failed(self):
+        podman = Mock()
+        podman.container_exec.side_effect = RuntimeError("exec failed")
+        path = MagicMock()
+        with patch.object(server, "_claude_auth_exists", return_value=True), \
+             patch.object(server, "_get_podman", return_value=podman), \
+             patch.object(server, "_claude_auth_file_path", return_value=path), \
+             patch.object(server, "_registry_lock", threading.Lock()), \
+             patch.object(server, "_load_registry", return_value={"crews": {
+                 "c1": {"status": "running", "acp_backend": "claude", "container": "gs-c1"}}}), \
+             patch.object(_registry_mod, "_load_registry", return_value={"crews": {
+                 "c1": {"status": "running", "acp_backend": "claude", "container": "gs-c1"}}}), \
+             patch.object(_registry_mod, "_save_registry"), \
+             patch.object(server._security, "audit_auth_event"):
+            response = asyncio.run(server._handle_claude_logout_post(Mock()))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'"wipe_failed":["c1"]', response.body.replace(b" ", b""))
