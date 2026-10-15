@@ -659,7 +659,10 @@ def _captain_monitor() -> None:
                                 _read_sentinel_file,
                                 _parse_sentinel_file,
                             )
-                        from transport.crew import Crew as _Crew
+                        try:
+                            from crew import Crew as _Crew  # container
+                        except ModuleNotFoundError:
+                            from transport.crew import Crew as _Crew  # local dev
                         _c = _Crew.from_dict(crew_id, info)
                         sentinel_content = _read_sentinel_file(_get_podman(), _c.container)
                         if sentinel_content is not None:
