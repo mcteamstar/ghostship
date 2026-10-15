@@ -1,41 +1,209 @@
-"""Pytest configuration for the test suite."""
-import pytest
+"""Pytest configuration for the transport unit test suite (TRN-244 rewrite).
+
+Design principles
+-----------------
+1. **Dependency injection over module patching** — fixtures expose the test
+   doubles directly; tests call functions under test with the fake injected,
+   rather than patching import paths with unittest.mock.patch.
+2. **No I/O in unit tests** — the autouse ``_block_registry_io`` fixture
+   prevents any ``_load_registry`` / ``_save_registry`` call from touching
+   the filesystem (they are blocked at the module level for every test not
+   explicitly in ``test_registry_lock.py``).
+3. **Single stub installation** — ``_install_transport_stubs()`` is called
+   once at session scope to install the httpx / mcp / starlette / uvicorn
+   shims needed for importing transport modules in the dependency-free
+   checkout (no httpx2 or httpx installed in test environment).
+"""
+
+from __future__ import annotations
+
+import io
+import sys
+import tarfile
+import types
+from typing import Any
 from unittest.mock import patch
 
+import pytest
 
-def pytest_configure(config):
-    """Register custom marks so pytest doesn't warn about unknown markers."""
-    config.addinivalue_line(
-        "markers",
-        "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    )
+from tests.fakes import FakePodmanClient
 
+
+# ── Stub installation (session-scoped, idempotent) ────────────────────────────
+
+def _install_transport_stubs() -> None:
+    """Install minimal module stubs for packages not present in unit test env.
+
+    Installs httpx2/httpx, mcp, starlette, and uvicorn stubs so that transport
+    modules can be imported without the real packages. Idempotent — safe to call
+    multiple times; the first call wins.
+    """
+    # ── httpx2 (the name used by podman.py) ───────────────────────────────────
+    if "httpx2" not in sys.modules:
+        httpx2 = types.ModuleType("httpx2")
+
+        class HTTPStatusError(Exception):
+            def __init__(self, msg: str = "", request: Any = None, response: Any = None):
+                super().__init__(msg)
+                self.request = request
+                self.response = response
+
+        class ConnectError(Exception):
+            pass
+
+        class ConnectTimeout(Exception):
+            pass
+
+        class Response:
+            def __init__(self, status_code: int = 200, **kw: Any):
+                self.status_code = status_code
+
+        class Client:
+            def __init__(self, *a: Any, **kw: Any):
+                pass
+
+            def close(self) -> None:
+                pass
+
+            def get(self, url: str, **kw: Any) -> "Response":
+                return Response()
+
+            def post(self, url: str, **kw: Any) -> "Response":
+                return Response()
+
+            def request(self, method: str, url: str, **kw: Any) -> "Response":
+                return Response()
+
+            def build_request(self, method: str, url: str, **kw: Any) -> Any:
+                return None
+
+            def send(self, request: Any, **kw: Any) -> "Response":
+                return Response()
+
+            def delete(self, url: str, **kw: Any) -> "Response":
+                return Response()
+
+        class AsyncClient:
+            def __init__(self, *a: Any, **kw: Any):
+                pass
+
+            async def aclose(self) -> None:
+                pass
+
+            async def request(self, method: str, url: str, **kw: Any) -> "Response":
+                return Response()
+
+        class HTTPTransport:
+            def __init__(self, *a: Any, **kw: Any):
+                pass
+
+        httpx2.HTTPStatusError = HTTPStatusError  # type: ignore[attr-defined]
+        httpx2.ConnectError = ConnectError  # type: ignore[attr-defined]
+        httpx2.ConnectTimeout = ConnectTimeout  # type: ignore[attr-defined]
+        httpx2.Response = Response  # type: ignore[attr-defined]
+        httpx2.Client = Client  # type: ignore[attr-defined]
+        httpx2.AsyncClient = AsyncClient  # type: ignore[attr-defined]
+        httpx2.HTTPTransport = HTTPTransport  # type: ignore[attr-defined]
+        httpx2._unit_test_stub = True  # type: ignore[attr-defined]
+        sys.modules["httpx2"] = httpx2
+
+    # ── httpx alias (imported by some transport modules as `import httpx`) ────
+    if "httpx" not in sys.modules:
+        httpx = sys.modules.get("httpx2") or sys.modules["httpx2"]
+        # Re-export as httpx so `import httpx` also resolves our stub
+        sys.modules["httpx"] = httpx
+
+    # ── cryptography (used by captain._format_captain_mail with signing) ─────
+    if "cryptography" not in sys.modules:
+        crypto = types.ModuleType("cryptography")
+        hazmat = types.ModuleType("cryptography.hazmat")
+        primitives = types.ModuleType("cryptography.hazmat.primitives")
+        asym = types.ModuleType("cryptography.hazmat.primitives.asymmetric")
+        ed25519_mod = types.ModuleType("cryptography.hazmat.primitives.asymmetric.ed25519")
+
+        class Ed25519PrivateKey:
+            @classmethod
+            def from_private_bytes(cls, data: bytes) -> "Ed25519PrivateKey":
+                inst = cls()
+                inst._data = data
+                return inst
+
+            def sign(self, payload: bytes) -> bytes:
+                # Deterministic stub: return first 64 bytes of sha256 repeated
+                import hashlib
+                h = hashlib.sha256(payload).digest()
+                return (h * 3)[:64]
+
+        ed25519_mod.Ed25519PrivateKey = Ed25519PrivateKey  # type: ignore[attr-defined]
+        asym.ed25519 = ed25519_mod  # type: ignore[attr-defined]
+        primitives.asymmetric = asym  # type: ignore[attr-defined]
+        hazmat.primitives = primitives  # type: ignore[attr-defined]
+        crypto.hazmat = hazmat  # type: ignore[attr-defined]
+        sys.modules.update({
+            "cryptography": crypto,
+            "cryptography.hazmat": hazmat,
+            "cryptography.hazmat.primitives": primitives,
+            "cryptography.hazmat.primitives.asymmetric": asym,
+            "cryptography.hazmat.primitives.asymmetric.ed25519": ed25519_mod,
+        })
+
+
+# Install stubs at module import time (before any transport module is loaded)
+_install_transport_stubs()
+
+
+# ── Autouse fixture: block registry I/O ──────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def _patch_registry_io(request):
+def _block_registry_io(request):
     """Prevent unit tests from writing to /data.
 
-    CrewRegistry.__enter__ calls registry._load_registry() and __exit__ calls
-    registry._save_registry(). Without these patches any test that exercises a
-    'with registry:' block would attempt to access /data, which does not exist
-    in the CI environment.
+    CrewRegistry.__enter__ calls _load_registry(); __exit__ calls _save_registry().
+    Without these patches, any test that touches a ``with registry:`` block
+    would attempt to access /data, which does not exist in test environments.
 
-    Tests in test_registry.py test registry internals directly (real file I/O
-    under a tmpdir) and are excluded from this fixture. All other unit tests
-    get a safe default: empty registry and no-op save.
-
-    Tests that need a specific registry state patch _registry_mod._load_registry
-    individually (with return_value=<their dict>); those per-test patches take
-    precedence over this autouse fixture.
+    Excluded: test_registry_lock.py exercises real file I/O under a tmpdir.
     """
-    # Skip for registry-focused tests that exercise real file I/O
-    if "test_registry" in request.fspath.basename or "test_batch" in request.fspath.basename:
+    if "test_registry_lock" in request.fspath.basename:
         yield
         return
 
-    import transport.registry as _registry_mod
+    import transport.registry as _reg_mod
     with (
-        patch.object(_registry_mod, "_load_registry", return_value={"crews": {}}),
-        patch.object(_registry_mod, "_save_registry"),
+        patch.object(_reg_mod, "_load_registry", return_value={"crews": {}}),
+        patch.object(_reg_mod, "_save_registry"),
     ):
         yield
+
+
+# ── Pytest marks ─────────────────────────────────────────────────────────────
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: marks tests as slow")
+    config.addinivalue_line("markers", "integration: marks integration tests")
+
+
+# ── Shared fixtures ───────────────────────────────────────────────────────────
+
+@pytest.fixture
+def fake_podman() -> FakePodmanClient:
+    """Return a fresh FakePodmanClient with no scripted state."""
+    return FakePodmanClient()
+
+
+@pytest.fixture
+def fake_podman_with_sentinel(tmp_path):
+    """Return a FakePodmanClient pre-scripted with a sentinel file.
+
+    The sentinel content is ``captain_id=test-crew\\ncompleted_at=2026-01-01T00:00:00Z\\n``
+    and the container is named ``gs-test-crew``.
+    """
+    podman = FakePodmanClient()
+    sentinel_content = b"captain_id=test-crew\ncompleted_at=2026-01-01T00:00:00Z\nreason=standing orders met\n"
+    podman.set_archive_file(
+        container="gs-test-crew",
+        path="/home/kirocrew/workplace/kirocrew-workspace/.captain_done",
+        content=sentinel_content,
+        filename=".captain_done",
+    )
+    return podman
