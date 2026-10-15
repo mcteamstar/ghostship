@@ -205,7 +205,6 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   These use `login.CLAUDE_FLOW`, `_claude_auth_exists`, `_write_claude_auth_file`,
   `_inject_claude_auth`, `_initiate_claude_login`, `_security`, `_request_source`.
   `server.py` re-exports all four handler names.
-  Verify: `pytest tests/unit/test_trn170_claude_subscription_oauth.py -q` green.
   Verify: `pytest tests/unit/ -q` green.
 
 - [ ] 3.4  **Move codex login/logout handlers to `login.py`.**
