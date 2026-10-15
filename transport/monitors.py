@@ -74,6 +74,19 @@ try:
 except ModuleNotFoundError:
     from transport.constants import CREW_GATEWAY_PORT  # local dev
 
+# Captain dispatch/steer engine. These used to be defined in server.py and were
+# imported at call time inside _captain_monitor to dodge the monitors<->server
+# load cycle. They now live in the captain_engine leaf (TRN-242), so a plain
+# top-level import is cycle-safe — captain_engine does not import monitors or
+# server. These are NOT injected via bind_lifecycle(); they are direct imports.
+try:
+    from captain_engine import _steer_captain_checkin, _dispatch_captain_checkin  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.captain_engine import (  # local dev
+        _steer_captain_checkin,
+        _dispatch_captain_checkin,
+    )
+
 # ── lifecycle bindings (injected, NOT imported — see below) ───────────────────
 # monitors needs a handful of runtime functions and constants from lifecycle
 # (_ensure_crew_running, _crew_api, _crew_api_with_recovery, _mint_cookie and
@@ -600,11 +613,10 @@ def _captain_monitor() -> None:
     registry; there is no gateway cron job for Captain.  This loop is the
     replacement for the gateway cron timer.
     """
-    # Import here to avoid circular import (same pattern as _schedule_monitor).
-    # These are injected via bind_lifecycle() for _crew_api_with_recovery and
-    # _ensure_crew_running.  For _steer_captain_checkin and
-    # _dispatch_captain_checkin we import from server at call time (they are
-    # defined there, not in lifecycle) to avoid a module-load cycle.
+    # _crew_api_with_recovery and _ensure_crew_running are injected via
+    # bind_lifecycle() — see the module-level comment above for why.
+    # _steer_captain_checkin and _dispatch_captain_checkin are top-level
+    # imports from captain_engine (TRN-242); no deferred import needed here.
     while True:
         next_wakeup = time.time() + _CAPTAIN_MONITOR_INTERVAL  # initialised before try so sleep line is always defined
         try:
@@ -687,19 +699,9 @@ def _captain_monitor() -> None:
                         )
                     # ── end sentinel check ───────────────────────────────────
 
-                    # Import _steer_captain_checkin from server at call time
-                    # to avoid a module-load cycle (server imports monitors).
+                    # _steer_captain_checkin is imported at module top from
+                    # captain_engine (TRN-242) — no call-time import needed.
                     try:
-                        try:
-                            from server import (  # container: flat /app/
-                                _steer_captain_checkin,
-                                _dispatch_captain_checkin,
-                            )
-                        except ModuleNotFoundError:
-                            from transport.server import (  # local dev  # type: ignore[no-redef]
-                                _steer_captain_checkin,
-                                _dispatch_captain_checkin,
-                            )
                         _steer_captain_checkin(crew, crew_id)
                     except Exception as e:
                         logger.error(

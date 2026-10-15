@@ -11,7 +11,7 @@ numbered groups must be done in order.
 Moves the captain dispatch/steer engine out of `server.py`, breaking the
 `monitors.py → server` deferred call-time import.
 
-- [ ] 1.1  **Create `transport/captain_engine.py`.**
+- [x] 1.1  **Create `transport/captain_engine.py`.**
   Move the following from `transport/server.py` to `captain_engine.py`:
   - `_MEMORY_PRESSURE_MARKER` (str constant, line ~3232)
   - `class _MemoryPressureSkip(RuntimeError)` (line ~3235)
@@ -49,7 +49,7 @@ Moves the captain dispatch/steer engine out of `server.py`, breaking the
   Verify: `python3 -c "import transport.captain_engine"` exits 0.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 1.2  **Update `monitors.py` to import from `captain_engine` directly.**
+- [x] 1.2  **Update `monitors.py` to import from `captain_engine` directly.**
   In `monitors.py::_captain_monitor`, replace the deferred call-time import:
   ```python
   # OLD (call-time)
@@ -78,7 +78,7 @@ Moves the MCP tool functions and their helpers out of `server.py`. The `mcp`
 instance stays in `server.py`; tools are registered via `register_tools(mcp,
 caddy_portal, dashboard_gate)`.
 
-- [ ] 2.1  **Create `transport/tools.py` skeleton with `register_tools`.**
+- [x] 2.1  **Create `transport/tools.py` skeleton with `register_tools`.**
   Create `tools.py` with module-level config setup (`Config.from_env()` once),
   the necessary dual-path imports from `registry`, `lifecycle`, `captain_engine`,
   `captain`, `academy`, `files`, `podman`, `constants`, `crew`. Define the
@@ -86,7 +86,7 @@ caddy_portal, dashboard_gate)`.
   (empty body for now). Verify: `python3 -c "import transport.tools"` exits 0.
   No tests yet — skeleton only.
 
-- [ ] 2.2  **Move helper functions to `tools.py`.**
+- [x] 2.2  **Move helper functions to `tools.py`.**
   Move from `server.py` to `tools.py` (these are used only by tools and
   do not belong to captain_engine):
   - `_registry_guard(fn)` decorator (line ~2316)
@@ -97,7 +97,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` adds re-export imports for these names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.3  **Move `crews()` and `resource_compositions()` tools to `tools.py`.**
+- [x] 2.3  **Move `crews()` and `resource_compositions()` tools to `tools.py`.**
   Register them inside `register_tools` using `mcp_instance.tool()` and
   `mcp_instance.resource(...)` decorators applied programmatically. Preserve all
   docstrings and decorator arguments exactly. `caddy_portal` and `dashboard_gate`
@@ -105,7 +105,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `crews` and `resource_compositions` by name.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.4  **Move `launch()` tool to `tools.py`.**
+- [x] 2.4  **Move `launch()` tool to `tools.py`.**
   `launch()` references `_caddy_portal`, `_dashboard_gate`, `GA_MAX_CREWS`,
   `COMPOSITION_REGISTRY`, `CREW_CONTAINER_PREFIX`, `cfg.ga_portal_tls_mode`,
   `cfg.ga_host_url`. These are resolved from `tools.py`'s own `cfg` singleton
@@ -114,14 +114,14 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `launch`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.5  **Move `supply()`, `evac()`, `nuke()` tools to `tools.py`.**
+- [x] 2.5  **Move `supply()`, `evac()`, `nuke()` tools to `tools.py`.**
   `nuke()` references `_caddy_portal`, `_dashboard_gate`, `_captain_order_locks`,
   `_captain_order_locks_lock` (the last two from `captain.py`). Import
   `_captain_order_locks`, `_captain_order_locks_lock` from `captain`.
   `server.py` re-exports `supply`, `evac`, `nuke`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.6  **Move `captain()` and `schedule()` tools to `tools.py`.**
+- [x] 2.6  **Move `captain()` and `schedule()` tools to `tools.py`.**
   `captain()` delegates to `_captain_do_order` / `_captain_do_status` /
   `_captain_do_stop` imported from `captain_engine`. `schedule()` uses
   `_schedule_cancel`, `_schedule_list`, `_bg_prewarm`, `_is_memory_pressure_refusal`,
@@ -129,7 +129,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `captain`, `schedule`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.7  **Move `dispatch()`, `steer()`, `pickup()` tools to `tools.py`.**
+- [x] 2.7  **Move `dispatch()`, `steer()`, `pickup()` tools to `tools.py`.**
   `dispatch()` uses `_validate_model`, `_validate_agent`, `_dispatch_batch`,
   `_resolve_dispatch_slot`, `_crew_api_with_recovery`, `_ensure_crew_running`,
   `_require_crew`, `_task_timestamps`, `_task_timestamps_lock`,
@@ -139,7 +139,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `dispatch`, `steer`, `pickup`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.8  **Move resource functions to `tools.py`.**
+- [x] 2.8  **Move resource functions to `tools.py`.**
   Move `resource_agents()`, `resource_orders()`, `resource_orders_by_name()`,
   `resource_version()`, `resource_jobs()` to `tools.py`. Register them inside
   `register_tools`. `resource_version()` needs `TRANSPORT_VERSION`; import it
@@ -149,7 +149,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports the resource function names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.9  **Wire `register_tools` in `server.py`.**
+- [x] 2.9  **Wire `register_tools` in `server.py`.**
   After creating the `mcp` instance and the `_caddy_portal` / `_dashboard_gate`
   objects in `server.py`, call:
   ```python
@@ -170,7 +170,7 @@ caddy_portal, dashboard_gate)`.
 Moves the ten HTTP route handlers and their local helpers out of `server.py`
 and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
 
-- [ ] 3.1  **Move login helper functions to `login.py`.**
+- [x] 3.1  **Move login helper functions to `login.py`.**
   Move from `server.py` to `login.py`:
   - `_warn_inert_backend_settings()` (line ~1873)
   - `_backend_enabled(backend)` (line ~1899)
@@ -180,7 +180,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   `server.py` adds re-exports for these three names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.2  **Move kiro login/logout handlers to `login.py`.**
+- [x] 3.2  **Move kiro login/logout handlers to `login.py`.**
   Move from `server.py`:
   - `_handle_login_post(request)` (line ~1693)
   - `_handle_login_get(request)` (line ~1736)
@@ -196,7 +196,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   Verify: `pytest tests/unit/test_lifecycle.py -q` green.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.3  **Move claude login/logout handlers to `login.py`.**
+- [x] 3.3  **Move claude login/logout handlers to `login.py`.**
   Move from `server.py`:
   - `_handle_claude_login_post(request)` (line ~1917)
   - `_handle_claude_login_get(request)` (line ~1964)
@@ -207,7 +207,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   `server.py` re-exports all four handler names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 3.4  **Move codex login/logout handlers to `login.py`.**
+- [x] 3.4  **Move codex login/logout handlers to `login.py`.**
   Move from `server.py`:
   - `_handle_codex_login_post(request)` (line ~2141)
   - `_handle_codex_login_get(request)` (line ~2188)
@@ -221,7 +221,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
 
 ## 4. Cleanup
 
-- [ ] 4.1  **Audit re-exports in `server.py` and remove those with no test coverage.**
+- [x] 4.1  **Audit re-exports in `server.py` and remove those with no test coverage.**
   Run:
   ```
   grep -r "server\._steer_captain\|server\._dispatch_captain\|server\._captain_do\|
@@ -235,7 +235,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   that appear nowhere in tests. Document which re-exports were retained and why.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 4.2  **Update module-level docstrings.**
+- [x] 4.2  **Update module-level docstrings.**
   - `server.py`: update to describe its remaining scope (proxy handlers, mcp
     wiring, middleware stack, `__main__`). Remove references to MCP tools,
     captain engine, or login handlers.
@@ -248,7 +248,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   Verify: `pytest tests/unit/ -q` green (docstring-only changes; no logic
   regressions).
 
-- [ ] 4.3  **Verify final line counts and import graph.**
+- [x] 4.3  **Verify final line counts and import graph.**
   Run `wc -l transport/server.py transport/tools.py transport/captain_engine.py transport/login.py`
   and confirm:
   - `server.py` ≤ 1 600 lines

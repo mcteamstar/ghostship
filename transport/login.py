@@ -1,4 +1,4 @@
-"""LoginFlow class hierarchy for the three ACP backend device-code auth flows.
+"""LoginFlow class hierarchy and HTTP handlers for ACP backend auth flows.
 
 Each backend (kiro, claude, codex) has a concrete ``LoginFlow`` subclass with
 backend-specific configuration and hooks. The shared state machine and lifecycle
@@ -12,6 +12,23 @@ the classes co-exist alongside the existing functions.
 Design note: the three module-level singletons (KIRO_FLOW, CLAUDE_FLOW,
 CODEX_FLOW) hold state for in-progress flows. Each singleton is not reentrant
 — concurrent callers are serialised by the per-flow ``_lock``.
+
+HTTP handlers (extracted from server.py, TRN-242)
+--------------------------------------------------
+The ten Starlette route handlers for the three login/logout flows live here
+alongside the ``LoginFlow`` singletons they delegate to:
+
+  kiro:   _handle_login_post, _handle_login_get, _handle_logout_post
+  claude: _handle_claude_login_post, _handle_claude_login_get,
+          _handle_claude_login_code_post, _handle_claude_logout_post
+  codex:  _handle_codex_login_post, _handle_codex_login_get,
+          _handle_codex_logout_post
+
+Three backend-check helpers used only by the handlers also live here:
+  _warn_inert_backend_settings, _backend_enabled, _backend_not_enabled_message
+
+``server.py`` imports all thirteen names for its ``BearerAuthMiddleware`` route
+table; it no longer defines them itself.
 """
 
 from __future__ import annotations
@@ -52,6 +69,72 @@ try:
     from constants import GA_STARBOARD_NETWORK  # noqa: F401
 except ModuleNotFoundError:
     from transport.constants import GA_STARBOARD_NETWORK  # noqa: F401
+
+
+# ── HTTP login/logout handler dependencies (TRN-242) ──────────────────────────
+# The ten login/logout Starlette handlers and the three backend helpers moved
+# here from server.py alongside the LoginFlow singletons they delegate to. These
+# module-level imports cover their non-lifecycle dependencies; lifecycle names
+# are resolved lazily through _lc() (login must not import lifecycle at module
+# load — lifecycle imports login, so the dependency runs one way).
+import dataclasses
+
+from starlette.requests import Request
+from starlette.responses import Response, PlainTextResponse, JSONResponse
+
+try:
+    import security as _security  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import security as _security  # local dev
+
+try:
+    from auth import _request_source  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.auth import _request_source  # local dev
+
+try:
+    from registry import registry  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.registry import registry  # local dev
+
+try:
+    from podman import _get_podman  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.podman import _get_podman  # local dev
+
+try:
+    from config import inert_backend_settings  # container: flat /app/
+except ImportError:
+    from transport.config import inert_backend_settings  # local dev
+
+# Credential globals the backend helpers read (same resolution order as
+# server/lifecycle/tools). cfg is already defined above.
+_ANTHROPIC_API_KEY = _security.get_secret(
+    "ga-crew-anthropic-api-key", env_var="ANTHROPIC_API_KEY")
+_CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
+    "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
+_OPENAI_API_KEY = _security.get_secret(
+    "ga-crew-openai-api-key", env_var="OPENAI_API_KEY")
+
+_lifecycle_mod = None
+
+
+def _lc():
+    """Return the fully-loaded lifecycle module, importing it on first use.
+
+    login is imported BY lifecycle, so importing lifecycle at login's module
+    load would cycle. By the time any HTTP handler runs, lifecycle is fully
+    loaded, so a lazy accessor is safe. Mirrors the call-time lifecycle imports
+    already used inside the LoginFlow subclasses.
+    """
+    global _lifecycle_mod
+    if _lifecycle_mod is None:
+        try:
+            import lifecycle as _lc_mod  # container: flat /app/
+        except ModuleNotFoundError:
+            from transport import lifecycle as _lc_mod  # local dev
+        _lifecycle_mod = _lc_mod
+    return _lifecycle_mod
 
 
 # ── Abstract base class ───────────────────────────────────────────────────────
@@ -616,3 +699,624 @@ CODEX_FLOW = CodexLoginFlow()
 
 #: All three flows — useful for ``for flow in ALL_FLOWS: flow.abort(podman)``
 ALL_FLOWS: list[LoginFlow] = [KIRO_FLOW, CLAUDE_FLOW, CODEX_FLOW]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HTTP login/logout handlers (moved from server.py, TRN-242)
+# Ten Starlette route handlers + three backend helpers. server.py re-exports
+# these names and wires them into BearerAuthMiddleware; lifecycle names are
+# reached through _lc(). See the dependency note above the _lc() accessor.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _warn_inert_backend_settings() -> None:
+    """Log one warning per setting that belongs to a disabled backend.
+
+    Called once from the startup path, not from Config (which loads in several
+    modules and does no file reads). Names only; values are never logged.
+    """
+    stored = frozenset(
+        name for name, present in (
+            ("ga-claude-auth", _lc()._claude_auth_exists()),
+            ("ga-codex-auth", _lc()._codex_auth_exists()),
+        ) if present
+    )
+    # cfg holds only env values, which are "" in production for the secret-
+    # delivered credentials; check what the transport actually resolved.
+    resolved = dataclasses.replace(
+        cfg,
+        anthropic_api_key=_ANTHROPIC_API_KEY,
+        claude_code_oauth_token=_CLAUDE_CODE_OAUTH_TOKEN,
+        openai_api_key=_OPENAI_API_KEY,
+    )
+    for name in inert_backend_settings(resolved, stored):
+        logger.warning(
+            "%s is set but its backend is not enabled in GA_CREW_AGENT; it has no effect.", name
+        )
+
+
+def _backend_enabled(backend: str) -> bool:
+    """True when ``backend`` is enabled. Kiro always is (bundled in every crew
+    image); others must be listed in GA_CREW_AGENT."""
+    enabled = frozenset(
+        name.strip().lower()
+        for name in cfg.ga_crew_agent.split(",")
+        if name.strip()
+    )
+    return backend == "kiro" or backend in enabled
+
+
+def _backend_not_enabled_message(backend: str) -> str:
+    return (
+        f"The {backend} backend is not enabled on this transport. Add {backend} to "
+        f"GA_CREW_AGENT in ghostship.conf, then re-run `ghostship install`."
+    )
+
+
+async def _handle_login_post(request: Request) -> Response:
+    """POST /login — initiate kiro-cli device auth via an ephemeral temp container.
+
+    State machine guard:
+      - 409 if ga-kiro-auth already exists and is non-empty (already authenticated)
+      - 409 if a login flow is already pending
+
+    Delegates to _lc()._initiate_login() for the actual container start and PTY flow.
+    Returns the URL and code immediately so the operator can open the browser.
+    """
+    if _lc()._read_auth_file():
+        return PlainTextResponse(
+            "Already authenticated. POST /logout first.",
+            status_code=409,
+        )
+    if KIRO_FLOW.state is not None:
+        return PlainTextResponse(
+            "Login already in progress. Poll GET /login for status.",
+            status_code=409,
+        )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _lc()._initiate_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Login already in progress. Poll GET /login for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_login_get(request: Request) -> Response:
+    """GET /login — poll whether the kiro-cli device auth flow has completed.
+
+    Returns {status: "pending"} while the browser flow is in progress.
+    On completion: writes ga-kiro-auth, injects auth into all running crews,
+    nukes the temp container, clears _login_pending, returns {status: "complete"}.
+    Returns 404 if no login flow is in progress.
+    """
+    pending = KIRO_FLOW.state
+
+    if pending is None:
+        return PlainTextResponse("No login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    auth_b64 = _lc()._read_auth_from_crew(podman, pending["container"])
+    if not auth_b64:
+        return JSONResponse({"status": "pending"})
+
+    # ── Auth complete ─────────────────────────────────────────────────────────
+    try:
+        _lc()._write_auth_file(auth_b64)
+        logger.info("ga-kiro-auth written after login completion")
+    except Exception as e:
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-kiro-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="academy",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
+
+    # Inject all currently running crews
+    with registry:
+        _running_crews = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running"
+        }
+    for cid, info in _running_crews.items():
+        try:
+            _lc()._inject_auth(podman, info["container"], auth_b64)
+            logger.info("Injected fresh auth into running crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not inject auth into crew %s: %s", cid, e)
+
+    # Nuke temp container and clear pending state via flow singleton abort
+    KIRO_FLOW.abort(podman)
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="academy",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_logout_post(request: Request) -> Response:
+    """POST /logout — de-authenticate the Ghost Academy.
+
+    Deletes ga-kiro-auth and wipes auth_kv rows from every running crew's
+    kiro-cli DB. Returns 404 if the academy is not currently authenticated.
+    """
+    if not _lc()._read_auth_file():
+        return PlainTextResponse("Not authenticated.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Clear the shared auth file
+    auth_path = _lc()._auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-kiro-auth")
+    except Exception as e:
+        logger.error("Could not delete ga-kiro-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="academy",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="academy",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe auth rows from all running crews
+    wipe_failed: list[str] = []
+    with registry:
+        _running_crews_info = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running"
+        }
+    for cid, info in _running_crews_info.items():
+        try:
+            podman.container_exec(
+                info["container"],
+                ["python3", f"{SCRIPTS_DIR}/wipe_auth.py", _lc().KIRO_CLI_DB],
+            )
+            logger.info("Cleared auth_kv from crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not clear auth from crew %s: %s", cid, e)
+            wipe_failed.append(cid)
+
+    # Abort any in-progress login flow so the transport is in a clean
+    # unauthenticated state immediately after logout (TRN-205).
+    aborted = _lc()._abort_pending_login(podman)
+
+    if wipe_failed:
+        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
+        if aborted:
+            resp["aborted_pending_login"] = True
+        return JSONResponse(resp)
+    if aborted:
+        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
+    return JSONResponse({"status": "logged_out"})
+
+
+async def _handle_claude_login_post(request: Request) -> Response:
+    """POST /login/claude — initiate Claude OAuth device-code flow.
+
+    Three-state machine guard:
+      - 409 if ga-claude-auth already exists (already authenticated)
+      - 409 if a Claude login flow is already in progress
+      - Calls _lc()._initiate_claude_login, returns {"login_url", "code"}
+
+    Requires claude to be an enabled backend (GA_CREW_AGENT), whether or
+    not it is the default; returns 400 otherwise.
+    """
+    if not _backend_enabled("claude"):
+        return PlainTextResponse(_backend_not_enabled_message("claude"), status_code=400)
+
+    if _lc()._claude_auth_exists():
+        return PlainTextResponse(
+            "Already authenticated. POST /logout/claude first.",
+            status_code=409,
+        )
+    if CLAUDE_FLOW.state is not None:
+        return PlainTextResponse(
+            "Claude login already in progress. Poll GET /login/claude for status.",
+            status_code=409,
+        )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _lc()._initiate_claude_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Claude login already in progress. Poll GET /login/claude for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_claude_login_get(request: Request) -> Response:
+    """GET /login/claude — poll whether the Claude OAuth flow has completed.
+
+    Returns {"status": "pending", "login_url": ...} while waiting.
+    On completion: tars ~/.claude/ from the login container, writes ga-claude-auth
+    (mode 0600), nukes the login container, clears _claude_login_pending, and
+    returns {"status": "complete"}.
+    Returns 404 if no Claude login flow is in progress.
+    """
+    pending = CLAUDE_FLOW.state
+
+    if pending is None:
+        return PlainTextResponse("No Claude login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # A submitted code that never completed the exchange abandons the flow.
+    if CLAUDE_FLOW.is_expired():
+        CLAUDE_FLOW.abort(podman)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="claude",
+            source=_request_source(request),
+            emit=logger.info,
+        )
+        return JSONResponse({"status": "expired"}, status_code=410)
+
+    # Poll the login container for the completed Claude credential.
+    tar_bytes = CLAUDE_FLOW.poll(podman)
+    if not tar_bytes:
+        return JSONResponse({
+            "status": "pending",
+            "login_url": pending.get("login_url"),
+        })
+
+    # ── Auth complete — write ga-claude-auth ──────────────────────────────────
+    try:
+        _lc()._write_claude_auth_file(tar_bytes)
+        logger.info("ga-claude-auth written after Claude login completion")
+    except Exception as e:
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-claude-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="claude",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
+
+    # Nuke temp container and clear pending state (guarded)
+    _lc()._abort_claude_pending_login(podman)
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="claude",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_claude_login_code_post(request: Request) -> Response:
+    """POST /login/claude/code — deliver the pasted Claude authorisation code.
+
+    Body: {"code": "<code>"}. The code is written to the pending login's PTY so
+    the CLI can complete the token exchange. Poll GET /login/claude afterwards.
+
+    Returns 202 once the code is written, 400 for a malformed body, 404 when no
+    flow is awaiting a code, 409 when a code was already submitted, and 500 when
+    the PTY closed before the write. The code is never logged or echoed.
+    Requires claude to be an enabled backend; returns 400 otherwise. That check
+    runs before the body is parsed or the pending flow is looked up.
+    """
+    if not _backend_enabled("claude"):
+        return JSONResponse({"error": _backend_not_enabled_message("claude")}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
+    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(code, str) or not code.strip():
+        return JSONResponse({"error": "'code' must be a non-empty string."}, status_code=400)
+
+    result = _lc()._submit_claude_login_code(code.strip())
+    error = result.get("error")
+    if error == "no_pending":
+        return JSONResponse({"error": "No Claude login is awaiting a code."}, status_code=404)
+    if error == "already_submitted":
+        return JSONResponse(
+            {"error": "A code was already submitted; poll GET /login/claude."},
+            status_code=409,
+        )
+    if error:
+        return JSONResponse({"error": "The login session closed before the code was written."},
+                            status_code=500)
+    return JSONResponse({"status": "submitted"}, status_code=202)
+
+
+async def _handle_claude_logout_post(request: Request) -> Response:
+    """POST /logout/claude — de-authenticate Claude OAuth.
+
+    Deletes ga-claude-auth and wipes ~/.claude/ from every running
+    Claude-backend crew. Returns 409 if not currently authenticated via OAuth.
+    """
+    if not _lc()._claude_auth_exists():
+        return PlainTextResponse(
+            "Not authenticated via Claude OAuth (ga-claude-auth not found).",
+            status_code=409,
+        )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Delete ga-claude-auth
+    auth_path = _claude_auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-claude-auth")
+    except Exception as e:
+        logger.error("Could not delete ga-claude-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="claude",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="claude",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe ~/.claude/ from all running Claude-backend crews
+    wipe_failed: list[str] = []
+    with registry:
+        _claude_crews = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running" and info.get("acp_backend") == "claude"
+        }
+    for cid, info in _claude_crews.items():
+        try:
+            podman.container_exec(
+                info["container"],
+                ["sh", "-c", "rm -rf /home/kirocrew/.claude/"],
+            )
+            logger.info("Wiped ~/.claude/ from crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
+            wipe_failed.append(cid)
+
+    # Abort any in-progress Claude login flow (TRN-205).
+    aborted = _lc()._abort_claude_pending_login(podman)
+
+    if wipe_failed:
+        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
+        if aborted:
+            resp["aborted_pending_login"] = True
+        return JSONResponse(resp)
+    if aborted:
+        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
+    return JSONResponse({"status": "logged_out"})
+
+
+async def _handle_codex_login_post(request: Request) -> Response:
+    """POST /login/codex — initiate Codex OAuth/device login flow.
+
+    Three-state machine guard (mirrors POST /login/claude):
+      - 409 if ga-codex-auth already exists (already authenticated)
+      - 409 if a Codex login flow is already in progress
+      - Calls _lc()._initiate_codex_login, returns {"login_url", "code"}
+
+    Requires codex to be an enabled backend (GA_CREW_AGENT), whether or
+    not it is the default; returns 400 otherwise.
+    """
+    if not _backend_enabled("codex"):
+        return PlainTextResponse(_backend_not_enabled_message("codex"), status_code=400)
+
+    if _lc()._codex_auth_exists():
+        return PlainTextResponse(
+            "Already authenticated. POST /logout/codex first.",
+            status_code=409,
+        )
+    if CODEX_FLOW.state is not None:
+        return PlainTextResponse(
+            "Codex login already in progress. Poll GET /login/codex for status.",
+            status_code=409,
+        )
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    result = _lc()._initiate_codex_login(podman)
+
+    if result.get("login_pending"):
+        return PlainTextResponse(
+            "Codex login already in progress. Poll GET /login/codex for status.",
+            status_code=409,
+        )
+    if "error" in result:
+        return PlainTextResponse(result["error"], status_code=500)
+
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_codex_login_get(request: Request) -> Response:
+    """GET /login/codex — poll whether the Codex OAuth flow has completed.
+
+    Returns {"status": "pending", "login_url": ...} while waiting.
+    On completion: tars ~/.codex/ from the login container, writes ga-codex-auth
+    (mode 0600), nukes the login container, clears _codex_login_pending, and
+    returns {"status": "complete"}.
+    Returns 404 if no Codex login flow is in progress.
+    """
+    pending = CODEX_FLOW.state
+
+    if pending is None:
+        return PlainTextResponse("No Codex login in progress.", status_code=404)
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Poll the login container for completed ~/.codex/ credentials.
+    tar_bytes = CODEX_FLOW.poll(podman)
+    if not tar_bytes:
+        return JSONResponse({
+            "status": "pending",
+            "login_url": pending.get("login_url"),
+        })
+
+    # ── Auth complete — write ga-codex-auth ───────────────────────────────────
+    try:
+        _lc()._write_codex_auth_file(tar_bytes)
+        logger.info("ga-codex-auth written after Codex login completion")
+    except Exception as e:
+        # Keep the login container and pending state so the next poll can retry,
+        # rather than discarding the only copy of the credential.
+        logger.error("Could not write ga-codex-auth: %s", e)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="codex",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": "Login completed but the credential could not be saved; poll again to retry."},
+            status_code=500,
+        )
+
+    # Nuke temp container and clear pending state (guarded)
+    _lc()._abort_codex_pending_login(podman)
+
+    _security.audit_auth_event(
+        action="login", outcome="success", account="codex",
+        source=_request_source(request),
+        emit=logger.info,
+    )
+    return JSONResponse({"status": "complete"})
+
+
+async def _handle_codex_logout_post(request: Request) -> Response:
+    """POST /logout/codex — de-authenticate Codex OAuth.
+
+    Deletes ga-codex-auth and wipes ~/.codex/ from every running Codex-backend
+    crew. Idempotent: returns HTTP 200 even when already unauthenticated (no
+    ga-codex-auth to clear), matching the codex-auth spec requirement.
+    """
+    if not _lc()._codex_auth_exists():
+        return JSONResponse({"status": "logged_out"})
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Delete ga-codex-auth
+    auth_path = _codex_auth_file_path()
+    try:
+        auth_path.unlink(missing_ok=True)
+        logger.info("Deleted ga-codex-auth")
+    except Exception as e:
+        logger.error("Could not delete ga-codex-auth: %s", e)
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account="codex",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+
+    # Audit after deletion so the log only records a logout that actually happened.
+    _security.audit_auth_event(
+        action="logout", outcome="success", account="codex",
+        source=_request_source(request), emit=logger.info,
+    )
+
+    # Wipe ~/.codex/ from all running Codex-backend crews
+    wipe_failed: list[str] = []
+    with registry:
+        _codex_crews = {
+            cid: info
+            for cid, info in registry._reg["crews"].items()
+            if info.get("status") == "running" and info.get("acp_backend") == "codex"
+        }
+    for cid, info in _codex_crews.items():
+        try:
+            podman.container_exec(
+                info["container"],
+                ["sh", "-c", "rm -rf /home/kirocrew/.codex/"],
+            )
+            logger.info("Wiped ~/.codex/ from crew %s", cid)
+        except Exception as e:
+            logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
+            wipe_failed.append(cid)
+
+    # Abort any in-progress Codex login flow (TRN-205).
+    aborted = _lc()._abort_codex_pending_login(podman)
+
+    if wipe_failed:
+        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
+        if aborted:
+            resp["aborted_pending_login"] = True
+        return JSONResponse(resp)
+    if aborted:
+        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
+    return JSONResponse({"status": "logged_out"})

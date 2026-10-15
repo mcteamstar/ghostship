@@ -150,6 +150,23 @@ def _install_transport_stubs() -> None:
                 super().__init__(content=content, status_code=status_code,
                                  headers=headers, media_type="text/plain")
 
+        class JSONResponse(Response):
+            """Minimal stub for starlette.responses.JSONResponse.
+
+            login.py's HTTP handlers (TRN-242) return JSONResponse; the unit
+            tests that import login only need the class to exist and carry the
+            serialised payload/status. json.dumps matches starlette's behaviour
+            closely enough for the assertions made in test_login.py.
+            """
+
+            def __init__(self, content: Any = None, status_code: int = 200,
+                         headers: dict | None = None) -> None:
+                import json as _json
+                self.data = content
+                body = _json.dumps(content)
+                super().__init__(content=body, status_code=status_code,
+                                 headers=headers, media_type="application/json")
+
         class Request:
             """Minimal stub for starlette.requests.Request.
 
@@ -167,6 +184,7 @@ def _install_transport_stubs() -> None:
 
         starlette_responses.Response = Response  # type: ignore[attr-defined]
         starlette_responses.PlainTextResponse = PlainTextResponse  # type: ignore[attr-defined]
+        starlette_responses.JSONResponse = JSONResponse  # type: ignore[attr-defined]
         starlette_requests.Request = Request  # type: ignore[attr-defined]
         starlette_mod.responses = starlette_responses  # type: ignore[attr-defined]
         starlette_mod.requests = starlette_requests  # type: ignore[attr-defined]
