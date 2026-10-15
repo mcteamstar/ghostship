@@ -1,1 +1,1 @@
-"""Portable Python unit tests for the transport and crew services."""
+# Transport unit test package (TRN-244 rewrite)
