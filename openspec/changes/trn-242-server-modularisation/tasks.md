@@ -248,7 +248,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
   Verify: `pytest tests/unit/ -q` green (docstring-only changes; no logic
   regressions).
 
-- [ ] 4.3  **Verify final line counts and import graph.**
+- [x] 4.3  **Verify final line counts and import graph.**
   Run `wc -l transport/server.py transport/tools.py transport/captain_engine.py transport/login.py`
   and confirm:
   - `server.py` ≤ 1 600 lines
