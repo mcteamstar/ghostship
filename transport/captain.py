@@ -55,18 +55,16 @@ _RAVEN_GATEWAY_ORIENTATION = """For routine work — checking what's running, ch
 
 _RAVEN_STORE_RESOLUTION = """Before touching OpenSpec for a delivered project, make sure you're pointed at its real store — check `openspec store list --json`, register the project root if it isn't listed yet (`openspec store register "$PROJECT_ROOT" --id repo --yes`, where PROJECT_ROOT is normally `$(cd ../repo && pwd)` from a subagent_* working directory), then pass that store id with `--store <id>` on every OpenSpec command — rather than falling back to the crew's own empty one."""
 
-_RAVEN_SELF_CANCEL = """Once you're genuinely satisfied the standing orders are met, stop your own captain check-in. The captain schedule lives in the transport's registry, NOT the gateway cron registry, so the `kirocrew` CLI (`cron list` and friends) cannot see or stop it — don't try to pause it through the CLI. Instead call the transport endpoint directly:
+_RAVEN_SELF_CANCEL = """Once you're genuinely satisfied the standing orders are met, write a sentinel file to signal completion. The transport monitor reads this file before each check-in tick and will auto-pause the schedule — you do not need to call any transport endpoint or use the kirocrew CLI to stop it.
+
+Write the sentinel file:
 
 ```bash
-crew_id="$KIROCREW_CREW_ID"
-cookie=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
-curl -s -o /dev/null -w '%{http_code}' -X POST \\
-  "http://ga-transport:64057/crews/${crew_id}/captain/stop" \\
-  -H "Cookie: mc_token_5476=${cookie}" \\
-  -H "Origin: $(echo $KIROCREW_CORS_ORIGINS | cut -d, -f1)"
+printf '%s\\n' "captain_id=$KIROCREW_CREW_ID" "completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "reason=standing orders met" \
+  > /home/kirocrew/workplace/kirocrew-workspace/.captain_done
 ```
 
-Treat a `200` response as success (the schedule is now stopped) and a `400` as already-stopped (also success — no further action). Treat `404` or any other status as a failure to report to the Admiral at admiral@localhost. Don't ask the Admiral to stop it for you, and don't report it done without confirming the status code. Never let the cookie value appear in anything you say, write, or report."""
+Once the file is written, hold — the transport will pause the schedule on its next tick. Do not attempt to call any transport endpoint, do not ask the Admiral to stop it, and do not report done without confirming the file was written successfully."""
 
 # ── Academy order template loading ───────────────────────────────────────────
 
@@ -702,6 +700,68 @@ def _read_mail_subjects_archive(
         return _read_maildir_subjects_from_tar(tar_bytes)
     except Exception:
         return []
+
+
+# ── Captain sentinel file helpers (TRN-243) ───────────────────────────────────
+# The sentinel file lives on the workspace volume at a well-known path.
+# The transport reads it directly via the Podman archive API — no exec, no auth,
+# works on both running and stopped containers.  Raven writes it when done;
+# the captain monitor reads it before each tick to auto-pause the schedule.
+
+_SENTINEL_WORKSPACE_PATH = "/home/kirocrew/workplace/kirocrew-workspace/.captain_done"
+
+
+def _read_sentinel_file(podman: "PodmanClient", container: str) -> str | None:
+    """Read the sentinel file content from the workspace volume.
+
+    Returns the file content as a string if the file exists, or None if absent
+    or if the archive API fails (container not found, etc.).  Works on both
+    running and stopped containers.
+    """
+    import tarfile as _tarfile
+    import io as _io
+    try:
+        response = podman.container_archive_get(container, _SENTINEL_WORKSPACE_PATH)
+        tar_bytes = b"".join(response.iter_bytes())
+        response.close()
+        with _tarfile.open(fileobj=_io.BytesIO(tar_bytes)) as tf:
+            for member in tf.getmembers():
+                if member.isfile():
+                    f = tf.extractfile(member)
+                    if f is not None:
+                        return f.read().decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
+
+
+def _delete_sentinel_file(podman: "PodmanClient", container: str) -> None:
+    """Delete the sentinel file from the workspace volume via container exec.
+
+    Best-effort — logs a warning on failure but does not raise.  Only called
+    when a new captain order is placed to clear a stale sentinel.
+    """
+    try:
+        podman.container_exec(
+            container,
+            ["rm", "-f", _SENTINEL_WORKSPACE_PATH],
+        )
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Captain: could not delete sentinel file in %s: %s", container, exc
+        )
+
+
+def _parse_sentinel_file(content: str) -> dict:
+    """Parse key=value lines from the sentinel file into a dict."""
+    result: dict = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if "=" in line:
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip()
+    return result
 
 
 def _captain_jobs(payload: Any) -> list[dict[str, Any]]:

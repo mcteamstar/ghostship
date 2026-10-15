@@ -644,6 +644,46 @@ def _captain_monitor() -> None:
                                     break
                         continue
 
+                    # ── Sentinel check (TRN-243) ─────────────────────────────
+                    # Before dispatching Raven, check whether the workspace
+                    # sentinel file exists.  If so, Raven has signalled
+                    # completion — pause the schedule and skip this tick.
+                    try:
+                        try:
+                            from captain import (  # container
+                                _read_sentinel_file,
+                                _parse_sentinel_file,
+                            )
+                        except ModuleNotFoundError:
+                            from transport.captain import (  # local dev  # type: ignore[no-redef]
+                                _read_sentinel_file,
+                                _parse_sentinel_file,
+                            )
+                        from transport.crew import Crew as _Crew
+                        _c = _Crew.from_dict(crew_id, info)
+                        sentinel_content = _read_sentinel_file(_get_podman(), _c.container)
+                        if sentinel_content is not None:
+                            parsed = _parse_sentinel_file(sentinel_content)
+                            logger.info(
+                                "Captain monitor: sentinel file found for crew %s "
+                                "(captain_id=%s completed_at=%s) — auto-pausing schedule",
+                                crew_id,
+                                parsed.get("captain_id", "?"),
+                                parsed.get("completed_at", "?"),
+                            )
+                            with registry:
+                                for s in registry.get_schedules(crew_id):
+                                    if s.get("type") == "captain":
+                                        s["enabled"] = False
+                                        break
+                            continue
+                    except Exception as sentinel_exc:
+                        logger.warning(
+                            "Captain monitor: sentinel check failed for crew %s: %s",
+                            crew_id, sentinel_exc,
+                        )
+                    # ── end sentinel check ───────────────────────────────────
+
                     # Import _steer_captain_checkin from server at call time
                     # to avoid a module-load cycle (server imports monitors).
                     try:
