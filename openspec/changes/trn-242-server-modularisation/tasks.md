@@ -78,7 +78,7 @@ Moves the MCP tool functions and their helpers out of `server.py`. The `mcp`
 instance stays in `server.py`; tools are registered via `register_tools(mcp,
 caddy_portal, dashboard_gate)`.
 
-- [ ] 2.1  **Create `transport/tools.py` skeleton with `register_tools`.**
+- [x] 2.1  **Create `transport/tools.py` skeleton with `register_tools`.**
   Create `tools.py` with module-level config setup (`Config.from_env()` once),
   the necessary dual-path imports from `registry`, `lifecycle`, `captain_engine`,
   `captain`, `academy`, `files`, `podman`, `constants`, `crew`. Define the
@@ -86,7 +86,7 @@ caddy_portal, dashboard_gate)`.
   (empty body for now). Verify: `python3 -c "import transport.tools"` exits 0.
   No tests yet — skeleton only.
 
-- [ ] 2.2  **Move helper functions to `tools.py`.**
+- [x] 2.2  **Move helper functions to `tools.py`.**
   Move from `server.py` to `tools.py` (these are used only by tools and
   do not belong to captain_engine):
   - `_registry_guard(fn)` decorator (line ~2316)
@@ -97,7 +97,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` adds re-export imports for these names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.3  **Move `crews()` and `resource_compositions()` tools to `tools.py`.**
+- [x] 2.3  **Move `crews()` and `resource_compositions()` tools to `tools.py`.**
   Register them inside `register_tools` using `mcp_instance.tool()` and
   `mcp_instance.resource(...)` decorators applied programmatically. Preserve all
   docstrings and decorator arguments exactly. `caddy_portal` and `dashboard_gate`
@@ -105,7 +105,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `crews` and `resource_compositions` by name.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.4  **Move `launch()` tool to `tools.py`.**
+- [x] 2.4  **Move `launch()` tool to `tools.py`.**
   `launch()` references `_caddy_portal`, `_dashboard_gate`, `GA_MAX_CREWS`,
   `COMPOSITION_REGISTRY`, `CREW_CONTAINER_PREFIX`, `cfg.ga_portal_tls_mode`,
   `cfg.ga_host_url`. These are resolved from `tools.py`'s own `cfg` singleton
@@ -114,14 +114,14 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `launch`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.5  **Move `supply()`, `evac()`, `nuke()` tools to `tools.py`.**
+- [x] 2.5  **Move `supply()`, `evac()`, `nuke()` tools to `tools.py`.**
   `nuke()` references `_caddy_portal`, `_dashboard_gate`, `_captain_order_locks`,
   `_captain_order_locks_lock` (the last two from `captain.py`). Import
   `_captain_order_locks`, `_captain_order_locks_lock` from `captain`.
   `server.py` re-exports `supply`, `evac`, `nuke`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.6  **Move `captain()` and `schedule()` tools to `tools.py`.**
+- [x] 2.6  **Move `captain()` and `schedule()` tools to `tools.py`.**
   `captain()` delegates to `_captain_do_order` / `_captain_do_status` /
   `_captain_do_stop` imported from `captain_engine`. `schedule()` uses
   `_schedule_cancel`, `_schedule_list`, `_bg_prewarm`, `_is_memory_pressure_refusal`,
@@ -129,7 +129,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `captain`, `schedule`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.7  **Move `dispatch()`, `steer()`, `pickup()` tools to `tools.py`.**
+- [x] 2.7  **Move `dispatch()`, `steer()`, `pickup()` tools to `tools.py`.**
   `dispatch()` uses `_validate_model`, `_validate_agent`, `_dispatch_batch`,
   `_resolve_dispatch_slot`, `_crew_api_with_recovery`, `_ensure_crew_running`,
   `_require_crew`, `_task_timestamps`, `_task_timestamps_lock`,
@@ -139,7 +139,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports `dispatch`, `steer`, `pickup`.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.8  **Move resource functions to `tools.py`.**
+- [x] 2.8  **Move resource functions to `tools.py`.**
   Move `resource_agents()`, `resource_orders()`, `resource_orders_by_name()`,
   `resource_version()`, `resource_jobs()` to `tools.py`. Register them inside
   `register_tools`. `resource_version()` needs `TRANSPORT_VERSION`; import it
@@ -149,7 +149,7 @@ caddy_portal, dashboard_gate)`.
   `server.py` re-exports the resource function names.
   Verify: `pytest tests/unit/ -q` green.
 
-- [ ] 2.9  **Wire `register_tools` in `server.py`.**
+- [x] 2.9  **Wire `register_tools` in `server.py`.**
   After creating the `mcp` instance and the `_caddy_portal` / `_dashboard_gate`
   objects in `server.py`, call:
   ```python
