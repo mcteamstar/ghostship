@@ -481,20 +481,25 @@ class TestCaptainStandingView(unittest.TestCase):
 
     def test_schedule_fields_surfaced(self):
         from transport.captain import _captain_standing_view
-        from transport.registry import registry
         job = {"enabled": True, "id": "job-1"}
 
-        # Seed the crew's captain schedule entry in the in-memory registry.
-        with registry:
-            registry._reg["crews"]["test-crew"] = {
-                "schedules": [
-                    {
-                        "type": "captain",
-                        "last_checkin_at": "2026-10-15T05:00:00Z",
-                        "current_task_id": "task-abc",
-                    }
-                ]
+        # Patch _load_registry to return a registry with our captain schedule
+        # so we don't touch the filesystem (avoids deadlock with _registry_lock).
+        fake_reg = {
+            "crews": {
+                "test-crew": {
+                    "schedules": [
+                        {
+                            "type": "captain",
+                            "last_checkin_at": "2026-10-15T05:00:00Z",
+                            "current_task_id": "task-abc",
+                        }
+                    ]
+                }
             }
+        }
+        with patch("transport.registry._load_registry", return_value=fake_reg), \
+             patch("transport.registry._save_registry"):
             result = _captain_standing_view(
                 self.CREW_ID, "status", job, self._podman(), self.CONTAINER
             )
