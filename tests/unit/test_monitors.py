@@ -611,6 +611,49 @@ class TestIdleMonitorIteration(unittest.TestCase):
         self._run_one_tick({self.CREW_ID: self._make_crew_entry(last_used=self.NOW)})
         self.assertFalse(self._podman.was_called("container_stop"))
 
+    def test_toctou_inlock_guard_prevents_stop(self):
+        """In-lock TOCTOU re-check: last_used advanced to now between the early check and the lock.
+
+        The idle monitor performs an early-out check (idle_secs < GA_IDLE_TIMEOUT_SECS)
+        before HTTP calls.  A separate, in-lock re-check at the stop gate (line 547 of
+        monitors.py) re-reads last_used from the registry under the lock so that a
+        concurrent _touch_crew that lands during the HTTP-check window is honoured.
+
+        This test simulates that race: the first _load_registry call (crew_items
+        snapshot) returns an entry with last_used far in the past (passes the
+        early-out); the second _load_registry call (inside the TOCTOU lock block)
+        returns an entry with last_used == NOW (fresh touch just arrived).
+        container_stop must NOT be called.
+        """
+        old_entry = self._make_crew_entry()          # last_used = NOW - 400, passes early-out
+        refreshed_entry = self._make_crew_entry(last_used=self.NOW)  # touched during checks
+
+        call_count = [0]
+        old_reg = _make_reg({self.CREW_ID: old_entry})
+        refreshed_reg = _make_reg({self.CREW_ID: refreshed_entry})
+
+        def scripted_load():
+            call_count[0] += 1
+            # First call: crew_items snapshot (passes early idle check)
+            if call_count[0] == 1:
+                return old_reg
+            # Subsequent calls (TOCTOU lock block + write-back): refreshed last_used
+            return refreshed_reg
+
+        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
+             patch.object(monitors.time, "time", return_value=self.NOW), \
+             patch.object(monitors, "_get_podman", return_value=self._podman), \
+             patch.object(monitors, "_http", self._http), \
+             patch.object(monitors, "_touch_crew"), \
+             patch.object(_reg_mod, "_load_registry", side_effect=scripted_load), \
+             patch.object(_reg_mod, "_save_registry"):
+            try:
+                monitors._idle_monitor()
+            except StopIteration:
+                pass
+
+        self.assertFalse(self._podman.was_called("container_stop"))
+
     def test_stopping_flag_prevents_double_stop(self):
         """_stopping=True pre-set → container_stop not called."""
         self._run_one_tick({self.CREW_ID: self._make_crew_entry(_stopping=True)})
