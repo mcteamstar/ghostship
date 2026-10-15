@@ -589,10 +589,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
     # Defensive: startup already rejects a default backend outside the enabled
     # set, so configuration can't reach this. It becomes a real path once a
     # crew can pick its own backend (per-session selection).
-    if not _backend_enabled(GA_CREW_ACP_BACKEND):
+    if not login._backend_enabled(GA_CREW_ACP_BACKEND):
         return {
             "error": "backend_not_enabled",
-            "instructions": _backend_not_enabled_message(GA_CREW_ACP_BACKEND),
+            "instructions": login._backend_not_enabled_message(GA_CREW_ACP_BACKEND),
         }
     if GA_CREW_ACP_BACKEND == "claude":
         # Task 3.3: Claude backend — require an API key, a setup-token (TRN-226) or
