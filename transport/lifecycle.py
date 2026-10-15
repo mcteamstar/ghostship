@@ -1252,9 +1252,9 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
                 # No task yet — dispatch immediately
                 try:
                     try:
-                        from server import _dispatch_captain_checkin  # container
+                        from captain_engine import _dispatch_captain_checkin  # container
                     except ModuleNotFoundError:
-                        from transport.server import _dispatch_captain_checkin  # type: ignore[no-redef]
+                        from transport.captain_engine import _dispatch_captain_checkin  # type: ignore[no-redef]
                     new_task_id = _dispatch_captain_checkin(
                         crew, crew_id, model=sched.get("model")
                     )
@@ -1291,9 +1291,9 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
                         )
                         try:
                             try:
-                                from server import _dispatch_captain_checkin  # container
+                                from captain_engine import _dispatch_captain_checkin  # container
                             except ModuleNotFoundError:
-                                from transport.server import _dispatch_captain_checkin  # type: ignore[no-redef]
+                                from transport.captain_engine import _dispatch_captain_checkin  # type: ignore[no-redef]
                             new_task_id = _dispatch_captain_checkin(
                                 crew, crew_id, model=sched.get("model")
                             )

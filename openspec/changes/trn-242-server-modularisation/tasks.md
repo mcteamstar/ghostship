@@ -221,7 +221,7 @@ and into `login.py` alongside the `LoginFlow` hierarchy they delegate to.
 
 ## 4. Cleanup
 
-- [ ] 4.1  **Audit re-exports in `server.py` and remove those with no test coverage.**
+- [x] 4.1  **Audit re-exports in `server.py` and remove those with no test coverage.**
   Run:
   ```
   grep -r "server\._steer_captain\|server\._dispatch_captain\|server\._captain_do\|

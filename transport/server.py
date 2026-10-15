@@ -409,8 +409,6 @@ _MODEL_MAX_LENGTH = 500
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
 
-# _validate_model moved to transport.tools (TRN-242); re-exported below so
-# server._validate_model keeps resolving for any external reference.
 GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 # KiroCrew agent name written to config.local.json inside each crew.
 # Hardcoded: not operator-configurable (always the built-in KiroCrew agent name).
@@ -1635,139 +1633,19 @@ except ModuleNotFoundError:
     )
 
 
-
-
-
-
-# ── Claude OAuth login/logout endpoints ────────────────────────────────────────
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ── Codex OAuth login/logout endpoints ──────────────────────────────────────────
-
-
-
-
-
-
-
-
-# ── MCP tools: workspace ─────────────────────────────────────────────────────
-
-
 # ── MCP tools + resources (extracted to tools.py, TRN-242) ───────────────────
-# The tool functions (crews, launch, supply, evac, nuke, captain, schedule,
-# dispatch, steer, pickup), the transport:// resources, and the tool-only
-# helpers (_registry_guard, _validate_model, _bg_prewarm, _schedule_cancel,
-# _schedule_list) now live in transport.tools. They are registered against the
-# mcp instance below via register_tools(mcp, _caddy_portal, _dashboard_gate).
-# Re-exported here so existing patch('server.X') test sites keep resolving.
-try:
-    from tools import (  # noqa: F401  re-exported for existing call-sites
-        _registry_guard, _validate_model, _bg_prewarm,
-        _schedule_cancel, _schedule_list,
-        crews, resource_compositions, launch, supply, evac, nuke,
-        captain, schedule, dispatch, steer, pickup,
-        resource_agents, resource_orders, resource_orders_by_name,
-        resource_version, resource_jobs,
-    )
-except ModuleNotFoundError:
-    from transport.tools import (  # noqa: F401  local dev
-        _registry_guard, _validate_model, _bg_prewarm,
-        _schedule_cancel, _schedule_list,
-        crews, resource_compositions, launch, supply, evac, nuke,
-        captain, schedule, dispatch, steer, pickup,
-        resource_agents, resource_orders, resource_orders_by_name,
-        resource_version, resource_jobs,
-    )
-
-# Register all tools/resources against the mcp instance, injecting the two
-# server-owned objects (CaddyPortal, DashboardGate) that launch()/nuke() need.
-# This MUST run before __main__ calls mcp.streamable_http_app(...) /
-# _openapi.get_mcp_tools(mcp), so it happens here at module import time.
+# All tool functions, resources, and tool-only helpers now live in
+# transport.tools; the captain dispatch/steer engine lives in
+# transport.captain_engine. server.py no longer re-exports those names: no
+# test patches `server.<name>` for any of them, and server's own code does not
+# reference them directly. Register them against the mcp instance before
+# __main__ calls mcp.streamable_http_app(...).
 try:
     from tools import register_tools as _register_tools  # noqa: F401
 except ModuleNotFoundError:
     from transport.tools import register_tools as _register_tools  # local dev
 _register_tools(mcp, _caddy_portal, _dashboard_gate)
 
-
-# ── Captain dispatch/steer engine (extracted to captain_engine.py, TRN-242) ──
-# The memory-pressure helpers, Admiral escalation, and the dispatch/steer/order/
-# status/stop engine now live in transport.captain_engine. Re-exported here so
-# existing patch('server.X') test sites and the captain() tool call sites below
-# keep resolving. monitors.py imports the dispatch/steer pair from the leaf
-# directly (no longer via server), breaking the former monitors->server import.
-try:
-    from captain_engine import (  # noqa: F401  re-exported for existing call-sites
-        _MEMORY_PRESSURE_MARKER, _MemoryPressureSkip,
-        _check_in_memory_pressure, _is_memory_pressure_refusal,
-        _mail_admiral, _record_memory_pressure_cycle,
-        _dispatch_captain_checkin, _steer_captain_checkin,
-        _captain_do_order, _captain_do_status, _captain_do_stop,
-    )
-except ModuleNotFoundError:
-    from transport.captain_engine import (  # noqa: F401  local dev
-        _MEMORY_PRESSURE_MARKER, _MemoryPressureSkip,
-        _check_in_memory_pressure, _is_memory_pressure_refusal,
-        _mail_admiral, _record_memory_pressure_cycle,
-        _dispatch_captain_checkin, _steer_captain_checkin,
-        _captain_do_order, _captain_do_status, _captain_do_stop,
-    )
-
-
-
-
-
-
-
-
-
-
-
-
-# _record_last_task_at and _dispatch_batch live in transport.lifecycle next to
-# _pickup_batch; imported above. The dispatch MCP tools below call them as before.
-
-
-
-
-
-
-# ── MCP resources ────────────────────────────────────────────────────────────
-
-# _AGENTS_DIR is imported from transport.lifecycle above.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# _schedule_monitor, _idle_monitor, _cron_activity_since, _cron_has_enabled_job,
-# _validate_academy, and _SCHEDULE_MONITOR_INTERVAL now live in transport.lifecycle
-# and are imported above.
 
 # ── Health endpoint ───────────────────────────────────────────────────────────
 
