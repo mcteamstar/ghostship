@@ -241,7 +241,9 @@ class Config:
     # (e.g. login containers). Must match the FROM pin in
     # crews/_base/admission/Containerfile.
     # 2026-10-17: bumped insider.4 → v0.9.0 stable. Schema verified unchanged.
-    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:a6156d268507cae747a6004bcc37a394c6a9955c9426eb2852e8f515b94821ec"
+    # Named tag used (not a per-arch digest) so the image resolves correctly on
+    # both arm64 (corsair/Mac) and amd64 (starport/Linux) without pinning.
+    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew:0.9.0"
 
     # ── Crew lifecycle ───────────────────────────────────────────────────────
     ga_max_crews: int = 20
@@ -399,7 +401,7 @@ class Config:
                 "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
-            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew@sha256:a6156d268507cae747a6004bcc37a394c6a9955c9426eb2852e8f515b94821ec"),
+            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew:0.9.0"),
             ga_max_crews=_env_int("GA_MAX_CREWS", "20"),
             ga_max_active_crews=_env_int("GA_MAX_ACTIVE_CREWS", "3"),
             ga_idle_timeout_secs=_env_int("GA_IDLE_TIMEOUT_SECS", "300"),
