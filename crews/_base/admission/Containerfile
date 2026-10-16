@@ -18,13 +18,15 @@
 # Default here matches the config default so plain `podman build` still works.
 #
 # TRN-219: bumped 0.8.0 → 0.9.0-insider.4 for the KiroCrew 0.9.0 upgrade.
-# Pinned to the immutable digest so a rebuild cannot float onto a newer insider
-# build silently. Human-readable tag for this digest: 0.9.0-insider.4.
+# 2026-10-17: bumped insider.4 → v0.9.0 stable. Schema re-verified (unchanged,
+#             6 migrations 000–005, kiro-cli 2.32.0). Human-readable tag: 0.9.0.
+# Pinned to the immutable digest so a rebuild cannot float onto a newer release
+# silently.
 # ⚠️  The graduation-layer DB seed (crews/_base/graduation/seed_kiro_db.py) MUST
 #     be re-verified against this exact base image before release — see TRN-219
 #     tasks.md §1/§5. Bumping this pin without that verification is the silent
 #     auth-injection regression the change guards against.
-ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898572175a1988e61a8696769821528860edceaf5ca253f8123a77009
+ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:a6156d268507cae747a6004bcc37a394c6a9955c9426eb2852e8f515b94821ec
 FROM ${KC_BASE_IMAGE}
 
 USER root
