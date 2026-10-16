@@ -8,21 +8,24 @@ See proposal.md (Why). Today's credential handling has four separate parts:
   `OPENAI_API_KEY` and `KIRO_API_KEY` go from `ghostship.conf` to install.sh
   (rm, then conditional create, at install.sh:861-886), into Podman secrets,
   then `/run/secrets` in `ga-transport`. `_security.get_secret` reads them at
-  import time, separately in both `server.py` (465-473, 650) and
-  `lifecycle.py` (143, 234-240).
+  import time in three places after TRN-242: `transport/tools.py` (~270-280,
+  module-level globals used in `launch()`), `transport/login.py` (~112-116,
+  used in `_finish_crew_setup` injection), and `transport/server.py` (~458-465,
+  ~643, remnants not yet cleaned up).
 - **Interactive login state.** The PTY flows write `DATA_DIR/ga-kiro-auth`
   (base64 SQLite rows), `ga-claude-auth` (tar of `~/.claude`) and
   `ga-codex-auth` (tar of `~/.codex`). These writes are 0600 but not atomic
   (truncate in place).
-- **Precedence.** Precedence is open-coded in launch gating (server.py
-  2599-2651), env injection (2763-2791) and `_finish_crew_setup`
-  (lifecycle.py 2222-2275).
+- **Precedence.** Precedence is open-coded in launch gating (`tools.py`
+  ~586-650 after TRN-242), env injection, and `_finish_crew_setup`
+  (lifecycle.py).
 - **The CLI.** It only knows `POST/GET /login/kiro` and `POST /logout/kiro` (kiro). It
   takes the URL and key from flags or `GHOSTSHIP_URL`, and nothing else.
 
 `trn-240-transport-refactor` introduces a `LoginFlow` base class with Kiro,
-Claude and Codex subclasses in `transport/login.py`. This change builds on that
-and lands after it.
+Claude and Codex subclasses in `transport/login.py`. `trn-242-server-modularisation`
+extracted MCP tools to `transport/tools.py` and login HTTP handlers to
+`transport/login.py`. This change builds on both and lands after them.
 
 ## Goals / Non-Goals
 

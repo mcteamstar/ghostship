@@ -19,28 +19,37 @@ in order; tasks inside a group may go in any order. Every task ends with
 
 ## 2. Transport resolves credentials per launch
 
-- [ ] 2.1 Replace the module-level credential globals in `server.py` and
-  `lifecycle.py` (`_ANTHROPIC_API_KEY`, `_CLAUDE_CODE_OAUTH_TOKEN`,
-  `_OPENAI_API_KEY`, `KIRO_API_KEY` and their lifecycle copies) with
-  `store.get(backend)` in launch gating, env injection and `_finish_crew_setup`
-  (design §4). Remove the matching fields from `transport/config.py` and its
-  `_SECRET_FIELDS` masking. Verify:
-  rewrite `test_trn226_claude_oauth_token.py` (launch-gate and injection
-  classes) and the module-global patches in `test_trn172_codex_backend.py`,
-  `test_trn170_claude_subscription_oauth.py`, `test_agent_backends.py`,
-  `test_trn167_claude_backend.py`, `test_trn171_anthropic_endpoint_override.py`,
-  `test_trn157_lifecycle_race_keypair.py`, `test_lifecycle.py` and
-  `test_server.py` to use a temp-dir store. Add a test that a credential
-  stored after startup reaches the next launch with no restart.
-- [ ] 2.2 Update `_warn_inert_backend_settings` to report stored credentials
-  for disabled backends (by backend and method) and `*_BASE_URL` settings.
-  Verify: updated inert-settings tests, including that values are not logged.
+- [ ] 2.1 Replace the module-level credential globals in `tools.py` and
+  `login.py` (`_ANTHROPIC_API_KEY`, `_CLAUDE_CODE_OAUTH_TOKEN`,
+  `_OPENAI_API_KEY`, `KIRO_API_KEY`) with `store.get(backend)` in launch
+  gating, env injection and `_finish_crew_setup` (design §4). Note: after
+  TRN-242, credentials live in `transport/tools.py` (launch gating, lines
+  ~270-280 and ~586-650) and `transport/login.py` (~112-116 and ~727-729).
+  `transport/server.py` still has its own `_ANTHROPIC_API_KEY` etc. at
+  ~458-465 and `KIRO_API_KEY` at ~643 — remove all of these. Remove the
+  matching fields from `transport/config.py` and its `_SECRET_FIELDS`
+  masking. Verify: add `tests/unit/test_credentials_launch.py` covering
+  store-based launch gating (API key present → no flow started, no credential
+  → flow started), credential rotation reaching the next launch with no
+  restart, and that no module-level credential globals remain (`grep -rn
+  "_security.get_secret.*api-key\|_security.get_secret.*oauth\|_security.get_secret.*openai"
+  transport/tools.py transport/login.py transport/server.py` is empty after
+  this task). Note: the test files referenced in the original plan
+  (`test_trn226*`, `test_trn172*`, `test_trn170*`, `test_trn167*`,
+  `test_trn171*`, `test_trn157*`) were deleted in TRN-244 — add fresh tests
+  in the new DI style using `FakePodmanClient` and a temp-dir credential store.
+- [ ] 2.2 Update `_warn_inert_backend_settings` (now in `transport/login.py`
+  after TRN-242) to report stored credentials for disabled backends (by backend
+  and method) and `*_BASE_URL` settings. Verify: updated inert-settings tests,
+  including that values are not logged.
 
 ## 3. Transport auth API
 
 - [ ] 3.1 Route table: register the `/login/{backend}/{method}`,
   `GET /login/{backend}` and `POST /logout/{backend}` routes from
-  design §3 under bearer auth. Remove bare `POST /login`, `POST /logout`,
+  design §3 under bearer auth. Note: after TRN-242, the kiro/claude/codex
+  HTTP handlers live in `transport/login.py` (not `server.py`); add the
+  new routes there. Remove bare `POST /login`, `POST /logout`,
   `POST /login/claude`, `POST /login/claude/code` and `POST /login/codex`.
   Widen the rate-limit rule to `POST /login/*` and update the OpenAPI schema.
   Verify: route tests for 404 on an unknown backend or method, 401 without
