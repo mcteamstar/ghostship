@@ -1,5 +1,90 @@
 # Changelog
 
+## v0.7.1
+
+### KiroCrew 0.9.0 compatibility
+
+This release pins ghostship to the KiroCrew **v0.9.0 stable** image (digest `sha256:a6156d268507...`, kiro-cli 2.32.0) and validates the full upgrade path from the insider pre-release. All breaking API changes introduced in the 0.9.0 insider line were addressed in the TRN-219–225 series (shipped in ghostship 0.7.1 pre-release commits); the stable cut adds no new breaking changes.
+
+- **Base image bumped to v0.9.0 stable.** The crew image was previously pinned to `0.9.0-insider.4`. All five backport fixes between insider.4 and the stable tag (insider.5–9) are no-ops for ghostship: `auto_update=false` neutralises the wheel-fetch fix, no persona id conflicts the KAS reserved-id fix, and the MCP deferred-tool change only affects the internal worker scheduler. Migration schema verified unchanged: kiro-cli 2.32.0 ships the same 6 migrations (000–005) as 2.27.1; `seed_kiro_db.py` is correct as-is.
+
+- **TRN-219 — crew image updated for KiroCrew 0.9.0.** Base image bumped from 0.8.0; `sandbox: "off"` and `sandbox_allow_unsandboxed_exec: true` added to `_patch_crew_config()` to satisfy the 0.9.0 Podman rootless sandbox gate. Node.js 24 LTS added to the spec-ops Containerfile (required by kiro-cli 2.27+). `kiro-cli DB pre-seeded` updated for migration schema 000–005.
+
+- **TRN-220 — peer-cred guard on the internal gateway API does not affect ghostship.** KiroCrew 0.9.0 gates `X-Internal-Secret` / `X-Session-Key` requests by Unix socket UID. The transport authenticates exclusively via cookie + Origin on the external path. `_FORBIDDEN_INTERNAL_HEADERS` guard added to `_crew_api`; contract enforced by `tests/unit/test_trn220_crew_api_headers.py`.
+
+- **TRN-221 — SEL key relocation to `$KIROCREW_HOME/trust/` is transparent.** No transport surface reads the SEL signing key. Grep audit confirmed zero pre-0.9.0 path literals; `test_trn_221_no_hardcoded_sel_path.py` guards against regression.
+
+- **TRN-222 — workspace-app scoping change.** Crew config adjusted so workspace-scoped apps are correctly isolated per crew.
+
+- **TRN-223 — knowledge auto-ingest is opt-in.** `auto_ingest: false` added to the crew config patch so crews do not auto-ingest workspace files on start.
+
+- **TRN-224 — memory retrieval now ranks by vector similarity.** No ghostship code change needed. Operators of long-running crews with accumulated memory should expect task behaviour to shift on first start after upgrade; a one-time re-embedding pass may briefly delay startup. Fresh/ephemeral spec-ops crews are unaffected.
+
+- **TRN-225 — memory pressure gate for cron spawns.** The gateway now gates cron-triggered spawns under memory pressure. The transport's `_crew_api` path is unaffected.
+
+### Captain auto-pause via workspace sentinel (TRN-243)
+
+Raven no longer loops indefinitely after completing a standing order. Previously, Raven's self-cancel curl (`POST /crews/{id}/captain/stop`) was blocked by `TransportSecretMiddleware` — crew containers cannot reach that endpoint by design.
+
+The fix: Raven writes `.captain_done` into the workspace volume when satisfied. The captain monitor reads the file directly via the Podman archive API (no exec, no auth, no container required) and pauses the schedule. `captain(action="order")` clears the sentinel on new orders so the crew is reusable. Eliminates overnight admiral-mail storms from looping Raven runs.
+
+### Shell exec hardening (TRN-235)
+
+Three credential injection surfaces hardened against future injection:
+
+- `_inject_claude_auth` and `_inject_codex_auth` base64-chunk appends replaced with `container_archive_put` (atomic tar write — structurally safe regardless of payload alphabet).
+- `_write_dashboard_cookie` `python3 -c` f-string interpolation replaced with `container_archive_put`.
+- `Config` dataclass gains `__repr__` masking for `kiro_api_key`, `anthropic_api_key`, `openai_api_key`, and `claude_code_oauth_token` so credentials never appear in logs.
+
+### Lifecycle resilience (TRN-238)
+
+- `_idle_monitor` lock scope reduced: `container_stop` now runs outside `_registry_lock`, with an in-flight flag preventing double-stop. Eliminates the 10–30s registry stall at higher crew counts.
+- `_ensure_crew_running` leader checks for registry-entry removal by a concurrent `nuke()` after `container_start`, before proceeding with post-start setup.
+
+### CSP fix for dashboard login page (TRN-237)
+
+`DEFAULT_CSP` previously blocked the login page's own inline scripts under CSP Level 2+. Fixed with a per-response nonce: each `GET /dashboard/login` generates a `secrets.token_hex(16)` nonce, injects it into the HTML, and sets `Content-Security-Policy: script-src 'self' 'nonce-<n>'; style-src 'self' 'nonce-<n>'`. Inline script and style tags carry the matching nonce.
+
+### Captain self-cancel fixed (TRN-241)
+
+Two bugs in the Raven self-cancel flow (superseded by TRN-243 sentinel, but fixed independently):
+
+- `KIROCREW_CREW_ID` was not injected into the crew container env, producing an empty path segment in the self-cancel URL. Fixed in `_finish_crew_setup` via `_patch_crew_config`.
+- `POST /crews/*/captain/stop` was not in `TransportSecretMiddleware`'s public-route bypass list and received 401 before the cookie auth ran.
+
+### Transport modularisation (TRN-240, TRN-242)
+
+`server.py` split from a ~5000-line monolith into focused modules with no behaviour or API changes:
+
+- `transport/tools.py` — all 10 MCP tool implementations (`crews`, `launch`, `supply`, `evac`, `nuke`, `dispatch`, `steer`, `pickup`, `schedule`, `captain`).
+- `transport/captain_engine.py` — captain/schedule dispatch logic (`_dispatch_captain_checkin`, `_steer_captain_checkin`, `_captain_do_order/status/stop`).
+- `transport/login.py` — kiro/claude/codex HTTP login/logout handlers.
+- `transport/server.py` — HTTP infrastructure, routing, and middleware only.
+
+Circular imports resolved by deferring `lifecycle` imports inside functions. All existing tests pass unchanged.
+
+### Interactive installer wizard (TRN-233 partial)
+
+`install.sh` gains a guided setup wizard on first install (no `ghostship.conf` present). Walks through backend selection, collects non-secret config, writes `ghostship.conf`, then builds, authenticates, and offers harness registration. Force it any time with `./install.sh --wizard`. Subsequent plain runs are non-interactive as before.
+
+### Unit test suite rewrite (TRN-244, TRN-245, TRN-246, TRN-247, TRN-248, TRN-249)
+
+The unit test suite was rewritten around dependency injection and a `FakePodmanClient` test double:
+
+- Module-level globals eliminated in favour of explicit arguments; patches no longer need to track which module namespace a name was imported into.
+- `tests/fakes.py` — `FakePodmanClient` with configurable container/exec/archive/secret stubs.
+- `tests/unit/test_captain.py` — standing orders, scheduling, stop/resume, mail, cookie injection.
+- `tests/unit/test_lifecycle.py` — `_ensure_crew_running`, launch/nuke, reconcile loop, memory gate, `_finish_crew_setup`.
+- `tests/unit/test_caddy.py` — dashboard login, session auth, crew route lifecycle.
+- `tests/unit/test_auth.py` — bearer middleware, HMAC, evac/supply presigned tokens.
+- `tests/unit/test_monitors.py` — idle monitor, schedule monitor, captain sentinel branch, cookie refresh.
+
+### Other fixes
+
+- `GA_REQUIRE_API_KEY` now defaults to `error` on non-loopback installs (TRN-231). Installations reachable from non-loopback addresses with no API key configured log an error and refuse to serve at startup.
+- Raven self-cancel endpoint corrected to `ga-transport:64057` (was `localhost:64057`, unreachable from inside a crew container).
+- `trn-233` wizard: fixed `set -e` abort on non-tty stdin during guided setup.
+
 ## v0.7.0
 
 ### Breaking changes
