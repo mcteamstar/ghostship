@@ -201,7 +201,7 @@
 # docs/configuration.md for full descriptions.
 # PODMAN_SOCKET=/run/user/1000/podman/podman.sock
 # KC_IMAGE=localhost/spec-ops:latest
-# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew:0.9.0
+# KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:108e6b94890ab6ce390d4f5103b096747a6b8eb51e7d020463641551e71ab94c
 # GA_SPAWN_MIN_MEMORY_GB=1.5
 # GA_RESOURCE_PRESSURE_GB=2.0
 # GA_RESOURCE_CRITICAL_GB=1.0
