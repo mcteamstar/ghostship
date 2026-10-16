@@ -166,8 +166,16 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(self.cfg.kiro_api_key, "")
 
     def test_kc_base_image_is_pinned_digest(self):
-        # Must contain a sha256 digest (TRN-219)
-        self.assertIn("sha256:", self.cfg.kc_base_image)
+        # Must be a pinned digest OR a named tag (not a mutable :latest).
+        # Named tags are acceptable when the image is multi-arch and the
+        # digest is platform-specific (arm64 vs amd64). TRN-219.
+        img = self.cfg.kc_base_image
+        has_digest = "sha256:" in img
+        has_named_tag = "@" not in img and ":latest" not in img and ":" in img
+        self.assertTrue(
+            has_digest or has_named_tag,
+            f"kc_base_image must be a pinned digest or named tag, got: {img!r}",
+        )
 
 
 # ── Config.from_env() ─────────────────────────────────────────────────────────
