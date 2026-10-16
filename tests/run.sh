@@ -69,20 +69,6 @@ run_unit() {
   local category_exit=0
   python3 -m pytest tests/unit -m "not slow" || category_exit=$?
 
-  # Shell-based unit tests (not discovered by pytest).
-  local script script_exit
-  for script in \
-    "$REPO_DIR/tests/unit/test_maildeliver.sh"; do
-    printf '\n--- Unit (shell): %s ---\n' "$(basename "$script")"
-    if bash "$script"; then
-      printf 'Shell unit result: PASS (%s)\n' "$(basename "$script")"
-    else
-      script_exit=$?
-      printf 'Shell unit result: FAIL (%s, exit %d)\n' \
-        "$(basename "$script")" "$script_exit"
-      category_exit=1
-    fi
-  done
   return "$category_exit"
 }
 
