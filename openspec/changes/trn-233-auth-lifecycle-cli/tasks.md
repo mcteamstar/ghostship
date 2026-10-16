@@ -19,25 +19,33 @@ in order; tasks inside a group may go in any order. Every task ends with
 
 ## 2. Transport resolves credentials per launch
 
-- [ ] 2.1 Replace the module-level credential globals in `tools.py` and
-  `login.py` (`_ANTHROPIC_API_KEY`, `_CLAUDE_CODE_OAUTH_TOKEN`,
-  `_OPENAI_API_KEY`, `KIRO_API_KEY`) with `store.get(backend)` in launch
-  gating, env injection and `_finish_crew_setup` (design §4). Note: after
-  TRN-242, credentials live in `transport/tools.py` (launch gating, lines
-  ~270-280 and ~586-650) and `transport/login.py` (~112-116 and ~727-729).
-  `transport/server.py` still has its own `_ANTHROPIC_API_KEY` etc. at
-  ~458-465 and `KIRO_API_KEY` at ~643 — remove all of these. Remove the
-  matching fields from `transport/config.py` and its `_SECRET_FIELDS`
-  masking. Verify: add `tests/unit/test_credentials_launch.py` covering
+- [ ] 2.1 Replace the module-level credential globals in `tools.py`,
+  `login.py`, `server.py` and `lifecycle.py` (`_ANTHROPIC_API_KEY`,
+  `_CLAUDE_CODE_OAUTH_TOKEN`, `_OPENAI_API_KEY`, `KIRO_API_KEY`) with
+  `store.get(backend)` in launch gating, env injection and
+  `_finish_crew_setup` (design §4). Locations after TRN-242:
+  - `transport/tools.py` lines ~270-280 (module-level globals) and ~586-650
+    (launch gating + env injection)
+  - `transport/login.py` lines ~112-116 (globals) and ~727-729
+    (`_finish_crew_setup` injection)
+  - `transport/server.py` lines ~458-465 and ~643 (duplicated globals not
+    yet cleaned up)
+  - `transport/lifecycle.py` line ~154 (`KIRO_API_KEY` still there post-TRN-242)
+  Remove the matching fields from `transport/config.py` and its
+  `_SECRET_FIELDS` masking. Note: `_inject_claude_auth` and
+  `_inject_codex_auth` live in `lifecycle.py` and are imported by
+  `login.py` — they stay but consume from the credential store rather than
+  module-level globals. Note: the test files referenced in the original plan
+  (`test_trn226*`, `test_trn172*`, `test_trn170*`, `test_trn167*`,
+  `test_trn171*`, `test_trn157*`) were deleted in TRN-244 — add fresh tests
+  in the new DI style using `FakePodmanClient` and a temp-dir credential store.
+  Verify: add `tests/unit/test_credentials_launch.py` covering
   store-based launch gating (API key present → no flow started, no credential
   → flow started), credential rotation reaching the next launch with no
   restart, and that no module-level credential globals remain (`grep -rn
   "_security.get_secret.*api-key\|_security.get_secret.*oauth\|_security.get_secret.*openai"
-  transport/tools.py transport/login.py transport/server.py` is empty after
-  this task). Note: the test files referenced in the original plan
-  (`test_trn226*`, `test_trn172*`, `test_trn170*`, `test_trn167*`,
-  `test_trn171*`, `test_trn157*`) were deleted in TRN-244 — add fresh tests
-  in the new DI style using `FakePodmanClient` and a temp-dir credential store.
+  transport/tools.py transport/login.py transport/server.py transport/lifecycle.py`
+  is empty after this task).
 - [ ] 2.2 Update `_warn_inert_backend_settings` (now in `transport/login.py`
   after TRN-242) to report stored credentials for disabled backends (by backend
   and method) and `*_BASE_URL` settings. Verify: updated inert-settings tests,
@@ -136,7 +144,8 @@ in order; tasks inside a group may go in any order. Every task ends with
 
 - [ ] 6.1 Remove the credential entries (not the Kiro Identity Center ones)
   from `config/ghostship.conf.example`, and replace them with a pointer to
-  `ghostship auth login`. Verify: `test_config_sync.py` green.
+  `ghostship auth login`. Verify: `grep -n "API_KEY\|OAUTH_TOKEN" config/ghostship.conf.example`
+  returns no uncommented credential lines.
 - [ ] 6.2 Rewrite the auth sections of `docs/auth.md`, `docs/configuration.md`
   and `README.md` for `ghostship auth login|logout|status` and each
   backend's methods, plus a breaking-change upgrade note (log in again). Verify: no remaining
