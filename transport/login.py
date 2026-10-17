@@ -1132,7 +1132,7 @@ async def _handle_claude_logout_post(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=500)
 
     # Delete ga-claude-auth
-    auth_path = _claude_auth_file_path()
+    auth_path = _lc()._claude_auth_file_path()
     try:
         auth_path.unlink(missing_ok=True)
         logger.info("Deleted ga-claude-auth")
@@ -1304,7 +1304,7 @@ async def _handle_codex_logout_post(request: Request) -> Response:
         return PlainTextResponse(str(e), status_code=500)
 
     # Delete ga-codex-auth
-    auth_path = _codex_auth_file_path()
+    auth_path = _lc()._codex_auth_file_path()
     try:
         auth_path.unlink(missing_ok=True)
         logger.info("Deleted ga-codex-auth")
@@ -1375,13 +1375,22 @@ async def _handle_login_kiro_get(request: Request) -> Response:
     # No flow in progress — return credential store status
     if pending is None:
         st = _cred_store.status().get("kiro", {})
-        return JSONResponse({
+        resp: dict = {
             "backend": "kiro",
             "configured": st.get("configured", False),
             "method": st.get("method"),
             "stored_at": st.get("stored_at"),
             "pending_flow": None,
-        })
+        }
+        # Spec (backend-credentials §GET): for kiro, also return the configured
+        # Identity Center start_url/region when set, so the CLI can offer them
+        # as defaults. Non-secret config — never a credential value.
+        if cfg.kiro_identity_provider or cfg.kiro_region:
+            resp["identity_center"] = {
+                "start_url": cfg.kiro_identity_provider or None,
+                "region": cfg.kiro_region or None,
+            }
+        return JSONResponse(resp)
     # Flow in progress — delegate to the existing polling handler
     # which also drives completion and writes ga-kiro-auth.
     return await _handle_login_get(request)

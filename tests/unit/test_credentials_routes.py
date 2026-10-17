@@ -247,6 +247,36 @@ class TestGetLoginStatus(_BaseRouteTest):
         raw = resp.body.decode() if isinstance(resp.body, bytes) else json.dumps(data)
         self.assertNotIn("kiro-secret-key-value", raw)
 
+    def test_kiro_get_identity_center_defaults(self):
+        """Spec: GET /login/kiro exposes configured Identity Center defaults as
+        identity_center.start_url / identity_center.region."""
+        import transport.login as login_mod
+        from transport.config import Config
+        orig_cfg = login_mod.cfg
+        try:
+            login_mod.cfg = Config(
+                ga_crew_agent="kiro",
+                kiro_identity_provider="https://my-sso.awsapps.com/start",
+                kiro_region="us-east-1",
+            )
+            from transport.login import _handle_login_kiro_get
+            resp = _run(_handle_login_kiro_get(_make_request()))
+            data = _json_data(resp)
+            self.assertIn("identity_center", data)
+            self.assertEqual(
+                data["identity_center"]["start_url"],
+                "https://my-sso.awsapps.com/start",
+            )
+            self.assertEqual(data["identity_center"]["region"], "us-east-1")
+        finally:
+            login_mod.cfg = orig_cfg
+
+    def test_kiro_get_no_identity_center_when_unconfigured(self):
+        """No identity_center block when KIRO_IDENTITY_PROVIDER/KIRO_REGION unset."""
+        from transport.login import _handle_login_kiro_get
+        resp = _run(_handle_login_kiro_get(_make_request()))
+        self.assertNotIn("identity_center", _json_data(resp))
+
     def test_claude_get_unconfigured(self):
         from transport.login import _handle_login_claude_get_new
         req = _make_request()
@@ -355,6 +385,77 @@ class TestLogoutCredentialStore(_BaseRouteTest):
                         mock_reg.__exit__ = lambda s, *a: None
                         resp = _run(_handle_logout_codex_post_new(req))
 
+        self.assertIsNone(self._store.get("codex"))
+
+    def test_logout_claude_oauth_present_deletes_auth_file(self):
+        """When a Claude OAuth credential exists, logout reaches the deletion
+        branch and resolves the auth-file path via _lc() (regression: the bare
+        _claude_auth_file_path() name is not defined in login.py and would raise
+        NameError, 500-ing a real logout)."""
+        self._store.put("claude", "oauth", b"tar-bytes")
+        from transport.login import _handle_logout_claude_post_new
+        req = _make_request()
+        unlinked = {"called": False}
+
+        def _auth_path():
+            return types.SimpleNamespace(
+                unlink=lambda missing_ok=False: unlinked.__setitem__("called", True)
+            )
+
+        with patch("transport.login._lc") as mock_lc:
+            lc = types.SimpleNamespace(
+                _claude_auth_exists=lambda: True,
+                _claude_auth_file_path=_auth_path,
+                _abort_claude_pending_login=lambda podman: False,
+            )
+            mock_lc.return_value = lc
+            with patch("transport.login._security") as mock_sec:
+                mock_sec.audit_auth_event = lambda **kw: None
+                with patch("transport.login._request_source", lambda r: None):
+                    with patch("transport.login._get_podman", return_value=FakePodmanClient()):
+                        with patch("transport.login.registry") as mock_reg:
+                            mock_reg._reg = {"crews": {}}
+                            mock_reg.__enter__ = lambda s: s
+                            mock_reg.__exit__ = lambda s, *a: None
+                            resp = _run(_handle_logout_claude_post_new(req))
+
+        self.assertTrue(unlinked["called"])
+        self.assertEqual(_json_data(resp).get("status"), "logged_out")
+        self.assertIsNone(self._store.get("claude"))
+
+    def test_logout_codex_oauth_present_deletes_auth_file(self):
+        """When a Codex ChatGPT credential exists, logout reaches the deletion
+        branch and resolves the auth-file path via _lc() (regression for the
+        bare _codex_auth_file_path() NameError)."""
+        self._store.put("codex", "chatgpt", b"tar-bytes")
+        from transport.login import _handle_logout_codex_post_new
+        req = _make_request()
+        unlinked = {"called": False}
+
+        def _auth_path():
+            return types.SimpleNamespace(
+                unlink=lambda missing_ok=False: unlinked.__setitem__("called", True)
+            )
+
+        with patch("transport.login._lc") as mock_lc:
+            lc = types.SimpleNamespace(
+                _codex_auth_exists=lambda: True,
+                _codex_auth_file_path=_auth_path,
+                _abort_codex_pending_login=lambda podman: False,
+            )
+            mock_lc.return_value = lc
+            with patch("transport.login._security") as mock_sec:
+                mock_sec.audit_auth_event = lambda **kw: None
+                with patch("transport.login._request_source", lambda r: None):
+                    with patch("transport.login._get_podman", return_value=FakePodmanClient()):
+                        with patch("transport.login.registry") as mock_reg:
+                            mock_reg._reg = {"crews": {}}
+                            mock_reg.__enter__ = lambda s: s
+                            mock_reg.__exit__ = lambda s, *a: None
+                            resp = _run(_handle_logout_codex_post_new(req))
+
+        self.assertTrue(unlinked["called"])
+        self.assertEqual(_json_data(resp).get("status"), "logged_out")
         self.assertIsNone(self._store.get("codex"))
 
     def test_logout_kiro_idempotent_no_credential(self):
