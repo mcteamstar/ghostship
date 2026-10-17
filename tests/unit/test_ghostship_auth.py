@@ -220,6 +220,7 @@ class TestSecretHttpsGuard(unittest.TestCase):
                     # Mock the status check for existing credential
                     with patch.object(gs, "_http_json",
                                       side_effect=[
+                                          {"identity_center": {}},  # GET /login/kiro IDC defaults
                                           {"configured": False},  # status check
                                           {"status": "stored", "method": "api-key",
                                            "stored_at": "2026-01-01T00:00:00Z"},  # POST
