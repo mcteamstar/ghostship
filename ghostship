@@ -744,24 +744,27 @@ def auth_login(args: list) -> int:
     # Flow methods (device code, oauth, etc.)
     request_body: dict = {}
     if method == "identity-center":
-        # Collect start_url and region
-        if not identity_provider:
-            if not sys.stdin.isatty():
+        # Collect start_url and region — show config value as default, allow override.
+        if not sys.stdin.isatty():
+            # Non-interactive: require values via flag or env.
+            if not identity_provider:
                 print("error: --identity-provider is required for identity-center "
                       "when stdin is not a terminal.", file=sys.stderr)
                 return 1
-            try:
-                identity_provider = input("IAM Identity Center start URL: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print("\nAborted.")
-                return 1
-        if not region:
-            if not sys.stdin.isatty():
+            if not region:
                 print("error: --region is required for identity-center "
                       "when stdin is not a terminal.", file=sys.stderr)
                 return 1
+        else:
             try:
-                region = input("Region (e.g. us-east-1): ").strip()
+                _ip_prompt = f"IAM Identity Center start URL [{identity_provider}]: " if identity_provider else "IAM Identity Center start URL: "
+                _ip_input = input(_ip_prompt).strip()
+                if _ip_input:
+                    identity_provider = _ip_input
+                _r_prompt = f"Region [{region}]: " if region else "Region (e.g. us-east-1): "
+                _r_input = input(_r_prompt).strip()
+                if _r_input:
+                    region = _r_input
             except (KeyboardInterrupt, EOFError):
                 print("\nAborted.")
                 return 1
