@@ -7,7 +7,7 @@ in order; tasks inside a group may go in any order. Every task ends with
 
 ## 1. Credential store
 
-- [ ] 1.1 Add `transport/credentials.py` with `CredentialStore`
+- [x] 1.1 Add `transport/credentials.py` with `CredentialStore`
   (`get`/`put`/`delete`/`status`), backend/method validation and the JSON
   envelope (design §1). Writes use temp file + `fsync` + `os.replace` in
   `DATA_DIR/credentials/` (0700 dir, 0600 files), not TRN-240's
