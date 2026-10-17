@@ -640,11 +640,15 @@ def auth_login(args: list) -> int:
         idx = args.index("--identity-provider")
         if idx + 1 < len(args):
             identity_provider = args[idx + 1]
+    if not identity_provider:
+        identity_provider = os.environ.get("KIRO_IDENTITY_PROVIDER") or None
     region = None
     if "--region" in args:
         idx = args.index("--region")
         if idx + 1 < len(args):
             region = args[idx + 1]
+    if not region:
+        region = os.environ.get("KIRO_REGION") or None
 
     # Method validation
     valid_methods = [m for m, _ in _BACKEND_METHODS[backend]]
