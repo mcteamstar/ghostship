@@ -189,15 +189,12 @@ try:
         _initiate_claude_login,
         _initiate_codex_login,
         _initiate_login,
-        _claude_auth_exists,
-        _codex_auth_exists,
         _nuke_login_container,
         _pickup_batch,
         _pickup_list,
         _pickup_single,
         _prewarm_crew,
         _probe_gateway,
-        _read_auth_file,
         _read_auth_from_crew,
         _record_last_task_at,
         _require_crew,
@@ -205,7 +202,6 @@ try:
         _to_crew,
         _validate_agent,
         _wait_gateway,
-        _write_auth_file,
     )
     import lifecycle as _lifecycle  # for the shared task-timestamp objects
 except ModuleNotFoundError:
@@ -222,15 +218,12 @@ except ModuleNotFoundError:
         _initiate_claude_login,
         _initiate_codex_login,
         _initiate_login,
-        _claude_auth_exists,
-        _codex_auth_exists,
         _nuke_login_container,
         _pickup_batch,
         _pickup_list,
         _pickup_single,
         _prewarm_crew,
         _probe_gateway,
-        _read_auth_file,
         _read_auth_from_crew,
         _record_last_task_at,
         _require_crew,
@@ -238,7 +231,6 @@ except ModuleNotFoundError:
         _to_crew,
         _validate_agent,
         _wait_gateway,
-        _write_auth_file,
     )
     from transport import lifecycle as _lifecycle  # local dev
 
@@ -637,22 +629,31 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "instructions": "Open login_url to authenticate with Codex, then call launch again.",
             }
     else:
-        # kiro path — api-key credential skips device flow entirely
+        # kiro path — api-key credential skips device flow entirely.
+        # TRN-233: the credential store is the sole source of truth.
+        # Legacy ga-kiro-auth file is no longer read.
         _kiro_api_key = ""
         if _cred and _cred["method"] == "api-key":
             _kiro_api_key = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
-        auth_b64 = _read_auth_file() or None
+        # For device-flow methods (builder-id, identity-center), auth_b64 comes
+        # from the credential store or from polling a running login container.
+        if _cred and _cred["method"] in ("builder-id", "identity-center"):
+            _payload = _cred["payload"]
+            auth_b64 = _payload.decode("utf-8") if isinstance(_payload, bytes) else _payload
         if not _kiro_api_key and not auth_b64:
             # If a login is already in progress, poll the DB before giving up —
             # the user may have just completed the device flow but GET /login
-            # hasn't been called yet to write the auth file.
+            # hasn't been called yet to store the credential.
             pending = login.KIRO_FLOW.state
             if pending is not None:
                 _poll_consumed = False
                 try:
                     auth_b64 = _read_auth_from_crew(podman, pending["container"]) or None
                     if auth_b64:
-                        _write_auth_file(auth_b64)
+                        # Store via credential store (TRN-233 hard break — no legacy file write).
+                        _provider = pending.get("provider")
+                        _method = "identity-center" if _provider else "builder-id"
+                        _cred_store.put("kiro", _method, auth_b64)
                         _nuke_login_container(podman, pending["container"])
                         _poll_consumed = True
                         login.KIRO_FLOW.abort(podman)
@@ -677,7 +678,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                     return {
                         "error": "not_authenticated",
                         "login_pending": True,
-                        "instructions": "Login already in progress. Poll GET /login, then call launch again.",
+                        "instructions": "Login already in progress. Poll GET /login/kiro, then call launch again.",
                     }
                 if "error" in result:
                     return {"error": result["error"]}
