@@ -803,6 +803,51 @@ if ${_PODMAN_CMD} image exists localhost/transport:latest 2>/dev/null; then
   if [[ "$_baked_transport_version" != "$VERSION" ]]; then
     echo "  Detected stale localhost/transport:latest version ('$_baked_transport_version' != '$VERSION') -- forcing a clean rebuild."
     _TRANSPORT_BUILD_FLAGS=(--no-cache)
+
+    # ── Breaking auth change: pre-0.8.0 → 0.8.0+ ──────────────────────────
+    # 0.8.0 removes legacy ga-kiro-auth / ga-claude-auth / ga-codex-auth file
+    # support. After upgrade, every backend must be re-authenticated with
+    # `ghostship auth login <backend>`. Warn the operator and require explicit
+    # confirmation before proceeding.
+    _minor_new="${VERSION#*.}"; _minor_new="${_minor_new%%.*}"
+    _minor_old="${_baked_transport_version#*.}"; _minor_old="${_minor_old%%.*}"
+    _major_new="${VERSION%%.*}"
+    _major_old="${_baked_transport_version%%.*}"
+    if [[ -n "$_baked_transport_version" ]] \
+       && { [[ "$_major_old" -lt "$_major_new" ]] \
+            || { [[ "$_major_old" -eq "$_major_new" ]] \
+                 && [[ "$_minor_old" =~ ^[0-9]+$ ]] && [[ "$_minor_new" =~ ^[0-9]+$ ]] \
+                 && [[ "$_minor_old" -lt 8 ]] && [[ "$_minor_new" -ge 8 ]]; }; }; then
+      echo ""
+      echo "  ╔══════════════════════════════════════════════════════════════════╗"
+      echo "  ║  BREAKING CHANGE: Auth credential migration required             ║"
+      echo "  ╠══════════════════════════════════════════════════════════════════╣"
+      echo "  ║  ghostship 0.8.0 removes support for legacy auth files           ║"
+      echo "  ║  (ga-kiro-auth, ga-claude-auth, ga-codex-auth). After upgrade,   ║"
+      echo "  ║  crews will return 'not_authenticated' until you re-authenticate: ║"
+      echo "  ║                                                                  ║"
+      echo "  ║    ghostship auth login kiro                                     ║"
+      echo "  ║    ghostship auth login claude   # if using claude backend       ║"
+      echo "  ║    ghostship auth login codex    # if using codex backend        ║"
+      echo "  ║                                                                  ║"
+      echo "  ║  Recommended: uninstall first to purge stale auth files:         ║"
+      echo "  ║    ./uninstall.sh --purge-auth && ./install.sh                   ║"
+      echo "  ╚══════════════════════════════════════════════════════════════════╝"
+      echo ""
+      if [[ -t 0 ]]; then
+        read -r -p "  Proceed with upgrade? [y/N] " _upgrade_confirm
+        case "$_upgrade_confirm" in
+          [yY][eE][sS]|[yY]) echo "" ;;
+          *)
+            echo "Upgrade cancelled. Run './uninstall.sh --purge-auth' first, then re-run install.sh."
+            exit 0
+            ;;
+        esac
+      else
+        echo "  Non-interactive install: proceeding. Remember to run 'ghostship auth login <backend>' after upgrade."
+        echo ""
+      fi
+    fi
   elif [[ -n "$_baked_transport_hash" && "$_baked_transport_hash" != "$_TRANSPORT_SOURCE_HASH" ]]; then
     echo "  Detected stale localhost/transport:latest source (hash mismatch) -- forcing a clean rebuild."
     _TRANSPORT_BUILD_FLAGS=(--no-cache)
