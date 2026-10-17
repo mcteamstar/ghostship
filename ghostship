@@ -650,6 +650,18 @@ def auth_login(args: list) -> int:
     if not region:
         region = os.environ.get("KIRO_REGION") or None
 
+    # For kiro identity-center, fetch defaults from transport config if not set.
+    if backend == "kiro" and (not identity_provider or not region):
+        try:
+            _status = _http_json(f"{base_url}/login/kiro", "GET", api_key=api_key)
+            _ic = _status.get("identity_center") or {}
+            if not identity_provider:
+                identity_provider = _ic.get("start_url") or None
+            if not region:
+                region = _ic.get("region") or None
+        except Exception:
+            pass  # non-fatal — will prompt if still missing
+
     # Method validation
     valid_methods = [m for m, _ in _BACKEND_METHODS[backend]]
     if method and method not in valid_methods:
