@@ -6,29 +6,6 @@ Authenticate kiro-cli inside crew containers exactly once per machine, and reuse
 
 ## Requirements
 
-### Requirement: Academy auth state machine
-The Ghost Academy has exactly three auth states — unauthenticated, pending, and authenticated — determined by the presence and content of `DATA_DIR/ga-kiro-auth`. Transitions are: unauthenticated → pending via `POST /login`; pending → authenticated via `GET /login` completing; authenticated → unauthenticated via `POST /logout`. No other transitions are valid.
-
-#### Scenario: Cannot login when already authenticated
-- **WHEN** `POST /login` is called and `ga-kiro-auth` exists and is non-empty
-- **THEN** the transport returns HTTP 409 with a message indicating the academy is already authenticated and `POST /logout` must be called first
-
-#### Scenario: Cannot login when login already in progress
-- **WHEN** `POST /login` is called while a login flow is already pending
-- **THEN** the transport returns HTTP 409 with a message indicating a login is already in progress and `GET /login` should be polled
-
-#### Scenario: Auth injected into all running crews on login completion
-- **WHEN** `GET /login` first returns `status: "complete"`
-- **THEN** the transport has written `ga-kiro-auth` with mode `0600` and has injected the fresh auth rows into every crew whose registry status is `running`, without restarting those crews
-
-#### Scenario: Auth cleared from all running crews on logout
-- **WHEN** `POST /logout` is called and the academy is authenticated
-- **THEN** `ga-kiro-auth` is deleted and the transport has executed `DELETE FROM auth_kv` in every running crew's kiro-cli SQLite DB
-
-#### Scenario: Orphaned temp containers cleaned up on startup
-- **WHEN** the transport starts and one or more containers named `ga-login-*` exist
-- **THEN** those containers are stopped and removed during `_reconcile_registry` before any other operations
-
 ### Requirement: First-time device auth flow
 The system SHALL initiate a kiro-cli device auth flow inside the crew container when no `ga-kiro-auth` file exists (or it exists but is empty), and return a login URL (and code, if available) instead of finishing crew setup.
 
@@ -54,85 +31,6 @@ The system SHALL read the saved `ga-kiro-auth` file and inject its rows into eve
 #### Scenario: Auth file is created or refreshed
 - **WHEN** a completed device-auth flow creates or replaces the auth file
 - **THEN** the file is written in place with mode `0600`, flushed, for later launches to read
-
-### Requirement: Identity provider configuration
-
-The system SHALL direct the device auth flow at a configured identity provider when `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION`/`KIRO_LICENSE` are set, and SHALL fall back to Builder ID (free tier) when they are not. When falling back to Builder ID, `kiro-cli` may present an interactive login-method selection menu before the device code appears; the system SHALL answer that menu (accepting the Builder ID default) rather than treating its appearance as a failure.
-
-When `KIRO_API_KEY` is set, the system SHALL skip the device-code auth flow entirely and inject the key as an env var into crew containers. The device-code path SHALL remain the default when `KIRO_API_KEY` is unset.
-
-When `GA_CREW_ACP_BACKEND=claude` is set, the system SHALL skip all kiro-cli auth injection entirely (no device flow, no `ga-kiro-auth`, no `KIRO_API_KEY` injection). The system SHALL authenticate the Claude backend using one of two paths, checked in order:
-
-1. **API key path**: If `ANTHROPIC_API_KEY` is set, inject it as `ANTHROPIC_API_KEY` into the crew container environment.
-2. **OAuth path**: If `ga-claude-auth` exists and is non-empty, inject the Claude OAuth credential into the crew container's `~/.claude/` directory.
-
-If `GA_CREW_ACP_BACKEND=claude` and neither credential is available, `launch` SHALL return `not_authenticated` with a `login_url` pointing to the Claude device-code flow (initiated automatically), rather than a hard error.
-
-When `GA_CREW_ACP_BACKEND=codex` is set, the system SHALL likewise skip all kiro-cli auth injection entirely (no device flow, no `ga-kiro-auth`, no `KIRO_API_KEY` injection). The system SHALL authenticate the Codex backend using one of two paths, checked in order:
-
-1. **API key path**: If `OPENAI_API_KEY` is set, inject it as `OPENAI_API_KEY` into the crew container environment.
-2. **OAuth path**: If `ga-codex-auth` exists and is non-empty, inject the Codex OAuth credential (a tar of `~/.codex/`) into the crew container's `~/.codex/` directory.
-
-If `GA_CREW_ACP_BACKEND=codex` and neither credential is available, `launch` SHALL return `not_authenticated` with a `login_url` pointing to the Codex login flow (initiated automatically), rather than a hard error.
-
-#### Scenario: Claude backend — API key takes precedence over OAuth credential
-- **WHEN** `GA_CREW_ACP_BACKEND=claude`, `ANTHROPIC_API_KEY` is set, and `ga-claude-auth` also exists
-- **THEN** `ANTHROPIC_API_KEY` is injected as an env var; the OAuth credential file is not injected; kiro auth is skipped entirely
-
-#### Scenario: Claude backend — OAuth credential injected when no API key
-- **WHEN** `GA_CREW_ACP_BACKEND=claude`, `ANTHROPIC_API_KEY` is unset, and `ga-claude-auth` exists and is non-empty
-- **THEN** the Claude credential from `ga-claude-auth` is injected into the crew container's `~/.claude/`; no `ANTHROPIC_API_KEY` env var is set; kiro auth is skipped
-
-#### Scenario: Claude backend — neither credential present triggers OAuth login flow
-- **WHEN** `GA_CREW_ACP_BACKEND=claude`, `ANTHROPIC_API_KEY` is unset, and `ga-claude-auth` does not exist or is empty
-- **THEN** `launch` returns `{"error": "not_authenticated", "login_url": "<url>", "code": "<code>", "instructions": "Open login_url to authenticate Claude, then call launch again."}` and does NOT create the crew container
-
-#### Scenario: Claude backend — no kiro auth state required
-- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ga-kiro-auth` does not exist
-- **THEN** `launch` proceeds without requiring kiro auth state; absence of kiro-cli auth is not an error when the Claude backend is selected
-
-#### Scenario: Codex backend — API key takes precedence over OAuth credential
-- **WHEN** `GA_CREW_ACP_BACKEND=codex`, `OPENAI_API_KEY` is set, and `ga-codex-auth` also exists
-- **THEN** `OPENAI_API_KEY` is injected as an env var; the OAuth credential archive is not injected; kiro auth is skipped entirely
-
-#### Scenario: Codex backend — OAuth credential injected when no API key
-- **WHEN** `GA_CREW_ACP_BACKEND=codex`, `OPENAI_API_KEY` is unset, and `ga-codex-auth` exists and is non-empty
-- **THEN** the Codex credential from `ga-codex-auth` is injected into the crew container's `~/.codex/`; no `OPENAI_API_KEY` env var is set; kiro auth is skipped
-
-#### Scenario: Codex backend — neither credential present triggers login flow
-- **WHEN** `GA_CREW_ACP_BACKEND=codex`, `OPENAI_API_KEY` is unset, and `ga-codex-auth` does not exist or is empty
-- **THEN** `launch` returns `{"error": "not_authenticated", "login_url": "<url>", "instructions": "Open login_url to authenticate Codex, then call launch again."}` and does NOT create the crew container
-
-#### Scenario: Codex backend — no kiro auth state required
-- **WHEN** `GA_CREW_ACP_BACKEND=codex` and `ga-kiro-auth` does not exist
-- **THEN** `launch` proceeds without requiring kiro auth state; absence of kiro-cli auth is not an error when the Codex backend is selected
-
-#### Scenario: Identity provider configured
-
-- **WHEN** `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION` are set on the transport container
-- **THEN** the `kiro-cli login` command run during first-time auth includes `--identity-provider` and `--region` (and `--license` if `KIRO_LICENSE` is set)
-
-#### Scenario: No identity provider configured
-
-- **WHEN** none of `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE` are set
-- **THEN** `kiro-cli login` runs with only `--use-device-flow`, authenticating against the default Builder ID identity; if kiro-cli shows a login-method selection menu first, the system answers it to select Builder ID and the flow still completes with a device code and URL
-
-#### Scenario: KIRO_API_KEY set — device flow skipped
-
-- **WHEN** `KIRO_API_KEY` is set in the transport environment and `launch` is called
-- **THEN** the system does NOT call `_initiate_login()`, does NOT require `ga-kiro-auth` to exist, and does NOT inject `auth_b64` rows into the crew's SQLite DB
-- **THEN** `KIRO_API_KEY` is passed as an env var to the crew container at creation time
-
-#### Scenario: KIRO_API_KEY unset — device flow unchanged
-
-- **WHEN** `KIRO_API_KEY` is unset and `GA_CREW_ACP_BACKEND` is `kiro`
-- **THEN** all existing device-code auth behaviour is unchanged — `ga-kiro-auth`, `_initiate_login()`, and `inject_auth.py` are used as before
-
-#### Scenario: Claude backend — Anthropic API key injected, kiro auth skipped
-
-- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ANTHROPIC_API_KEY` is set and `launch` is called
-- **THEN** the system does NOT call `_initiate_login()`, does NOT read `ga-kiro-auth`, and does NOT inject kiro-cli auth rows
-- **THEN** `ANTHROPIC_API_KEY` is set to the value of `ANTHROPIC_API_KEY` in the crew container's environment at creation time
 
 ### Requirement: Crew secrets not persisted in plaintext after injection
 
@@ -236,3 +134,58 @@ unchanged.
   with a public key of its own choosing
 - **THEN** the write fails, because `.admiral_public_key` is a read-only Podman secret mount
   and the container lacks `CAP_SYS_ADMIN` to remount it read-write
+
+### Requirement: Kiro auth state machine
+The transport SHALL track kiro auth as unauthenticated, pending or authenticated, from whether kiro holds an active credential. `POST /login/kiro/builder-id` or `POST /login/kiro/identity-center` moves to pending; `GET /login/kiro` completing moves to authenticated; `POST /login/kiro/api-key` moves to authenticated; `POST /logout/kiro` moves to unauthenticated. The transport SHALL NOT make any other transition.
+
+#### Scenario: Device login allowed when already authenticated
+- **WHEN** a kiro device login is started and kiro already holds a credential
+- **THEN** the flow starts, and the existing credential is replaced only when the flow completes
+
+#### Scenario: Cannot login when login already in progress
+- **WHEN** a kiro device login is started while a kiro flow is already pending
+- **THEN** the transport returns HTTP 409 with a message indicating a login is already in progress and `GET /login/kiro` should be polled
+
+#### Scenario: Auth injected into all running crews on login completion
+- **WHEN** `GET /login/kiro` first returns `status: "complete"`
+- **THEN** the transport has stored kiro's credential with mode `0600` and has injected the fresh auth rows into every crew whose registry status is `running`, without restarting those crews
+
+#### Scenario: Auth cleared from all running crews on logout
+- **WHEN** `POST /logout/kiro` is called and kiro holds a device-flow credential
+- **THEN** the credential is deleted and the transport has executed `DELETE FROM auth_kv` in every running crew's kiro-cli SQLite DB
+
+#### Scenario: Orphaned temp containers cleaned up on startup
+- **WHEN** the transport starts and one or more containers named `ga-login-*` exist
+- **THEN** those containers are stopped and removed during `_reconcile_registry` before any other operations
+
+### Requirement: Kiro login method selects the identity provider
+`identity-center` SHALL run `kiro-cli login` with `--identity-provider`, `--region` and `--license pro`, using the start URL and region from the request, or else the configured `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION`. `builder-id` SHALL run it with only `--use-device-flow`. A kiro `api-key` credential SHALL skip the device flow. Claude and Codex crews SHALL receive no kiro auth.
+
+#### Scenario: Identity Center flow
+- **WHEN** `POST /login/kiro/identity-center` is called with a start URL and a region
+- **THEN** the `kiro-cli login` command includes `--identity-provider <start URL>`, `--region <region>` and `--license pro`
+
+#### Scenario: Identity Center from configuration
+- **WHEN** `POST /login/kiro/identity-center` is called with no start URL or region and `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION` are configured
+- **THEN** the Identity Center flow runs with the configured values
+
+#### Scenario: Identity Center flow missing inputs
+- **WHEN** `POST /login/kiro/identity-center` is called with no start URL or region and none configured
+- **THEN** the transport returns HTTP 400 naming the missing input and starts no container
+
+#### Scenario: Builder ID flow
+- **WHEN** `POST /login/kiro/builder-id` is called
+- **THEN** `kiro-cli login` runs with only `--use-device-flow`; if kiro-cli shows a login-method selection menu first, the system answers it to select Builder ID and the flow still completes with a device code and URL
+
+#### Scenario: Kiro API key — device flow skipped
+- **WHEN** kiro's active method is `api-key` and `launch` is called for a kiro crew
+- **THEN** the system does NOT start a device flow and does NOT inject kiro-cli auth rows into the crew's SQLite DB
+- **THEN** the stored key is passed as `KIRO_API_KEY` to the crew container at creation time
+
+#### Scenario: Kiro device credential — unchanged injection
+- **WHEN** kiro's active method is a device-code method and a kiro crew is launched
+- **THEN** the stored kiro-cli login state is injected into the crew as before
+
+#### Scenario: Claude or Codex backend — no kiro auth state required
+- **WHEN** a claude or codex crew is launched and kiro holds no credential
+- **THEN** `launch` proceeds without requiring kiro auth state

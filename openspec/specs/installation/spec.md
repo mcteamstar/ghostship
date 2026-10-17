@@ -81,27 +81,31 @@ The system SHALL be safe to re-run: existing images are rebuilt, the existing `g
 - **THEN** the script removes and recreates only the `ga-transport` container with freshly built images, without erroring on the already-existing network
 
 ### Requirement: File-based transport auth persistence
-The installation SHALL persist reusable kiro-cli auth as a single plain file, `DATA_DIR/ga-kiro-auth`, mode `0600` — not a Podman secret. No dedicated bind mount, migration step, or file-driver access is needed: `DATA_DIR` is already bind-mounted read/write into the transport container as `/data`, so transport reads and writes the file directly.
+The installation SHALL persist backend credentials only as plain files under `DATA_DIR`, mode `0600`, written by the transport's credential store. They SHALL NOT be stored as Podman secrets. No dedicated bind mount, migration step, or file-driver access is needed: `DATA_DIR` is already bind-mounted read/write into the transport container as `/data`, so the transport reads and writes the files directly.
 
 #### Scenario: Install with no existing auth file
-- **WHEN** installation runs before `ga-kiro-auth` exists
-- **THEN** the transport starts with no auth file present, and the existing first-time device-auth flow remains available to create it
+- **WHEN** installation runs before any backend credential exists
+- **THEN** the transport starts with an empty credential store, and `ghostship auth login <backend>` remains available to populate it
 
 #### Scenario: Install with an existing auth file
-- **WHEN** installation runs and `DATA_DIR/ga-kiro-auth` already has content from a previous install
-- **THEN** the transport reads it directly via the existing `/data` mount, with no separate migration or projection step required
+- **WHEN** installation runs and `DATA_DIR` already holds backend credentials from a previous install
+- **THEN** the transport reads them directly via the existing `/data` mount, and the installer neither reads nor modifies them
 
 #### Scenario: Ordinary uninstall preserves reusable auth
 - **WHEN** uninstall runs without `--purge-auth`
-- **THEN** transport state other than `ga-kiro-auth` is removed while that file is retained
+- **THEN** transport state other than the backend credential files (kiro, claude and codex) is removed while those files are retained
 
 #### Scenario: Ordinary uninstall on Linux preserves reusable auth even without --keep-machine
 - **WHEN** `uninstall.sh` runs on Linux without `--purge-auth` and without `--keep-machine`
-- **THEN** `ga-kiro-auth` is retained; only the dedicated instance's `containers/` storage root is removed during machine teardown, not the entire `~/.local/share/${GA_MACHINE_NAME}` tree
+- **THEN** the backend credential files are retained; only the dedicated instance's `containers/` storage root is removed during machine teardown, not the entire `~/.local/share/${GA_MACHINE_NAME}` tree
 
 #### Scenario: Purge uninstall removes reusable auth
 - **WHEN** uninstall runs with `--purge-auth`
-- **THEN** `ga-kiro-auth` is also removed
+- **THEN** every backend credential file is also removed
+
+#### Scenario: Uninstall removes obsolete credential secrets
+- **WHEN** uninstall runs and obsolete backend credential Podman secrets (`ga-crew-anthropic-api-key`, `ga-claude-code-oauth-token`, `ga-crew-openai-api-key`, `ga-kiro-api-key`) exist
+- **THEN** those secrets are removed
 
 ### Requirement: Container base images use deterministic references
 
@@ -635,34 +639,6 @@ variables.
 - **THEN** `GA_REQUIRE_API_KEY` and `GA_TRUSTED_PROXY` are present as commented-out
   entries with their defaults
 
-### Requirement: install.sh creates Podman secrets for crew API keys
-When `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` are set, `install.sh` SHALL create corresponding Podman secrets (`ga-crew-anthropic-api-key`, `ga-crew-openai-api-key`, `ga-kiro-api-key`). Creation SHALL be idempotent: an existing secret with the same name SHALL be removed before recreation.
-
-#### Scenario: Secret created when key is set
-- **GIVEN** `ANTHROPIC_API_KEY=sk-ant-...` is set in the config
-- **WHEN** `install.sh` runs
-- **THEN** `podman secret ls` shows `ga-crew-anthropic-api-key` and the install reports "✓ Podman secret 'ga-crew-anthropic-api-key' created"
-
-#### Scenario: Secret not created when key is absent
-- **GIVEN** `ANTHROPIC_API_KEY` is empty or unset
-- **WHEN** `install.sh` runs
-- **THEN** `podman secret ls` does not show `ga-crew-anthropic-api-key`
-
-#### Scenario: Re-run is idempotent
-- **GIVEN** `ga-crew-anthropic-api-key` already exists from a prior run
-- **WHEN** `install.sh` runs again with the same or a new key value
-- **THEN** the install completes without error and the secret holds the current key value
-
-#### Scenario: Generated compose.yml references new secrets
-- **GIVEN** `ANTHROPIC_API_KEY` and `KIRO_API_KEY` are set
-- **WHEN** `install.sh` generates `compose.yml`
-- **THEN** `compose.yml` lists `ga-crew-anthropic-api-key` and `ga-kiro-api-key` under `ga-transport`'s `secrets:` and under the top-level `secrets:` block as `external: true`
-
-#### Scenario: Generated compose.yml omits absent-key secrets
-- **GIVEN** only `ANTHROPIC_API_KEY` is set; `OPENAI_API_KEY` and `KIRO_API_KEY` are unset
-- **WHEN** `install.sh` generates `compose.yml`
-- **THEN** `compose.yml` references `ga-crew-anthropic-api-key` but does not reference `ga-crew-openai-api-key` or `ga-kiro-api-key`
-
 ### Requirement: install.sh retries compose up on transient port conflict
 `install.sh` SHALL retry the `podman compose up` invocation up to `GA_COMPOSE_RETRY_ATTEMPTS` times (default 3, minimum 1) with a `GA_COMPOSE_RETRY_DELAY_SECS`-second sleep (default 2) between attempts before giving up. On final failure, `install.sh` SHALL print the compose error output and exit non-zero.
 
@@ -809,27 +785,27 @@ unconditionally.
 
 ### Requirement: Model backend settings use their standard names
 
-`install.sh` SHALL read the model backend settings under the names the Claude and Codex CLIs use: `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_BASE_URL`. Each SHALL be reset to empty before `ghostship.conf` is sourced, so a value exported in the invoking shell is never used.
+`install.sh` SHALL read the non-secret model backend settings under the names the Claude and Codex CLIs use: `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`. Each SHALL be reset to empty before `ghostship.conf` is sourced, so a value exported in the invoking shell is never used.
 
 #### Scenario: Standard names configure the backends
-- **WHEN** `ghostship.conf` sets `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
-- **THEN** `install.sh` delivers them as the `ga-crew-anthropic-api-key` and `ga-crew-openai-api-key` Podman secrets and prints no deprecation warning
+- **WHEN** `ghostship.conf` sets `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`
+- **THEN** `install.sh` passes them to the transport and prints no deprecation warning
 
 #### Scenario: Shell values ignored
-- **WHEN** `ANTHROPIC_API_KEY` or `GA_CREW_ANTHROPIC_API_KEY` is exported in the shell running `install.sh` and neither is set in `ghostship.conf`
-- **THEN** no `ga-crew-anthropic-api-key` secret is created
+- **WHEN** `OPENAI_BASE_URL` is exported in the shell running `install.sh` and not set in `ghostship.conf`
+- **THEN** the transport receives no `OPENAI_BASE_URL`
 
 ### Requirement: Pre-TRN-226 model backend names accepted as deprecated aliases
 
-`install.sh` SHALL accept `GA_CREW_ANTHROPIC_API_KEY`, `GA_CREW_ANTHROPIC_BASE_URL`, `GA_CREW_OPENAI_API_KEY` and `GA_CREW_OPENAI_BASE_URL` from `ghostship.conf` as aliases for the standard names. Each alias in use SHALL print a warning naming the old and new setting, never the value. When both names are set, the standard name SHALL win.
+`install.sh` SHALL accept `GA_CREW_ANTHROPIC_BASE_URL` and `GA_CREW_OPENAI_BASE_URL` from `ghostship.conf` as aliases for the standard names. Each alias in use SHALL print a warning naming the old and new setting, never the value. When both names are set, the standard name SHALL win.
 
 #### Scenario: Old name mapped with a warning
-- **WHEN** `ghostship.conf` sets only `GA_CREW_ANTHROPIC_API_KEY`
-- **THEN** `install.sh` uses its value as `ANTHROPIC_API_KEY` and warns that `GA_CREW_ANTHROPIC_API_KEY` is deprecated, without printing the value
+- **WHEN** `ghostship.conf` sets only `GA_CREW_OPENAI_BASE_URL`
+- **THEN** `install.sh` uses its value as `OPENAI_BASE_URL` and warns that `GA_CREW_OPENAI_BASE_URL` is deprecated
 
 #### Scenario: Standard name wins
-- **WHEN** `ghostship.conf` sets both `ANTHROPIC_API_KEY` and `GA_CREW_ANTHROPIC_API_KEY`
-- **THEN** `install.sh` uses `ANTHROPIC_API_KEY` and warns that the old name is ignored
+- **WHEN** `ghostship.conf` sets both `OPENAI_BASE_URL` and `GA_CREW_OPENAI_BASE_URL`
+- **THEN** `install.sh` uses `OPENAI_BASE_URL` and warns that the old name is ignored
 
 ### Requirement: Interactive guided setup when no ghostship.conf exists
 When `install.sh` is run and no `ghostship.conf` exists in the current directory (or `--setup` flag is passed), the installer SHALL enter an interactive guided setup mode. The existing non-interactive path SHALL be unchanged when a `ghostship.conf` is present.
@@ -843,7 +819,7 @@ When `install.sh` is run and no `ghostship.conf` exists in the current directory
 - **THEN** the installer proceeds non-interactively as before, without any prompts
 
 ### Requirement: Interactive setup collects backend and non-secret config
-The interactive setup SHALL prompt the operator to choose a default agent backend (`kiro` default, `claude`, `codex`) and optional additional backends, then collect only the non-secret config for the selected backends (`KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` for kiro; nothing for claude; `OPENAI_BASE_URL` for codex). Collected values SHALL be written to a new `ghostship.conf` (mode `600`, non-empty vars only, no secrets) before the build proceeds. Secret injection (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`) SHALL be deferred to `ghostship auth login <backend>`.
+The interactive setup SHALL prompt the operator to choose a default agent backend (`kiro` default, `claude`, `codex`) and optional additional backends, then collect only the non-secret config for the selected backends (`KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` for kiro; nothing for claude; `OPENAI_BASE_URL` for codex). Collected values SHALL be written to a new `ghostship.conf` (mode `600`, non-empty vars only, no secrets) before the build proceeds. All credentials SHALL be left to `ghostship auth login <backend>`.
 
 #### Scenario: Selecting kiro backend prompts for identity provider
 - **WHEN** the operator selects `kiro` as the backend
@@ -851,18 +827,26 @@ The interactive setup SHALL prompt the operator to choose a default agent backen
 
 #### Scenario: Selecting claude backend collects no secret config
 - **WHEN** the operator selects `claude` as a backend
-- **THEN** the installer collects no config and instructs the operator to run `ghostship auth login anthropic` after install
+- **THEN** the installer collects no config and does not print a `ghostship auth login anthropic` hint (the post-start login offer covers it)
 
 #### Scenario: Multiple backends enabled simultaneously
 - **WHEN** the operator selects `kiro` as default and adds `claude,codex`
 - **THEN** `GA_CREW_AGENT=kiro,claude,codex` is written to `ghostship.conf` with `kiro` as the runtime default
 
 ### Requirement: Interactive setup runs login flow after transport starts
-After the transport is started successfully, the interactive setup SHALL automatically trigger the login flow for the selected backend and display the login URL or device code to the operator. The installer SHALL wait for login completion before exiting, so the operator finishes the install already authenticated.
+After the transport starts successfully, the interactive setup SHALL offer, for each enabled backend with no stored credential, to run `ghostship auth login <backend>`. Accepting SHALL run that command in the foreground against the just-installed transport (including its port and bearer key). Declining SHALL print the command to run later. The install SHALL succeed either way.
 
 #### Scenario: Login flow triggered automatically after install
-- **WHEN** interactive setup completes the build and starts the transport
-- **THEN** the appropriate login flow is started automatically and the operator is shown the login URL or device code without a separate manual step
+- **WHEN** interactive setup starts the transport with `GA_CREW_AGENT=kiro,claude` and neither backend holds a credential
+- **THEN** the operator is offered `ghostship auth login kiro` and then `ghostship auth login claude`
+
+#### Scenario: Login on a keyed install
+- **WHEN** the transport was installed with a bearer key and the operator accepts the login offer
+- **THEN** the login request carries that key and succeeds
+
+#### Scenario: Backend already authenticated
+- **WHEN** a backend already holds a stored credential
+- **THEN** no login is offered for it
 
 ### Requirement: Interactive setup offers harness registration
 After login completes, the interactive setup SHALL offer to run `ghostship setup` to register the MCP server with detected harnesses (kiro-cli, Claude Code, opencode). The operator can accept or skip.
@@ -870,6 +854,24 @@ After login completes, the interactive setup SHALL offer to run `ghostship setup
 #### Scenario: Harness registration is optional
 - **WHEN** the operator declines harness registration during interactive setup
 - **THEN** the install completes normally without running `ghostship setup`
+
+### Requirement: Installer never handles backend credentials
+`install.sh` SHALL NOT read, create, remove or mount any backend credential: no `ga-crew-anthropic-api-key`, `ga-claude-code-oauth-token`, `ga-crew-openai-api-key` or `ga-kiro-api-key` secret operations, and no such secrets in the generated `compose.yml`. Re-running install, with or without `--wizard`, SHALL leave stored credentials unchanged.
+
+#### Scenario: Re-install keeps credentials
+- **WHEN** claude holds a stored setup-token and `install.sh --wizard` is run
+- **THEN** claude's stored credential is unchanged after install
+
+#### Scenario: Compose has no credential secrets
+- **WHEN** `install.sh` generates `compose.yml`
+- **THEN** it references none of the backend credential secrets
+
+### Requirement: Credential settings in ghostship.conf are ignored with a warning
+When `ghostship.conf` sets `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `KIRO_API_KEY`, `GA_CREW_ANTHROPIC_API_KEY` or `GA_CREW_OPENAI_API_KEY`, `install.sh` SHALL warn naming the setting and the `ghostship auth login <backend>` command that replaces it, never the value, and SHALL otherwise ignore it.
+
+#### Scenario: Leftover token in conf
+- **WHEN** `ghostship.conf` sets `CLAUDE_CODE_OAUTH_TOKEN`
+- **THEN** install warns that it is ignored and to use `ghostship auth login claude`, and creates no secret
 
 ## Interactive Setup Mode
 

@@ -33,6 +33,7 @@ Before sourcing the config file, `install.sh` SHALL check whether it contains `G
 - **WHEN** a config file exports any combination of: `KIRO_IDENTITY_PROVIDER`, `KIRO_REGION`, `KIRO_LICENSE`, `PORT`, `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT`, `GA_API_KEY`, `GA_HOST_URL`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MACHINE_CPUS`, `GA_MACHINE_MEMORY`, `GA_MACHINE_DISK`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`
 - **THEN** each exported variable SHALL act as a default, overridable by its corresponding flag where one exists
 - **AND** the following variables SHALL no longer be supported as operator-configurable inputs and SHALL be ignored if present: `GA_PORTAL_PORT` (superseded by `PORT`), `HOST`, `GA_PORTAL_ADMIN_URL`, `GA_FILE_TTL_SECS`, `GA_PICKUP_MAX_POLL_SECS`, `GA_MEMORY_WAIT_SECS`, `KC_GATEWAY_TOKEN_TTL`, `GA_ENFORCE_HTTPS_REDIRECT`, `GA_CSP_ENFORCE`
+- **AND** backend credentials (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `KIRO_API_KEY`) SHALL be ignored with a warning pointing at `ghostship auth login <backend>`
 
 #### Scenario: GA_PORTAL_PORT in config file is auto-migrated
 - **WHEN** `install.sh` runs with `--config ./my.conf` and `my.conf` contains `GA_PORTAL_PORT=9000`
@@ -99,13 +100,6 @@ The documentation SHALL include a "Knowledge auto-ingest" note stating that:
 - **THEN** they learn that auto-ingest is off by the verified upstream default, that it is
   deliberately NOT pinned (no `knowledge.auto_ingest` key exists to pin), that a CI test
   guards against an upstream default flip, and how to opt in explicitly if wanted
-
-### Requirement: Auth docs config file reference
-`docs/auth.md` SHALL document the config file as the first item in identity provider resolution order (config file → flags → interactive prompt) and include an example config file snippet for identity provider settings.
-
-#### Scenario: Auth docs reference config file
-- **WHEN** reading `docs/auth.md` "Identity provider config" section
-- **THEN** it SHALL list config file as item 1 in the resolution order and include an example snippet showing `KIRO_IDENTITY_PROVIDER=...` and `KIRO_REGION=...`
 
 ### Requirement: Transport runtime config centralised in Config dataclass
 The transport SHALL load all runtime configuration from environment variables exactly once at startup into a `Config` dataclass defined in `transport/config.py`. All transport subsystems SHALL read configuration from this loaded instance rather than calling `os.environ.get()` directly at use sites.
@@ -176,3 +170,10 @@ The comment block above `_TASK_TIMESTAMP_TTL_SECS` in `transport/lifecycle.py` S
 #### Scenario: Code comment matches actual behaviour
 - **WHEN** a developer reads the `_TASK_TIMESTAMP_TTL_SECS` comment in `lifecycle.py`
 - **THEN** the comment accurately states which TTL has a floor and which does not, matching the actual code behaviour
+
+### Requirement: Auth docs describe the auth command
+`docs/auth.md` SHALL state that backend credentials are not configured in `ghostship.conf`, SHALL keep the config-file snippet for `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` as the Identity Center default, and SHALL document `ghostship auth login <kiro|claude|codex>`, its methods, `ghostship auth logout <backend>` and `ghostship auth status`.
+
+#### Scenario: Auth docs reference the auth command
+- **WHEN** reading `docs/auth.md`
+- **THEN** it describes each backend's login methods under `ghostship auth login`, including that Identity Center defaults to the configured start URL and region, and contains no credential snippet for `ghostship.conf`
