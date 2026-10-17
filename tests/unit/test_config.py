@@ -450,25 +450,30 @@ class TestValidateCaddyTlsMode(unittest.TestCase):
 
 
 class TestConfigRepr(unittest.TestCase):
-    """Config.__repr__ masks secret fields."""
+    """Config.__repr__ masks secret fields.
 
-    def test_anthropic_api_key_masked(self):
+    After TRN-233, backend credential fields (anthropic_api_key,
+    openai_api_key, claude_code_oauth_token) are no longer in _SECRET_FIELDS
+    because credentials are managed by CredentialStore, not Config. Only
+    kiro_api_key (the transport bearer key) remains masked.
+    """
+
+    def test_anthropic_api_key_not_masked_after_trn233(self):
+        # Credential fields are no longer secret in Config — CredentialStore owns them.
         cfg = Config(anthropic_api_key="sk-real-key")
-        self.assertNotIn("sk-real-key", repr(cfg))
-        self.assertIn("***", repr(cfg))
+        self.assertIn("sk-real-key", repr(cfg))
 
-    def test_openai_api_key_masked(self):
+    def test_openai_api_key_not_masked_after_trn233(self):
         cfg = Config(openai_api_key="sk-openai-key")
-        self.assertNotIn("sk-openai-key", repr(cfg))
-        self.assertIn("***", repr(cfg))
+        self.assertIn("sk-openai-key", repr(cfg))
 
     def test_kiro_api_key_masked(self):
         cfg = Config(kiro_api_key="kiro-super-secret")
         self.assertNotIn("kiro-super-secret", repr(cfg))
 
-    def test_claude_code_oauth_token_masked(self):
+    def test_claude_code_oauth_token_not_masked_after_trn233(self):
         cfg = Config(claude_code_oauth_token="oauth-token")
-        self.assertNotIn("oauth-token", repr(cfg))
+        self.assertIn("oauth-token", repr(cfg))
 
     def test_empty_secret_fields_not_masked(self):
         """Empty secret fields show '' not '***'."""

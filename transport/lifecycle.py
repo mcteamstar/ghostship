@@ -42,6 +42,11 @@ except ModuleNotFoundError:
     from transport import security as _security
 
 try:
+    from credentials import CredentialStore  # container: flat /app/
+except ImportError:
+    from transport.credentials import CredentialStore  # local dev
+
+try:
     from podman import (  # container: flat /app/
         PodmanClient,
         _get_podman,
@@ -146,12 +151,9 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 cfg = Config.from_env()
 
-# When set, kiro-cli in the crew authenticates via this API key (injected
-# as a container env var by server.launch) and the SQLite auth-row injection
-# (_inject_auth) is skipped. Unset (default) => device-code auth is injected.
-# Read from the Podman secret, as server.py does: cfg.kiro_api_key is "" in
-# production because the compose file never carries the key (TRN-226).
-KIRO_API_KEY = _security.get_secret("ga-kiro-api-key", env_var="KIRO_API_KEY")
+# Credential store — resolved per-launch via store.get(backend) in launcher.py
+# (TRN-233 task 2.1). KIRO_API_KEY and the anthropic/openai globals removed.
+_cred_store = CredentialStore()
 
 # The reusable kiro-cli auth blob lives under the transport data mount; the
 # KIRO_* values drive the interactive `kiro-cli login` device flow in _initiate_login.
@@ -240,15 +242,9 @@ GA_PREWARM_ENABLED = True
 # GA_CREW_AGENT is the consolidated backend var (replaces GA_CREW_ACP_BACKEND + GA_AGENT_BACKENDS).
 # The runtime default backend is the first entry.
 GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
-# Credentials resolve from Podman secrets exactly as in server.py, so the
-# OAuth-injection guards below see the same values the crew env was built from.
-ANTHROPIC_API_KEY = _security.get_secret(
-    "ga-crew-anthropic-api-key", env_var="ANTHROPIC_API_KEY")
-CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
-    "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
+# Credential globals removed (TRN-233 task 2.1) — launcher.py now calls
+# _cred_store.get(backend) at launch time instead of using module-level reads.
 ANTHROPIC_BASE_URL = cfg.anthropic_base_url
-OPENAI_API_KEY = _security.get_secret(
-    "ga-crew-openai-api-key", env_var="OPENAI_API_KEY")
 OPENAI_BASE_URL = cfg.openai_base_url
 
 # The effective crew session idle timeout. Spec-ops crews are patched with a

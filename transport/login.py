@@ -107,14 +107,14 @@ try:
 except ImportError:
     from transport.config import inert_backend_settings  # local dev
 
-# Credential globals the backend helpers read (same resolution order as
-# server/lifecycle/tools). cfg is already defined above.
-_ANTHROPIC_API_KEY = _security.get_secret(
-    "ga-crew-anthropic-api-key", env_var="ANTHROPIC_API_KEY")
-_CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
-    "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
-_OPENAI_API_KEY = _security.get_secret(
-    "ga-crew-openai-api-key", env_var="OPENAI_API_KEY")
+try:
+    from credentials import CredentialStore  # container: flat /app/
+except ImportError:
+    from transport.credentials import CredentialStore  # local dev
+
+# Credential store — resolved per-call in _warn_inert_backend_settings
+# (TRN-233 task 2.1). No module-level credential globals remain.
+_cred_store = CredentialStore()
 
 _lifecycle_mod = None
 
@@ -709,29 +709,49 @@ ALL_FLOWS: list[LoginFlow] = [KIRO_FLOW, CLAUDE_FLOW, CODEX_FLOW]
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _warn_inert_backend_settings() -> None:
-    """Log one warning per setting that belongs to a disabled backend.
+    """Log one warning per credential or stored credential that belongs to a
+    disabled backend. Also warns about *_BASE_URL settings for disabled backends.
 
-    Called once from the startup path, not from Config (which loads in several
-    modules and does no file reads). Names only; values are never logged.
+    Called once from the startup path. Names only; values are never logged.
+    Updated for TRN-233: checks the credential store for each disabled backend
+    rather than Podman-secret-backed module-level globals.
     """
-    stored = frozenset(
-        name for name, present in (
-            ("ga-claude-auth", _lc()._claude_auth_exists()),
-            ("ga-codex-auth", _lc()._codex_auth_exists()),
-        ) if present
+    status = _cred_store.status()
+    enabled = frozenset(
+        name.strip().lower()
+        for name in cfg.ga_crew_agent.split(",")
+        if name.strip()
     )
-    # cfg holds only env values, which are "" in production for the secret-
-    # delivered credentials; check what the transport actually resolved.
-    resolved = dataclasses.replace(
-        cfg,
-        anthropic_api_key=_ANTHROPIC_API_KEY,
-        claude_code_oauth_token=_CLAUDE_CODE_OAUTH_TOKEN,
-        openai_api_key=_OPENAI_API_KEY,
-    )
-    for name in inert_backend_settings(resolved, stored):
-        logger.warning(
-            "%s is set but its backend is not enabled in GA_CREW_AGENT; it has no effect.", name
-        )
+    # Per-backend BASE_URL settings that belong only to non-kiro backends.
+    _BASE_URL_SETTINGS: dict[str, str] = {
+        "claude": "ANTHROPIC_BASE_URL",
+        "codex": "OPENAI_BASE_URL",
+    }
+    _base_url_values: dict[str, str] = {
+        "claude": cfg.anthropic_base_url,
+        "codex": cfg.openai_base_url,
+    }
+    for backend, info in status.items():
+        if backend == "kiro":
+            continue
+        if backend in enabled:
+            continue
+        # Stored credential for a disabled backend
+        if info["configured"]:
+            logger.warning(
+                "%s has a stored credential (method=%s) but its backend is not "
+                "enabled in GA_CREW_AGENT; it has no effect.",
+                backend,
+                info.get("method"),
+            )
+        # BASE_URL setting for a disabled backend
+        if _base_url_values.get(backend):
+            logger.warning(
+                "%s is set but its backend (%s) is not enabled in "
+                "GA_CREW_AGENT; it has no effect.",
+                _BASE_URL_SETTINGS[backend],
+                backend,
+            )
 
 
 def _backend_enabled(backend: str) -> bool:
@@ -835,6 +855,13 @@ async def _handle_login_get(request: Request) -> Response:
             status_code=500,
         )
 
+    # Store via the credential store (TRN-233). The auth_b64 is the SQLite
+    # row data; method is builder-id (default) unless identity-center was used.
+    try:
+        _cred_store.put("kiro", "builder-id", auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64)
+        logger.info("Stored kiro builder-id credential in credential store")
+    except Exception as e:
+        logger.warning("Could not store kiro credential in credential store: %s", e)
     # Inject all currently running crews
     with registry:
         _running_crews = {
@@ -1013,7 +1040,7 @@ async def _handle_claude_login_get(request: Request) -> Response:
             "login_url": pending.get("login_url"),
         })
 
-    # ── Auth complete — write ga-claude-auth ──────────────────────────────────
+    # ── Auth complete — store via credential store + write legacy ga-claude-auth ─
     try:
         _lc()._write_claude_auth_file(tar_bytes)
         logger.info("ga-claude-auth written after Claude login completion")
@@ -1031,6 +1058,14 @@ async def _handle_claude_login_get(request: Request) -> Response:
             status_code=500,
         )
 
+    # Store via the credential store (TRN-233). The payload is the tar bytes;
+    # storing base64 of the raw tar mirrors the existing oauth archive convention.
+    try:
+        import base64 as _base64
+        _cred_store.put("claude", "oauth", _base64.b64encode(tar_bytes))
+        logger.info("Stored claude OAuth credential in credential store")
+    except Exception as e:
+        logger.warning("Could not store claude credential in credential store: %s", e)
     # Nuke temp container and clear pending state (guarded)
     _lc()._abort_claude_pending_login(podman)
 
@@ -1320,3 +1355,303 @@ async def _handle_codex_logout_post(request: Request) -> Response:
     if aborted:
         return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
     return JSONResponse({"status": "logged_out"})
+
+
+# ── TRN-233: new /login/{backend}/{method} and /logout/{backend} routes ───────
+# These replace the old bare /login, /logout, /login/claude, etc. paths.
+# All routes require bearer auth (registered in BearerAuthMiddleware.routes).
+
+
+# ── GET /login/{backend} — status for any backend ────────────────────────────
+
+async def _handle_login_kiro_get(request: Request) -> Response:
+    """GET /login/kiro — status of the kiro credential and any pending flow.
+
+    When a flow is in progress, also polls the login container for completion
+    and stores the result via the credential store (TRN-233). Mirrors the
+    original _handle_login_get polling cycle.
+    """
+    pending = KIRO_FLOW.state
+    # No flow in progress — return credential store status
+    if pending is None:
+        st = _cred_store.status().get("kiro", {})
+        return JSONResponse({
+            "backend": "kiro",
+            "configured": st.get("configured", False),
+            "method": st.get("method"),
+            "stored_at": st.get("stored_at"),
+            "pending_flow": None,
+        })
+    # Flow in progress — delegate to the existing polling handler
+    # which also drives completion and writes ga-kiro-auth.
+    return await _handle_login_get(request)
+
+
+async def _handle_login_claude_get_new(request: Request) -> Response:
+    """GET /login/claude — status of the claude credential and any pending flow.
+
+    When a flow is in progress, delegates to the polling handler which drives
+    completion and stores the result. When no flow is running, returns status
+    from the credential store.
+    """
+    pending = CLAUDE_FLOW.state
+    if pending is None:
+        st = _cred_store.status().get("claude", {})
+        return JSONResponse({
+            "backend": "claude",
+            "configured": st.get("configured", False),
+            "method": st.get("method"),
+            "stored_at": st.get("stored_at"),
+            "pending_flow": None,
+        })
+    # Flow in progress — delegate to the existing claude poll handler
+    return await _handle_claude_login_get(request)
+
+
+async def _handle_login_codex_get_new(request: Request) -> Response:
+    """GET /login/codex — status of the codex credential and any pending flow.
+
+    When a flow is in progress, delegates to the existing codex poll handler.
+    """
+    pending = CODEX_FLOW.state
+    if pending is None:
+        st = _cred_store.status().get("codex", {})
+        return JSONResponse({
+            "backend": "codex",
+            "configured": st.get("configured", False),
+            "method": st.get("method"),
+            "stored_at": st.get("stored_at"),
+            "pending_flow": None,
+        })
+    return await _handle_codex_login_get(request)
+
+
+# ── POST /login/kiro/* ────────────────────────────────────────────────────────
+
+async def _handle_login_kiro_api_key_post(request: Request) -> Response:
+    """POST /login/kiro/api-key — store a pasted Kiro API key."""
+    if not _backend_enabled("kiro"):
+        return JSONResponse({"error": _backend_not_enabled_message("kiro")}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
+    secret = body.get("secret") if isinstance(body, dict) else None
+    if not isinstance(secret, str) or not secret.strip():
+        return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
+    _cred_store.put("kiro", "api-key", secret.strip())
+    _security.audit_auth_event(
+        action="login", outcome="success", account="kiro",
+        source=_request_source(request), emit=logger.info,
+    )
+    st = _cred_store.status().get("kiro", {})
+    return JSONResponse({
+        "status": "stored",
+        "backend": "kiro",
+        "method": "api-key",
+        "stored_at": st.get("stored_at"),
+    })
+
+
+async def _handle_login_kiro_builder_id_post(request: Request) -> Response:
+    """POST /login/kiro/builder-id — initiate kiro Builder ID device flow."""
+    if not _backend_enabled("kiro"):
+        return JSONResponse({"error": _backend_not_enabled_message("kiro")}, status_code=400)
+    # Delegate to the existing kiro login initiation (PTY flow).
+    return await _handle_login_post(request)
+
+
+async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
+    """POST /login/kiro/identity-center — initiate kiro Identity Center device flow.
+
+    Accepts optional {start_url?, region?} in the request body;
+    falls back to KIRO_IDENTITY_PROVIDER/KIRO_REGION from config.
+    Returns 400 if no start_url or region is available.
+    """
+    if not _backend_enabled("kiro"):
+        return JSONResponse({"error": _backend_not_enabled_message("kiro")}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    start_url = body.get("start_url") or cfg.kiro_identity_provider
+    region = body.get("region") or cfg.kiro_region
+    if not start_url or not region:
+        return JSONResponse(
+            {"error": "start_url and region are required for identity-center login "
+             "(provide in request body or set KIRO_IDENTITY_PROVIDER/KIRO_REGION)."},
+            status_code=400,
+        )
+    return await _handle_login_post(request)
+
+
+# ── POST /logout/kiro ─────────────────────────────────────────────────────────
+
+async def _handle_logout_kiro_post(request: Request) -> Response:
+    """POST /logout/kiro — clear kiro credential and wipe running crews. Idempotent."""
+    _cred_store.delete("kiro")
+    return await _handle_logout_post(request)
+
+
+# ── POST /login/claude/* ──────────────────────────────────────────────────────
+
+async def _handle_login_claude_api_key_post(request: Request) -> Response:
+    """POST /login/claude/api-key — store a pasted Anthropic API key."""
+    if not _backend_enabled("claude"):
+        return JSONResponse({"error": _backend_not_enabled_message("claude")}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
+    secret = body.get("secret") if isinstance(body, dict) else None
+    if not isinstance(secret, str) or not secret.strip():
+        return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
+    _cred_store.put("claude", "api-key", secret.strip())
+    _security.audit_auth_event(
+        action="login", outcome="success", account="claude",
+        source=_request_source(request), emit=logger.info,
+    )
+    st = _cred_store.status().get("claude", {})
+    return JSONResponse({
+        "status": "stored",
+        "backend": "claude",
+        "method": "api-key",
+        "stored_at": st.get("stored_at"),
+    })
+
+
+async def _handle_login_claude_setup_token_post(request: Request) -> Response:
+    """POST /login/claude/setup-token — store a pasted claude setup-token."""
+    if not _backend_enabled("claude"):
+        return JSONResponse({"error": _backend_not_enabled_message("claude")}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
+    secret = body.get("secret") if isinstance(body, dict) else None
+    if not isinstance(secret, str) or not secret.strip():
+        return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
+    _cred_store.put("claude", "setup-token", secret.strip())
+    _security.audit_auth_event(
+        action="login", outcome="success", account="claude",
+        source=_request_source(request), emit=logger.info,
+    )
+    st = _cred_store.status().get("claude", {})
+    return JSONResponse({
+        "status": "stored",
+        "backend": "claude",
+        "method": "setup-token",
+        "stored_at": st.get("stored_at"),
+    })
+
+
+async def _handle_login_claude_oauth_post(request: Request) -> Response:
+    """POST /login/claude/oauth — initiate Claude authorisation-code flow.
+
+    Starting a flow no longer returns 409 when a credential already exists
+    (TRN-233 design §3) — the store.put replaces on completion.
+    """
+    if not _backend_enabled("claude"):
+        return JSONResponse({"error": _backend_not_enabled_message("claude")}, status_code=400)
+    if CLAUDE_FLOW.state is not None:
+        return JSONResponse(
+            {"error": "Claude login already in progress. Poll GET /login/claude."},
+            status_code=409,
+        )
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+    result = _lc()._initiate_claude_login(podman)
+    if result.get("login_pending"):
+        return JSONResponse(
+            {"error": "Claude login already in progress. Poll GET /login/claude."},
+            status_code=409,
+        )
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=500)
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+async def _handle_login_claude_oauth_code_post(request: Request) -> Response:
+    """POST /login/claude/oauth/code — submit the OAuth authorisation code."""
+    return await _handle_claude_login_code_post(request)
+
+
+# ── POST /logout/claude ───────────────────────────────────────────────────────
+
+async def _handle_logout_claude_post_new(request: Request) -> Response:
+    """POST /logout/claude — clear claude credential and wipe running crews. Idempotent."""
+    _cred_store.delete("claude")
+    return await _handle_claude_logout_post(request)
+
+
+# ── POST /login/codex/* ───────────────────────────────────────────────────────
+
+async def _handle_login_codex_api_key_post(request: Request) -> Response:
+    """POST /login/codex/api-key — store a pasted OpenAI API key."""
+    if not _backend_enabled("codex"):
+        return JSONResponse({"error": _backend_not_enabled_message("codex")}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
+    secret = body.get("secret") if isinstance(body, dict) else None
+    if not isinstance(secret, str) or not secret.strip():
+        return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
+    _cred_store.put("codex", "api-key", secret.strip())
+    _security.audit_auth_event(
+        action="login", outcome="success", account="codex",
+        source=_request_source(request), emit=logger.info,
+    )
+    st = _cred_store.status().get("codex", {})
+    return JSONResponse({
+        "status": "stored",
+        "backend": "codex",
+        "method": "api-key",
+        "stored_at": st.get("stored_at"),
+    })
+
+
+async def _handle_login_codex_chatgpt_post(request: Request) -> Response:
+    """POST /login/codex/chatgpt — initiate Codex ChatGPT device flow.
+
+    Starting a flow no longer returns 409 when a credential already exists.
+    """
+    if not _backend_enabled("codex"):
+        return JSONResponse({"error": _backend_not_enabled_message("codex")}, status_code=400)
+    if CODEX_FLOW.state is not None:
+        return JSONResponse(
+            {"error": "Codex login already in progress. Poll GET /login/codex."},
+            status_code=409,
+        )
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+    result = _lc()._initiate_codex_login(podman)
+    if result.get("login_pending"):
+        return JSONResponse(
+            {"error": "Codex login already in progress. Poll GET /login/codex."},
+            status_code=409,
+        )
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=500)
+    return JSONResponse({
+        "status": "pending",
+        "login_url": result.get("login_url"),
+        "code": result.get("code"),
+    })
+
+
+# ── POST /logout/codex ────────────────────────────────────────────────────────
+
+async def _handle_logout_codex_post_new(request: Request) -> Response:
+    """POST /logout/codex — clear codex credential and wipe running crews. Idempotent."""
+    _cred_store.delete("codex")
+    return await _handle_codex_logout_post(request)

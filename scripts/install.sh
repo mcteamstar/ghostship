@@ -104,11 +104,11 @@ _interactive_setup() {
         fi
     fi
     if [[ "$GA_CREW_AGENT" == *claude* ]]; then
-        echo "  Claude: no config needed here — run 'ghostship auth login anthropic' after install to set your key."
+        echo "  Claude: no config needed here — you'll be offered a login after the transport starts."
     fi
     if [[ "$GA_CREW_AGENT" == *codex* ]]; then
         _prompt "OpenAI-compatible base URL (blank = https://api.openai.com/v1; can point at a local proxy like litellm)" "" OPENAI_BASE_URL
-        echo "  Codex: run 'ghostship auth login openai' after install to set your API key."
+        echo "  Codex: you'll be offered a login after the transport starts."
     fi
 
     # 4. Write ghostship.conf (non-secrets only, chmod 600).
@@ -355,10 +355,13 @@ if [[ "$CLIENT_ONLY" == "true" ]]; then
   exit 0
 fi
 
-# ── Model backend setting names (TRN-226) ────────────────────────────────────
-# ANTHROPIC_* / OPENAI_* replace the GA_CREW_-prefixed names. An old name still
-# works for this run with a warning; when both are set, the new name wins.
-for _new in ANTHROPIC_API_KEY ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL; do
+# ── Model backend base-URL alias mapping (TRN-226) ───────────────────────────
+# ANTHROPIC_BASE_URL / OPENAI_BASE_URL replace the GA_CREW_-prefixed names. The
+# old name still works for this run with a warning; when both are set, the new
+# name wins. These are non-secret config, so they are still mapped here. The
+# credential aliases (GA_CREW_ANTHROPIC_API_KEY / GA_CREW_OPENAI_API_KEY) are
+# handled by the ignored-setting warning below.
+for _new in ANTHROPIC_BASE_URL OPENAI_BASE_URL; do
   _old="GA_CREW_${_new}"
   if [[ -n "${!_old:-}" ]]; then
     echo "  WARNING: ${_old} is deprecated — rename it to ${_new} in ghostship.conf." >&2
@@ -370,6 +373,28 @@ for _new in ANTHROPIC_API_KEY ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL;
   fi
 done
 unset _new _old
+
+# ── Backend credentials are no longer installer-managed (TRN-233) ─────────────
+# The installer has no code path that can create, delete or mount a backend
+# credential; they are managed with `ghostship auth login|logout|status` and
+# resolved per launch from DATA_DIR/credentials/. If the conf (or the operator's
+# shell, though these are reset above) still sets any backend credential — or
+# one of the two deprecated credential aliases — warn that it is ignored and
+# unset it so it cannot leak into the compose file or a crew environment.
+for _ignored in \
+  ANTHROPIC_API_KEY \
+  CLAUDE_CODE_OAUTH_TOKEN \
+  OPENAI_API_KEY \
+  KIRO_API_KEY \
+  GA_CREW_ANTHROPIC_API_KEY \
+  GA_CREW_OPENAI_API_KEY; do
+  if [[ -n "${!_ignored:-}" ]]; then
+    echo "  WARNING: ${_ignored} is no longer used by the installer and is ignored." >&2
+    echo "           Backend credentials are managed with 'ghostship auth login <backend>'." >&2
+    unset "$_ignored"
+  fi
+done
+unset _ignored
 
 # ── Agent backend consolidation (TRN-213) ────────────────────────────────────
 # GA_CREW_AGENT replaces GA_AGENT_BACKENDS + GA_CREW_ACP_BACKEND.
@@ -854,36 +879,13 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ Podman secret 'ga-api-key' created"
 fi
 
-# ── Podman secret for ga-crew-anthropic-api-key ───────────────────────────────
-# Model backend keys and KIRO_API_KEY are delivered as Podman secrets rather
-# than plaintext compose env vars (secret-delivery-hardening). Each block is
-# idempotent: remove any prior secret, then recreate only when the value is set.
-${_PODMAN_CMD} secret rm ga-crew-anthropic-api-key 2>/dev/null || true
-if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  printf '%s' "$ANTHROPIC_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-anthropic-api-key -
-  echo "✓ Podman secret 'ga-crew-anthropic-api-key' created"
-fi
-
-# ── Podman secret for ga-claude-code-oauth-token ──────────────────────────────
-${_PODMAN_CMD} secret rm ga-claude-code-oauth-token 2>/dev/null || true
-if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-  printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | ${_PODMAN_CMD} secret create ga-claude-code-oauth-token -
-  echo "✓ Podman secret 'ga-claude-code-oauth-token' created"
-fi
-
-# ── Podman secret for ga-crew-openai-api-key ──────────────────────────────────
-${_PODMAN_CMD} secret rm ga-crew-openai-api-key 2>/dev/null || true
-if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-  printf '%s' "$OPENAI_API_KEY" | ${_PODMAN_CMD} secret create ga-crew-openai-api-key -
-  echo "✓ Podman secret 'ga-crew-openai-api-key' created"
-fi
-
-# ── Podman secret for ga-kiro-api-key ─────────────────────────────────────────
-${_PODMAN_CMD} secret rm ga-kiro-api-key 2>/dev/null || true
-if [[ -n "${KIRO_API_KEY:-}" ]]; then
-  printf '%s' "$KIRO_API_KEY" | ${_PODMAN_CMD} secret create ga-kiro-api-key -
-  echo "✓ Podman secret 'ga-kiro-api-key' created"
-fi
+# ── Backend credentials are no longer installer-managed (TRN-233) ─────────────
+# The four backend credential secrets (ga-crew-anthropic-api-key,
+# ga-claude-code-oauth-token, ga-crew-openai-api-key, ga-kiro-api-key) are gone.
+# Backend credentials now live in DATA_DIR/credentials/ and are managed with
+# `ghostship auth login|logout|status`; the installer has no code path that can
+# create, delete or mount a backend credential. uninstall.sh removes any stale
+# secrets left over from a pre-change install.
 
 # ── Podman secret for GA_TRANSPORT_SECRET ────────────────────────────────────────
 # Idempotent: only generate if the secret does not already exist. This ensures
@@ -979,9 +981,9 @@ fi
 _DASHBOARD_PORT_START="${GA_DASHBOARD_PORT_RANGE_START:-64058}"
 _DASHBOARD_PORT_END=$(( _DASHBOARD_PORT_START + ${GA_DASHBOARD_PORT_RANGE_SIZE:-64} - 1 ))
 
-# compose.yml carries model API keys (ANTHROPIC_API_KEY,
-# OPENAI_API_KEY): create it owner-only. chmod as well, because
-# rewriting an existing file keeps its old mode.
+# compose.yml no longer carries any backend credential; it still holds the
+# transport bearer-key secret reference, so create it owner-only. chmod as well,
+# because rewriting an existing file keeps its old mode.
 _ga_saved_umask="$(umask)"
 umask 077
 cat > "${DATA_DIR}/compose.yml" <<COMPOSE_EOF
@@ -1021,12 +1023,11 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       GA_BATCH_MAX_TASKS: "${GA_BATCH_MAX_TASKS:-20}"
       GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
-      # Model backend keys (ANTHROPIC_API_KEY, OPENAI_API_KEY)
-      # and KIRO_API_KEY are NOT passed as environment values here — they are
-      # delivered to the transport as Podman secrets mounted under /run/secrets
-      # (see the secrets: blocks below) so the keys never appear in plaintext in
-      # this compose file (secret-delivery-hardening). Only the non-secret base
-      # URLs remain in the environment.
+      # Backend credentials (Anthropic/OpenAI API keys, the Claude OAuth token
+      # and KIRO_API_KEY) are NOT delivered here. They are managed out of band
+      # with `ghostship auth login` and resolved per launch from the credential
+      # store (TRN-233); the installer neither reads nor mounts them. Only the
+      # non-secret base URLs remain in the environment.
       ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
       OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
@@ -1059,10 +1060,6 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
-$(if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then printf '      - ga-crew-anthropic-api-key\n'; fi)
-$(if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then printf '      - ga-claude-code-oauth-token\n'; fi)
-$(if [[ -n "${OPENAI_API_KEY:-}" ]]; then printf '      - ga-crew-openai-api-key\n'; fi)
-$(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '      - ga-kiro-api-key\n'; fi)
   ga-portal:
     image: docker.io/caddy:2
     container_name: ga-portal
@@ -1088,10 +1085,6 @@ secrets:
   ga-transport-secret:
     external: true
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '  ga-api-key:\n    external: true\n'; fi)
-$(if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then printf '  ga-crew-anthropic-api-key:\n    external: true\n'; fi)
-$(if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then printf '  ga-claude-code-oauth-token:\n    external: true\n'; fi)
-$(if [[ -n "${OPENAI_API_KEY:-}" ]]; then printf '  ga-crew-openai-api-key:\n    external: true\n'; fi)
-$(if [[ -n "${KIRO_API_KEY:-}" ]]; then printf '  ga-kiro-api-key:\n    external: true\n'; fi)
 volumes:
   ga-portal-data:
 COMPOSE_EOF
@@ -1336,14 +1329,45 @@ else
 fi
 
 # ── Interactive-mode authentication (TRN-233) ────────────────────────────────
+# After the transport is ready, offer `ghostship auth login <backend>` for each
+# ENABLED backend (from GA_CREW_AGENT) that the transport reports as not yet
+# configured. Credentials are never collected by the installer — the CLI drives
+# the login against the just-installed URL and bearer key (discovered via the
+# same Podman inspect `ghostship status` uses), so no flags are needed here.
 if [[ "${_INTERACTIVE_MODE:-false}" == "true" ]]; then
     echo ""
     echo "=== Authentication ==="
-    if [[ "${GA_CREW_AGENT}" == *kiro* ]]; then
-        "${GHOSTSHIP_DIR}/ghostship" auth login
-    fi
-    [[ "${GA_CREW_AGENT}" == *claude* ]] && echo "  Claude: run 'ghostship auth login anthropic' to set your API key or OAuth token."
-    [[ "${GA_CREW_AGENT}" == *codex* ]]  && echo "  Codex:  run 'ghostship auth login openai' to set your API key."
+
+    # Which enabled backends still need a credential? Ask the transport; its
+    # `GET /login/<backend>` reports {"configured": bool} per backend. If the
+    # status call fails (older transport, transient error), fall back to
+    # offering a login for every enabled backend rather than skipping auth.
+    _enabled_backends="${GA_CREW_AGENT//,/ }"
+    _auth_status_json="$("${GHOSTSHIP_DIR}/ghostship" auth status --json 2>/dev/null || true)"
+    for _backend in $_enabled_backends; do
+        _backend="${_backend// /}"
+        [[ -z "$_backend" ]] && continue
+        _is_configured="unknown"
+        if [[ -n "$_auth_status_json" ]]; then
+            _is_configured="$(printf '%s' "$_auth_status_json" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('unknown'); sys.exit(0)
+info = data.get('$_backend') or {}
+print('yes' if info.get('configured') else 'no')
+" 2>/dev/null || echo unknown)"
+        fi
+        if [[ "$_is_configured" == "yes" ]]; then
+            echo "  ${_backend}: already configured — skipping login."
+        else
+            echo "  ${_backend}: starting login (run 'ghostship auth logout ${_backend}' to undo)."
+            "${GHOSTSHIP_DIR}/ghostship" auth login "${_backend}" || \
+                echo "  ${_backend}: login not completed — run 'ghostship auth login ${_backend}' later." >&2
+        fi
+    done
+    unset _enabled_backends _auth_status_json _backend _is_configured
 fi
 
 echo ""

@@ -634,5 +634,155 @@ class TestLoginFlowThreadSafety(unittest.TestCase):
         self.assertEqual(errors, [], f"Concurrent abort raised: {errors}")
 
 
+# ── TestWarnInertBackendSettings ──────────────────────────────────────────────
+
+
+class TestWarnInertBackendSettings(unittest.TestCase):
+    """_warn_inert_backend_settings: warns about stored credentials and BASE_URL
+    settings for disabled backends. Values must never appear in log output."""
+
+    def setUp(self) -> None:
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        from transport.credentials import CredentialStore
+        self._store = CredentialStore(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run_warn(self, ga_crew_agent: str) -> list[str]:
+        """Invoke _warn_inert_backend_settings with a patched config and store,
+        returning the list of warning messages emitted."""
+        import logging
+        from transport.login import _warn_inert_backend_settings
+        from transport.config import Config
+        messages = []
+
+        class _CapHandler(logging.Handler):
+            def emit(self, record):
+                messages.append(record.getMessage())
+
+        handler = _CapHandler()
+        import transport.login as login_mod
+        lg = logging.getLogger("transport.login")
+        lg.addHandler(handler)
+        orig_store = login_mod._cred_store
+        orig_cfg = login_mod.cfg
+        try:
+            login_mod._cred_store = self._store
+            login_mod.cfg = Config(ga_crew_agent=ga_crew_agent)
+            _warn_inert_backend_settings()
+        finally:
+            login_mod._cred_store = orig_store
+            login_mod.cfg = orig_cfg
+            lg.removeHandler(handler)
+        return messages
+
+    def test_disabled_backend_with_credential_warns(self):
+        self._store.put("claude", "api-key", "sk-ant-should-not-appear")
+        messages = self._run_warn("kiro")
+        self.assertTrue(
+            any("claude" in m for m in messages),
+            f"Expected warning about disabled claude backend, got: {messages}",
+        )
+
+    def test_warning_contains_method_not_value(self):
+        self._store.put("claude", "setup-token", "my-secret-token-value")
+        messages = self._run_warn("kiro")
+        warning = next((m for m in messages if "claude" in m), None)
+        self.assertIsNotNone(warning, "Expected a warning about claude")
+        # method name is in the warning
+        self.assertIn("setup-token", warning)
+        # secret value is NOT in the warning
+        self.assertNotIn("my-secret-token-value", warning)
+
+    def test_enabled_backend_with_credential_no_warn(self):
+        self._store.put("claude", "api-key", "sk-ant-key-value")
+        messages = self._run_warn("claude,kiro")
+        self.assertFalse(
+            any("claude" in m for m in messages),
+            f"Should not warn about enabled claude backend, got: {messages}",
+        )
+
+    def test_disabled_codex_with_credential_warns(self):
+        self._store.put("codex", "api-key", "sk-openai-test-key")
+        messages = self._run_warn("kiro")
+        self.assertTrue(
+            any("codex" in m for m in messages),
+            f"Expected warning about disabled codex, got: {messages}",
+        )
+
+    def test_no_credential_no_warn(self):
+        # Nothing stored — no warnings
+        messages = self._run_warn("kiro")
+        self.assertEqual(messages, [], f"Expected no warnings but got: {messages}")
+
+    def test_base_url_warns_for_disabled_backend(self):
+        from transport.config import Config
+        import transport.login as login_mod
+        import logging
+        messages = []
+
+        class _CapHandler(logging.Handler):
+            def emit(self, record):
+                messages.append(record.getMessage())
+
+        handler = _CapHandler()
+        lg = logging.getLogger("transport.login")
+        lg.addHandler(handler)
+        orig_store = login_mod._cred_store
+        orig_cfg = login_mod.cfg
+        try:
+            login_mod._cred_store = self._store
+            # anthropic_base_url set but claude not enabled
+            login_mod.cfg = Config(ga_crew_agent="kiro", anthropic_base_url="https://proxy.example.com")
+            from transport.login import _warn_inert_backend_settings
+            _warn_inert_backend_settings()
+        finally:
+            login_mod._cred_store = orig_store
+            login_mod.cfg = orig_cfg
+            lg.removeHandler(handler)
+
+        self.assertTrue(
+            any("ANTHROPIC_BASE_URL" in m for m in messages),
+            f"Expected ANTHROPIC_BASE_URL warning, got: {messages}",
+        )
+        # The URL value itself must not appear in the warning
+        self.assertFalse(
+            any("proxy.example.com" in m for m in messages),
+            f"URL value leaked into warning: {messages}",
+        )
+
+    def test_base_url_not_warned_when_backend_enabled(self):
+        from transport.config import Config
+        import transport.login as login_mod
+        import logging
+        messages = []
+
+        class _CapHandler(logging.Handler):
+            def emit(self, record):
+                messages.append(record.getMessage())
+
+        handler = _CapHandler()
+        lg = logging.getLogger("transport.login")
+        lg.addHandler(handler)
+        orig_store = login_mod._cred_store
+        orig_cfg = login_mod.cfg
+        try:
+            login_mod._cred_store = self._store
+            login_mod.cfg = Config(ga_crew_agent="claude,kiro", anthropic_base_url="https://proxy.example.com")
+            from transport.login import _warn_inert_backend_settings
+            _warn_inert_backend_settings()
+        finally:
+            login_mod._cred_store = orig_store
+            login_mod.cfg = orig_cfg
+            lg.removeHandler(handler)
+
+        self.assertFalse(
+            any("ANTHROPIC_BASE_URL" in m for m in messages),
+            f"Should not warn when claude is enabled, got: {messages}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

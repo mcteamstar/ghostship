@@ -500,11 +500,7 @@ class CrewLauncher:
                 GA_CREW_ACP_BACKEND,
                 CREW_GATEWAY_PORT,
                 ANTHROPIC_BASE_URL,
-                ANTHROPIC_API_KEY,
-                CLAUDE_CODE_OAUTH_TOKEN,
                 OPENAI_BASE_URL,
-                OPENAI_API_KEY,
-                KIRO_API_KEY,
                 KIRO_AGENTS_DIR,
                 SCRIPTS_DIR,
                 _wait_gateway,
@@ -512,8 +508,6 @@ class CrewLauncher:
                 _inject_auth,
                 _inject_claude_auth,
                 _inject_codex_auth,
-                _claude_auth_exists,
-                _codex_auth_exists,
                 _patch_crew_config,
                 _seed_openspec_store,
                 _inject_policy,
@@ -524,6 +518,7 @@ class CrewLauncher:
                 _enroll_crew_members,
                 _prewarm_crew,
                 _secret_identifier,
+                _cred_store,
             )
             from academy import AcademyLoader  # container
         except ModuleNotFoundError:
@@ -531,11 +526,7 @@ class CrewLauncher:
                 GA_CREW_ACP_BACKEND,
                 CREW_GATEWAY_PORT,
                 ANTHROPIC_BASE_URL,
-                ANTHROPIC_API_KEY,
-                CLAUDE_CODE_OAUTH_TOKEN,
                 OPENAI_BASE_URL,
-                OPENAI_API_KEY,
-                KIRO_API_KEY,
                 KIRO_AGENTS_DIR,
                 SCRIPTS_DIR,
                 _wait_gateway,
@@ -543,8 +534,6 @@ class CrewLauncher:
                 _inject_auth,
                 _inject_claude_auth,
                 _inject_codex_auth,
-                _claude_auth_exists,
-                _codex_auth_exists,
                 _patch_crew_config,
                 _seed_openspec_store,
                 _inject_policy,
@@ -555,6 +544,7 @@ class CrewLauncher:
                 _enroll_crew_members,
                 _prewarm_crew,
                 _secret_identifier,
+                _cred_store,
             )
             from transport.academy import AcademyLoader  # local dev
 
@@ -575,15 +565,18 @@ class CrewLauncher:
                 _cleanup_crew(podman, container, volume, home_volume)
                 return {"error": f"Gateway did not recover for crew {crew_id}"}
 
-        # Auth injection (backend-specific)
+        # Auth injection (backend-specific) — resolved per-launch from the
+        # credential store (TRN-233 task 2.1).
+        _cred = _cred_store.get(GA_CREW_ACP_BACKEND)
         if GA_CREW_ACP_BACKEND == "claude":
             _effective_endpoint = ANTHROPIC_BASE_URL or "api.anthropic.com"
             logger.warning(
                 "GA_CREW_ACP_BACKEND=claude: crew %s requires outbound access to "
                 "%s to function", crew_id, _effective_endpoint,
             )
-            if (not ANTHROPIC_API_KEY and not CLAUDE_CODE_OAUTH_TOKEN
-                    and _claude_auth_exists()):
+            # oauth method: inject ~/.claude/ archive; api-key and setup-token
+            # were already injected as env vars at container_create time.
+            if _cred and _cred["method"] == "oauth":
                 try:
                     _inject_claude_auth(podman, container)
                 except Exception as e:
@@ -598,7 +591,9 @@ class CrewLauncher:
                 "GA_CREW_ACP_BACKEND=codex: crew %s requires outbound access to "
                 "%s to function", crew_id, _effective_endpoint,
             )
-            if not OPENAI_API_KEY and _codex_auth_exists():
+            # chatgpt method: inject ~/.codex/ archive; api-key was already
+            # injected as env var at container_create time.
+            if _cred and _cred["method"] == "chatgpt":
                 try:
                     _inject_codex_auth(podman, container)
                 except Exception as e:
@@ -608,8 +603,10 @@ class CrewLauncher:
                         "api.openai.com", crew_id, e,
                     )
         else:
-            # kiro path
-            if not KIRO_API_KEY:
+            # kiro path: api-key credential was already injected as KIRO_API_KEY
+            # env var at container_create time. For device flows (builder-id,
+            # identity-center), inject the SQLite auth rows.
+            if not (_cred and _cred["method"] == "api-key"):
                 _inject_auth(podman, container, auth_b64)
 
         policy_signing_key = __import__("secrets").token_hex(32)

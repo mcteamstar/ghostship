@@ -449,21 +449,10 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 # "claude": skip kiro auth, inject ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN).
 # "codex": skip kiro auth, inject OPENAI_API_KEY.
 GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
-# Crew credentials come from Podman secrets mounted under /run/secrets; the
-# compose template never carries them in its environment block, so the cfg
-# values are "" in production. _security.get_secret prefers the secret file,
-# falls back to the env var for dev/test runs, and registers the value with the
-# redaction filter. lifecycle resolves the same names the same way, so both
-# modules agree on which credential a crew gets (TRN-226).
-_ANTHROPIC_API_KEY = _security.get_secret(
-    "ga-crew-anthropic-api-key", env_var="ANTHROPIC_API_KEY")
+# Credential globals removed (TRN-233 task 2.1) — tools.py resolves credentials
+# per-launch via CredentialStore.get(backend). These stale module-level reads
+# are no longer needed here.
 _ANTHROPIC_BASE_URL = cfg.anthropic_base_url
-# Long-lived token from `claude setup-token`; injected as CLAUDE_CODE_OAUTH_TOKEN
-# when no Anthropic API key is set.
-_CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
-    "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
-_OPENAI_API_KEY = _security.get_secret(
-    "ga-crew-openai-api-key", env_var="OPENAI_API_KEY")
 _OPENAI_BASE_URL = cfg.openai_base_url
 
 # ── Transport security ───────────────────────────────────────────────
@@ -637,10 +626,8 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 # KIRO_LICENSE / KIRO_IDENTITY_PROVIDER / KIRO_REGION also moved to lifecycle
 # (they drive only the moved _initiate_login device flow).
 
-# When set, kiro-cli authenticates via this API key and the device-code auth
-# flow is skipped entirely. Injected as an env var into crew
-# containers; unset (default) => existing device-code flow is used.
-KIRO_API_KEY = _security.get_secret("ga-kiro-api-key", env_var="KIRO_API_KEY")
+# KIRO_API_KEY global removed (TRN-233 task 2.1) — credentials are now resolved
+# per-launch via CredentialStore.get(backend) in tools.py.
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1613,11 +1600,12 @@ async def _handle_openapi_get(request: Request) -> Response:
 
 
 # ── Login/logout HTTP handlers (extracted to login.py, TRN-242) ──────────────
-# The ten Starlette login/logout route handlers and the three backend helpers
+# The Starlette login/logout route handlers and the three backend helpers
 # (_warn_inert_backend_settings, _backend_enabled, _backend_not_enabled_message)
 # now live in transport.login alongside the LoginFlow singletons they delegate
 # to. Re-exported here so BearerAuthMiddleware wiring in __main__ and existing
 # patch('server.X') test sites keep resolving.
+# TRN-233: new /login/{backend}/{method} and /logout/{backend} handlers added.
 try:
     from login import (  # noqa: F401  re-exported for existing call-sites
         _warn_inert_backend_settings, _backend_enabled, _backend_not_enabled_message,
@@ -1625,6 +1613,15 @@ try:
         _handle_claude_login_post, _handle_claude_login_get,
         _handle_claude_login_code_post, _handle_claude_logout_post,
         _handle_codex_login_post, _handle_codex_login_get, _handle_codex_logout_post,
+        # TRN-233 new routes
+        _handle_login_kiro_get, _handle_login_claude_get_new, _handle_login_codex_get_new,
+        _handle_login_kiro_api_key_post, _handle_login_kiro_builder_id_post,
+        _handle_login_kiro_identity_center_post, _handle_logout_kiro_post,
+        _handle_login_claude_api_key_post, _handle_login_claude_setup_token_post,
+        _handle_login_claude_oauth_post, _handle_login_claude_oauth_code_post,
+        _handle_logout_claude_post_new,
+        _handle_login_codex_api_key_post, _handle_login_codex_chatgpt_post,
+        _handle_logout_codex_post_new,
     )
 except ModuleNotFoundError:
     from transport.login import (  # noqa: F401  local dev
@@ -1633,6 +1630,15 @@ except ModuleNotFoundError:
         _handle_claude_login_post, _handle_claude_login_get,
         _handle_claude_login_code_post, _handle_claude_logout_post,
         _handle_codex_login_post, _handle_codex_login_get, _handle_codex_logout_post,
+        # TRN-233 new routes
+        _handle_login_kiro_get, _handle_login_claude_get_new, _handle_login_codex_get_new,
+        _handle_login_kiro_api_key_post, _handle_login_kiro_builder_id_post,
+        _handle_login_kiro_identity_center_post, _handle_logout_kiro_post,
+        _handle_login_claude_api_key_post, _handle_login_claude_setup_token_post,
+        _handle_login_claude_oauth_post, _handle_login_claude_oauth_code_post,
+        _handle_logout_claude_post_new,
+        _handle_login_codex_api_key_post, _handle_login_codex_chatgpt_post,
+        _handle_logout_codex_post_new,
     )
 
 
@@ -1713,17 +1719,24 @@ if __name__ == "__main__":
     # Generate the OpenAPI schema once, after all routes/tools are defined,
     # before constructing BearerAuthMiddleware. Cached globally so
     # _handle_openapi_get can serve it without re-generating on every request.
+    # TRN-233: old bare /login, /logout, /login/claude, /login/codex paths
+    # removed; new /login/{backend}/{method} and /logout/{backend} registered.
     _openapi_schema_routes = {
-        ("POST", "/login"): _handle_login_post,
-        ("GET",  "/login"): _handle_login_get,
-        ("POST", "/logout"): _handle_logout_post,
-        ("POST", "/login/claude"): _handle_claude_login_post,
-        ("GET",  "/login/claude"): _handle_claude_login_get,
-        ("POST", "/login/claude/code"): _handle_claude_login_code_post,
-        ("POST", "/logout/claude"): _handle_claude_logout_post,
-        ("POST", "/login/codex"): _handle_codex_login_post,
-        ("GET",  "/login/codex"): _handle_codex_login_get,
-        ("POST", "/logout/codex"): _handle_codex_logout_post,
+        ("GET",  "/login/kiro"): _handle_login_kiro_get,
+        ("POST", "/login/kiro/api-key"): _handle_login_kiro_api_key_post,
+        ("POST", "/login/kiro/builder-id"): _handle_login_kiro_builder_id_post,
+        ("POST", "/login/kiro/identity-center"): _handle_login_kiro_identity_center_post,
+        ("POST", "/logout/kiro"): _handle_logout_kiro_post,
+        ("GET",  "/login/claude"): _handle_login_claude_get_new,
+        ("POST", "/login/claude/api-key"): _handle_login_claude_api_key_post,
+        ("POST", "/login/claude/setup-token"): _handle_login_claude_setup_token_post,
+        ("POST", "/login/claude/oauth"): _handle_login_claude_oauth_post,
+        ("POST", "/login/claude/oauth/code"): _handle_login_claude_oauth_code_post,
+        ("POST", "/logout/claude"): _handle_logout_claude_post_new,
+        ("GET",  "/login/codex"): _handle_login_codex_get_new,
+        ("POST", "/login/codex/api-key"): _handle_login_codex_api_key_post,
+        ("POST", "/login/codex/chatgpt"): _handle_login_codex_chatgpt_post,
+        ("POST", "/logout/codex"): _handle_logout_codex_post_new,
         ("GET",  "/health"): _handle_health,
         ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
@@ -1752,16 +1765,21 @@ if __name__ == "__main__":
         api_key=GA_API_KEY,
         file_app=_file_starlette,
         routes={
-            ("POST", "/login"): _handle_login_post,
-            ("GET",  "/login"): _handle_login_get,
-            ("POST", "/logout"): _handle_logout_post,
-            ("POST", "/login/claude"): _handle_claude_login_post,
-            ("GET",  "/login/claude"): _handle_claude_login_get,
-            ("POST", "/login/claude/code"): _handle_claude_login_code_post,
-            ("POST", "/logout/claude"): _handle_claude_logout_post,
-            ("POST", "/login/codex"): _handle_codex_login_post,
-            ("GET",  "/login/codex"): _handle_codex_login_get,
-            ("POST", "/logout/codex"): _handle_codex_logout_post,
+            ("GET",  "/login/kiro"): _handle_login_kiro_get,
+            ("POST", "/login/kiro/api-key"): _handle_login_kiro_api_key_post,
+            ("POST", "/login/kiro/builder-id"): _handle_login_kiro_builder_id_post,
+            ("POST", "/login/kiro/identity-center"): _handle_login_kiro_identity_center_post,
+            ("POST", "/logout/kiro"): _handle_logout_kiro_post,
+            ("GET",  "/login/claude"): _handle_login_claude_get_new,
+            ("POST", "/login/claude/api-key"): _handle_login_claude_api_key_post,
+            ("POST", "/login/claude/setup-token"): _handle_login_claude_setup_token_post,
+            ("POST", "/login/claude/oauth"): _handle_login_claude_oauth_post,
+            ("POST", "/login/claude/oauth/code"): _handle_login_claude_oauth_code_post,
+            ("POST", "/logout/claude"): _handle_logout_claude_post_new,
+            ("GET",  "/login/codex"): _handle_login_codex_get_new,
+            ("POST", "/login/codex/api-key"): _handle_login_codex_api_key_post,
+            ("POST", "/login/codex/chatgpt"): _handle_login_codex_chatgpt_post,
+            ("POST", "/logout/codex"): _handle_logout_codex_post_new,
             ("GET",  "/health"): _handle_health,
             # Crew proxy routes — pattern keys used by BearerAuthMiddleware dispatch
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,

@@ -11,9 +11,10 @@
 #                    for GA_MACHINE_NAME, so a customised dedicated-machine
 #                    name is actually found and torn down.
 #   --yes           Skip the confirmation prompt.
-#   --purge-auth    Also remove the ga-kiro-auth file. Off by default —
-#                   removing it means the next install needs a fresh device
-#                   auth login instead of inheriting the existing one.
+#   --purge-auth    Also remove the ga-kiro-auth file and the credentials/
+#                   directory. Off by default — removing them means the next
+#                   install needs fresh logins (`ghostship auth login`) instead
+#                   of inheriting the existing credentials.
 #                   On Linux, this is the only flag that removes ga-kiro-auth;
 #                   omitting --keep-machine does NOT remove it.
 #   --keep-machine  Keep the dedicated Podman machine/instance (don't remove
@@ -93,9 +94,9 @@ if [[ -n "$_HAS_DEDICATED_MACHINE" ]]; then
   fi
 fi
 if [[ -n "$PURGE_AUTH" ]]; then
-  echo "  - transport state under ${DATA_DIR}, including the ga-kiro-auth file (--purge-auth given — next install needs a fresh login)"
+  echo "  - transport state under ${DATA_DIR}, including the ga-kiro-auth file and the credentials/ directory (--purge-auth given — next install needs a fresh login)"
 else
-  echo "  - transport state under ${DATA_DIR} (${DATA_DIR}/ga-kiro-auth is KEPT — pass --purge-auth to remove it)"
+  echo "  - transport state under ${DATA_DIR} (${DATA_DIR}/ga-kiro-auth and ${DATA_DIR}/credentials/ are KEPT — pass --purge-auth to remove them)"
 fi
 echo ""
 echo "Left alone (shared with other Podman workloads on this machine):"
@@ -184,6 +185,21 @@ ${_PODMAN_CMD} network rm ga-net >/dev/null 2>&1 && echo "✓ ga-net network rem
 ${_PODMAN_CMD} rmi -f localhost/kirocrew-crew:latest >/dev/null 2>&1 && echo "✓ localhost/kirocrew-crew:latest removed" || true
 ${_PODMAN_CMD} rmi -f localhost/transport:latest >/dev/null 2>&1 && echo "✓ localhost/transport:latest removed" || true
 
+# ── Obsolete credential Podman secrets (TRN-233) ──────────────────────────────
+# Pre-change installs delivered backend credentials as Podman secrets. They are
+# no longer created or mounted (credentials live in DATA_DIR/credentials/ now),
+# so remove any left over from an earlier install by name. Idempotent: a secret
+# that was never created is simply skipped.
+for _obsolete_secret in \
+  ga-crew-anthropic-api-key \
+  ga-claude-code-oauth-token \
+  ga-crew-openai-api-key \
+  ga-kiro-api-key; do
+  ${_PODMAN_CMD} secret rm "${_obsolete_secret}" >/dev/null 2>&1 \
+    && echo "✓ removed obsolete Podman secret '${_obsolete_secret}'" || true
+done
+unset _obsolete_secret
+
 # ── Dedicated machine/instance teardown ───────────────────────────────────────
 
 if [[ -n "$_HAS_DEDICATED_MACHINE" ]]; then
@@ -263,10 +279,12 @@ fi
 # ── Data dir ──────────────────────────────────────────────────────────────────
 
 AUTH_FILE="${DATA_DIR}/ga-kiro-auth"
+CREDENTIALS_DIR="${DATA_DIR}/credentials"
 if [[ -d "$DATA_DIR" ]]; then
   shopt -s dotglob nullglob
   for entry in "$DATA_DIR"/*; do
     [[ "$entry" == "$AUTH_FILE" ]] && continue
+    [[ "$entry" == "$CREDENTIALS_DIR" ]] && continue
     rm -rf "$entry"
   done
   shopt -u dotglob nullglob
@@ -276,9 +294,13 @@ if [[ -d "$DATA_DIR" ]]; then
       rm -f "$AUTH_FILE"
       echo "✓ removed ${AUTH_FILE}"
     fi
+    if [[ -e "$CREDENTIALS_DIR" || -L "$CREDENTIALS_DIR" ]]; then
+      rm -rf "$CREDENTIALS_DIR"
+      echo "✓ removed ${CREDENTIALS_DIR}"
+    fi
     echo "✓ removed transport state from ${DATA_DIR}"
   else
-    echo "✓ removed transport state from ${DATA_DIR} (kept ${AUTH_FILE})"
+    echo "✓ removed transport state from ${DATA_DIR} (kept ${AUTH_FILE} and ${CREDENTIALS_DIR})"
   fi
 fi
 

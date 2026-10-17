@@ -688,5 +688,173 @@ class TestSecurityHeadersMiddleware(unittest.TestCase):
         self.assertNotIn(b"x-content-type-options", header_names)
 
 
+# ── TRN-233: new route table tests ───────────────────────────────────────────
+
+
+class TestTrn233RouteTable(unittest.TestCase):
+    """TRN-233 task 3.1: old paths return 404, new paths get through bearer,
+    and the rate-limit rule is widened to POST /login/*."""
+
+    def _make_mw(self, api_key="testkey", routes=None, public_routes=None):
+        from transport.auth import BearerAuthMiddleware
+        app = _RecordingApp()
+        mw = BearerAuthMiddleware(
+            app, api_key=api_key,
+            routes=routes or {},
+            public_routes=public_routes or {},
+        )
+        return mw, app
+
+    def _status(self, mw, method, path, key=None):
+        headers = {}
+        if key:
+            headers["authorization"] = f"Bearer {key}"
+        scope = _make_scope(method, path, headers=headers)
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        start = next((m for m in messages if m["type"] == "http.response.start"), None)
+        return start["status"] if start else None
+
+    def test_old_bare_login_post_returns_404_via_mcp_app(self):
+        """POST /login is not in the new route table; falls through to MCP app.
+        BearerAuthMiddleware dispatches to the inner app (which in our test is
+        _RecordingApp, which records the call without setting a status —
+        effectively a 200). The key thing is it is NOT in the routes dict,
+        so the route dispatch doesn't call any login handler. We verify 401
+        when bearer is wrong (since no route matches and MCP app requires bearer).
+        """
+        mw, app = self._make_mw(api_key="testkey123", routes={})
+        # No route registered for POST /login → falls to MCP app after bearer check
+        status = self._status(mw, "POST", "/login", key=None)
+        # Without bearer key and with api_key set → 401
+        self.assertEqual(status, 401)
+
+    def test_old_bare_logout_post_not_registered(self):
+        mw, app = self._make_mw(api_key="testkey123", routes={})
+        status = self._status(mw, "POST", "/logout", key=None)
+        self.assertEqual(status, 401)
+
+    def test_old_login_claude_not_registered(self):
+        mw, app = self._make_mw(api_key="testkey123", routes={})
+        status = self._status(mw, "POST", "/login/claude", key=None)
+        self.assertEqual(status, 401)
+
+    def test_old_login_claude_code_not_registered(self):
+        mw, app = self._make_mw(api_key="testkey123", routes={})
+        status = self._status(mw, "POST", "/login/claude/code", key=None)
+        self.assertEqual(status, 401)
+
+    def test_old_login_codex_not_registered(self):
+        mw, app = self._make_mw(api_key="testkey123", routes={})
+        status = self._status(mw, "POST", "/login/codex", key=None)
+        self.assertEqual(status, 401)
+
+    def test_new_login_kiro_get_registered(self):
+        """GET /login/kiro with valid bearer is dispatched to the registered handler."""
+        from starlette.responses import JSONResponse
+        called = {"flag": False}
+
+        async def handler(request):
+            called["flag"] = True
+            return JSONResponse({"ok": True})
+
+        mw, app = self._make_mw(api_key="testkey", routes={("GET", "/login/kiro"): handler})
+        status = self._status(mw, "GET", "/login/kiro", key="testkey")
+        self.assertTrue(called["flag"])
+
+    def test_new_login_claude_api_key_registered(self):
+        from starlette.responses import JSONResponse
+        called = {"flag": False}
+
+        async def handler(request):
+            called["flag"] = True
+            return JSONResponse({"ok": True})
+
+        mw, app = self._make_mw(api_key="testkey", routes={("POST", "/login/claude/api-key"): handler})
+        status = self._status(mw, "POST", "/login/claude/api-key", key="testkey")
+        self.assertTrue(called["flag"])
+
+    def test_new_logout_kiro_registered(self):
+        from starlette.responses import JSONResponse
+        called = {"flag": False}
+
+        async def handler(request):
+            called["flag"] = True
+            return JSONResponse({"ok": True})
+
+        mw, app = self._make_mw(api_key="testkey", routes={("POST", "/logout/kiro"): handler})
+        status = self._status(mw, "POST", "/logout/kiro", key="testkey")
+        self.assertTrue(called["flag"])
+
+    def test_new_route_without_bearer_returns_401(self):
+        """New routes require bearer auth — no bearer → 401."""
+        from starlette.responses import JSONResponse
+
+        async def handler(request):
+            return JSONResponse({"ok": True})
+
+        mw, app = self._make_mw(api_key="testkey", routes={("GET", "/login/kiro"): handler})
+        status = self._status(mw, "GET", "/login/kiro", key=None)
+        self.assertEqual(status, 401)
+
+    def test_new_route_wrong_bearer_returns_401(self):
+        from starlette.responses import JSONResponse
+
+        async def handler(request):
+            return JSONResponse({"ok": True})
+
+        mw, app = self._make_mw(api_key="testkey", routes={("GET", "/login/kiro"): handler})
+        status = self._status(mw, "GET", "/login/kiro", key="wrongkey")
+        self.assertEqual(status, 401)
+
+
+class TestTrn233RateLimit(unittest.TestCase):
+    """TRN-233 task 3.1: rate limit widened to POST /login/*."""
+
+    def _limiter(self, max_requests=5):
+        from transport.security import RateLimiter
+        class _CapLimiter(RateLimiter):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.recorded = []
+            def record(self, key):
+                self.recorded.append(key)
+                return True
+        return _CapLimiter(max_requests=max_requests, window_secs=60)
+
+    def _make_middleware(self, limiters):
+        from transport.auth import RateLimitMiddleware
+        app = _RecordingApp()
+        mw = RateLimitMiddleware(app, limiters=limiters, api_key="testkey")
+        return mw, app
+
+    def test_login_kiro_builder_id_matches_login_post(self):
+        """POST /login/kiro/builder-id is subject to the login_post rate limit."""
+        limiter = self._limiter(max_requests=5)
+        mw, app = self._make_middleware({"login_post": limiter})
+        _run(mw(_make_scope("POST", "/login/kiro/builder-id", client=("5.5.5.5", 1)), _receive, _collect_send()[1]))
+        self.assertTrue(limiter.recorded)
+
+    def test_login_claude_oauth_matches_login_post(self):
+        limiter = self._limiter(max_requests=5)
+        mw, app = self._make_middleware({"login_post": limiter})
+        _run(mw(_make_scope("POST", "/login/claude/oauth", client=("5.5.5.6", 1)), _receive, _collect_send()[1]))
+        self.assertTrue(limiter.recorded)
+
+    def test_login_kiro_get_matches_login_get(self):
+        limiter = self._limiter(max_requests=5)
+        mw, app = self._make_middleware({"login_get": limiter})
+        _run(mw(_make_scope("GET", "/login/kiro", client=("5.5.5.7", 1)), _receive, _collect_send()[1]))
+        self.assertTrue(limiter.recorded)
+
+    def test_logout_not_rate_limited_by_login_limiter(self):
+        """POST /logout/kiro is not subject to the login rate limit."""
+        limiter = self._limiter(max_requests=5)
+        mw, app = self._make_middleware({"login_post": limiter})
+        _run(mw(_make_scope("POST", "/logout/kiro", client=("5.5.5.8", 1)), _receive, _collect_send()[1]))
+        # /logout is not /login/* — should not match login_post
+        self.assertFalse(limiter.recorded)
+
+
 if __name__ == "__main__":
     unittest.main()

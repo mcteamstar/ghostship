@@ -47,6 +47,11 @@ except ImportError:
     from transport.config import Config  # local dev
 
 try:
+    from credentials import CredentialStore  # container: flat /app/
+except ImportError:
+    from transport.credentials import CredentialStore  # local dev
+
+try:
     from constants import (  # container: flat /app/
         ADMIRAL_PUBKEY_PATH,
         CREW_CONTAINER_PREFIX,
@@ -267,14 +272,11 @@ GA_CREW_ACP_BACKEND = cfg.ga_crew_agent.split(",")[0].strip().lower()
 GA_GIT_AUTHOR_NAME = os.environ.get("GA_GIT_AUTHOR_NAME", "").strip()
 GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 
-KIRO_API_KEY = _security.get_secret("ga-kiro-api-key", env_var="KIRO_API_KEY")
-_ANTHROPIC_API_KEY = _security.get_secret(
-    "ga-crew-anthropic-api-key", env_var="ANTHROPIC_API_KEY")
+# Credential store — resolved per-launch via store.get(backend) rather than
+# module-level globals (TRN-233 task 2.1).
+_cred_store = CredentialStore()
+
 _ANTHROPIC_BASE_URL = cfg.anthropic_base_url
-_CLAUDE_CODE_OAUTH_TOKEN = _security.get_secret(
-    "ga-claude-code-oauth-token", env_var="CLAUDE_CODE_OAUTH_TOKEN")
-_OPENAI_API_KEY = _security.get_secret(
-    "ga-crew-openai-api-key", env_var="OPENAI_API_KEY")
 _OPENAI_BASE_URL = cfg.openai_base_url
 
 _MODEL_MAX_LENGTH = 500
@@ -578,13 +580,9 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         return {"error": str(e)}
 
     # ── Auth check — before registry write to avoid orphaned entries ──────────
-    # When GA_CREW_ACP_BACKEND=claude, all kiro-cli auth (device-code flow,
-    # ga-kiro-auth file, auth_b64 injection) is skipped entirely.
-    # ANTHROPIC_API_KEY is injected at container_create time (API key path) or
-    # ~/.claude/ is injected via _inject_claude_auth in _finish_crew_setup (OAuth).
-    #
-    # When KIRO_API_KEY is set, kiro-cli authenticates via the injected env var;
-    # the device-code flow and auth_b64 injection are also skipped on that path.
+    # Credentials are resolved per-launch from the credential store (TRN-233
+    # task 2.1). No module-level credential globals remain; store.get(backend)
+    # is called here and the result is used for gating and env injection below.
     auth_b64: str | None = None
     # Defensive: startup already rejects a default backend outside the enabled
     # set, so configuration can't reach this. It becomes a real path once a
@@ -594,13 +592,15 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             "error": "backend_not_enabled",
             "instructions": login._backend_not_enabled_message(GA_CREW_ACP_BACKEND),
         }
+
+    # Resolve credential for the default backend once per launch.
+    _cred = _cred_store.get(GA_CREW_ACP_BACKEND)
+
     if GA_CREW_ACP_BACKEND == "claude":
-        # Task 3.3: Claude backend — require an API key, a setup-token (TRN-226) or
-        # an OAuth credential.
-        # If neither is present, initiate the Claude login flow and return
-        # not_authenticated with the login URL (identical behaviour to kiro path).
-        if (not _ANTHROPIC_API_KEY and not _CLAUDE_CODE_OAUTH_TOKEN
-                and not _claude_auth_exists()):
+        # Claude backend — require a stored credential (any method).
+        # If no credential is present, initiate the Claude login flow and return
+        # not_authenticated with the login URL.
+        if not _cred:
             result = _initiate_claude_login(podman)
             if result.get("login_pending"):
                 return {
@@ -617,13 +617,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "instructions": "Open login_url, approve, then POST the pasted code to /login/claude/code, poll GET /login/claude until complete, then call launch again.",
             }
     elif GA_CREW_ACP_BACKEND == "codex":
-        # Task 3.3: Codex backend — require either OPENAI_API_KEY or a
-        # non-empty ga-codex-auth OAuth credential. If neither is present,
-        # initiate the Codex login flow and return not_authenticated with the
-        # login URL (mirrors the Claude path). OPENAI_API_KEY/OPENAI_BASE_URL are
-        # injected at container_create time; ~/.codex/ is injected via
-        # _inject_codex_auth in _finish_crew_setup on the OAuth path.
-        if not _OPENAI_API_KEY and not _codex_auth_exists():
+        # Codex backend — require a stored credential (any method).
+        # If no credential is present, initiate the Codex login flow and return
+        # not_authenticated with the login URL.
+        if not _cred:
             result = _initiate_codex_login(podman)
             if result.get("login_pending"):
                 return {
@@ -640,8 +637,12 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "instructions": "Open login_url to authenticate with Codex, then call launch again.",
             }
     else:
+        # kiro path — api-key credential skips device flow entirely
+        _kiro_api_key = ""
+        if _cred and _cred["method"] == "api-key":
+            _kiro_api_key = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
         auth_b64 = _read_auth_file() or None
-        if not KIRO_API_KEY and not auth_b64:
+        if not _kiro_api_key and not auth_b64:
             # If a login is already in progress, poll the DB before giving up —
             # the user may have just completed the device flow but GET /login
             # hasn't been called yet to write the auth file.
@@ -736,37 +737,25 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
             # Sandbox mode is controlled via the crew's sandbox: config key;
             # KIROCREW_ALLOW_UNSANDBOXED was removed (replaced by sandbox: off).
         }
-        # When an API key is configured, pass it to the crew container so
-        # kiro-cli inside authenticates via the env var (no device-code / SQLite
-        # auth injection). Only set when non-empty so the device-code path is
-        # entirely unaffected when KIRO_API_KEY is unset.
-        if KIRO_API_KEY:
-            container_env["KIRO_API_KEY"] = KIRO_API_KEY
-        # When the Claude ACP backend is selected, inject ANTHROPIC_API_KEY into
-        # the crew container so claude-agent-acp can authenticate against
-        # api.anthropic.com. The kiro auth path is skipped for Claude-backend crews
-        # (handled in _finish_crew_setup). Only set when non-empty — the key is
-        # optional (Claude OAuth is an alternative), so we guard on its presence
-        # here rather than relying on any startup validation.
-        if GA_CREW_ACP_BACKEND == "claude" and _ANTHROPIC_API_KEY:
-            container_env["ANTHROPIC_API_KEY"] = _ANTHROPIC_API_KEY
-            if _ANTHROPIC_BASE_URL:
-                container_env["ANTHROPIC_BASE_URL"] = _ANTHROPIC_BASE_URL
-        # No API key: the setup-token is next in precedence (TRN-226). With it
-        # set, _finish_crew_setup skips ga-claude-auth injection, so the crew
-        # gets exactly one Claude credential.
-        elif GA_CREW_ACP_BACKEND == "claude" and _CLAUDE_CODE_OAUTH_TOKEN:
-            container_env["CLAUDE_CODE_OAUTH_TOKEN"] = _CLAUDE_CODE_OAUTH_TOKEN
-        # When the Codex ACP backend is selected, inject OPENAI_API_KEY into the
-        # crew container so codex-acp can authenticate against api.openai.com
-        # (API-key path). The kiro auth path is skipped for Codex-backend crews
-        # (handled in _finish_crew_setup); the OAuth path injects ~/.codex/
-        # instead. OPENAI_BASE_URL is injected whenever the backend is codex and
-        # the value is set, independent of the API key (task 3.4) — it redirects
-        # both the API-key and OAuth paths to an OpenAI-compatible endpoint.
-        if GA_CREW_ACP_BACKEND == "codex":
-            if _OPENAI_API_KEY:
-                container_env["OPENAI_API_KEY"] = _OPENAI_API_KEY
+        # Credential-based env injection — resolved per-launch from the store
+        # (TRN-233 task 2.1).  _cred was resolved above in the auth-gating block;
+        # method drives which env var to set.
+        if GA_CREW_ACP_BACKEND == "kiro":
+            if _cred and _cred["method"] == "api-key":
+                container_env["KIRO_API_KEY"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
+        elif GA_CREW_ACP_BACKEND == "claude":
+            if _cred:
+                if _cred["method"] == "api-key":
+                    container_env["ANTHROPIC_API_KEY"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
+                    if _ANTHROPIC_BASE_URL:
+                        container_env["ANTHROPIC_BASE_URL"] = _ANTHROPIC_BASE_URL
+                elif _cred["method"] == "setup-token":
+                    container_env["CLAUDE_CODE_OAUTH_TOKEN"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
+                # oauth method: ~/.claude/ is injected in _finish_crew_setup via _inject_claude_auth
+        elif GA_CREW_ACP_BACKEND == "codex":
+            if _cred and _cred["method"] == "api-key":
+                container_env["OPENAI_API_KEY"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
+            # chatgpt method: ~/.codex/ is injected in _finish_crew_setup via _inject_codex_auth
             if _OPENAI_BASE_URL:
                 container_env["OPENAI_BASE_URL"] = _OPENAI_BASE_URL
         if GA_GIT_AUTHOR_NAME and GA_GIT_AUTHOR_EMAIL:

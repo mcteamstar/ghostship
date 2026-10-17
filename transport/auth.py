@@ -264,9 +264,9 @@ class RateLimitMiddleware(AsyncMiddlewareBase):
 
         Priority order: login_post, login_get, files, crew_api, mcp.
         """
-        if method == "POST" and path == "/login":
+        if method == "POST" and (path == "/login" or path.startswith("/login/")):
             return "login_post"
-        if method == "GET" and path == "/login":
+        if method == "GET" and (path == "/login" or path.startswith("/login/")):
             return "login_get"
         if path.startswith("/files/"):
             return "files"

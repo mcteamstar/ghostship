@@ -34,18 +34,17 @@
 # without setting HOST=127.0.0.1 is treated as non-loopback.
 # GA_REQUIRE_API_KEY=error
 
-# Two auth paths for kiro-cli inside crews:
-#   Option A — API key (Pro+, headless): set KIRO_API_KEY to skip the device-code
-#     login flow entirely. The key is injected as an env var into crew containers
-#     and kiro-cli authenticates directly — no POST /login, no browser step.
-#     Re-run install.sh after setting this so the transport picks it up.
-#   Option B — Device code (default, all tiers): leave KIRO_API_KEY unset. After
-#     install, run POST /login once to complete the browser-based auth flow. For
-#     org (IAM Identity Center) licensing, also set the KIRO_IDENTITY_PROVIDER /
-#     KIRO_REGION / KIRO_LICENSE vars below.
-# KIRO_API_KEY=""
+# Authentication for kiro-cli inside crews is NO LONGER set in this file.
+# After install, run:  ghostship auth login kiro
+#   - Builder ID (default, all tiers): a browser device-code flow.
+#   - IAM Identity Center (org licensing): pass --identity-provider / --region,
+#     or set the KIRO_IDENTITY_PROVIDER / KIRO_REGION / KIRO_LICENSE defaults
+#     below so the login uses them. Pro+ API-key auth is also offered by the
+#     `ghostship auth login kiro` method menu.
+# See docs/auth.md. `ghostship auth status` shows what is configured.
 
 # kiro-cli identity provider (omit to use default Builder ID / free tier).
+# These are non-secret defaults for the Identity Center login method.
 # KIRO_IDENTITY_PROVIDER=""
 # KIRO_REGION=""
 # KIRO_LICENSE=""
@@ -119,32 +118,24 @@
 #
 # GA_CREW_AGENT=kiro
 
-# ── Claude Code ACP backend (TRN-167, TRN-170, TRN-226) ──────────────────────
-# ANTHROPIC_* and OPENAI_* below were GA_CREW_ANTHROPIC_* / GA_CREW_OPENAI_*
-# before TRN-226. The old names still work for now, with a deprecation warning.
+# ── Claude Code ACP backend (TRN-167, TRN-170, TRN-226, TRN-233) ─────────────
 # To use the Claude Code ACP runtime inside crews:
 #   1. Enable it: GA_CREW_AGENT=claude (see Agent backend above).
-#   2. A Claude credential, used in this order of precedence — one of:
-#      a. ANTHROPIC_API_KEY — Anthropic pay-per-token API key (TRN-167).
-#      b. CLAUDE_CODE_OAUTH_TOKEN — long-lived token from running
-#         `claude setup-token` on your own machine (TRN-226). Recommended for
-#         Claude Pro/Max subscriptions on unattended deployments. A value
-#         exported in your shell is ignored; only this file counts.
-#      c. Claude OAuth login (TRN-170). Requires a Claude Pro/Max subscription.
-#         Two steps: POST /login/claude returns a login_url; approve it in the
-#         browser, then POST the pasted <code>#<state> to /login/claude/code.
-#         Poll GET /login/claude until it returns "complete". Credentials are
-#         stored in ga-claude-auth and injected into new crew containers.
-#      If neither is present at launch time, launch() returns not_authenticated
-#      with a login URL. ANTHROPIC_API_KEY is optional from TRN-170.
+#   2. Log in AFTER install — credentials are NOT set in this file any more:
+#        ghostship auth login claude
+#      The method menu offers an Anthropic API key, a long-lived token from
+#      `claude setup-token`, or the Claude Pro/Max OAuth authorisation-code flow.
+#      Credentials are stored by the transport and resolved per launch; re-run
+#      `ghostship auth login claude` to rotate. See docs/auth.md.
+#      If no credential is stored at launch time, launch() returns
+#      not_authenticated with a login URL.
 #
 # NOTE: The KiroCrew per-call tool approval gate is bypassed when
 # GA_CREW_AGENT=claude. The signed security policy ceiling (academy/
 # policies/default.json) is still enforced. Outbound access to
 # api.anthropic.com is required for Claude-backend crews.
 #
-# ANTHROPIC_API_KEY=""   # optional when using a token or OAuth login
-# CLAUDE_CODE_OAUTH_TOKEN=""     # from `claude setup-token`; never commit it
+# Optional non-secret base URL (e.g. a local proxy such as litellm):
 # ANTHROPIC_BASE_URL=""
 #
 # Model override (applies to all agents; a dispatch(model=...) call still wins).
@@ -152,21 +143,18 @@
 # to work; the default persona model may be restricted.
 # KC_MODEL_OVERRIDE="claude-haiku-5-5"
 
-# ── Codex ACP backend (TRN-172) ──────────────────────────────────────────────
+# ── Codex ACP backend (TRN-172, TRN-233) ─────────────────────────────────────
 # To use the Codex ACP runtime inside crews:
 #   1. Enable it: GA_CREW_AGENT=codex (see Agent backend above). The toolchain
 #      is ONE npm package, @agentclientprotocol/codex-acp: the adapter ships
 #      its own compatible Codex binary, so there is no separate `codex` CLI.
-#   2. An OpenAI credential — one of:
-#      a. OPENAI_API_KEY — OpenAI pay-per-token API key. When set,
-#         takes precedence over OAuth credentials.
-#      b. Codex OAuth login via POST /login/codex. Requires a ChatGPT
-#         subscription. Authenticate by calling POST /login/codex and completing
-#         the browser flow; credentials are stored in ga-codex-auth and injected
-#         automatically into new crew containers.
-#      If neither is present at launch time, launch() returns not_authenticated
-#      with a login URL. OPENAI_API_KEY is optional (OAuth is an
-#      alternative).
+#   2. Log in AFTER install — credentials are NOT set in this file any more:
+#        ghostship auth login codex
+#      The method menu offers an OpenAI API key or the ChatGPT sign-in flow.
+#      Credentials are stored by the transport and resolved per launch; re-run
+#      `ghostship auth login codex` to rotate. See docs/auth.md.
+#      If no credential is stored at launch time, launch() returns
+#      not_authenticated with a login URL.
 #
 # NOTE: The KiroCrew per-call tool approval gate is bypassed when
 # GA_CREW_AGENT=codex — codex-acp runs under a verified read-only ACP
@@ -174,7 +162,8 @@
 # default.json) is still enforced. Outbound access to api.openai.com (or the
 # OPENAI_BASE_URL endpoint when set) is required for Codex-backend crews.
 #
-# OPENAI_API_KEY=""   # optional when using Codex OAuth login
+# Optional non-secret base URL (blank = https://api.openai.com/v1; can point at
+# a local proxy such as litellm):
 # OPENAI_BASE_URL=""
 
 # ── User-defined standing-order templates (TRN-135) ──────────────────────────

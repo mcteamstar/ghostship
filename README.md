@@ -70,11 +70,15 @@ The `ghostship-admin` skill walks you through the rest.
 
 **kiro-cli / Claude Code / opencode:** run `ghostship setup` after `./install.sh` — it registers the MCP server and installs skill symlinks automatically.
 
-Then authenticate:
+Then authenticate each enabled backend (the wizard offers this automatically):
 
 ```bash
-ghostship auth login
+ghostship auth login kiro      # or: claude, codex
+ghostship auth status          # see what is configured
 ```
+
+Credentials are stored by the transport and managed with `ghostship auth
+login|logout|status` — they are no longer set in `ghostship.conf`.
 
 Full install options — API keys, client-only installs, remote deployments, repeatable config: [docs/configuration.md](docs/configuration.md).
 

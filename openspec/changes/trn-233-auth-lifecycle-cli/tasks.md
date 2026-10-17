@@ -19,7 +19,7 @@ in order; tasks inside a group may go in any order. Every task ends with
 
 ## 2. Transport resolves credentials per launch
 
-- [ ] 2.1 Replace the module-level credential globals in `tools.py`,
+- [x] 2.1 Replace the module-level credential globals in `tools.py`,
   `login.py`, `server.py` and `lifecycle.py` (`_ANTHROPIC_API_KEY`,
   `_CLAUDE_CODE_OAUTH_TOKEN`, `_OPENAI_API_KEY`, `KIRO_API_KEY`) with
   `store.get(backend)` in launch gating, env injection and
@@ -46,14 +46,14 @@ in order; tasks inside a group may go in any order. Every task ends with
   "_security.get_secret.*api-key\|_security.get_secret.*oauth\|_security.get_secret.*openai"
   transport/tools.py transport/login.py transport/server.py transport/lifecycle.py`
   is empty after this task).
-- [ ] 2.2 Update `_warn_inert_backend_settings` (now in `transport/login.py`
+- [x] 2.2 Update `_warn_inert_backend_settings` (now in `transport/login.py`
   after TRN-242) to report stored credentials for disabled backends (by backend
   and method) and `*_BASE_URL` settings. Verify: updated inert-settings tests,
   including that values are not logged.
 
 ## 3. Transport auth API
 
-- [ ] 3.1 Route table: register the `/login/{backend}/{method}`,
+- [x] 3.1 Route table: register the `/login/{backend}/{method}`,
   `GET /login/{backend}` and `POST /logout/{backend}` routes from
   design §3 under bearer auth. Note: after TRN-242, the kiro/claude/codex
   HTTP handlers live in `transport/login.py` (not `server.py`); add the
@@ -63,13 +63,13 @@ in order; tasks inside a group may go in any order. Every task ends with
   Verify: route tests for 404 on an unknown backend or method, 401 without
   the bearer key, and the old paths (including bare `/login` and
   `/logout`) returning 404.
-- [ ] 3.2 Pasted-secret routes (`api-key`, `setup-token`) store via the
+- [x] 3.2 Pasted-secret routes (`api-key`, `setup-token`) store via the
   store and return status. Login routes return 400 for a disabled backend. `GET /login/{backend}` returns status and any
   pending flow (kiro also returns configured Identity Center defaults). `POST /logout/{backend}` clears the credential,
   cancels the flow, wipes running crews, and is idempotent. Verify: tests for
   store, empty-secret 400, status with no values anywhere, logout with and
   without a credential, and running-crew wipe.
-- [ ] 3.3 `POST /login/kiro/builder-id` and `.../identity-center` drive
+- [x] 3.3 `POST /login/kiro/builder-id` and `.../identity-center` drive
   `KiroLoginFlow`. Identity Center takes `{start_url?, region?}`, defaulting to
   `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION`, adds `--license pro`, and returns 400
   if a value is still missing. `POST /login/claude/oauth` and `.../oauth/code`
@@ -92,7 +92,7 @@ in order; tasks inside a group may go in any order. Every task ends with
   path. Verify:
   `grep -rn "ga-codex-auth\|codex-acp\", \"login" transport/` is empty.
 
-- [ ] 3.6 Launch with no stored credential starts the backend's interactive
+- [x] 3.6 Launch with no stored credential starts the backend's interactive
   flow (kiro Identity Center if configured, else Builder ID; claude
   authorisation code; codex ChatGPT), reuses a pending flow, and returns
   `not_authenticated` with `login_url` and `code`. Update the MCP `launch` tool
@@ -102,51 +102,51 @@ in order; tasks inside a group may go in any order. Every task ends with
 
 ## 4. CLI
 
-- [ ] 4.1 Shared URL and key discovery for every CLI subcommand: flag, then
+- [x] 4.1 Shared URL and key discovery for every CLI subcommand: flag, then
   env (`GHOSTSHIP_URL`/`GHOSTSHIP_API_KEY`), then the installed port and
   `/data` mount source via Podman inspect (`ga-api-key` there), then the
   default (design §6). Add the HTTPS-or-loopback check with `--insecure`. Verify: `test_ghostship_auth.py` cases for each level, and a keyed
   install needing no flags, and refusing a secret over plain HTTP to a
   remote host.
-- [ ] 4.2 `ghostship auth <verb> [backend]` dispatch with usage, the backend
+- [x] 4.2 `ghostship auth <verb> [backend]` dispatch with usage, the backend
   required for login and logout, and unknown verb or backend errors. Verify:
   dispatch tests, including `ghostship auth login anthropic` exiting non-zero
   without contacting the transport.
-- [ ] 4.3 `auth login`: the method menu, `--method`,
+- [x] 4.3 `auth login`: the method menu, `--method`,
   replacement confirmation with `--yes`, hidden-prompt and stdin secret
   reading, device and authorisation-code polling, and Identity Center prompts
   with `--identity-provider`/`--region`. Verify: tests for each spec scenario
   in trn-cli (piped secret, empty secret, no-tty-without-method, decline
   replace, timeout), plus a check that no secret appears in argv or stdout.
-- [ ] 4.4 `auth logout <backend>` (`POST /logout/{backend}`) and
+- [x] 4.4 `auth logout <backend>` (`POST /logout/{backend}`) and
   `auth status` (table and `--json`). Verify: tests for the logout success and
   nothing-stored cases, and for the status table with no values.
 
 ## 5. Installer and uninstaller
 
-- [ ] 5.1 Delete the backend credential secret blocks and compose lines,
+- [x] 5.1 Delete the backend credential secret blocks and compose lines,
   and credential alias mapping in `scripts/install.sh`
   (Kiro Identity Center settings and flags stay). Add the ignored-setting warning. Verify: replace `TestInstallSecretWiring` and
   `TestDeprecatedModelKeyNames` with tests asserting that install.sh contains
   no `secret create|rm` for the four names, that the warning fires for each
   ignored variable, and that the `*_BASE_URL` aliases still map.
-- [ ] 5.2 Wizard: keep the Kiro Identity Center prompts, and drop the
+- [x] 5.2 Wizard: keep the Kiro Identity Center prompts, and drop the
   `auth login anthropic|openai` hints. After the transport is ready, offer
   `ghostship auth login <backend>` per unconfigured enabled backend, using
   the installed URL and key. Verify: wizard tests on `--wizard </dev/null`
   and a scripted tty run against a keyed install.
-- [ ] 5.3 `scripts/uninstall.sh` keeps `credentials/` (`--purge-auth`
+- [x] 5.3 `scripts/uninstall.sh` keeps `credentials/` (`--purge-auth`
   removes it) and removes the four obsolete credential Podman secrets by
   name. Verify:
   uninstall tests for the default and purge cases on macOS and Linux paths.
 
 ## 6. Docs and config example
 
-- [ ] 6.1 Remove the credential entries (not the Kiro Identity Center ones)
+- [x] 6.1 Remove the credential entries (not the Kiro Identity Center ones)
   from `config/ghostship.conf.example`, and replace them with a pointer to
   `ghostship auth login`. Verify: `grep -n "API_KEY\|OAUTH_TOKEN" config/ghostship.conf.example`
   returns no uncommented credential lines.
-- [ ] 6.2 Rewrite the auth sections of `docs/auth.md`, `docs/configuration.md`
+- [x] 6.2 Rewrite the auth sections of `docs/auth.md`, `docs/configuration.md`
   and `README.md` for `ghostship auth login|logout|status` and each
   backend's methods, plus a breaking-change upgrade note (log in again). Verify: no remaining
   `ANTHROPIC_API_KEY=`, `CLAUDE_CODE_OAUTH_TOKEN=` or
