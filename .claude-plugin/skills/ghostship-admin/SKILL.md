@@ -18,17 +18,17 @@ use the CLI for the most common tasks:
 ghostship status
 
 # Wire MCP server + skill symlinks for all detected agent clients (one-time, idempotent)
-ghostship init
+ghostship setup
 
 # Target a specific client, optionally with a custom URL or API key
-ghostship init --agent kiro
-ghostship init --agent claude --url http://myhost:64057/mcp --api-key <key>
+ghostship setup --agent kiro
+ghostship setup --agent claude --url http://myhost:64057/mcp --api-key <key>
 ```
 
 `ghostship status` is the canonical health check — it reads the container state
 directly via Podman, with no MCP connection required.
 
-`ghostship init` automates everything in [Connect an MCP client](#connect-an-mcp-client)
+`ghostship setup` automates everything in [Connect an MCP client](#connect-an-mcp-client)
 below: registers the MCP server and symlinks the three skill files for each detected
 agent client. It is idempotent — safe to run again after a reinstall or repo move.
 
@@ -143,63 +143,44 @@ cp config/ghostship.conf.example config/ghostship.conf
 ./install.sh --config config/ghostship.conf
 ```
 
-## Step 3: Log in — kiro-cli identity (do this before your first `launch`)
+## Step 3: Log in — backend credentials (do this before your first `launch`)
 
-The transport exposes three plain HTTP routes on the MCP port for
-academy-wide kiro-cli auth: `POST /login`, `GET /login`, `POST /logout`.
-These are **not** MCP tools — no agent can call them, only `curl`/shell.
-State machine:
-
-```
-UNAUTHENTICATED ──[POST /login]──► PENDING ──[GET /login → complete]──► AUTHENTICATED
-                ◄─────────────────────[POST /logout]──────────────────────────┘
-```
-
-Recommended first-time flow, **before your first `launch()` call**:
+As of ghostship 0.8.0 (TRN-233), backend credentials are managed by the
+`ghostship auth` CLI command — **not** by bare HTTP calls to `/login`. Use
+this flow before your first `launch()`:
 
 ```bash
-# 1. Start the device-auth flow
-curl -sX POST http://localhost:64057/login | jq
-# → { "status": "pending", "login_url": "...", "code": "XXXX-XXXX" }
+# Check what's configured
+ghostship auth status
 
-# 2. Open login_url in a browser, sign in, approve the device
+# Log in to kiro (Builder ID device flow — most common)
+ghostship auth login kiro
 
-# 3. Poll until complete
-curl -s http://localhost:64057/login | jq .status
-# → "complete"
+# Log in to kiro with IAM Identity Center (enterprise)
+ghostship auth login kiro --method identity-center
+# → prompts for start URL and region (pre-filled from config if set)
 
-# 4. Only now call launch()
+# Log in to claude or codex backends
+ghostship auth login claude
+ghostship auth login codex
+
+# Log out a backend
+ghostship auth logout kiro
 ```
 
-Add `-H "Authorization: Bearer $GHOSTSHIP_API_KEY"` to every call above if
-you've enabled the endpoint API key (see below).
+The method menu lets you choose between API key paste, Builder ID device
+code, or IAM Identity Center. If `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION`
+are set in `ghostship.conf`, the identity-center method pre-fills those
+values — just hit Enter to accept.
 
-**Don't skip this and call `launch()` first.** `launch()` has its own
-fallback auto-trigger for first-time auth, but attempting `launch` before
-auth is complete fails with `not_authenticated`, and any crew partially
-created in that state can't be salvaged — it has to be nuked. Worse, for
-`--license pro` (IAM Identity Center) installs, `launch()`'s fallback path
-uses a non-TTY exec that can fail *silently* against the IdC device flow
-(upstream bug [kirodotdev/Kiro#6120](https://github.com/kirodotdev/Kiro/issues/6120)).
-The explicit `POST /login` flow above doesn't have that problem — always
-use it, don't rely on `launch()` to bootstrap auth for you.
+Credentials are stored by the transport at `DATA_DIR/credentials/` (0600
+files, atomic writes). They persist across installs and restarts. To rotate,
+run `ghostship auth login <backend>` again and confirm the replacement.
 
-**Logout / secret rotation** — `POST /logout` clears the stored auth and
-every running crew's kiro-cli auth rows, no nuke or relaunch required:
-
-```bash
-curl -sX POST http://localhost:64057/logout | jq
-# → { "status": "logged_out" }
-```
-
-Use it to force a fresh login (logout, then repeat the flow above) when
-tokens expire. Running crews get the new auth injected in place once
-`GET /login` reports `complete`.
-
-**Guards:** `POST /login` returns `409` if already authenticated (log out
-first) or if a login is already in progress (poll instead). `GET /login`
-returns `404` if no login is in progress. `POST /logout` returns `404` if
-not currently authenticated.
+**Don't skip this and call `launch()` first.** If no credential is stored,
+`launch()` returns `not_authenticated` with a device flow URL. You can
+complete the flow from that URL, but it's cleaner to authenticate explicitly
+upfront.
 
 ## Lock down the endpoint — API key
 
