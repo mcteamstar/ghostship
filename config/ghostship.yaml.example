@@ -42,8 +42,9 @@ network:
 
   # Direct TLS termination. Both must be set together, pointing at files in
   # the same directory. Leave empty to use Caddy's built-in TLS (portal section).
-  tls_certfile: ""
-  tls_keyfile: ""
+  tls:
+    certfile: ""
+    keyfile: ""
 
 # ── Crew ──────────────────────────────────────────────────────────────────────
 
@@ -74,8 +75,10 @@ crew:
 
   # Git author identity written into all crew commits.
   # When empty, the per-persona identity is used instead.
-  git_author_name: ""
-  git_author_email: ""
+  git:
+    author:
+      name: ""
+      email: ""
 
   # Memory gate — controls when crews and new spawns are allowed.
   memory:
@@ -97,33 +100,63 @@ crew:
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 model:
-  # Force all crew agents to use this model, regardless of per-agent config.
-  # Highest precedence in the chain: override > per-agent > default > built-in.
-  override: ""
-
-  # Global model fallback when no per-agent model is set.
+  # Global model fallback — the LOWEST-precedence level in the chain, used only
+  # when no per-agent model and no per-backend model is set. There is no global
+  # `override` key: a single model is not accessible across every backend
+  # (kiro, claude and codex use different model namespaces), so a global lock
+  # would break the moment a crew runs on another backend. Use the per-backend
+  # knobs under backends.<b>.model instead.
+  #
+  # Precedence (highest → lowest):
+  #   dispatch(model=…) > backends.<b>.model.override > per-agent
+  #     > backends.<b>.model.default > model.default > built-in
   default: ""
 
 # ── Backends ──────────────────────────────────────────────────────────────────
 
 backends:
   # Which agent backend(s) to build into the crew image and use at runtime.
-  # Comma-separated for multi-toolchain builds; the first entry is the runtime
-  # default. kiro is always available. Values: kiro, claude, codex.
-  agent: "kiro"
+  # A YAML list; the first entry is the runtime default. kiro is always
+  # available (appended if omitted). Values: kiro, claude, codex.
+  # Uncomment extra entries to build a multi-toolchain image.
+  default:
+    - kiro
+    # - claude
+    # - codex
 
   kiro:
-    # IAM Identity Center start URL. Leave empty for Builder ID / free tier.
-    identity_provider: ""
-    region: ""
+    # Per-backend model control for kiro crews:
+    #   override — forces ALL kiro agents to this model, ignoring per-agent
+    #              config. Use when a backend only supports a specific model set.
+    #   default  — fallback for kiro agents with no per-agent model set
+    #              (more specific than the global model.default).
+    model:
+      override: ""
+      default: ""
+
+    # IAM Identity Center start URL + region. Leave empty for Builder ID /
+    # free tier. (Was backends.kiro.identity_provider / .region before TRN-257.)
+    identity_center:
+      url: ""
+      region: ""
     license: ""
 
   claude:
+    # Per-backend model control for claude crews (see kiro.model above).
+    model:
+      override: ""
+      default: ""
+
     # Anthropic-compatible base URL (e.g. a local LiteLLM proxy).
     # Credentials go via `ghostship auth login claude`, not here.
     base_url: ""
 
   codex:
+    # Per-backend model control for codex crews (see kiro.model above).
+    model:
+      override: ""
+      default: ""
+
     # OpenAI-compatible base URL. Empty = https://api.openai.com/v1.
     # Credentials go via `ghostship auth login codex`, not here.
     base_url: ""
@@ -144,12 +177,14 @@ portal:
   # Lifetime (seconds) of gs_session cookies issued by /dashboard/login.
   session_ttl_secs: 86400
 
-  # Host port range for per-crew dashboard allocations.
-  dashboard_port_range_start: 64058
-  dashboard_port_range_size: 64
+  dashboard:
+    # Allocate a dashboard port on every launch() call when true.
+    default: false
 
-  # Allocate a dashboard port on every launch() call when true.
-  dashboard_default: false
+    # Host port range for per-crew dashboard allocations.
+    port_range:
+      start: 64058
+      size: 64
 
   # HTTP rate limiting per endpoint. Format: "requests:window_seconds".
   # Set enabled: false to disable all rate limiting.
@@ -176,22 +211,22 @@ machine:
 
   # Resources allocated to the dedicated VM (macOS only).
   # These are ceilings, not upfront reservations — idle usage is much lower.
-  cpus: 8
-  memory: 16384   # MB
-  disk: 100       # GB
+  resources:
+    cpus: 8
+    memory_mb: 16384
+    disk_gb: 100
 
-# ── Images (advanced / expert only) ───────────────────────────────────────────
-# Normal installs never need to touch this section.
-# See docs/configuration.md for details.
+  # ── Images (advanced / expert only) ─────────────────────────────────────────
+  # Normal installs never need to touch this section.
+  # (Was a top-level images: section before TRN-257.)
+  images:
+    # Path to the Podman socket inside the dedicated machine. Resolved
+    # automatically by install.sh — only override for non-standard setups.
+    podman_socket: "/run/user/1000/podman/podman.sock"
 
-images:
-  # Path to the Podman socket inside the dedicated machine. Resolved
-  # automatically by install.sh — only override for non-standard setups.
-  podman_socket: "/run/user/1000/podman/podman.sock"
+    # Crew container image. Override to test a custom spec-ops build.
+    kc_image: "localhost/spec-ops:latest"
 
-  # Crew container image. Override to test a custom spec-ops build.
-  kc_image: "localhost/spec-ops:latest"
-
-  # KiroCrew base image. Empty = pinned by install.sh automatically.
-  # Set explicitly only to test a specific KiroCrew version.
-  kc_base_image: ""
+    # KiroCrew base image. Empty = pinned by install.sh automatically.
+    # Set explicitly only to test a specific KiroCrew version.
+    kc_base_image: ""

@@ -12,8 +12,9 @@ These variables are written into the transport container's environment by `insta
 | `GA_MAX_CREWS` | `20` | Maximum registered crews (running + stopped). Stopped crews cost no memory; this is a housekeeping limit. |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum simultaneously running crews. Enforced on restart — if the running count equals this limit, restart is refused until another crew idles out. Values ≤ 0 all disable the limit. At ~2–3 GB per running crew, the default of 3 fits an 8 GB host. |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before the container is stopped. |
-| `KC_MODEL_OVERRIDE` | _(unset)_ | Operator-wide model override (via `--model`). Takes precedence over per-agent defaults. Leave unset to use each agent's own default. |
-| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json`. Lower precedence than `KC_MODEL_OVERRIDE` and per-agent model fields. Set via `--model-default`. Full precedence: `KC_MODEL_OVERRIDE` > per-agent model > `KC_MODEL_DEFAULT` > KiroCrew built-in. |
+| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json` — the **lowest**-precedence level, used only when no per-agent and no per-backend model is set. Set via `--model-default`. There is no global override (removed in TRN-257); use the per-backend `KC_MODEL_<B>_OVERRIDE` vars instead. See [Model precedence](#model-precedence). |
+| `KC_MODEL_<B>_OVERRIDE` | _(unset)_ | Per-backend model lock for backend `<B>` ∈ {`KIRO`, `CLAUDE`, `CODEX`}, from `backends.<b>.model.override`. Forces every agent on that backend to the named model, overriding per-agent config. Beaten only by a dispatch-time `model=`. |
+| `KC_MODEL_<B>_DEFAULT` | _(unset)_ | Per-backend fallback model for backend `<B>`, from `backends.<b>.model.default`. Used when an agent on that backend has no per-agent model; more specific than `KC_MODEL_DEFAULT`. |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. On Linux uses host uid (`id -u`); on macOS uses the `podman machine` guest uid (`podman machine ssh -- id -u`), which may differ. |
 | `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Set for externally-reachable deployments. |
 | `GA_FILE_SECRET` | unset (generated once, stored in `DATA_DIR/ga-file-secret`) | HMAC secret signing presigned file URLs. The stored secret survives transport restarts. `install.sh` does not pass an override. |
@@ -101,19 +102,77 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 
 ## Model precedence
 
-Resolved highest to lowest:
+Which model a crew agent runs is resolved per **backend** (kiro, claude, codex),
+highest to lowest:
 
-1. **`dispatch(model=...)`** — per-call override. Always wins.
-2. **`model.override`** (`KC_MODEL_OVERRIDE`, also `--model`) — operator-wide override.
-3. **Per-agent model field** — the `model` field in the agent's JSON under `academy/agents/`.
-4. **`model.default`** (`KC_MODEL_DEFAULT`, also `--model-default`) — operator-wide fallback.
-5. **KiroCrew built-in default** — used when no operator or per-agent setting is present.
+```
+dispatch(model=…)            # 1. per-call, always wins
+  └─ backends.<b>.model.override   # 2. per-backend lock
+       └─ per-agent model          # 3. the agent persona's own model field
+            └─ backends.<b>.model.default   # 4. per-backend fallback
+                 └─ model.default            # 5. global fallback
+                      └─ built-in default    # 6. KiroCrew's own default
+```
 
-Common patterns:
+Each level, and when to reach for it:
 
-- **Uniform model**: set `model.override`.
-- **Per-agent with fallback**: leave `model.override` unset, set `model.default` as the baseline, add per-agent model fields where needed.
-- **KiroCrew default everywhere**: leave both unset.
+1. **`dispatch(model=...)`** — a model passed on a single spawn/dispatch call.
+   One-off, always wins, affects only that call.
+2. **`backends.<b>.model.override`** (`KC_MODEL_<B>_OVERRIDE`) — a per-backend
+   **lock**. Every agent that runs on backend `<b>` is forced to this model,
+   ignoring its persona's own model field. Use it when a backend only supports a
+   specific model set — e.g. pin all kiro crews to a model kiro-cli actually
+   offers — without touching the other backends.
+3. **Per-agent model field** — the `model` field in the agent's JSON under
+   `academy/agents/`. The persona's own choice; wins over both fallbacks below.
+4. **`backends.<b>.model.default`** (`KC_MODEL_<B>_DEFAULT`) — a per-backend
+   **fallback**, applied only when the agent has no model field of its own. Use
+   it to give one backend a different baseline than the rest.
+5. **`model.default`** (`KC_MODEL_DEFAULT`, also `--model-default`) — the global
+   fallback, applied when neither a per-backend default nor a per-agent field is
+   set. The one knob that spans every backend.
+6. **KiroCrew built-in default** — used when nothing above is set.
+
+Within the transport, levels 2 and 4–6 are what the installer/transport resolve
+from config: the override (level 2) is hard-patched into every agent file, and
+the fallback (levels 4→5→6) is written as `default_model` only when it resolves
+to a non-empty value. Levels 1 and 3 are applied by the gateway at dispatch time.
+
+> **No global override.** A single global model override was removed in TRN-257:
+> no one model is reachable across backends with different model namespaces
+> (kiro, claude and codex name models differently), so a global lock breaks the
+> moment a crew runs on another backend. Per-backend overrides give the same
+> "force a model" capability without that cross-backend footgun.
+
+### Common patterns
+
+- **Lock one backend to a model** (e.g. kiro-cli's available set):
+  ```yaml
+  backends:
+    kiro:
+      model:
+        override: "claude-sonnet-4-5"
+  ```
+- **A different baseline for one backend**, personas still able to opt out:
+  ```yaml
+  backends:
+    kiro:
+      model:
+        default: "qwen-dense"   # kiro agents with no model field use this
+  model:
+    default: "gemma"            # every other backend falls back to this
+  ```
+- **One fallback everywhere**: set only `model.default`.
+- **KiroCrew default everywhere**: leave all of them unset.
+
+### Migrating from `model.override`
+
+The global `model.override` key (and its `KC_MODEL_OVERRIDE` env var) has been
+**removed**. An existing `ghostship.yaml` that still sets `model.override` loads
+with a warning and the value is **ignored**. To keep the same "force this model"
+behaviour, set `backends.<b>.model.override` for each backend you want to
+constrain — e.g. move `model.override: X` to `backends.kiro.model.override: X`
+(and add `claude`/`codex` entries if those backends are enabled).
 
 ## Interactive setup
 
@@ -134,7 +193,10 @@ Multiple backends can be enabled at once — the transport holds config for all 
 
 ```yaml
 backends:
-  agent: "kiro,claude,codex"
+  default:
+    - kiro
+    - claude
+    - codex
 ```
 
 ## Config file
@@ -189,14 +251,14 @@ default, is documented in **`config/ghostship.yaml.example`** — copy it to
 
 | Section | Example keys | Maps to |
 |:--------|:-------------|:--------|
-| `network` | `port`, `host`, `host_url`, `api_key`, `require_api_key`, `tls_certfile`, `tls_keyfile` | `PORT`, `HOST`, `GA_HOST_URL`, `GA_API_KEY`, … |
-| `crew` | `max_crews`, `max_active`, `idle_timeout_secs`, `subagent_timeout_secs`, `orders_dir`, `git_author_name`/`git_author_email` | `GA_MAX_CREWS`, `GA_MAX_ACTIVE_CREWS`, … |
+| `network` | `port`, `host`, `host_url`, `api_key`, `require_api_key`, `tls.certfile`, `tls.keyfile` | `PORT`, `HOST`, `GA_HOST_URL`, `GA_API_KEY`, … |
+| `crew` | `max_crews`, `max_active`, `idle_timeout_secs`, `subagent_timeout_secs`, `orders_dir`, `git.author.name`/`git.author.email` | `GA_MAX_CREWS`, `GA_MAX_ACTIVE_CREWS`, … |
 | `crew.memory` | `min_free_mem_gb`, `spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb` | `GA_MIN_FREE_MEM_GB`, … |
-| `model` | `override`, `default` | `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT` |
-| `backends` | `agent`; `kiro.identity_provider`/`region`/`license`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KIRO_IDENTITY_PROVIDER`, … |
-| `portal` | `tls_mode`, `domain`, `session_ttl_secs`, `dashboard_port_range_start`/`_size`, `dashboard_default`, `rate_limit.*` | `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, … |
-| `machine` | `dedicated`, `name`, `cpus`, `memory`, `disk` | `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, … |
-| `images` | `podman_socket`, `kc_image`, `kc_base_image` | `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE` |
+| `model` | `default` | `KC_MODEL_DEFAULT` |
+| `backends` | `default` (list); `<b>.model.override`/`<b>.model.default`; `kiro.identity_center.url`/`.region`/`kiro.license`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KC_MODEL_<B>_OVERRIDE`/`_DEFAULT`, `KIRO_IDENTITY_PROVIDER`, … |
+| `portal` | `tls_mode`, `domain`, `session_ttl_secs`, `dashboard.default`, `dashboard.port_range.start`/`.size`, `rate_limit.*` | `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, … |
+| `machine` | `dedicated`, `name`, `resources.cpus`/`resources.memory_mb`/`resources.disk_gb` | `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, … |
+| `machine.images` | `podman_socket`, `kc_image`, `kc_base_image` | `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE` |
 
 An unrecognised key produces a warning and is ignored (the install continues).
 A YAML syntax error aborts the install with a parse error.
@@ -214,13 +276,16 @@ layers (both optional; absence is not an error).
 network:
   port: 9000
   host_url: "https://academy.example.com"
-model:
-  override: "anthropic/claude-sonnet-4-20250514"
 backends:
   kiro:
-    identity_provider: "https://identitycenter.amazonaws.com/ssoins-abc123"
-    region: "us-east-1"
+    model:
+      override: "claude-sonnet-4-5"   # force all kiro crews to this model
+    identity_center:
+      url: "https://identitycenter.amazonaws.com/ssoins-abc123"
+      region: "us-east-1"
     license: "pro"
+model:
+  default: "anthropic/claude-sonnet-4-20250514"   # global fallback
 ```
 
 CLI flags override any config-file value:

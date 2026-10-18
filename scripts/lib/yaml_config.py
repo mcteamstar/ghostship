@@ -94,8 +94,7 @@ DEFAULTS: dict[str, str] = {
     "GA_RESOURCE_PRESSURE_GB": "2.0",
     "GA_RESOURCE_CRITICAL_GB": "1.0",
     "GA_SPAWN_PRESSURE_ESCALATE_CYCLES": "3",
-    # ── model ──
-    "KC_MODEL_OVERRIDE": "",
+    # ── model (global fallback only; no global override — TRN-257) ──
     "KC_MODEL_DEFAULT": "",
     # ── git identity ──
     "GA_GIT_AUTHOR_NAME": "",
@@ -107,6 +106,13 @@ DEFAULTS: dict[str, str] = {
     "KIRO_LICENSE": "",
     "ANTHROPIC_BASE_URL": "",
     "OPENAI_BASE_URL": "",
+    # ── per-backend model control (TRN-257) ──
+    "KC_MODEL_KIRO_OVERRIDE": "",
+    "KC_MODEL_KIRO_DEFAULT": "",
+    "KC_MODEL_CLAUDE_OVERRIDE": "",
+    "KC_MODEL_CLAUDE_DEFAULT": "",
+    "KC_MODEL_CODEX_OVERRIDE": "",
+    "KC_MODEL_CODEX_DEFAULT": "",
     # ── user-defined orders ──
     "GA_ORDERS_DIR": "",
     # ── images (advanced) ──
@@ -152,8 +158,8 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("network", "host_url"): "GA_HOST_URL",
     ("network", "api_key"): "GA_API_KEY",
     ("network", "require_api_key"): "GA_REQUIRE_API_KEY",
-    ("network", "tls_certfile"): "GA_TLS_CERTFILE",
-    ("network", "tls_keyfile"): "GA_TLS_KEYFILE",
+    ("network", "tls", "certfile"): "GA_TLS_CERTFILE",
+    ("network", "tls", "keyfile"): "GA_TLS_KEYFILE",
     # crew
     ("crew", "max_crews"): "GA_MAX_CREWS",
     ("crew", "max_active"): "GA_MAX_ACTIVE_CREWS",
@@ -162,35 +168,37 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("crew", "batch_max_tasks"): "GA_BATCH_MAX_TASKS",
     ("crew", "pickup_max_poll_secs"): "GA_PICKUP_MAX_POLL_SECS",
     ("crew", "orders_dir"): "GA_ORDERS_DIR",
-    ("crew", "git_author_name"): "GA_GIT_AUTHOR_NAME",
-    ("crew", "git_author_email"): "GA_GIT_AUTHOR_EMAIL",
+    ("crew", "git", "author", "name"): "GA_GIT_AUTHOR_NAME",
+    ("crew", "git", "author", "email"): "GA_GIT_AUTHOR_EMAIL",
     # crew.memory
     ("crew", "memory", "min_free_mem_gb"): "GA_MIN_FREE_MEM_GB",
     ("crew", "memory", "spawn_min_memory_gb"): "GA_SPAWN_MIN_MEMORY_GB",
     ("crew", "memory", "resource_pressure_gb"): "GA_RESOURCE_PRESSURE_GB",
     ("crew", "memory", "resource_critical_gb"): "GA_RESOURCE_CRITICAL_GB",
     ("crew", "memory", "spawn_pressure_escalate_cycles"): "GA_SPAWN_PRESSURE_ESCALATE_CYCLES",
-    # model
-    ("model", "override"): "KC_MODEL_OVERRIDE",
+    # model (global fallback only — no global override as of TRN-257)
     ("model", "default"): "KC_MODEL_DEFAULT",
     # backends
-    ("backends", "agent"): "GA_CREW_AGENT",
-    ("backends", "kiro", "identity_provider"): "KIRO_IDENTITY_PROVIDER",
-    ("backends", "kiro", "region"): "KIRO_REGION",
+    ("backends", "default"): "GA_CREW_AGENT",
+    ("backends", "kiro", "identity_center", "url"): "KIRO_IDENTITY_PROVIDER",
+    ("backends", "kiro", "identity_center", "region"): "KIRO_REGION",
     ("backends", "kiro", "license"): "KIRO_LICENSE",
     ("backends", "claude", "base_url"): "ANTHROPIC_BASE_URL",
     ("backends", "codex", "base_url"): "OPENAI_BASE_URL",
-    # images (advanced)
-    ("images", "podman_socket"): "PODMAN_SOCKET",
-    ("images", "kc_image"): "KC_IMAGE",
-    ("images", "kc_base_image"): "KC_BASE_IMAGE",
+    # per-backend model control (TRN-257)
+    ("backends", "kiro", "model", "override"): "KC_MODEL_KIRO_OVERRIDE",
+    ("backends", "kiro", "model", "default"): "KC_MODEL_KIRO_DEFAULT",
+    ("backends", "claude", "model", "override"): "KC_MODEL_CLAUDE_OVERRIDE",
+    ("backends", "claude", "model", "default"): "KC_MODEL_CLAUDE_DEFAULT",
+    ("backends", "codex", "model", "override"): "KC_MODEL_CODEX_OVERRIDE",
+    ("backends", "codex", "model", "default"): "KC_MODEL_CODEX_DEFAULT",
     # portal
     ("portal", "tls_mode"): "GA_PORTAL_TLS_MODE",
     ("portal", "domain"): "GA_PORTAL_DOMAIN",
     ("portal", "session_ttl_secs"): "GA_PORTAL_SESSION_TTL_SECS",
-    ("portal", "dashboard_port_range_start"): "GA_DASHBOARD_PORT_RANGE_START",
-    ("portal", "dashboard_port_range_size"): "GA_DASHBOARD_PORT_RANGE_SIZE",
-    ("portal", "dashboard_default"): "GA_DASHBOARD_DEFAULT",
+    ("portal", "dashboard", "port_range", "start"): "GA_DASHBOARD_PORT_RANGE_START",
+    ("portal", "dashboard", "port_range", "size"): "GA_DASHBOARD_PORT_RANGE_SIZE",
+    ("portal", "dashboard", "default"): "GA_DASHBOARD_DEFAULT",
     # portal.rate_limit
     ("portal", "rate_limit", "enabled"): "GA_RATE_LIMIT_ENABLED",
     ("portal", "rate_limit", "login_get"): "GA_RATE_LIMIT_LOGIN_GET",
@@ -202,9 +210,13 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     # machine (dedicated podman machine)
     ("machine", "dedicated"): "GA_DEDICATED_MACHINE",
     ("machine", "name"): "GA_MACHINE_NAME",
-    ("machine", "cpus"): "GA_MACHINE_CPUS",
-    ("machine", "memory"): "GA_MACHINE_MEMORY",
-    ("machine", "disk"): "GA_MACHINE_DISK",
+    ("machine", "resources", "cpus"): "GA_MACHINE_CPUS",
+    ("machine", "resources", "memory_mb"): "GA_MACHINE_MEMORY",
+    ("machine", "resources", "disk_gb"): "GA_MACHINE_DISK",
+    # machine.images (was top-level images: — merged into machine, TRN-257)
+    ("machine", "images", "podman_socket"): "PODMAN_SOCKET",
+    ("machine", "images", "kc_image"): "KC_IMAGE",
+    ("machine", "images", "kc_base_image"): "KC_BASE_IMAGE",
 }
 
 # env var -> YAML path, derived once (used by migration).
@@ -236,6 +248,118 @@ _DROPPED_CONF_KEYS: frozenset[str] = frozenset(
         "GA_AGENT_BACKENDS",
     }
 )
+
+
+# ── Deprecated YAML path rewrite (TRN-257) ────────────────────────────────────
+# TRN-257 restructured the YAML into logical sub-sections. Operators with a
+# ghostship.yaml written against the TRN-253 flat layout are supported: each old
+# tuple-path is rewritten to its new path on load, with a warning. The special
+# case `("model", "override")` has no replacement — the global override was
+# removed as a cross-backend footgun — so it is warned and discarded.
+#
+# Order matters only in that `_DISCARDED_YAML_PATHS` paths are dropped, never
+# copied. Every entry here maps an OLD path to its NEW path.
+_DEPRECATED_YAML_PATHS: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("network", "tls_certfile"): ("network", "tls", "certfile"),
+    ("network", "tls_keyfile"): ("network", "tls", "keyfile"),
+    ("crew", "git_author_name"): ("crew", "git", "author", "name"),
+    ("crew", "git_author_email"): ("crew", "git", "author", "email"),
+    ("backends", "agent"): ("backends", "default"),
+    ("backends", "kiro", "identity_provider"): ("backends", "kiro", "identity_center", "url"),
+    ("backends", "kiro", "region"): ("backends", "kiro", "identity_center", "region"),
+    ("portal", "dashboard_port_range_start"): ("portal", "dashboard", "port_range", "start"),
+    ("portal", "dashboard_port_range_size"): ("portal", "dashboard", "port_range", "size"),
+    ("portal", "dashboard_default"): ("portal", "dashboard", "default"),
+    ("machine", "cpus"): ("machine", "resources", "cpus"),
+    ("machine", "memory"): ("machine", "resources", "memory_mb"),
+    ("machine", "disk"): ("machine", "resources", "disk_gb"),
+    ("images", "podman_socket"): ("machine", "images", "podman_socket"),
+    ("images", "kc_image"): ("machine", "images", "kc_image"),
+    ("images", "kc_base_image"): ("machine", "images", "kc_base_image"),
+}
+
+# Removed paths with no replacement — warn and discard.
+_DISCARDED_YAML_PATHS: dict[tuple[str, ...], str] = {
+    ("model", "override"): (
+        "model.override has been removed — a global model override is a footgun "
+        "across backends with different model namespaces. Use "
+        "backends.<backend>.model.override instead (e.g. backends.kiro.model.override). "
+        "The value is ignored."
+    ),
+}
+
+
+def _pop_path(tree: dict[str, Any], path: tuple[str, ...]) -> Any:
+    """Remove and return the leaf at ``path`` in ``tree``, or ``_MISSING``.
+
+    Prunes any intermediate dicts that become empty after the removal so a
+    deprecated section (e.g. a lone top-level ``images:``) does not linger as an
+    empty mapping and get reported as an unknown key.
+    """
+    # Walk to the parent, recording the chain so we can prune empties.
+    chain: list[dict[str, Any]] = [tree]
+    cursor: Any = tree
+    for segment in path[:-1]:
+        if not isinstance(cursor, dict) or segment not in cursor:
+            return _MISSING
+        cursor = cursor[segment]
+        chain.append(cursor)
+    leaf_key = path[-1]
+    if not isinstance(cursor, dict) or leaf_key not in cursor:
+        return _MISSING
+    value = cursor.pop(leaf_key)
+    # Prune now-empty parent dicts from the deepest upward.
+    for depth in range(len(path) - 2, -1, -1):
+        parent = chain[depth]
+        key = path[depth]
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            del parent[key]
+    return value
+
+
+def _set_path(tree: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    """Set the leaf at ``path`` in ``tree``, creating intermediate dicts."""
+    cursor = tree
+    for segment in path[:-1]:
+        nxt = cursor.get(segment)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cursor[segment] = nxt
+        cursor = nxt
+    cursor[path[-1]] = value
+
+
+def _rewrite_deprecated_yaml_paths(tree: dict[str, Any]) -> None:
+    """Rewrite old TRN-253 YAML paths to their TRN-257 locations, in place.
+
+    For each deprecated path present in ``tree``: if the new path is not already
+    set, copy the value there; delete the old key; warn naming both paths. When
+    the new path is already set (operator used both forms), the new value wins
+    and no warning is emitted for the old key (it is simply removed).
+
+    Removed paths (``_DISCARDED_YAML_PATHS``, e.g. ``model.override``) are warned
+    about and discarded without a replacement.
+    """
+    for old_path, msg in _DISCARDED_YAML_PATHS.items():
+        if _lookup_path(tree, old_path) is not _MISSING:
+            _pop_path(tree, old_path)
+            sys.stderr.write(f"warning: {msg}\n")
+
+    for old_path, new_path in _DEPRECATED_YAML_PATHS.items():
+        old_value = _pop_path(tree, old_path)
+        if old_value is _MISSING:
+            continue
+        old_dotted = ".".join(old_path)
+        new_dotted = ".".join(new_path)
+        if _lookup_path(tree, new_path) is not _MISSING:
+            # New path already set — it wins; old key already removed above.
+            continue
+        _set_path(tree, new_path, old_value)
+        sys.stderr.write(
+            f"warning: config key '{old_dotted}' is deprecated; "
+            f"use '{new_dotted}' instead (value applied).\n"
+        )
 
 
 # ── Loading / merging ─────────────────────────────────────────────────────────
@@ -290,10 +414,17 @@ def _defaults_tree() -> dict[str, Any]:
     for path, env in _KEY_MAP.items():
         if env not in DEFAULTS:
             continue
+        value: Any = DEFAULTS[env]
+        # backends.default is canonically a YAML list; the DEFAULTS table stores
+        # the comma-string form "kiro" for GA_CREW_AGENT, so expand it to a list
+        # here. This keeps flatten_to_env on the list path (no spurious
+        # string-deprecation warning on an unconfigured install).
+        if path == ("backends", "default"):
+            value = [p for p in str(value).split(",") if p]
         cursor = tree
         for segment in path[:-1]:
             cursor = cursor.setdefault(segment, {})
-        cursor[path[-1]] = DEFAULTS[env]
+        cursor[path[-1]] = value
     return tree
 
 
@@ -311,10 +442,16 @@ def resolve_config(
     """
     merged = _defaults_tree()
     if explicit_path:
-        merged = deep_merge(merged, load_yaml(explicit_path))
+        layer = load_yaml(explicit_path)
+        _rewrite_deprecated_yaml_paths(layer)
+        merged = deep_merge(merged, layer)
     else:
-        merged = deep_merge(merged, load_yaml(repo_path))
-        merged = deep_merge(merged, load_yaml(xdg_path))
+        repo_layer = load_yaml(repo_path)
+        _rewrite_deprecated_yaml_paths(repo_layer)
+        merged = deep_merge(merged, repo_layer)
+        xdg_layer = load_yaml(xdg_path)
+        _rewrite_deprecated_yaml_paths(xdg_layer)
+        merged = deep_merge(merged, xdg_layer)
     return merged
 
 
@@ -348,8 +485,30 @@ def flatten_to_env(merged: dict[str, Any]) -> dict[str, str]:
         value = _lookup_path(merged, path)
         if value is _MISSING:
             continue
+        if path == ("backends", "default"):
+            env[var] = _normalise_backends_default(value)
+            continue
         env[var] = _normalise_scalar(value)
     return env
+
+
+def _normalise_backends_default(value: Any) -> str:
+    """Normalise ``backends.default`` to the comma-string ``GA_CREW_AGENT`` wants.
+
+    The canonical form is a YAML list (``[kiro, claude]`` -> ``"kiro,claude"``).
+    A bare string is the deprecated TRN-253 form (``backends.agent: "kiro"``);
+    it is accepted as-is with a deprecation warning. Any other scalar is coerced
+    through ``_normalise_scalar`` for robustness.
+    """
+    if isinstance(value, list):
+        return ",".join(_normalise_scalar(item) for item in value)
+    if isinstance(value, str):
+        sys.stderr.write(
+            "warning: backends.default as a string is deprecated; "
+            "use a YAML list instead (e.g. backends.default: [kiro, claude]).\n"
+        )
+        return value
+    return _normalise_scalar(value)
 
 
 _MISSING = object()

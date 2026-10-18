@@ -1702,9 +1702,10 @@ def dispatch(
             other context. Mutually exclusive with ``tasks``.
         agent: Which agent to use. Default is 'ghost' (general-purpose).
         crew_id: Which crew to dispatch to. Required — use launch first.
-        model: Optional model override for this call only. It outranks
-            KC_MODEL_OVERRIDE and per-agent config. It has no effect on later
-            steer/continue operations.
+        model: Optional model override for this call only. It is the highest
+            precedence level — it outranks the per-backend override
+            (backends.<b>.model.override) and per-agent config. It has no effect
+            on later steer/continue operations.
         tasks: A list of 2..GA_BATCH_MAX_TASKS task strings for atomic batch
             dispatch. Mutually exclusive with ``task``.
         slot: Dashboard session routing for this dispatch. One of:

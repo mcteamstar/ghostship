@@ -219,8 +219,41 @@ GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 _KC_AGENT_NAME = "kiro"
 # Retained as GA_CREW_AGENT for existing call sites in _patch_crew_config.
 GA_CREW_AGENT = _KC_AGENT_NAME
-KC_MODEL_OVERRIDE = cfg.kc_model_override
 KC_MODEL_DEFAULT = cfg.kc_model_default
+# Per-backend model knobs (TRN-257). Keyed by backend name so the precedence
+# chain can be resolved for whichever backend a crew runs on.
+_KC_MODEL_BACKEND_OVERRIDE: dict[str, str] = {
+    "kiro": cfg.kc_model_kiro_override,
+    "claude": cfg.kc_model_claude_override,
+    "codex": cfg.kc_model_codex_override,
+}
+_KC_MODEL_BACKEND_DEFAULT: dict[str, str] = {
+    "kiro": cfg.kc_model_kiro_default,
+    "claude": cfg.kc_model_claude_default,
+    "codex": cfg.kc_model_codex_default,
+}
+
+
+def _resolve_backend_model_override(backend: str) -> str:
+    """Per-backend hard override (``backends.<b>.model.override``), or ''.
+
+    Highest operator-controlled precedence level: when set, every agent on this
+    backend is forced to the named model regardless of per-agent persona config.
+    """
+    return _KC_MODEL_BACKEND_OVERRIDE.get(backend, "")
+
+
+def _resolve_backend_default_model(backend: str) -> str:
+    """Resolve the fallback model for a backend when no per-agent model is set.
+
+    Applies the lower half of the TRN-257 precedence chain:
+      backends.<b>.model.default > model.default > "" (KiroCrew built-in)
+    The caller writes the result as ``agent.default_model`` only when non-empty,
+    leaving KiroCrew's built-in default intact otherwise. A per-agent model in a
+    persona file still wins over this (the gateway treats default_model as a
+    fallback), as does a per-backend override resolved separately.
+    """
+    return _KC_MODEL_BACKEND_DEFAULT.get(backend, "") or KC_MODEL_DEFAULT
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
 GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
 GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
@@ -991,8 +1024,15 @@ def _seed_openspec_store(podman: PodmanClient, container: str) -> None:
 
 
 def _patch_models(podman: PodmanClient, container: str) -> None:
-    """Patch all *.json agent files to KC_MODEL_OVERRIDE if set."""
-    model = KC_MODEL_OVERRIDE
+    """Hard-patch all *.json agent files to the per-backend model override.
+
+    TRN-257: the override is now per-backend (``backends.<b>.model.override``),
+    resolved for the crew's runtime default backend (``GA_CREW_ACP_BACKEND``).
+    When set, it forces every agent on that backend to the named model — the
+    highest operator-controlled precedence level (``backend_override``), beaten
+    only by a dispatch-time ``model=`` argument. No override set -> no patch.
+    """
+    model = _resolve_backend_model_override(GA_CREW_ACP_BACKEND)
     if not model:
         return
     try:
@@ -1539,13 +1579,18 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
     # ghostship's per-call kiro approval gate does not apply (see crew-governance).
     elif GA_CREW_ACP_BACKEND == "codex":
         agent_overrides["acp_backend"] = "codex"
-    # KC_MODEL_DEFAULT sets agent.default_model — a global fallback that applies
-    # when no per-agent model field overrides it. Precedence (high→low):
-    #   KC_MODEL_OVERRIDE > per-agent model > KC_MODEL_DEFAULT > KiroCrew built-in
-    # Only write the field when the env var is set and non-empty; omitting it
-    # leaves KiroCrew's built-in default intact for existing installs.
-    if KC_MODEL_DEFAULT:
-        agent_overrides["default_model"] = KC_MODEL_DEFAULT
+    # agent.default_model — the fallback model applied when no per-agent model
+    # field overrides it. TRN-257 resolves it per backend:
+    #   backends.<b>.model.default > model.default > KiroCrew built-in
+    # Full precedence chain (high→low):
+    #   dispatch(model=) > backends.<b>.model.override > per-agent model
+    #     > backends.<b>.model.default > model.default > KiroCrew built-in
+    # The per-backend override (if any) is applied separately as a hard patch in
+    # _patch_models. Only write default_model when the resolved fallback is
+    # non-empty; omitting it leaves KiroCrew's built-in default intact.
+    _default_model = _resolve_backend_default_model(GA_CREW_ACP_BACKEND)
+    if _default_model:
+        agent_overrides["default_model"] = _default_model
 
     # Build the full config override structure passed to patch_crew_config.py.
     # The script deep-merges every top-level key into config.local.json, so

@@ -250,8 +250,23 @@ class Config:
     ga_idle_timeout_secs: int = 300
 
     # ── Model ────────────────────────────────────────────────────────────────
-    kc_model_override: str = ""
+    # Global override removed in TRN-257 (a global model is a footgun across
+    # backends with different namespaces). `kc_model_default` is the sole global
+    # knob — the lowest-precedence fallback. Per-backend control lives in the
+    # kc_model_<backend>_override / _default fields below.
     kc_model_default: str = ""
+
+    # ── Per-backend model control (TRN-257) ──────────────────────────────────
+    # Resolved at spawn time into the precedence chain:
+    #   dispatch > backend_override > per-agent > backend_default > model.default > built-in
+    # `override` forces every agent on that backend to the named model; `default`
+    # is that backend's fallback when no per-agent model is set. Empty = unset.
+    kc_model_kiro_override: str = ""
+    kc_model_kiro_default: str = ""
+    kc_model_claude_override: str = ""
+    kc_model_claude_default: str = ""
+    kc_model_codex_override: str = ""
+    kc_model_codex_default: str = ""
 
     # ── Memory gate / thresholds ─────────────────────────────────────────────
     ga_min_free_mem_gb: float = 2.0
@@ -402,8 +417,13 @@ class Config:
             ga_max_crews=_env_int("GA_MAX_CREWS", "20"),
             ga_max_active_crews=_env_int("GA_MAX_ACTIVE_CREWS", "3"),
             ga_idle_timeout_secs=_env_int("GA_IDLE_TIMEOUT_SECS", "300"),
-            kc_model_override=os.environ.get("KC_MODEL_OVERRIDE", ""),
             kc_model_default=os.environ.get("KC_MODEL_DEFAULT", ""),
+            kc_model_kiro_override=os.environ.get("KC_MODEL_KIRO_OVERRIDE", ""),
+            kc_model_kiro_default=os.environ.get("KC_MODEL_KIRO_DEFAULT", ""),
+            kc_model_claude_override=os.environ.get("KC_MODEL_CLAUDE_OVERRIDE", ""),
+            kc_model_claude_default=os.environ.get("KC_MODEL_CLAUDE_DEFAULT", ""),
+            kc_model_codex_override=os.environ.get("KC_MODEL_CODEX_OVERRIDE", ""),
+            kc_model_codex_default=os.environ.get("KC_MODEL_CODEX_DEFAULT", ""),
             ga_min_free_mem_gb=_env_float("GA_MIN_FREE_MEM_GB", "2.0"),
             ga_spawn_min_memory_gb=_env_float("GA_SPAWN_MIN_MEMORY_GB", "1.5"),
             ga_resource_pressure_gb=_env_float("GA_RESOURCE_PRESSURE_GB", "2.0"),

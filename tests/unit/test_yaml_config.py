@@ -171,7 +171,7 @@ class TestFlattenToEnv(unittest.TestCase):
 
     def test_nested_backend_mapping(self):
         env = yaml_config.flatten_to_env(
-            {"backends": {"kiro": {"identity_provider": "https://idp"}}}
+            {"backends": {"kiro": {"identity_center": {"url": "https://idp"}}}}
         )
         self.assertEqual(env["KIRO_IDENTITY_PROVIDER"], "https://idp")
 
@@ -241,7 +241,7 @@ class TestMigrateConf(unittest.TestCase):
         yaml_config.migrate_conf(self.conf, self.out)
         loaded = yaml_config.load_yaml(self.out)
         self.assertEqual(
-            loaded["backends"]["kiro"]["identity_provider"],
+            loaded["backends"]["kiro"]["identity_center"]["url"],
             "https://idp.example.com",
         )
 
@@ -355,6 +355,166 @@ class TestComposeVarCoverage(unittest.TestCase):
         """
         self.assertNotIn("GA_SUBAGENT_MAX_TURNS", yaml_config.DEFAULTS)
         self.assertNotIn("GA_SUBAGENT_MAX_TURNS", yaml_config._ENV_TO_PATH)
+
+
+class TestDeprecatedYamlPaths(unittest.TestCase):
+    """TRN-257: old flat YAML paths rewrite to the new sub-section paths with a
+    warning; the removed model.override is warned about and discarded."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _write(self, name: str, content: str) -> str:
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return path
+
+    def _resolve_env(self, yaml_text: str):
+        """Resolve a single explicit-config layer, capturing stderr warnings."""
+        import contextlib
+        import io
+
+        cfg = self._write("c.yaml", yaml_text)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            merged = yaml_config.resolve_config("", "", cfg)
+            env = yaml_config.flatten_to_env(merged)
+        return env, buf.getvalue()
+
+    def test_git_author_name_deprecated_path(self):
+        env, warnings = self._resolve_env("crew:\n  git_author_name: Bot\n")
+        self.assertEqual(env["GA_GIT_AUTHOR_NAME"], "Bot")
+        self.assertIn("crew.git_author_name", warnings)
+        self.assertIn("crew.git.author.name", warnings)
+
+    def test_tls_certfile_deprecated_path(self):
+        env, warnings = self._resolve_env("network:\n  tls_certfile: /x/cert.pem\n")
+        self.assertEqual(env["GA_TLS_CERTFILE"], "/x/cert.pem")
+        self.assertIn("network.tls_certfile", warnings)
+
+    def test_identity_provider_deprecated_path(self):
+        env, warnings = self._resolve_env(
+            "backends:\n  kiro:\n    identity_provider: https://idp\n"
+        )
+        self.assertEqual(env["KIRO_IDENTITY_PROVIDER"], "https://idp")
+        self.assertIn("backends.kiro.identity_provider", warnings)
+        self.assertIn("backends.kiro.identity_center.url", warnings)
+
+    def test_machine_cpus_deprecated_path(self):
+        env, warnings = self._resolve_env("machine:\n  cpus: 4\n")
+        self.assertEqual(env["GA_MACHINE_CPUS"], "4")
+        self.assertIn("machine.cpus", warnings)
+        self.assertIn("machine.resources.cpus", warnings)
+
+    def test_images_section_merged_into_machine(self):
+        env, warnings = self._resolve_env(
+            "images:\n  kc_image: localhost/custom:v2\n"
+        )
+        self.assertEqual(env["KC_IMAGE"], "localhost/custom:v2")
+        self.assertIn("images.kc_image", warnings)
+        self.assertIn("machine.images.kc_image", warnings)
+
+    def test_dashboard_port_range_deprecated_path(self):
+        env, warnings = self._resolve_env(
+            "portal:\n  dashboard_port_range_start: 70000\n"
+        )
+        self.assertEqual(env["GA_DASHBOARD_PORT_RANGE_START"], "70000")
+        self.assertIn("portal.dashboard_port_range_start", warnings)
+
+    def test_model_override_removed_warns_and_ignored(self):
+        env, warnings = self._resolve_env("model:\n  override: some-model\n")
+        # No env var for a removed key, and the global default is untouched.
+        self.assertNotIn("KC_MODEL_OVERRIDE", env)
+        self.assertEqual(env["KC_MODEL_DEFAULT"], "")
+        self.assertIn("model.override", warnings)
+        self.assertIn("removed", warnings)
+        self.assertIn("backends.<backend>.model.override", warnings)
+
+    def test_deprecated_path_does_not_warn_as_unknown(self):
+        _env, warnings = self._resolve_env("machine:\n  cpus: 4\n")
+        # The old path is rewritten, not surfaced as an unknown-key warning.
+        self.assertNotIn("unknown config key", warnings)
+
+    def test_new_path_wins_when_both_present(self):
+        env, warnings = self._resolve_env(
+            "backends:\n  agent: kiro\n  default: [kiro, claude]\n"
+        )
+        self.assertEqual(env["GA_CREW_AGENT"], "kiro,claude")
+        # No deprecation warning for backends.agent — the new path already set it.
+        self.assertNotIn("backends.agent", warnings)
+
+
+class TestBackendsDefaultList(unittest.TestCase):
+    """TRN-257: backends.default accepts a list (canonical) or string (deprecated)."""
+
+    def test_list_joined_to_comma_string(self):
+        env = yaml_config.flatten_to_env({"backends": {"default": ["kiro", "claude"]}})
+        self.assertEqual(env["GA_CREW_AGENT"], "kiro,claude")
+
+    def test_single_element_list(self):
+        env = yaml_config.flatten_to_env({"backends": {"default": ["kiro"]}})
+        self.assertEqual(env["GA_CREW_AGENT"], "kiro")
+
+    def test_string_form_warns_but_resolves(self):
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            env = yaml_config.flatten_to_env(
+                {"backends": {"default": "kiro,codex"}}
+            )
+        self.assertEqual(env["GA_CREW_AGENT"], "kiro,codex")
+        self.assertIn("backends.default", buf.getvalue())
+        self.assertIn("deprecated", buf.getvalue())
+
+    def test_default_install_uses_list_no_warning(self):
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            merged = yaml_config.resolve_config("", "", None)
+            env = yaml_config.flatten_to_env(merged)
+        self.assertEqual(env["GA_CREW_AGENT"], "kiro")
+        # The built-in default is a list, so no string-deprecation warning fires.
+        self.assertNotIn("backends.default as a string", buf.getvalue())
+
+
+class TestPerBackendModelEnvVars(unittest.TestCase):
+    """TRN-257: per-backend model env vars emitted from the new YAML paths."""
+
+    def test_all_six_present_in_defaults(self):
+        merged = yaml_config.resolve_config("", "", None)
+        env = yaml_config.flatten_to_env(merged)
+        for var in (
+            "KC_MODEL_KIRO_OVERRIDE",
+            "KC_MODEL_KIRO_DEFAULT",
+            "KC_MODEL_CLAUDE_OVERRIDE",
+            "KC_MODEL_CLAUDE_DEFAULT",
+            "KC_MODEL_CODEX_OVERRIDE",
+            "KC_MODEL_CODEX_DEFAULT",
+        ):
+            self.assertIn(var, env)
+            self.assertEqual(env[var], "")
+
+    def test_kiro_override_resolves(self):
+        env = yaml_config.flatten_to_env(
+            {"backends": {"kiro": {"model": {"override": "claude-sonnet-4-5"}}}}
+        )
+        self.assertEqual(env["KC_MODEL_KIRO_OVERRIDE"], "claude-sonnet-4-5")
+
+    def test_codex_default_resolves(self):
+        env = yaml_config.flatten_to_env(
+            {"backends": {"codex": {"model": {"default": "gpt-x"}}}}
+        )
+        self.assertEqual(env["KC_MODEL_CODEX_DEFAULT"], "gpt-x")
+
+    def test_global_model_override_absent(self):
+        # The global model.override env var no longer exists anywhere.
+        self.assertNotIn("KC_MODEL_OVERRIDE", yaml_config.DEFAULTS)
+        self.assertNotIn("KC_MODEL_OVERRIDE", yaml_config._ENV_TO_PATH)
 
 
 if __name__ == "__main__":

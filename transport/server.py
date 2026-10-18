@@ -418,7 +418,6 @@ GA_IDLE_TIMEOUT_SECS = cfg.ga_idle_timeout_secs
 _KC_AGENT_NAME = "kiro"
 # Retained as GA_CREW_AGENT for existing call sites.
 GA_CREW_AGENT = _KC_AGENT_NAME
-KC_MODEL_OVERRIDE = cfg.kc_model_override
 KC_MODEL_DEFAULT = cfg.kc_model_default
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
 GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb

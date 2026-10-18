@@ -648,16 +648,26 @@ class TestConfigYamlExampleSync(unittest.TestCase):
 
         parsed = yaml.safe_load(raw)
         self.assertIsInstance(parsed, dict)
-        # Spot-check a selection of nested keys.
+        # Spot-check a selection of nested keys (TRN-257 structure).
         self.assertIn("network", parsed)
         self.assertEqual(parsed["network"]["port"], 64057)
+        self.assertIn("tls", parsed["network"])
         self.assertIn("crew", parsed)
         self.assertIn("memory", parsed["crew"])
+        self.assertIn("author", parsed["crew"]["git"])
         self.assertIn("backends", parsed)
+        # backends.default is now a YAML list; model.override removed globally.
+        self.assertIsInstance(parsed["backends"]["default"], list)
+        self.assertIn("model", parsed["backends"]["kiro"])
+        self.assertIn("identity_center", parsed["backends"]["kiro"])
+        self.assertNotIn("override", parsed["model"])
         self.assertIn("portal", parsed)
         self.assertIn("rate_limit", parsed["portal"])
+        self.assertIn("port_range", parsed["portal"]["dashboard"])
         self.assertIn("machine", parsed)
-        self.assertIn("images", parsed)
+        self.assertIn("resources", parsed["machine"])
+        # images merged into machine (was a top-level section before TRN-257).
+        self.assertIn("images", parsed["machine"])
 
 
 if __name__ == "__main__":

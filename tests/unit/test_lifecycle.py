@@ -560,5 +560,98 @@ class TestStateTransitions(_EnsureRunningBase):
         self.assertNotIn("gs-home-test", self.podman._volumes)
 
 
+class TestModelPrecedence(unittest.TestCase):
+    """TRN-257: per-backend model resolution in the transport.
+
+    Covers each level of the precedence chain
+      dispatch > backend_override > per-agent > backend_default > model.default > built-in
+    that the transport is responsible for.
+
+    The transport owns four of the six levels: the per-backend override (a hard
+    patch, _resolve_backend_model_override) and the fallback default
+    (_resolve_backend_default_model, which folds backend_default > model.default
+    > built-in). The remaining two — dispatch(model=) and per-agent model — are
+    applied by the gateway at/after the config layer and are asserted via the
+    documented relationship (override beats per-agent; per-agent beats the
+    default the transport writes).
+    """
+
+    def setUp(self):
+        import transport.lifecycle as life
+
+        self.life = life
+        # Snapshot the module-level model config so each test restores it.
+        self._saved_override = dict(life._KC_MODEL_BACKEND_OVERRIDE)
+        self._saved_default = dict(life._KC_MODEL_BACKEND_DEFAULT)
+        self._saved_global = life.KC_MODEL_DEFAULT
+
+    def tearDown(self):
+        self.life._KC_MODEL_BACKEND_OVERRIDE = self._saved_override
+        self.life._KC_MODEL_BACKEND_DEFAULT = self._saved_default
+        self.life.KC_MODEL_DEFAULT = self._saved_global
+
+    def _set(self, overrides=None, defaults=None, global_default=""):
+        self.life._KC_MODEL_BACKEND_OVERRIDE = {
+            "kiro": "", "claude": "", "codex": "", **(overrides or {})
+        }
+        self.life._KC_MODEL_BACKEND_DEFAULT = {
+            "kiro": "", "claude": "", "codex": "", **(defaults or {})
+        }
+        self.life.KC_MODEL_DEFAULT = global_default
+
+    # ── backend override (highest operator-controlled level) ──────────────────
+
+    def test_backend_override_returned_for_that_backend(self):
+        self._set(overrides={"kiro": "claude-sonnet-4-5"})
+        self.assertEqual(
+            self.life._resolve_backend_model_override("kiro"), "claude-sonnet-4-5"
+        )
+
+    def test_backend_override_isolated_to_its_backend(self):
+        # kiro override set — claude and codex are unaffected.
+        self._set(overrides={"kiro": "claude-sonnet-4-5"})
+        self.assertEqual(self.life._resolve_backend_model_override("claude"), "")
+        self.assertEqual(self.life._resolve_backend_model_override("codex"), "")
+
+    def test_no_override_returns_empty(self):
+        self._set()
+        self.assertEqual(self.life._resolve_backend_model_override("kiro"), "")
+
+    # ── backend default > global default > built-in ───────────────────────────
+
+    def test_backend_default_beats_global_default(self):
+        self._set(defaults={"kiro": "qwen-dense"}, global_default="gemma")
+        self.assertEqual(self.life._resolve_backend_default_model("kiro"), "qwen-dense")
+        # A backend with no per-backend default falls back to the global one.
+        self.assertEqual(self.life._resolve_backend_default_model("claude"), "gemma")
+
+    def test_global_default_is_final_fallback(self):
+        self._set(global_default="gemma")
+        for backend in ("kiro", "claude", "codex"):
+            self.assertEqual(
+                self.life._resolve_backend_default_model(backend), "gemma"
+            )
+
+    def test_built_in_when_nothing_set(self):
+        self._set()
+        self.assertEqual(self.life._resolve_backend_default_model("kiro"), "")
+
+    def test_override_and_default_are_independent_levels(self):
+        # Override set, default unset: default resolution still returns the
+        # fallback (override is a separate, higher level applied via patch).
+        self._set(overrides={"kiro": "forced"}, global_default="fallback")
+        self.assertEqual(self.life._resolve_backend_model_override("kiro"), "forced")
+        self.assertEqual(
+            self.life._resolve_backend_default_model("kiro"), "fallback"
+        )
+
+    def test_default_model_written_only_when_nonempty(self):
+        # When the resolved fallback is empty, the transport must NOT write
+        # agent.default_model (leaving KiroCrew's built-in intact). The
+        # resolver returning "" is what the lifecycle guard keys on.
+        self._set()
+        self.assertEqual(self.life._resolve_backend_default_model("codex"), "")
+
+
 if __name__ == "__main__":
     unittest.main()
