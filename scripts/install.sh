@@ -297,13 +297,50 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+# Bootstrap a minimal venv for yaml_config.py (requires PyYAML, which may not
+# be installed in the system Python). The venv lives in /tmp and is reused
+# across installs — only created once per machine.
+_YAML_VENV="${TMPDIR:-/tmp}/ghostship-yaml-venv"
+if [[ ! -x "${_YAML_VENV}/bin/python3" ]] \
+   || ! "${_YAML_VENV}/bin/python3" -c "import yaml" 2>/dev/null; then
+  echo "  Bootstrapping yaml config venv (one-time, installs PyYAML)..." >&2
+  [[ -d "${_YAML_VENV}" ]] || python3 -m venv "${_YAML_VENV}"
+  if command -v uv >/dev/null 2>&1; then
+    # uv is fast and handles PEP 668 / externally-managed Pythons gracefully
+    uv pip install --quiet --python "${_YAML_VENV}/bin/python3" "pyyaml>=6.0,<7.0" || {
+      echo "Error: failed to install PyYAML (via uv) into yaml config venv." >&2; exit 1
+    }
+  else
+    # Bootstrap pip inside the venv then install PyYAML
+    "${_YAML_VENV}/bin/python3" -m ensurepip --upgrade --quiet 2>/dev/null \
+      || python3 -m ensurepip --upgrade --quiet 2>/dev/null || true
+    if ! "${_YAML_VENV}/bin/python3" -m pip install --quiet "pyyaml>=6.0,<7.0" 2>/dev/null; then
+      # Last resort: download get-pip.py
+      _GETPIP="$(mktemp /tmp/get-pip.XXXXXX.py)"
+      if command -v curl >/dev/null 2>&1; then
+        curl -sSL https://bootstrap.pypa.io/get-pip.py -o "$_GETPIP"
+      else
+        wget -qO "$_GETPIP" https://bootstrap.pypa.io/get-pip.py
+      fi
+      "${_YAML_VENV}/bin/python3" "$_GETPIP" --quiet
+      rm -f "$_GETPIP"
+      "${_YAML_VENV}/bin/python3" -m pip install --quiet "pyyaml>=6.0,<7.0" || {
+        echo "Error: failed to install PyYAML into yaml config venv." >&2
+        echo "       Try: pip install pyyaml" >&2
+        exit 1
+      }
+    fi
+  fi
+fi
+_YAML_PYTHON="${_YAML_VENV}/bin/python3"
+
 # ── Auto-migration: ghostship.conf → ghostship.yaml (TRN-253) ────────────────
 # When a legacy conf exists with no yaml alongside it, convert mechanically,
 # write the yaml, rename the old file to .bak, and warn on any unmapped keys.
 # Only runs for the implicit repo config (not for an explicit --config path).
 if [[ -z "$CONFIG_FILE" && -f "$_REPO_CONF" && ! -f "$_REPO_YAML" ]]; then
   echo "⚠ Legacy config/ghostship.conf found — migrating to config/ghostship.yaml" >&2
-  _MIGRATE_OUT="$(python3 "$_YAML_CONFIG_HELPER" migrate --conf "$_REPO_CONF" --out "$_REPO_YAML")" || {
+  _MIGRATE_OUT="$("$_YAML_PYTHON" "$_YAML_CONFIG_HELPER" migrate --conf "$_REPO_CONF" --out "$_REPO_YAML")" || {
     echo "Error: config migration failed." >&2
     exit 1
   }
@@ -328,7 +365,7 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: config file is not readable: $CONFIG_FILE" >&2
     exit 1
   fi
-  _RESOLVED="$(python3 "$_YAML_CONFIG_HELPER" resolve --config "$CONFIG_FILE")" || {
+  _RESOLVED="$("$_YAML_PYTHON" "$_YAML_CONFIG_HELPER" resolve --config "$CONFIG_FILE")" || {
     echo "Error: failed to parse config file: $CONFIG_FILE" >&2
     exit 1
   }
@@ -341,7 +378,7 @@ else
   if [[ -f "$_REPO_YAML" || -f "$_XDG_YAML" ]]; then
     _FOUND_CONFIG=true
   fi
-  _RESOLVED="$(python3 "$_YAML_CONFIG_HELPER" resolve --repo "$_REPO_YAML" --xdg "$_XDG_YAML")" || {
+  _RESOLVED="$("$_YAML_PYTHON" "$_YAML_CONFIG_HELPER" resolve --repo "$_REPO_YAML" --xdg "$_XDG_YAML")" || {
     echo "Error: failed to resolve YAML config." >&2
     exit 1
   }
