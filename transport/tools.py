@@ -1231,6 +1231,38 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     # Remove the per-crew signing-secret file (best-effort).
     _delete_crew_secret(crew_id)
 
+    # Evict per-crew in-memory state so nuked crew_ids do not accumulate
+    # indefinitely in long-running transport processes.
+    #
+    # _recovery_locks / _startup_generation / _crew_restart_outcomes live in
+    # lifecycle module-level dicts (and are mirrored in _launcher for the
+    # restart path). _idle_skip_reasons lives in monitors.
+    # These are all small objects (Lock, int, str, tuple) but grow without
+    # bound across many launch+nuke cycles if not pruned here.
+    try:
+        from lifecycle import (  # container: flat /app/
+            _recovery_locks, _recovery_locks_lock,
+            _startup_events_lock, _startup_generation, _crew_restart_outcomes,
+        )
+    except ModuleNotFoundError:
+        from transport.lifecycle import (  # local dev
+            _recovery_locks, _recovery_locks_lock,
+            _startup_events_lock, _startup_generation, _crew_restart_outcomes,
+        )
+    with _recovery_locks_lock:
+        _recovery_locks.pop(crew_id, None)
+    with _startup_events_lock:
+        _startup_generation.pop(crew_id, None)
+        _crew_restart_outcomes.pop(crew_id, None)
+    try:
+        try:
+            from monitors import _idle_skip_reasons  # container: flat /app/
+        except ModuleNotFoundError:
+            from transport.monitors import _idle_skip_reasons  # local dev
+        _idle_skip_reasons.pop(crew_id, None)
+    except Exception:
+        pass  # monitors may not be loaded yet (e.g. tests); skip silently
+
     logger.info("Crew %s nuked", crew_id)
     return {"crew_id": crew_id, "status": "nuked", "container": container}
 

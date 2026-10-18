@@ -1,6 +1,14 @@
 ## 1. Extend backend validation to accept `opencode`
 
-- [ ] 1.1 Add `opencode` to the valid backend names in `transport/config.py`'s `_parse_ga_crew_agent()` (alongside `kiro`, `claude`, `codex`). Also add it to the deprecated `parse_agent_backends()` alias to keep the parity test in sync.
+> **Banshee review note (2026-10-18):** `Config.ga_crew_agent`'s docstring on line 319 of
+> `transport/config.py` already lists `"opencode"` as a valid value, but `_ACP_BACKEND_VALUES`
+> (line 75) does not include it. Setting `GA_CREW_AGENT=opencode` therefore raises a
+> `ConfigError` at transport startup — the comment actively misleads operators. Task 1.1
+> must fix both in the same commit: add `opencode` to `_ACP_BACKEND_VALUES` AND ensure the
+> docstring matches reality (or remove the premature mention until the full implementation is
+> ready).
+
+- [ ] 1.1 Add `opencode` to the valid backend names in `transport/config.py`'s `_parse_ga_crew_agent()` (alongside `kiro`, `claude`, `codex`). Also add it to the deprecated `parse_agent_backends()` alias to keep the parity test in sync. **Fix the `Config.ga_crew_agent` docstring in the same commit so it only lists backends that actually pass validation.**
 - [ ] 1.2 Add `opencode` to `scripts/lib/agent_backends.sh` — it is validated against toolchain scripts, so adding `opencode.sh` in step 2 may be sufficient; confirm and add any explicit validation if needed
 - [ ] 1.3 Update `tests/unit/test_agent_backends.py` with opencode validation scenarios (valid name accepted, unknown name still rejected, case normalisation)
 - [ ] 1.4 Update `tests/unit/test_agent_backends_parity.py` to keep transport and shell validation in step
