@@ -635,36 +635,29 @@ class TestConfigYamlExampleSync(unittest.TestCase):
         )
 
     def test_yaml_example_parses_when_decommented(self):
-        """The commented key lines in the example form syntactically valid YAML.
+        """The example file is valid YAML and contains the expected structure.
 
-        Prose comment lines (sentences, section banners) are left out; only
-        lines whose decommented form looks like a YAML key or list item are
-        un-commented. Guards against a malformed template whose keys would not
-        parse once an operator uncomments them.
+        Since ghostship.yaml.example is now live YAML (not a fully-commented
+        template), we parse it directly and spot-check key sections survive.
+        Guards against accidentally writing invalid YAML in the example.
         """
-        import re
-
         import yaml
 
         _yc, repo_root = self._load_yaml_config_module()
         raw = (repo_root / "config" / "ghostship.yaml.example").read_text()
 
-        # A YAML key line (optionally commented): leading indent, optional
-        # "# ", then "key:" or "key: value" or a "- " list item.
-        key_re = re.compile(r"^(\s*)#?\s?(\s*)([\w.-]+:(\s.*)?|-\s.*)$")
-        out_lines: list[str] = []
-        for line in raw.splitlines():
-            m = key_re.match(line)
-            if m and not line.lstrip().startswith("# ─") and "═" not in line:
-                indent = m.group(1) + m.group(2)
-                out_lines.append(indent + m.group(3))
-            # else: drop prose/banner comment lines entirely
-        decommented = "\n".join(out_lines)
-        parsed = yaml.safe_load(decommented)
+        parsed = yaml.safe_load(raw)
         self.assertIsInstance(parsed, dict)
-        # Spot-check a nested key survived the round-trip.
+        # Spot-check a selection of nested keys.
         self.assertIn("network", parsed)
         self.assertEqual(parsed["network"]["port"], 64057)
+        self.assertIn("crew", parsed)
+        self.assertIn("memory", parsed["crew"])
+        self.assertIn("backends", parsed)
+        self.assertIn("portal", parsed)
+        self.assertIn("rate_limit", parsed["portal"])
+        self.assertIn("machine", parsed)
+        self.assertIn("images", parsed)
 
 
 if __name__ == "__main__":
