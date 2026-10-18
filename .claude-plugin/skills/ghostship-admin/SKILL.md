@@ -260,6 +260,12 @@ operations and `ghostship-admin` only for host-level work (install, auth,
 upgrade). You should rarely need to invoke `ghostship-admin` after initial
 setup is complete.
 
+**Keeping skills up to date:** `ghostship setup` creates symlinks from your
+agent's skill directory to the ghostship repo. Once symlinked, skills update
+automatically whenever you `git pull` in the ghostship repo — no re-run needed.
+Only run `ghostship setup` again if symlinks are missing or broken (e.g. after
+moving the repo to a new location).
+
 ## Keep it running
 
 `ghostship start` brings ghostship back up after a stop or reboot — starts the
