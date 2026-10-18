@@ -53,7 +53,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_GIT_AUTHOR_NAME` | _(unset)_ | Injected as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` into every crew container at setup. When set with `GA_GIT_AUTHOR_EMAIL`, all agent commits carry the operator's identity. Config-file-only. |
 | `GA_GIT_AUTHOR_EMAIL` | _(unset)_ | Injected as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`. Both this and `GA_GIT_AUTHOR_NAME` must be set for injection to occur. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
-| `GA_DASHBOARD_PORT_RANGE_SIZE` | `1024` | Number of host ports in the dashboard proxy port range. Config-file-only. |
+| `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of host ports in the dashboard proxy port range. Config-file-only. |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
 | `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:f4f4801898...` — the `0.9.0-insider.4` digest)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
@@ -66,22 +66,22 @@ These variables are written into the transport container's environment by `insta
 
 ## Advanced / expert-only configuration
 
-The following variables are functional but not listed in `ghostship.conf.example` — they are only needed for unusual deployments. Set them in a config file with `--config <path>`.
+The following variables are functional but not listed in `config/ghostship.yaml.example` — they are only needed for unusual deployments. Set them under the matching YAML section (e.g. `images.podman_socket`, `machine.name`) in a config file.
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. Override when the socket is in a non-standard location. See `ghostship.conf.example` for detection logic. |
+| `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path (`images.podman_socket`). Override when the socket is in a non-standard location. |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. Set when building or tagging the image under a different name. |
 | `KC_BASE_IMAGE` | _(Containerfile digest)_ | KiroCrew base image for ephemeral login containers. Set when pinning to a different version for testing. |
 | `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine/service name. Only needed when running two ghostship instances side-by-side on the same host. |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Wall-clock timeout per task (seconds). Increase for long-running multi-step orchestration tasks. |
-| `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | KiroCrew subagent spawn admission gate. See note in ghostship.conf.example about container memory allocation. |
+| `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | KiroCrew subagent spawn admission gate. KiroCrew subagent spawn admission gate (`crew.memory.spawn_min_memory_gb`). |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | KiroCrew memory throttle threshold. |
 | `GA_RESOURCE_CRITICAL_GB` | `1.0` | KiroCrew memory hard-stop threshold. |
 | `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` | `3` | Memory-pressure escalation cycle count before Admiral mail. |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Host free-memory floor for crew startup. Set to `0` to disable. Useful on memory-constrained hosts. |
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First port in the dashboard proxy range. Only needed when port conflicts occur on the default range. |
-| `GA_DASHBOARD_PORT_RANGE_SIZE` | `1024` | Number of ports in the dashboard proxy range. |
+| `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of ports in the dashboard proxy range. |
 | `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | Per-endpoint rate limit. Override only to tune emergency traffic limits; the master switch `GA_RATE_LIMIT_ENABLED` is the correct production knob. |
 | `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | See above. |
 | `GA_RATE_LIMIT_MCP` | `300:60` | See above. |
@@ -104,93 +104,148 @@ The following variables are functional but not listed in `ghostship.conf.example
 Resolved highest to lowest:
 
 1. **`dispatch(model=...)`** — per-call override. Always wins.
-2. **`KC_MODEL_OVERRIDE`** — operator-wide override via `--model`.
+2. **`model.override`** (`KC_MODEL_OVERRIDE`, also `--model`) — operator-wide override.
 3. **Per-agent model field** — the `model` field in the agent's JSON under `academy/agents/`.
-4. **`KC_MODEL_DEFAULT`** — operator-wide fallback written as `default_model` in `config.local.json`.
+4. **`model.default`** (`KC_MODEL_DEFAULT`, also `--model-default`) — operator-wide fallback.
 5. **KiroCrew built-in default** — used when no operator or per-agent setting is present.
 
 Common patterns:
 
-- **Uniform model**: set `KC_MODEL_OVERRIDE`.
-- **Per-agent with fallback**: leave `KC_MODEL_OVERRIDE` unset, set `KC_MODEL_DEFAULT` as the baseline, add per-agent model fields where needed.
+- **Uniform model**: set `model.override`.
+- **Per-agent with fallback**: leave `model.override` unset, set `model.default` as the baseline, add per-agent model fields where needed.
 - **KiroCrew default everywhere**: leave both unset.
 
 ## Interactive setup
 
-On a first install — when no `ghostship.conf` is found (neither `./ghostship.conf` nor `config/ghostship.conf`) and stdin is a tty — `install.sh` runs an **interactive guided setup** automatically. Pass `--wizard` to force it even when a config exists; when a config is present and `--wizard` is not passed, the install runs non-interactively with no prompts.
+On a first install — when no config is found (neither `config/ghostship.yaml`
+nor an XDG override) and stdin is a tty — `install.sh` runs an **interactive
+guided setup** automatically. Pass `--wizard` to force it even when a config
+exists; when a config is present and `--wizard` is not passed, the install runs
+non-interactively with no prompts.
 
 The wizard:
 
 1. Prompts for a default agent backend (`kiro`/`claude`/`codex`, default `kiro`) and optional comma-separated additional backends.
-2. Collects **non-secret** config only: `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` for kiro, `OPENAI_BASE_URL` for codex (claude needs none). Secrets are deferred to `ghostship auth login <backend>`.
-3. Writes a `config/ghostship.conf` (mode `600`, non-empty vars only), then builds and starts the transport.
+2. Collects **non-secret** config only: identity provider / region for kiro, base URL for codex (claude needs none). Secrets are deferred to `ghostship auth login <backend>`.
+3. Writes `config/ghostship.yaml` (mode `600`) from an internal template, with the operator's choices uncommented and other keys commented at their defaults. If a `config/ghostship.yaml` already exists it prompts before overwriting. Then builds and starts the transport.
 4. After the transport is ready, offers `ghostship auth login <backend>` for each enabled backend that `ghostship auth status` reports as unconfigured (using the installed URL and key), then offers to run `ghostship setup` for harness registration.
 
 Multiple backends can be enabled at once — the transport holds config for all of them simultaneously, and the first entry is the runtime default:
 
-```conf
-GA_CREW_AGENT=kiro,claude,codex
+```yaml
+backends:
+  agent: "kiro,claude,codex"
 ```
 
 ## Config file
 
-`install.sh` accepts `--config <path>` pointing to a shell file that sets default values. The file is sourced before argument parsing, so **CLI flags always win over config-file values**.
+Configuration is a **YAML** file. `install.sh` resolves it by deep-merging up
+to three layers, and bakes the resolved values into `compose.yml` as the env
+vars the transport reads via `Config.from_env()`. Every config file is an
+**override file** — you only specify the keys you want to change from the
+built-in defaults.
+
+> `ghostship.conf` (the old flat shell format) is **no longer read**. An
+> existing `config/ghostship.conf` is auto-migrated on the next install — see
+> [Migration from ghostship.conf](#migration-from-ghostshipconf) below.
 
 ### Resolution order
 
-1. **Built-in default** (e.g. `PORT=64057`)
-2. **Config file** (sourced from `--config <path>`)
-3. **CLI flag** (e.g. `--port 9000`)
+Each setting is resolved by deep-merging these layers in order; a later layer
+overrides an earlier one **at the individual key level**, so an override file
+only needs the keys it changes:
 
-> **⚠️ No ambient-environment-variable tier.** Exporting a shell variable has no effect on `install.sh` or `uninstall.sh`. Use a config file with `--config <path>` instead.
->
-> **Exception — `PODMAN_SOCK`:** Accepted from the ambient environment before config-file sourcing, as a narrow exception. Does not generalise to other variables.
+1. **Built-in defaults** (the `Config` dataclass field defaults)
+2. **Repo config** — `config/ghostship.yaml` in the ghostship directory (if present)
+3. **XDG override** — a per-user file (if present), see below
 
-### Format
+When `--config <path>` is passed, it **replaces layers 2 and 3 entirely**: the
+named file merges on top of built-in defaults only, and neither the repo config
+nor the XDG override is read. Use it for CI, remote deploys, and scripted
+installs where you want full control.
 
-A plain shell file that assigns (or exports) variables. Lines starting with `#` are comments.
+CLI flags (`--port`, `--public-url`, `--identity-provider`, …) take precedence
+over **all** config-file layers.
 
-### Supported variables (flag-mapped)
+> **⚠️ No ambient-environment-variable tier.** Exporting a shell variable has
+> no effect on `install.sh` — the built-in default applies when no config file
+> or flag provides a value. Use a config file instead.
 
-| Variable | Corresponding flag |
-|:---------|:-------------------|
-| `PORT` | `--port` |
-| `KIRO_IDENTITY_PROVIDER` | `--identity-provider` |
-| `KIRO_REGION` | `--region` |
-| `KIRO_LICENSE` | `--license` |
-| `KC_MODEL_OVERRIDE` | `--model` |
-| `KC_MODEL_DEFAULT` | `--model-default` |
-| `GA_API_KEY` | `--api-key` |
-| `GA_HOST_URL` | `--public-url` |
-| `GA_PORTAL_DOMAIN` | `--caddy-domain` |
-| `GA_PORTAL_TLS_MODE` | `--caddy-tls-mode` |
+### XDG override file location
 
-Variables not in this table (`GA_MAX_CREWS`, `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, `GA_MIN_FREE_MEM_GB`, `GA_GIT_AUTHOR_NAME`, `GA_GIT_AUTHOR_EMAIL`, `GA_DASHBOARD_PORT_RANGE_START`, `GA_ORDERS_DIR`, `GA_PORTAL_SESSION_TTL_SECS`) are **config-file-only** — no CLI flag, no ambient-environment input.
+The optional per-user override file lets you keep machine-specific or personal
+settings out of the repo config:
+
+| OS | Path |
+|:---|:-----|
+| Linux | `${XDG_CONFIG_HOME:-$HOME/.config}/ghost-academy/ghostship.yaml` |
+| macOS | `~/Library/Application Support/ghost-academy/ghostship.yaml` |
+
+### Format and supported keys
+
+The YAML is organised into logical sections. Every configurable field, with its
+default, is documented in **`config/ghostship.yaml.example`** — copy it to
+`config/ghostship.yaml` and uncomment what you need. The sections are:
+
+| Section | Example keys | Maps to |
+|:--------|:-------------|:--------|
+| `network` | `port`, `host`, `host_url`, `api_key`, `require_api_key`, `tls_certfile`, `tls_keyfile` | `PORT`, `HOST`, `GA_HOST_URL`, `GA_API_KEY`, … |
+| `crew` | `max_crews`, `max_active`, `idle_timeout_secs`, `subagent_timeout_secs`, `orders_dir`, `git_author_name`/`git_author_email` | `GA_MAX_CREWS`, `GA_MAX_ACTIVE_CREWS`, … |
+| `crew.memory` | `min_free_mem_gb`, `spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb` | `GA_MIN_FREE_MEM_GB`, … |
+| `model` | `override`, `default` | `KC_MODEL_OVERRIDE`, `KC_MODEL_DEFAULT` |
+| `backends` | `agent`; `kiro.identity_provider`/`region`/`license`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KIRO_IDENTITY_PROVIDER`, … |
+| `portal` | `tls_mode`, `domain`, `session_ttl_secs`, `dashboard_port_range_start`/`_size`, `dashboard_default`, `rate_limit.*` | `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, … |
+| `machine` | `dedicated`, `name`, `cpus`, `memory`, `disk` | `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, … |
+| `images` | `podman_socket`, `kc_image`, `kc_base_image` | `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE` |
+
+An unrecognised key produces a warning and is ignored (the install continues).
+A YAML syntax error aborts the install with a parse error.
 
 ### Error handling
 
-If `--config <path>` is passed and the file does not exist or is unreadable, `install.sh` aborts immediately. Omitting `--config` skips config-file sourcing (no error).
+If `--config <path>` is passed and the file does not exist or is unreadable,
+`install.sh` aborts immediately. Omitting `--config` resolves the repo + XDG
+layers (both optional; absence is not an error).
 
 ### Example config file
 
-```bash
-# ghostship.conf — site-specific install defaults
-# Reference with: ./install.sh --config ./ghostship.conf
-
-KIRO_IDENTITY_PROVIDER="https://identitycenter.amazonaws.com/ssoins-abc123"
-KIRO_REGION="us-east-1"
-KIRO_LICENSE="pro"
-PORT=9000
-KC_MODEL_OVERRIDE="anthropic/claude-sonnet-4-20250514"
-GA_HOST_URL="https://academy.example.com"
+```yaml
+# config/ghostship.yaml — site-specific install defaults (override file)
+network:
+  port: 9000
+  host_url: "https://academy.example.com"
+model:
+  override: "anthropic/claude-sonnet-4-20250514"
+backends:
+  kiro:
+    identity_provider: "https://identitycenter.amazonaws.com/ssoins-abc123"
+    region: "us-east-1"
+    license: "pro"
 ```
 
 CLI flags override any config-file value:
 
 ```bash
-./install.sh --config ./ghostship.conf --port 8080
-# PORT=8080 (flag wins), all other values from config file
+./install.sh --config ./my-config.yaml --port 8080
+# port 8080 (flag wins), all other values from the config file
 ```
+
+### Migration from ghostship.conf
+
+When `install.sh` finds `config/ghostship.conf` with no `config/ghostship.yaml`
+alongside it, it **auto-migrates** before loading config:
+
+1. Reads the old conf, maps each known key to its YAML path, and writes
+   `config/ghostship.yaml` holding **only the non-default values**.
+2. Any conf key it does not recognise is preserved as a
+   `# UNKNOWN: KEY=value` comment in the new file, and the install prints a
+   warning listing those keys for you to handle manually. Backend credentials
+   and the retired `GA_AGENT_BACKENDS` key are deliberately dropped, not
+   migrated (credentials are managed with `ghostship auth login <backend>`).
+3. Renames the old file to `config/ghostship.conf.bak` and prints a notice.
+
+The install then proceeds with the migrated file. To roll back, rename
+`config/ghostship.conf.bak` back to `config/ghostship.conf` and downgrade.
 
 ## Client-only install
 

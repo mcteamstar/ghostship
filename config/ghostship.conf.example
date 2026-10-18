@@ -1,3 +1,15 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ DEPRECATED (TRN-253) — this file is NO LONGER READ by install.sh.          ║
+# ║                                                                            ║
+# ║ The config format is now YAML. Use config/ghostship.yaml.example instead:  ║
+# ║   cp config/ghostship.yaml.example config/ghostship.yaml                   ║
+# ║                                                                            ║
+# ║ If you already have a config/ghostship.conf, install.sh auto-migrates it   ║
+# ║ to config/ghostship.yaml on the next run (renaming the old file to         ║
+# ║ config/ghostship.conf.bak). This .example file is retained for one release ║
+# ║ and will be removed in 0.9.0. See docs/configuration.md.                   ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+#
 # ghostship.conf.example — copy to ghostship.conf and fill in your values
 # Pass to install.sh with: ./install.sh --config ghostship.conf
 # Every value below is commented out and shows install.sh's actual built-in

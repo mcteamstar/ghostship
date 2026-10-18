@@ -4,6 +4,9 @@ __pycache__/
 .venv/
 .openspec-store/
 
-# User-filled config (copied from config/*.conf.example)
+# User-filled config (copied from config/*.example)
 config/*.conf
+config/*.yaml
+config/*.conf.bak
 !config/*.conf.example
+!config/*.yaml.example

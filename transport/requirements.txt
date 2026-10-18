@@ -2,6 +2,10 @@ mcp[cli]==2.2.0
 httpx2==2.12.0
 websockets>=13.0,<15.0
 croniter==6.2.4
+# TRN-253: scripts/lib/yaml_config.py (install-time YAML config loader) and the
+# config sync unit test both need PyYAML. install.sh shells out to python3 to
+# resolve config, so PyYAML must be importable in that interpreter.
+pyyaml>=6.0,<7.0
 # Declared explicitly — mcp[cli] pulls these as transitive deps but pinning
 # prevents silent breakage if mcp ever restructures its extras.
 starlette>=1.0.1,<2.0.0

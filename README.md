@@ -58,7 +58,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 
 Builds crew images, starts the transport and Caddy proxy on port 64057 (published on all interfaces — set `GA_API_KEY` if the host is reachable from other machines). Then connect your harness:
 
-> **First install?** When no `ghostship.conf` is present, `install.sh` runs an **interactive guided setup** automatically: it walks you through choosing a default agent backend (`kiro`/`claude`/`codex`) plus any additional backends, collects non-secret config, writes `ghostship.conf`, then builds, authenticates, and offers harness registration. Force it any time with `./install.sh --wizard`. When a `ghostship.conf` already exists, the install runs non-interactively as before.
+> **First install?** When no config file is present, `install.sh` runs an **interactive guided setup** automatically: it walks you through choosing a default agent backend (`kiro`/`claude`/`codex`) plus any additional backends, collects non-secret config, writes `config/ghostship.yaml`, then builds, authenticates, and offers harness registration. Force it any time with `./install.sh --wizard`. When a `config/ghostship.yaml` already exists, the install runs non-interactively as before. (Config is YAML; an existing `config/ghostship.conf` is auto-migrated on the next install.)
 
 **Kiro (via Power):**
 
@@ -78,7 +78,7 @@ ghostship auth status          # see what is configured
 ```
 
 Credentials are stored by the transport and managed with `ghostship auth
-login|logout|status` — they are no longer set in `ghostship.conf`.
+login|logout|status` — they are no longer set in the config file.
 
 Full install options — API keys, client-only installs, remote deployments, repeatable config: [docs/configuration.md](docs/configuration.md).
 

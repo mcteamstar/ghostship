@@ -29,14 +29,18 @@ source "$SCRIPT_DIR/helpers/sandbox.sh"
 # Pass "unit" as $1 to also create the systemd unit file that makes
 # uninstall.sh treat this as a dedicated machine (so the containers-teardown
 # branch runs).
+#
+# TRN-253/TRN-233: the per-launch credential store (credentials/) is the thing
+# an uninstall must preserve by default; the legacy ga-kiro-auth file was
+# removed in TRN-233. We seed credentials/ and assert on that.
 seed_instance() {
   local with_unit="${1:-}"
   local data_dir="${SANDBOX_HOME}/.local/share/${MACHINE}/data"
   local containers_dir="${SANDBOX_HOME}/.local/share/${MACHINE}/containers"
   mkdir -p "${containers_dir}/storage/overlay"
-  mkdir -p "$data_dir"
-  echo "fake-auth-token" > "${data_dir}/ga-kiro-auth"
-  echo "fake-crews"      > "${data_dir}/crews.json"
+  mkdir -p "${data_dir}/credentials"
+  echo '{"backend":"kiro"}' > "${data_dir}/credentials/kiro.json"
+  echo "fake-crews"         > "${data_dir}/crews.json"
   if [[ "$with_unit" == "unit" ]]; then
     mkdir -p "${SANDBOX_HOME}/.config/systemd/user"
     : > "${SANDBOX_HOME}/.config/systemd/user/podman-${MACHINE}.service"
@@ -44,22 +48,23 @@ seed_instance() {
 }
 
 # Paths inside the current sandbox (recomputed after each sandbox_setup).
-auth_file()      { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/data/ga-kiro-auth"; }
+creds_dir()      { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/data/credentials"; }
+creds_file()     { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/data/credentials/kiro.json"; }
 crews_file()     { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/data/crews.json"; }
 containers_dir() { echo "${SANDBOX_HOME}/.local/share/${MACHINE}/containers"; }
 
-echo "=== Test: uninstall.sh auth / machine preservation (real script) ==="
+echo "=== Test: uninstall.sh credentials / machine preservation (real script) ==="
 
-# ── Test 1: no --purge-auth → ga-kiro-auth survives ──────────────────────────
+# ── Test 1: no --purge-auth → credentials/ survives ──────────────────────────
 echo ""
-echo "--- Test 1: ga-kiro-auth preserved without --purge-auth ---"
+echo "--- Test 1: credentials/ preserved without --purge-auth ---"
 sandbox_setup
 seed_instance unit
 sandbox_run_script "$UNINSTALL" --yes
-if [[ -f "$(auth_file)" ]]; then
-  pass "ga-kiro-auth preserved without --purge-auth"
+if [[ -f "$(creds_file)" ]]; then
+  pass "credentials/ preserved without --purge-auth"
 else
-  fail "ga-kiro-auth was destroyed without --purge-auth"
+  fail "credentials/ was destroyed without --purge-auth"
   echo "    output: ${SANDBOX_OUTPUT}"
 fi
 if [[ ! -f "$(crews_file)" ]]; then
@@ -80,39 +85,39 @@ else
   fail "containers/ removed despite --keep-machine"
   echo "    output: ${SANDBOX_OUTPUT}"
 fi
-# Auth still survives too (no --purge-auth).
-if [[ -f "$(auth_file)" ]]; then
-  pass "ga-kiro-auth preserved with --keep-machine"
+# Credentials still survive too (no --purge-auth).
+if [[ -f "$(creds_file)" ]]; then
+  pass "credentials/ preserved with --keep-machine"
 else
-  fail "ga-kiro-auth destroyed with --keep-machine"
+  fail "credentials/ destroyed with --keep-machine"
 fi
 
-# ── Test 3: --purge-auth removes ga-kiro-auth (A.4 regression) ────────────────
+# ── Test 3: --purge-auth removes credentials/ (A.4 regression) ────────────────
 echo ""
-echo "--- Test 3: --purge-auth removes ga-kiro-auth ---"
+echo "--- Test 3: --purge-auth removes credentials/ ---"
 sandbox_setup
 seed_instance unit
 sandbox_run_script "$UNINSTALL" --yes --purge-auth
-if [[ ! -e "$(auth_file)" ]]; then
-  pass "ga-kiro-auth removed by --purge-auth"
+if [[ ! -e "$(creds_dir)" ]]; then
+  pass "credentials/ removed by --purge-auth"
 else
-  fail "ga-kiro-auth survived --purge-auth"
+  fail "credentials/ survived --purge-auth"
   echo "    output: ${SANDBOX_OUTPUT}"
 fi
 
 # ── Test 4: data dir cleanup without a dedicated machine ──────────────────────
 # No systemd unit seeded → the dedicated-machine teardown branch is skipped,
-# but the data-dir cleanup still runs and still preserves ga-kiro-auth.
+# but the data-dir cleanup still runs and still preserves credentials/.
 echo ""
 echo "--- Test 4: data-dir cleanup with no dedicated machine ---"
 sandbox_setup
 seed_instance   # no unit
 sandbox_run_script "$UNINSTALL" --yes
-if [[ -f "$(auth_file)" && ! -f "$(crews_file)" ]]; then
-  pass "data dir cleaned, ga-kiro-auth preserved (no dedicated machine)"
+if [[ -f "$(creds_file)" && ! -f "$(crews_file)" ]]; then
+  pass "data dir cleaned, credentials/ preserved (no dedicated machine)"
 else
   fail "data-dir cleanup incorrect without a dedicated machine"
-  echo "    auth exists: $([[ -f "$(auth_file)" ]] && echo yes || echo no); crews exists: $([[ -f "$(crews_file)" ]] && echo yes || echo no)"
+  echo "    creds exists: $([[ -f "$(creds_file)" ]] && echo yes || echo no); crews exists: $([[ -f "$(crews_file)" ]] && echo yes || echo no)"
   echo "    output: ${SANDBOX_OUTPUT}"
 fi
 

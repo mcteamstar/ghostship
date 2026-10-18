@@ -1,7 +1,7 @@
 # Auth & Security
 
 > **Breaking change (TRN-233): backend credentials are no longer set in
-> `ghostship.conf` or delivered as Podman secrets.** The `ANTHROPIC_API_KEY`,
+> the config file (`ghostship.yaml` / the retired `ghostship.conf`) or delivered as Podman secrets.** The `ANTHROPIC_API_KEY`,
 > `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and `KIRO_API_KEY` config entries
 > are gone, and the installer ignores them with a warning if present. Backend
 > credentials now live in `DATA_DIR/credentials/<backend>.json` and are managed
@@ -9,7 +9,7 @@
 > stored credential — log in again** with `ghostship auth login <backend>` for
 > each enabled backend (the install wizard offers this automatically). Running
 > crews fail to launch until you do; the first `launch` per backend returns a
-> login URL. `KIRO_IDENTITY_PROVIDER` / `KIRO_REGION` / `KIRO_LICENSE` stay as
+> login URL. `backends.kiro.identity_provider` / `.region` / `.license` stay as
 > config — they are the non-secret defaults for the Kiro Identity Center login.
 
 ## Managing credentials: `ghostship auth`
@@ -73,13 +73,16 @@ ghostship auth login kiro --method api-key
 ### Identity provider config
 
 The Identity Center login defaults come from `--config` file → CLI flags →
-interactive prompt. These settings stay in `ghostship.conf` (non-secret):
+interactive prompt. These settings stay in `config/ghostship.yaml` (non-secret),
+under `backends.kiro`:
 
-```bash
-# idp.conf
-KIRO_IDENTITY_PROVIDER="https://identitycenter.amazonaws.com/ssoins-abc123"
-KIRO_REGION="us-east-1"
-KIRO_LICENSE="pro"
+```yaml
+# config/ghostship.yaml
+backends:
+  kiro:
+    identity_provider: "https://identitycenter.amazonaws.com/ssoins-abc123"
+    region: "us-east-1"
+    license: "pro"
 ```
 
 ```bash
@@ -129,8 +132,8 @@ resolved per launch. Pick a method with `ghostship auth login claude`:
 
 ### Prerequisites
 
-Enable the Claude backend by adding `claude` to `GA_CREW_AGENT` in your
-`ghostship.conf` and re-running `ghostship install`, which builds the `claude`
+Enable the Claude backend by adding `claude` to `backends.agent` in your
+`config/ghostship.yaml` and re-running `ghostship install`, which builds the `claude`
 CLI into the crew image. Login works whenever `claude` is enabled, even while
 another backend is the default.
 
@@ -146,7 +149,7 @@ another backend is the default.
    ```
 
 New Claude-backend crews launch without a login prompt. The token is never
-written to `ghostship.conf` and never appears in command output.
+written to the config file and never appears in command output.
 
 ### Rotate
 
@@ -167,8 +170,8 @@ drives the HTTP flow below for you; the raw endpoints are documented for referen
 
 ### Prerequisites
 
-1. Enable the Claude backend: add `claude` to `GA_CREW_AGENT` in your
-   `ghostship.conf` and re-run `ghostship install`, which builds the `claude` CLI
+1. Enable the Claude backend: add `claude` to `backends.agent` in your
+   `config/ghostship.yaml` and re-run `ghostship install`, which builds the `claude` CLI
    into the crew image.
 2. To make Claude the default for new crews, also set `GA_CREW_AGENT=claude` (deprecated alias: `GA_CREW_ACP_BACKEND=claude`).
    Login works whenever `claude` is enabled, even while another backend is the
@@ -260,8 +263,8 @@ method recorded for the `claude` backend:
 3. `oauth` (`ga-claude-auth`, copied into the crew's `~/.claude/`).
 
 There is one active credential per backend — logging in with a new method replaces
-the previous one. `ANTHROPIC_BASE_URL` (non-secret) may still be set in
-`ghostship.conf` to point at a proxy.
+the previous one. `backends.claude.base_url` (`ANTHROPIC_BASE_URL`, non-secret) may still be set in
+`config/ghostship.yaml` to point at a proxy.
 
 ### Claude OAuth API
 
@@ -306,8 +309,8 @@ drives the HTTP flow below for you.
 
 ### Prerequisites
 
-1. Enable the Codex backend: add `codex` to `GA_CREW_AGENT` in your
-   `ghostship.conf` and re-run `ghostship install`, which builds the `codex-acp`
+1. Enable the Codex backend: add `codex` to `backends.agent` in your
+   `config/ghostship.yaml` and re-run `ghostship install`, which builds the `codex-acp`
    adapter into the crew image (ONE package — it ships its own Codex binary).
 2. To make Codex the default for new crews, also set `GA_CREW_AGENT=codex` (deprecated alias: `GA_CREW_ACP_BACKEND=codex`).
    Login works whenever `codex` is enabled, even while another backend is the
@@ -371,8 +374,8 @@ after logging in again.
 
 There is one active credential per backend. Logging in with `--method api-key`
 replaces a stored `chatgpt` credential and vice versa — the method recorded for
-the `codex` backend is the one used. `OPENAI_BASE_URL` (non-secret) may still be
-set in `ghostship.conf` to point at a proxy.
+the `codex` backend is the one used. `backends.codex.base_url` (`OPENAI_BASE_URL`, non-secret) may still be
+set in `config/ghostship.yaml` to point at a proxy.
 
 ### Codex OAuth API
 

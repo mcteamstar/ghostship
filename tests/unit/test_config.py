@@ -552,5 +552,120 @@ class TestEnvBoolHelpers(unittest.TestCase):
         self.assertTrue(result)
 
 
+# ── Config ↔ ghostship.yaml.example sync invariant (TRN-253) ──────────────────
+
+
+class TestConfigYamlExampleSync(unittest.TestCase):
+    """Every Config dataclass field must have a documented entry in
+    config/ghostship.yaml.example.
+
+    TRN-253 replaced the flat ghostship.conf.example with a structured YAML
+    example. The invariant is enforced through scripts/lib/yaml_config.py's
+    canonical env-var -> YAML-path map: every Config field maps to an env var,
+    every env var maps to a YAML path, and that path's leaf key must appear in
+    the example file. This keeps the installer's config surface (yaml_config),
+    the transport's config surface (Config), and the operator documentation
+    (yaml.example) in lock-step.
+    """
+
+    # Config fields the installer deliberately does NOT surface in the YAML
+    # config: backend credentials are managed by `ghostship auth login` and
+    # resolved per launch (TRN-233), never set in the config file.
+    _CREDENTIAL_FIELDS = frozenset(
+        {
+            "anthropic_api_key",
+            "openai_api_key",
+            "kiro_api_key",
+            "claude_code_oauth_token",
+        }
+    )
+
+    @staticmethod
+    def _load_yaml_config_module():
+        import importlib.util
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        mod_path = repo_root / "scripts" / "lib" / "yaml_config.py"
+        spec = importlib.util.spec_from_file_location("yaml_config", mod_path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod, repo_root
+
+    def test_every_config_field_has_yaml_example_entry(self):
+        import dataclasses
+        import re
+
+        yc, repo_root = self._load_yaml_config_module()
+        example = (repo_root / "config" / "ghostship.yaml.example").read_text()
+
+        # Config field name -> env var. Field names mirror env var names
+        # lowercased (module docstring), except host/port which drop the GA_
+        # prefix. Build the lowercase->ENV lookup from yaml_config.DEFAULTS.
+        env_by_lower = {name.lower(): name for name in yc.DEFAULTS}
+
+        missing = []
+        for field in dataclasses.fields(Config):
+            fname = field.name
+            if fname.startswith("_"):
+                continue
+            if fname in self._CREDENTIAL_FIELDS:
+                continue
+            env = env_by_lower.get(fname)
+            self.assertIsNotNone(
+                env,
+                f"Config field '{fname}' has no matching env var in "
+                f"yaml_config.DEFAULTS — add it to both DEFAULTS and _KEY_MAP.",
+            )
+            path = yc._ENV_TO_PATH.get(env)
+            self.assertIsNotNone(
+                path,
+                f"env var '{env}' (Config.{fname}) is not in yaml_config._KEY_MAP.",
+            )
+            leaf = path[-1]
+            if not re.search(rf"^\s*#?\s*{re.escape(leaf)}:", example, re.M):
+                missing.append(f"{fname} -> {'.'.join(path)}")
+
+        self.assertEqual(
+            missing,
+            [],
+            "Config fields missing a commented entry in ghostship.yaml.example: "
+            + ", ".join(missing),
+        )
+
+    def test_yaml_example_parses_when_decommented(self):
+        """The commented key lines in the example form syntactically valid YAML.
+
+        Prose comment lines (sentences, section banners) are left out; only
+        lines whose decommented form looks like a YAML key or list item are
+        un-commented. Guards against a malformed template whose keys would not
+        parse once an operator uncomments them.
+        """
+        import re
+
+        import yaml
+
+        _yc, repo_root = self._load_yaml_config_module()
+        raw = (repo_root / "config" / "ghostship.yaml.example").read_text()
+
+        # A YAML key line (optionally commented): leading indent, optional
+        # "# ", then "key:" or "key: value" or a "- " list item.
+        key_re = re.compile(r"^(\s*)#?\s?(\s*)([\w.-]+:(\s.*)?|-\s.*)$")
+        out_lines: list[str] = []
+        for line in raw.splitlines():
+            m = key_re.match(line)
+            if m and not line.lstrip().startswith("# ─") and "═" not in line:
+                indent = m.group(1) + m.group(2)
+                out_lines.append(indent + m.group(3))
+            # else: drop prose/banner comment lines entirely
+        decommented = "\n".join(out_lines)
+        parsed = yaml.safe_load(decommented)
+        self.assertIsInstance(parsed, dict)
+        # Spot-check a nested key survived the round-trip.
+        self.assertIn("network", parsed)
+        self.assertEqual(parsed["network"]["port"], 64057)
+
+
 if __name__ == "__main__":
     unittest.main()

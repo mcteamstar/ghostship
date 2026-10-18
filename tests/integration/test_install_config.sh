@@ -58,20 +58,38 @@ for spec in "${KNOWN_VALUE_FLAGS[@]}"; do
   fi
 done
 
-# --config is accepted and sources values from the file.
+# --config is accepted and loads values from a YAML file (TRN-253).
 sandbox_setup
-CONF="${SANDBOX_DIR}/test.conf"
+CONF="${SANDBOX_DIR}/test.yaml"
 cat > "$CONF" <<'EOF'
-PORT=9999
-KIRO_IDENTITY_PROVIDER="https://config-idp.example.com"
-KIRO_REGION="us-west-2"
-KIRO_LICENSE="pro"
+network:
+  port: 9999
+backends:
+  kiro:
+    identity_provider: "https://config-idp.example.com"
+    region: "us-west-2"
+    license: "pro"
 EOF
 sandbox_run_script "$INSTALL" --config "$CONF" --client-only --url "$URL"
-if [[ "$SANDBOX_STATUS" -eq 0 ]] && sandbox_output_contains "Sourced config file"; then
-  pass "install.sh accepts --config and sources it"
+if [[ "$SANDBOX_STATUS" -eq 0 ]] && sandbox_output_contains "Loaded config file"; then
+  pass "install.sh accepts --config (YAML) and loads it"
 else
-  fail "install.sh did not source --config (status=${SANDBOX_STATUS})"
+  fail "install.sh did not load --config (status=${SANDBOX_STATUS})"
+  echo "    output: ${SANDBOX_OUTPUT}"
+fi
+
+# A CLI flag overrides the matching config-file value (--port beats network.port).
+sandbox_setup
+CONF2="${SANDBOX_DIR}/override.yaml"
+cat > "$CONF2" <<'EOF'
+network:
+  port: 9999
+EOF
+sandbox_run_script "$INSTALL" --config "$CONF2" --port 8000 --client-only --url "$URL"
+if [[ "$SANDBOX_STATUS" -eq 0 ]] && ! sandbox_output_contains "Unknown argument"; then
+  pass "install.sh accepts --port alongside --config (flag precedence path)"
+else
+  fail "install.sh rejected --port + --config (status=${SANDBOX_STATUS})"
   echo "    output: ${SANDBOX_OUTPUT}"
 fi
 
