@@ -8,10 +8,11 @@ Subcommands:
     install    [flags]   Install or update the transport (runs scripts/install.sh)
     start      [flags]   Start the transport (runs scripts/start.sh)
     stop                 Stop the transport, portal, and Podman machine/service
-    upgrade    [flags]   Rebuild and restart the transport (runs scripts/install.sh)
+    upgrade    [flags]   Rebuild and restart the transport (runs scripts/install.sh); --skills also refreshes skills
     uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
     status               Show transport status (container running, port, uptime)
     setup      [flags]   Register the MCP server and install skill symlinks for agent clients
+    skills     [flags]   Refresh skill symlinks and MCP registration (alias for setup)
     version              Print the ghostship version
 
 Run 'ghostship <subcommand> --help' for subcommand-specific flags.
@@ -91,11 +92,29 @@ def cmd_start(args: list) -> int:
 def cmd_upgrade(args: list) -> int:
     """Rebuild images and restart the transport (alias for install)."""
     if "--help" in args or "-h" in args:
-        print("Usage: ghostship upgrade [flags]\n"
+        print("Usage: ghostship upgrade [--skills] [flags]\n"
               "\nRebuild images and recreate the transport container.\n"
-              "Equivalent to 'ghostship install'. Delegates to scripts/install.sh.")
+              "Equivalent to 'ghostship install'. Delegates to scripts/install.sh.\n"
+              "\n"
+              "  --skills   After a successful rebuild, also run 'ghostship setup' to\n"
+              "             refresh skill symlinks and re-register the MCP server for\n"
+              "             all detected agent clients (kiro-cli, Claude Code, opencode).")
         return 0
-    _exec_script("scripts/install.sh", args)
+    skills = "--skills" in args
+    install_args = [a for a in args if a != "--skills"]
+    if not skills:
+        # Fast path: replace the process entirely (original behaviour).
+        _exec_script("scripts/install.sh", install_args)
+        return 0  # unreachable in production (execvp), needed for tests
+    # --skills path: run install as a subprocess so we can chain setup after.
+    script = _ghostship_dir() / "scripts" / "install.sh"
+    if not script.exists():
+        print(f"error: script not found: {script}", file=sys.stderr)
+        return 1
+    result = subprocess.run([str(script)] + install_args)
+    if result.returncode != 0:
+        return result.returncode
+    return cmd_setup([])
 
 
 def cmd_uninstall(args: list) -> int:
@@ -404,6 +423,24 @@ def cmd_setup(args: list) -> int:
     _exec_script("scripts/setup.py", args)
 
 
+def cmd_skills(args: list) -> int:
+    """Refresh skill symlinks and MCP registration (alias for ghostship setup)."""
+    if "--help" in args or "-h" in args:
+        print(
+            "Usage: ghostship skills [--agent kiro|claude|opencode|all] "
+            "[--url <url>] [--api-key <key>]\n"
+            "\n"
+            "  Refresh ghostship skill symlinks and re-register the MCP server\n"
+            "  for detected agent clients. Equivalent to 'ghostship setup'.\n"
+            "  Idempotent — safe to re-run.\n"
+            "\n"
+            "  --agent   Target: kiro, claude, opencode, or all.\n"
+            "            Default: auto-detect installed agents.\n"
+            "  --url     MCP server URL (default: http://localhost:64057/mcp)\n"
+            "  --api-key Bearer token for the MCP endpoint (optional)\n"
+        )
+        return 0
+    return cmd_setup(args)
 
 
 # ---------------------------------------------------------------------------
@@ -993,10 +1030,11 @@ Subcommands:
   install    [flags]   Install or update the transport (runs scripts/install.sh)
   start      [flags]   Start the transport (runs scripts/start.sh)
   stop                 Stop the transport + portal, then the Podman machine/service (frees RAM, preserves state)
-  upgrade    [flags]   Rebuild and restart the transport (same as install)
+  upgrade    [flags]   Rebuild and restart the transport (same as install); --skills also refreshes skill symlinks
   uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
   status               Show transport status
   setup      [flags]   Register MCP server + skills for agent clients (kiro, Claude Code, opencode)
+  skills     [flags]   Refresh skill symlinks and MCP registration (alias for setup)
   auth       [login|logout|status]  Manage backend credentials
   version              Print ghostship version
 
@@ -1011,6 +1049,7 @@ _COMMANDS = {
     "uninstall": cmd_uninstall,
     "status":    cmd_status,
     "setup":     cmd_setup,
+    "skills":    cmd_skills,
     "auth":      cmd_auth,
     "version":   cmd_version,
 }

@@ -1506,12 +1506,14 @@ if ${_PODMAN_CMD} network exists ga-net 2>/dev/null; then
     echo "  ga-net still has ${_ga_net_containers} container(s) — will be migrated at transport startup"
   fi
 fi
-# ── Interactive-mode harness registration (TRN-233) ──────────────────────────
+# ── Interactive-mode harness registration (TRN-255) ──────────────────────────
+# Always run ghostship setup after a successful wizard install — no prompt.
+# Non-fatal: missing agent clients are reported per-agent but do not fail the install.
 if [[ "${_INTERACTIVE_MODE:-false}" == "true" ]]; then
-    _prompt "Register MCP server with detected harnesses? (kiro-cli, claude, opencode)" "y" _register
-    if [[ "${_register}" == "y" || "${_register}" == "Y" ]]; then
-        "${GHOSTSHIP_DIR}/ghostship" setup
-    fi
+    echo ""
+    echo "Registering MCP server with detected agent clients (kiro-cli, claude, opencode)..."
+    "${GHOSTSHIP_DIR}/ghostship" setup || \
+        echo "  ⚠ ghostship setup encountered an issue — run 'ghostship setup' manually if needed."
 fi
 
 # The manual post-install instructions below are only relevant to the
