@@ -86,7 +86,6 @@ DEFAULTS: dict[str, str] = {
     "GA_MAX_ACTIVE_CREWS": "3",
     "GA_IDLE_TIMEOUT_SECS": "300",
     "GA_SUBAGENT_TIMEOUT_SECS": "3600",
-    "GA_SUBAGENT_MAX_TURNS": "200",
     "GA_BATCH_MAX_TASKS": "20",
     "GA_PICKUP_MAX_POLL_SECS": "30",
     # ── memory gate ──
@@ -160,7 +159,6 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("crew", "max_active"): "GA_MAX_ACTIVE_CREWS",
     ("crew", "idle_timeout_secs"): "GA_IDLE_TIMEOUT_SECS",
     ("crew", "subagent_timeout_secs"): "GA_SUBAGENT_TIMEOUT_SECS",
-    ("crew", "subagent_max_turns"): "GA_SUBAGENT_MAX_TURNS",
     ("crew", "batch_max_tasks"): "GA_BATCH_MAX_TASKS",
     ("crew", "pickup_max_poll_secs"): "GA_PICKUP_MAX_POLL_SECS",
     ("crew", "orders_dir"): "GA_ORDERS_DIR",

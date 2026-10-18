@@ -41,8 +41,6 @@
 #   idle_timeout_secs: 300
 #   # Wall-clock timeout per subagent task (seconds).
 #   subagent_timeout_secs: 3600
-#   # Max tool-call turns per subagent task.
-#   subagent_max_turns: 200
 #   # Max tasks accepted in a single batch dispatch.
 #   batch_max_tasks: 20
 #   # Max seconds a pickup poll waits.

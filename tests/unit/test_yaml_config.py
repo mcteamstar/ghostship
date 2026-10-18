@@ -283,5 +283,79 @@ class TestMigrateConf(unittest.TestCase):
         self.assertIs(loaded["machine"]["dedicated"], False)
 
 
+class TestComposeVarCoverage(unittest.TestCase):
+    """Regression guard: vars that were previously missing from the compose.yml
+    template (TRN-253 review finding).
+
+    These vars were in yaml_config._KEY_MAP but not wired through the compose.yml
+    environment block, so operator overrides were silently dropped at runtime.
+    Verify they are in DEFAULTS and _KEY_MAP so the installer resolves and
+    injects them correctly.
+    """
+
+    def test_spawn_pressure_escalate_cycles_in_defaults(self):
+        self.assertIn("GA_SPAWN_PRESSURE_ESCALATE_CYCLES", yaml_config.DEFAULTS)
+
+    def test_spawn_pressure_escalate_cycles_in_key_map(self):
+        self.assertIn(
+            "GA_SPAWN_PRESSURE_ESCALATE_CYCLES",
+            yaml_config._ENV_TO_PATH,
+            "GA_SPAWN_PRESSURE_ESCALATE_CYCLES must have a YAML path in _KEY_MAP",
+        )
+
+    def test_rate_limit_dashboard_auth_in_defaults(self):
+        self.assertIn("GA_RATE_LIMIT_DASHBOARD_AUTH", yaml_config.DEFAULTS)
+
+    def test_rate_limit_dashboard_auth_in_key_map(self):
+        self.assertIn(
+            "GA_RATE_LIMIT_DASHBOARD_AUTH",
+            yaml_config._ENV_TO_PATH,
+            "GA_RATE_LIMIT_DASHBOARD_AUTH must have a YAML path in _KEY_MAP",
+        )
+
+    def test_kc_image_in_defaults(self):
+        self.assertIn("KC_IMAGE", yaml_config.DEFAULTS)
+
+    def test_kc_image_in_key_map(self):
+        self.assertIn(
+            "KC_IMAGE",
+            yaml_config._ENV_TO_PATH,
+            "KC_IMAGE must have a YAML path in _KEY_MAP",
+        )
+
+    def test_kc_image_default_value(self):
+        self.assertEqual(yaml_config.DEFAULTS["KC_IMAGE"], "localhost/spec-ops:latest")
+
+    def test_flatten_includes_spawn_pressure(self):
+        """flatten_to_env must emit GA_SPAWN_PRESSURE_ESCALATE_CYCLES."""
+        merged = yaml_config.resolve_config("", "", None)
+        env = yaml_config.flatten_to_env(merged)
+        self.assertIn("GA_SPAWN_PRESSURE_ESCALATE_CYCLES", env)
+        self.assertEqual(env["GA_SPAWN_PRESSURE_ESCALATE_CYCLES"], "3")
+
+    def test_flatten_includes_dashboard_auth(self):
+        """flatten_to_env must emit GA_RATE_LIMIT_DASHBOARD_AUTH."""
+        merged = yaml_config.resolve_config("", "", None)
+        env = yaml_config.flatten_to_env(merged)
+        self.assertIn("GA_RATE_LIMIT_DASHBOARD_AUTH", env)
+        self.assertEqual(env["GA_RATE_LIMIT_DASHBOARD_AUTH"], "600:60")
+
+    def test_flatten_includes_kc_image(self):
+        """flatten_to_env must emit KC_IMAGE."""
+        merged = yaml_config.resolve_config("", "", None)
+        env = yaml_config.flatten_to_env(merged)
+        self.assertIn("KC_IMAGE", env)
+        self.assertEqual(env["KC_IMAGE"], "localhost/spec-ops:latest")
+
+    def test_subagent_max_turns_not_in_defaults(self):
+        """GA_SUBAGENT_MAX_TURNS is hardcoded in the transport (lifecycle.py and
+        server.py use _SUBAGENT_MAX_TURNS=200 as an internal constant). It must
+        NOT appear in yaml_config.DEFAULTS or _KEY_MAP — setting it in
+        ghostship.yaml would have no effect and would mislead operators.
+        """
+        self.assertNotIn("GA_SUBAGENT_MAX_TURNS", yaml_config.DEFAULTS)
+        self.assertNotIn("GA_SUBAGENT_MAX_TURNS", yaml_config._ENV_TO_PATH)
+
+
 if __name__ == "__main__":
     unittest.main()

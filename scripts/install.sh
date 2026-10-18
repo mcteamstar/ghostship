@@ -179,7 +179,6 @@ GA_MAX_CREWS=20
 GA_MAX_ACTIVE_CREWS=3
 GA_IDLE_TIMEOUT_SECS=300
 GA_SUBAGENT_TIMEOUT_SECS=3600
-GA_SUBAGENT_MAX_TURNS=200
 GA_BATCH_MAX_TASKS=20
 GA_PICKUP_MAX_POLL_SECS=30
 GA_CREW_AGENT=kiro
@@ -212,6 +211,7 @@ GA_MIN_FREE_MEM_GB=2.0
 GA_SPAWN_MIN_MEMORY_GB=1.5
 GA_RESOURCE_PRESSURE_GB=2.0
 GA_RESOURCE_CRITICAL_GB=1.0
+GA_SPAWN_PRESSURE_ESCALATE_CYCLES=3
 GA_GIT_AUTHOR_NAME=""
 GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
@@ -229,6 +229,8 @@ GA_RATE_LIMIT_LOGIN_POST=5:300
 GA_RATE_LIMIT_MCP=300:60
 GA_RATE_LIMIT_FILES=60:60
 GA_RATE_LIMIT_CREW_API=120:60
+GA_RATE_LIMIT_DASHBOARD_AUTH=600:60
+KC_IMAGE=localhost/spec-ops:latest
 _COMPOSE_RETRY_ATTEMPTS=3     # retries on transient compose up failure (hardcoded)
 _COMPOSE_RETRY_DELAY_SECS=2   # sleep between retries in seconds (hardcoded)
 # ── Client-only install ──────────────────────────────────────────────────────
@@ -1153,6 +1155,7 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       GA_SPAWN_MIN_MEMORY_GB: "${GA_SPAWN_MIN_MEMORY_GB:-1.5}"
       GA_RESOURCE_PRESSURE_GB: "${GA_RESOURCE_PRESSURE_GB:-2.0}"
       GA_RESOURCE_CRITICAL_GB: "${GA_RESOURCE_CRITICAL_GB:-1.0}"
+      GA_SPAWN_PRESSURE_ESCALATE_CYCLES: "${GA_SPAWN_PRESSURE_ESCALATE_CYCLES:-3}"
       GA_GIT_AUTHOR_NAME: "${GA_GIT_AUTHOR_NAME:-}"
       GA_GIT_AUTHOR_EMAIL: "${GA_GIT_AUTHOR_EMAIL:-}"
       GA_TLS_CERTFILE: "$(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then echo "/mnt/tls/$(basename "${GA_TLS_CERTFILE}")"; else echo ""; fi)"
@@ -1163,6 +1166,7 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       GA_RATE_LIMIT_MCP: "${GA_RATE_LIMIT_MCP:-300:60}"
       GA_RATE_LIMIT_FILES: "${GA_RATE_LIMIT_FILES:-60:60}"
       GA_RATE_LIMIT_CREW_API: "${GA_RATE_LIMIT_CREW_API:-120:60}"
+      GA_RATE_LIMIT_DASHBOARD_AUTH: "${GA_RATE_LIMIT_DASHBOARD_AUTH:-600:60}"
       GA_DASHBOARD_PORT_RANGE_START: "${GA_DASHBOARD_PORT_RANGE_START:-64058}"
       GA_DASHBOARD_DEFAULT: "${GA_DASHBOARD_DEFAULT:-false}"
       GA_DASHBOARD_PORT_RANGE_SIZE: "${GA_DASHBOARD_PORT_RANGE_SIZE:-64}"
@@ -1171,6 +1175,7 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
       GA_ORDERS_DIR: "$(if [[ -n "${GA_ORDERS_DIR:-}" ]]; then echo "/mnt/orders"; else echo ""; fi)"
       GA_REQUIRE_API_KEY: "${GA_REQUIRE_API_KEY:-error}"
+      KC_IMAGE: "${KC_IMAGE:-localhost/spec-ops:latest}"
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
