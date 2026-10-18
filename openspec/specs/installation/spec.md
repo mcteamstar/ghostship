@@ -51,27 +51,55 @@ The system SHALL accept a `--port` flag controlling the MCP listener port (defau
 - **WHEN** `install.sh` runs without `--public-url`
 - **THEN** `GA_HOST_URL` defaults to `http://localhost:{PORT}`
 
-### Requirement: Identity provider configuration resolution order
-The system SHALL resolve `KIRO_IDENTITY_PROVIDER`/`KIRO_REGION`/`KIRO_LICENSE` in a fixed order: a `--config` file first, then individual CLI flags, then an interactive prompt if still unset and running in a terminal.
+### Requirement: Config file resolution
+The system SHALL resolve configuration by deep-merging three layers in order: built-in
+defaults, then `config/ghostship.yaml` in the ghostship directory (if present), then
+the XDG override file (if present). When `--config <path>` is passed, it replaces
+layers 2 and 3 entirely. The system SHALL resolve `KIRO_IDENTITY_PROVIDER`,
+`KIRO_REGION`, and `KIRO_LICENSE` from the merged config under `backends.kiro.*`
+before falling back to individual CLI flags, then an interactive prompt if still
+unset and running in a terminal.
 
-#### Scenario: Config file sets identity provider, no flags override
-- **WHEN** `install.sh` runs with `--config <path>` and the config file exports `KIRO_IDENTITY_PROVIDER` and no `--identity-provider` flag is passed
-- **THEN** the transport uses the config file value
+#### Scenario: Repo config sets identity provider
+- **WHEN** `config/ghostship.yaml` sets `backends.kiro.identity_provider` and `backends.kiro.region`
+- **AND** no `--identity-provider` flag is passed
+- **THEN** install.sh uses the config values
 
-#### Scenario: CLI flag overrides config file identity provider
-- **WHEN** `install.sh` runs with `--config <path> --identity-provider <url>` and the config file also exports `KIRO_IDENTITY_PROVIDER`
-- **THEN** the CLI flag value wins (flags override config file)
+#### Scenario: XDG override sets identity provider
+- **WHEN** the XDG override file sets `backends.kiro.identity_provider`
+- **AND** `config/ghostship.yaml` does not set it
+- **THEN** install.sh uses the XDG value
 
-#### Scenario: No config and non-interactive
-- **WHEN** `install.sh` runs with none of `--config`, `--identity-provider` set, and stdin is not a terminal
-- **THEN** the script proceeds without prompting, leaving identity provider settings unset (Builder ID fallback)
+#### Scenario: --config flag replaces implicit resolution
+- **WHEN** `--config /path/to/custom.yaml` is passed
+- **THEN** only that file and built-in defaults are used; repo and XDG files are ignored
 
-### Requirement: Config file integration with install flags
-The `--config <path>` flag SHALL source the specified file before processing other flags. All flags in the argument parser (including `--public-url`, `--port`, `--api-key`, etc.) SHALL override values set by the config file.
+### Requirement: Auto-migration from ghostship.conf on install
+When install.sh finds `config/ghostship.conf` with no `config/ghostship.yaml`, it
+SHALL automatically convert the conf to YAML, write `config/ghostship.yaml`, rename
+the old file to `config/ghostship.conf.bak`, and print a clear migration notice
+before proceeding with the install.
 
-#### Scenario: Config file sets public URL, flag overrides
-- **WHEN** `install.sh` runs with `--config ./site.conf --public-url https://override.com` and `site.conf` exports `GA_HOST_URL=https://config.com`
-- **THEN** `GA_HOST_URL` SHALL be `https://override.com` (flag wins)
+#### Scenario: Auto-migration runs on upgrade
+- **WHEN** `config/ghostship.conf` exists and `config/ghostship.yaml` does not
+- **THEN** install.sh prints a migration notice, writes `config/ghostship.yaml`, and renames `config/ghostship.conf` to `config/ghostship.conf.bak`
+
+#### Scenario: Install proceeds after migration
+- **WHEN** auto-migration completes
+- **THEN** install.sh continues with the migrated `config/ghostship.yaml` and completes normally
+
+### Requirement: Wizard generates ghostship.yaml
+The install wizard (run on first install or with `--wizard`) SHALL generate
+`config/ghostship.yaml` with operator-supplied values and inline comments from an
+internal template. It SHALL NOT generate `ghostship.conf`.
+
+#### Scenario: Wizard writes YAML config
+- **WHEN** the wizard completes
+- **THEN** `config/ghostship.yaml` exists with the operator's choices and all other keys commented out at their defaults
+
+#### Scenario: Wizard does not overwrite existing config
+- **WHEN** `config/ghostship.yaml` already exists and `--wizard` is passed
+- **THEN** the wizard prompts before overwriting (existing behaviour preserved)
 
 ### Requirement: Idempotent, repeatable install
 The system SHALL be safe to re-run: existing images are rebuilt, the existing `ga-transport` container is replaced, and an already-existing `ga-net` network is left untouched rather than erroring. Crew workspace/home volumes are out of scope for `install.sh` — they are created per-crew by `launch`, not by installation.
