@@ -87,7 +87,6 @@ Full install options — API keys, client-only installs, remote deployments, rep
 ```bash
 ghostship upgrade          # rebuild images and restart transport
 ghostship upgrade --skills # rebuild + refresh skill symlinks for all agent clients
-ghostship skills           # refresh skills only (alias for ghostship setup)
 ```
 
 ### Skills
