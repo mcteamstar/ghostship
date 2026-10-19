@@ -1,7 +1,5 @@
 # Changelog
 
-# Changelog
-
 ## v0.8.0
 
 ### YAML config (ghostship.yaml) replaces ghostship.conf (TRN-253, TRN-257)
