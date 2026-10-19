@@ -21,6 +21,7 @@
 - [x] 2.3 Remove the legacy handlers (`_handle_logout_post`, `_handle_claude_logout_post`, `_handle_codex_logout_post`) and their crew-wipe code, drop them from both `server.py` import blocks, and delete `transport/container_scripts/wipe_auth.py`. Update the existing `TestLogoutCredentialStore` tests to the new routine. Verify: `grep -rn '_handle_logout_post\b\|_handle_claude_logout_post\b\|_handle_codex_logout_post\b\|wipe_auth' transport/ tests/` returns nothing, and the updated tests pass.
 - [x] 2.4 A new login starts after cancelling: a unit test aborts a pending kiro flow via `POST /logout/kiro`, then calls `POST /login/kiro/builder-id` and gets a new flow, not 409. Verify: the test passes.
 - [x] 2.5 Container runtime unavailable: `_logout` still removes the stored credential and legacy file when `_get_podman` raises, and returns 500 saying a pending login could not be cancelled (design Decision 1, steps 1 and 5). Verify: `test_podman_unavailable_still_removes_credential_and_reports_500` passes, and fails against the pre-fix `_logout`, which returned 500 before removing anything.
+- [x] 2.6 Replace all ten 409 user-facing messages across kiro, claude, and codex login POST routes that referenced `POST /logout/...` with `ghostship auth logout <backend>` instructions. Verify: `grep -n "POST /logout" transport/login.py` returns only comments and docstrings, not user-facing response strings.
 
 ## 3. Docs
 

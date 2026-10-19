@@ -24,6 +24,7 @@ Logout also reaches into running crews to delete device-flow logins (kiro's `aut
   - Logging out while a login container is still being created no longer leaves an orphaned container.
   - A login that a poll was completing when logout cancelled it cannot store its credential afterwards.
 - A failed credential-store delete is reported as an error instead of being treated as "nothing stored".
+- The 409 "already authenticated" and "login already in progress" responses from all three login POST routes now direct the user to `ghostship auth logout <backend>` instead of the raw `POST /logout/{backend}` REST route.
 - Out of scope: the CLI calling logout automatically on Ctrl-C. Aborting a re-login through logout also removes the credential being replaced; that follows from the single end state and is accepted.
 
 ## Capabilities
