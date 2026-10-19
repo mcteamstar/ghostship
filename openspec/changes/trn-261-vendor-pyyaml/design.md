@@ -2,62 +2,75 @@
 
 ## Context
 
-See proposal.md — Why. The venv bootstrap exists because TRN-256 couldn't
-assume PyYAML was installed on the system Python. Vendoring sidesteps that
-entirely: the library travels with the repo, no network or package manager
-involved.
-
-PyYAML's pure-Python package is a single directory (`yaml/`) with 17 `.py`
-files. The optional C extension (`_yaml` / `cyaml.py`) is only used if
-compiled — `safe_load` works without it. Zero transitive deps. MIT licensed.
+See proposal.md — Why. Two changes that touch the same set of files, done
+together to avoid a partial state where `bin/` exists but still uses the venv.
 
 ## Goals / Non-Goals
 
-**Goals:** First-time install works with only `python3` present. No venv, no
-pip, no uv, no network. Existing installs keep working.
+**Goals:** First-time install on any Linux or macOS host with only `python3`
+and `podman`/`podman-compose`. Clear `bin/` vs `scripts/` layout. No venv,
+no pip, no network at install time.
 
-**Non-Goals:** Vendoring any other dependency. Keeping the venv code as a
-fallback (remove it entirely — having both paths is confusing and the venv path
-is the one that breaks).
+**Non-Goals:** Moving any file that isn't clearly user-facing to `bin/`. The
+boundary is: does a user or deploy script invoke it directly? Yes → `bin/`.
+No → `scripts/`.
 
 ## Decisions
 
-**Vendor location: `scripts/lib/vendor/yaml/`**
+**What moves to bin/ vs stays in scripts/**
 
-Keeps vendored code visually separate from ghostship's own lib code. The
-`PYTHONPATH` prefix points at `scripts/lib/vendor/` so `import yaml` resolves
-to the vendored copy even if a system yaml exists (PYTHONPATH takes precedence
-over site-packages).
+| File | Decision | Reason |
+|:-----|:---------|:-------|
+| `install.sh` | → `bin/` | User runs directly |
+| `start.sh` | → `bin/` | User runs directly |
+| `stop.sh` | → `bin/` | User runs directly |
+| `uninstall.sh` | → `bin/` | User runs directly |
+| `lib/yaml_config.py` | → `bin/lib/` | Support for bin/ scripts only |
+| `lib/portal_host.sh` | → `bin/lib/` | Sourced by bin/ scripts only |
+| `setup.py` | stays `scripts/` | Invoked by ghostship CLI, not directly by users |
+| `generate_openapi.py` | stays `scripts/` | Dev/CI tool |
+| `security_scan.py` | stays `scripts/` | Dev/CI tool |
+
+**Vendor location: `bin/lib/vendor/yaml/`**
+
+Colocated with the scripts that use it. `PYTHONPATH` points at `bin/lib/vendor/`
+so `import yaml` always resolves to the vendored copy. Takes precedence over any
+system site-packages yaml (correct — we control the version).
 
 **Commit the vendor directory**
 
-Not gitignored. It's intentional and needs to be present in every checkout,
-including CI and the adjutant submodule. A `.gitignore` entry would silently
-break deploys after a fresh clone.
+Not gitignored. Vendored deps that are small, pure-Python, and zero-dependency
+are legitimate to commit. A `.gitignore` entry would silently break fresh
+clones and CI.
 
-**Remove venv bootstrap entirely, don't leave it as fallback**
+**Remove venv bootstrap entirely — no fallback**
 
-A two-path system (try venv, fall back to vendor) would be confusing and hide
-the fact that the vendor copy is always sufficient. One path, always vendor.
+Having a fallback-to-vendor path alongside a try-venv path would be confusing
+and test two code paths. Remove the venv code entirely. The vendor copy is
+always sufficient.
 
-**Keep `yaml_config.py` unchanged**
+**`_YAML_CONFIG_HELPER` path update**
 
-It imports `yaml` at the top. `PYTHONPATH` makes this resolve to the vendor
-copy automatically. No code change needed in the helper.
+The scripts set `_YAML_CONFIG_HELPER="${GHOSTSHIP_DIR}/scripts/lib/yaml_config.py"`.
+After the move this becomes `"${GHOSTSHIP_DIR}/bin/lib/yaml_config.py"`.
+Invocation changes from `"$_YAML_PYTHON" "$_YAML_CONFIG_HELPER"` to
+`PYTHONPATH="${GHOSTSHIP_DIR}/bin/lib/vendor" python3 "$_YAML_CONFIG_HELPER"`.
+
+**adjutant deploy script**
+
+`pre-deploy.sh` rsyncs the ghostship repo to starport. It may have hardcoded
+`scripts/` paths that need updating. Check and update before merging.
 
 ## Migration Plan
 
-1. Copy `yaml/` from the installed PyYAML into `scripts/lib/vendor/yaml/`
-2. Update `install.sh`, `start.sh`, `uninstall.sh`: replace the venv bootstrap
-   block and `_YAML_PYTHON`/`_YAML_VENV` vars with a `_YAML_PYTHON` set to
-   plain `python3`, and prefix invocations with
-   `PYTHONPATH="${GHOSTSHIP_DIR}/scripts/lib/vendor"`.
-3. Update docs.
-4. Verify on a clean system (no PyYAML installed) that `install.sh --client-only`
-   works end-to-end.
-
-Rollback: revert the commit. The venv approach is gone but can be restored from
-git history.
+1. Create `bin/` and `bin/lib/vendor/` directories.
+2. Copy PyYAML pure-Python source into `bin/lib/vendor/yaml/`.
+3. `git mv` the four scripts and two lib files.
+4. Update all internal references (ghostship CLI, tests, docs).
+5. Verify `bash -n` passes on all moved scripts.
+6. Run `pytest tests/unit/` — confirm 858 tests pass.
+7. Run `./bin/install.sh --client-only --url ...` on a shell with no venv — confirm no bootstrap output.
+8. Deploy to starport to confirm carrier upgrade works cleanly.
 
 ## Open Questions
 

@@ -2,27 +2,52 @@
 
 ## Why
 
-The PyYAML venv bootstrap (TRN-256) fails on Linux hosts where `python3-venv`
-is not installed — e.g. starport (vm23, Ubuntu, Python 3.14). Ghostship
-deployed to carrier required a manual `apt install python3-venv` before the
-installer could proceed. The venv approach requires `uv`, `ensurepip`, or a
-network-accessible `get-pip.py` — all three can fail in constrained or
-air-gapped environments. The dependency is disproportionate for a tool whose
-only job is parsing a config file at install time.
+Two friction points addressed together since they touch the same files:
+
+**scripts/ layout is unclear.** User-facing scripts (`install.sh`, `start.sh`,
+`stop.sh`, `uninstall.sh`) live alongside dev/CI tools (`generate_openapi.py`,
+`security_scan.py`) with no distinction. The convention `bin/` for user-facing
+executables and `scripts/` for dev/CI tools makes the intent obvious.
+
+**PyYAML venv bootstrap fails on constrained Linux hosts.** The TRN-256 venv
+bootstrap requires `python3-venv`, `uv`, or network access to `get-pip.py`.
+On starport (Ubuntu, Python 3.14) this caused a failed install until
+`python3-venv` was manually installed. The fix is to vendor PyYAML's pure-Python
+source — it's 200KB, zero dependencies, MIT licensed, and needs only `python3`.
 
 ## What Changes
 
-- Copy PyYAML's pure-Python source (`yaml/` directory, 17 `.py` files, ~200 KB,
-  zero transitive dependencies, MIT licensed) into `scripts/lib/vendor/yaml/`
-  and commit it as a vendored dependency.
-- Replace all `"$_YAML_PYTHON" "$_YAML_CONFIG_HELPER"` invocations in
-  `install.sh`, `start.sh`, and `uninstall.sh` with
-  `PYTHONPATH="${GHOSTSHIP_DIR}/scripts/lib/vendor" python3 "$_YAML_CONFIG_HELPER"`.
-- Remove the entire venv bootstrap block (`_YAML_VENV`, `_YAML_PYTHON`, the
-  `uv`/`ensurepip`/`get-pip.py` fallback chain) from all three scripts. Also
-  remove it from the `ghostship` CLI shim if it duplicates the same logic.
-- Update README and `docs/configuration.md` prerequisites: PyYAML is no longer
-  a prerequisite; `python3` is the only requirement (already checked).
+### 1. Restructure scripts/ → bin/
+
+Move user-facing executables and their support libraries:
+- `scripts/install.sh` → `bin/install.sh`
+- `scripts/start.sh` → `bin/start.sh`
+- `scripts/stop.sh` → `bin/stop.sh`
+- `scripts/uninstall.sh` → `bin/uninstall.sh`
+- `scripts/lib/yaml_config.py` → `bin/lib/yaml_config.py`
+- `scripts/lib/portal_host.sh` → `bin/lib/portal_host.sh`
+
+Dev/CI tools stay in `scripts/`: `generate_openapi.py`, `security_scan.py`,
+`setup.py`, and any other non-user-facing tools.
+
+Update all internal references:
+- `ghostship` CLI shim — `_exec_script()` and `GHOSTSHIP_DIR` path constants
+- `tests/integration/` — script paths in test helpers
+- `tests/run.sh` — integration test loop
+- `Containerfile` and `compose.yml` template — any `scripts/` refs
+- `adjutant` deploy script — `pre-deploy.sh` rsync paths
+- `README.md` and `docs/` — any path references
+
+### 2. Vendor PyYAML into bin/lib/vendor/
+
+- Copy PyYAML pure-Python source (17 `.py` files) into `bin/lib/vendor/yaml/`.
+  Commit it — it's intentional and must be present in every checkout.
+- Replace all venv bootstrap blocks (`_YAML_VENV`, `_YAML_PYTHON`,
+  `uv`/`ensurepip`/`get-pip.py` chain) in `bin/install.sh`, `bin/start.sh`,
+  and `bin/uninstall.sh` with:
+  `PYTHONPATH="${GHOSTSHIP_DIR}/bin/lib/vendor" python3 "$_YAML_CONFIG_HELPER"`
+- Add `bin/lib/vendor/README.md` noting version and license.
+- Update README prerequisites: PyYAML no longer needed; `python3` is sufficient.
 
 ## Capabilities
 
@@ -30,12 +55,15 @@ only job is parsing a config file at install time.
 None.
 
 ### Modified Capabilities
-- `installation`: prerequisite for PyYAML removed; `python3` is sufficient.
+- `installation`: `bin/` layout documented; PyYAML prerequisite removed;
+  `python3` is sufficient for YAML config parsing.
 
 ## Impact
 
-- `scripts/install.sh`, `scripts/start.sh`, `scripts/uninstall.sh` — venv
-  bootstrap replaced with `PYTHONPATH` prefix
-- `scripts/lib/vendor/yaml/` — new vendored directory (17 files, ~200 KB)
-- `README.md`, `docs/configuration.md` — prerequisite docs updated
-- No behaviour change: `yaml_config.py` imports `yaml` identically either way
+- `bin/` — new directory, four scripts
+- `bin/lib/` — new directory, two support files + vendored yaml/
+- `scripts/` — user-facing scripts removed; dev tools remain
+- `ghostship` CLI shim — path constants updated
+- `tests/` — integration test paths updated
+- `adjutant` — deploy script rsync paths updated (separate repo)
+- README, docs — path references updated
