@@ -385,6 +385,24 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 - **WHEN** `./install.sh --client-only [flags]` is invoked
 - **THEN** `bin/install.sh --client-only [flags]` runs with all arguments forwarded and the exit code is preserved
 
+### Requirement: PyYAML vendored — python3 is the only YAML config prerequisite
+
+The ghostship repository SHALL include a vendored copy of the PyYAML pure-Python
+package at `bin/lib/vendor/yaml/`. `bin/install.sh`, `bin/start.sh`, and
+`bin/uninstall.sh` SHALL invoke `yaml_config.py` with
+`PYTHONPATH="${GHOSTSHIP_DIR}/bin/lib/vendor" python3` so that `import yaml`
+always resolves to the vendored copy without requiring PyYAML to be installed
+on the system Python, and without creating a virtual environment. The only
+prerequisite for YAML config parsing SHALL be a working `python3` binary.
+
+#### Scenario: Install succeeds with only python3 — no PyYAML installed
+- **WHEN** `bin/install.sh --client-only` is invoked on a host where PyYAML is not installed in the system Python
+- **THEN** the install completes successfully, no venv is created, and no pip or uv commands are executed
+
+#### Scenario: Vendored yaml takes precedence over any system installation
+- **WHEN** `bin/install.sh` invokes `yaml_config.py`
+- **THEN** the `yaml` module resolves from `bin/lib/vendor/` via `PYTHONPATH`, regardless of whether a different version is installed system-wide
+
 ### Requirement: ghostship CLI available on PATH after install
 `bin/install.sh` SHALL make the `ghostship` CLI script available on `PATH` after a successful run.
 
