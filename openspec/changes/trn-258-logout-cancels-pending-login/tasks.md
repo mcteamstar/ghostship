@@ -33,7 +33,7 @@
 
 ## 4. Integration check
 
-- [ ] 4.1 Run the full unit suite. Verify: `pytest tests/unit/` exits 0.
+- [x] 4.1 Run the full unit suite. Verify: `pytest tests/unit/` exits 0.
 - [ ] 4.2 On the live install after `ghostship upgrade`:
   - `curl -X POST .../login/kiro/builder-id`, then `ghostship auth logout kiro`. Verify the logout succeeds, no `ga-login-*` container remains, and `GET /login/kiro` shows `pending_flow: null` and `configured: false`.
   - Run `ghostship auth logout kiro` again. Verify it succeeds.
