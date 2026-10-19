@@ -186,6 +186,26 @@ def _install_transport_stubs() -> None:
         starlette_responses.PlainTextResponse = PlainTextResponse  # type: ignore[attr-defined]
         starlette_responses.JSONResponse = JSONResponse  # type: ignore[attr-defined]
         starlette_requests.Request = Request  # type: ignore[attr-defined]
+
+        class StreamingResponse(Response):
+            """Minimal stub for starlette.responses.StreamingResponse."""
+            def __init__(self, content: Any = None, status_code: int = 200,
+                         headers: dict | None = None, media_type: str = "application/octet-stream") -> None:
+                super().__init__(content="", status_code=status_code,
+                                 headers=headers, media_type=media_type)
+                self.body_iterator = content
+
+        starlette_responses.StreamingResponse = StreamingResponse  # type: ignore[attr-defined]
+
+        starlette_routing = types.ModuleType("starlette.routing")
+
+        class Route:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        starlette_routing.Route = Route  # type: ignore[attr-defined]
+        starlette_mod.routing = starlette_routing  # type: ignore[attr-defined]
+
         starlette_mod.responses = starlette_responses  # type: ignore[attr-defined]
         starlette_mod.requests = starlette_requests  # type: ignore[attr-defined]
         starlette_mod._unit_test_stub = True  # type: ignore[attr-defined]
@@ -193,6 +213,7 @@ def _install_transport_stubs() -> None:
             "starlette": starlette_mod,
             "starlette.responses": starlette_responses,
             "starlette.requests": starlette_requests,
+            "starlette.routing": starlette_routing,
         })
 
     # ── cryptography (used by captain._format_captain_mail with signing) ─────

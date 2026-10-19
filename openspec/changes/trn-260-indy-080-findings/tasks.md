@@ -29,7 +29,7 @@
 
 ## 3. C-1 — Restore meaningful deleted test modules
 
-- [ ] 3.1 Create `tests/unit/test_streaming_transfer.py` covering
+- [x] 3.1 Create `tests/unit/test_streaming_transfer.py` covering
   `_ResponseChunkReader` and `_TarMemberStream` in `transport/files.py`:
   normal reads, cross-chunk boundaries, early EOF, and member-not-found error.
   Verify: `pytest tests/unit/test_streaming_transfer.py` passes.
@@ -48,4 +48,4 @@
 
 ## 4. Integration check
 
-- [ ] 4.1 Run `pytest tests/unit/` and confirm exit 0.
+- [x] 4.1 Run `pytest tests/unit/` and confirm exit 0.
