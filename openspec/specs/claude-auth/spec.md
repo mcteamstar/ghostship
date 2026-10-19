@@ -137,8 +137,8 @@ The operator documentation (`docs/auth.md`) SHALL document `CLAUDE_CODE_OAUTH_TO
 - **WHEN** claude is an enabled backend, `GA_CREW_ACP_BACKEND` is unset, and `POST /login/claude/setup-token` is called
 - **THEN** the transport returns HTTP 404 because the route no longer exists; headless Claude auth is configured through `CLAUDE_CODE_OAUTH_TOKEN` instead
 
-### Requirement: Claude authorisation-code flow state machine
-The Claude authorisation-code flow SHALL have three states: idle, pending and complete. `POST /login/claude/oauth` moves idle to pending. `GET /login/claude` moves pending to complete once a code has been submitted through `POST /login/claude/oauth/code`, storing the result as claude's active credential (method `oauth`). The transport MUST NOT make any other transition. Clearing is done with `POST /logout/claude`.
+### Requirement: Claude authorisation-code flow states
+The Claude authorisation-code flow SHALL have three states: idle, pending and complete. `POST /login/claude/oauth` moves idle to pending. `GET /login/claude` moves pending to complete once a code has been submitted through `POST /login/claude/oauth/code`, storing the result as claude's active credential (method `oauth`). The transport MUST NOT make any other transition. Clearing is done with `POST /logout/claude`, which also cancels a pending flow and leaves running crews untouched.
 
 #### Scenario: POST /login/claude/oauth starts the flow
 - **WHEN** `POST /login/claude/oauth` is called and no Claude login flow is pending, whether or not claude already holds a credential
@@ -160,6 +160,6 @@ The Claude authorisation-code flow SHALL have three states: idle, pending and co
 - **WHEN** `GET /login/claude` is polled and no login flow is in progress
 - **THEN** the transport returns HTTP 404
 
-#### Scenario: Clearing claude wipes running crews
-- **WHEN** `POST /logout/claude` is called and claude's active method is `oauth`
-- **THEN** the credential is deleted and the transport removes the Claude credential from every running Claude-backend crew's container without restarting those crews
+#### Scenario: Logout leaves running claude crews untouched
+- **WHEN** `POST /logout/claude` is called and claude's active method is `oauth` while claude crews are running
+- **THEN** the stored credential is deleted, and no running crew's `~/.claude/` is modified

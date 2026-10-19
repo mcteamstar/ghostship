@@ -17,20 +17,20 @@ The system SHALL initiate a kiro-cli device auth flow inside the crew container 
 - **WHEN** `launch` is called again with the same `crew_id` whose registry status is `auth_required`
 - **THEN** the system checks the crew container's kiro-cli database for completed auth; if found, it writes the auth rows to `ga-kiro-auth` and proceeds to finish crew setup; if not found, it returns the same `auth_required` status and login URL again
 
-### Requirement: Auth reuse across crews
+### Requirement: Kiro auth reused across crews
 The system SHALL read the saved `ga-kiro-auth` file and inject its rows into every subsequent crew's kiro-cli database, so a single login authenticates all future crews without repeating the device auth flow. `ga-kiro-auth` is a single plain file under `DATA_DIR`, mode `0600` — not a Podman secret — so reading it never involves Podman's secret API or file-driver backing store.
 
 #### Scenario: Auth file has content
 - **WHEN** `launch` creates a new crew and `DATA_DIR/ga-kiro-auth` exists with content
 - **THEN** the system injects the decoded auth rows into the new crew's kiro-cli SQLite database during setup, with no login prompt shown to the caller
 
-#### Scenario: Auth file missing or empty
-- **WHEN** `DATA_DIR/ga-kiro-auth` does not exist or is empty
-- **THEN** the system falls back to reading auth rows directly from any currently running crew's kiro-cli database instead
-
 #### Scenario: Auth file is created or refreshed
 - **WHEN** a completed device-auth flow creates or replaces the auth file
 - **THEN** the file is written in place with mode `0600`, flushed, for later launches to read
+
+#### Scenario: No fallback to running crews
+- **WHEN** a kiro crew is launched and kiro holds no stored credential, while other kiro crews are running and authenticated
+- **THEN** the launch does not read auth from any running crew; it starts kiro's interactive login as for any unauthenticated launch
 
 ### Requirement: Crew secrets not persisted in plaintext after injection
 
@@ -135,8 +135,8 @@ unchanged.
 - **THEN** the write fails, because `.admiral_public_key` is a read-only Podman secret mount
   and the container lacks `CAP_SYS_ADMIN` to remount it read-write
 
-### Requirement: Kiro auth state machine
-The transport SHALL track kiro auth as unauthenticated, pending or authenticated, from whether kiro holds an active credential. `POST /login/kiro/builder-id` or `POST /login/kiro/identity-center` moves to pending; `GET /login/kiro` completing moves to authenticated; `POST /login/kiro/api-key` moves to authenticated; `POST /logout/kiro` moves to unauthenticated. The transport SHALL NOT make any other transition.
+### Requirement: Kiro auth state transitions
+The transport SHALL track kiro auth as unauthenticated, pending or authenticated, from whether kiro holds an active credential. `POST /login/kiro/builder-id` or `POST /login/kiro/identity-center` moves to pending; `GET /login/kiro` completing moves to authenticated; `POST /login/kiro/api-key` moves to authenticated; `POST /logout/kiro` moves to unauthenticated from either state, cancelling any pending flow. The transport SHALL NOT make any other transition.
 
 #### Scenario: Device login allowed when already authenticated
 - **WHEN** a kiro device login is started and kiro already holds a credential
@@ -146,17 +146,21 @@ The transport SHALL track kiro auth as unauthenticated, pending or authenticated
 - **WHEN** a kiro device login is started while a kiro flow is already pending
 - **THEN** the transport returns HTTP 409 with a message indicating a login is already in progress and `GET /login/kiro` should be polled
 
-#### Scenario: Auth injected into all running crews on login completion
+#### Scenario: Auth injected into running kiro crews on login completion
 - **WHEN** `GET /login/kiro` first returns `status: "complete"`
-- **THEN** the transport has stored kiro's credential with mode `0600` and has injected the fresh auth rows into every crew whose registry status is `running`, without restarting those crews
-
-#### Scenario: Auth cleared from all running crews on logout
-- **WHEN** `POST /logout/kiro` is called and kiro holds a device-flow credential
-- **THEN** the credential is deleted and the transport has executed `DELETE FROM auth_kv` in every running crew's kiro-cli SQLite DB
+- **THEN** the transport has stored kiro's credential with mode `0600` and has injected the fresh auth rows into every crew whose registry status is `running` and whose `acp_backend` is `kiro` (an absent `acp_backend` counts as kiro), without restarting those crews; running claude and codex crews are not modified
 
 #### Scenario: Orphaned temp containers cleaned up on startup
 - **WHEN** the transport starts and one or more containers named `ga-login-*` exist
 - **THEN** those containers are stopped and removed during `_reconcile_registry` before any other operations
+
+#### Scenario: Logout leaves running crews untouched
+- **WHEN** `POST /logout/kiro` is called while kiro holds a device-flow credential and kiro crews are running
+- **THEN** the stored credential is deleted, and no running crew's kiro-cli database is modified
+
+#### Scenario: Logout from pending
+- **WHEN** a kiro device login is pending and `POST /logout/kiro` is called
+- **THEN** the flow is cancelled, its login container removed, and kiro auth is unauthenticated
 
 ### Requirement: Kiro login method selects the identity provider
 `identity-center` SHALL run `kiro-cli login` with `--identity-provider`, `--region` and `--license pro`, using the start URL and region from the request, or else the configured `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION`. `builder-id` SHALL run it with `--use-device-flow` and `--license free`. The `--license` value SHALL be derived from the method and SHALL NOT be configurable. A kiro `api-key` credential SHALL skip the device flow. Claude and Codex crews SHALL receive no kiro auth.
