@@ -517,5 +517,154 @@ class TestPerBackendModelEnvVars(unittest.TestCase):
         self.assertNotIn("KC_MODEL_OVERRIDE", yaml_config._ENV_TO_PATH)
 
 
+
+class TestPortalOnlyHost(unittest.TestCase):
+    """portal-only-host: HOST is ga-portal's bind address, loopback by default."""
+
+    def test_host_defaults_to_loopback(self):
+        env = yaml_config.flatten_to_env(yaml_config._defaults_tree())
+        self.assertEqual(env["HOST"], "127.0.0.1")
+
+    def test_loopback_detection(self):
+        for host in ("", "127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "LOCALHOST"):
+            self.assertTrue(yaml_config.is_loopback(host), host)
+        for host in ("0.0.0.0", "::", "192.168.1.10", "example.com"):
+            self.assertFalse(yaml_config.is_loopback(host), host)
+
+    def test_is_loopback_subcommand(self):
+        import contextlib
+        import io
+
+        for host, want in (("127.0.0.1", "true"), ("0.0.0.0", "false")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = yaml_config.main(["is-loopback", host])
+            self.assertEqual(rc, 0)
+            self.assertEqual(buf.getvalue().strip(), want)
+
+
+class TestApiKeyStates(unittest.TestCase):
+    """portal-only-host: network.api_key is a key, unset, or false (opt-out)."""
+
+    def _env(self, api_key):
+        return yaml_config.flatten_to_env({"network": {"api_key": api_key}})
+
+    def test_string_enables_auth(self):
+        env = self._env("s3cret")
+        self.assertEqual(env["GA_API_KEY"], "s3cret")
+        self.assertEqual(env["GA_API_KEY_DISABLED"], "")
+        self.assertEqual(env["GA_API_KEY_SOURCE"], "yaml")
+
+    def test_false_is_explicit_opt_out(self):
+        env = self._env(False)
+        self.assertEqual(env["GA_API_KEY"], "")
+        self.assertEqual(env["GA_API_KEY_DISABLED"], "true")
+        self.assertEqual(env["GA_API_KEY_SOURCE"], "yaml")
+
+    def test_null_and_empty_are_unset_not_opt_out(self):
+        for value in (None, ""):
+            env = self._env(value)
+            self.assertEqual(env["GA_API_KEY"], "")
+            self.assertEqual(env["GA_API_KEY_DISABLED"], "")
+            self.assertEqual(env["GA_API_KEY_SOURCE"], "")
+
+    def test_absent_is_unset(self):
+        env = yaml_config.flatten_to_env({})
+        self.assertEqual(env["GA_API_KEY_DISABLED"], "")
+        self.assertEqual(env["GA_API_KEY_SOURCE"], "")
+
+    def test_true_and_quoted_booleans_rejected(self):
+        for value in (True, "true", "false", "FALSE", 123, ["k"]):
+            with self.assertRaises(ValueError, msg=repr(value)):
+                self._env(value)
+
+    def test_resolve_subcommand_fails_on_invalid_key(self):
+        import contextlib
+        import io
+
+        tmp = tempfile.mkdtemp()
+        cfg = os.path.join(tmp, "c.yaml")
+        with open(cfg, "w", encoding="utf-8") as fh:
+            fh.write('network:\n  api_key: "false"\n')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = yaml_config.main(["resolve", "--config", cfg])
+        self.assertEqual(rc, 1)
+        self.assertIn("network.api_key", err.getvalue())
+
+
+class TestRequireApiKeyDeprecated(unittest.TestCase):
+    """portal-only-host: network.require_api_key is deprecated; only off maps."""
+
+    def _env(self, setting, api_key=None):
+        import contextlib
+        import io
+
+        network = {"require_api_key": setting}
+        if api_key is not None:
+            network["api_key"] = api_key
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            env = yaml_config.flatten_to_env({"network": network})
+        return env, buf.getvalue()
+
+    def test_off_emits_deprecated_off_marker(self):
+        env, warnings = self._env("off")
+        self.assertEqual(env["GA_API_KEY_DEPRECATED_OFF"], "true")
+        # The opt-out itself is applied by install.sh after key resolution.
+        self.assertEqual(env["GA_API_KEY_DISABLED"], "")
+        self.assertIn("network.api_key: false", warnings)
+
+    def test_error_and_warn_ignored_with_warning(self):
+        for setting in ("error", "warn"):
+            env, warnings = self._env(setting)
+            self.assertNotIn("GA_API_KEY_DEPRECATED_OFF", env)
+            self.assertIn("deprecated", warnings)
+
+    def test_never_emits_ga_require_api_key(self):
+        for setting in ("off", "error", "warn"):
+            env, _ = self._env(setting)
+            self.assertNotIn("GA_REQUIRE_API_KEY", env)
+        self.assertNotIn("GA_REQUIRE_API_KEY", yaml_config.DEFAULTS)
+        self.assertNotIn("GA_REQUIRE_API_KEY", yaml_config._ENV_TO_PATH)
+
+    def test_key_alongside_off_is_still_resolved(self):
+        env, _ = self._env("off", api_key="s3cret")
+        self.assertEqual(env["GA_API_KEY"], "s3cret")
+
+    def test_not_reported_as_unknown(self):
+        self.assertEqual(
+            yaml_config.collect_unknown_paths({"network": {"require_api_key": "off"}}), []
+        )
+
+
+class TestMigrateRequireApiKey(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.conf = os.path.join(self.tmp, "ghostship.conf")
+        self.out = os.path.join(self.tmp, "ghostship.yaml")
+
+    def _migrate(self, content: str) -> dict:
+        with open(self.conf, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        unknown = yaml_config.migrate_conf(self.conf, self.out)
+        self.assertEqual(unknown, [])
+        return yaml_config.load_yaml(self.out)
+
+    def test_off_without_key_becomes_api_key_false(self):
+        loaded = self._migrate("GA_REQUIRE_API_KEY=off\n")
+        self.assertIs(loaded["network"]["api_key"], False)
+        self.assertNotIn("require_api_key", loaded["network"])
+
+    def test_off_with_key_keeps_key(self):
+        loaded = self._migrate("GA_REQUIRE_API_KEY=off\nGA_API_KEY=s3cret\n")
+        self.assertEqual(loaded["network"]["api_key"], "s3cret")
+
+    def test_error_dropped(self):
+        loaded = self._migrate("GA_REQUIRE_API_KEY=warn\nPORT=9000\n")
+        self.assertNotIn("api_key", loaded["network"])
+        self.assertNotIn("require_api_key", loaded["network"])
+
+
 if __name__ == "__main__":
     unittest.main()

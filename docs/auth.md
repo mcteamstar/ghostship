@@ -403,13 +403,25 @@ unauthenticated (nothing to clear).
 
 ---
 
-An optional static bearer credential protecting the MCP endpoint.
+An optional static bearer credential protecting the MCP endpoint. Set it in
+`config/ghostship.yaml` or on the command line (the flag wins and is saved for
+later installs):
+
+```yaml
+network:
+  api_key: "<your-secret-key>"
+```
 
 ```bash
 ./install.sh --api-key <your-secret-key>
 ```
 
-The key is delivered as a Podman secret — never as an environment variable. To disable: `./install.sh --api-key ""`.
+The key is delivered as a Podman secret — never as an environment variable. `./install.sh --api-key ""` clears the saved flag key.
+
+A key is optional while `network.host` is loopback (the default, `127.0.0.1`).
+For any other host the install aborts without one, unless you opt out
+explicitly with `network.api_key: false` — for deployments that put their own
+auth layer in front (Tailscale, VPN, reverse proxy).
 
 To rotate: `./install.sh --api-key <new-key>` — rewrites the file, recreates the secret, restarts the transport (~2s). Update all MCP clients with the new bearer token.
 

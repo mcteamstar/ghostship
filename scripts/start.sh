@@ -194,18 +194,29 @@ fi
 _COMPOSE_ENV="${_COMPOSE_ENV:+${_COMPOSE_ENV} }PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose 2>/dev/null || true)"
 eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${_COMPOSE_FILE}\" up -d"
 
+# Probe /health through ga-portal at the address install.sh published it on
+# (GA_PORTAL_HOST in compose.yml) — the path every client uses.
+# shellcheck source=lib/portal_host.sh
+source "${GHOSTSHIP_DIR}/scripts/lib/portal_host.sh"
+_PORTAL_HOST="$(sed -n 's/^ *GA_PORTAL_HOST: "\(.*\)"$/\1/p' "${_COMPOSE_FILE}" | head -n 1)"
+_PORTAL_TLS="$(sed -n 's/^ *GA_PORTAL_TLS_MODE: "\(.*\)"$/\1/p' "${_COMPOSE_FILE}" | head -n 1)"
+_scheme="http"
+[[ -n "$_PORTAL_TLS" && "$_PORTAL_TLS" != "off" ]] && _scheme="https"
+_probe_url="$(portal_probe_base "${_PORTAL_HOST:-127.0.0.1}" "${PORT}" "$_scheme")/health"
+
 _ready=0
 for i in $(seq 1 30); do
-  if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+  if curl -sfk "$_probe_url" >/dev/null 2>&1; then
     _ready=1; break
   fi
   sleep 1
 done
 
 if [[ "$_ready" == "1" ]]; then
-  echo "✓ ga-transport is ready (http://127.0.0.1:${PORT}/health)"
+  echo "✓ ga-transport is ready (${_probe_url})"
 else
-  echo "✗ ga-transport did not become ready within 30s" >&2
+  echo "✗ ga-transport did not become ready through ga-portal within 30s (${_probe_url})" >&2
   eval "${_PODMAN_CMD} logs ga-transport --tail 10" >&2
+  eval "${_PODMAN_CMD} logs ga-portal --tail 10" >&2
   exit 1
 fi

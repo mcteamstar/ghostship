@@ -6,7 +6,7 @@ These variables are written into the transport container's environment by `insta
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `HOST` | `0.0.0.0` | Interface the transport binds to inside its container. The transport publishes no host port: Caddy (`ga-portal`) is published on all interfaces (`0.0.0.0`) at `PORT` and proxies to it. |
+| `HOST` | `127.0.0.1` | Address Caddy (`ga-portal`) publishes on, for `PORT` and the dashboard port range — the only thing it controls (`network.host`). The default keeps ghostship reachable from this machine only; use `0.0.0.0` (all interfaces) or a specific interface address for remote access, which requires an API key or the explicit opt-out (see `GA_API_KEY`). The transport always listens on `0.0.0.0` inside its own container and publishes no host port. With a specific address, `ghostship setup` still registers `http://localhost:<PORT>/mcp` by default; pass `ghostship setup --url http://<HOST>:<PORT>/mcp`. On macOS (Podman machine), prefer `127.0.0.1` or `0.0.0.0`. |
 | `PORT` | `64057` | Host port Caddy (`ga-portal`) listens on for MCP and file routes. The transport itself always listens on `64057` inside its container (not configurable). Set via `install.sh --port <port>`. |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. |
 | `GA_MAX_CREWS` | `20` | Maximum registered crews (running + stopped). Stopped crews cost no memory; this is a housekeeping limit. |
@@ -16,11 +16,11 @@ These variables are written into the transport container's environment by `insta
 | `KC_MODEL_<B>_OVERRIDE` | _(unset)_ | Per-backend model lock for backend `<B>` ∈ {`KIRO`, `CLAUDE`, `CODEX`}, from `backends.<b>.model.override`. Forces every agent on that backend to the named model, overriding per-agent config. Beaten only by a dispatch-time `model=`. |
 | `KC_MODEL_<B>_DEFAULT` | _(unset)_ | Per-backend fallback model for backend `<B>`, from `backends.<b>.model.default`. Used when an agent on that backend has no per-agent model; more specific than `KC_MODEL_DEFAULT`. |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. On Linux uses host uid (`id -u`); on macOS uses the `podman machine` guest uid (`podman machine ssh -- id -u`), which may differ. |
-| `GA_HOST_URL` | `http://localhost:<PORT>` | Base URL baked into presigned `evac`/`supply` links. Set for externally-reachable deployments. |
+| `GA_HOST_URL` | derived from `HOST` | Public base URL baked into presigned `evac`/`supply` links and crew CORS origins (`network.host_url`, `--public-url`). When unset: `http://localhost:<PORT>` for a loopback or wildcard `HOST`, `http://<HOST>:<PORT>` for a specific address. Set it explicitly for a DNS name or TLS. |
 | `GA_FILE_SECRET` | unset (generated once, stored in `DATA_DIR/ga-file-secret`) | HMAC secret signing presigned file URLs. The stored secret survives transport restarts. `install.sh` does not pass an override. |
 | `TRANSPORT_DATA_DIR` | `/data` (pinned) | Container-side data directory the transport reads/writes. Effectively pinned to `/data` in the standard install: `DATA_DIR` is always bind-mounted as `/data`, and the value is hardcoded (TRN-213) rather than read from the environment. Changing it would require a custom compose override. |
-| `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`). Set via `install.sh --api-key <key>` — persisted to the data directory and reused on later installs; `--api-key ""` clears it. **Never log, print, or embed this value.** See [auth.md](auth.md). |
-| `GA_REQUIRE_API_KEY` | `error` | Controls install-time and transport-startup enforcement when `GA_API_KEY` is unset and the transport is bound to a non-loopback address. `error` (default) — aborts `install.sh` with a non-zero exit and makes the transport refuse to start. `warn` — prints a warning to stderr and continues (still accepted for backward compatibility). `off` — allows unauthenticated remote access. Loopback installs (`HOST=127.0.0.1` or unset) are never subject to this check — no API key is required. Use `off` for proxy-protected deployments that place their own auth layer in front (Tailscale, VPN, reverse proxy). |
+| `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`), from `network.api_key` or `install.sh --api-key <key>`. Resolution order: `--api-key` > `network.api_key` > the key saved by an earlier `--api-key` (`--api-key ""` clears the saved key). `network.api_key` has three states: a string enables auth; unset is fine on a loopback `HOST`, but on any other `HOST` the install warns and aborts and the transport refuses to start; `false` is the explicit opt-out that allows unauthenticated non-loopback access (for deployments behind their own auth layer — Tailscale, VPN, reverse proxy) with a warning. **Never log, print, or embed this value.** See [auth.md](auth.md). |
+| `GA_REQUIRE_API_KEY` | _(deprecated)_ | Deprecated, along with `network.require_api_key`. `off` is treated as `network.api_key: false` when no key is set from any source; `error` and `warn` are ignored with a warning (an unset key on a non-loopback `HOST` now always aborts). |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
 | `KIRO_LICENSE` | unset | kiro-cli license type, if required by the identity provider. |
@@ -251,7 +251,7 @@ default, is documented in **`config/ghostship.yaml.example`** — copy it to
 
 | Section | Example keys | Maps to |
 |:--------|:-------------|:--------|
-| `network` | `port`, `host`, `host_url`, `api_key`, `require_api_key`, `tls.certfile`, `tls.keyfile` | `PORT`, `HOST`, `GA_HOST_URL`, `GA_API_KEY`, … |
+| `network` | `port`, `host`, `host_url`, `api_key`, `tls.certfile`, `tls.keyfile` | `PORT`, `HOST`, `GA_HOST_URL`, `GA_API_KEY`, … |
 | `crew` | `max_crews`, `max_active`, `idle_timeout_secs`, `subagent_timeout_secs`, `orders_dir`, `git.author.name`/`git.author.email` | `GA_MAX_CREWS`, `GA_MAX_ACTIVE_CREWS`, … |
 | `crew.memory` | `min_free_mem_gb`, `spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb` | `GA_MIN_FREE_MEM_GB`, … |
 | `model` | `default` | `KC_MODEL_DEFAULT` |

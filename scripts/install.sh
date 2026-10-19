@@ -3,7 +3,8 @@
 #
 # Builds the crew + transport images and starts the transport and Caddy
 # (ga-portal) with podman-compose from a generated compose.yml. Caddy is
-# published on all interfaces at PORT; set GA_API_KEY on shared networks. On macOS, Podman runs inside a
+# published on HOST:PORT (default 127.0.0.1, loopback only); a non-loopback HOST
+# needs an API key or network.api_key: false. On macOS, Podman runs inside a
 # lightweight Linux VM ("podman machine"); on Linux it runs directly on
 # the host kernel, no VM involved.
 #
@@ -35,9 +36,14 @@
 # Port: MCP and file transfer both listen on --port (default 64057) — one port
 # serves all routes, matching server.py's unified app.
 #
-# API key: --api-key <key> enables MCP bearer-token auth and persists the
-# key to your data directory, so it stays enabled on future installs without
-# repeating the flag. --api-key "" (empty) clears it. See docs/auth.md.
+# Host: HOST (network.host) is the address ga-portal publishes on — default
+# 127.0.0.1. The transport always listens on 0.0.0.0 inside its container.
+#
+# API key: network.api_key in the YAML, or --api-key <key>, enables MCP
+# bearer-token auth. The flag wins and is persisted to your data directory, so
+# it stays enabled on future installs without repeating it; --api-key ""
+# (empty) clears the saved flag key. network.api_key: false is the explicit
+# opt-out for a non-loopback HOST. See docs/auth.md.
 # set -e: exit on any command failure. set -o pipefail: exit on failures
 # within pipelines. Together these ensure that podman machine ssh failures
 # (including those in command-substitution subshells like GUEST_UID=...)
@@ -175,6 +181,9 @@ KC_MODEL_CODEX_DEFAULT=""
 KC_MODEL_DEFAULT=""
 GA_HOST_URL=""
 GA_API_KEY=""
+GA_API_KEY_DISABLED=""        # "true" = network.api_key: false (explicit opt-out)
+GA_API_KEY_SOURCE=""          # "yaml" when network.api_key set the key or opt-out
+GA_API_KEY_DEPRECATED_OFF=""  # deprecated network.require_api_key: off
 GA_DEDICATED_MACHINE=true
 GA_MACHINE_CPUS=8
 GA_MACHINE_MEMORY=16384
@@ -222,7 +231,7 @@ GA_GIT_AUTHOR_EMAIL=""
 GA_DASHBOARD_PORT_RANGE_START=64058
 GA_DASHBOARD_DEFAULT=false  # Set true to allocate a dashboard on every launch
 GA_DASHBOARD_PORT_RANGE_SIZE=64
-HOST=0.0.0.0
+HOST=127.0.0.1  # ga-portal's published address — loopback only by default
 GA_ORDERS_DIR=""
 GA_TLS_CERTFILE=""
 GA_TLS_KEYFILE=""
@@ -254,13 +263,11 @@ CLIENT_ONLY_API_KEY=""
 # To enable TLS: set GA_PORTAL_TLS_MODE=acme + GA_PORTAL_DOMAIN (any port).
 GA_PORTAL_TLS_MODE=off
 GA_PORTAL_DOMAIN=""
-# Bind-address enforcement mode. When GA_API_KEY is absent and the transport is
-# not bound to loopback, abort install (error), emit a warning (warn), or
-# stay silent (off). Default: error. Set GA_REQUIRE_API_KEY=off for
-# proxy-protected deployments that place their own auth layer in front
-# (Tailscale, VPN, reverse proxy). Loopback installs (HOST=127.0.0.1 or unset)
-# are never subject to this check.
-GA_REQUIRE_API_KEY=error
+# Exposure check: a non-loopback HOST with no API key aborts the install unless
+# network.api_key: false opts out explicitly (for deployments that put their own
+# auth layer in front — Tailscale, VPN, reverse proxy). Loopback installs never
+# need a key. The deprecated GA_REQUIRE_API_KEY / network.require_api_key is
+# mapped by yaml_config.py (only `off` has an effect, as the opt-out).
 
 # ── Config file (YAML): extract --config <path> first (peek at $@) ──────────
 # Resolve BEFORE the flag-parsing loop so CLI flags override config-file values.
@@ -390,6 +397,7 @@ fi
 
 # ── Flag parsing (runs AFTER config sourcing — flags override config) ────────
 API_KEY_FLAG_PASSED=0
+_FLAG_API_KEY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config|--identity-provider|--region|--license|--port|--model|--model-default|\
@@ -406,7 +414,7 @@ while [[ $# -gt 0 ]]; do
     --model) KC_MODEL_KIRO_OVERRIDE="$2"; shift 2 ;;
     --model-default) KC_MODEL_DEFAULT="$2"; shift 2 ;;
     --public-url) GA_HOST_URL="$2"; shift 2 ;;
-    --api-key) GA_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
+    --api-key) _FLAG_API_KEY="$2"; API_KEY_FLAG_PASSED=1; shift 2 ;;
     --caddy-domain) GA_PORTAL_DOMAIN="$2"; shift 2 ;;
     --caddy-tls-mode) GA_PORTAL_TLS_MODE="$2"; shift 2 ;;
     --client-only) CLIENT_ONLY=true; shift ;;
@@ -440,14 +448,16 @@ esac
 # shellcheck source=lib/agent_backends.sh
 source "$GHOSTSHIP_DIR/scripts/lib/agent_backends.sh"
 agent_backends_reject_retired || exit 1
+# shellcheck source=lib/portal_host.sh
+source "$GHOSTSHIP_DIR/scripts/lib/portal_host.sh"
 
 # ── Client-only early-exit ────────────────────────────────────────────────────
 # When --client-only is set, wire the ghostship CLI + agent harnesses to a
 # (usually remote) transport and skip ALL container-infrastructure steps:
 # Podman prerequisites, machine/network setup, image builds, compose up.
-# The --api-key flag reuses the existing GA_API_KEY parser case above.
+# --api-key wins over network.api_key, as for a full install.
 if [[ "$CLIENT_ONLY" == "true" ]]; then
-  CLIENT_ONLY_API_KEY="${GA_API_KEY:-}"
+  CLIENT_ONLY_API_KEY="${_FLAG_API_KEY:-${GA_API_KEY:-}}"
 
   # Install the ghostship CLI symlink (same logic as the full install path).
   _LOCAL_BIN="${HOME}/.local/bin"
@@ -811,25 +821,12 @@ fi
 # mount below already gives transport read/write access to it.
 echo "✓ transport data dir ready: ${DATA_DIR}"
 
-# GA_API_KEY persistence: a plain file in DATA_DIR, the same pattern
-# ga-kiro-auth already uses — not a Podman secret, since server.py just
-# wants a plain env var and DATA_DIR already survives reinstalls.
-# --api-key <key> sets/overwrites it; --api-key "" (empty) explicitly
-# clears it; omitting the flag entirely reuses whatever was last persisted.
-API_KEY_PROJECTION="${DATA_DIR}/ga-api-key"
-if [[ "$API_KEY_FLAG_PASSED" == "1" ]]; then
-  if [[ -n "${GA_API_KEY:-}" ]]; then
-    (umask 077; printf '%s' "$GA_API_KEY" > "$API_KEY_PROJECTION")
-    chmod 600 "$API_KEY_PROJECTION"
-    echo "✓ API key saved to ${API_KEY_PROJECTION} (reused automatically on future installs)"
-  else
-    rm -f "$API_KEY_PROJECTION"
-    echo "✓ API key cleared — pass --api-key <key> again to re-enable"
-  fi
-elif [[ -s "$API_KEY_PROJECTION" ]]; then
-  GA_API_KEY="$(cat "$API_KEY_PROJECTION")"
-  echo "✓ API key restored from ${API_KEY_PROJECTION}"
-fi
+# ── API key resolution and exposure check (portal-only-host) ─────────────────
+# --api-key > network.api_key > the saved --api-key. DATA_DIR/ga-api-key holds
+# the effective key for the ghostship CLI. Runs before any image build or
+# container start so an unauthenticated non-loopback install fails fast.
+portal_resolve_api_key
+portal_check_exposure "$HOST" "$PORT" || exit 1
 
 # ── Resolve dedicated-instance podman command ────────────────────────────────
 
@@ -1083,28 +1080,11 @@ else
 fi
 echo "✓ academy/ (agents, skills, steering, policies, orders, mcp) and crews/ copied to ${DATA_DIR}"
 
-# ── Bind-address enforcement ─────────────────────────────────────────────────
-# Abort (or warn) when the transport is exposed on a non-loopback address with
-# no API key. GA_REQUIRE_API_KEY controls severity: error (default), warn, or
-# off. When HOST is 127.0.0.1, ::1, or localhost, the check is skipped entirely
-# — no key required for loopback installs. The script default is HOST=0.0.0.0
-# (all interfaces), so a bare ./install.sh without setting HOST is non-loopback.
-_bind_host="${HOST:-0.0.0.0}"
-_require_api_key="${GA_REQUIRE_API_KEY:-error}"
-if [[ "$_require_api_key" != "off" && -z "${GA_API_KEY:-}" ]]; then
-  if [[ "$_bind_host" != "127.0.0.1" && "$_bind_host" != "::1" && "$_bind_host" != "localhost" ]]; then
-    _warn_msg="WARNING: ghostship transport will bind on ${_bind_host}:${PORT} with no API key — anyone who can reach this host can use every MCP tool. Set GA_API_KEY in ghostship.conf or use HOST=127.0.0.1 to restrict to loopback."
-    if [[ "$_require_api_key" == "warn" ]]; then
-      echo "$_warn_msg" >&2
-    else
-      echo "$_warn_msg" >&2
-      echo "Aborting: set GA_API_KEY, or set GA_REQUIRE_API_KEY=off to allow unauthenticated remote access (for proxy-protected deployments)." >&2
-      exit 1
-    fi
-  fi
-fi
-
 # ── Generate compose.yml ──────────────────────────────────────────────────────
+portal_legacy_bind_notice "${DATA_DIR}/compose.yml" "$HOST" "$PORT"
+_PORTAL_BIND="$(portal_addr "$HOST")"
+GA_HOST_URL="${GA_HOST_URL:-$(portal_public_base "$HOST" "$PORT")}"
+
 # Written to DATA_DIR so it is machine-specific (socket path, env vars) and
 # not committed to the repo. start.sh and uninstall.sh both read it.
 
@@ -1171,9 +1151,11 @@ $(if [[ -n "${GA_ORDERS_DIR:-}" ]]; then printf '      - %s:/mnt/orders:ro\n' "$
 $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(dirname "${GA_TLS_CERTFILE}")"; fi)
     environment:
       PODMAN_SOCKET: ${PODMAN_SOCK}
-      HOST: ${HOST:-0.0.0.0}
+      GA_TRANSPORT_BIND: "0.0.0.0"
+      GA_PORTAL_HOST: "${HOST}"
+      GA_API_KEY_DISABLED: "${GA_API_KEY_DISABLED:-}"
       PORT: "64057"
-      GA_HOST_URL: "${GA_HOST_URL:-http://localhost:${PORT}}"
+      GA_HOST_URL: "${GA_HOST_URL}"
       GA_MAX_CREWS: "${GA_MAX_CREWS:-20}"
       GA_MAX_ACTIVE_CREWS: "${GA_MAX_ACTIVE_CREWS:-3}"
       GA_IDLE_TIMEOUT_SECS: "${GA_IDLE_TIMEOUT_SECS:-300}"
@@ -1221,7 +1203,6 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       GA_PORTAL_DOMAIN: "${GA_PORTAL_DOMAIN:-}"
       GA_PORTAL_SESSION_TTL_SECS: "${GA_PORTAL_SESSION_TTL_SECS:-86400}"
       GA_ORDERS_DIR: "$(if [[ -n "${GA_ORDERS_DIR:-}" ]]; then echo "/mnt/orders"; else echo ""; fi)"
-      GA_REQUIRE_API_KEY: "${GA_REQUIRE_API_KEY:-error}"
       KC_IMAGE: "${KC_IMAGE:-localhost/spec-ops:latest}"
     secrets:
       - ga-transport-secret
@@ -1231,8 +1212,8 @@ $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
     container_name: ga-portal
     restart: always
     ports:
-      - "0.0.0.0:${PORT:-64057}:${PORT:-64057}"
-      - "${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
+      - "${_PORTAL_BIND}:${PORT:-64057}:${PORT:-64057}"
+      - "${_PORTAL_BIND}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}:${_DASHBOARD_PORT_START}-${_DASHBOARD_PORT_END}"
     networks:
       - ga-portside
     secrets:
@@ -1449,8 +1430,10 @@ echo "✓ ga-transport container started"
 
 if [[ -n "${GA_API_KEY:-}" ]]; then
   echo "✓ MCP API-key authentication: enabled (see docs/auth.md for client header setup)"
+elif [[ "${GA_API_KEY_DISABLED:-}" == "true" ]]; then
+  echo "  MCP API-key authentication: disabled (explicit opt-out: network.api_key: false)"
 else
-  echo "  MCP API-key authentication: disabled (pass --api-key <key> to enable)"
+  echo "  MCP API-key authentication: disabled (loopback-only; pass --api-key <key> to enable)"
 fi
 
 sleep 1  # brief pause before first probe attempt
@@ -1461,36 +1444,36 @@ _interval=3
 _ready=0
 _caddy_scheme="http"
 [[ "${GA_PORTAL_TLS_MODE:-off}" != "off" ]] && _caddy_scheme="https"
-# Two probe methods tried each iteration:
-#   1. podman exec into ga-transport — works locally; may fail on remote deploys
-#      due to variable expansion differences in the SSH non-interactive shell.
-#   2. curl via Caddy on the host port — works on remote deploys; only succeeds
-#      once both ga-transport and ga-portal are up.
-# Either passing is sufficient — the transport is ready.
+# Ready means /health answers THROUGH ga-portal at its published address — the
+# path every client uses. A transport that answers only inside its own
+# container (e.g. Caddy cannot reach it) is not ready.
+_probe_url="$(portal_probe_base "$HOST" "${PORT:-64057}" "$_caddy_scheme")/health"
 for (( _i=0; _i<_max_wait; _i+=_interval )); do
-  # Method 1: container-internal probe
-  if ${_PODMAN_CMD} exec ga-transport python3 -c "
-import urllib.request, os
-secret = open('/run/secrets/ga-transport-secret').read().strip() if os.path.exists('/run/secrets/ga-transport-secret') else ''
-req = urllib.request.Request('http://127.0.0.1:${PORT}/health', headers={'X-Transport-Token': secret})
-urllib.request.urlopen(req)
-" >/dev/null 2>&1; then
-    _ready=1
-    break
-  fi
-  # Method 2: curl via Caddy (fallback for remote/SSH deploys)
-  if curl -sk "${_caddy_scheme}://127.0.0.1:${PORT:-64057}/health" >/dev/null 2>&1; then
+  if curl -sfk "$_probe_url" >/dev/null 2>&1; then
     _ready=1
     break
   fi
   sleep "$_interval"
 done
 if [[ "$_ready" == "1" ]]; then
-  echo "✓ Transport is ready"
+  echo "✓ Transport is ready (${_probe_url})"
 else
-  echo "✗ Transport did not become ready within ${_max_wait}s" >&2
-  echo "  Last 20 lines of container logs:" >&2
-  ${_PODMAN_CMD} logs ga-transport --tail 20 >&2
+  echo "✗ Transport did not become ready through ga-portal within ${_max_wait}s (${_probe_url})" >&2
+  # Diagnostic only: does the transport answer inside its own container? It
+  # always listens on 64057 there, whatever PORT is.
+  if ${_PODMAN_CMD} exec ga-transport python3 -c "
+import urllib.request, os
+secret = open('/run/secrets/ga-transport-secret').read().strip() if os.path.exists('/run/secrets/ga-transport-secret') else ''
+req = urllib.request.Request('http://127.0.0.1:64057/health', headers={'X-Transport-Token': secret})
+urllib.request.urlopen(req)
+" >/dev/null 2>&1; then
+    echo "  ga-transport is up, but ga-portal cannot reach it (portal-to-transport path)." >&2
+    echo "  Last 20 lines of ga-portal logs:" >&2
+    ${_PODMAN_CMD} logs ga-portal --tail 20 >&2
+  else
+    echo "  Last 20 lines of container logs:" >&2
+    ${_PODMAN_CMD} logs ga-transport --tail 20 >&2
+  fi
   exit 1
 fi
 
@@ -1567,7 +1550,7 @@ fi
 # non-interactive path; interactive mode handled auth and registration above.
 if [[ "${_INTERACTIVE_MODE:-false}" != "true" ]]; then
 echo "Register the MCP server (one-time):"
-echo "  kiro-cli mcp add --name ghostship --url http://localhost:${PORT}/mcp --scope global"
+echo "  kiro-cli mcp add --name ghostship --url ${GA_HOST_URL%/}/mcp --scope global"
 echo ""
 echo "Then from Kiro CLI, create the first crew:"
 echo "  ghostship__launch(crew_id=\"general\")"

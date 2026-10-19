@@ -19,10 +19,14 @@
 # ── Network ───────────────────────────────────────────────────────────────────
 
 network:
-  # Bind address inside the transport container (leave at 0.0.0.0).
-  host: "0.0.0.0"
+  # Address ga-portal (Caddy) publishes on — the only thing this setting
+  # controls. 127.0.0.1 (default) keeps ghostship reachable from this machine
+  # only. Set 0.0.0.0 (all interfaces) or a specific interface address for
+  # remote access; any non-loopback host needs api_key below (or api_key: false).
+  # The transport always listens on 0.0.0.0 inside its own container.
+  host: "127.0.0.1"
 
-  # Port the transport (and Caddy) listen on.
+  # Host port ga-portal (Caddy) listens on.
   port: 64057
 
   # Public base URL baked into presigned evac/supply links.
@@ -30,15 +34,16 @@ network:
   # Required for remote installs so links are reachable from outside the host.
   host_url: ""
 
-  # Bearer token required on all MCP requests.
-  # Leave empty to disable auth (only safe on loopback installs).
+  # Bearer token required on all MCP requests. Three states:
+  #   "<key>"  — authentication on with this key
+  #   ""       — unset: fine on a loopback host; on any other host the install
+  #              warns and aborts (so does the transport at startup)
+  #   false    — explicit opt-out: no authentication, even on a non-loopback
+  #              host (for deployments behind your own auth layer — Tailscale,
+  #              VPN, reverse proxy). Must be the bare YAML boolean, not "false".
+  # --api-key <key> on the install command line overrides this.
+  # (require_api_key is deprecated: use api_key: false instead of "off".)
   api_key: ""
-
-  # Enforcement when api_key is unset and host is non-loopback:
-  #   error  — abort install and refuse to start (default, recommended)
-  #   warn   — print warning and continue (deprecated)
-  #   off    — skip the check entirely (use when a reverse proxy handles auth)
-  require_api_key: "error"
 
   # Direct TLS termination. Both must be set together, pointing at files in
   # the same directory. Leave empty to use Caddy's built-in TLS (portal section).

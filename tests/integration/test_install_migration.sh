@@ -34,6 +34,7 @@ stage_ghostship_tree() {
   cp "${REPO_DIR}/scripts/install.sh"       "${tree}/scripts/install.sh"
   cp "${REPO_DIR}/scripts/lib/yaml_config.py" "${tree}/scripts/lib/yaml_config.py"
   cp "${REPO_DIR}/scripts/lib/agent_backends.sh" "${tree}/scripts/lib/agent_backends.sh"
+  cp "${REPO_DIR}/scripts/lib/portal_host.sh" "${tree}/scripts/lib/portal_host.sh"
   chmod +x "${tree}/scripts/install.sh"
   printf '%s' "$conf_body" > "${tree}/config/ghostship.conf"
   # Stub ghostship CLI — the client-only path calls "$GHOSTSHIP_DIR/ghostship setup".

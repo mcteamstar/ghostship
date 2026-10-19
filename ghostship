@@ -511,25 +511,26 @@ def _discover_transport(args: list) -> tuple[str, str | None]:
 
 
 def _inspect_installed_url() -> str:
-    """Try to discover the installed transport URL via Podman inspect."""
+    """Try to discover the installed transport URL via Podman inspect.
+
+    ga-transport publishes no host port — clients reach it through ga-portal —
+    so its port bindings say nothing. install.sh bakes the public URL into
+    ga-transport's GA_HOST_URL (derived from HOST and PORT unless --public-url
+    overrides it), which is exactly the base URL a client should use.
+    """
     podman = _find_podman()
     if not podman:
         return ""
     try:
         result = subprocess.run(
-            podman + ["inspect", "ga-transport", "--format",
-                      "{{json .NetworkSettings.Ports}}"],
+            podman + ["inspect", "ga-transport", "--format", "{{json .Config.Env}}"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return ""
-        ports = json.loads(result.stdout.strip())
-        for _, bindings in ports.items():
-            if bindings:
-                host_port = bindings[0].get("HostPort", "")
-                host_ip = bindings[0].get("HostIp", "127.0.0.1") or "127.0.0.1"
-                if host_port:
-                    return f"http://{host_ip}:{host_port}"
+        for item in json.loads(result.stdout.strip()) or []:
+            if isinstance(item, str) and item.startswith("GA_HOST_URL="):
+                return item.split("=", 1)[1].strip().rstrip("/")
     except Exception:
         pass
     return ""

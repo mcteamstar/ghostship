@@ -30,7 +30,7 @@ The canonical section structure is:
 
 ```
 network:
-  host, port, host_url, api_key, require_api_key
+  host, port, host_url, api_key
   tls:
     certfile, keyfile
 
@@ -275,3 +275,51 @@ internal template), but SHALL NOT modify an existing config file after initial c
 #### Scenario: Runtime state stays on data volume
 - **WHEN** a kiro device flow completes and a credential is stored
 - **THEN** the credential is written to `DATA_DIR/credentials/`, not to any config file
+
+### Requirement: network.api_key accepts a key or an explicit opt-out
+
+`network.api_key` SHALL accept a non-empty string (enables bearer authentication with that key), or the YAML boolean `false` (explicit opt-out: no authentication, permitted on non-loopback installs). An absent key, `null` or empty string SHALL mean unset, never opt-out. Any other value, including `true` and the strings `"true"`/`"false"`, SHALL make `install.sh` exit non-zero naming `network.api_key`.
+
+#### Scenario: String enables authentication
+- **WHEN** `network.api_key: "s3cret"` is set
+- **THEN** the transport requires `Authorization: Bearer s3cret`
+
+#### Scenario: false is an explicit opt-out
+- **WHEN** `network.api_key: false` is set and `network.host: 0.0.0.0`
+- **THEN** the install proceeds unauthenticated with a WARNING rather than aborting
+
+#### Scenario: Empty or null is unset, not opt-out
+- **WHEN** `network.api_key:` (null) or `network.api_key: ""` is set and `network.host: 0.0.0.0`
+- **THEN** the install aborts as for an unset key
+
+#### Scenario: true is rejected
+- **WHEN** `network.api_key: true` is set
+- **THEN** `install.sh` exits non-zero with an error naming `network.api_key` and its accepted values
+
+#### Scenario: Quoted "false" is rejected, not used as a key
+- **WHEN** `network.api_key: "false"` (a string) is set
+- **THEN** `install.sh` exits non-zero with an error naming `network.api_key`, rather than enabling authentication with the literal key `false`
+
+### Requirement: network.require_api_key is deprecated and mapped
+
+`network.require_api_key` (and `GA_REQUIRE_API_KEY` in a migrated `ghostship.conf`) SHALL be accepted with a deprecation warning naming `network.api_key`. The value `off` SHALL act as `network.api_key: false` only when no key is resolved from any source (flag, YAML, or persisted); otherwise the key SHALL win. The values `error` and `warn` SHALL be ignored, so an unset key on a non-loopback install aborts.
+
+#### Scenario: off maps to the opt-out
+- **WHEN** `network.require_api_key: off` is set and `network.api_key` is unset
+- **THEN** `install.sh` warns that `require_api_key` is deprecated and behaves as `network.api_key: false`
+
+#### Scenario: A key set alongside off wins
+- **WHEN** `network.require_api_key: off` and `network.api_key: "s3cret"` are both set
+- **THEN** `install.sh` warns that `require_api_key` is deprecated and ignored, and authentication is enabled with `s3cret`
+
+#### Scenario: A persisted key set alongside off wins
+- **WHEN** `network.require_api_key: off` is set, `network.api_key` is unset, `install.sh` runs without `--api-key`, and `DATA_DIR` holds a key persisted by an earlier `--api-key`
+- **THEN** authentication stays enabled with the persisted key, and the deprecation warning is printed
+
+#### Scenario: warn no longer lets an unset key through
+- **WHEN** `network.require_api_key: warn` is set, `network.api_key` is unset, and `network.host: 0.0.0.0`
+- **THEN** `install.sh` warns that `require_api_key` is deprecated and aborts as for an unset key
+
+#### Scenario: Legacy conf value migrated
+- **WHEN** a `ghostship.conf` containing `GA_REQUIRE_API_KEY=off` and no `GA_API_KEY` is auto-migrated
+- **THEN** the generated YAML sets `network.api_key: false` and omits `require_api_key`

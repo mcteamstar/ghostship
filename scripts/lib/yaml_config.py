@@ -30,12 +30,17 @@ Subcommands (argv[1]):
       ``ghostship.yaml`` holding only non-default values, and print any unknown
       conf keys (one ``UNKNOWN: KEY`` line per unmapped key) to stdout.
 
+  is-loopback <host>
+      Print ``true`` when ``host`` is a loopback address (empty, ``localhost``,
+      ``::1`` or anything in ``127.0.0.0/8``), ``false`` otherwise.
+
 This module is intentionally dependency-light: only PyYAML and the stdlib.
 """
 
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import shlex
 import sys
@@ -74,11 +79,11 @@ def _require_yaml() -> None:
 # side of the same contract.
 DEFAULTS: dict[str, str] = {
     # ── network ──
-    "HOST": "0.0.0.0",
+    # HOST is the address ga-portal publishes on — loopback-only by default.
+    "HOST": "127.0.0.1",
     "PORT": "64057",
     "GA_HOST_URL": "",
     "GA_API_KEY": "",
-    "GA_REQUIRE_API_KEY": "error",
     "GA_TLS_CERTFILE": "",
     "GA_TLS_KEYFILE": "",
     # ── crew lifecycle ──
@@ -157,7 +162,6 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("network", "port"): "PORT",
     ("network", "host_url"): "GA_HOST_URL",
     ("network", "api_key"): "GA_API_KEY",
-    ("network", "require_api_key"): "GA_REQUIRE_API_KEY",
     ("network", "tls", "certfile"): "GA_TLS_CERTFILE",
     ("network", "tls", "keyfile"): "GA_TLS_KEYFILE",
     # crew
@@ -277,6 +281,16 @@ _DEPRECATED_YAML_PATHS: dict[tuple[str, ...], tuple[str, ...]] = {
     ("images", "kc_image"): ("machine", "images", "kc_image"),
     ("images", "kc_base_image"): ("machine", "images", "kc_base_image"),
 }
+
+# network.api_key is three-state (string key / unset / false opt-out), so it is
+# flattened by _api_key_env rather than _normalise_scalar.
+_API_KEY_PATH: tuple[str, ...] = ("network", "api_key")
+
+# network.require_api_key was folded into network.api_key: false. It is still
+# accepted (so it is not reported as unknown) but only ``off`` has an effect,
+# and that is applied by install.sh after the full key resolution — a key from
+# the --api-key flag or a persisted key must still win over it.
+_REQUIRE_API_KEY_PATH: tuple[str, ...] = ("network", "require_api_key")
 
 # Removed paths with no replacement — warn and discard.
 _DISCARDED_YAML_PATHS: dict[tuple[str, ...], str] = {
@@ -488,8 +502,75 @@ def flatten_to_env(merged: dict[str, Any]) -> dict[str, str]:
         if path == ("backends", "default"):
             env[var] = _normalise_backends_default(value)
             continue
+        if path == _API_KEY_PATH:
+            continue  # three-state; handled by _api_key_env below
         env[var] = _normalise_scalar(value)
+    env.update(_api_key_env(_lookup_path(merged, _API_KEY_PATH)))
+    env.update(_require_api_key_env(_lookup_path(merged, _REQUIRE_API_KEY_PATH)))
     return env
+
+
+def _api_key_env(value: Any) -> dict[str, str]:
+    """Flatten the three-state ``network.api_key``.
+
+    A non-empty string enables auth with that key; ``false`` is the explicit
+    opt-out; absent, ``null`` or ``""`` is unset. ``null`` deliberately means
+    unset — ``api_key:`` with nothing after it is an easy accident and must
+    never disable authentication. ``true`` and the strings ``"true"``/``"false"``
+    are rejected so a quoted boolean is never used as a literal key.
+
+    ``GA_API_KEY_SOURCE=yaml`` tells install.sh the YAML set the key (or the
+    opt-out), so a previously persisted ``--api-key`` must not override it.
+    """
+    if value is _MISSING or value is None or value == "":
+        return {"GA_API_KEY": "", "GA_API_KEY_DISABLED": "", "GA_API_KEY_SOURCE": ""}
+    if value is False:
+        return {"GA_API_KEY": "", "GA_API_KEY_DISABLED": "true", "GA_API_KEY_SOURCE": "yaml"}
+    if isinstance(value, str) and value.strip().lower() not in ("true", "false"):
+        return {"GA_API_KEY": value, "GA_API_KEY_DISABLED": "", "GA_API_KEY_SOURCE": "yaml"}
+    raise ValueError(
+        "network.api_key must be a non-empty string (the API key), false "
+        f"(explicitly disable authentication), or unset — got {value!r}"
+    )
+
+
+def _require_api_key_env(value: Any) -> dict[str, str]:
+    """Map the deprecated ``network.require_api_key`` with a warning.
+
+    Only ``off`` has an effect: it becomes ``GA_API_KEY_DEPRECATED_OFF=true``,
+    which install.sh treats as the opt-out only when no key was resolved from
+    any source. ``error`` and ``warn`` are ignored (an unset key on a
+    non-loopback install now always aborts).
+    """
+    if value is _MISSING or value is None:
+        return {}
+    setting = _normalise_scalar(value).strip().lower()
+    if setting == "off":
+        sys.stderr.write(
+            "warning: network.require_api_key is deprecated; use "
+            "network.api_key: false instead (treated as that when no API key is set).\n"
+        )
+        return {"GA_API_KEY_DEPRECATED_OFF": "true"}
+    sys.stderr.write(
+        f"warning: network.require_api_key is deprecated and '{setting}' is ignored; "
+        "set network.api_key to a key, or network.api_key: false to opt out.\n"
+    )
+    return {}
+
+
+def is_loopback(host: str) -> bool:
+    """True for an unset host, ``localhost``, ``::1`` and ``127.0.0.0/8``.
+
+    Mirrors ``transport.config.is_loopback`` — install.sh calls this through the
+    ``is-loopback`` subcommand so the install-time and startup checks agree.
+    """
+    host = (host or "").strip()
+    if not host or host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def _normalise_backends_default(value: Any) -> str:
@@ -544,8 +625,8 @@ def collect_unknown_paths(
             return
         for key, value in node.items():
             here = path + (key,)
-            if here in _KEY_MAP:
-                continue  # mapped leaf
+            if here in _KEY_MAP or here == _REQUIRE_API_KEY_PATH:
+                continue  # mapped leaf (or deprecated-but-accepted)
             if here in known_prefixes:
                 _walk(value, here)  # known section — recurse
             else:
@@ -609,10 +690,21 @@ def migrate_conf(conf_path: str, yaml_path: str) -> list[str]:
     tree: dict[str, Any] = {}
     unknown: list[tuple[str, str]] = []
 
+    # GA_REQUIRE_API_KEY=off becomes network.api_key: false — but only when the
+    # conf sets no key of its own; any other value is dropped.
+    conf_values = dict(pairs)
+    if (
+        conf_values.get("GA_REQUIRE_API_KEY", "").strip().lower() == "off"
+        and not conf_values.get("GA_API_KEY", "")
+    ):
+        _set_path(tree, _API_KEY_PATH, False)
+
     for key, value in pairs:
         env = _DEPRECATED_CONF_ALIASES.get(key, key)
         if env in _DROPPED_CONF_KEYS or key in _DROPPED_CONF_KEYS:
             continue
+        if key == "GA_REQUIRE_API_KEY":
+            continue  # handled above
         path = _ENV_TO_PATH.get(env)
         if path is None:
             unknown.append((key, value))
@@ -672,7 +764,11 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
     )
     for path in collect_unknown_paths(merged):
         sys.stderr.write(f"warning: unknown config key '{path}' ignored\n")
-    env = flatten_to_env(merged)
+    try:
+        env = flatten_to_env(merged)
+    except ValueError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
     for key in sorted(env):
         # Shell-quote the value so eval is safe for spaces/special chars.
         sys.stdout.write(f"{key}={shlex.quote(env[key])}\n")
@@ -689,8 +785,16 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_is_loopback(args: argparse.Namespace) -> int:
+    sys.stdout.write("true\n" if is_loopback(args.host) else "false\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    _require_yaml()
+    if argv is None:
+        argv = sys.argv[1:]
+    if not (argv and argv[0] == "is-loopback"):
+        _require_yaml()  # is-loopback is stdlib-only
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -704,6 +808,10 @@ def main(argv: list[str] | None = None) -> int:
     p_migrate.add_argument("--conf", required=True, help="legacy ghostship.conf path")
     p_migrate.add_argument("--out", required=True, help="output ghostship.yaml path")
     p_migrate.set_defaults(func=_cmd_migrate)
+
+    p_loop = sub.add_parser("is-loopback", help="print true if HOST is a loopback address")
+    p_loop.add_argument("host", nargs="?", default="", help="host address (empty = unset)")
+    p_loop.set_defaults(func=_cmd_is_loopback)
 
     args = parser.parse_args(argv)
     return args.func(args)

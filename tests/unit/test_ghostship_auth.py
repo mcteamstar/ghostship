@@ -42,6 +42,50 @@ def _load_ghostship():
 gs = _load_ghostship()
 
 
+# ── portal-only-host: installed URL comes from ga-transport's GA_HOST_URL ─────
+
+class TestInspectInstalledUrl(unittest.TestCase):
+    """ga-transport publishes no port; the installed URL is its GA_HOST_URL."""
+
+    def _inspect(self, env, returncode=0):
+        import subprocess as _sp
+
+        completed = _sp.CompletedProcess(
+            args=[], returncode=returncode, stdout=json.dumps(env), stderr=""
+        )
+        with patch.object(gs, "_find_podman", return_value=["podman"]):
+            with patch.object(gs.subprocess, "run", return_value=completed) as run:
+                url = gs._inspect_installed_url()
+        return url, run
+
+    def test_loopback_install(self):
+        url, run = self._inspect(["PORT=64057", "GA_HOST_URL=http://localhost:64057"])
+        self.assertEqual(url, "http://localhost:64057")
+        self.assertIn("ga-transport", run.call_args.args[0])
+        self.assertIn("{{json .Config.Env}}", run.call_args.args[0])
+
+    def test_specific_host_install(self):
+        url, _ = self._inspect(["GA_HOST_URL=http://192.168.1.10:64057/"])
+        self.assertEqual(url, "http://192.168.1.10:64057")
+
+    def test_custom_port_install_is_discovered(self):
+        url, _ = self._inspect(["GA_HOST_URL=http://localhost:9000"])
+        self.assertEqual(url, "http://localhost:9000")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GHOSTSHIP_URL", None)
+            with patch.object(gs, "_inspect_installed_url", return_value=url):
+                resolved, _ = gs._discover_transport([])
+        self.assertEqual(resolved, "http://localhost:9000")
+
+    def test_missing_ga_host_url_falls_back(self):
+        url, _ = self._inspect(["PORT=64057"])
+        self.assertEqual(url, "")
+
+    def test_inspect_failure_falls_back(self):
+        url, _ = self._inspect([], returncode=125)
+        self.assertEqual(url, "")
+
+
 # ── Task 4.1: URL and key discovery ──────────────────────────────────────────
 
 class TestDiscoverTransport(unittest.TestCase):

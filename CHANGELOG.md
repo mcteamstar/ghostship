@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### HOST is ga-portal's address only; network.api_key is the one auth setting (portal-only-host)
+
+- **BREAKING — `HOST` (`network.host`) now only sets where ga-portal (Caddy) publishes, and defaults to `127.0.0.1`.** It used to set the transport's in-container listen address, while ga-portal was always published on `0.0.0.0`. So `HOST=127.0.0.1` broke every request through the portal (502, `connection refused`), and every install was reachable from the LAN whatever `HOST` said. The transport now always listens on `0.0.0.0` inside its container, and ga-portal publishes `PORT` and the dashboard range on `HOST`. **If you relied on remote access without setting `host`, set `network.host: 0.0.0.0` (or an interface address) and an API key.** `install.sh` prints a one-time notice when it narrows an existing all-interfaces install.
+- **BREAKING — `network.require_api_key` / `GA_REQUIRE_API_KEY` is deprecated; `network.api_key` has three states.** A string enables auth. Unset is fine on a loopback `HOST`, but on any other `HOST` `install.sh` warns and aborts and the transport refuses to start. `false` is the explicit opt-out. `require_api_key: off` maps to `api_key: false` when no key is set from any source; `error` and `warn` are ignored, so `warn` installs without a key now abort. The check now looks at ga-portal's published address, not the transport's.
+- **API key resolution:** `--api-key` > `network.api_key` > the key saved by an earlier `--api-key` (now `DATA_DIR/ga-api-key.flag`). A YAML key is no longer silently replaced by a stale saved key. `DATA_DIR/ga-api-key` now always holds the effective key for the `ghostship` CLI.
+- **Readiness is checked through ga-portal.** `install.sh` and `ghostship start` probe `/health` at ga-portal's published address. A transport that ga-portal cannot reach now fails the install, and the error names the portal-to-transport path.
+- **`GA_HOST_URL` default follows `HOST`** (`http://<HOST>:<PORT>` for a specific address). Presigned URLs and crew CORS origins follow it.
+- **CLI:** installed-URL discovery reads `GA_HOST_URL` from ga-transport, so a non-default `PORT` or a specific `HOST` is found without `--url`.
+- **Rollback caveat:** remove `network.api_key: false` before reinstalling an older version. Older versions read it as the literal key `"false"`.
+
 ## v0.7.1
 
 ### KiroCrew 0.9.0 compatibility

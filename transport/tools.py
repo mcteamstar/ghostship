@@ -255,7 +255,6 @@ logger = logging.getLogger(__name__)
 # _security.get_secret (same resolution order as server/lifecycle).
 cfg = Config.from_env()
 
-HOST = cfg.host
 PORT = cfg.port
 GA_MAX_CREWS = cfg.ga_max_crews
 GA_MAX_ACTIVE_CREWS = cfg.ga_max_active_crews
@@ -716,15 +715,11 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # The crew gateway needs to accept API calls from the browser when it is
         # served from the per-crew UI port (a different origin). We append the
         # transport's public origin to KIROCREW_CORS_ORIGINS so those calls are
-        # not CORS-rejected. GA_HOST_URL may be "http://host:port/" (strip path),
-        # or we fall back to http://localhost:{PORT}.
-        _transport_public_origin: str
-        if cfg.ga_host_url:
-            from urllib.parse import urlparse as _urlparse
-            _parsed = _urlparse(cfg.ga_host_url)
-            _transport_public_origin = f"{_parsed.scheme}://{_parsed.netloc}"
-        else:
-            _transport_public_origin = f"http://localhost:{PORT}"
+        # not CORS-rejected. The public base is GA_HOST_URL (path stripped) or,
+        # when unset, derived from ga-portal's published address (HOST).
+        from urllib.parse import urlparse as _urlparse
+        _parsed = _urlparse(cfg.public_base_url())
+        _transport_public_origin = f"{_parsed.scheme}://{_parsed.netloc}"
 
         _crew_internal_origin = f"http://{container}:{CREW_GATEWAY_PORT}"
         _cors_origins = f"{_crew_internal_origin},{_transport_public_origin}"

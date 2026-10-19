@@ -21,6 +21,7 @@ intentionally NOT part of `Config`.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import math
 import os
@@ -219,6 +220,51 @@ def _validate_caddy_tls_mode(value: str, default: str = "off") -> str:
     return default
 
 
+def is_loopback(host: str) -> bool:
+    """True for an unset host, ``localhost``, ``::1`` and ``127.0.0.0/8``.
+
+    Mirrors ``is_loopback`` in scripts/lib/yaml_config.py, which install.sh uses
+    for the same check, so install time and transport startup agree.
+    """
+    host = (host or "").strip()
+    if not host or host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_wildcard(host: str) -> bool:
+    return host.strip("[]") in ("0.0.0.0", "::")
+
+
+def api_key_exposure(api_key: str, config: "Config") -> tuple[str, str] | None:
+    """Decide whether the transport may start without an API key.
+
+    The check is on ga-portal's published address (``ga_portal_host``, the
+    operator's HOST), never on the transport's own in-container listen address.
+    Returns None when there is nothing to report, ``("warning", msg)`` for the
+    explicit opt-out (``network.api_key: false``) on a non-loopback portal, and
+    ``("error", msg)`` when a non-loopback portal has no key and no opt-out.
+    """
+    if api_key or is_loopback(config.ga_portal_host):
+        return None
+    if config.ga_api_key_disabled:
+        return (
+            "warning",
+            "No API key is configured (network.api_key: false) and ga-portal is "
+            f"published on {config.ga_portal_host} — MCP endpoints are accessible "
+            "without authentication to anyone who can reach that address.",
+        )
+    return (
+        "error",
+        f"Refusing to start: ga-portal is published on {config.ga_portal_host} with "
+        "no API key. Set network.api_key (or --api-key), set network.host: "
+        "127.0.0.1, or set network.api_key: false to accept unauthenticated access.",
+    )
+
+
 @dataclass
 class Config:
     """Transport runtime configuration.
@@ -228,9 +274,16 @@ class Config:
     """
 
     # ── Network ──────────────────────────────────────────────────────────────
-    host: str = "0.0.0.0"
+    # The transport's own in-container listen address. Fixed by compose.yml —
+    # NOT the operator's HOST, which is where ga-portal publishes (portal-only-host).
+    ga_transport_bind: str = "0.0.0.0"
+    # The operator's HOST: the address ga-portal publishes on. Used only for the
+    # API-key exposure check and the public URL fallback, never as a bind address.
+    ga_portal_host: str = "127.0.0.1"
     port: int = 64057
     ga_host_url: str = ""
+    # network.api_key: false — authentication explicitly disabled by the operator.
+    ga_api_key_disabled: bool = False
 
     # ── Storage / runtime ────────────────────────────────────────────────────
     podman_socket: str = "/run/user/1000/podman/podman.sock"
@@ -391,6 +444,22 @@ class Config:
             parts.append(f"{f.name}={value!r}")
         return f"{type(self).__name__}({', '.join(parts)})"
 
+    def public_base_url(self) -> str:
+        """The transport's public base URL, without a trailing slash.
+
+        ``GA_HOST_URL`` when set (install.sh always sets it). Otherwise derived
+        from the portal's published address: ``http://localhost:{PORT}`` for a
+        loopback or wildcard HOST, ``http://{HOST}:{PORT}`` for a specific one.
+        """
+        if self.ga_host_url:
+            return self.ga_host_url.rstrip("/")
+        host = (self.ga_portal_host or "").strip()
+        if is_loopback(host) or _is_wildcard(host):
+            return f"http://localhost:{self.port}"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"http://{host}:{self.port}"
+
     @classmethod
     def from_env(cls) -> "Config":
         """Read every configured env var and construct a Config instance.
@@ -406,9 +475,11 @@ class Config:
         _normalized = _parse_ga_crew_agent(_raw_ga_crew_agent)
         ga_crew_agent = ",".join(_normalized)
         return cls(
-            host=os.environ.get("HOST", "0.0.0.0"),
+            ga_transport_bind=os.environ.get("GA_TRANSPORT_BIND", "0.0.0.0"),
+            ga_portal_host=os.environ.get("GA_PORTAL_HOST", "127.0.0.1"),
             port=_env_int("PORT", "64057"),
             ga_host_url=os.environ.get("GA_HOST_URL", ""),
+            ga_api_key_disabled=_env_bool_default_off("GA_API_KEY_DISABLED"),
             podman_socket=os.environ.get(
                 "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
             ),

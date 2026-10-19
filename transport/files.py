@@ -150,12 +150,10 @@ _security.register_secret(_FILE_SECRET)
 def _resolve_public_url_base() -> str:
     """Return the public URL base for presigned file URLs.
 
-    Precedence: GA_HOST_URL > http://localhost:{PORT}.
+    Precedence: GA_HOST_URL > derived from ga-portal's published address
+    (``http://localhost:{PORT}`` for a loopback or wildcard HOST).
     """
-    base = cfg.ga_host_url
-    if base:
-        return base.rstrip("/")
-    return f"http://localhost:{PORT}"
+    return cfg.public_base_url()
 
 
 def _sign_file_url(
