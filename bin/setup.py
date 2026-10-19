@@ -6,7 +6,7 @@ Idempotent: safe to re-run.
 
 Usage:
     ghostship setup [--agent kiro|claude|opencode|all] [--url <url>] [--api-key <key>]
-    ./scripts/setup.py [same flags]
+    ./bin/setup.py [same flags]
 """
 
 import json

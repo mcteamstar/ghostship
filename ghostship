@@ -430,7 +430,7 @@ def cmd_setup(args: list) -> int:
             "  --api-key Bearer token for the MCP endpoint (optional)\n"
         )
         return 0
-    _exec_script("scripts/setup.py", args)
+    _exec_script("bin/setup.py", args)
 
 # ---------------------------------------------------------------------------
 # Subcommand group: auth  (TRN-233)
