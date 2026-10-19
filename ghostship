@@ -294,6 +294,17 @@ def cmd_status(args: list) -> int:
     )
 
     if inspect.returncode != 0:
+        stderr_lower = (inspect.stderr or "").lower()
+        # A connection error means the Podman machine/service is stopped but
+        # the install is intact — distinguish from a missing container.
+        machine_stopped = any(k in stderr_lower for k in (
+            "connection refused", "no such file", "cannot connect",
+            "failed to connect", "dial unix", "machine is not running",
+        ))
+        if machine_stopped:
+            print("ghostship status: stopped (podman machine not running)")
+            print("  Run 'ghostship start' to bring it back up.")
+            return 0
         # Container doesn't exist at all
         print("ghostship status: not installed (ga-transport container not found)")
         print("  Run 'ghostship install' to set up the transport.")
