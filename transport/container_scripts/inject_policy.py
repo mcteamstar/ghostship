@@ -2,12 +2,13 @@
 """Sign and write the crew's security + admission policy files.
 
 Runs inside a crew container via
-``python3 /scripts/inject_policy.py <crew_dir> <b64_payload>``, where
-``b64_payload`` is a base64-encoded JSON object with keys ``policy`` (the
-policy document, including its ``identity`` block but without a signature)
-and ``policy_signing_key`` (the dedicated HMAC key used to sign the policy —
-distinct from ``admiral_secret``, which is kept separate and never written
-to ``admission_policy.json``).
+``python3 /scripts/inject_policy.py <crew_dir>``, where the payload
+(a base64-encoded JSON object with keys ``policy`` and
+``policy_signing_key``) is written to the process's stdin by the caller.
+
+Reading the payload via stdin rather than argv ensures the signing key
+never appears in ``/proc/<pid>/cmdline`` (secret-delivery-hardening spec,
+TRN-260/H-1).
 
 Signing runs inside the container so the canonicalization is always the
 same version as the verifier. The KiroCrew canonicalization is inlined
@@ -15,12 +16,11 @@ here rather than importing ``kiro_crew`` — this avoids import
 side-effects during setup and keeps signing independent of the internal
 module path.
 
-The payload is base64-encoded via argv because the transport's exec API is
-stdout-only (no stdin) and to avoid interpolating the secret as a literal.
-
 Args (argv):
-    1. crew_dir     — the ``.kiro/crew`` directory to write policy files into
-    2. b64_payload  — base64-encoded JSON {"policy": {...}, "policy_signing_key": "..."}
+    1. crew_dir — the ``.kiro/crew`` directory to write policy files into
+
+Stdin:
+    base64-encoded JSON {"policy": {...}, "policy_signing_key": "..."}
 
 Both files are written with mode 0600. Prints
 ``policy injected version=<v>``.
@@ -49,7 +49,7 @@ def sign_policy(policy: dict, secret: str) -> dict:
     if rest:
         body["identity"] = rest
     payload = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    sig = hmac.new(secret.encode("utf-8"), payload, digestmod=hashlib.sha256).hexdigest()
+    sig = hmac.HMAC(secret.encode("utf-8"), payload, digestmod=hashlib.sha256).hexdigest()
     signed = {**policy}
     signed["identity"] = {**signed.get("identity", {}), "signature": sig}
     return signed
@@ -89,10 +89,10 @@ def inject_policy(crew_dir: str, policy: dict, policy_signing_key: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: inject_policy.py <crew_dir> <b64_payload>", file=sys.stderr)
+    if len(argv) != 2:
+        print("usage: inject_policy.py <crew_dir>  (payload on stdin)", file=sys.stderr)
         return 2
-    data = json.loads(base64.b64decode(argv[2]).decode())
+    data = json.loads(base64.b64decode(sys.stdin.read().strip()).decode())
     version = inject_policy(argv[1], data["policy"], data["policy_signing_key"])
     print(f"policy injected version={version}")
     return 0

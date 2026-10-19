@@ -750,3 +750,86 @@ class TestPatchFollowsCrewBackend(unittest.TestCase):
     def test_backend_is_required(self):
         with self.assertRaises(TypeError):
             self.life._patch_crew_config(_ExecRecorder(), "gs-crew-x")
+
+
+# ---------------------------------------------------------------------------
+# TRN-260 H-1: inject_policy uses stdin, not argv (secret-delivery-hardening)
+# ---------------------------------------------------------------------------
+
+class TestInjectPolicyStdinDelivery(unittest.TestCase):
+    """Assert that _inject_policy delivers the signing key via stdin, not argv.
+
+    H-1: passing the key as argv exposes it in /proc/<pid>/cmdline.
+    The fix: container_exec_stdin is used and the key does NOT appear in argv.
+    """
+
+    def setUp(self):
+        try:
+            from lifecycle import _inject_policy  # container flat layout
+        except ModuleNotFoundError:
+            from transport.lifecycle import _inject_policy  # local dev
+        self._inject_policy = _inject_policy
+
+    def _make_podman(self):
+        from tests.fakes import FakePodmanClient
+        podman = FakePodmanClient()
+        podman.exec_responses["test-container"] = "policy injected version=1"
+        return podman
+
+    def _patch_policy(self):
+        """Mock Path.read_text so _inject_policy doesn't need /policies/default.json."""
+        import json as _json
+        _fake_policy = _json.dumps({"version": "1", "rules": []})
+        return unittest.mock.patch(
+            "pathlib.Path.read_text", return_value=_fake_policy
+        )
+
+    def test_uses_container_exec_stdin_not_exec_checked(self):
+        """_inject_policy must call container_exec_stdin, not container_exec_checked."""
+        podman = self._make_podman()
+        with self._patch_policy():
+            self._inject_policy(podman, "test-container", "spec-ops", "my-secret-key")
+        call_types = [c[0] for c in podman.calls]
+        self.assertIn("container_exec_stdin", call_types)
+        self.assertNotIn("container_exec_checked", call_types)
+
+    def test_signing_key_not_in_argv(self):
+        """The policy signing key must not appear in any argv element."""
+        secret = "super-secret-hmac-key-12345"
+        podman = self._make_podman()
+        with self._patch_policy():
+            self._inject_policy(podman, "test-container", "spec-ops", secret)
+        for call in podman.calls:
+            if call[0] == "container_exec_stdin":
+                cmd = call[2]  # (type, container, cmd, stdin_data)
+                for arg in cmd:
+                    self.assertNotIn(secret, arg,
+                        f"Signing key found in argv element {arg!r}")
+
+    def test_signing_key_delivered_via_stdin(self):
+        """The signing key must be present in the decoded stdin payload."""
+        import base64, json as _json
+        secret = "super-secret-hmac-key-12345"
+        podman = self._make_podman()
+        with self._patch_policy():
+            self._inject_policy(podman, "test-container", "spec-ops", secret)
+        for call in podman.calls:
+            if call[0] == "container_exec_stdin":
+                stdin_data = call[3]
+                decoded = base64.b64decode(stdin_data.strip()).decode()
+                self.assertIn(secret, decoded,
+                    "Signing key not found in decoded stdin payload")
+
+    def test_payload_is_base64_json_with_key(self):
+        """stdin_data must be base64-decodable JSON containing policy_signing_key."""
+        import base64, json as _json
+        secret = "another-secret-key"
+        podman = self._make_podman()
+        with self._patch_policy():
+            self._inject_policy(podman, "test-container", "spec-ops", secret)
+        for call in podman.calls:
+            if call[0] == "container_exec_stdin":
+                stdin_data = call[3]
+                data = _json.loads(base64.b64decode(stdin_data.strip()).decode())
+                self.assertEqual(data["policy_signing_key"], secret)
+                self.assertIn("policy", data)

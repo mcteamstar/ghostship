@@ -1768,17 +1768,18 @@ def _inject_policy(
     # 2. Add identity block (without signature yet) and pass everything into
     # the container to sign.  Signing runs inside the container so the
     # canonicalization is always the same version as the verifier.
-    # The policy + policy_signing_key are passed as a single base64-encoded
-    # JSON payload to avoid interpolating the secret as a Python literal.
+    # The policy + policy_signing_key are sent via stdin (not argv) so the
+    # signing key never appears in /proc/<pid>/cmdline (TRN-260/H-1).
     policy["identity"] = {"issuer": "ghostship"}
     payload_b64 = base64.b64encode(
         json.dumps({"policy": policy, "policy_signing_key": policy_signing_key}).encode("utf-8")
     ).decode()
 
     # Signing runs inside the container (see inject_policy.py).
-    result = podman.container_exec_checked(
+    result = podman.container_exec_stdin(
         container,
-        ["python3", f"{SCRIPTS_DIR}/inject_policy.py", KIRO_CREW_DIR, payload_b64],
+        ["python3", f"{SCRIPTS_DIR}/inject_policy.py", KIRO_CREW_DIR],
+        payload_b64.encode("utf-8"),
     )
     logger.info("Injected security policy for %s: %s", container, result.strip())
     return policy_version

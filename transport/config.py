@@ -338,7 +338,7 @@ class Config:
     # range config is retained because Portal still uses it via the transport's
     # port pool.
     ga_dashboard_port_range_start: int = 64058
-    ga_dashboard_port_range_size: int = 1024
+    ga_dashboard_port_range_size: int = 64
     ga_dashboard_default: bool = False
 
     # ── Transport security ────────────────────────────────────────────────────

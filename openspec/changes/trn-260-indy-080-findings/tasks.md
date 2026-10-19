@@ -2,27 +2,27 @@
 
 ## 1. Quick fixes (L-1, M-4)
 
-- [ ] 1.1 In `transport/config.py`, change the `ga_dashboard_port_range_size`
+- [x] 1.1 In `transport/config.py`, change the `ga_dashboard_port_range_size`
   dataclass default from `1024` to `64`. Verify: `grep ga_dashboard_port_range_size transport/config.py`
   shows `64`; unit tests pass.
 
-- [ ] 1.2 In `transport/files.py`, replace all 3 calls to `hmac.new(...)` with
+- [x] 1.2 In `transport/files.py`, replace all 3 calls to `hmac.new(...)` with
   `hmac.HMAC(...)` (identical signature). Verify: `grep -n 'hmac\.new' transport/files.py`
   returns nothing; unit tests pass.
 
 ## 2. H-1 — stdin delivery for inject_policy.py
 
-- [ ] 2.1 Update `transport/container_scripts/inject_policy.py` to read the HMAC
+- [x] 2.1 Update `transport/container_scripts/inject_policy.py` to read the HMAC
   signing key from `sys.stdin.read().strip()` instead of `sys.argv[1]`. Remove
   the `--key` / positional argv handling. Verify: running the script with key
   piped via stdin works; `sys.argv` no longer contains the key value.
 
-- [ ] 2.2 Update the caller in `transport/lifecycle.py` (the
+- [x] 2.2 Update the caller in `transport/lifecycle.py` (the
   `container_exec_stdin` call for `inject_policy.py`) to pass the key via the
   `input=` kwarg instead of as an argv element. Verify: no `--key` or raw key
   string in the argv list passed to `container_exec_stdin` for inject_policy.
 
-- [ ] 2.3 Add a unit test in `tests/unit/test_lifecycle.py` (or a new dedicated
+- [x] 2.3 Add a unit test in `tests/unit/test_lifecycle.py` (or a new dedicated
   file) asserting that the argv list for `inject_policy.py` does not contain
   the HMAC key, and that the key is delivered via the `input` kwarg. Verify:
   test passes and fails against the pre-fix code.
