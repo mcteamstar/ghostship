@@ -186,15 +186,17 @@ class CredentialStore:
     # ── delete ─────────────────────────────────────────────────────────────── 
 
     def delete(self, backend: str) -> bool:
-        """Remove *backend*'s credential. Idempotent; returns whether a file
-        was removed."""
+        """Remove *backend*'s credential. Idempotent.
+
+        Returns ``True`` when a file was removed and ``False`` when none
+        existed. Raises ``OSError`` when the file exists but cannot be removed,
+        so callers can tell "already logged out" apart from "still stored".
+        """
         path = self._path(backend)
         try:
             path.unlink()
             return True
         except FileNotFoundError:
-            return False
-        except OSError:
             return False
 
     # ── status ───────────────────────────────────────────────────────────────

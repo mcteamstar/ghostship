@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import types
 import unittest
@@ -373,188 +374,331 @@ class TestGetLoginStatus(_BaseRouteTest):
         self.assertNotIn("sk-ant-super-secret-key", raw)
 
 
-class TestLogoutCredentialStore(_BaseRouteTest):
-    """POST /logout/{backend} clears the credential store and is idempotent."""
+class _LogoutHarness(_BaseRouteTest):
+    """Drives the three /logout/{backend} routes against temp paths.
 
-    def _patch_lifecycle(self):
-        """Return a context manager that patches _lc() helpers used by logout."""
-        import unittest.mock
-        return unittest.mock.patch.multiple(
-            "transport.login",
-            _get_podman=lambda: FakePodmanClient(),
-            _security=types.SimpleNamespace(
-                audit_auth_event=lambda **kw: None,
-            ),
+    ``_lc`` is replaced with a stub whose legacy auth paths live in the temp
+    directory, so nothing under DATA_DIR is touched. The abort helpers are
+    stubs that record calls; ``abort_result`` sets what each one reports.
+    """
+
+    ROUTES = {
+        "kiro": "_handle_logout_kiro_post",
+        "claude": "_handle_logout_claude_post_new",
+        "codex": "_handle_logout_codex_post_new",
+    }
+    ACCOUNTS = {"kiro": "academy", "claude": "claude", "codex": "codex"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        import transport.login as login_mod
+        self._login = login_mod
+        self.podman = FakePodmanClient()
+        base = self._tmp.name
+        self.legacy = {
+            "kiro": os.path.join(base, "ga-kiro-auth"),
+            "claude": os.path.join(base, "ga-claude-auth"),
+            "codex": os.path.join(base, "ga-codex-auth"),
+        }
+        self.abort_calls: list[str] = []
+        self.abort_result: dict[str, bool] = {}
+        self.audits: list[tuple] = []
+        self.crews: dict = {}
+
+        def _abort(name):
+            def _call(podman):
+                self.abort_calls.append(name)
+                return self.abort_result.get(name, False)
+            return _call
+
+        lc = types.SimpleNamespace(
+            _abort_pending_login=_abort("kiro"),
+            _abort_claude_pending_login=_abort("claude"),
+            _abort_codex_pending_login=_abort("codex"),
+            _auth_file_path=lambda: types.SimpleNamespace(unlink=_unlinker(self.legacy["kiro"])),
+            _claude_auth_file_path=lambda: types.SimpleNamespace(unlink=_unlinker(self.legacy["claude"])),
+            _codex_auth_file_path=lambda: types.SimpleNamespace(unlink=_unlinker(self.legacy["codex"])),
         )
-
-    def test_logout_kiro_clears_credential_store(self):
-        self._store.put("kiro", "api-key", "kiro-key-to-delete")
-        self.assertIsNotNone(self._store.get("kiro"))
-
-        from transport.login import _handle_logout_kiro_post
-        req = _make_request()
-        # _handle_logout_kiro_post also delegates to _handle_logout_post
-        # which reads ga-kiro-auth — patch to avoid filesystem access
-        with patch("transport.login._lc") as mock_lc:
-            lc = types.SimpleNamespace(
-                _read_auth_file=lambda: None,
-                _auth_file_path=lambda: types.SimpleNamespace(
-                    unlink=lambda missing_ok=False: None
+        for name, value in (
+            ("_lc", lambda: lc),
+            ("_get_podman", lambda: self.podman),
+            ("_request_source", lambda request: None),
+            ("_security", types.SimpleNamespace(
+                audit_auth_event=lambda **kw: self.audits.append(
+                    (kw["action"], kw["outcome"], kw["account"])
                 ),
-                _inject_auth=lambda *a, **kw: None,
-            )
-            mock_lc.return_value = lc
-            with patch("transport.login._security") as mock_sec:
-                mock_sec.audit_auth_event = lambda **kw: None
-                with patch("transport.login._get_podman", return_value=FakePodmanClient()):
-                    with patch("transport.login.registry") as mock_reg:
-                        mock_reg._reg = {"crews": {}}
-                        mock_reg.__enter__ = lambda s: s
-                        mock_reg.__exit__ = lambda s, *a: None
-                        resp = _run(_handle_logout_kiro_post(req))
+            )),
+            ("registry", _FakeRegistry(self.crews)),
+        ):
+            patcher = patch.object(login_mod, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
-        # Credential store entry should be gone
-        self.assertIsNone(self._store.get("kiro"))
+    def _logout(self, backend: str):
+        import transport.login as login_mod
+        handler = getattr(login_mod, self.ROUTES[backend])
+        return _run(handler(_make_request()))
 
-    def test_logout_claude_clears_credential_store(self):
-        self._store.put("claude", "api-key", "sk-ant-to-delete")
-        from transport.login import _handle_logout_claude_post_new
-        req = _make_request()
-        with patch("transport.login._lc") as mock_lc:
-            lc = types.SimpleNamespace(
-                _claude_auth_exists=lambda: False,
-                _codex_auth_exists=lambda: False,
-                _abort_claude_pending_login=lambda podman: False,
-            )
-            mock_lc.return_value = lc
-            with patch("transport.login._security") as mock_sec:
-                mock_sec.audit_auth_event = lambda **kw: None
-                with patch("transport.login._get_podman", return_value=FakePodmanClient()):
-                    with patch("transport.login.registry") as mock_reg:
-                        mock_reg._reg = {"crews": {}}
-                        mock_reg.__enter__ = lambda s: s
-                        mock_reg.__exit__ = lambda s, *a: None
-                        resp = _run(_handle_logout_claude_post_new(req))
+    def _write_legacy(self, backend: str) -> None:
+        with open(self.legacy[backend], "w") as f:
+            f.write("legacy-device-credential")
 
-        self.assertIsNone(self._store.get("claude"))
 
-    def test_logout_codex_clears_credential_store(self):
-        self._store.put("codex", "api-key", "sk-openai-to-delete")
-        from transport.login import _handle_logout_codex_post_new
-        req = _make_request()
-        with patch("transport.login._lc") as mock_lc:
-            lc = types.SimpleNamespace(
-                _codex_auth_exists=lambda: False,
-                _abort_codex_pending_login=lambda podman: False,
-            )
-            mock_lc.return_value = lc
-            with patch("transport.login._security") as mock_sec:
-                mock_sec.audit_auth_event = lambda **kw: None
-                with patch("transport.login._get_podman", return_value=FakePodmanClient()):
-                    with patch("transport.login.registry") as mock_reg:
-                        mock_reg._reg = {"crews": {}}
-                        mock_reg.__enter__ = lambda s: s
-                        mock_reg.__exit__ = lambda s, *a: None
-                        resp = _run(_handle_logout_codex_post_new(req))
+def _unlinker(path: str):
+    """Return an ``unlink`` that removes *path* the way pathlib would, raising like it."""
+    def _unlink(missing_ok: bool = False):
+        os.unlink(path)
+    return _unlink
 
-        self.assertIsNone(self._store.get("codex"))
 
-    def test_logout_claude_oauth_present_deletes_auth_file(self):
-        """When a Claude OAuth credential exists, logout reaches the deletion
-        branch and resolves the auth-file path via _lc() (regression: the bare
-        _claude_auth_file_path() name is not defined in login.py and would raise
-        NameError, 500-ing a real logout)."""
+class TestLogoutCancelsAndClears(_LogoutHarness):
+    """POST /logout/{backend}: cancel any pending login, remove the credential, idempotent."""
+
+    def test_pending_flow_with_nothing_stored_is_cancelled(self):
+        for backend in ("kiro", "claude", "codex"):
+            with self.subTest(backend=backend):
+                self.abort_calls.clear()
+                self.audits.clear()
+                self.abort_result = {backend: True}
+                resp = self._logout(backend)
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(_json_data(resp), {"status": "logged_out", "aborted_pending_login": True})
+                self.assertEqual(self.abort_calls, [backend])
+                self.assertEqual(self.audits, [])
+
+    def test_nothing_pending_or_stored_is_idempotent_and_silent(self):
+        for backend in ("kiro", "claude", "codex"):
+            with self.subTest(backend=backend):
+                self.audits.clear()
+                resp = self._logout(backend)
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(_json_data(resp), {"status": "logged_out"})
+                self.assertEqual(self.audits, [])
+
+    def test_store_only_credentials_are_removed(self):
+        cases = (
+            ("kiro", "api-key", "kiro-key"),
+            ("claude", "setup-token", "claude-token"),
+            ("codex", "api-key", "sk-openai"),
+        )
+        for backend, method, secret in cases:
+            with self.subTest(backend=backend, method=method):
+                self.audits.clear()
+                self._store.put(backend, method, secret)
+                resp = self._logout(backend)
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(_json_data(resp), {"status": "logged_out"})
+                self.assertIsNone(self._store.get(backend))
+                self.assertEqual(self.audits, [("logout", "success", self.ACCOUNTS[backend])])
+
+    def test_legacy_device_credential_file_is_removed(self):
+        for backend in ("kiro", "claude", "codex"):
+            with self.subTest(backend=backend):
+                self._write_legacy(backend)
+                resp = self._logout(backend)
+                self.assertEqual(resp.status_code, 200)
+                self.assertFalse(os.path.exists(self.legacy[backend]))
+
+    def test_pending_flow_and_store_credential_both_cleared(self):
         self._store.put("claude", "oauth", b"tar-bytes")
-        from transport.login import _handle_logout_claude_post_new
-        req = _make_request()
-        unlinked = {"called": False}
-
-        def _auth_path():
-            return types.SimpleNamespace(
-                unlink=lambda missing_ok=False: unlinked.__setitem__("called", True)
-            )
-
-        with patch("transport.login._lc") as mock_lc:
-            lc = types.SimpleNamespace(
-                _claude_auth_exists=lambda: True,
-                _claude_auth_file_path=_auth_path,
-                _abort_claude_pending_login=lambda podman: False,
-            )
-            mock_lc.return_value = lc
-            with patch("transport.login._security") as mock_sec:
-                mock_sec.audit_auth_event = lambda **kw: None
-                with patch("transport.login._request_source", lambda r: None):
-                    with patch("transport.login._get_podman", return_value=FakePodmanClient()):
-                        with patch("transport.login.registry") as mock_reg:
-                            mock_reg._reg = {"crews": {}}
-                            mock_reg.__enter__ = lambda s: s
-                            mock_reg.__exit__ = lambda s, *a: None
-                            resp = _run(_handle_logout_claude_post_new(req))
-
-        self.assertTrue(unlinked["called"])
-        self.assertEqual(_json_data(resp).get("status"), "logged_out")
+        self.abort_result = {"claude": True}
+        resp = self._logout("claude")
+        self.assertEqual(_json_data(resp), {"status": "logged_out", "aborted_pending_login": True})
+        self.assertEqual(self.abort_calls, ["claude"])
         self.assertIsNone(self._store.get("claude"))
 
-    def test_logout_codex_oauth_present_deletes_auth_file(self):
-        """When a Codex ChatGPT credential exists, logout reaches the deletion
-        branch and resolves the auth-file path via _lc() (regression for the
-        bare _codex_auth_file_path() NameError)."""
-        self._store.put("codex", "chatgpt", b"tar-bytes")
-        from transport.login import _handle_logout_codex_post_new
-        req = _make_request()
-        unlinked = {"called": False}
+    def test_store_delete_failure_is_500_and_audited_as_failure(self):
+        self._store.put("codex", "api-key", "sk-openai")
+        with patch.object(self._store, "delete", side_effect=PermissionError("denied")):
+            resp = self._logout("codex")
+        self.assertEqual(resp.status_code, 500)
+        body = _json_data(resp)
+        self.assertEqual(body["status"], "error")
+        self.assertIsNotNone(self._store.get("codex"))
+        self.assertEqual(self.audits, [("logout", "failure", "codex")])
 
-        def _auth_path():
-            return types.SimpleNamespace(
-                unlink=lambda missing_ok=False: unlinked.__setitem__("called", True)
-            )
+    def test_legacy_file_removal_failure_is_500(self):
+        # A directory at the legacy path cannot be unlinked, so the removal fails.
+        os.mkdir(self.legacy["kiro"])
+        resp = self._logout("kiro")
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(_json_data(resp)["status"], "error")
+        self.assertEqual(self.audits, [("logout", "failure", "academy")])
 
-        with patch("transport.login._lc") as mock_lc:
-            lc = types.SimpleNamespace(
-                _codex_auth_exists=lambda: True,
-                _codex_auth_file_path=_auth_path,
-                _abort_codex_pending_login=lambda podman: False,
-            )
-            mock_lc.return_value = lc
-            with patch("transport.login._security") as mock_sec:
-                mock_sec.audit_auth_event = lambda **kw: None
-                with patch("transport.login._request_source", lambda r: None):
-                    with patch("transport.login._get_podman", return_value=FakePodmanClient()):
-                        with patch("transport.login.registry") as mock_reg:
-                            mock_reg._reg = {"crews": {}}
-                            mock_reg.__enter__ = lambda s: s
-                            mock_reg.__exit__ = lambda s, *a: None
-                            resp = _run(_handle_logout_codex_post_new(req))
 
-        self.assertTrue(unlinked["called"])
-        self.assertEqual(_json_data(resp).get("status"), "logged_out")
-        self.assertIsNone(self._store.get("codex"))
+class TestLogoutLeavesRunningCrews(_LogoutHarness):
+    """POST /logout/{backend} never executes into, restarts or stops a running crew (TRN-258)."""
 
-    def test_logout_kiro_idempotent_no_credential(self):
-        """Logout with no stored credential returns without error."""
+    def test_running_crews_of_each_backend_are_untouched(self):
+        self.crews.update({
+            "kiro-run": {"status": "running", "container": "gs-crew-kiro", "acp_backend": "kiro"},
+            "claude-run": {"status": "running", "container": "gs-crew-claude", "acp_backend": "claude"},
+            "codex-run": {"status": "running", "container": "gs-crew-codex", "acp_backend": "codex"},
+        })
+        before = {cid: dict(info) for cid, info in self.crews.items()}
+        self._store.put("kiro", "builder-id", "rows")
+        self._write_legacy("claude")
+        for backend in ("kiro", "claude", "codex"):
+            resp = self._logout(backend)
+            self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.podman.calls, [])
+        self.assertEqual(self.crews, before)
+
+
+class TestNewLoginAfterCancel(_LogoutHarness):
+    """A login started after a cancelling logout is a new flow, not a 409 (TRN-258)."""
+
+    def test_initiate_after_logout_cancel_is_not_refused_as_pending(self):
+        import transport.login as login_mod
+        flow = login_mod.KIRO_FLOW
+        flow._pending = {"container": None, "state": "starting", "started_at": 0.0}
+        self.addCleanup(setattr, flow, "_pending", None)
+        # Real abort, not a stub, so this exercises the real cancel path.
+        with patch.object(login_mod, "_lc", lambda: types.SimpleNamespace(
+            _abort_pending_login=lambda podman: flow.abort(podman),
+            _auth_file_path=lambda: types.SimpleNamespace(unlink=_unlinker(self.legacy["kiro"])),
+        )):
+            resp = self._logout("kiro")
+        self.assertEqual(_json_data(resp), {"status": "logged_out", "aborted_pending_login": True})
+        self.assertIsNone(flow.state)
+
+        class _Stop(login_mod.KiroLoginFlow):
+            def start_container(self, podman):
+                raise RuntimeError("stop here")
+
+        result = _Stop().initiate(FakePodmanClient())
+        self.assertNotIn("login_pending", result)
+        self.assertIn("error", result)
+
+
+class _FakeRegistry:
+    """Stands in for transport.login.registry: a context manager over a crews dict."""
+
+    def __init__(self, crews: dict) -> None:
+        self._reg = {"crews": crews}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
+    """Completion GETs store a credential only while their flow is still pending (TRN-258)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import time
+        import transport.login as login_mod
+        self._time = time
+        self.podman = FakePodmanClient()
+        self.written: list[tuple] = []
+        self.injected: list[str] = []
+        self.crews: dict = {}
+        self.lc = types.SimpleNamespace(
+            _read_auth_from_crew=lambda podman, container: None,
+            _write_auth_file=lambda value: self.written.append(("kiro", value)),
+            _inject_auth=lambda podman, container, auth_b64: self.injected.append(container),
+            _write_claude_auth_file=lambda data: self.written.append(("claude", data)),
+            _write_codex_auth_file=lambda data: self.written.append(("codex", data)),
+        )
+        for name, value in (
+            ("_get_podman", lambda: self.podman),
+            ("_security", types.SimpleNamespace(audit_auth_event=lambda **kw: None)),
+            ("_request_source", lambda request: None),
+            ("registry", _FakeRegistry(self.crews)),
+            ("_lc", lambda: self.lc),
+        ):
+            patcher = patch.object(login_mod, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for flow in (login_mod.KIRO_FLOW, login_mod.CLAUDE_FLOW, login_mod.CODEX_FLOW):
+            self.addCleanup(setattr, flow, "_pending", None)
+            flow._pending = None
+
+    def _pending(self, container: str, state: str = "started") -> dict:
+        return {"container": container, "state": state, "started_at": self._time.time()}
+
+    def test_kiro_completion_cancelled_by_logout_stores_nothing(self):
+        import transport.login as login_mod
+        login_mod.KIRO_FLOW._pending = self._pending("ga-login-k1")
+        self.crews["k-1"] = {"status": "running", "container": "c-k1", "acp_backend": "kiro"}
+
+        def poll_then_logout(podman, container):
+            # Logout's abort lands between the poll and the commit.
+            login_mod.KIRO_FLOW.abort(podman)
+            return "kiro-auth-rows"
+
+        self.lc._read_auth_from_crew = poll_then_logout
+        from transport.login import _handle_login_get, _handle_login_kiro_get
+        resp = _run(_handle_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "cancelled"})
         self.assertIsNone(self._store.get("kiro"))
-        from transport.login import _handle_logout_kiro_post
-        req = _make_request()
-        with patch("transport.login._lc") as mock_lc:
-            lc = types.SimpleNamespace(
-                _read_auth_file=lambda: None,
-                _auth_file_path=lambda: types.SimpleNamespace(
-                    unlink=lambda missing_ok=False: None
-                ),
-                _inject_auth=lambda *a, **kw: None,
-            )
-            mock_lc.return_value = lc
-            with patch("transport.login._security") as mock_sec:
-                mock_sec.audit_auth_event = lambda **kw: None
-                with patch("transport.login._get_podman", return_value=FakePodmanClient()):
-                    with patch("transport.login.registry") as mock_reg:
-                        mock_reg._reg = {"crews": {}}
-                        mock_reg.__enter__ = lambda s: s
-                        mock_reg.__exit__ = lambda s, *a: None
-                        # Should not raise
-                        resp = _run(_handle_logout_kiro_post(req))
-        # delete on an already-empty store is safe
-        self.assertIsNone(self._store.get("kiro"))
+        self.assertEqual(self.written, [])
+        self.assertEqual(self.injected, [])
+        status = _json_data(_run(_handle_login_kiro_get(_make_request())))
+        self.assertIsNone(status["pending_flow"])
+        self.assertFalse(status["configured"])
+
+    def test_kiro_completion_injects_only_into_kiro_crews(self):
+        import transport.login as login_mod
+        login_mod.KIRO_FLOW._pending = self._pending("ga-login-k2")
+        self.lc._read_auth_from_crew = lambda podman, container: "kiro-auth-rows"
+        self.crews.update({
+            "kiro-run": {"status": "running", "container": "c-kiro", "acp_backend": "kiro"},
+            "no-field": {"status": "running", "container": "c-nofield"},
+            "claude-run": {"status": "running", "container": "c-claude", "acp_backend": "claude"},
+            "codex-run": {"status": "running", "container": "c-codex", "acp_backend": "codex"},
+        })
+        from transport.login import _handle_login_get
+        resp = _run(_handle_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertEqual(sorted(self.injected), ["c-kiro", "c-nofield"])
+        self.assertEqual(self._store.get("kiro")["method"], "builder-id")
+        self.assertIsNone(login_mod.KIRO_FLOW.state)
+
+    def test_claude_completion_cancelled_by_logout_stores_nothing(self):
+        import transport.login as login_mod
+        login_mod.CLAUDE_FLOW._pending = self._pending("ga-claude-login-c1", "awaiting_code")
+
+        def poll_then_logout(podman):
+            login_mod.CLAUDE_FLOW.abort(podman)
+            return b"tar-bytes"
+
+        from transport.login import _handle_claude_login_get
+        with patch.object(login_mod.CLAUDE_FLOW, "poll", side_effect=poll_then_logout):
+            resp = _run(_handle_claude_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "cancelled"})
+        self.assertIsNone(self._store.get("claude"))
+        self.assertEqual(self.written, [])
+        self.assertIsNone(login_mod.CLAUDE_FLOW.state)
+
+    def test_claude_completion_commits_when_current(self):
+        import transport.login as login_mod
+        login_mod.CLAUDE_FLOW._pending = self._pending("ga-claude-login-c2", "awaiting_code")
+        from transport.login import _handle_claude_login_get
+        with patch.object(login_mod.CLAUDE_FLOW, "poll", return_value=b"tar-bytes"):
+            resp = _run(_handle_claude_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertEqual(self._store.get("claude")["method"], "oauth")
+        self.assertEqual(self.written, [("claude", b"tar-bytes")])
+        self.assertIsNone(login_mod.CLAUDE_FLOW.state)
+
+    def test_codex_completion_cancelled_by_logout_writes_nothing(self):
+        import transport.login as login_mod
+        login_mod.CODEX_FLOW._pending = self._pending("ga-codex-login-c1")
+
+        def poll_then_logout(podman):
+            login_mod.CODEX_FLOW.abort(podman)
+            return b"tar-bytes"
+
+        from transport.login import _handle_codex_login_get
+        with patch.object(login_mod.CODEX_FLOW, "poll", side_effect=poll_then_logout):
+            resp = _run(_handle_codex_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "cancelled"})
+        self.assertEqual(self.written, [])
+        self.assertIsNone(login_mod.CODEX_FLOW.state)
 
 
 if __name__ == "__main__":

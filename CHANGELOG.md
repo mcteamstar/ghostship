@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Logout cancels a pending login and leaves running crews alone (TRN-258)
+
+- **BREAKING: logout no longer touches running crews.** `ghostship auth logout <backend>` (`POST /logout/{backend}`) cancels any pending login, removes the stored credential, and stops there. It no longer wipes kiro `auth_kv` or runs `rm -rf` on `~/.claude/` and `~/.codex/` in running crews. Those crews keep the credential they launched with; relaunch or nuke them to drop it.
+- Logout always ends with no stored credential and no pending login. It returns `200 {"status": "logged_out"}`, with `aborted_pending_login: true` when a flow was cancelled, in place of the old 404 and 409 "not authenticated" responses. It returns 500 only when a credential cannot be deleted. The `wipe_failed` field is gone.
+- Fixed: a logout during login startup no longer leaves a login container behind, a new login can start straight after a cancelling logout, and a login poll that logout cancelled no longer stores its credential.
+
+### Fixed: kiro login completion no longer injects auth into claude or codex crews (TRN-258)
+
+- Since TRN-259 a transport can run claude and codex crews alongside kiro ones. Completing a kiro device login now injects the fresh auth only into running crews whose `acp_backend` is kiro (an entry with no `acp_backend` counts as kiro). Running claude and codex crews are left alone.
+
 ### Choose the backend per crew (TRN-259)
 
 - **`launch` takes an optional `backend` argument** (`"kiro"`, `"claude"` or `"codex"`). Omitted, the crew uses the transport default (first entry of `backends.default`) as before. Different crews can now run different backends on one transport, using each backend's stored login. A backend that isn't enabled (kiro always is; others when listed in `backends.default`) returns `backend_not_enabled` with the enabled list and creates nothing.

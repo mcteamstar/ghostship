@@ -15,6 +15,7 @@ import json
 import os
 import stat
 import unittest
+from unittest import mock
 
 from transport.credentials import (
     CredentialStore,
@@ -114,6 +115,15 @@ class TestCredentialStore(unittest.TestCase):
         self.assertTrue(self.store.delete("kiro"))
         self.assertFalse(self.store.delete("kiro"))
         self.assertIsNone(self.store.get("kiro"))
+
+    def test_delete_raises_when_unlink_fails(self):
+        # A file that exists but cannot be removed must raise, not report False,
+        # so logout can tell "already absent" from "still stored".
+        self.store.put("kiro", "api-key", "kiro-key-value")
+        with mock.patch("transport.credentials.Path.unlink", side_effect=PermissionError("denied")):
+            with self.assertRaises(OSError):
+                self.store.delete("kiro")
+        self.assertIsNotNone(self.store.get("kiro"))
 
     # ── provider round-trip for identity-center ──────────────────────────────
 

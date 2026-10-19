@@ -217,6 +217,40 @@ class TestAuthFollowsBackend(_LaunchHarness):
         self.assertNotIn("KIRO_API_KEY", env)
 
 
+class TestLaunchPollCommit(_LaunchHarness):
+    """The launch-time kiro poll commits only while its login flow is still pending (TRN-258)."""
+
+    def setUp(self):
+        super().setUp()
+        import time
+        import transport.login as login_mod
+        self.flow = login_mod.KIRO_FLOW
+        self.flow._pending = {"container": "ga-login-poll", "state": "started", "started_at": time.time()}
+        self.addCleanup(setattr, self.flow, "_pending", None)
+
+    def test_logout_during_poll_stops_launch_without_storing(self):
+        def poll_then_logout(podman, container):
+            # Logout's abort lands between the poll and the commit.
+            self.flow.abort(podman)
+            return "kiro-auth-rows"
+
+        with patch.object(self.tools, "_read_auth_from_crew", side_effect=poll_then_logout):
+            result = self.launch(backend="kiro")
+        self.assertEqual(result["error"], "not_authenticated")
+        self.assertIn("cancelled by logout", result["instructions"])
+        self.assertIsNone(self.store.get("kiro"))
+        self.assertEqual(self.login_calls, [])
+        self.assertFalse(self.podman.was_called("container_create"))
+        self.assertIsNone(self.flow.state)
+
+    def test_current_poll_stores_credential_and_launches(self):
+        with patch.object(self.tools, "_read_auth_from_crew", return_value="kiro-auth-rows"):
+            result = self.launch(backend="kiro")
+        self.assertNotIn("error", result)
+        self.assertEqual(self.store.get("kiro")["method"], "builder-id")
+        self.assertIsNone(self.flow.state)
+
+
 if __name__ == "__main__":
     unittest.main()
 

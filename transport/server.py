@@ -1577,10 +1577,10 @@ async def _handle_openapi_get(request: Request) -> Response:
 try:
     from login import (  # noqa: F401  re-exported for existing call-sites
         _warn_inert_backend_settings, _backend_enabled, _backend_not_enabled_message,
-        _handle_login_post, _handle_login_get, _handle_logout_post,
+        _handle_login_post, _handle_login_get,
         _handle_claude_login_post, _handle_claude_login_get,
-        _handle_claude_login_code_post, _handle_claude_logout_post,
-        _handle_codex_login_post, _handle_codex_login_get, _handle_codex_logout_post,
+        _handle_claude_login_code_post,
+        _handle_codex_login_post, _handle_codex_login_get,
         # TRN-233 new routes
         _handle_login_kiro_get, _handle_login_claude_get_new, _handle_login_codex_get_new,
         _handle_login_kiro_api_key_post, _handle_login_kiro_builder_id_post,
@@ -1594,10 +1594,10 @@ try:
 except ModuleNotFoundError:
     from transport.login import (  # noqa: F401  local dev
         _warn_inert_backend_settings, _backend_enabled, _backend_not_enabled_message,
-        _handle_login_post, _handle_login_get, _handle_logout_post,
+        _handle_login_post, _handle_login_get,
         _handle_claude_login_post, _handle_claude_login_get,
-        _handle_claude_login_code_post, _handle_claude_logout_post,
-        _handle_codex_login_post, _handle_codex_login_get, _handle_codex_logout_post,
+        _handle_claude_login_code_post,
+        _handle_codex_login_post, _handle_codex_login_get,
         # TRN-233 new routes
         _handle_login_kiro_get, _handle_login_claude_get_new, _handle_login_codex_get_new,
         _handle_login_kiro_api_key_post, _handle_login_kiro_builder_id_post,

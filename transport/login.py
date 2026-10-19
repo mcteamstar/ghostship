@@ -18,11 +18,12 @@ HTTP handlers (extracted from server.py, TRN-242)
 The ten Starlette route handlers for the three login/logout flows live here
 alongside the ``LoginFlow`` singletons they delegate to:
 
-  kiro:   _handle_login_post, _handle_login_get, _handle_logout_post
+  kiro:   _handle_login_post, _handle_login_get
   claude: _handle_claude_login_post, _handle_claude_login_get,
-          _handle_claude_login_code_post, _handle_claude_logout_post
-  codex:  _handle_codex_login_post, _handle_codex_login_get,
-          _handle_codex_logout_post
+          _handle_claude_login_code_post
+  codex:  _handle_codex_login_post, _handle_codex_login_get
+
+All three ``/logout/{backend}`` routes call ``_logout`` (TRN-258).
 
 Three backend-check helpers used only by the handlers also live here:
   _warn_inert_backend_settings, _backend_enabled, _backend_not_enabled_message
@@ -45,11 +46,6 @@ try:
     from config import Config  # container: flat /app/
 except ImportError:
     from transport.config import Config  # local dev
-
-try:
-    from constants import SCRIPTS_DIR  # container: flat /app/
-except ModuleNotFoundError:
-    from transport.constants import SCRIPTS_DIR  # local dev
 
 logger = logging.getLogger(__name__)
 
@@ -286,12 +282,13 @@ class LoginFlow(ABC):
         with self._lock:
             if self._pending is not None:
                 return {"login_pending": True}
-            self._pending = {
+            pending = {
                 "container": None,
                 "started_at": time.time(),
                 "state": "starting",
                 **(pending_extra or {}),
             }
+            self._pending = pending
 
         # Start container
         try:
@@ -302,10 +299,18 @@ class LoginFlow(ABC):
                 self._pending = None
             return {"error": f"Failed to start login container: {e}"}
 
+        # Identity, not "is not None": an abort during start_container clears
+        # _pending, and a new flow may have taken its place. Only record the
+        # container against the dict this call created.
         with self._lock:
-            if self._pending is not None:
-                self._pending["container"] = container
-                self._pending["state"] = "started"
+            cancelled = self._pending is not pending
+            if not cancelled:
+                pending["container"] = container
+                pending["state"] = "started"
+        if cancelled:
+            logger.info("[%s] Login cancelled while starting %s", self.backend, container)
+            self._nuke_container(podman, container)
+            return {"error": "cancelled"}
 
         # Wait for the binary
         for _ in range(10):
@@ -409,6 +414,33 @@ class LoginFlow(ABC):
             if self._pending is pending:
                 self._pending = None
         return True
+
+    def commit_if_current(self, pending: dict, store_fn) -> bool:
+        """Store a completed login's credential only if its flow is still live.
+
+        *pending* is the dict a completion path captured before polling the
+        login container. Under the lock, if ``_pending`` is still that dict,
+        run ``store_fn`` and clear ``_pending`` in the same critical section, so
+        an abort cannot land between the check and the store. If ``store_fn``
+        raises, ``_pending`` is left in place so the caller can retry.
+
+        Returns False when the flow was cancelled or replaced since *pending*
+        was captured. The caller must then discard its result and remove
+        ``pending["container"]``.
+        """
+        with self._lock:
+            if self._pending is not pending:
+                return False
+            store_fn()
+            self._pending = None
+            return True
+
+
+def _nuke_pending_container(flow: LoginFlow, podman, pending: dict) -> None:
+    """Best-effort removal of the login container a completed or cancelled flow owned."""
+    container = pending.get("container")
+    if container:
+        flow._nuke_container(podman, container)
 
 
 # ── Kiro flow ─────────────────────────────────────────────────────────────────
@@ -899,9 +931,28 @@ async def _handle_login_get(request: Request) -> Response:
         return JSONResponse({"status": "pending"})
 
     # ── Auth complete ─────────────────────────────────────────────────────────
-    try:
+    # The legacy file write and the credential-store put run inside the flow's
+    # commit, so a logout that cancels this flow first stores nothing.
+    _provider = pending.get("provider")
+    _method = "identity-center" if _provider else "builder-id"
+
+    def _store() -> None:
         _lc()._write_auth_file(auth_b64)
         logger.info("ga-kiro-auth written after login completion")
+        # Store via the credential store (TRN-233). The auth_b64 is the SQLite
+        # row data; method is builder-id (default) unless identity-center was used.
+        try:
+            _cred_store.put(
+                "kiro", _method,
+                auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64,
+                provider=_provider,
+            )
+            logger.info("Stored kiro %s credential in credential store", _method)
+        except Exception as e:
+            logger.warning("Could not store kiro credential in credential store: %s", e)
+
+    try:
+        committed = KIRO_FLOW.commit_if_current(pending, _store)
     except Exception as e:
         # Keep the login container and pending state so the next poll can retry,
         # rather than discarding the only copy of the credential.
@@ -915,26 +966,19 @@ async def _handle_login_get(request: Request) -> Response:
              "error": "Login completed but the credential could not be saved; poll again to retry."},
             status_code=500,
         )
+    if not committed:
+        _nuke_pending_container(KIRO_FLOW, podman, pending)
+        return JSONResponse({"status": "cancelled"})
 
-    # Store via the credential store (TRN-233). The auth_b64 is the SQLite
-    # row data; method is builder-id (default) unless identity-center was used.
-    _provider = pending.get("provider")
-    _method = "identity-center" if _provider else "builder-id"
-    try:
-        _cred_store.put(
-            "kiro", _method,
-            auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64,
-            provider=_provider,
-        )
-        logger.info("Stored kiro %s credential in credential store", _method)
-    except Exception as e:
-        logger.warning("Could not store kiro credential in credential store: %s", e)
-    # Inject all currently running crews
+    # Inject into running kiro crews only. Since TRN-259 a transport can run
+    # claude and codex crews too; an entry with no acp_backend field is kiro
+    # (matches Crew.from_dict's default).
     with registry:
         _running_crews = {
             cid: info
             for cid, info in registry._reg["crews"].items()
             if info.get("status") == "running"
+            and info.get("acp_backend", "kiro") == "kiro"
         }
     for cid, info in _running_crews.items():
         try:
@@ -943,8 +987,7 @@ async def _handle_login_get(request: Request) -> Response:
         except Exception as e:
             logger.warning("Could not inject auth into crew %s: %s", cid, e)
 
-    # Nuke temp container and clear pending state via flow singleton abort
-    KIRO_FLOW.abort(podman)
+    _nuke_pending_container(KIRO_FLOW, podman, pending)
 
     _security.audit_auth_event(
         action="login", outcome="success", account="academy",
@@ -952,75 +995,6 @@ async def _handle_login_get(request: Request) -> Response:
         emit=logger.info,
     )
     return JSONResponse({"status": "complete"})
-
-
-async def _handle_logout_post(request: Request) -> Response:
-    """POST /logout — de-authenticate the Ghost Academy.
-
-    Deletes ga-kiro-auth and wipes auth_kv rows from every running crew's
-    kiro-cli DB. Returns 404 if the academy is not currently authenticated.
-    """
-    if not _lc()._read_auth_file():
-        return PlainTextResponse("Not authenticated.", status_code=404)
-
-    try:
-        podman = _get_podman()
-    except Exception as e:
-        return PlainTextResponse(str(e), status_code=500)
-
-    # Clear the shared auth file
-    auth_path = _lc()._auth_file_path()
-    try:
-        auth_path.unlink(missing_ok=True)
-        logger.info("Deleted ga-kiro-auth")
-    except Exception as e:
-        logger.error("Could not delete ga-kiro-auth: %s", e)
-        _security.audit_auth_event(
-            action="logout", outcome="failure", account="academy",
-            source=_request_source(request), emit=logger.info,
-        )
-        return JSONResponse(
-            {"status": "error", "error": "The stored credential could not be deleted."},
-            status_code=500,
-        )
-
-    # Audit after deletion so the log only records a logout that actually happened.
-    _security.audit_auth_event(
-        action="logout", outcome="success", account="academy",
-        source=_request_source(request), emit=logger.info,
-    )
-
-    # Wipe auth rows from all running crews
-    wipe_failed: list[str] = []
-    with registry:
-        _running_crews_info = {
-            cid: info
-            for cid, info in registry._reg["crews"].items()
-            if info.get("status") == "running"
-        }
-    for cid, info in _running_crews_info.items():
-        try:
-            podman.container_exec(
-                info["container"],
-                ["python3", f"{SCRIPTS_DIR}/wipe_auth.py", _lc().KIRO_CLI_DB],
-            )
-            logger.info("Cleared auth_kv from crew %s", cid)
-        except Exception as e:
-            logger.warning("Could not clear auth from crew %s: %s", cid, e)
-            wipe_failed.append(cid)
-
-    # Abort any in-progress login flow so the transport is in a clean
-    # unauthenticated state immediately after logout (TRN-205).
-    aborted = _lc()._abort_pending_login(podman)
-
-    if wipe_failed:
-        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
-        if aborted:
-            resp["aborted_pending_login"] = True
-        return JSONResponse(resp)
-    if aborted:
-        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
-    return JSONResponse({"status": "logged_out"})
 
 
 async def _handle_claude_login_post(request: Request) -> Response:
@@ -1108,9 +1082,22 @@ async def _handle_claude_login_get(request: Request) -> Response:
         })
 
     # ── Auth complete — store via credential store + write legacy ga-claude-auth ─
-    try:
+    # Both writes run inside the flow's commit, so a logout that cancels this
+    # flow first stores nothing.
+    def _store() -> None:
         _lc()._write_claude_auth_file(tar_bytes)
         logger.info("ga-claude-auth written after Claude login completion")
+        # Store via the credential store (TRN-233). The payload is the tar bytes;
+        # storing base64 of the raw tar mirrors the existing oauth archive convention.
+        try:
+            import base64 as _base64
+            _cred_store.put("claude", "oauth", _base64.b64encode(tar_bytes))
+            logger.info("Stored claude OAuth credential in credential store")
+        except Exception as e:
+            logger.warning("Could not store claude credential in credential store: %s", e)
+
+    try:
+        committed = CLAUDE_FLOW.commit_if_current(pending, _store)
     except Exception as e:
         # Keep the login container and pending state so the next poll can retry,
         # rather than discarding the only copy of the credential.
@@ -1124,17 +1111,17 @@ async def _handle_claude_login_get(request: Request) -> Response:
              "error": "Login completed but the credential could not be saved; poll again to retry."},
             status_code=500,
         )
-
-    # Store via the credential store (TRN-233). The payload is the tar bytes;
-    # storing base64 of the raw tar mirrors the existing oauth archive convention.
-    try:
-        import base64 as _base64
-        _cred_store.put("claude", "oauth", _base64.b64encode(tar_bytes))
-        logger.info("Stored claude OAuth credential in credential store")
-    except Exception as e:
-        logger.warning("Could not store claude credential in credential store: %s", e)
-    # Nuke temp container and clear pending state (guarded)
-    _lc()._abort_claude_pending_login(podman)
+    # Close the PTY socket (the flow does not) and nuke the temp container,
+    # whether the flow completed or was cancelled while we polled.
+    pty_sock = pending.get("pty_sock")
+    if pty_sock is not None:
+        try:
+            pty_sock.close()
+        except Exception:
+            pass
+    _nuke_pending_container(CLAUDE_FLOW, podman, pending)
+    if not committed:
+        return JSONResponse({"status": "cancelled"})
 
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
@@ -1179,77 +1166,6 @@ async def _handle_claude_login_code_post(request: Request) -> Response:
         return JSONResponse({"error": "The login session closed before the code was written."},
                             status_code=500)
     return JSONResponse({"status": "submitted"}, status_code=202)
-
-
-async def _handle_claude_logout_post(request: Request) -> Response:
-    """POST /logout/claude — de-authenticate Claude OAuth.
-
-    Deletes ga-claude-auth and wipes ~/.claude/ from every running
-    Claude-backend crew. Returns 409 if not currently authenticated via OAuth.
-    """
-    if not _lc()._claude_auth_exists():
-        return PlainTextResponse(
-            "Not authenticated via Claude OAuth (ga-claude-auth not found).",
-            status_code=409,
-        )
-
-    try:
-        podman = _get_podman()
-    except Exception as e:
-        return PlainTextResponse(str(e), status_code=500)
-
-    # Delete ga-claude-auth
-    auth_path = _lc()._claude_auth_file_path()
-    try:
-        auth_path.unlink(missing_ok=True)
-        logger.info("Deleted ga-claude-auth")
-    except Exception as e:
-        logger.error("Could not delete ga-claude-auth: %s", e)
-        _security.audit_auth_event(
-            action="logout", outcome="failure", account="claude",
-            source=_request_source(request), emit=logger.info,
-        )
-        return JSONResponse(
-            {"status": "error", "error": "The stored credential could not be deleted."},
-            status_code=500,
-        )
-
-    # Audit after deletion so the log only records a logout that actually happened.
-    _security.audit_auth_event(
-        action="logout", outcome="success", account="claude",
-        source=_request_source(request), emit=logger.info,
-    )
-
-    # Wipe ~/.claude/ from all running Claude-backend crews
-    wipe_failed: list[str] = []
-    with registry:
-        _claude_crews = {
-            cid: info
-            for cid, info in registry._reg["crews"].items()
-            if info.get("status") == "running" and info.get("acp_backend") == "claude"
-        }
-    for cid, info in _claude_crews.items():
-        try:
-            podman.container_exec(
-                info["container"],
-                ["sh", "-c", "rm -rf /home/kirocrew/.claude/"],
-            )
-            logger.info("Wiped ~/.claude/ from crew %s", cid)
-        except Exception as e:
-            logger.warning("Could not wipe ~/.claude/ from crew %s: %s", cid, e)
-            wipe_failed.append(cid)
-
-    # Abort any in-progress Claude login flow (TRN-205).
-    aborted = _lc()._abort_claude_pending_login(podman)
-
-    if wipe_failed:
-        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
-        if aborted:
-            resp["aborted_pending_login"] = True
-        return JSONResponse(resp)
-    if aborted:
-        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
-    return JSONResponse({"status": "logged_out"})
 
 
 async def _handle_codex_login_post(request: Request) -> Response:
@@ -1327,9 +1243,14 @@ async def _handle_codex_login_get(request: Request) -> Response:
         })
 
     # ── Auth complete — write ga-codex-auth ───────────────────────────────────
-    try:
+    # The write runs inside the flow's commit, so a logout that cancels this
+    # flow first stores nothing.
+    def _store() -> None:
         _lc()._write_codex_auth_file(tar_bytes)
         logger.info("ga-codex-auth written after Codex login completion")
+
+    try:
+        committed = CODEX_FLOW.commit_if_current(pending, _store)
     except Exception as e:
         # Keep the login container and pending state so the next poll can retry,
         # rather than discarding the only copy of the credential.
@@ -1343,9 +1264,9 @@ async def _handle_codex_login_get(request: Request) -> Response:
              "error": "Login completed but the credential could not be saved; poll again to retry."},
             status_code=500,
         )
-
-    # Nuke temp container and clear pending state (guarded)
-    _lc()._abort_codex_pending_login(podman)
+    _nuke_pending_container(CODEX_FLOW, podman, pending)
+    if not committed:
+        return JSONResponse({"status": "cancelled"})
 
     _security.audit_auth_event(
         action="login", outcome="success", account="codex",
@@ -1353,75 +1274,6 @@ async def _handle_codex_login_get(request: Request) -> Response:
         emit=logger.info,
     )
     return JSONResponse({"status": "complete"})
-
-
-async def _handle_codex_logout_post(request: Request) -> Response:
-    """POST /logout/codex — de-authenticate Codex OAuth.
-
-    Deletes ga-codex-auth and wipes ~/.codex/ from every running Codex-backend
-    crew. Idempotent: returns HTTP 200 even when already unauthenticated (no
-    ga-codex-auth to clear), matching the codex-auth spec requirement.
-    """
-    if not _lc()._codex_auth_exists():
-        return JSONResponse({"status": "logged_out"})
-
-    try:
-        podman = _get_podman()
-    except Exception as e:
-        return PlainTextResponse(str(e), status_code=500)
-
-    # Delete ga-codex-auth
-    auth_path = _lc()._codex_auth_file_path()
-    try:
-        auth_path.unlink(missing_ok=True)
-        logger.info("Deleted ga-codex-auth")
-    except Exception as e:
-        logger.error("Could not delete ga-codex-auth: %s", e)
-        _security.audit_auth_event(
-            action="logout", outcome="failure", account="codex",
-            source=_request_source(request), emit=logger.info,
-        )
-        return JSONResponse(
-            {"status": "error", "error": "The stored credential could not be deleted."},
-            status_code=500,
-        )
-
-    # Audit after deletion so the log only records a logout that actually happened.
-    _security.audit_auth_event(
-        action="logout", outcome="success", account="codex",
-        source=_request_source(request), emit=logger.info,
-    )
-
-    # Wipe ~/.codex/ from all running Codex-backend crews
-    wipe_failed: list[str] = []
-    with registry:
-        _codex_crews = {
-            cid: info
-            for cid, info in registry._reg["crews"].items()
-            if info.get("status") == "running" and info.get("acp_backend") == "codex"
-        }
-    for cid, info in _codex_crews.items():
-        try:
-            podman.container_exec(
-                info["container"],
-                ["sh", "-c", "rm -rf /home/kirocrew/.codex/"],
-            )
-            logger.info("Wiped ~/.codex/ from crew %s", cid)
-        except Exception as e:
-            logger.warning("Could not wipe ~/.codex/ from crew %s: %s", cid, e)
-            wipe_failed.append(cid)
-
-    # Abort any in-progress Codex login flow (TRN-205).
-    aborted = _lc()._abort_codex_pending_login(podman)
-
-    if wipe_failed:
-        resp: dict = {"status": "logged_out", "wipe_failed": wipe_failed}
-        if aborted:
-            resp["aborted_pending_login"] = True
-        return JSONResponse(resp)
-    if aborted:
-        return JSONResponse({"status": "logged_out", "aborted_pending_login": True})
-    return JSONResponse({"status": "logged_out"})
 
 
 # ── TRN-233: new /login/{backend}/{method} and /logout/{backend} routes ───────
@@ -1578,10 +1430,74 @@ async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
 
 # ── POST /logout/kiro ─────────────────────────────────────────────────────────
 
+# ── POST /logout/{backend} ────────────────────────────────────────────────────
+# TRN-258: logout acts on the transport only. It cancels any pending login for
+# the backend, then removes the stored credential and the legacy device file.
+# Running crews are never touched; they keep the credential they launched with.
+
+
+def _logout(backend: str, request: Request) -> Response:
+    """Cancel a pending *backend* login, then remove its stored credential.
+
+    Idempotent: returns 200 whether or not anything was pending or stored.
+    Returns 500 only when a credential could not be removed.
+    """
+    lc = _lc()
+    if backend == "kiro":
+        abort, legacy_path, account = lc._abort_pending_login, lc._auth_file_path(), "academy"
+    elif backend == "claude":
+        abort, legacy_path, account = lc._abort_claude_pending_login, lc._claude_auth_file_path(), "claude"
+    else:
+        abort, legacy_path, account = lc._abort_codex_pending_login, lc._codex_auth_file_path(), "codex"
+
+    try:
+        podman = _get_podman()
+    except Exception as e:
+        return PlainTextResponse(str(e), status_code=500)
+
+    # Abort first: a pending login must not be able to store a credential after
+    # this call removes it (see LoginFlow.commit_if_current).
+    aborted = abort(podman)
+
+    store_removed = legacy_removed = failed = False
+    try:
+        store_removed = _cred_store.delete(backend)
+    except OSError as e:
+        logger.error("Could not delete %s credential from store: %s", backend, e)
+        failed = True
+    try:
+        legacy_path.unlink()
+        legacy_removed = True
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.error("Could not delete legacy %s auth file: %s", backend, e)
+        failed = True
+
+    if failed:
+        _security.audit_auth_event(
+            action="logout", outcome="failure", account=account,
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error", "error": "The stored credential could not be deleted."},
+            status_code=500,
+        )
+    # Audit only a logout that removed something; a no-op logout is not an event.
+    if store_removed or legacy_removed:
+        _security.audit_auth_event(
+            action="logout", outcome="success", account=account,
+            source=_request_source(request), emit=logger.info,
+        )
+    body: dict = {"status": "logged_out"}
+    if aborted:
+        body["aborted_pending_login"] = True
+    return JSONResponse(body)
+
+
 async def _handle_logout_kiro_post(request: Request) -> Response:
-    """POST /logout/kiro — clear kiro credential and wipe running crews. Idempotent."""
-    _cred_store.delete("kiro")
-    return await _handle_logout_post(request)
+    """POST /logout/kiro — cancel a pending kiro login and remove its credential."""
+    return _logout("kiro", request)
 
 
 # ── POST /login/claude/* ──────────────────────────────────────────────────────
@@ -1676,9 +1592,8 @@ async def _handle_login_claude_oauth_code_post(request: Request) -> Response:
 # ── POST /logout/claude ───────────────────────────────────────────────────────
 
 async def _handle_logout_claude_post_new(request: Request) -> Response:
-    """POST /logout/claude — clear claude credential and wipe running crews. Idempotent."""
-    _cred_store.delete("claude")
-    return await _handle_claude_logout_post(request)
+    """POST /logout/claude — cancel a pending claude login and remove its credential."""
+    return _logout("claude", request)
 
 
 # ── POST /login/codex/* ───────────────────────────────────────────────────────
@@ -1742,6 +1657,5 @@ async def _handle_login_codex_chatgpt_post(request: Request) -> Response:
 # ── POST /logout/codex ────────────────────────────────────────────────────────
 
 async def _handle_logout_codex_post_new(request: Request) -> Response:
-    """POST /logout/codex — clear codex credential and wipe running crews. Idempotent."""
-    _cred_store.delete("codex")
-    return await _handle_codex_logout_post(request)
+    """POST /logout/codex — cancel a pending codex login and remove its credential."""
+    return _logout("codex", request)

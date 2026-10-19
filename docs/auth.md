@@ -18,7 +18,7 @@ All backend auth is driven by one CLI, against the installed transport:
 
 ```bash
 ghostship auth login <backend>    # store or replace a credential (kiro|claude|codex)
-ghostship auth logout <backend>   # clear the stored credential
+ghostship auth logout <backend>   # cancel any pending login and clear the stored credential
 ghostship auth status             # show what is configured for every backend
 ```
 
@@ -32,6 +32,11 @@ ghostship auth status             # show what is configured for every backend
   remote host unless `--insecure` is passed.
 - `ghostship auth status --json` emits machine-readable per-backend state
   (`{backend: {configured, method, stored_at}}`), with no secret values.
+- `ghostship auth logout <backend>` is how you both log out and abort a login.
+  It always ends with no stored credential and no pending login, whatever the
+  starting state. It is idempotent: it returns success with
+  `aborted_pending_login` when it cancelled a flow. It does not touch running
+  crews, so relaunch or nuke them to drop their credential.
 
 Per-backend methods:
 
@@ -98,8 +103,9 @@ install can reuse the logins. Pass `--purge-auth` to remove both.
 ### Secret rotation
 
 When tokens expire: `ghostship auth logout kiro` to clear stale auth, then
-`ghostship auth login kiro` for fresh tokens. Running crews receive fresh auth
-on their next launch — no nuke needed.
+`ghostship auth login kiro` for fresh tokens. When the new login completes, its
+auth is injected into running kiro crews. Logout itself leaves running crews
+unchanged; relaunch or nuke a crew to drop the credential it launched with.
 
 ### Auth API
 
@@ -115,7 +121,7 @@ UNAUTHENTICATED  ──[POST /login/kiro/builder-id]──►  PENDING  ──[G
 
 **`GET /login/kiro`** — polls completion and returns status plus any pending flow and the configured Identity Center defaults. On success writes `ga-kiro-auth`, injects auth into all running crews, returns `complete`.
 
-**`POST /logout/kiro`** — clears the credential, cancels a pending flow, and wipes auth from every running crew. Idempotent.
+**`POST /logout/kiro`** — cancels any pending flow (removing its login container), then removes the stored credential and the legacy `ga-kiro-auth` file. Returns `200 {"status": "logged_out"}`, adding `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 only if the credential cannot be deleted. Running crews are not touched: they keep the credential they launched with until relaunched or nuked.
 
 ---
 
@@ -249,9 +255,10 @@ curl -sX POST http://localhost:64057/login/claude | jq
 curl -sX POST http://localhost:64057/logout/claude
 ```
 
-This deletes `ga-claude-auth` and runs `rm -rf ~/.claude/` inside every running
-Claude-backend crew. Existing crew sessions become unauthenticated; relaunch them
-after logging in again.
+This cancels any pending Claude login, then deletes the stored credential (and
+`ga-claude-auth`, if present). It is idempotent. Running Claude-backend crews are
+not touched: they keep the credential they launched with, so relaunch or nuke a
+crew to drop it.
 
 ### Credential precedence
 
@@ -291,8 +298,7 @@ returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
 Returns 404 if no flow is in progress, and 410 `{"status": "expired"}` when a
 submitted code did not complete within 120 seconds.
 
-**`POST /logout/claude`** — deletes `ga-claude-auth` and wipes `~/.claude/` from
-every running Claude-backend crew. Returns 409 if not authenticated via OAuth.
+**`POST /logout/claude`** — cancels any pending flow (removing its login container), then removes the stored credential and `ga-claude-auth`. Returns `200 {"status": "logged_out"}`, with `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 only if the credential cannot be deleted. Running crews are not touched.
 
 ---
 
@@ -366,9 +372,10 @@ curl -sX POST http://localhost:64057/login/codex | jq
 curl -sX POST http://localhost:64057/logout/codex
 ```
 
-This deletes `ga-codex-auth` and runs `rm -rf ~/.codex/` inside every running
-Codex-backend crew. Existing crew sessions become unauthenticated; relaunch them
-after logging in again.
+This cancels any pending Codex login, then deletes the stored credential (and
+`ga-codex-auth`, if present). It is idempotent. Running Codex-backend crews are
+not touched: they keep the credential they launched with, so relaunch or nuke a
+crew to drop it.
 
 ### Credential precedence
 
@@ -397,9 +404,7 @@ Returns 409 if already authenticated or a flow is in progress, and 400 if
 returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
 Returns 404 if no flow is in progress.
 
-**`POST /logout/codex`** — deletes `ga-codex-auth` and wipes `~/.codex/` from
-every running Codex-backend crew. Idempotent: returns 200 even when already
-unauthenticated (nothing to clear).
+**`POST /logout/codex`** — cancels any pending flow (removing its login container), then removes the stored credential and `ga-codex-auth`. Returns `200 {"status": "logged_out"}`, with `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 only if the credential cannot be deleted. Running crews are not touched.
 
 ---
 
@@ -521,7 +526,7 @@ HTTPS redirect is handled unconditionally by Caddy. Minimum TLS is 1.2.
 # polls until you approve or the flow times out (~5 min).
 ghostship auth login <backend>      # kiro | claude | codex
 
-# Clear the stored credential for a backend.
+# Cancel any pending login and clear the stored credential for a backend.
 ghostship auth logout <backend>
 
 # Show per-backend credential status (add --json for machine-readable output).

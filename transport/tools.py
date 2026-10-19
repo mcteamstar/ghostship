@@ -662,17 +662,26 @@ def launch(
             pending = login.KIRO_FLOW.state
             if pending is not None:
                 _poll_consumed = False
+                _cancelled = False
                 try:
                     auth_b64 = _read_auth_from_crew(podman, pending["container"]) or None
                     if auth_b64:
                         # Store via credential store (TRN-233 hard break — no legacy file write).
                         _provider = pending.get("provider")
                         _method = "identity-center" if _provider else "builder-id"
-                        _cred_store.put("kiro", _method, auth_b64, provider=_provider)
-                        _nuke_login_container(podman, pending["container"])
-                        _poll_consumed = True
-                        login.KIRO_FLOW.abort(podman)
-                        logger.info("Auth completed via launch poll — login container cleaned up")
+                        # Commit only if the flow was not cancelled by logout while we polled.
+                        _committed = login.KIRO_FLOW.commit_if_current(
+                            pending,
+                            lambda: _cred_store.put("kiro", _method, auth_b64, provider=_provider),
+                        )
+                        if _committed:
+                            _nuke_login_container(podman, pending["container"])
+                            _poll_consumed = True
+                            logger.info("Auth completed via launch poll — login container cleaned up")
+                        else:
+                            _cancelled = True
+                            auth_b64 = None
+                            logger.info("Launch poll found a login cancelled by logout; credential discarded")
                 except Exception as e:
                     logger.warning("Auth poll in launch failed: %s", e)
                 finally:
@@ -680,13 +689,20 @@ def launch(
                     # returned no auth) we fall through to _initiate_login below,
                     # which starts a NEW login container. The stale one from the
                     # prior flow would then leak. Nuke it and clear the sentinel
-                    # here so the retry starts clean.
+                    # here so the retry starts clean. A cancelled flow is already
+                    # cleared, so skip the abort: it could cancel a newer flow.
                     if not _poll_consumed:
                         try:
                             _nuke_login_container(podman, pending["container"])
                         except Exception:
                             pass
-                        login.KIRO_FLOW.abort(podman)
+                        if not _cancelled:
+                            login.KIRO_FLOW.abort(podman)
+                if _cancelled:
+                    return {
+                        "error": "not_authenticated",
+                        "instructions": "Login was cancelled by logout. Start a kiro login, then call launch again.",
+                    }
             if not auth_b64:
                 result = _initiate_login(podman)
                 if result.get("login_pending"):
