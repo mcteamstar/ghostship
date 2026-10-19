@@ -1,4 +1,4 @@
-"""Unit tests for scripts/lib/yaml_config.py (TRN-253).
+"""Unit tests for bin/lib/yaml_config.py (TRN-253).
 
 Covers:
 - deep_merge: scalar override, nested partial override, list replacement
@@ -18,9 +18,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# Load the standalone module directly (it lives under scripts/lib, not a package).
+# Load the standalone module directly (it lives under bin/lib, not a package).
 _MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "lib" / "yaml_config.py"
+    Path(__file__).resolve().parents[2] / "bin" / "lib" / "yaml_config.py"
 )
 _spec = importlib.util.spec_from_file_location("yaml_config", _MODULE_PATH)
 assert _spec and _spec.loader

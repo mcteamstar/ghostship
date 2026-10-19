@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Integration test: scripts/install.sh flag parsing + config sourcing.
+# Integration test: bin/install.sh flag parsing + config sourcing.
 #
 # trn-212-test-coverage-gaps A.2 — this file was rewritten to call the REAL
-# scripts/install.sh inside a sandbox (see helpers/sandbox.sh) instead of
+# bin/install.sh inside a sandbox (see helpers/sandbox.sh) instead of
 # reimplementing the parser. Flag drift between the test and the script is now
 # impossible: every case runs the actual argument-parsing loop.
 #
@@ -16,7 +16,7 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INSTALL="$REPO_DIR/scripts/install.sh"
+INSTALL="$REPO_DIR/bin/install.sh"
 URL="http://localhost:64057/mcp"
 
 # shellcheck source=helpers/sandbox.sh

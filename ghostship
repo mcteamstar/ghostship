@@ -5,11 +5,11 @@ Usage:
     ghostship <subcommand> [flags]
 
 Subcommands:
-    install    [flags]   Install or update the transport (runs scripts/install.sh)
-    start      [flags]   Start the transport (runs scripts/start.sh)
+    install    [flags]   Install or update the transport (runs bin/install.sh)
+    start      [flags]   Start the transport (runs bin/start.sh)
     stop                 Stop the transport, portal, and Podman machine/service
-    upgrade    [flags]   Rebuild and restart the transport (runs scripts/install.sh); --skills also refreshes skills
-    uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
+    upgrade    [flags]   Rebuild and restart the transport (runs bin/install.sh); --skills also refreshes skills
+    uninstall  [flags]   Uninstall the transport (runs bin/uninstall.sh)
     status               Show transport status (container running, port, uptime)
     setup      [flags]   Register the MCP server and install skill symlinks for agent clients
     version              Print the ghostship version
@@ -46,7 +46,7 @@ def _version() -> str:
 
 
 def _exec_script(script_rel: str, extra_args: list) -> None:
-    """Replace the current process with scripts/<script> forwarding all args."""
+    """Replace the current process with bin/<script> (or scripts/ for dev tools) forwarding all args."""
     script = _ghostship_dir() / script_rel
     if not script.exists():
         print(f"error: script not found: {script}", file=sys.stderr)
@@ -71,21 +71,21 @@ def cmd_install(args: list) -> int:
     if "--help" in args or "-h" in args:
         print("Usage: ghostship install [flags]\n"
               "\nInstall or update the Ghost Academy transport.\n"
-              "Delegates to scripts/install.sh — run 'ghostship install --help' "
+              "Delegates to bin/install.sh — run 'ghostship install --help' "
               "after removing this flag to see all install.sh flags.")
         return 0
-    # Forward ALL extra args unchanged to scripts/install.sh, including
+    # Forward ALL extra args unchanged to bin/install.sh, including
     # --client-only / --url / --api-key (TRN-115) — no per-flag handling here.
-    _exec_script("scripts/install.sh", args)
+    _exec_script("bin/install.sh", args)
 
 
 def cmd_start(args: list) -> int:
     if "--help" in args or "-h" in args:
         print("Usage: ghostship start [flags]\n"
               "\nStart the transport (no-op if already running).\n"
-              "Delegates to scripts/start.sh.")
+              "Delegates to bin/start.sh.")
         return 0
-    _exec_script("scripts/start.sh", args)
+    _exec_script("bin/start.sh", args)
 
 
 def cmd_upgrade(args: list) -> int:
@@ -93,7 +93,7 @@ def cmd_upgrade(args: list) -> int:
     if "--help" in args or "-h" in args:
         print("Usage: ghostship upgrade [--skills] [flags]\n"
               "\nRebuild images and recreate the transport container.\n"
-              "Equivalent to 'ghostship install'. Delegates to scripts/install.sh.\n"
+              "Equivalent to 'ghostship install'. Delegates to bin/install.sh.\n"
               "\n"
               "  --skills   After a successful rebuild, also run 'ghostship setup' to\n"
               "             refresh skill symlinks and re-register the MCP server for\n"
@@ -103,7 +103,7 @@ def cmd_upgrade(args: list) -> int:
     install_args = [a for a in args if a != "--skills"]
     if not skills:
         # Fast path: replace the process entirely (original behaviour).
-        _exec_script("scripts/install.sh", install_args)
+        _exec_script("bin/install.sh", install_args)
         return 0  # unreachable in production (execvp), needed for tests
     # --skills path: run install as a subprocess so we can chain setup after.
     script = _ghostship_dir() / "scripts" / "install.sh"
@@ -120,9 +120,9 @@ def cmd_uninstall(args: list) -> int:
     if "--help" in args or "-h" in args:
         print("Usage: ghostship uninstall [flags]\n"
               "\nTear down the Ghost Academy transport.\n"
-              "Delegates to scripts/uninstall.sh.")
+              "Delegates to bin/uninstall.sh.")
         return 0
-    _exec_script("scripts/uninstall.sh", args)
+    _exec_script("bin/uninstall.sh", args)
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ def _podman_cmd() -> list:
 def _stop_machine(machine: str) -> None:
     """Stop the underlying Podman machine (macOS) or dedicated service (Linux).
 
-    Mirrors the start-side logic in scripts/start.sh. A machine that is already
+    Mirrors the start-side logic in bin/start.sh. A machine that is already
     stopped or not found is reported, never raised — a non-zero return from the
     stop command in that case is expected and must not fail `ghostship stop`.
 
@@ -1017,11 +1017,11 @@ _USAGE = """\
 Usage: ghostship <subcommand> [flags]
 
 Subcommands:
-  install    [flags]   Install or update the transport (runs scripts/install.sh)
-  start      [flags]   Start the transport (runs scripts/start.sh)
+  install    [flags]   Install or update the transport (runs bin/install.sh)
+  start      [flags]   Start the transport (runs bin/start.sh)
   stop                 Stop the transport + portal, then the Podman machine/service (frees RAM, preserves state)
   upgrade    [flags]   Rebuild and restart the transport (same as install); --skills also refreshes skill symlinks
-  uninstall  [flags]   Uninstall the transport (runs scripts/uninstall.sh)
+  uninstall  [flags]   Uninstall the transport (runs bin/uninstall.sh)
   status               Show transport status
   setup      [flags]   Register MCP server + skills for agent clients (kiro, Claude Code, opencode)
   auth       [login|logout|status]  Manage backend credentials

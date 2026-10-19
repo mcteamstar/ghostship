@@ -576,7 +576,7 @@ class TestConfigYamlExampleSync(unittest.TestCase):
     config/ghostship.yaml.example.
 
     TRN-253 replaced the flat ghostship.conf.example with a structured YAML
-    example. The invariant is enforced through scripts/lib/yaml_config.py's
+    example. The invariant is enforced through bin/lib/yaml_config.py's
     canonical env-var -> YAML-path map: every Config field maps to an env var,
     every env var maps to a YAML path, and that path's leaf key must appear in
     the example file. This keeps the installer's config surface (yaml_config),
@@ -611,7 +611,7 @@ class TestConfigYamlExampleSync(unittest.TestCase):
         from pathlib import Path
 
         repo_root = Path(__file__).resolve().parents[2]
-        mod_path = repo_root / "scripts" / "lib" / "yaml_config.py"
+        mod_path = repo_root / "bin" / "lib" / "yaml_config.py"
         spec = importlib.util.spec_from_file_location("yaml_config", mod_path)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)

@@ -113,7 +113,7 @@ def parse_agent_backends(raw: str) -> tuple[str, ...]:
     Deprecated alias for _parse_ga_crew_agent for the parity test (TRN-202).
     Splits on commas, trims, lowercases, and drops empty entries, duplicates
     and kiro (always enabled). Returns the remaining names in first-listed
-    order. scripts/lib/agent_backends.sh applies the same rules on the
+    order. bin/lib/agent_backends.sh applies the same rules on the
     install side; the parity test keeps them in step.
 
     Raises ConfigError for a name outside _ACP_BACKEND_VALUES.
@@ -223,7 +223,7 @@ def _validate_caddy_tls_mode(value: str, default: str = "off") -> str:
 def is_loopback(host: str) -> bool:
     """True for an unset host, ``localhost``, ``::1`` and ``127.0.0.0/8``.
 
-    Mirrors ``is_loopback`` in scripts/lib/yaml_config.py, which install.sh uses
+    Mirrors ``is_loopback`` in bin/lib/yaml_config.py, which install.sh uses
     for the same check, so install time and transport startup agree.
     """
     host = (host or "").strip()

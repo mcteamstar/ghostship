@@ -4,7 +4,7 @@ HOST is the address ga-portal publishes on; the transport always listens on
 0.0.0.0 inside its container. The API key is network.api_key (key / unset /
 false opt-out), resolved as --api-key > YAML > saved --api-key.
 
-* **Behavioural** — source ``scripts/lib/portal_host.sh`` in a real ``bash``
+* **Behavioural** — source ``bin/lib/portal_host.sh`` in a real ``bash``
   subprocess and drive its functions (skipped when bash is unavailable).
 * **Rendered** — render install.sh's compose.yml heredoc with bash and assert
   on the result.
@@ -22,9 +22,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
-START_SH = REPO_ROOT / "scripts" / "start.sh"
-PORTAL_LIB = REPO_ROOT / "scripts" / "lib" / "portal_host.sh"
+INSTALL_SH = REPO_ROOT / "bin" / "install.sh"
+START_SH = REPO_ROOT / "bin" / "start.sh"
+PORTAL_LIB = REPO_ROOT / "bin" / "lib" / "portal_host.sh"
 
 BASH = shutil.which("bash")
 needs_bash = pytest.mark.skipif(not BASH, reason="bash not available")

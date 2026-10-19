@@ -40,7 +40,7 @@ class TestCmdUpgradeSkills(unittest.TestCase):
         """Return a mock install.sh path that exists."""
         mock_path = MagicMock(spec=pathlib.Path)
         mock_path.exists.return_value = True
-        mock_path.__str__ = lambda self: "/fake/scripts/install.sh"
+        mock_path.__str__ = lambda self: "/fake/bin/install.sh"
         return mock_path
 
     def test_skills_flag_runs_install_then_setup_on_success(self):
@@ -51,7 +51,7 @@ class TestCmdUpgradeSkills(unittest.TestCase):
             fake_dir = MagicMock(spec=pathlib.Path)
             install_script = MagicMock(spec=pathlib.Path)
             install_script.exists.return_value = True
-            install_script.__str__ = lambda self: "/fake/scripts/install.sh"
+            install_script.__str__ = lambda self: "/fake/bin/install.sh"
             fake_dir.__truediv__ = lambda self, other: install_script
             mock_dir.return_value = fake_dir
             mock_subprocess.run.return_value = MagicMock(returncode=0)
@@ -69,7 +69,7 @@ class TestCmdUpgradeSkills(unittest.TestCase):
             fake_dir = MagicMock(spec=pathlib.Path)
             install_script = MagicMock(spec=pathlib.Path)
             install_script.exists.return_value = True
-            install_script.__str__ = lambda self: "/fake/scripts/install.sh"
+            install_script.__str__ = lambda self: "/fake/bin/install.sh"
             fake_dir.__truediv__ = lambda self, other: install_script
             mock_dir.return_value = fake_dir
             mock_subprocess.run.return_value = MagicMock(returncode=1)
@@ -87,7 +87,7 @@ class TestCmdUpgradeSkills(unittest.TestCase):
             fake_dir = MagicMock(spec=pathlib.Path)
             install_script = MagicMock(spec=pathlib.Path)
             install_script.exists.return_value = True
-            install_script.__str__ = lambda self: "/fake/scripts/install.sh"
+            install_script.__str__ = lambda self: "/fake/bin/install.sh"
             fake_dir.__truediv__ = lambda self, other: install_script
             mock_dir.return_value = fake_dir
             mock_subprocess.run.return_value = MagicMock(returncode=0)
@@ -106,7 +106,7 @@ class TestCmdUpgradeSkills(unittest.TestCase):
                 gs.cmd_upgrade(["--port", "9999"])
             except SystemExit:
                 pass  # execvp would replace the process; mock raises nothing
-        mock_exec.assert_called_once_with("scripts/install.sh", ["--port", "9999"])
+        mock_exec.assert_called_once_with("bin/install.sh", ["--port", "9999"])
 
     def test_help_flag_exits_0(self):
         out = io.StringIO()

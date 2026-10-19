@@ -312,7 +312,7 @@ The install then proceeds with the migrated file. To roll back, rename
 
 ## Client-only install
 
-`scripts/install.sh --client-only` wires the `ghostship` CLI and agent harnesses (kiro-cli, Claude Code, opencode) to an already-running transport — typically a shared remote academy — without any container infrastructure. In this mode `install.sh` skips Podman prerequisites, machine/network setup, image builds, and `compose up`; it installs the `~/.local/bin/ghostship` symlink and calls `ghostship setup` to register MCP entries and skill symlinks for every detected agent client.
+`bin/install.sh --client-only` wires the `ghostship` CLI and agent harnesses (kiro-cli, Claude Code, opencode) to an already-running transport — typically a shared remote academy — without any container infrastructure. In this mode `install.sh` skips Podman prerequisites, machine/network setup, image builds, and `compose up`; it installs the `~/.local/bin/ghostship` symlink and calls `ghostship setup` to register MCP entries and skill symlinks for every detected agent client.
 
 ```bash
 ./install.sh --client-only --url https://academy.example.com/mcp

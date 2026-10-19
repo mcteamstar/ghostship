@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-UNINSTALL_SH = REPO_ROOT / "scripts" / "uninstall.sh"
+UNINSTALL_SH = REPO_ROOT / "bin" / "uninstall.sh"
 
 OBSOLETE_SECRET_NAMES = (
     "ga-crew-anthropic-api-key",

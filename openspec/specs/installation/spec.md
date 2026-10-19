@@ -371,30 +371,30 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 - **THEN** `podman compose down` stops and removes the container cleanly
 
 ### Requirement: Shell scripts reorganised under scripts/
-`start.sh` and `uninstall.sh` SHALL be located at `scripts/start.sh` and `scripts/uninstall.sh` respectively. `install.sh` at the repo root SHALL remain as a shim that delegates to `scripts/install.sh` with all arguments forwarded, preserving backward compatibility for existing workflows. The shim SHALL forward `--client-only` and all other flags unchanged.
+`start.sh` and `uninstall.sh` SHALL be located at `bin/start.sh` and `bin/uninstall.sh` respectively. `install.sh` at the repo root SHALL remain as a shim that delegates to `bin/install.sh` with all arguments forwarded, preserving backward compatibility for existing workflows. The shim SHALL forward `--client-only` and all other flags unchanged.
 
 #### Scenario: start.sh and uninstall.sh in scripts/
 - **WHEN** a user clones the repository
-- **THEN** `scripts/start.sh` and `scripts/uninstall.sh` exist and are executable, and no `start.sh` or `uninstall.sh` exist at the repo root
+- **THEN** `bin/start.sh` and `bin/uninstall.sh` exist and are executable, and no `start.sh` or `uninstall.sh` exist at the repo root
 
 #### Scenario: install.sh shim at root
 - **WHEN** `./install.sh [flags]` is invoked
-- **THEN** `scripts/install.sh [flags]` runs with all arguments forwarded and the exit code is preserved
+- **THEN** `bin/install.sh [flags]` runs with all arguments forwarded and the exit code is preserved
 
 #### Scenario: install.sh shim forwards --client-only
 - **WHEN** `./install.sh --client-only [flags]` is invoked
-- **THEN** `scripts/install.sh --client-only [flags]` runs with all arguments forwarded and the exit code is preserved
+- **THEN** `bin/install.sh --client-only [flags]` runs with all arguments forwarded and the exit code is preserved
 
 ### Requirement: ghostship CLI available on PATH after install
-`scripts/install.sh` SHALL make the `ghostship` CLI script available on `PATH` after a successful run.
+`bin/install.sh` SHALL make the `ghostship` CLI script available on `PATH` after a successful run.
 
 #### Scenario: ~/.local/bin present and on PATH
-- **WHEN** `scripts/install.sh` completes successfully and `~/.local/bin` exists and is on `PATH`
+- **WHEN** `bin/install.sh` completes successfully and `~/.local/bin` exists and is on `PATH`
 - **THEN** `~/.local/bin/ghostship` is a symlink pointing to the `ghostship` script in the repo
 
 #### Scenario: ~/.local/bin not on PATH
-- **WHEN** `scripts/install.sh` completes and `~/.local/bin` is not on `PATH`
-- **THEN** `scripts/install.sh` prints a clear one-line message instructing the user to add `~/.local/bin` to their `PATH`
+- **WHEN** `bin/install.sh` completes and `~/.local/bin` is not on `PATH`
+- **THEN** `bin/install.sh` prints a clear one-line message instructing the user to add `~/.local/bin` to their `PATH`
 
 ### Requirement: podman-compose required as a prerequisite
 The system SHALL require `podman-compose` to be installed before `install.sh` runs. `install.sh` SHALL check for `podman-compose` specifically and exit with a clear error and install instructions if it is not found. `docker-compose` and `docker compose` are NOT acceptable alternatives because Ghostship's generated `compose.yml` uses external Podman secrets that Docker Compose does not support.

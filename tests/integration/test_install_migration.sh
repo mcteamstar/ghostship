@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Integration test: scripts/install.sh auto-migration ghostship.conf → .yaml.
+# Integration test: bin/install.sh auto-migration ghostship.conf → .yaml.
 #
 # TRN-253 — when install.sh finds config/ghostship.conf with no
 # config/ghostship.yaml, it migrates the conf to YAML (via
-# scripts/lib/yaml_config.py), writes config/ghostship.yaml holding only the
+# bin/lib/yaml_config.py), writes config/ghostship.yaml holding only the
 # non-default values, renames the old file to config/ghostship.conf.bak, and
 # proceeds with the install.
 #
@@ -30,12 +30,13 @@ source "$SCRIPT_DIR/helpers/sandbox.sh"
 stage_ghostship_tree() {
   local conf_body="$1"
   local tree="${SANDBOX_DIR}/ghostship"
-  mkdir -p "${tree}/scripts/lib" "${tree}/config"
-  cp "${REPO_DIR}/scripts/install.sh"       "${tree}/scripts/install.sh"
-  cp "${REPO_DIR}/scripts/lib/yaml_config.py" "${tree}/scripts/lib/yaml_config.py"
-  cp "${REPO_DIR}/scripts/lib/agent_backends.sh" "${tree}/scripts/lib/agent_backends.sh"
-  cp "${REPO_DIR}/scripts/lib/portal_host.sh" "${tree}/scripts/lib/portal_host.sh"
-  chmod +x "${tree}/scripts/install.sh"
+  mkdir -p "${tree}/bin/lib" "${tree}/config"
+  cp "${REPO_DIR}/bin/install.sh"       "${tree}/bin/install.sh"
+  cp "${REPO_DIR}/bin/lib/yaml_config.py" "${tree}/bin/lib/yaml_config.py"
+  cp "${REPO_DIR}/bin/lib/agent_backends.sh" "${tree}/bin/lib/agent_backends.sh"
+  cp "${REPO_DIR}/bin/lib/portal_host.sh" "${tree}/bin/lib/portal_host.sh"
+  cp -r "${REPO_DIR}/bin/lib/vendor" "${tree}/bin/lib/vendor"
+  chmod +x "${tree}/bin/install.sh"
   printf '%s' "$conf_body" > "${tree}/config/ghostship.conf"
   # Stub ghostship CLI — the client-only path calls "$GHOSTSHIP_DIR/ghostship setup".
   cat > "${tree}/ghostship" <<'STUB'
@@ -56,7 +57,7 @@ TREE="$(stage_ghostship_tree 'PORT=9000
 GA_MAX_ACTIVE_CREWS=6
 KIRO_IDENTITY_PROVIDER="https://idp.example.com"
 ')"
-sandbox_run_script "${TREE}/scripts/install.sh" --client-only --url "$URL"
+sandbox_run_script "${TREE}/bin/install.sh" --client-only --url "$URL"
 
 if [[ "$SANDBOX_STATUS" -eq 0 ]]; then
   pass "install completed (exit 0) after migration"
@@ -104,7 +105,7 @@ TREE="$(stage_ghostship_tree 'PORT=1234
 ')"
 # Pre-create a yaml so migration must NOT fire.
 printf 'network:\n  port: 7777\n' > "${TREE}/config/ghostship.yaml"
-sandbox_run_script "${TREE}/scripts/install.sh" --client-only --url "$URL"
+sandbox_run_script "${TREE}/bin/install.sh" --client-only --url "$URL"
 
 if [[ -f "${TREE}/config/ghostship.conf" && ! -f "${TREE}/config/ghostship.conf.bak" ]]; then
   pass "existing conf left untouched when yaml already present"
@@ -119,7 +120,7 @@ echo "--- Test 3: unknown conf key warned during migration ---"
 sandbox_setup
 TREE="$(stage_ghostship_tree 'SOME_LEGACY_KEY=value123
 ')"
-sandbox_run_script "${TREE}/scripts/install.sh" --client-only --url "$URL"
+sandbox_run_script "${TREE}/bin/install.sh" --client-only --url "$URL"
 if sandbox_output_contains "SOME_LEGACY_KEY"; then
   pass "unknown conf key reported during migration"
 else

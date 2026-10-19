@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Integration test: scripts/uninstall.sh credential + machine preservation.
+# Integration test: bin/uninstall.sh credential + machine preservation.
 #
 # trn-212-test-coverage-gaps A.3/A.4 — rewritten to invoke the REAL
-# scripts/uninstall.sh --yes inside a sandbox (helpers/sandbox.sh) instead of a
+# bin/uninstall.sh --yes inside a sandbox (helpers/sandbox.sh) instead of a
 # `simulate_linux_teardown` reimplementation. Assertions are made on actual
 # filesystem state after the real script runs, so a regression that deleted
 # credentials would turn this test red (the old reimplementation would not).
@@ -19,7 +19,7 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-UNINSTALL="$REPO_DIR/scripts/uninstall.sh"
+UNINSTALL="$REPO_DIR/bin/uninstall.sh"
 MACHINE="ghost-academy"   # install.sh/uninstall.sh default GA_MACHINE_NAME
 
 # shellcheck source=helpers/sandbox.sh

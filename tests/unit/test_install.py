@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
+INSTALL_SH = REPO_ROOT / "bin" / "install.sh"
 
 # The four backend credential secrets that the installer used to manage.
 CREDENTIAL_SECRET_NAMES = (

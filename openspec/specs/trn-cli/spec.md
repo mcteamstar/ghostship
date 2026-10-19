@@ -22,7 +22,7 @@ The system SHALL provide an executable `ghostship` script at the repository root
 - **THEN** the version string from the `VERSION` file in the repo root is printed and the process exits 0
 
 ### Requirement: Transport lifecycle subcommands
-The system SHALL provide subcommands that delegate to the shell scripts under `scripts/`. Each subcommand SHALL forward unrecognised flags to the underlying script unchanged. `ghostship install --client-only [flags]` SHALL forward all flags including `--client-only`, `--url`, and `--api-key` to `scripts/install.sh`.
+The system SHALL provide subcommands that delegate to the shell scripts under `scripts/`. Each subcommand SHALL forward unrecognised flags to the underlying script unchanged. `ghostship install --client-only [flags]` SHALL forward all flags including `--client-only`, `--url`, and `--api-key` to `bin/install.sh`.
 
 `ghostship stop` SHALL stop the `ga-transport` container, the `ga-portal` container, and the underlying Podman machine or dedicated service, in that order. On macOS with a dedicated machine (`GA_DEDICATED_MACHINE` not `false`), stopping the machine is `podman machine stop <GA_MACHINE_NAME>`. On Linux with a dedicated service, stopping is `systemctl --user stop podman-<GA_MACHINE_NAME>.service` (or the equivalent socket unit). On Linux without a dedicated service, the default Podman socket service is stopped. All crew containers and volumes are preserved across the stop; `ghostship start` restores the machine and transport, and crews restart transparently on next use via `_ensure_crew_running`. If the machine is already stopped or not found, `ghostship stop` SHALL exit 0 with a diagnostic message rather than failing.
 
@@ -30,11 +30,11 @@ The system SHALL provide subcommands that delegate to the shell scripts under `s
 
 #### Scenario: ghostship install
 - **WHEN** `ghostship install [flags]` is invoked
-- **THEN** `scripts/install.sh [flags]` runs in the ghostship directory, inheriting stdio, and the exit code is forwarded
+- **THEN** `bin/install.sh [flags]` runs in the ghostship directory, inheriting stdio, and the exit code is forwarded
 
 #### Scenario: ghostship start
 - **WHEN** `ghostship start [flags]` is invoked
-- **THEN** `scripts/start.sh [flags]` runs in the ghostship directory and exit code is forwarded
+- **THEN** `bin/start.sh [flags]` runs in the ghostship directory and exit code is forwarded
 
 #### Scenario: ghostship stop
 - **WHEN** `ghostship stop` is invoked on macOS with a dedicated machine
@@ -58,23 +58,23 @@ The system SHALL provide subcommands that delegate to the shell scripts under `s
 
 #### Scenario: ghostship uninstall
 - **WHEN** `ghostship uninstall [flags]` is invoked
-- **THEN** `scripts/uninstall.sh [flags]` runs and exit code is forwarded
+- **THEN** `bin/uninstall.sh [flags]` runs and exit code is forwarded
 
 #### Scenario: ghostship upgrade without --skills
 - **WHEN** `ghostship upgrade [flags]` is invoked without `--skills`
-- **THEN** `scripts/install.sh [flags]` runs (which unconditionally rebuilds images and recreates the transport container) and exit code is forwarded; no skill refresh is performed
+- **THEN** `bin/install.sh [flags]` runs (which unconditionally rebuilds images and recreates the transport container) and exit code is forwarded; no skill refresh is performed
 
 #### Scenario: ghostship upgrade with --skills
 - **WHEN** `ghostship upgrade --skills` is invoked and the transport rebuild succeeds
-- **THEN** `scripts/install.sh` runs, then `ghostship setup` runs for all detected agent clients, and the combined exit code is forwarded
+- **THEN** `bin/install.sh` runs, then `ghostship setup` runs for all detected agent clients, and the combined exit code is forwarded
 
 #### Scenario: ghostship upgrade --skills — install fails
-- **WHEN** `ghostship upgrade --skills` is invoked and `scripts/install.sh` exits non-zero
+- **WHEN** `ghostship upgrade --skills` is invoked and `bin/install.sh` exits non-zero
 - **THEN** `ghostship setup` is NOT run and the non-zero exit code is forwarded
 
 #### Scenario: ghostship install --client-only forwarded
 - **WHEN** `ghostship install --client-only --url https://remote.example.com/mcp --api-key secret` is invoked
-- **THEN** `scripts/install.sh --client-only --url https://remote.example.com/mcp --api-key secret` runs and the exit code is forwarded
+- **THEN** `bin/install.sh --client-only --url https://remote.example.com/mcp --api-key secret` runs and the exit code is forwarded
 
 ### Requirement: Skills subcommand
 The system SHALL provide a `ghostship skills` subcommand that is a direct alias for `ghostship setup`. It SHALL accept the same flags (`--agent`, `--url`, `--api-key`) and behave identically. It exists to give a discoverable, intent-clear entry point for "refresh my skills" without implying a full reinstall.
@@ -209,11 +209,11 @@ All verbs SHALL accept:
 The system SHALL ensure the `ghostship` command is accessible on `PATH` after a successful install run.
 
 #### Scenario: install.sh symlinks ghostship
-- **WHEN** `scripts/install.sh` completes successfully and `~/.local/bin` is on `PATH`
+- **WHEN** `bin/install.sh` completes successfully and `~/.local/bin` is on `PATH`
 - **THEN** a symlink at `~/.local/bin/ghostship` points to the `ghostship` script in the repo
 
 #### Scenario: ~/.local/bin not on PATH
-- **WHEN** `scripts/install.sh` completes and `~/.local/bin` is not on `PATH`
+- **WHEN** `bin/install.sh` completes and `~/.local/bin` is not on `PATH`
 - **THEN** a one-line message is printed explaining how to add it to `PATH`
 
 ### Requirement: Auth login offers per-backend methods interactively

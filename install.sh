@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec "$(dirname "$0")/scripts/install.sh" "$@"
+exec "$(dirname "$0")/bin/install.sh" "$@"

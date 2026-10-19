@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration test: scripts/install.sh wizard unconditional ghostship setup (TRN-255).
+# Integration test: bin/install.sh wizard unconditional ghostship setup (TRN-255).
 #
 # Verifies that the interactive-mode harness-registration block no longer
 # prompts the operator ("Register MCP server with detected harnesses?") and
@@ -19,7 +19,7 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INSTALL="${REPO_DIR}/scripts/install.sh"
+INSTALL="${REPO_DIR}/bin/install.sh"
 
 # shellcheck source=helpers/sandbox.sh
 source "$SCRIPT_DIR/helpers/sandbox.sh"
@@ -60,7 +60,7 @@ fi
 
 # ── Test 4: bash -n syntax check ─────────────────────────────────────────────
 echo ""
-echo "--- Test 4: bash -n scripts/install.sh ---"
+echo "--- Test 4: bash -n bin/install.sh ---"
 sandbox_setup
 if bash -n "$INSTALL" 2>/dev/null; then
   pass "install.sh syntax valid"

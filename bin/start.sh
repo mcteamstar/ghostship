@@ -25,36 +25,13 @@ done
 # ── Python / YAML config resolution (TRN-253) ────────────────────────────────
 # start.sh needs only three config vars: GA_MACHINE_NAME, GA_DEDICATED_MACHINE,
 # PORT. Resolve them the same way install.sh does — via yaml_config.py in a
-# dedicated venv so PyYAML is always available regardless of system Python state.
+# PyYAML is vendored at bin/lib/vendor/yaml — no venv, no pip, no network needed.
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Error: python3 is required to parse the YAML config." >&2; exit 1
 fi
 
-_YAML_CONFIG_HELPER="${GHOSTSHIP_DIR}/scripts/lib/yaml_config.py"
-_YAML_VENV="${TMPDIR:-/tmp}/ghostship-yaml-venv"
-if [[ ! -x "${_YAML_VENV}/bin/python3" ]] \
-   || ! "${_YAML_VENV}/bin/python3" -c "import yaml; yaml.safe_load("{}")" 2>/dev/null; then
-  echo "  Bootstrapping yaml config venv (one-time, installs PyYAML)..." >&2
-  [[ -d "${_YAML_VENV}" ]] || python3 -m venv "${_YAML_VENV}"
-  if command -v uv >/dev/null 2>&1; then
-    uv pip install --quiet --python "${_YAML_VENV}/bin/python3" "pyyaml>=6.0,<7.0" || {
-      echo "Error: failed to install PyYAML into yaml config venv." >&2; exit 1
-    }
-  else
-    "${_YAML_VENV}/bin/python3" -m ensurepip --upgrade --quiet 2>/dev/null || true
-    if ! "${_YAML_VENV}/bin/python3" -m pip install --quiet "pyyaml>=6.0,<7.0" 2>/dev/null; then
-      _GETPIP="$(mktemp /tmp/get-pip.XXXXXX.py)"
-      if command -v curl >/dev/null 2>&1; then curl -sSL https://bootstrap.pypa.io/get-pip.py -o "$_GETPIP"
-      else wget -qO "$_GETPIP" https://bootstrap.pypa.io/get-pip.py; fi
-      "${_YAML_VENV}/bin/python3" "$_GETPIP" --quiet; rm -f "$_GETPIP"
-      "${_YAML_VENV}/bin/python3" -m pip install --quiet "pyyaml>=6.0,<7.0" || {
-        echo "Error: failed to install PyYAML into yaml config venv." >&2; exit 1
-      }
-    fi
-  fi
-fi
-_YAML_PYTHON="${_YAML_VENV}/bin/python3"
+_YAML_CONFIG_HELPER="${GHOSTSHIP_DIR}/bin/lib/yaml_config.py"
 
 _REPO_YAML="${GHOSTSHIP_DIR}/config/ghostship.yaml"
 if [[ "$OS" == "Darwin" ]]; then
@@ -64,11 +41,11 @@ else
 fi
 
 if [[ -n "$_CONFIG_FLAG" ]]; then
-  _RESOLVED="$("$_YAML_PYTHON" "$_YAML_CONFIG_HELPER" resolve --config "$_CONFIG_FLAG")" || {
+  _RESOLVED="$(PYTHONPATH="${GHOSTSHIP_DIR}/bin/lib/vendor" python3 "$_YAML_CONFIG_HELPER" resolve --config "$_CONFIG_FLAG")" || {
     echo "Error: failed to parse config file: $_CONFIG_FLAG" >&2; exit 1
   }
 else
-  _RESOLVED="$("$_YAML_PYTHON" "$_YAML_CONFIG_HELPER" resolve --repo "$_REPO_YAML" --xdg "$_XDG_YAML")" || {
+  _RESOLVED="$(PYTHONPATH="${GHOSTSHIP_DIR}/bin/lib/vendor" python3 "$_YAML_CONFIG_HELPER" resolve --repo "$_REPO_YAML" --xdg "$_XDG_YAML")" || {
     echo "Error: failed to resolve YAML config." >&2; exit 1
   }
 fi
@@ -182,7 +159,7 @@ eval "${_COMPOSE_ENV} podman compose --project-name ga -f \"${_COMPOSE_FILE}\" u
 # Probe /health through ga-portal at the address install.sh published it on
 # (GA_PORTAL_HOST in compose.yml) — the path every client uses.
 # shellcheck source=lib/portal_host.sh
-source "${GHOSTSHIP_DIR}/scripts/lib/portal_host.sh"
+source "${GHOSTSHIP_DIR}/bin/lib/portal_host.sh"
 _PORTAL_HOST="$(sed -n 's/^ *GA_PORTAL_HOST: "\(.*\)"$/\1/p' "${_COMPOSE_FILE}" | head -n 1)"
 _PORTAL_TLS="$(sed -n 's/^ *GA_PORTAL_TLS_MODE: "\(.*\)"$/\1/p' "${_COMPOSE_FILE}" | head -n 1)"
 _scheme="http"
