@@ -104,9 +104,9 @@ except ModuleNotFoundError:
     from transport.podman import _get_podman  # local dev
 
 try:
-    from config import inert_backend_settings  # container: flat /app/
+    from config import inert_backend_settings, _ACP_BACKEND_VALUES  # container: flat /app/
 except ImportError:
-    from transport.config import inert_backend_settings  # local dev
+    from transport.config import inert_backend_settings, _ACP_BACKEND_VALUES  # local dev
 
 try:
     from credentials import CredentialStore  # container: flat /app/
@@ -766,11 +766,7 @@ def _warn_inert_backend_settings() -> None:
     rather than Podman-secret-backed module-level globals.
     """
     status = _cred_store.status()
-    enabled = frozenset(
-        name.strip().lower()
-        for name in cfg.ga_crew_agent.split(",")
-        if name.strip()
-    )
+    enabled = frozenset(_enabled_backends())
     # Per-backend BASE_URL settings that belong only to non-kiro backends.
     _BASE_URL_SETTINGS: dict[str, str] = {
         "claude": "ANTHROPIC_BASE_URL",
@@ -804,13 +800,16 @@ def _warn_inert_backend_settings() -> None:
 
 
 def _enabled_backends() -> tuple[str, ...]:
-    """The enabled backends in order: kiro (always — bundled in every crew
-    image), then the others listed in GA_CREW_AGENT."""
-    names = ["kiro"]
+    """The enabled backends in GA_CREW_AGENT order — so the first entry is the
+    transport default — with kiro (always enabled; bundled in every crew image)
+    appended when not listed."""
+    names: list[str] = []
     for name in cfg.ga_crew_agent.split(","):
         name = name.strip().lower()
         if name and name not in names:
             names.append(name)
+    if "kiro" not in names:
+        names.append("kiro")
     return tuple(names)
 
 
@@ -821,9 +820,14 @@ def _backend_enabled(backend: str) -> bool:
 
 
 def _backend_not_enabled_message(backend: str) -> str:
+    if backend not in _ACP_BACKEND_VALUES:
+        return (
+            f"'{backend}' is not a known backend. Valid backends: "
+            f"{', '.join(sorted(_ACP_BACKEND_VALUES))}."
+        )
     return (
         f"The {backend} backend is not enabled on this transport. Add {backend} to "
-        f"GA_CREW_AGENT in ghostship.conf, then re-run `ghostship install`."
+        f"backends.default in ghostship.yaml, then re-run `ghostship install`."
     )
 
 

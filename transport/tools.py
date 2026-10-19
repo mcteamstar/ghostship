@@ -569,7 +569,7 @@ def launch(
     # TRN-259: resolve the crew's backend — the caller's choice, else the
     # transport default — and require it to be enabled (its toolchain is only
     # in the crew image when it is). Everything below keys on this value.
-    backend = (backend or GA_CREW_ACP_BACKEND).strip().lower()
+    backend = (backend or "").strip().lower() or GA_CREW_ACP_BACKEND
     if not login._backend_enabled(backend):
         return {
             "error": "backend_not_enabled",

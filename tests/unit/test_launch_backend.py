@@ -156,6 +156,10 @@ class TestBackendSelection(_LaunchHarness):
         self.launch(backend="KIRO")
         self.assertEqual(self.finish_calls[-1]["backend"], "kiro")
 
+    def test_blank_uses_default(self):
+        self.launch(backend="  ")
+        self.assertEqual(self.finish_calls[-1]["backend"], "claude")
+
     def test_kiro_always_enabled(self):
         # GA_CREW_AGENT is "claude" only; kiro is still launchable.
         self.assertNotIn("error", self.launch(backend="kiro"))
@@ -167,7 +171,7 @@ class TestBackendRejected(_LaunchHarness):
         result = self.launch(backend=backend)
         self.assertEqual(result["error"], "backend_not_enabled")
         self.assertEqual(result["backend"], backend)
-        self.assertEqual(result["enabled"], ["kiro", "claude"])
+        self.assertEqual(result["enabled"], ["claude", "kiro"])
         self.assertFalse(self.podman.was_called("container_create"))
         self.assertFalse(self.podman.was_called("volume_create"))
         self.assertEqual(self.crews, {})
@@ -175,9 +179,14 @@ class TestBackendRejected(_LaunchHarness):
 
     def test_disabled_backend(self):
         self._assert_rejected("codex")
+        result = self.launch(backend="codex")
+        self.assertIn("backends.default in ghostship.yaml", result["instructions"])
 
     def test_unknown_backend(self):
         self._assert_rejected("gemini")
+        result = self.launch(backend="gemini")
+        self.assertIn("not a known backend", result["instructions"])
+        self.assertNotIn("backends.default", result["instructions"])
 
 
 class TestAuthFollowsBackend(_LaunchHarness):

@@ -5,7 +5,7 @@
 ### Choose the backend per crew (TRN-259)
 
 - **`launch` takes an optional `backend` argument** (`"kiro"`, `"claude"` or `"codex"`). Omitted, the crew uses the transport default (first entry of `backends.default`) as before. Different crews can now run different backends on one transport, using each backend's stored login. A backend that isn't enabled (kiro always is; others when listed in `backends.default`) returns `backend_not_enabled` with the enabled list and creates nothing.
-- **Fix: restarts keep a crew's backend.** Reconcile and recovery restarts used to re-patch the crew config with the *current* default backend, so changing `backends.default` and reinstalling silently switched existing crews to the new runtime on their next restart. Restarts now use the crew's recorded `acp_backend` (missing → `kiro`).
+- **Fix: restarts keep a crew's backend.** Reconcile and recovery restarts used to re-patch the crew config with the *current* default backend, so changing `backends.default` and reinstalling silently switched existing crews to the new runtime on their next restart. Restarts now use the crew's recorded `acp_backend` (missing → `kiro`). A kiro crew that the old bug already restarted under a claude/codex default can keep that runtime in its crew config (the patch only merges keys in); nuke and relaunch it to reset.
 
 ### HOST is ga-portal's address only; network.api_key is the one auth setting (portal-only-host)
 
