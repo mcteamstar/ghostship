@@ -308,7 +308,7 @@ fi
 # across installs — only created once per machine.
 _YAML_VENV="${TMPDIR:-/tmp}/ghostship-yaml-venv"
 if [[ ! -x "${_YAML_VENV}/bin/python3" ]] \
-   || ! "${_YAML_VENV}/bin/python3" -c "import yaml" 2>/dev/null; then
+   || ! "${_YAML_VENV}/bin/python3" -c "import yaml; yaml.safe_load("{}")" 2>/dev/null; then
   echo "  Bootstrapping yaml config venv (one-time, installs PyYAML)..." >&2
   [[ -d "${_YAML_VENV}" ]] || python3 -m venv "${_YAML_VENV}"
   if command -v uv >/dev/null 2>&1; then

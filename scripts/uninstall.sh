@@ -48,11 +48,27 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: config file does not exist or is not readable: $CONFIG_FILE" >&2
     exit 1
   fi
-  # Same trust assumption as install.sh: this sources arbitrary shell code
-  # from the path the caller passed. Do NOT pass an untrusted path.
-  # shellcheck source=/dev/null
-  source "$CONFIG_FILE"
-  echo "✓ Sourced config file: $CONFIG_FILE"
+  # Resolve via yaml_config.py — same mechanism as install.sh (TRN-253).
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 is required to parse the YAML config." >&2; exit 1
+  fi
+  _YAML_HELPER="$(dirname "${BASH_SOURCE[0]}")/lib/yaml_config.py"
+  _YAML_VENV="${TMPDIR:-/tmp}/ghostship-yaml-venv"
+  if [[ ! -x "${_YAML_VENV}/bin/python3" ]] \
+     || ! "${_YAML_VENV}/bin/python3" -c "import yaml; yaml.safe_load("{}")" 2>/dev/null; then
+    python3 -m venv "${_YAML_VENV}" 2>/dev/null || true
+    if command -v uv >/dev/null 2>&1; then
+      uv pip install --quiet --python "${_YAML_VENV}/bin/python3" "pyyaml>=6.0,<7.0" 2>/dev/null || true
+    else
+      "${_YAML_VENV}/bin/python3" -m ensurepip --quiet 2>/dev/null || true
+      "${_YAML_VENV}/bin/python3" -m pip install --quiet "pyyaml>=6.0,<7.0" 2>/dev/null || true
+    fi
+  fi
+  _YAML_PYTHON="${_YAML_VENV}/bin/python3"
+  _RESOLVED="$("$_YAML_PYTHON" "$_YAML_HELPER" resolve --config "$CONFIG_FILE")" || {
+    echo "Error: failed to parse config file: $CONFIG_FILE" >&2; exit 1
+  }
+  eval "$_RESOLVED"
 fi
 
 # ── Detect dedicated machine/instance ─────────────────────────────────────────

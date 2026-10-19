@@ -22,72 +22,57 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Config discovery ──────────────────────────────────────────────────────────
-_load_config() {
-  local cfg="$1"
-  if [[ ! -f "$cfg" ]]; then
-    echo "Config file not found: $cfg" >&2; exit 1
-  fi
-  # shellcheck source=/dev/null
-  source "$cfg"
-  echo "✓ Using config: $cfg"
-}
+# ── Python / YAML config resolution (TRN-253) ────────────────────────────────
+# start.sh needs only three config vars: GA_MACHINE_NAME, GA_DEDICATED_MACHINE,
+# PORT. Resolve them the same way install.sh does — via yaml_config.py in a
+# dedicated venv so PyYAML is always available regardless of system Python state.
 
-if [[ -n "$_CONFIG_FLAG" ]]; then
-  _load_config "$_CONFIG_FLAG"
-else
-  # Scan candidate locations in preference order; use first match.
-  _CANDIDATES=()
-  for _f in \
-    "${GHOSTSHIP_DIR}/ghostship.conf" \
-    "${GHOSTSHIP_DIR}/config/ghostship.conf"
-  do
-    [[ -f "$_f" ]] && _CANDIDATES+=("$_f") || true
-  done
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "Error: python3 is required to parse the YAML config." >&2; exit 1
+fi
 
-  # Deduplicate by real path
-  declare -A _seen=()
-  _UNIQUE=()
-  for _f in "${_CANDIDATES[@]}"; do
-    _real="$(realpath "$_f" 2>/dev/null || echo "$_f")"
-    if [[ -z "${_seen[$_real]:-}" ]]; then
-      _seen["$_real"]=1
-      _UNIQUE+=("$_f")
-    fi
-  done
-
-  if [[ ${#_UNIQUE[@]} -eq 0 ]]; then
-    if [[ -t 0 ]]; then
-      echo "No ghostship.conf found in:"
-      echo "  ${GHOSTSHIP_DIR}/ghostship.conf"
-      echo "  ${GHOSTSHIP_DIR}/config/ghostship.conf"
-      echo ""
-      read -rp "Path to config (blank = use defaults): " _CONFIG_FLAG
-      [[ -n "$_CONFIG_FLAG" ]] && _load_config "$_CONFIG_FLAG" || echo "  (using built-in defaults)"
-    else
-      echo "No ghostship.conf found — using built-in defaults"
-    fi
-  elif [[ ${#_UNIQUE[@]} -eq 1 ]]; then
-    _load_config "${_UNIQUE[0]}"
+_YAML_CONFIG_HELPER="${GHOSTSHIP_DIR}/scripts/lib/yaml_config.py"
+_YAML_VENV="${TMPDIR:-/tmp}/ghostship-yaml-venv"
+if [[ ! -x "${_YAML_VENV}/bin/python3" ]] \
+   || ! "${_YAML_VENV}/bin/python3" -c "import yaml; yaml.safe_load("{}")" 2>/dev/null; then
+  echo "  Bootstrapping yaml config venv (one-time, installs PyYAML)..." >&2
+  [[ -d "${_YAML_VENV}" ]] || python3 -m venv "${_YAML_VENV}"
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --quiet --python "${_YAML_VENV}/bin/python3" "pyyaml>=6.0,<7.0" || {
+      echo "Error: failed to install PyYAML into yaml config venv." >&2; exit 1
+    }
   else
-    echo "Multiple ghostship configs found:"
-    for i in "${!_UNIQUE[@]}"; do
-      echo "  $((i+1))) ${_UNIQUE[$i]}"
-    done
-    if [[ -t 0 ]]; then
-      read -rp "Choose [1-${#_UNIQUE[@]}] or enter a path: " _choice
-      if [[ "$_choice" =~ ^[0-9]+$ ]] && (( _choice >= 1 && _choice <= ${#_UNIQUE[@]} )); then
-        _load_config "${_UNIQUE[$((_choice-1))]}"
-      elif [[ -n "$_choice" ]]; then
-        _load_config "$_choice"
-      else
-        _load_config "${_UNIQUE[0]}"
-      fi
-    else
-      _load_config "${_UNIQUE[0]}"
+    "${_YAML_VENV}/bin/python3" -m ensurepip --upgrade --quiet 2>/dev/null || true
+    if ! "${_YAML_VENV}/bin/python3" -m pip install --quiet "pyyaml>=6.0,<7.0" 2>/dev/null; then
+      _GETPIP="$(mktemp /tmp/get-pip.XXXXXX.py)"
+      if command -v curl >/dev/null 2>&1; then curl -sSL https://bootstrap.pypa.io/get-pip.py -o "$_GETPIP"
+      else wget -qO "$_GETPIP" https://bootstrap.pypa.io/get-pip.py; fi
+      "${_YAML_VENV}/bin/python3" "$_GETPIP" --quiet; rm -f "$_GETPIP"
+      "${_YAML_VENV}/bin/python3" -m pip install --quiet "pyyaml>=6.0,<7.0" || {
+        echo "Error: failed to install PyYAML into yaml config venv." >&2; exit 1
+      }
     fi
   fi
 fi
+_YAML_PYTHON="${_YAML_VENV}/bin/python3"
+
+_REPO_YAML="${GHOSTSHIP_DIR}/config/ghostship.yaml"
+if [[ "$OS" == "Darwin" ]]; then
+  _XDG_YAML="${HOME}/Library/Application Support/ghost-academy/ghostship.yaml"
+else
+  _XDG_YAML="${XDG_CONFIG_HOME:-${HOME}/.config}/ghost-academy/ghostship.yaml"
+fi
+
+if [[ -n "$_CONFIG_FLAG" ]]; then
+  _RESOLVED="$("$_YAML_PYTHON" "$_YAML_CONFIG_HELPER" resolve --config "$_CONFIG_FLAG")" || {
+    echo "Error: failed to parse config file: $_CONFIG_FLAG" >&2; exit 1
+  }
+else
+  _RESOLVED="$("$_YAML_PYTHON" "$_YAML_CONFIG_HELPER" resolve --repo "$_REPO_YAML" --xdg "$_XDG_YAML")" || {
+    echo "Error: failed to resolve YAML config." >&2; exit 1
+  }
+fi
+eval "$_RESOLVED"
 
 # ── Apply flag overrides ──────────────────────────────────────────────────────
 [[ -n "$_MACHINE_FLAG" ]] && GA_MACHINE_NAME="$_MACHINE_FLAG" || true
