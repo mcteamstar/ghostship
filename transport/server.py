@@ -591,7 +591,7 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 
 # _auth_file_path, _read_auth_file, _write_auth_file moved to
 # transport.lifecycle alongside _initiate_login; imported below.
-# KIRO_LICENSE / KIRO_IDENTITY_PROVIDER / KIRO_REGION also moved to lifecycle
+# KIRO_IDENTITY_PROVIDER / KIRO_REGION also moved to lifecycle
 # (they drive only the moved _initiate_login device flow).
 
 # KIRO_API_KEY global removed (TRN-233 task 2.1) — credentials are now resolved

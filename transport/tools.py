@@ -652,7 +652,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                         # Store via credential store (TRN-233 hard break — no legacy file write).
                         _provider = pending.get("provider")
                         _method = "identity-center" if _provider else "builder-id"
-                        _cred_store.put("kiro", _method, auth_b64)
+                        _cred_store.put("kiro", _method, auth_b64, provider=_provider)
                         _nuke_login_container(podman, pending["container"])
                         _poll_consumed = True
                         login.KIRO_FLOW.abort(podman)

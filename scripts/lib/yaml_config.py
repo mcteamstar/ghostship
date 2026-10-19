@@ -108,7 +108,6 @@ DEFAULTS: dict[str, str] = {
     "GA_CREW_AGENT": "kiro",
     "KIRO_IDENTITY_PROVIDER": "",
     "KIRO_REGION": "",
-    "KIRO_LICENSE": "",
     "ANTHROPIC_BASE_URL": "",
     "OPENAI_BASE_URL": "",
     # ── per-backend model control (TRN-257) ──
@@ -186,7 +185,6 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("backends", "default"): "GA_CREW_AGENT",
     ("backends", "kiro", "identity_center", "url"): "KIRO_IDENTITY_PROVIDER",
     ("backends", "kiro", "identity_center", "region"): "KIRO_REGION",
-    ("backends", "kiro", "license"): "KIRO_LICENSE",
     ("backends", "claude", "base_url"): "ANTHROPIC_BASE_URL",
     ("backends", "codex", "base_url"): "OPENAI_BASE_URL",
     # per-backend model control (TRN-257)
@@ -250,6 +248,7 @@ _DROPPED_CONF_KEYS: frozenset[str] = frozenset(
         "GA_CREW_OPENAI_API_KEY",
         "GA_TRANSPORT_SECRET",
         "GA_AGENT_BACKENDS",
+        "KIRO_LICENSE",
     }
 )
 
@@ -299,6 +298,11 @@ _DISCARDED_YAML_PATHS: dict[tuple[str, ...], str] = {
         "across backends with different model namespaces. Use "
         "backends.<backend>.model.override instead (e.g. backends.kiro.model.override). "
         "The value is ignored."
+    ),
+    ("backends", "kiro", "license"): (
+        "backends.kiro.license has been removed — the kiro-cli license flag is "
+        "derived from the login method (identity-center => pro, builder-id => "
+        "free). The value is ignored."
     ),
 }
 

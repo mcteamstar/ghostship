@@ -144,7 +144,6 @@ backends:
     identity_center:
       url: ""
       region: ""
-    license: ""
 
   claude:
     # Per-backend model control for claude crews (see kiro.model above).

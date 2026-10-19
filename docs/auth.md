@@ -9,8 +9,8 @@
 > stored credential — log in again** with `ghostship auth login <backend>` for
 > each enabled backend (the install wizard offers this automatically). Running
 > crews fail to launch until you do; the first `launch` per backend returns a
-> login URL. `backends.kiro.identity_provider` / `.region` / `.license` stay as
-> config — they are the non-secret defaults for the Kiro Identity Center login.
+> login URL. `backends.kiro.identity_center.url` / `.region` stay as config —
+> they are the non-secret defaults for the Kiro Identity Center login.
 
 ## Managing credentials: `ghostship auth`
 
@@ -80,9 +80,9 @@ under `backends.kiro`:
 # config/ghostship.yaml
 backends:
   kiro:
-    identity_provider: "https://identitycenter.amazonaws.com/ssoins-abc123"
-    region: "us-east-1"
-    license: "pro"
+    identity_center:
+      url: "https://identitycenter.amazonaws.com/ssoins-abc123"
+      region: "us-east-1"
 ```
 
 ```bash

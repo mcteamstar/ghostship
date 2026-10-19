@@ -35,7 +35,6 @@ echo "--- Known flags are accepted ---"
 declare -a KNOWN_VALUE_FLAGS=(
   "--identity-provider https://idp.example.com"
   "--region us-west-2"
-  "--license pro"
   "--port 55000"
   "--model some-model"
   "--model-default some-default-model"
@@ -68,7 +67,6 @@ backends:
   kiro:
     identity_provider: "https://config-idp.example.com"
     region: "us-west-2"
-    license: "pro"
 EOF
 sandbox_run_script "$INSTALL" --config "$CONF" --client-only --url "$URL"
 if [[ "$SANDBOX_STATUS" -eq 0 ]] && sandbox_output_contains "Loaded config file"; then

@@ -55,8 +55,8 @@ The system SHALL accept a `--port` flag controlling the MCP listener port (defau
 The system SHALL resolve configuration by deep-merging three layers in order: built-in
 defaults, then `config/ghostship.yaml` in the ghostship directory (if present), then
 the XDG override file (if present). When `--config <path>` is passed, it replaces
-layers 2 and 3 entirely. The system SHALL resolve `KIRO_IDENTITY_PROVIDER`,
-`KIRO_REGION`, and `KIRO_LICENSE` from the merged config under `backends.kiro.*`
+layers 2 and 3 entirely. The system SHALL resolve `KIRO_IDENTITY_PROVIDER`
+and `KIRO_REGION` from the merged config under `backends.kiro.identity_center.*`
 before falling back to individual CLI flags, then an interactive prompt if still
 unset and running in a terminal.
 

@@ -410,7 +410,6 @@ class Config:
     openai_base_url: str = ""
 
     # ── kiro-cli identity ────────────────────────────────────────────────────
-    kiro_license: str = ""
     kiro_identity_provider: str = ""
     kiro_region: str = ""
     # When set, kiro-cli authenticates via this API key (Pro+, headless) and the
@@ -511,7 +510,6 @@ class Config:
             ),
             ga_portal_domain=os.environ.get("GA_PORTAL_DOMAIN", "").strip(),
             ga_portal_session_ttl_secs=_env_int("GA_PORTAL_SESSION_TTL_SECS", "86400"),
-            kiro_license=os.environ.get("KIRO_LICENSE", ""),
             kiro_identity_provider=os.environ.get("KIRO_IDENTITY_PROVIDER", ""),
             kiro_region=os.environ.get("KIRO_REGION", ""),
             kiro_api_key=os.environ.get("KIRO_API_KEY", ""),

@@ -55,7 +55,6 @@ backends:
       default: ""      # kiro fallback when no per-agent model set
     identity_center:
       url, region
-    license
   claude:
     model:
       override: ""

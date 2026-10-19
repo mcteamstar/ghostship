@@ -300,6 +300,88 @@ class TestNukeContainer(unittest.TestCase):
         self.assertTrue(podman.was_called("container_remove"))
 
 
+class TestKiroLoginCmdLicense(unittest.TestCase):
+    """--license is derived from the login method, never from config."""
+
+    def _cmd_for(self, pending):
+        from transport.login import KiroLoginFlow
+        flow = KiroLoginFlow()
+        flow._pending = pending
+        return flow._login_cmd()
+
+    def test_identity_center_passes_license_pro_and_provider(self):
+        cmd = self._cmd_for({
+            "method": "identity-center",
+            "provider": {"start_url": "https://d-123.awsapps.com/start/#/", "region": "eu-west-1"},
+        })
+        self.assertEqual(cmd[cmd.index("--license") + 1], "pro")
+        self.assertEqual(
+            cmd[cmd.index("--identity-provider") + 1], "https://d-123.awsapps.com/start/#/"
+        )
+        self.assertEqual(cmd[cmd.index("--region") + 1], "eu-west-1")
+        self.assertIn("--use-device-flow", cmd)
+
+    def test_builder_id_passes_license_free(self):
+        cmd = self._cmd_for({"method": "builder-id", "provider": None})
+        self.assertEqual(cmd[cmd.index("--license") + 1], "free")
+        self.assertNotIn("--identity-provider", cmd)
+        self.assertNotIn("--region", cmd)
+
+    def test_no_pending_defaults_to_builder_id(self):
+        cmd = self._cmd_for(None)
+        self.assertEqual(cmd[cmd.index("--license") + 1], "free")
+
+
+class TestKiroInitiateResolvesMethod(unittest.TestCase):
+    """KiroLoginFlow.initiate records method/provider in the pending state."""
+
+    def _initiate(self, cfg_kwargs, **kwargs):
+        import transport.login as login_mod
+        from transport.config import Config
+        from transport.login import KiroLoginFlow
+        orig_cfg = login_mod.cfg
+        captured = {}
+
+        class _Flow(KiroLoginFlow):
+            def start_container(self, podman):
+                captured.update(self._pending)
+                raise RuntimeError("stop here")
+
+        try:
+            login_mod.cfg = Config(ga_crew_agent="kiro", **cfg_kwargs)
+            _Flow().initiate(FakePodmanClient(), **kwargs)
+        finally:
+            login_mod.cfg = orig_cfg
+        return captured
+
+    def test_explicit_identity_center_uses_request_provider(self):
+        got = self._initiate(
+            {"kiro_identity_provider": "https://cfg", "kiro_region": "us-east-1"},
+            method="identity-center",
+            provider={"start_url": "https://req", "region": "ap-southeast-2"},
+        )
+        self.assertEqual(got["method"], "identity-center")
+        self.assertEqual(got["provider"], {"start_url": "https://req", "region": "ap-southeast-2"})
+
+    def test_explicit_builder_id_ignores_configured_idc(self):
+        got = self._initiate(
+            {"kiro_identity_provider": "https://cfg", "kiro_region": "us-east-1"},
+            method="builder-id",
+        )
+        self.assertEqual(got["method"], "builder-id")
+        self.assertIsNone(got["provider"])
+
+    def test_default_method_is_identity_center_when_configured(self):
+        got = self._initiate({"kiro_identity_provider": "https://cfg", "kiro_region": "us-east-1"})
+        self.assertEqual(got["method"], "identity-center")
+        self.assertEqual(got["provider"], {"start_url": "https://cfg", "region": "us-east-1"})
+
+    def test_default_method_is_builder_id_when_unconfigured(self):
+        got = self._initiate({})
+        self.assertEqual(got["method"], "builder-id")
+        self.assertIsNone(got["provider"])
+
+
 class TestLoginFlowInitiatePending(unittest.TestCase):
     """LoginFlow.initiate: returns login_pending when already in progress."""
 

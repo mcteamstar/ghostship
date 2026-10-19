@@ -159,7 +159,6 @@ _cred_store = CredentialStore()
 # KIRO_* values drive the interactive `kiro-cli login` device flow in _initiate_login.
 DATA_DIR = Path("/data")
 GA_AUTH_FILE = "ga-kiro-auth"
-KIRO_LICENSE = cfg.kiro_license
 KIRO_IDENTITY_PROVIDER = cfg.kiro_identity_provider
 KIRO_REGION = cfg.kiro_region
 
@@ -2109,8 +2108,13 @@ _login_pending: dict | None = None
 _login_pending_lock = threading.Lock()
 
 
-def _initiate_login(podman: "PodmanClient") -> dict:
+def _initiate_login(
+    podman: "PodmanClient", method: str | None = None, provider: dict | None = None
+) -> dict:
     """Start a device auth flow and return login URL and code.
+
+    *method*/*provider* select builder-id or identity-center; see
+    ``KiroLoginFlow.initiate`` for the defaults when they are omitted.
 
     Acquires _login_pending_lock, applies TOCTOU-safe guards, starts the
     ephemeral login container, runs kiro-cli login via PTY, answers interactive
@@ -2129,7 +2133,7 @@ def _initiate_login(podman: "PodmanClient") -> dict:
     except ModuleNotFoundError:
         from transport.login import KIRO_FLOW  # local dev
     global _login_pending, _login_pending_lock
-    result = KIRO_FLOW.initiate(podman)
+    result = KIRO_FLOW.initiate(podman, method=method, provider=provider)
     with _login_pending_lock:
         _login_pending = KIRO_FLOW._pending
     return result

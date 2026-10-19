@@ -222,6 +222,52 @@ class TestDisabledBackendReturns400(_BaseRouteTest):
             login_mod.cfg = orig_cfg
 
 
+class TestKiroDeviceFlowRoutesPassMethod(_BaseRouteTest):
+    """The kiro device-flow routes hand their method/provider to the PTY flow."""
+
+    def _call(self, handler_name, body):
+        import transport.login as login_mod
+        from transport.config import Config
+        orig_cfg = login_mod.cfg
+        calls = []
+
+        async def fake_login_post(request, method=None, provider=None):
+            calls.append({"method": method, "provider": provider})
+            return login_mod.JSONResponse({"status": "pending"})
+
+        try:
+            login_mod.cfg = Config(
+                ga_crew_agent="kiro",
+                kiro_identity_provider="https://cfg.awsapps.com/start/#/",
+                kiro_region="us-east-1",
+            )
+            with patch.object(login_mod, "_handle_login_post", fake_login_post):
+                _run(getattr(login_mod, handler_name)(_make_request(body)))
+        finally:
+            login_mod.cfg = orig_cfg
+        return calls
+
+    def test_identity_center_uses_request_values(self):
+        calls = self._call(
+            "_handle_login_kiro_identity_center_post",
+            {"start_url": "https://req.awsapps.com/start/#/", "region": "eu-west-1"},
+        )
+        self.assertEqual(calls, [{
+            "method": "identity-center",
+            "provider": {"start_url": "https://req.awsapps.com/start/#/", "region": "eu-west-1"},
+        }])
+
+    def test_identity_center_falls_back_to_config(self):
+        calls = self._call("_handle_login_kiro_identity_center_post", {})
+        self.assertEqual(calls[0]["provider"], {
+            "start_url": "https://cfg.awsapps.com/start/#/", "region": "us-east-1",
+        })
+
+    def test_builder_id_does_not_use_identity_center(self):
+        calls = self._call("_handle_login_kiro_builder_id_post", {})
+        self.assertEqual(calls, [{"method": "builder-id", "provider": None}])
+
+
 class TestGetLoginStatus(_BaseRouteTest):
     """GET /login/{backend} returns status with no secret values."""
 

@@ -11,7 +11,7 @@ The system SHALL initiate a kiro-cli device auth flow inside the crew container 
 
 #### Scenario: No auth file exists
 - **WHEN** `launch` is called, `DATA_DIR/ga-kiro-auth` does not exist or is empty, and no currently running crew can supply auth rows as a fallback
-- **THEN** the system starts `kiro-cli login --use-device-flow` (plus any configured license/identity-provider/region flags) inside the crew container, registers the crew with status `auth_required` and the returned login URL, and returns that status to the caller without minting a cookie
+- **THEN** the system starts `kiro-cli login --use-device-flow` (plus the `--license`/identity-provider/region flags for the login method) inside the crew container, registers the crew with status `auth_required` and the returned login URL, and returns that status to the caller without minting a cookie
 
 #### Scenario: Resuming after auth
 - **WHEN** `launch` is called again with the same `crew_id` whose registry status is `auth_required`
@@ -159,7 +159,7 @@ The transport SHALL track kiro auth as unauthenticated, pending or authenticated
 - **THEN** those containers are stopped and removed during `_reconcile_registry` before any other operations
 
 ### Requirement: Kiro login method selects the identity provider
-`identity-center` SHALL run `kiro-cli login` with `--identity-provider`, `--region` and `--license pro`, using the start URL and region from the request, or else the configured `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION`. `builder-id` SHALL run it with only `--use-device-flow`. A kiro `api-key` credential SHALL skip the device flow. Claude and Codex crews SHALL receive no kiro auth.
+`identity-center` SHALL run `kiro-cli login` with `--identity-provider`, `--region` and `--license pro`, using the start URL and region from the request, or else the configured `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION`. `builder-id` SHALL run it with `--use-device-flow` and `--license free`. The `--license` value SHALL be derived from the method and SHALL NOT be configurable. A kiro `api-key` credential SHALL skip the device flow. Claude and Codex crews SHALL receive no kiro auth.
 
 #### Scenario: Identity Center flow
 - **WHEN** `POST /login/kiro/identity-center` is called with a start URL and a region

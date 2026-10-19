@@ -10,7 +10,7 @@
 #
 # Run:
 #   ./install.sh [--config <path>] [--identity-provider <url>] \
-#                [--region <region>] [--license <license>] [--port <port>] \
+#                [--region <region>] [--port <port>] \
 #                [--model <model>] [--api-key <key>]
 #
 # Config file: copy config/ghostship.yaml.example to config/ghostship.yaml and
@@ -28,9 +28,9 @@
 # provider/region to authenticate against — without it, it falls back to
 # Builder ID (free tier), which is likely not what an org-licensed kiro-cli
 # install should use. Resolved in this order:
-#   1. --config <path>   — a YAML file setting backends.kiro.identity_provider,
-#                           backends.kiro.region, backends.kiro.license
-#   2. --identity-provider / --region / --license flags
+#   1. --config <path>   — a YAML file setting backends.kiro.identity_center.url
+#                           and backends.kiro.identity_center.region
+#   2. --identity-provider / --region flags
 #   3. Interactive prompt, if running in a terminal and still unset
 #
 # Port: MCP and file transfer both listen on --port (default 64057) — one port
@@ -171,7 +171,6 @@ _interactive_setup() {
 PORT=64057
 KIRO_IDENTITY_PROVIDER=""
 KIRO_REGION=""
-KIRO_LICENSE=""
 KC_MODEL_KIRO_OVERRIDE=""
 KC_MODEL_KIRO_DEFAULT=""
 KC_MODEL_CLAUDE_OVERRIDE=""
@@ -400,7 +399,7 @@ API_KEY_FLAG_PASSED=0
 _FLAG_API_KEY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --config|--identity-provider|--region|--license|--port|--model|--model-default|\
+    --config|--identity-provider|--region|--port|--model|--model-default|\
     --public-url|--api-key|--caddy-domain|--caddy-tls-mode|--url)
       # Without this, `shift 2` fails under set -e and the script exits silently.
       [[ $# -ge 2 ]] || { echo "Error: $1 requires a value" >&2; exit 1; } ;;
@@ -409,7 +408,6 @@ while [[ $# -gt 0 ]]; do
     --config) shift 2 ;;  # already consumed above
     --identity-provider) KIRO_IDENTITY_PROVIDER="$2"; shift 2 ;;
     --region) KIRO_REGION="$2"; shift 2 ;;
-    --license) KIRO_LICENSE="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --model) KC_MODEL_KIRO_OVERRIDE="$2"; shift 2 ;;
     --model-default) KC_MODEL_DEFAULT="$2"; shift 2 ;;
@@ -1172,7 +1170,6 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"
       KIRO_REGION: "${KIRO_REGION:-}"
-      KIRO_LICENSE: "${KIRO_LICENSE:-}"
       KC_MODEL_DEFAULT: "${KC_MODEL_DEFAULT:-}"
       KC_MODEL_KIRO_OVERRIDE: "${KC_MODEL_KIRO_OVERRIDE:-}"
       KC_MODEL_KIRO_DEFAULT: "${KC_MODEL_KIRO_DEFAULT:-}"

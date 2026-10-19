@@ -264,8 +264,12 @@ class LoginFlow(ABC):
         except Exception:
             pass
 
-    def initiate(self, podman) -> dict:
+    def initiate(self, podman, pending_extra: dict | None = None) -> dict:
         """Start the device-flow and return the login URL/code dict.
+
+        ``pending_extra`` is merged into the pending state before the login
+        command is built, so subclasses can read per-flow options (e.g. the
+        kiro method/provider) from ``self._pending`` in ``_login_cmd``.
 
         Returns one of:
           ``{"login_url": str, "code": str | None}``  — flow started
@@ -285,6 +289,7 @@ class LoginFlow(ABC):
                 "container": None,
                 "started_at": time.time(),
                 "state": "starting",
+                **(pending_extra or {}),
             }
 
         # Start container
@@ -418,22 +423,66 @@ class KiroLoginFlow(LoginFlow):
     def _binary_name(self) -> str:
         return "kiro-cli"
 
+    def initiate(
+        self, podman, method: str | None = None, provider: dict | None = None
+    ) -> dict:
+        """Start a kiro device flow for *method* (builder-id or identity-center).
+
+        With no *method*, identity-center is used when KIRO_IDENTITY_PROVIDER and
+        KIRO_REGION are both configured, else builder-id. For identity-center a
+        missing *provider* falls back to the configured start URL and region.
+        """
+        if method is None:
+            method = (
+                "identity-center"
+                if cfg.kiro_identity_provider and cfg.kiro_region
+                else "builder-id"
+            )
+        if method == "identity-center":
+            provider = provider or {
+                "start_url": cfg.kiro_identity_provider,
+                "region": cfg.kiro_region,
+            }
+        else:
+            provider = None
+        return super().initiate(
+            podman, pending_extra={"method": method, "provider": provider}
+        )
+
+    def _provider(self) -> dict | None:
+        pending = self._pending
+        return pending.get("provider") if pending else None
+
     def _login_cmd(self) -> list[str]:
+        # --license picks the login method, not a subscription tier: pro is
+        # Identity Center, free is Builder ID / social. Passing it explicitly
+        # skips kiro-cli's "Select login method" menu.
         cmd = ["kiro-cli", "login", "--use-device-flow"]
-        if cfg.kiro_license:
-            cmd += ["--license", cfg.kiro_license]
+        provider = self._provider()
+        if provider:
+            cmd += [
+                "--license", "pro",
+                "--identity-provider", provider["start_url"],
+                "--region", provider["region"],
+            ]
+        else:
+            cmd += ["--license", "free"]
         return cmd
 
     def _prompt_patterns(self) -> list:
+        # Fallbacks only: the explicit flags above should suppress these prompts.
         import re
-        return [
-            (re.compile(r"Select login method"), b"\n"),
-            (
-                re.compile(r"Start URL"),
-                (cfg.kiro_identity_provider.rstrip("/") + "/\n").encode(),
-            ),
-            (re.compile(r"Region"), (cfg.kiro_region + "\n").encode()),
-        ]
+        patterns = [(re.compile(r"Select login method"), b"\n")]
+        provider = self._provider()
+        if provider:
+            patterns += [
+                (
+                    re.compile(r"Start URL"),
+                    (provider["start_url"].rstrip("/") + "/\n").encode(),
+                ),
+                (re.compile(r"Region"), (provider["region"] + "\n").encode()),
+            ]
+        return patterns
 
     def _url_patterns(self) -> list:
         import re
@@ -772,7 +821,9 @@ def _backend_not_enabled_message(backend: str) -> str:
     )
 
 
-async def _handle_login_post(request: Request) -> Response:
+async def _handle_login_post(
+    request: Request, method: str | None = None, provider: dict | None = None
+) -> Response:
     """POST /login — initiate kiro-cli device auth via an ephemeral temp container.
 
     State machine guard:
@@ -798,7 +849,7 @@ async def _handle_login_post(request: Request) -> Response:
     except Exception as e:
         return PlainTextResponse(str(e), status_code=500)
 
-    result = _lc()._initiate_login(podman)
+    result = _lc()._initiate_login(podman, method=method, provider=provider)
 
     if result.get("login_pending"):
         return PlainTextResponse(
@@ -857,9 +908,15 @@ async def _handle_login_get(request: Request) -> Response:
 
     # Store via the credential store (TRN-233). The auth_b64 is the SQLite
     # row data; method is builder-id (default) unless identity-center was used.
+    _provider = pending.get("provider")
+    _method = "identity-center" if _provider else "builder-id"
     try:
-        _cred_store.put("kiro", "builder-id", auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64)
-        logger.info("Stored kiro builder-id credential in credential store")
+        _cred_store.put(
+            "kiro", _method,
+            auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64,
+            provider=_provider,
+        )
+        logger.info("Stored kiro %s credential in credential store", _method)
     except Exception as e:
         logger.warning("Could not store kiro credential in credential store: %s", e)
     # Inject all currently running crews
@@ -1467,7 +1524,7 @@ async def _handle_login_kiro_builder_id_post(request: Request) -> Response:
     if not _backend_enabled("kiro"):
         return JSONResponse({"error": _backend_not_enabled_message("kiro")}, status_code=400)
     # Delegate to the existing kiro login initiation (PTY flow).
-    return await _handle_login_post(request)
+    return await _handle_login_post(request, method="builder-id")
 
 
 async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
@@ -1492,7 +1549,11 @@ async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
              "(provide in request body or set KIRO_IDENTITY_PROVIDER/KIRO_REGION)."},
             status_code=400,
         )
-    return await _handle_login_post(request)
+    return await _handle_login_post(
+        request,
+        method="identity-center",
+        provider={"start_url": start_url, "region": region},
+    )
 
 
 # ── POST /logout/kiro ─────────────────────────────────────────────────────────

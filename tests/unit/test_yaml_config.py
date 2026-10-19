@@ -431,6 +431,13 @@ class TestDeprecatedYamlPaths(unittest.TestCase):
         self.assertIn("removed", warnings)
         self.assertIn("backends.<backend>.model.override", warnings)
 
+    def test_kiro_license_removed_warns_and_ignored(self):
+        env, warnings = self._resolve_env("backends:\n  kiro:\n    license: pro\n")
+        self.assertNotIn("KIRO_LICENSE", env)
+        self.assertIn("backends.kiro.license", warnings)
+        self.assertIn("removed", warnings)
+        self.assertNotIn("unknown config key", warnings)
+
     def test_deprecated_path_does_not_warn_as_unknown(self):
         _env, warnings = self._resolve_env("machine:\n  cpus: 4\n")
         # The old path is rewritten, not surfaced as an unknown-key warning.
