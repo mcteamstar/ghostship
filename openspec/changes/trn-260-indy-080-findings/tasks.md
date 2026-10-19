@@ -27,31 +27,24 @@
   the HMAC key, and that the key is delivered via the `input` kwarg. Verify:
   test passes and fails against the pre-fix code.
 
-## 3. C-1 — Restore deleted test modules
+## 3. C-1 — Restore meaningful deleted test modules
 
-- [ ] 3.1 Create `tests/unit/test_ws_proxy.py` covering `_handle_crew_ui_ws_proxy`:
-  upstream failure before accept, successful relay, abnormal close. Verify:
-  `pytest tests/unit/test_ws_proxy.py` passes.
+- [ ] 3.1 Create `tests/unit/test_streaming_transfer.py` covering
+  `_ResponseChunkReader` and `_TarMemberStream` in `transport/files.py`:
+  normal reads, cross-chunk boundaries, early EOF, and member-not-found error.
+  Verify: `pytest tests/unit/test_streaming_transfer.py` passes.
 
-- [ ] 3.2 Create `tests/unit/test_podman_exec_stdin.py` covering
-  `container_exec_stdin` with `socketpair()`: normal write+read, EOF on close,
-  error propagation. Verify: `pytest tests/unit/test_podman_exec_stdin.py` passes.
-
-- [ ] 3.3 Create `tests/unit/test_streaming_transfer.py` covering
-  `_ResponseChunkReader` and `_TarMemberStream`: normal reads, chunk boundaries,
-  early EOF. Verify: `pytest tests/unit/test_streaming_transfer.py` passes.
-
-- [ ] 3.4 Create `tests/unit/test_tls.py` covering `_ssl_context_factory`:
-  cert+key present → `SSLContext`, missing file → raises, no-TLS → `None`.
-  Verify: `pytest tests/unit/test_tls.py` passes.
-
-- [ ] 3.5 Create `tests/unit/test_trn237_csp_nonce.py` covering CSP nonce
-  middleware: nonce injected into HTML, non-HTML unchanged, nonce rotates per
-  request. Verify: `pytest tests/unit/test_trn237_csp_nonce.py` passes.
-
-- [ ] 3.6 Create `tests/unit/test_trn221_no_hardcoded_sel_path.py` as a static
-  guardrail scanning `transport/` Python files for hardcoded pre-0.9.0 SEL
-  paths. Verify: `pytest tests/unit/test_trn221_no_hardcoded_sel_path.py` passes.
+  Dropped from scope (not genuine gaps):
+  - `test_ws_proxy.py` — `_handle_crew_ui_ws_proxy` requires full async
+    Starlette + websockets mock harness; belongs in integration tests
+  - `test_podman_exec_stdin.py` — `container_exec_stdin` now covered by
+    `TestInjectPolicyStdinDelivery` in `test_lifecycle.py` (task 2.3)
+  - `test_tls.py` — `_ssl_context_factory` is a 6-line closure only reachable
+    via server startup with real cert files; trivial and integration-only
+  - `test_trn237_csp_nonce.py` — `generate_csp_nonce()` / `_csp_with_nonce()`
+    are one-liner stdlib calls; no meaningful unit test gap
+  - `test_trn221_no_hardcoded_sel_path.py` — no hardcoded SEL paths exist in
+    codebase; guardrail would pass vacuously
 
 ## 4. Integration check
 
