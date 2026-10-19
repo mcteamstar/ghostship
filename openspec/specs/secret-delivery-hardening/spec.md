@@ -101,6 +101,26 @@ The transport SHALL deliver credential files into crew containers via `container
 - **WHEN** `_write_dashboard_cookie` is called to write the cookie into a crew container
 - **THEN** the cookie value is written via `container_archive_put`; no `python3 -c` subprocess is spawned
 
+### Requirement: inject_policy.py uses stdin for HMAC key delivery
+
+`inject_policy.py` SHALL read the HMAC policy signing key from `sys.stdin`
+(via `sys.stdin.read().strip()`), not from `sys.argv`. The caller in
+`lifecycle.py` SHALL deliver the key via the `input` parameter of
+`container_exec_stdin`, closing the write end after the key is written. The key
+SHALL NOT appear in any element of `argv` of the `inject_policy.py` process.
+
+#### Scenario: inject_policy.py signing key not in argv
+
+- **WHEN** `_inject_policy` is called to sign and write crew policy files
+- **THEN** the HMAC policy signing key does not appear in any positional argument
+  passed to the `inject_policy.py` process; it is delivered exclusively via stdin
+
+#### Scenario: inject_policy.py signing key delivered via stdin
+
+- **WHEN** `_inject_policy` calls `container_exec_stdin` to run `inject_policy.py`
+- **THEN** the base64-encoded JSON payload containing `policy_signing_key` is written
+  to the process's stdin stream; the process reads it with `sys.stdin.read().strip()`
+
 ### Requirement: Config repr masks sensitive credential fields
 The `Config` dataclass SHALL hold no backend credential fields; backend credentials live only in the credential store. The credential store and its records SHALL override `__repr__` so that no credential value appears in `repr()` or `str()`. Any log call that includes `repr(cfg)`, `str(cfg)` or a credential record SHALL NOT emit live credential values.
 
