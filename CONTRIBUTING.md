@@ -30,7 +30,7 @@ parts into a separate PR rather than sending everything at once.
 - Open an issue or draft PR for discussion before significant transport
   changes — a short description of what and why is enough.
 - Keep PRs focused. A bug fix and a new feature are two PRs.
-- All existing tests must pass (`bash tests/run.sh --unit`). Add tests for
+- All existing tests must pass (`bash scripts/run.sh --unit`). Add tests for
   new behaviour.
 - Commit messages follow the conventional commit style used in this repo
   (`fix:`, `feat:`, `chore:`, `docs:`, `test:`), subject line ≤50 chars.

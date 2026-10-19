@@ -46,7 +46,7 @@ else
         ;;
       -h|--help)
         cat <<'USAGE'
-Usage: tests/run.sh [--unit] [--integration] [--e2e]
+Usage: scripts/run.sh [--unit] [--integration] [--e2e]
 
 With no flags, all test categories run. Use --all for the same behavior.
 USAGE

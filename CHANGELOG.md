@@ -77,7 +77,7 @@ Crews keep the credential they launched with until relaunched or nuked. This is 
 - **`nuke()` evicts per-crew in-memory state** (`_recovery_locks`, `_startup_generation`, `_crew_restart_outcomes`, `_idle_skip_reasons`) so nuked crew IDs don't accumulate in long-running transports.
 - **Kiro Identity Center login fixes:** accept pre-filled Start URL / Region prompts with Enter; keep IDC defaults on `GET /login/kiro` while a device flow is pending; derive `--license` from login method, removing `backends.kiro.license` config.
 - **Port range default corrected:** `ga_dashboard_port_range_size` dataclass default was 1024, should be 64 (matching YAML default and docs).
-- `test_install_migration.sh` and `test_install_wizard.sh` added to `tests/run.sh` integration suite (were silently skipped).
+- `test_install_migration.sh` and `test_install_wizard.sh` added to `scripts/run.sh` integration suite (were silently skipped).
 
 ## v0.7.1
 
@@ -433,7 +433,7 @@ Crew base image bumped from `0.6.0`. Login containers also updated. `KC_BASE_IMA
 ### Testing
 
 - Full-suite test bootstrap stabilized (TRN-144) — a shared httpx stub module (`tests/unit/_stubs.py`) fixes exception-identity mismatches that caused spurious `test_recovery.py` failures under the parallel test runner.
-- `tests/integration/test_uninstall_auth_preservation.sh` is now actually wired into `tests/run.sh`'s integration suite — it existed but was never executed.
+- `tests/integration/test_uninstall_auth_preservation.sh` is now actually wired into `scripts/run.sh`'s integration suite — it existed but was never executed.
 
 ---
 

@@ -11,7 +11,7 @@ Two shift-left gates that fail the build on a regression:
    interpolation of a variable directly into a query, which the
    injection-safe-data-access requirement forbids (use bound parameters).
 
-Exit non-zero on any finding. Run from the repo root: python3 tests/security_scan.py
+Exit non-zero on any finding. Run from the repo root: python3 scripts/security_scan.py
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def _iter_files():
             continue
         # Skip the scanner and the security tests (they contain sample patterns).
         rel = path.relative_to(REPO).as_posix()
-        if rel in ("tests/security_scan.py", "tests/unit/test_trn70_security.py"):
+        if rel in ("scripts/security_scan.py", "tests/unit/test_trn70_security.py"):
             continue
         yield path
 

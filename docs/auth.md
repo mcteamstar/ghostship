@@ -490,7 +490,7 @@ Browser ──GET :64058/──▶ ga-portal
 - **Redaction.** `SecretRedactionFilter` is installed on the root logger at startup. Any value passed to `security.register_secret` is scrubbed from every log record and error.
 - **Admiral private key never enters the container.** No key material passes through a `podman exec` argument list or appears in `/proc/<pid>/cmdline`.
 - **`crews.json` stores identifiers only.** Non-reversible `sha256:<hex[:16]>` fingerprints only — never plaintext secrets.
-- **CI secret scan.** `tests/security_scan.py` runs in the `security-scan` CI job and fails the build on a likely committed live secret.
+- **CI secret scan.** `scripts/security_scan.py` runs in the `security-scan` CI job and fails the build on a likely committed live secret.
 
 ### Rotating `GA_API_KEY`
 
@@ -514,7 +514,7 @@ HTTPS redirect is handled unconditionally by Caddy. Minimum TLS is 1.2.
 
 - `security.validate_str` checks type, length, and format server-side, independent of client checks.
 - All `auth_kv` access uses parameterized SQL — no string-built queries.
-- `tests/security_scan.py` flags string-built SQL and fails the build.
+- `scripts/security_scan.py` flags string-built SQL and fails the build.
 
 ---
 

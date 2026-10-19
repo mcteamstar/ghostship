@@ -36,7 +36,7 @@ pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; }
 
 # Call at the end of a test file: prints the tally and exits non-zero on any
-# failure, which is what tests/run.sh keys off.
+# failure, which is what scripts/run.sh keys off.
 sandbox_report() {
   echo ""
   echo "Results: ${PASS} passed, ${FAIL} failed"

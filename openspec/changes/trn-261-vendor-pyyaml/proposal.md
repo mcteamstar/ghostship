@@ -33,7 +33,7 @@ Dev/CI tools stay in `scripts/`: `generate_openapi.py`, `security_scan.py`,
 Update all internal references:
 - `ghostship` CLI shim — `_exec_script()` and `GHOSTSHIP_DIR` path constants
 - `tests/integration/` — script paths in test helpers
-- `tests/run.sh` — integration test loop
+- `scripts/run.sh` — integration test loop
 - `Containerfile` and `compose.yml` template — any `scripts/` refs
 - `adjutant` deploy script — `pre-deploy.sh` rsync paths
 - `README.md` and `docs/` — any path references

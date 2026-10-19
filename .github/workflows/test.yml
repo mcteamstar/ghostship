@@ -20,7 +20,7 @@ jobs:
         run: pip install -r transport/requirements.txt
 
       - name: Run tests
-        run: tests/run.sh --unit
+        run: scripts/run.sh --unit
 
       - name: Generate OpenAPI schema (TRN-129)
         run: python scripts/generate_openapi.py --output openapi.json
@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Run shell integration tests
-        run: tests/run.sh --integration
+        run: scripts/run.sh --integration
 
   security-scan:
     name: security-scan
@@ -64,5 +64,5 @@ jobs:
       # TRN-70 secrets-management 1.4 + input-validation 4.4: fail the build on
       # a committed live secret or on string-built SQL.
       - name: Security scan (secrets + unsafe queries)
-        run: python3 tests/security_scan.py
+        run: python3 scripts/security_scan.py
 

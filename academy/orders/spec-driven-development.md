@@ -78,7 +78,7 @@ Apply these rules to each change independently (in multi-change mode, one check-
 When all changes in the list are archived, dispatch Ghost to execute the reconciliation:
 
 ```
-SDD reconcile <change-list> — cd /home/kirocrew/workplace/kirocrew-workspace/repo && for each change in list: git merge --no-ff <change-name> -m "merge: <change-name>"; bash tests/run.sh --unit
+SDD reconcile <change-list> — cd /home/kirocrew/workplace/kirocrew-workspace/repo && for each change in list: git merge --no-ff <change-name> -m "merge: <change-name>"; bash scripts/run.sh --unit
 ```
 
 The Ghost task description must include:
@@ -89,8 +89,8 @@ The Ghost task description must include:
 
 Ghost should:
 1. Merge each change branch into the main checkout with `git merge --no-ff <change-name> -m "merge: <change-name>"`
-2. Run `bash tests/run.sh --unit`
-3. On conflict: before escalating, read each conflicting change's `specs/` and `tasks.md` to understand intent. Resolve additively where both changes' intents can coexist (e.g. both add new code in the same file); choose one side only when changes are genuinely mutually exclusive (e.g. both rename the same function differently), using the specs to determine which is correct. After resolving all conflicts, re-run `bash tests/run.sh --unit`.
+2. Run `bash scripts/run.sh --unit`
+3. On conflict: before escalating, read each conflicting change's `specs/` and `tasks.md` to understand intent. Resolve additively where both changes' intents can coexist (e.g. both add new code in the same file); choose one side only when changes are genuinely mutually exclusive (e.g. both rename the same function differently), using the specs to determine which is correct. After resolving all conflicts, re-run `bash scripts/run.sh --unit`.
 4. On success (tests pass, with or without conflict resolution): remove each worktree (`git worktree remove ../repo-<change-name> --force`), then mail `admiral@localhost` with subject `sdd complete — all changes merged, tests green` listing each change merged. If any conflicts were resolved automatically, include a per-conflict summary: what conflicted, which side was chosen, and why.
 5. On test failure after conflict resolution (or unresolvable conflict): mail `admiral@localhost` with subject `sdd merge failed — manual intervention needed` including the full error output and a summary of every resolution decision attempted.
 
