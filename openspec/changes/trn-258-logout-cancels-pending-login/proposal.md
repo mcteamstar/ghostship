@@ -19,7 +19,7 @@ Logout also reaches into running crews to delete device-flow logins (kiro's `aut
 - One operation, one end state: `ghostship auth logout <kiro|claude|codex>` is how you log out *and* how you abort a login. Afterwards the transport holds no credential for that backend and no login is pending, whatever the starting state. No new routes or HTTP methods are added.
 - `POST /logout/{backend}` SHALL always cancel any pending login flow first, removing its login container. It then removes the stored credential (credential store and legacy auth file, whichever exist).
 - It SHALL return `200` `{"status": "logged_out"}` in every non-error case, with `aborted_pending_login: true` when a flow was cancelled. There are no more `404`/`409` "not authenticated" responses. It fails (500) only when a credential could not be removed.
-- **BREAKING:** logout SHALL NOT touch running crews. Device-flow logins are no longer deleted from running crews (kiro `auth_kv`, claude `~/.claude/`, codex `~/.codex/`). A running crew keeps its launch-time credential until it is relaunched or nuked. Injecting a completed kiro device login into running crews is unchanged.
+- **BREAKING:** logout SHALL NOT touch running crews. Device-flow logins are no longer deleted from running crews (kiro `auth_kv`, claude `~/.claude/`, codex `~/.codex/`). A running crew keeps its launch-time credential until it is relaunched or nuked. A completed kiro device login is still injected into running crews, but only into kiro crews: since TRN-259 a transport can run claude and codex crews alongside kiro ones, and those are left alone.
 - Race fixes, so the end state actually holds:
   - Logging out while a login container is still being created no longer leaves an orphaned container.
   - A login that a poll was completing when logout cancelled it cannot store its credential afterwards.
@@ -33,7 +33,7 @@ None.
 
 ### Modified Capabilities
 - `backend-credentials`: "Credentials cleared per backend" becomes transport-only (cancel first, idempotent 200, error only on failed removal, race guarantees). "Credentials resolved at each crew launch" drops the "logout clears it from them" exception.
-- `crew-auth`: "Kiro auth state machine" is replaced by "Kiro auth state transitions". It is identical except that the "auth cleared from all running crews on logout" scenario becomes "logout leaves running crews untouched", and logout from pending is stated explicitly.
+- `crew-auth`: "Kiro auth state machine" is replaced by "Kiro auth state transitions". It is identical except that the "auth cleared from all running crews on logout" scenario becomes "logout leaves running crews untouched", logout from pending is stated explicitly, and login completion injects only into running kiro crews.
 - `claude-auth`: "Claude authorisation-code flow state machine" is replaced by "Claude authorisation-code flow states". It is identical except that the "clearing claude wipes running crews" scenario becomes "logout leaves running claude crews untouched".
 
 ## Impact
@@ -41,6 +41,7 @@ None.
 - **Code:** `transport/login.py`:
   - The three logout routes and the legacy handlers they delegate to (`_handle_logout_post`, `_handle_claude_logout_post`, `_handle_codex_logout_post`, also imported in `server.py`).
   - `LoginFlow.initiate()` (orphan fix) and the three completion paths (cancelled-flow guard).
+  - The kiro `GET /login/kiro` completion's running-crew injection, filtered to crews whose `acp_backend` is `kiro`.
   - `transport/credentials.py` `CredentialStore.delete()` (distinguish "absent" from "failed").
   - `transport/container_scripts/wipe_auth.py` becomes unused and is removed.
 - **Tests:** `tests/unit/test_credentials_routes.py` logout cases, plus new unit tests for the races.

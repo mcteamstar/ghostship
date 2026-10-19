@@ -7,7 +7,8 @@ See proposal.md for why. Current shape:
 - **Routes** (`transport/login.py`): `_handle_logout_kiro_post`, `_handle_logout_claude_post_new` and `_handle_logout_codex_post_new` call `_cred_store.delete(backend)`, then delegate to the pre-TRN-233 handlers. Those handlers start with a legacy-file guard (404 / 409 / early 200), then delete the legacy file, audit, wipe running crews (kiro `wipe_auth.py` on `auth_kv`, claude `rm -rf ~/.claude/`, codex `~/.codex/`), and call the `_abort_*_pending_login(podman)` helper last.
 - **Abort helpers** (`LoginFlow.abort`, wrapped by `lifecycle._abort_*_pending_login`) are safe whether or not a flow is pending. They read `_pending` under the flow lock, remove its container, then clear `_pending` only if it is still the same dict.
 - **`LoginFlow.initiate`** sets `_pending = {"container": None, "state": "starting"}` under the lock, starts the container *outside* the lock, then records the container only `if self._pending is not None`. If an abort lands in that window, the container is created but never recorded or removed.
-- **Completion paths** read `_pending`, poll the login container, then store the credential with no check that the flow is still current. There are four: `_handle_login_get` (kiro), the claude and codex `GET /login/{backend}` handlers, and the launch-time poll in `tools.py` (~L645).
+- **Completion paths** read `_pending`, poll the login container, then store the credential with no check that the flow is still current. There are four: `_handle_login_get` (kiro), the claude and codex `GET /login/{backend}` handlers, and the launch-time poll in `tools.py` (~L661).
+- **Kiro completion injection** (`_handle_login_get`, `login.py` ~L973) injects the fresh auth into every running crew regardless of `acp_backend`. Since TRN-259 a transport can run claude and codex crews alongside kiro ones. The claude and codex paths already filter on `acp_backend` (`login.py` ~L1229, ~L1401).
 - **`CredentialStore.delete`** returns `False` for both "not found" and `OSError`.
 - **Launch** resolves kiro auth only from the credential store or the pending login container (`tools.py`, "TRN-233: the credential store is the sole source of truth"). It never reads running crews.
 
@@ -19,7 +20,7 @@ See proposal.md for why. Current shape:
 
 **Non-Goals:**
 - A cancel-only operation, a new HTTP method, or CLI Ctrl-C handling.
-- Changing what a completed kiro device login injects into running crews.
+- Changing *what* a completed kiro device login injects into running crews. Only *which* crews receive it changes (Decision 6).
 - Cleaning up other stale legacy wording in `crew-auth` (references to the `ga-kiro-auth` file); only the running-crew fallback scenario is removed, because it contradicts transport-only logout.
 
 ## Decisions
@@ -54,6 +55,11 @@ This guarantees the end state with logout's ordering (abort, then delete):
 
 ### 5. Running crews are out of logout's reach
 No exec, restart or stop of any crew. The "logout takes effect at the next launch" guarantee rests on launch reading only the credential store (true today). The spec now forbids the running-crew fallback so it can't come back.
+
+### 6. Kiro completion injects only into kiro crews
+The kiro completion's running-crew loop keeps only crews where `info.get("acp_backend", "kiro") == "kiro"`. Treating an absent field as kiro matches `Crew.from_dict`'s default, so registry entries from before the field existed are still injected. Injection runs only after `commit_if_current` succeeds, so a cancelled flow injects nothing.
+
+*Why here:* this change already rewrites the requirement that describes the injection; restating it as "every running crew" would write the pre-TRN-259 behaviour into the spec.
 
 ## Risks / Trade-offs
 

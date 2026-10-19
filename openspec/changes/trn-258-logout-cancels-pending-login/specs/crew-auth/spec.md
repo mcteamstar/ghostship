@@ -11,9 +11,9 @@ The transport SHALL track kiro auth as unauthenticated, pending or authenticated
 - **WHEN** a kiro device login is started while a kiro flow is already pending
 - **THEN** the transport returns HTTP 409 with a message indicating a login is already in progress and `GET /login/kiro` should be polled
 
-#### Scenario: Auth injected into all running crews on login completion
+#### Scenario: Auth injected into running kiro crews on login completion
 - **WHEN** `GET /login/kiro` first returns `status: "complete"`
-- **THEN** the transport has stored kiro's credential with mode `0600` and has injected the fresh auth rows into every crew whose registry status is `running`, without restarting those crews
+- **THEN** the transport has stored kiro's credential with mode `0600` and has injected the fresh auth rows into every crew whose registry status is `running` and whose `acp_backend` is `kiro` (an absent `acp_backend` counts as kiro), without restarting those crews; running claude and codex crews are not modified
 
 #### Scenario: Orphaned temp containers cleaned up on startup
 - **WHEN** the transport starts and one or more containers named `ga-login-*` exist
@@ -45,7 +45,7 @@ The system SHALL read the saved `ga-kiro-auth` file and inject its rows into eve
 ## REMOVED Requirements
 
 ### Requirement: Kiro auth state machine
-**Reason**: Logout no longer clears auth from running crews (logout acts on the transport only — running crews keep their launch-time credential). Replaced by "Kiro auth state transitions", which is otherwise unchanged.
+**Reason**: Logout no longer clears auth from running crews (logout acts on the transport only — running crews keep their launch-time credential). Since TRN-259 running crews may also be claude or codex crews, so login completion now injects only into kiro crews. Replaced by "Kiro auth state transitions", which is otherwise unchanged.
 **Migration**: None for operators. A running crew stays authenticated after `ghostship auth logout kiro`; relaunch or nuke it to drop its credential.
 
 ### Requirement: Auth reuse across crews
