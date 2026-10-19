@@ -2,9 +2,35 @@
 
 ## v0.8.0
 
+### ⚠ Breaking changes — read before upgrading
+
+**1. Re-authenticate every backend after upgrading.**
+0.8.0 removes the legacy `ga-kiro-auth`, `ga-claude-auth`, and `ga-codex-auth` credential files. After `ghostship upgrade`, existing crews will return `not_authenticated` until you log in with the new CLI. `install.sh` prints a prominent warning and prompts for confirmation when it detects an upgrade from <0.8.0.
+
+```
+ghostship auth login kiro
+ghostship auth login claude   # if using claude backend
+ghostship auth login codex    # if using codex backend
+```
+
+Recommended: `./uninstall.sh --purge-auth && ./install.sh` to start clean.
+
+**2. Config file format changed: `ghostship.conf` → `ghostship.yaml`.**
+`install.sh` auto-migrates an existing `ghostship.conf` on upgrade (old file kept as `.bak`). No manual action needed unless you have tooling that reads `ghostship.conf` directly.
+
+**3. `network.host` now controls ga-portal's bind address only (default `127.0.0.1`).**
+Previously `HOST=0.0.0.0` was the implicit default, making every install reachable from the LAN. If you rely on remote access: set `network.host: 0.0.0.0` (or a specific interface address) in `ghostship.yaml` **and** set `network.api_key` to protect it.
+
+**4. `network.require_api_key` is deprecated — use `network.api_key`.**
+A string value enables auth. `false` is the explicit no-auth opt-out. On any non-loopback `network.host`, no key causes `install.sh` to warn and abort.
+
+**5. `ghostship auth logout <backend>` no longer touches running crews.**
+Crews keep the credential they launched with until relaunched or nuked. This is intentional — logout is now transport-only. To drop a running crew's credential: nuke it and relaunch after logging back in.
+
+---
+
 ### YAML config (ghostship.yaml) replaces ghostship.conf (TRN-253, TRN-257)
 
-- **BREAKING — `config/ghostship.conf` is replaced by `config/ghostship.yaml`.** `install.sh` auto-migrates an existing `ghostship.conf` to `ghostship.yaml` (old file renamed to `.bak`). After upgrading, run `ghostship upgrade` once to pick up the new format.
 - YAML config uses semantic nesting: `network.tls.{certfile,keyfile}`, `crew.git.author.{name,email}`, `backends.default` (list), `backends.kiro.identity_center.{url,region}`, `portal.dashboard.port_range.{start,size}`, `portal.dashboard.default`, `machine.resources.{cpus,memory_mb,disk_gb}`.
 - Three-layer merge: built-in defaults → `config/ghostship.yaml` → `~/.config/ghost-academy/ghostship.yaml` (XDG user override). Pass `--config <path>` to override both.
 - Per-backend model precedence: `dispatch(model=...)` > `backends.<b>.model.override` > per-agent config > `backends.<b>.model.default` > `model.default` > built-in. `KC_MODEL_DEFAULT` and six `KC_MODEL_{BACKEND}_{OVERRIDE,DEFAULT}` env vars wired into `compose.yml`.
@@ -15,7 +41,7 @@
 
 - **`ghostship auth login <kiro|claude|codex>`** — interactive per-backend authentication. kiro: paste API key, Builder ID device code, or IAM Identity Center device code. claude: OAuth browser flow, paste API key, or paste setup-token. codex: ChatGPT device code or paste OpenAI API key.
 - **`ghostship auth status`** — shows configured backends and stored credentials.
-- **`ghostship auth logout <backend>`** — removes the stored credential.
+- **`ghostship auth logout <backend>`** — cancels any pending login and removes the stored credential. See breaking change #5 above for crew behaviour.
 - Transport credential store (`transport/credentials.py`): one active credential per backend, 0600 files under `DATA_DIR/credentials/`. Credentials resolved per crew launch — rotation needs no restart.
 - New transport auth API: `POST /login/{backend}/{method}`, `GET /login/{backend}`, `POST /logout/{backend}`.
 - Installer no longer manages backend credential Podman secrets.
@@ -27,10 +53,9 @@
 
 ### Logout cancels pending login and leaves running crews alone (TRN-258)
 
-- **BREAKING — logout no longer touches running crews.** `ghostship auth logout <backend>` cancels any pending login, removes the stored credential, and stops there. Running crews keep the credential they launched with; relaunch or nuke them to drop it.
-- Logout returns `200 {"status": "logged_out"}` in every non-error case — no more 404 or 409 "not authenticated" responses. Returns `aborted_pending_login: true` when a flow was cancelled.
+- Logout returns `200 {"status": "logged_out"}` in every non-error case — no more 404 or 409 "not authenticated" responses. Returns `aborted_pending_login: true` when a flow was cancelled. Returns 500 only when a credential cannot be deleted.
 - Fixed: logout during login container startup leaves no orphaned container; a new login starts immediately after a cancelling logout; a completing poll whose logout cancelled it stores no credential.
-- **Fixed: kiro login completion no longer injects auth into claude or codex crews.** Since TRN-259, auth injection on device login completion is scoped to crews whose `acp_backend` is `kiro`.
+- **Fixed: kiro login completion no longer injects auth into claude or codex crews.** Auth injection on device login completion is now scoped to crews whose `acp_backend` is `kiro`.
 - 409 responses from login POST routes now say `ghostship auth logout <backend>` instead of the raw REST route.
 
 ### `ghostship upgrade --skills` and skill management (TRN-255)
@@ -53,11 +78,6 @@
 - **Kiro Identity Center login fixes:** accept pre-filled Start URL / Region prompts with Enter; keep IDC defaults on `GET /login/kiro` while a device flow is pending; derive `--license` from login method, removing `backends.kiro.license` config.
 - **Port range default corrected:** `ga_dashboard_port_range_size` dataclass default was 1024, should be 64 (matching YAML default and docs).
 - `test_install_migration.sh` and `test_install_wizard.sh` added to `tests/run.sh` integration suite (were silently skipped).
-
-### HOST is ga-portal's address only; network.api_key is the one auth setting
-
-- **BREAKING — `HOST` (`network.host`) now only sets where ga-portal (Caddy) publishes, and defaults to `127.0.0.1`.** The transport always listens on `0.0.0.0` inside its container. **If you relied on remote access without setting `host`, set `network.host: 0.0.0.0` and an API key.**
-- **BREAKING — `network.require_api_key` is deprecated; `network.api_key` has three states.** A string enables auth. Unset is fine on a loopback `HOST` but on any other address `install.sh` warns and aborts. `false` is the explicit opt-out.
 
 ## v0.7.1
 
