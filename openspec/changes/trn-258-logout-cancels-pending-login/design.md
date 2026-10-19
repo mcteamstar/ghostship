@@ -28,11 +28,14 @@ See proposal.md for why. Current shape:
 ### 1. One logout routine, parameterised per backend
 `_logout(backend, request)` with a small per-backend table: abort helper, legacy auth-file path, audit account. Steps:
 
-1. `aborted = abort_helper(podman)`, always, first.
+1. `aborted = abort_helper(podman)`, first. If the container runtime cannot be reached (`_get_podman` raises), record the error and carry on: no login poll can run without it either, so removal is still safe.
 2. `store_removed = _cred_store.delete(backend)`; `legacy_removed = unlink(legacy_path)` if present.
 3. If either removal *failed*: audit `logout failure`, return 500 `{"status": "error", "error": "The stored credential could not be deleted."}`.
 4. If anything was removed: audit `logout success`.
-5. Return 200 `{"status": "logged_out"}`, plus `aborted_pending_login: true` when `aborted`.
+5. If step 1 failed: return 500 `{"status": "error", "error": "The stored credential was removed, but a pending login could not be cancelled."}`.
+6. Return 200 `{"status": "logged_out"}`, plus `aborted_pending_login: true` when `aborted`.
+
+*Why not return early on a missing runtime:* the stored credential is the thing a user most needs gone, and the old kiro route removed it before touching podman. The 500 in step 5 is kept so the CLI does not report a clean logout while a login container may still be running.
 
 The three routes call `_logout`. The legacy handlers and the per-backend crew-wipe code are deleted, and so is `transport/container_scripts/wipe_auth.py`, whose only caller was the kiro wipe. `wipe_failed` disappears from the response.
 
@@ -43,6 +46,8 @@ Return `True` (removed) or `False` (absent), and raise on `OSError`. `_logout` c
 
 ### 3. `initiate()` cleans up a container it can't record
 After starting the container, under the lock: if `self._pending` is not the dict this call created, the flow was cancelled while starting. Remove the container (best effort), and return `{"error": "cancelled"}` so the caller reports the cancellation rather than a login URL. Compare by identity, not `is not None`, so a *new* flow started in between isn't confused with this one.
+
+The same identity check applies to the PTY URL read that follows. If the flow was cancelled while waiting for a URL, return `{"error": "cancelled"}` (closing the PTY socket and removing the container) and do not hand out a URL. The failure paths clear `_pending` only if it is still this call's dict, so a failed read cannot clear a flow started after the cancel.
 
 ### 4. Completion commits only for the current flow
 Each completion path captures the `pending` dict it polled. It then takes the flow's lock and checks `flow._pending is pending`. If that holds, it stores the credential and clears `_pending` inside the same critical section. If it doesn't, it discards the result, removes the container, and returns `{"status": "cancelled"}` (or the launch path's `not_authenticated`). Add a `LoginFlow.commit_if_current(pending, store_fn)` helper so the four paths share it.

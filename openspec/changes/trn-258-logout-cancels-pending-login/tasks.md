@@ -7,6 +7,7 @@
 - [x] 1.3 Add `LoginFlow.commit_if_current(pending, store_fn)` and route the four completion paths through it: the kiro `GET` completion, the claude and codex `GET` completions, and the launch-time poll in `tools.py`. A non-current flow discards the result, removes the container, and returns `cancelled` (launch path: `not_authenticated`) (design Decision 4). Verify: unit tests where logout's abort runs between the poll and the commit show no credential stored and `GET /login/{backend}` reporting no pending flow.
 
 - [x] 1.4 Filter the kiro completion's running-crew injection in `_handle_login_get` to crews where `info.get("acp_backend", "kiro") == "kiro"`, and inject only after `commit_if_current` succeeds (design Decision 6). Verify: a unit test with running kiro, claude and codex crews plus one entry with no `acp_backend` in the fake registry asserts `_inject_auth` is called for the kiro crew and the no-field entry only.
+- [x] 1.5 Identity guard through the PTY URL read in `LoginFlow.initiate` (design Decision 3): a flow cancelled during the read returns `cancelled` with no URL, and its failure paths clear `_pending` only if it is still this call's dict. Verify: `TestLoginFlowInitiateCancelledDuringPTY` passes, and fails against the pre-fix `initiate` (a failed read cleared a newer flow's slot).
 
 ## 2. Logout routine
 
@@ -19,6 +20,7 @@
 - [x] 2.2 Running crews untouched: a unit test with running crews of each backend in the fake registry asserts logout makes no `container_exec`, restart or stop call. Verify: the test passes.
 - [x] 2.3 Remove the legacy handlers (`_handle_logout_post`, `_handle_claude_logout_post`, `_handle_codex_logout_post`) and their crew-wipe code, drop them from both `server.py` import blocks, and delete `transport/container_scripts/wipe_auth.py`. Update the existing `TestLogoutCredentialStore` tests to the new routine. Verify: `grep -rn '_handle_logout_post\b\|_handle_claude_logout_post\b\|_handle_codex_logout_post\b\|wipe_auth' transport/ tests/` returns nothing, and the updated tests pass.
 - [x] 2.4 A new login starts after cancelling: a unit test aborts a pending kiro flow via `POST /logout/kiro`, then calls `POST /login/kiro/builder-id` and gets a new flow, not 409. Verify: the test passes.
+- [x] 2.5 Container runtime unavailable: `_logout` still removes the stored credential and legacy file when `_get_podman` raises, and returns 500 saying a pending login could not be cancelled (design Decision 1, steps 1 and 5). Verify: `test_podman_unavailable_still_removes_credential_and_reports_500` passes, and fails against the pre-fix `_logout`, which returned 500 before removing anything.
 
 ## 3. Docs
 

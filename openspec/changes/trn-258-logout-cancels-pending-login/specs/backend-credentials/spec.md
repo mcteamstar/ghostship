@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Credentials cleared per backend
-`POST /logout/{backend}` acts on the transport only. It SHALL first cancel any pending login flow for that backend, removing its login container, then remove the backend's stored credential whichever method produced it. It SHALL NOT modify running crews. It SHALL succeed when nothing is stored or pending (idempotent), returning HTTP 200, and SHALL fail only if a credential could not be removed.
+`POST /logout/{backend}` acts on the transport only. It SHALL first cancel any pending login flow for that backend, removing its login container, then remove the backend's stored credential whichever method produced it. It SHALL NOT modify running crews. It SHALL succeed when nothing is stored or pending (idempotent), returning HTTP 200. It SHALL fail with HTTP 500 when a credential could not be removed, or when a pending login could not be cancelled because the container runtime is unavailable; the credential is removed in the second case too.
 
 #### Scenario: Logout removes stored credential
 - **WHEN** `POST /logout/kiro` is called while kiro holds a credential
@@ -31,9 +31,17 @@
 - **WHEN** `POST /logout/{backend}` is called and the stored credential cannot be deleted
 - **THEN** the transport returns HTTP 500, records a failed logout in the audit log, and does not report `logged_out`
 
+#### Scenario: Container runtime unavailable
+- **WHEN** `POST /logout/{backend}` is called while the container runtime cannot be reached
+- **THEN** the stored credential is still removed, and the transport returns HTTP 500 saying a pending login could not be cancelled, without reporting `logged_out`
+
 #### Scenario: Logout during login startup leaves no container
 - **WHEN** `POST /logout/{backend}` cancels a flow whose login container is still being created
 - **THEN** the login request that was starting the flow removes the container it created and reports the flow as cancelled, so no login container remains
+
+#### Scenario: Logout while waiting for a login URL
+- **WHEN** `POST /logout/{backend}` cancels a flow while its login request is still waiting for the login URL
+- **THEN** that login request returns a cancelled error with no URL, removes its container, and does not clear a flow started after the cancel
 
 #### Scenario: A cancelled flow cannot complete
 - **WHEN** a pending login is cancelled by `POST /logout/{backend}` while a `GET /login/{backend}` poll is completing it

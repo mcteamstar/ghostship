@@ -119,9 +119,9 @@ UNAUTHENTICATED  ──[POST /login/kiro/builder-id]──►  PENDING  ──[G
 
 **`POST /login/kiro/builder-id`** / **`POST /login/kiro/identity-center`** — start the device / Identity Center flow and return `login_url` and `code`. Identity Center takes `{start_url?, region?}`, defaulting to the configured `KIRO_IDENTITY_PROVIDER` / `KIRO_REGION`, adds `--license pro`, and returns 400 if a value is still missing. **`POST /login/kiro/api-key`** stores a pasted Pro+ key. Completion replaces any existing credential (no 409).
 
-**`GET /login/kiro`** — polls completion and returns status plus any pending flow and the configured Identity Center defaults. On success writes `ga-kiro-auth`, injects auth into all running crews, returns `complete`.
+**`GET /login/kiro`** — polls completion and returns status plus any pending flow and the configured Identity Center defaults. On success writes `ga-kiro-auth`, injects auth into running kiro crews (not claude or codex crews), returns `complete`.
 
-**`POST /logout/kiro`** — cancels any pending flow (removing its login container), then removes the stored credential and the legacy `ga-kiro-auth` file. Returns `200 {"status": "logged_out"}`, adding `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 only if the credential cannot be deleted. Running crews are not touched: they keep the credential they launched with until relaunched or nuked.
+**`POST /logout/kiro`** — cancels any pending flow (removing its login container), then removes the stored credential and the legacy `ga-kiro-auth` file. Returns `200 {"status": "logged_out"}`, adding `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 if the credential cannot be deleted, or if podman is unavailable so a pending login cannot be cancelled (the credential is still removed). Running crews are not touched: they keep the credential they launched with until relaunched or nuked.
 
 ---
 
@@ -298,7 +298,7 @@ returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
 Returns 404 if no flow is in progress, and 410 `{"status": "expired"}` when a
 submitted code did not complete within 120 seconds.
 
-**`POST /logout/claude`** — cancels any pending flow (removing its login container), then removes the stored credential and `ga-claude-auth`. Returns `200 {"status": "logged_out"}`, with `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 only if the credential cannot be deleted. Running crews are not touched.
+**`POST /logout/claude`** — cancels any pending flow (removing its login container), then removes the stored credential and `ga-claude-auth`. Returns `200 {"status": "logged_out"}`, with `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 if the credential cannot be deleted, or if podman is unavailable so a pending login cannot be cancelled (the credential is still removed). Running crews are not touched.
 
 ---
 
@@ -404,7 +404,7 @@ Returns 409 if already authenticated or a flow is in progress, and 400 if
 returns `{"status": "complete"}`. Returns `{"status": "pending"}` while waiting.
 Returns 404 if no flow is in progress.
 
-**`POST /logout/codex`** — cancels any pending flow (removing its login container), then removes the stored credential and `ga-codex-auth`. Returns `200 {"status": "logged_out"}`, with `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 only if the credential cannot be deleted. Running crews are not touched.
+**`POST /logout/codex`** — cancels any pending flow (removing its login container), then removes the stored credential and `ga-codex-auth`. Returns `200 {"status": "logged_out"}`, with `"aborted_pending_login": true` when a flow was cancelled. Idempotent: with nothing stored or pending it still returns 200. Returns 500 if the credential cannot be deleted, or if podman is unavailable so a pending login cannot be cancelled (the credential is still removed). Running crews are not touched.
 
 ---
 

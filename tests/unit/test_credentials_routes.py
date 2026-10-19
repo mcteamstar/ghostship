@@ -517,6 +517,18 @@ class TestLogoutCancelsAndClears(_LogoutHarness):
         self.assertIsNotNone(self._store.get("codex"))
         self.assertEqual(self.audits, [("logout", "failure", "codex")])
 
+    def test_podman_unavailable_still_removes_credential_and_reports_500(self):
+        import transport.login as login_mod
+        self._store.put("kiro", "api-key", "sk-kiro")
+        self._write_legacy("kiro")
+        with patch.object(login_mod, "_get_podman", side_effect=RuntimeError("no podman socket")):
+            resp = self._logout("kiro")
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(_json_data(resp)["status"], "error")
+        self.assertIsNone(self._store.get("kiro"))
+        self.assertFalse(os.path.exists(self.legacy["kiro"]))
+        self.assertEqual(self.abort_calls, [])
+
     def test_legacy_file_removal_failure_is_500(self):
         # A directory at the legacy path cannot be unlinked, so the removal fails.
         os.mkdir(self.legacy["kiro"])

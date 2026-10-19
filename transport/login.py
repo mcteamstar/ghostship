@@ -296,7 +296,8 @@ class LoginFlow(ABC):
         except Exception as e:
             logger.error("[%s] Failed to start login container: %s", self.backend, e)
             with self._lock:
-                self._pending = None
+                if self._pending is pending:
+                    self._pending = None
             return {"error": f"Failed to start login container: {e}"}
 
         # Identity, not "is not None": an abort during start_container clears
@@ -330,7 +331,8 @@ class LoginFlow(ABC):
         except Exception as e:
             self._nuke_container(podman, container)
             with self._lock:
-                self._pending = None
+                if self._pending is pending:
+                    self._pending = None
             return {"error": f"Failed to start {self._binary_name()} login: {e}"}
 
         pty_sock.setblocking(False)
@@ -358,16 +360,31 @@ class LoginFlow(ABC):
                 pass
             self._nuke_container(podman, container)
             with self._lock:
-                self._pending = None
+                current = self._pending is pending
+                if current:
+                    self._pending = None
+            if not current:
+                return {"error": "cancelled"}
             return {
                 "error": (
                     f"{self._binary_name()} did not produce a login URL within 45s."
                 )
             }
 
+        # A logout may have cancelled this flow during the PTY read. Return no
+        # URL for it: the container is gone and nothing can be stored.
         with self._lock:
-            if self._pending is not None:
-                self._pending["exec_id"] = exec_id
+            cancelled = self._pending is not pending
+            if not cancelled:
+                pending["exec_id"] = exec_id
+        if cancelled:
+            try:
+                pty_sock.close()
+            except Exception:
+                pass
+            self._nuke_container(podman, container)
+            logger.info("[%s] Login cancelled while waiting for a URL", self.backend)
+            return {"error": "cancelled"}
 
         logger.info(
             "[%s] Login flow started in %s, URL extracted", self.backend, container
@@ -1440,7 +1457,8 @@ def _logout(backend: str, request: Request) -> Response:
     """Cancel a pending *backend* login, then remove its stored credential.
 
     Idempotent: returns 200 whether or not anything was pending or stored.
-    Returns 500 only when a credential could not be removed.
+    Returns 500 when a credential could not be removed, or when podman is
+    unavailable so a pending login could not be cancelled.
     """
     lc = _lc()
     if backend == "kiro":
@@ -1450,14 +1468,16 @@ def _logout(backend: str, request: Request) -> Response:
     else:
         abort, legacy_path, account = lc._abort_codex_pending_login, lc._codex_auth_file_path(), "codex"
 
-    try:
-        podman = _get_podman()
-    except Exception as e:
-        return PlainTextResponse(str(e), status_code=500)
-
     # Abort first: a pending login must not be able to store a credential after
-    # this call removes it (see LoginFlow.commit_if_current).
-    aborted = abort(podman)
+    # this call removes it (see LoginFlow.commit_if_current). With podman down the
+    # abort cannot run, but no login poll can run either, so the removal still
+    # happens and the 500 below reports the pending login that was left behind.
+    aborted = False
+    cancel_error = None
+    try:
+        aborted = abort(_get_podman())
+    except Exception as e:
+        cancel_error = str(e)
 
     store_removed = legacy_removed = failed = False
     try:
@@ -1488,6 +1508,13 @@ def _logout(backend: str, request: Request) -> Response:
         _security.audit_auth_event(
             action="logout", outcome="success", account=account,
             source=_request_source(request), emit=logger.info,
+        )
+    if cancel_error is not None:
+        logger.error("Could not cancel pending %s login: %s", backend, cancel_error)
+        return JSONResponse(
+            {"status": "error",
+             "error": "The stored credential was removed, but a pending login could not be cancelled."},
+            status_code=500,
         )
     body: dict = {"status": "logged_out"}
     if aborted:

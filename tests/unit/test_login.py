@@ -21,6 +21,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from unittest import mock
 
 from tests.fakes import FakePodmanClient
 
@@ -464,6 +465,56 @@ class TestLoginFlowInitiateCancelledDuringStart(unittest.TestCase):
         self.assertIs(flow._pending, new_pending)
         self.assertIsNone(flow._pending["container"])
         self.assertFalse(podman.container_exists("ga-login-old"))
+
+
+class TestLoginFlowInitiateCancelledDuringPTY(unittest.TestCase):
+    """LoginFlow.initiate: a logout during the PTY URL read must not clear or hand out a newer flow."""
+
+    def _flow(self):
+        from transport.login import KiroLoginFlow
+
+        class _Flow(KiroLoginFlow):
+            def start_container(self, podman):
+                return "ga-login-a"
+
+        return _Flow()
+
+    def _podman(self):
+        podman = mock.Mock()
+        podman.container_exec.return_value = "kiro-cli"
+        podman.container_exec_pty_stdin.return_value = ("exec-a", mock.Mock(), b"")
+        return podman
+
+    def test_failed_pty_read_does_not_clear_a_newer_flow(self):
+        from transport import lifecycle
+        podman = self._podman()
+        flow = self._flow()
+        newer = {"container": "ga-login-b", "state": "started", "started_at": time.time()}
+
+        def pty_read(**kwargs):
+            flow.abort(podman)     # logout cancels flow A
+            flow._pending = newer  # login B takes the idle slot
+            return None, None      # A's container is gone, so no URL
+
+        with mock.patch.object(lifecycle, "_run_pty_login_flow", side_effect=pty_read):
+            result = flow.initiate(podman)
+        self.assertEqual(result, {"error": "cancelled"})
+        self.assertIs(flow._pending, newer)
+
+    def test_url_read_after_cancel_is_not_returned(self):
+        from transport import lifecycle
+        podman = self._podman()
+        flow = self._flow()
+
+        def pty_read(**kwargs):
+            flow.abort(podman)
+            return "https://example.invalid/login", "ABCD-1234"
+
+        with mock.patch.object(lifecycle, "_run_pty_login_flow", side_effect=pty_read):
+            result = flow.initiate(podman)
+        self.assertEqual(result, {"error": "cancelled"})
+        self.assertIsNone(flow._pending)
+        podman.container_remove.assert_called_with("ga-login-a")
 
 
 class TestLoginFlowCommitIfCurrent(unittest.TestCase):
