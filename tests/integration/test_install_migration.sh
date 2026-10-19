@@ -89,8 +89,7 @@ fi
 if [[ -f "${TREE}/config/ghostship.yaml" ]] && \
    grep -q 'port: 9000' "${TREE}/config/ghostship.yaml" && \
    grep -q 'max_active: 6' "${TREE}/config/ghostship.yaml" && \
-   { grep -q 'identity_provider:' "${TREE}/config/ghostship.yaml" || \
-     grep -q 'identity_center:' "${TREE}/config/ghostship.yaml"; }; then
+   grep -q 'identity_center:' "${TREE}/config/ghostship.yaml"; then
   pass "migrated yaml holds the non-default values under YAML paths"
 else
   fail "migrated yaml missing expected values"
