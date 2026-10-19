@@ -33,6 +33,7 @@ table; it no longer defines them itself.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import threading
@@ -1429,6 +1430,15 @@ async def _handle_login_kiro_get(request: Request) -> Response:
     original _handle_login_get polling cycle.
     """
     pending = KIRO_FLOW.state
+    # Spec (backend-credentials §GET): for kiro, also return the configured
+    # Identity Center start_url/region when set, so the CLI can offer them
+    # as defaults. Non-secret config — never a credential value.
+    ic = None
+    if cfg.kiro_identity_provider or cfg.kiro_region:
+        ic = {
+            "start_url": cfg.kiro_identity_provider or None,
+            "region": cfg.kiro_region or None,
+        }
     # No flow in progress — return credential store status
     if pending is None:
         st = _cred_store.status().get("kiro", {})
@@ -1439,18 +1449,19 @@ async def _handle_login_kiro_get(request: Request) -> Response:
             "stored_at": st.get("stored_at"),
             "pending_flow": None,
         }
-        # Spec (backend-credentials §GET): for kiro, also return the configured
-        # Identity Center start_url/region when set, so the CLI can offer them
-        # as defaults. Non-secret config — never a credential value.
-        if cfg.kiro_identity_provider or cfg.kiro_region:
-            resp["identity_center"] = {
-                "start_url": cfg.kiro_identity_provider or None,
-                "region": cfg.kiro_region or None,
-            }
+        if ic:
+            resp["identity_center"] = ic
         return JSONResponse(resp)
     # Flow in progress — delegate to the existing polling handler
-    # which also drives completion and writes ga-kiro-auth.
-    return await _handle_login_get(request)
+    # which also drives completion and writes ga-kiro-auth. Keep the Identity
+    # Center defaults on its JSON responses too, or the CLI loses them while a
+    # stale flow is pending.
+    poll = await _handle_login_get(request)
+    if ic and isinstance(poll, JSONResponse):
+        body = json.loads(poll.body)
+        body["identity_center"] = ic
+        return JSONResponse(body, status_code=poll.status_code)
+    return poll
 
 
 async def _handle_login_claude_get_new(request: Request) -> Response:

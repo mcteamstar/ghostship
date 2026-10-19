@@ -317,6 +317,32 @@ class TestGetLoginStatus(_BaseRouteTest):
         finally:
             login_mod.cfg = orig_cfg
 
+    def test_kiro_get_identity_center_defaults_while_flow_pending(self):
+        """A pending (possibly stale) flow must not hide the IDC defaults."""
+        import transport.login as login_mod
+        from transport.config import Config
+        orig_cfg = login_mod.cfg
+        orig_pending = login_mod.KIRO_FLOW._pending
+
+        async def fake_poll(request):
+            return login_mod.JSONResponse({"status": "pending"})
+
+        try:
+            login_mod.cfg = Config(
+                ga_crew_agent="kiro",
+                kiro_identity_provider="https://my-sso.awsapps.com/start",
+                kiro_region="us-east-1",
+            )
+            login_mod.KIRO_FLOW._pending = {"container": "ga-login-x", "started_at": 0}
+            with patch.object(login_mod, "_handle_login_get", fake_poll):
+                resp = _run(login_mod._handle_login_kiro_get(_make_request()))
+            data = _json_data(resp)
+            self.assertEqual(data["status"], "pending")
+            self.assertEqual(data["identity_center"]["region"], "us-east-1")
+        finally:
+            login_mod.cfg = orig_cfg
+            login_mod.KIRO_FLOW._pending = orig_pending
+
     def test_kiro_get_no_identity_center_when_unconfigured(self):
         """No identity_center block when KIRO_IDENTITY_PROVIDER/KIRO_REGION unset."""
         from transport.login import _handle_login_kiro_get
