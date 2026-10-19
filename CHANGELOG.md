@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Choose the backend per crew (TRN-259)
+
+- **`launch` takes an optional `backend` argument** (`"kiro"`, `"claude"` or `"codex"`). Omitted, the crew uses the transport default (first entry of `backends.default`) as before. Different crews can now run different backends on one transport, using each backend's stored login. A backend that isn't enabled (kiro always is; others when listed in `backends.default`) returns `backend_not_enabled` with the enabled list and creates nothing.
+- **Fix: restarts keep a crew's backend.** Reconcile and recovery restarts used to re-patch the crew config with the *current* default backend, so changing `backends.default` and reinstalling silently switched existing crews to the new runtime on their next restart. Restarts now use the crew's recorded `acp_backend` (missing → `kiro`).
+
 ### HOST is ga-portal's address only; network.api_key is the one auth setting (portal-only-host)
 
 - **BREAKING — `HOST` (`network.host`) now only sets where ga-portal (Caddy) publishes, and defaults to `127.0.0.1`.** It used to set the transport's in-container listen address, while ga-portal was always published on `0.0.0.0`. So `HOST=127.0.0.1` broke every request through the portal (502, `connection refused`), and every install was reachable from the LAN whatever `HOST` said. The transport now always listens on `0.0.0.0` inside its container, and ga-portal publishes `PORT` and the dashboard range on `HOST`. **If you relied on remote access without setting `host`, set `network.host: 0.0.0.0` (or an interface address) and an API key.** `install.sh` prints a one-time notice when it narrows an existing all-interfaces install.

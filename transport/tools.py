@@ -510,7 +510,12 @@ def resource_compositions() -> str:
 
 
 @_registry_guard
-def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None = None) -> dict:
+def launch(
+    crew_id: str,
+    composition: str = "spec-ops",
+    dashboard: bool | None = None,
+    backend: str | None = None,
+) -> dict:
     """Step 1: create a crew workspace — summon a new crew container into existence, with its own workspace volume.
 
     Creates an isolated crew: a full KiroCrew instance (gateway + agent pool)
@@ -545,6 +550,13 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                    browser visibility, pass dashboard=False (or dispatch with
                    slot=False) to avoid this overhead. Use dashboard=True only
                    when you actually intend to watch the crew in a browser.
+        backend: Agent runtime for this crew: "kiro", "claude" or "codex".
+                 None (default) uses the transport default (the first entry of
+                 backends.default). Must be an enabled backend — kiro always is;
+                 claude/codex only when listed in backends.default — otherwise
+                 launch returns backend_not_enabled with the enabled list. The
+                 crew keeps this backend for its whole life, including restarts;
+                 authentication uses that backend's stored credential.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """
@@ -553,6 +565,18 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
 
     if not re.match(r'^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$', crew_id):
         return {"error": "crew_id must be lowercase alphanumeric/hyphens, 1-50 chars"}
+
+    # TRN-259: resolve the crew's backend — the caller's choice, else the
+    # transport default — and require it to be enabled (its toolchain is only
+    # in the crew image when it is). Everything below keys on this value.
+    backend = (backend or GA_CREW_ACP_BACKEND).strip().lower()
+    if not login._backend_enabled(backend):
+        return {
+            "error": "backend_not_enabled",
+            "backend": backend,
+            "enabled": list(login._enabled_backends()),
+            "instructions": login._backend_not_enabled_message(backend),
+        }
 
     # Resolve crew type from registry
     composition_entry = _resolve_composition(composition)
@@ -575,19 +599,11 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
     # task 2.1). No module-level credential globals remain; store.get(backend)
     # is called here and the result is used for gating and env injection below.
     auth_b64: str | None = None
-    # Defensive: startup already rejects a default backend outside the enabled
-    # set, so configuration can't reach this. It becomes a real path once a
-    # crew can pick its own backend (per-session selection).
-    if not login._backend_enabled(GA_CREW_ACP_BACKEND):
-        return {
-            "error": "backend_not_enabled",
-            "instructions": login._backend_not_enabled_message(GA_CREW_ACP_BACKEND),
-        }
 
-    # Resolve credential for the default backend once per launch.
-    _cred = _cred_store.get(GA_CREW_ACP_BACKEND)
+    # Resolve the crew backend's credential once per launch.
+    _cred = _cred_store.get(backend)
 
-    if GA_CREW_ACP_BACKEND == "claude":
+    if backend == "claude":
         # Claude backend — require a stored credential (any method).
         # If no credential is present, initiate the Claude login flow and return
         # not_authenticated with the login URL.
@@ -607,7 +623,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 "code": result.get("code"),
                 "instructions": "Open login_url, approve, then POST the pasted code to /login/claude/code, poll GET /login/claude until complete, then call launch again.",
             }
-    elif GA_CREW_ACP_BACKEND == "codex":
+    elif backend == "codex":
         # Codex backend — require a stored credential (any method).
         # If no credential is present, initiate the Codex login flow and return
         # not_authenticated with the login URL.
@@ -736,10 +752,10 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
         # Credential-based env injection — resolved per-launch from the store
         # (TRN-233 task 2.1).  _cred was resolved above in the auth-gating block;
         # method drives which env var to set.
-        if GA_CREW_ACP_BACKEND == "kiro":
+        if backend == "kiro":
             if _cred and _cred["method"] == "api-key":
                 container_env["KIRO_API_KEY"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
-        elif GA_CREW_ACP_BACKEND == "claude":
+        elif backend == "claude":
             if _cred:
                 if _cred["method"] == "api-key":
                     container_env["ANTHROPIC_API_KEY"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
@@ -748,7 +764,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 elif _cred["method"] == "setup-token":
                     container_env["CLAUDE_CODE_OAUTH_TOKEN"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
                 # oauth method: ~/.claude/ is injected in _finish_crew_setup via _inject_claude_auth
-        elif GA_CREW_ACP_BACKEND == "codex":
+        elif backend == "codex":
             if _cred and _cred["method"] == "api-key":
                 container_env["OPENAI_API_KEY"] = _cred["payload"].decode("utf-8") if isinstance(_cred["payload"], bytes) else _cred["payload"]
             # chatgpt method: ~/.codex/ is injected in _finish_crew_setup via _inject_codex_auth
@@ -860,7 +876,7 @@ def launch(crew_id: str, composition: str = "spec-ops", dashboard: bool | None =
                 registry._reg["crews"].pop(crew_id, None)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend)
         # _finish_crew_setup error-dict paths have already called _cleanup_crew
         # (removing the admiral secret and Podman resources). The registry placeholder
         # entry written before the try block still exists and must be removed here.

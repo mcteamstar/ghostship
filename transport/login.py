@@ -803,15 +803,21 @@ def _warn_inert_backend_settings() -> None:
             )
 
 
+def _enabled_backends() -> tuple[str, ...]:
+    """The enabled backends in order: kiro (always — bundled in every crew
+    image), then the others listed in GA_CREW_AGENT."""
+    names = ["kiro"]
+    for name in cfg.ga_crew_agent.split(","):
+        name = name.strip().lower()
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def _backend_enabled(backend: str) -> bool:
     """True when ``backend`` is enabled. Kiro always is (bundled in every crew
     image); others must be listed in GA_CREW_AGENT."""
-    enabled = frozenset(
-        name.strip().lower()
-        for name in cfg.ga_crew_agent.split(",")
-        if name.strip()
-    )
-    return backend == "kiro" or backend in enabled
+    return backend in _enabled_backends()
 
 
 def _backend_not_enabled_message(backend: str) -> str:

@@ -205,6 +205,41 @@ class _EnsureRunningBase(unittest.TestCase):
             p.stop()
 
 
+# ── TestRestartKeepsBackend (TRN-259) ─────────────────────────────────────────
+
+class TestRestartKeepsBackend(_EnsureRunningBase):
+    """Restarts re-patch the crew config from the recorded acp_backend, not the
+    transport default."""
+
+    def _patched_backend(self):
+        _args, kwargs = self.life._patch_crew_config.call_args
+        return kwargs["backend"]
+
+    def test_ensure_running_kiro_crew_under_claude_default(self):
+        self.crews[CREW_ID]["acp_backend"] = "kiro"
+        with patch.object(self.life, "GA_CREW_ACP_BACKEND", "claude"):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertEqual(self._patched_backend(), "kiro")
+
+    def test_ensure_running_claude_crew_under_kiro_default(self):
+        self.crews[CREW_ID]["acp_backend"] = "claude"
+        with patch.object(self.life, "GA_CREW_ACP_BACKEND", "kiro"):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertEqual(self._patched_backend(), "claude")
+
+    def test_ensure_running_missing_backend_is_kiro(self):
+        self.crews[CREW_ID].pop("acp_backend", None)
+        with patch.object(self.life, "GA_CREW_ACP_BACKEND", "claude"):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertEqual(self._patched_backend(), "kiro")
+
+    def test_reconcile_restart_cycle_uses_recorded_backend(self):
+        self.crews[CREW_ID]["acp_backend"] = "kiro"
+        with patch.object(self.life, "GA_CREW_ACP_BACKEND", "claude"):
+            self.launcher._run_restart_cycle(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertEqual(self._patched_backend(), "kiro")
+
+
 # ── TestEnsureRunning ─────────────────────────────────────────────────────────
 
 class TestEnsureRunning(_EnsureRunningBase):
@@ -297,6 +332,7 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         # container_start twice — initial start + post-config-repatch restart —
         # so counting container_start calls would not isolate the leader).
         self.assertEqual(self.life._patch_crew_config.call_count, 1)
+        self.assertIn("backend", self.life._patch_crew_config.call_args.kwargs)
         self.assertEqual(len(results), 2)
         # Both callers returned a crew dict (neither the nuked sentinel). The
         # authoritative status lives in the registry — the leader's returned
@@ -655,3 +691,62 @@ class TestModelPrecedence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── TestPatchFollowsCrewBackend (TRN-259) ─────────────────────────────────────
+
+class _ExecRecorder:
+    """Minimal podman stand-in that records container_exec argv."""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def container_exec(self, container, cmd):
+        self.calls.append(cmd)
+        return "ok"
+
+
+class TestPatchFollowsCrewBackend(unittest.TestCase):
+    """_patch_crew_config / _patch_models use the crew's backend, not the
+    transport default."""
+
+    def setUp(self):
+        import transport.lifecycle as life
+        self.life = life
+        self._patchers = [
+            patch.object(life, "GA_CREW_ACP_BACKEND", "claude"),
+            patch.object(life, "_load_crew_manifest", return_value={}),
+            patch.dict(life._KC_MODEL_BACKEND_OVERRIDE,
+                       {"kiro": "kiro-override", "claude": "claude-override"}, clear=True),
+            patch.dict(life._KC_MODEL_BACKEND_DEFAULT,
+                       {"kiro": "kiro-default", "claude": "claude-default"}, clear=True),
+        ]
+        for p in self._patchers:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self._patchers])
+
+    def _agent_overrides(self, backend):
+        import base64
+        import json
+        rec = _ExecRecorder()
+        self.life._patch_crew_config(rec, "gs-crew-x", backend=backend)
+        return json.loads(base64.b64decode(rec.calls[-1][-1]))["agent"]
+
+    def test_kiro_crew_under_claude_default(self):
+        agent = self._agent_overrides("kiro")
+        self.assertNotIn("acp_backend", agent)
+        self.assertEqual(agent["default_model"], "kiro-default")
+
+    def test_claude_crew(self):
+        agent = self._agent_overrides("claude")
+        self.assertEqual(agent["acp_backend"], "claude")
+        self.assertEqual(agent["default_model"], "claude-default")
+
+    def test_patch_models_uses_crew_backend(self):
+        rec = _ExecRecorder()
+        self.life._patch_models(rec, "gs-crew-x", backend="kiro")
+        self.assertEqual(rec.calls[-1][-1], "kiro-override")
+
+    def test_backend_is_required(self):
+        with self.assertRaises(TypeError):
+            self.life._patch_crew_config(_ExecRecorder(), "gs-crew-x")

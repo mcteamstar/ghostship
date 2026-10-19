@@ -25,7 +25,14 @@ Development inside a ghostship follows [OpenSpec](https://github.com/Fission-AI/
 ## Crew lifecycle
 
 ```
-launch(crew_id)
+launch(crew_id, backend=None)
+  0. Resolve the crew's backend: `backend` if given, else the transport
+     default (first entry of GA_CREW_AGENT). It must be enabled (kiro always;
+     claude/codex when listed), otherwise launch returns backend_not_enabled.
+     Every backend-specific step below (credential, login flow, env, config
+     and model patches) uses this value, and it is recorded as `acp_backend`
+     in the registry. Restarts re-apply the recorded backend, never the
+     current default.
   1. Check the ga-kiro-auth file (DATA_DIR/ga-kiro-auth, not a Podman secret)
      └── missing → start kiro-cli device auth flow, return login URL
                    call launch again after auth to finish setup
@@ -265,7 +272,7 @@ Policy injection failure is logged but never aborts launch.
 
 ### Claude backend governance gap (TRN-167)
 
-When `GA_CREW_AGENT=claude` (deprecated: `GA_CREW_ACP_BACKEND=claude`), the Claude Code ACP server (`claude-agent-acp`) runs inside each crew container instead of `kiro-cli`. This changes the trust model in one important way:
+When a crew's backend is `claude` (the default via `GA_CREW_AGENT=claude`, or `launch(..., backend="claude")`), the Claude Code ACP server (`claude-agent-acp`) runs inside each crew container instead of `kiro-cli`. This changes the trust model in one important way:
 
 - **KiroCrew's per-call tool approval gate is bypassed.** kiro-cli normally blocks individual tool calls until they are approved by the approval policy (or automatically approved under `dangerously_skip_permissions=true`). `claude-agent-acp` does not route through this gate; all tool calls are executed without a KiroCrew-level checkpoint. Headless auto-approval is achieved via the `CLAUDE_CODE_HEADLESS=1` environment variable injected into crew containers at launch.
 
@@ -277,7 +284,7 @@ Crews running with `GA_CREW_AGENT=claude` require outbound HTTPS access to **`ap
 
 ### Codex backend governance model (TRN-172)
 
-When `GA_CREW_AGENT=codex` (deprecated: `GA_CREW_ACP_BACKEND=codex`), the Codex ACP adapter (`codex-acp`) runs inside each crew container instead of `kiro-cli`. Its trust model parallels the Claude backend but rests on a different mechanism:
+When a crew's backend is `codex` (the default via `GA_CREW_AGENT=codex`, or `launch(..., backend="codex")`), the Codex ACP adapter (`codex-acp`) runs inside each crew container instead of `kiro-cli`. Its trust model parallels the Claude backend but rests on a different mechanism:
 
 - **KiroCrew's per-call tool approval gate is bypassed** — but by design, not by an approval-suppression flag. KiroCrew verifies at `session/new` that the codex session advertises `mode=read-only` before the first prompt; the read-only mode is the mechanism, so there is no ghostship-side approval-suppression environment variable to inject (unlike the Claude backend's `CLAUDE_CODE_HEADLESS=1`). ghostship's job is simply not to fight this — the per-call kiro approval gate does not apply to a codex session.
 

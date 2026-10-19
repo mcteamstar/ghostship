@@ -1022,16 +1022,16 @@ def _seed_openspec_store(podman: PodmanClient, container: str) -> None:
         logger.warning("openspec init failed for %s: %s", container, e)
 
 
-def _patch_models(podman: PodmanClient, container: str) -> None:
+def _patch_models(podman: PodmanClient, container: str, *, backend: str) -> None:
     """Hard-patch all *.json agent files to the per-backend model override.
 
     TRN-257: the override is now per-backend (``backends.<b>.model.override``),
-    resolved for the crew's runtime default backend (``GA_CREW_ACP_BACKEND``).
+    resolved for the crew's own ``backend`` (TRN-259).
     When set, it forces every agent on that backend to the named model — the
     highest operator-controlled precedence level (``backend_override``), beaten
     only by a dispatch-time ``model=`` argument. No override set -> no patch.
     """
-    model = _resolve_backend_model_override(GA_CREW_ACP_BACKEND)
+    model = _resolve_backend_model_override(backend)
     if not model:
         return
     try:
@@ -1491,8 +1491,18 @@ def _reconcile_registry() -> None:
     logger.info("Registry reconciled. Live crews: %s", list(snapshot.keys()))
 
 
-def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> None:
+def _patch_crew_config(
+    podman: PodmanClient,
+    container: str,
+    composition_entry: dict | None = None,
+    *,
+    backend: str,
+) -> None:
     """Patch KiroCrew config while the container is running.
+
+    ``backend`` is the crew's own backend (TRN-259): the launch-time choice, or
+    the registry-recorded ``acp_backend`` on restart. It is required so no call
+    site silently falls back to the transport default.
 
     The stopped-crew recovery path calls this immediately after a provisional
     start, before waiting for gateway readiness. Create the destination
@@ -1568,15 +1578,15 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
         "sandbox": "off",
         "sandbox_allow_unsandboxed_exec": True,
     }
-    # When GA_CREW_ACP_BACKEND=claude, write acp_backend into the crew config so
-    # the gateway routes agent spawns through the Claude Code ACP runtime rather
-    # than the kiro-cli runtime.
-    if GA_CREW_ACP_BACKEND == "claude":
+    # For a claude crew, write acp_backend into the crew config so the gateway
+    # routes agent spawns through the Claude Code ACP runtime rather than the
+    # kiro-cli runtime.
+    if backend == "claude":
         agent_overrides["acp_backend"] = "claude"
-    # When GA_CREW_ACP_BACKEND=codex, route agent spawns through the Codex ACP
-    # runtime. codex-acp advertises a verified read-only mode at session/new, so
+    # For a codex crew, route agent spawns through the Codex ACP runtime.
+    # codex-acp advertises a verified read-only mode at session/new, so
     # ghostship's per-call kiro approval gate does not apply (see crew-governance).
-    elif GA_CREW_ACP_BACKEND == "codex":
+    elif backend == "codex":
         agent_overrides["acp_backend"] = "codex"
     # agent.default_model — the fallback model applied when no per-agent model
     # field overrides it. TRN-257 resolves it per backend:
@@ -1587,7 +1597,7 @@ def _patch_crew_config(podman: PodmanClient, container: str, composition_entry: 
     # The per-backend override (if any) is applied separately as a hard patch in
     # _patch_models. Only write default_model when the resolved fallback is
     # non-empty; omitting it leaves KiroCrew's built-in default intact.
-    _default_model = _resolve_backend_default_model(GA_CREW_ACP_BACKEND)
+    _default_model = _resolve_backend_default_model(backend)
     if _default_model:
         agent_overrides["default_model"] = _default_model
 
@@ -1786,6 +1796,7 @@ def _finish_crew_setup(
     *,
     admiral_secret: str,
     dashboard: bool = False,
+    backend: str,
 ) -> dict:
     """Complete crew setup after auth is confirmed.
 
@@ -1808,6 +1819,7 @@ def _finish_crew_setup(
         composition_entry,
         admiral_secret=admiral_secret,
         dashboard=dashboard,
+        backend=backend,
     )
 
 

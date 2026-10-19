@@ -88,7 +88,16 @@ evac(path, crew_id, ...)            → presigned download URL; GET bytes yourse
 nuke(crew_id, confirm=True)         → destroys container + BOTH volumes
 ```
 
-### 1. `launch(crew_id, composition="spec-ops")`
+### 1. `launch(crew_id, composition="spec-ops", backend=None)`
+
+`backend` picks the agent runtime for this crew — `"kiro"`, `"claude"` or
+`"codex"`. Omit it to use the transport default. Different crews can run
+different backends side by side; a crew keeps its backend until it is nuked.
+Only enabled backends are accepted (kiro always; the others when the operator
+listed them in `backends.default`) — anything else returns
+`backend_not_enabled` with the enabled list. If that backend has no stored
+login, `launch` returns `not_authenticated` with a `login_url` for it.
+`crews()` shows each crew's `acp_backend`.
 
 Name `crew_id` after the work — lowercase letters/digits/hyphens, 1–50 chars.
 There's no single required convention; pick whatever makes the crew's purpose
