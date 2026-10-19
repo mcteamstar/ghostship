@@ -894,12 +894,12 @@ async def _handle_login_post(
     """
     if _lc()._read_auth_file():
         return PlainTextResponse(
-            "Already authenticated. POST /logout first.",
+            "Already authenticated. Run 'ghostship auth logout kiro' first.",
             status_code=409,
         )
     if KIRO_FLOW.state is not None:
         return PlainTextResponse(
-            "Login already in progress. Poll GET /login for status.",
+            "Login already in progress. Run 'ghostship auth logout kiro' to cancel, or poll GET /login for status.",
             status_code=409,
         )
 
@@ -912,7 +912,7 @@ async def _handle_login_post(
 
     if result.get("login_pending"):
         return PlainTextResponse(
-            "Login already in progress. Poll GET /login for status.",
+            "Login already in progress. Run 'ghostship auth logout kiro' to cancel, or poll GET /login for status.",
             status_code=409,
         )
     if "error" in result:
@@ -1030,12 +1030,12 @@ async def _handle_claude_login_post(request: Request) -> Response:
 
     if _lc()._claude_auth_exists():
         return PlainTextResponse(
-            "Already authenticated. POST /logout/claude first.",
+            "Already authenticated. Run 'ghostship auth logout claude' first.",
             status_code=409,
         )
     if CLAUDE_FLOW.state is not None:
         return PlainTextResponse(
-            "Claude login already in progress. Poll GET /login/claude for status.",
+            "Claude login already in progress. Run 'ghostship auth logout claude' to cancel, or poll GET /login/claude for status.",
             status_code=409,
         )
 
@@ -1048,7 +1048,7 @@ async def _handle_claude_login_post(request: Request) -> Response:
 
     if result.get("login_pending"):
         return PlainTextResponse(
-            "Claude login already in progress. Poll GET /login/claude for status.",
+            "Claude login already in progress. Run 'ghostship auth logout claude' to cancel, or poll GET /login/claude for status.",
             status_code=409,
         )
     if "error" in result:
@@ -1201,12 +1201,12 @@ async def _handle_codex_login_post(request: Request) -> Response:
 
     if _lc()._codex_auth_exists():
         return PlainTextResponse(
-            "Already authenticated. POST /logout/codex first.",
+            "Already authenticated. Run 'ghostship auth logout codex' first.",
             status_code=409,
         )
     if CODEX_FLOW.state is not None:
         return PlainTextResponse(
-            "Codex login already in progress. Poll GET /login/codex for status.",
+            "Codex login already in progress. Run 'ghostship auth logout codex' to cancel, or poll GET /login/codex for status.",
             status_code=409,
         )
 
@@ -1219,7 +1219,7 @@ async def _handle_codex_login_post(request: Request) -> Response:
 
     if result.get("login_pending"):
         return PlainTextResponse(
-            "Codex login already in progress. Poll GET /login/codex for status.",
+            "Codex login already in progress. Run 'ghostship auth logout codex' to cancel, or poll GET /login/codex for status.",
             status_code=409,
         )
     if "error" in result:
@@ -1589,7 +1589,7 @@ async def _handle_login_claude_oauth_post(request: Request) -> Response:
         return JSONResponse({"error": _backend_not_enabled_message("claude")}, status_code=400)
     if CLAUDE_FLOW.state is not None:
         return JSONResponse(
-            {"error": "Claude login already in progress. Poll GET /login/claude."},
+            {"error": "Claude login already in progress. Run 'ghostship auth logout claude' to cancel, or poll GET /login/claude."},
             status_code=409,
         )
     try:
@@ -1599,7 +1599,7 @@ async def _handle_login_claude_oauth_post(request: Request) -> Response:
     result = _lc()._initiate_claude_login(podman)
     if result.get("login_pending"):
         return JSONResponse(
-            {"error": "Claude login already in progress. Poll GET /login/claude."},
+            {"error": "Claude login already in progress. Run 'ghostship auth logout claude' to cancel, or poll GET /login/claude."},
             status_code=409,
         )
     if "error" in result:
@@ -1659,7 +1659,7 @@ async def _handle_login_codex_chatgpt_post(request: Request) -> Response:
         return JSONResponse({"error": _backend_not_enabled_message("codex")}, status_code=400)
     if CODEX_FLOW.state is not None:
         return JSONResponse(
-            {"error": "Codex login already in progress. Poll GET /login/codex."},
+            {"error": "Codex login already in progress. Run 'ghostship auth logout codex' to cancel, or poll GET /login/codex."},
             status_code=409,
         )
     try:
@@ -1669,7 +1669,7 @@ async def _handle_login_codex_chatgpt_post(request: Request) -> Response:
     result = _lc()._initiate_codex_login(podman)
     if result.get("login_pending"):
         return JSONResponse(
-            {"error": "Codex login already in progress. Poll GET /login/codex."},
+            {"error": "Codex login already in progress. Run 'ghostship auth logout codex' to cancel, or poll GET /login/codex."},
             status_code=409,
         )
     if "error" in result:
