@@ -332,6 +332,28 @@ class TestKiroLoginCmdLicense(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--license") + 1], "free")
 
 
+class TestKiroPromptAnswers(unittest.TestCase):
+    """Pre-filled Start URL/Region prompts are accepted with a bare Enter."""
+
+    def test_identity_center_prompts_answer_enter_only(self):
+        from transport.login import KiroLoginFlow
+        flow = KiroLoginFlow()
+        flow._pending = {
+            "method": "identity-center",
+            "provider": {"start_url": "https://d-123.awsapps.com/start/", "region": "eu-west-1"},
+        }
+        answers = {p.pattern: a for p, a in flow._prompt_patterns()}
+        self.assertEqual(answers["Start URL"], b"\n")
+        self.assertEqual(answers["Region"], b"\n")
+
+    def test_builder_id_has_no_idc_prompts(self):
+        from transport.login import KiroLoginFlow
+        flow = KiroLoginFlow()
+        flow._pending = {"method": "builder-id", "provider": None}
+        patterns = [p.pattern for p, _ in flow._prompt_patterns()]
+        self.assertNotIn("Start URL", patterns)
+
+
 class TestKiroInitiateResolvesMethod(unittest.TestCase):
     """KiroLoginFlow.initiate records method/provider in the pending state."""
 

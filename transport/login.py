@@ -471,17 +471,16 @@ class KiroLoginFlow(LoginFlow):
         return cmd
 
     def _prompt_patterns(self) -> list:
-        # Fallbacks only: the explicit flags above should suppress these prompts.
+        # --license skips the method menu (kept as a fallback). With
+        # --identity-provider/--region, kiro-cli still shows the Start URL and
+        # Region prompts but pre-fills them, so a bare Enter accepts the value;
+        # typing it again would append to the pre-filled text.
         import re
         patterns = [(re.compile(r"Select login method"), b"\n")]
-        provider = self._provider()
-        if provider:
+        if self._provider():
             patterns += [
-                (
-                    re.compile(r"Start URL"),
-                    (provider["start_url"].rstrip("/") + "/\n").encode(),
-                ),
-                (re.compile(r"Region"), (provider["region"] + "\n").encode()),
+                (re.compile(r"Start URL"), b"\n"),
+                (re.compile(r"Region"), b"\n"),
             ]
         return patterns
 

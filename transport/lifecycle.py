@@ -2074,6 +2074,14 @@ def _run_pty_login_flow(
     except Exception as e:
         logger.warning("PTY read error in _run_pty_login_flow: %s", e)
 
+    if not login_url:
+        # Surface what the CLI printed so a stalled prompt is diagnosable from
+        # the transport log alone.
+        tail = _strip_terminal_sequences(
+            collected.decode("utf-8", errors="replace")
+        ).strip()[-500:]
+        logger.warning("Login CLI produced no URL; last output: %r", tail)
+
     if login_url:
         # Hand remaining PTY output to a background daemon thread so the
         # socket drains to EOF without blocking the event loop.
