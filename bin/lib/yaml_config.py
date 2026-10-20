@@ -123,6 +123,10 @@ DEFAULTS: dict[str, str] = {
     "PODMAN_SOCKET": "/run/user/1000/podman/podman.sock",
     "KC_IMAGE": "localhost/spec-ops:latest",
     "KC_BASE_IMAGE": "",
+    # Pin for mcteamstar/.agents baked into the crew image (TRN-264).
+    # Empty = use the Containerfile default ("main") — override with a tag or
+    # SHA for reproducible builds. A changed value forces a crew image rebuild.
+    "AGENTS_REF": "",
     # ── portal / caddy ──
     "GA_PORTAL_TLS_MODE": "off",
     "GA_PORTAL_DOMAIN": "",
@@ -219,6 +223,7 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("machine", "images", "podman_socket"): "PODMAN_SOCKET",
     ("machine", "images", "kc_image"): "KC_IMAGE",
     ("machine", "images", "kc_base_image"): "KC_BASE_IMAGE",
+    ("machine", "images", "agents_ref"): "AGENTS_REF",
 }
 
 # env var -> YAML path, derived once (used by migration).

@@ -234,3 +234,10 @@ machine:
     # KiroCrew base image. Empty = pinned by install.sh automatically.
     # Set explicitly only to test a specific KiroCrew version.
     kc_base_image: ""
+
+    # Pin for mcteamstar/.agents baked into the crew image (TRN-264).
+    # Academy content is staged via .agents/setup <backend> at crew launch.
+    # Empty = use "main" (development default). For reproducible builds set this
+    # to a specific tag or SHA (e.g. "v1.2.0" or a 40-char commit SHA).
+    # A changed value forces a crew image rebuild on the next install.sh run.
+    agents_ref: ""

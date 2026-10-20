@@ -382,6 +382,15 @@ class AcademyLoader:
         *kind* must be one of ``"agents"``, ``"skills"``, or ``"steering"``.
         Returns the list of copied asset names (filenames / directory names).
         Raises ``ValueError`` for unknown kinds.
+
+        .. warning::
+            ``copy("skills")`` and ``copy("steering")`` stage content into the
+            ``.agents/`` directories but do **not** call ``_run_setup()``.  The
+            staged content is therefore not wired to the backend's harness paths
+            until ``.agents/setup <backend>`` runs.  Prefer ``copy_all()`` for
+            normal crew setup; use this method only when you need a single-kind
+            operation and will call ``_run_setup()`` yourself.  ``copy("agents")``
+            is exempt — it writes directly to ``~/.kiro/agents/`` (kiro-only).
         """
         if kind == "agents":
             return self._copy_agents()

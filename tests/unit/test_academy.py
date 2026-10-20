@@ -125,61 +125,31 @@ def test_stage_skills_destination_is_agents_skills_dir(tmp_path: Path) -> None:
 # ── _stage_steering tests ─────────────────────────────────────────────────────
 
 def test_stage_steering_puts_files_in_agents_context(tmp_path: Path) -> None:
-    """Steering docs are staged into .agents/context/."""
+    """Steering docs are staged into .agents/context/ (real implementation)."""
     import transport.academy as academy
 
-    steering_dir = tmp_path / "steering"
-    steering_dir.mkdir()
+    steering_dir = tmp_path
     (steering_dir / "STANDING_ORDERS.md").write_text("orders\n", encoding="utf-8")
     (steering_dir / "TIPS.md").write_text("tips\n", encoding="utf-8")
 
     podman = _CapturePodman()
-    with (
-        patch.object(academy, "_load_crew_manifest", return_value={"steering": "*"}),
-        patch("builtins.open", side_effect=None),  # let real open work
-    ):
-        # Patch the steering source directory
-        with patch.object(Path, "exists", side_effect=lambda p=None: True):
-            pass  # can't easily patch Path("/steering") — use steering_src patch
-
-    # Use the internal method directly with patched steering source
     loader = academy.AcademyLoader(podman, "gs-test")
-    with (
-        patch.object(academy, "_load_crew_manifest", return_value={"steering": "*"}),
-        patch("transport.academy.Path") as MockPath,
-    ):
-        # Rebuild: patch the Path("/steering") call to return our tmp dir
-        import transport.academy as _acad
 
-        class _PatchedLoader(academy.AcademyLoader):
-            def _stage_steering(self):
-                # Inline _stage_steering with patched source
-                steering_src = steering_dir
-                selection = _acad._load_crew_manifest(self._composition_entry)["steering"]
-                staged: list[str] = []
-                self._podman.container_exec(
-                    self._container, ["mkdir", "-p", _acad._AGENTS_CONTEXT_DIR]
-                )
-                for doc in steering_src.glob("*.md"):
-                    if not _acad._manifest_selects(selection, doc.name):
-                        continue
-                    data = doc.read_bytes()
-                    buf = io.BytesIO()
-                    with tarfile.open(fileobj=buf, mode="w") as tar:
-                        ti = tarfile.TarInfo(name=doc.name)
-                        ti.size = len(data)
-                        ti.mode = 0o644
-                        tar.addfile(ti, io.BytesIO(data))
-                    buf.seek(0)
-                    self._podman.container_archive_put(
-                        self._container, _acad._AGENTS_CONTEXT_DIR, buf.read()
-                    )
-                    staged.append(doc.name)
-                return staged
+    orig_path_cls = academy.Path
 
-        loader2 = _PatchedLoader(podman, "gs-test2")
-        with patch.object(academy, "_load_crew_manifest", return_value={"steering": "*"}):
-            result = loader2._stage_steering()
+    class _FakePath:
+        def __init__(self, *args):
+            if len(args) == 1 and args[0] == "/steering":
+                self._p = steering_dir
+            else:
+                self._p = orig_path_cls(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._p, name)
+
+    with patch.object(academy, "_load_crew_manifest", return_value={"steering": "*"}):
+        with patch.object(academy, "Path", _FakePath):
+            result = loader._stage_steering()
 
     assert sorted(result) == ["STANDING_ORDERS.md", "TIPS.md"]
     # All archive_put calls must target .agents/context/

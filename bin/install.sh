@@ -235,6 +235,11 @@ GA_ORDERS_DIR=""
 GA_TLS_CERTFILE=""
 GA_TLS_KEYFILE=""
 KC_BASE_IMAGE=""
+# Pin for mcteamstar/.agents baked into the crew image (TRN-264). Empty = use
+# the Containerfile default ("main"). Set to a tag or SHA for reproducible
+# builds; a changed value forces a crew image rebuild. Override via
+# machine.images.agents_ref in ghostship.yaml.
+AGENTS_REF=""
 GA_PORTAL_SESSION_TTL_SECS=86400
 GA_RATE_LIMIT_ENABLED=true
 GA_RATE_LIMIT_LOGIN_GET=30:60
@@ -941,6 +946,14 @@ if ${_PODMAN_CMD} image exists localhost/spec-ops:latest 2>/dev/null; then
     echo "  Detected stale localhost/spec-ops:latest version ('$_baked_crew_version' != '${VERSION}-spec-ops') -- forcing a clean rebuild."
     _CREW_BUILD_FLAGS=(--no-cache)
   fi
+  # TRN-264: a changed .agents pin must also trigger a clean rebuild.
+  _baked_agents_ref="$(${_PODMAN_CMD} inspect localhost/spec-ops:latest --format '{{ index .Labels "org.ghostship.agents_ref" }}' 2>/dev/null || true)"
+  [[ "$_baked_agents_ref" == "<no value>" ]] && _baked_agents_ref=""
+  _effective_agents_ref="${AGENTS_REF:-main}"
+  if [[ -n "$_baked_agents_ref" && "$_baked_agents_ref" != "$_effective_agents_ref" ]]; then
+    echo "  .agents pin changed ('${_baked_agents_ref}' -> '${_effective_agents_ref}') -- forcing a clean rebuild."
+    _CREW_BUILD_FLAGS=(--no-cache)
+  fi
 fi
 
 echo "Building localhost/base-admission:latest (admission) ..."
@@ -972,6 +985,7 @@ ${_PODMAN_CMD} build -t localhost/spec-ops-mid:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
   --build-arg VERSION="${VERSION}-spec-ops" \
   --build-arg AGENT_TOOLCHAINS="${AGENT_TOOLCHAINS}" \
+  ${AGENTS_REF:+--build-arg AGENTS_REF="${AGENTS_REF}"} \
   "$GHOSTSHIP_DIR/crews/spec-ops/" \
   && ${_PODMAN_CMD} build -t localhost/spec-ops:latest \
   "${_CREW_BUILD_FLAGS[@]}" \
