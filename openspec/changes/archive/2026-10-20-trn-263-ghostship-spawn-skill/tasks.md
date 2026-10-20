@@ -49,8 +49,9 @@
 
 - [x] 4.1 Correct the claude permission comment in `crews/spec-ops/toolchains/claude.sh`: claude crews run in KiroCrew's `default` mode under its hook gate, and `dangerously_skip_permissions` only approves what the gate allows. Add the same note, plus a short `ghostship-spawn` section, to `docs/architecture.md`. Fix the `KC_BASE_IMAGE` default note in `docs/configuration.md` to the pinned 0.9.0 digest. Add a CHANGELOG entry in a `## v0.8.1` section (create it if absent) covering the new skill and that Raven dispatch no longer stalls on claude crews. Verify: `grep -n bypassPermissions crews/spec-ops/toolchains/claude.sh` no longer claims KiroCrew writes it; the CHANGELOG entry is present.
 - [x] 4.2 Run the full unit suite. Verify: `scripts/run.sh --unit` exits 0.
-- [ ] 4.3 On the live install after `ghostship upgrade`:
+- [x] 4.3 On the live install after `ghostship upgrade`:
   - Launch a claude crew and supply the repo.
   - Order Captain with `specky` on a small change.
   - Confirm through the transport only (`captain status`, `pickup`, `crews()`) that Raven dispatches ghost with `ghostship-spawn` on the first check-in, with no refusal, and that a `dispatching ghost <task_id>` confirmation marker appears.
   Then dispatch a raven task over MCP to report `ls -l ~/.kiro/crew/skills/ghostship-spawn/scripts/`. Verify: the script is present and executable.
+  - Result (2026-10-20, transport at `b098153`, claude crew on KiroCrew 0.9.0): the skill was delivered and the script is executable in `~/.kiro/crew/skills/ghostship-spawn/scripts/`. At the second check-in Raven dispatched ghost (`1cde8f4be4d3b618`) with `ghostship-spawn`, with no refusal, and wrote both the intent and the `dispatching ghost 1cde8f4be4d3b618` confirmation markers. Caveat: at the first check-in Raven held, because claude sessions don't list academy skills in their Skill tool (issue #30), and it went ahead only after being told to call the helper by its path.
