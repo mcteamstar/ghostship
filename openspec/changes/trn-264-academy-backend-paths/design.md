@@ -27,13 +27,13 @@ Alternative considered: clone at launch time. Rejected — adds network dependen
 
 ### D2: AcademyLoader stages into .agents/ then execs setup, rather than writing directly to harness paths
 
-Ghostship should not own a per-backend path table — that belongs in `.agents`. Staging into `.agents/skills/`, `.agents/context/`, `.agents/mcp/` and running `setup <backend>` keeps all path knowledge in one place. When `.agents` adds opencode support, ghostship gets it automatically.
+Ghostship's academy is responsible for injecting content — not delivering it. `AcademyLoader` stages into `.agents/skills/`, `.agents/context/`, and `.agents/mcp/servers.json`, then calls `setup <backend>`. All delivery path knowledge, format conversion, and per-backend wiring lives in `.agents/setup`. Ghostship never needs to know about `~/.claude/rules/`, `~/.kiro/mcp.json`, or any harness-specific paths.
 
-Alternative considered: AcademyLoader reads the path table from `.agents` and writes directly. Rejected — duplicates the format conversion logic (especially MCP format per backend) and couples ghostship to `.agents` internals.
+Alternative considered: AcademyLoader writes directly to harness paths. Rejected — duplicates delivery logic that `.agents` already owns, couples ghostship to per-backend path conventions, and means every new backend requires ghostship changes.
 
-### D3: MCP delivery stays at launch time
+### D3: MCP delivered via .agents/mcp/servers.json
 
-Catalogue entries contain `${VAR}` references resolved from the transport's runtime environment (API keys, transport URL). These cannot be resolved at image build time. The staging step writes raw resolved JSON into `.agents/mcp/`; `setup` handles the per-backend format conversion.
+After env-var substitution, resolved catalogue entries are written as `.agents/mcp/servers.json` inside the container (the same format `.agents/setup` already reads via `load_mcp_servers()`). Each entry includes `"disabled": false` so academy-delivered servers are active by default. `setup <backend>` then writes the backend-native MCP config (kiro `mcp.json`, claude `.claude.json`, codex `config.toml`) from that single source. No MCP format conversion in ghostship.
 
 ### D4: .agents/setup called once per launch, not per kind
 
@@ -45,21 +45,17 @@ A single `setup <backend>` call handles skills, steering, and MCP in one pass. T
 
 ## Risks / Trade-offs
 
-- **`.agents/setup` container compatibility** → `.agents/setup` is tested on developer machines (macOS/Linux) where harness CLIs are installed. Inside a container, `kiro-cli` exists but `claude` and `codex` CLIs may or may not be present depending on the composition. `setup` must handle missing CLIs gracefully (it already skips undetected harnesses). Risk is low; mitigation is a container smoke-test in CI.
-- **Symlinks vs real files** → `.agents/setup` creates symlinks on developer machines. At bake time the source directories exist, so symlinks resolve correctly and are baked as real files. At launch-time injection the source is a tar archive delivered by `container_archive_put` — files land as real files, not symlinks. This is the desired behaviour; no special handling needed.
-- **`.agents` repo pin** → The crew image bakes a specific commit of `.agents`. If path conventions change in `.agents`, a crew image rebuild is needed. Mitigation: pin by tag/SHA in the Containerfile and bump deliberately.
-- **MCP format divergence** → `.agents/setup` currently writes kiro-format `mcp.json`. Claude and opencode formats differ. If `.agents/setup` does not yet handle the MCP format for a given backend, those crews get no MCP wiring. Mitigation: implement MCP support in `.agents` before or alongside this change; document as a known gap until done.
+- **`.agents/setup` container compatibility** → `setup` creates symlinks on developer machines. At bake time source dirs exist so symlinks resolve and are baked as real files. At launch-time, `AcademyLoader` tar-injects real files into `.agents/skills/` and `.agents/context/`, overwriting the baked symlinks — the harness paths then point to real files. Risk is low; mitigation is a container smoke-test in CI.
+- **`disabled: true` default in `.agents`** → `load_mcp_servers()` defaults new servers to `disabled: true`. `AcademyLoader` sets `"disabled": false` on every entry it writes to `servers.json` so academy-delivered servers are active. This is the only ghostship-side MCP concern.
+- **`.agents` repo pin** → The crew image bakes a specific commit of `.agents`. Path convention changes in `.agents` require a crew image rebuild. Mitigation: pin by tag/SHA in the Containerfile and bump deliberately.
 
 ## Migration Plan
 
-1. Update `mcteamstar/.agents/setup` to handle container context (no-op if harness CLI absent)
+1. Verify `mcteamstar/.agents/setup` handles missing harness CLIs gracefully (it already skips undetected harnesses — confirm in a container context)
 2. Add `.agents` clone to all composition Containerfiles
 3. Refactor `AcademyLoader`: replace `_copy_skills`, `_copy_steering`, and MCP delivery with staging + `setup <backend>` exec
 4. Pass `acp_backend` from the registry entry into `AcademyLoader` at launch (already available via `_finish_crew_setup`)
 5. Existing kiro crews: next relaunch re-runs `AcademyLoader` and picks up the new flow; no migration needed for running crews
 6. Rollback: revert `AcademyLoader` changes; the `.agents` clone in the image is inert if `AcademyLoader` never calls `setup`
 
-## Open Questions
 
-- Does `.agents/setup` need a `--no-symlink` flag for container use, or does baking at image-build time mean symlinks are already resolved before the container runs? (Current understanding: bake-time clone + real-file tar injection at launch = no symlink issue. Confirm during implementation.)
-- Should `setup` be called idempotently on every launch (safe, slightly slower) or only on first launch (requires tracking state)? Current proposal: every launch, since content changes with each academy update.

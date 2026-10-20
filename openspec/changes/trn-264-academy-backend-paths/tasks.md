@@ -15,9 +15,9 @@
 ## 3. Refactor AcademyLoader
 
 - [ ] 3.1 Add `acp_backend` parameter to `AcademyLoader.__init__()` and thread it through from `_finish_crew_setup` in `lifecycle.py` (registry entry already carries `acp_backend`) — verify existing kiro crews still launch correctly
-- [ ] 3.2 Implement `_stage_skills()`: tar-inject manifest-selected skills into `/home/kirocrew/.agents/skills/` (replacing `_copy_skills()` kiro-only path) — verify files appear in the container under `.agents/skills/`
-- [ ] 3.3 Implement `_stage_steering()`: tar-inject manifest-selected steering docs into `/home/kirocrew/.agents/context/` (replacing `_copy_steering()`) — verify files appear in the container under `.agents/context/`
-- [ ] 3.4 Implement `_stage_mcp()`: resolve catalogue entries (env-var substitution unchanged), write per-server JSON files into `/home/kirocrew/.agents/mcp/` — verify files appear in the container under `.agents/mcp/`
+- [ ] 3.2 Implement `_stage_skills()`: tar-inject manifest-selected skills into `/home/kirocrew/.agents/skills/` — verify files appear in the container under `.agents/skills/`
+- [ ] 3.3 Implement `_stage_steering()`: tar-inject manifest-selected steering docs into `/home/kirocrew/.agents/context/` — verify files appear in the container under `.agents/context/`
+- [ ] 3.4 Implement `_stage_mcp()`: resolve catalogue entries (env-var substitution unchanged), write a single `.agents/mcp/servers.json` containing all resolved entries with `"disabled": false` — verify the file appears in the container under `.agents/mcp/servers.json`
 - [ ] 3.5 Implement `_run_setup()`: exec `.agents/setup <backend>` inside the container after all staging is complete — verify exit code 0 for kiro backend on a test crew
 - [ ] 3.6 Update `copy_all()` to call stage methods + `_run_setup()` instead of the old per-kind copy methods — verify kiro crew launch end-to-end: skills in `~/.kiro/skills/`, steering in `~/.kiro/steering/`, mcp.json written
 - [ ] 3.7 Retain persona JSON delivery (`_copy_agents()` → `~/.kiro/agents/`) for kiro backend only; skip for claude/codex — verify no `~/.kiro/agents/` writes occur on a claude-backend crew
