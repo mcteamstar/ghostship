@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import stat
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ _CREW_REGISTRY_PATH = Path("/crews/registry.json")
 
 # Academy agents pool (bind-mounted from the host at /agents).
 _AGENTS_DIR = Path("/agents")
+_SKILLS_DIR = Path("/skills")
 
 # ── Container-side paths (must match Containerfile/crew image layout) ─────────
 # These mirror the constants in lifecycle.py. They are defined here so
@@ -481,8 +483,8 @@ class AcademyLoader:
         return copied
 
     def _copy_skills(self) -> list[str]:
-        """Copy skill SKILL.md files selected by the crew manifest."""
-        skills_src = Path("/skills")
+        """Copy every regular file in manifest-selected skill directories."""
+        skills_src = _SKILLS_DIR
         if not skills_src.exists():
             logger.warning(
                 "No /skills dir in transport container — skipping skill copy"
@@ -490,23 +492,39 @@ class AcademyLoader:
             return []
         selection = _load_crew_manifest(self._composition_entry)["skills"]
         copied: list[str] = []
-        for skill_dir in skills_src.iterdir():
+        for skill_dir in sorted(skills_src.iterdir(), key=lambda path: path.name):
+            if skill_dir.is_symlink() or not skill_dir.is_dir():
+                continue
             if not _manifest_selects(selection, skill_dir.name):
                 continue
-            skill_md = skill_dir / "SKILL.md"
-            if not skill_md.exists():
-                continue
             try:
-                data = skill_md.read_bytes()
+                files: list[tuple[Path, str, bytes, int]] = []
+                for source in sorted(skill_dir.rglob("*"), key=lambda path: path.as_posix()):
+                    if source.is_symlink():
+                        continue
+                    try:
+                        source_stat = source.lstat()
+                    except OSError:
+                        continue
+                    if not stat.S_ISREG(source_stat.st_mode):
+                        continue
+                    relative = source.relative_to(skill_dir).as_posix()
+                    mode = 0o755 if source_stat.st_mode & 0o111 else 0o644
+                    files.append((source, relative, source.read_bytes(), mode))
+                if not files:
+                    continue
+
                 dest_dir = f"{_KIRO_SKILLS_DIR}/{skill_dir.name}"
                 self._podman.container_exec(
                     self._container, ["mkdir", "-p", dest_dir]
                 )
                 buf = io.BytesIO()
                 with tarfile.open(fileobj=buf, mode="w") as tar:
-                    ti = tarfile.TarInfo(name="SKILL.md")
-                    ti.size = len(data)
-                    tar.addfile(ti, io.BytesIO(data))
+                    for _source, relative, data, mode in files:
+                        info = tarfile.TarInfo(name=relative)
+                        info.size = len(data)
+                        info.mode = mode
+                        tar.addfile(info, io.BytesIO(data))
                 buf.seek(0)
                 self._podman.container_archive_put(
                     self._container, dest_dir, buf.read()

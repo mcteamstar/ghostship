@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.1
+
+### Crew orchestration
+
+- Added the `ghostship-spawn` Academy skill for safe named-persona dispatch, task status, steering, and continuation through the crew gateway.
+- Raven dispatches through the helper, so Captain autopilot no longer stalls on Claude crews because of hand-built gateway calls.
+
 ## v0.8.0
 
 ### ⚠ Breaking changes — read before upgrading

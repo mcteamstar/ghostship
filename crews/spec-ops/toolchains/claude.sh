@@ -8,12 +8,10 @@
 #     (required by claude-agent-acp via CLAUDE_CODE_EXECUTABLE; the ACP
 #     server delegates model turns to the Claude Agent SDK which needs this)
 #
-# Headless tool-approval suppression: KiroCrew writes
-# <work_dir>/.claude/settings.local.json with permissions.defaultMode set to
-# "bypassPermissions" at session spawn time (see kiro_crew/acp/client.py
-# _write_claude_local_settings). No environment variable override is needed
-# from the ghostship side — KiroCrew handles it automatically via the
-# dangerously_skip_permissions config key already set in _patch_crew_config.
+# Headless tool approvals: Claude crews run in KiroCrew's `default` mode under
+# its hook gate. KiroCrew does not write `bypassPermissions`; the
+# `dangerously_skip_permissions` setting only approves calls that the gate
+# allows and cannot override a gate denial.
 set -eu
 npm install -g @agentclientprotocol/claude-agent-acp@0.79.0
 npm install -g @anthropic-ai/claude-code@2.1.293
