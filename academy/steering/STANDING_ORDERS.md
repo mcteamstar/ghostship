@@ -87,6 +87,18 @@ directions. See `skills/ghostship-mail/SKILL.md` for the send/receive pattern.
 If a task hands you a concrete path or explicit instructions instead, that takes
 priority — mail is for cases where you'd otherwise have no way to know.
 
+Use the `ghostship-spawn` skill to dispatch personas and manage their tasks via
+the crew gateway. Always invoke by full path — it is not on PATH as a bare command:
+
+```bash
+~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn <persona>
+```
+
+See `skills/ghostship-spawn/SKILL.md` for the full usage pattern. Never attempt
+to run `ghostship-spawn` as a bare command or check for its existence with `which`
+or `command -v` — use the full path directly. If the script is not found at that
+path, report the gate block to Admiral and hold.
+
 ## Mail conventions
 
 - **Derive task ID**: `TASK_ID=$(basename $PWD | sed 's/subagent_//')`
