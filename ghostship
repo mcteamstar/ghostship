@@ -321,26 +321,6 @@ def cmd_status(args: list) -> int:
         print("  Run 'ghostship start' to bring it back up.")
         return 0
 
-    # Parse port bindings from ga-transport. When Caddy (ga-portal) fronts the
-    # transport, the transport has no host port binding — fall back to PORT
-    # (the single Caddy listen port, default 64057).
-    port_str = "unknown"
-    try:
-        ports = json.loads(ports_json)
-        # ports is like {"64057/tcp": [{"HostIp": "127.0.0.1", "HostPort": "64057"}]}
-        for _proto_key, bindings in ports.items():
-            if bindings:
-                host_port = bindings[0].get("HostPort", "")
-                host_ip = bindings[0].get("HostIp", "127.0.0.1")
-                if host_port:
-                    port_str = f"{host_ip}:{host_port}"
-                    break
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        pass
-    if port_str == "unknown":
-        # Transport has no host binding (Caddy is the external listener).
-        port_str = f"localhost:{os.environ.get('PORT', '64057')}"
-
     # Compute uptime
     uptime_str = ""
     if started_at:
@@ -377,8 +357,36 @@ def cmd_status(args: list) -> int:
         except Exception:
             uptime_str = started_at
 
+    # Parse port bindings from ga-transport. When Caddy (ga-portal) fronts the
+    # transport, the transport has no host port binding. Resolution order:
+    #   1. Host port binding (direct listen, no portal)
+    #   2. GA_HOST_URL from container env (set by install.sh — captures remote
+    #      hosts and non-default ports such as port 80 on starport)
+    #   3. localhost:<PORT> fallback
+    port_str = "unknown"
+    host_url = ""
+    try:
+        ports = json.loads(ports_json)
+        # ports is like {"64057/tcp": [{"HostIp": "127.0.0.1", "HostPort": "64057"}]}
+        for _proto_key, bindings in ports.items():
+            if bindings:
+                host_port = bindings[0].get("HostPort", "")
+                host_ip = bindings[0].get("HostIp", "127.0.0.1")
+                if host_port:
+                    port_str = f"{host_ip}:{host_port}"
+                    break
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+    if port_str == "unknown":
+        host_url = _inspect_installed_url()
+        if not host_url:
+            port_str = f"localhost:{os.environ.get('PORT', '64057')}"
+
     print("ghostship status: running ✓")
-    print(f"  URL:    http://{port_str}/mcp")
+    if host_url:
+        print(f"  URL:    {host_url}/mcp")
+    else:
+        print(f"  URL:    http://{port_str}/mcp")
     if uptime_str:
         print(f"  Uptime: {uptime_str}")
 
