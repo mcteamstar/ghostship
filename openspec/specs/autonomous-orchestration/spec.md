@@ -218,39 +218,29 @@ The `400 Bad Request` response on `/continue` SHALL NOT be routed to the stale-c
 - **WHEN** a non-`/continue` path (e.g. `/api/spawn` dispatch) returns `400 Bad Request`
 - **THEN** `_crew_api_with_recovery` continues to route through the existing phase-1 stale-cookie recovery path unchanged
 
-### Requirement: Raven persona prompt uses cookie-only auth for spawn calls
+### Requirement: Raven performs gateway operations through the ghostship-spawn skill
+Every Raven prompt source SHALL instruct Raven to dispatch named personas, read task detail, steer running tasks and continue finished tasks with the `ghostship-spawn` command (see `persona-dispatch`), and SHALL NOT describe a hand-built gateway REST call. Those sources are the `raven.json` persona prompt, the Captain check-in orientation injected by the transport, and every built-in order template. None of them SHALL reference `.local_secret`, `X-Internal-Secret`, `X-Session-Key`, the dashboard cookie file, or a `curl` data-file argument (`-d @`, `--data @`, `--data-binary @`).
 
-The `raven.json` persona prompt SHALL instruct Raven to authenticate all crew
-gateway spawn calls using the dashboard session cookie at
-`/home/kirocrew/.kiro/crew/.dashboard_cookie`, and SHALL NOT reference
-`.local_secret`, `X-Internal-Secret`, or `X-Session-Key` for any spawn-related
-instructions. The persona prompt auth instructions SHALL be consistent with the
-`_RAVEN_GATEWAY_ORIENTATION` constant in `transport/captain.py`.
+Raven SHALL keep the task text it passes to `ghostship-spawn` free of literal command lines that upload files or pipe downloads to a shell, describing such steps in words instead, and SHALL keep each brief well under 20 KiB, because the brief is part of the command the crew's tool gate scans. If `ghostship-spawn` is not available in the crew, Raven SHALL report that to the Admiral and hold rather than calling the gateway another way.
 
-The spawn call pattern in the persona prompt SHALL be:
+Raven SHALL treat a refused tool call on a gateway operation as a crew gate block, not a human decision. It SHALL report which operation was refused and hold, without asking for approval and without quoting the refused command line into mail.
 
-```bash
-COOKIE=$(cat /home/kirocrew/.kiro/crew/.dashboard_cookie)
-curl -s -X POST http://localhost:5476/api/spawn \
-  -H "Cookie: mc_token_5476=$COOKIE" \
-  -H "Origin: $(echo $KIROCREW_CORS_ORIGINS | cut -d, -f1)" \
-  -H "Content-Type: application/json" \
-  -d '{"task": "...", "agent": "<persona>"}'
-```
+#### Scenario: All prompt sources agree
+- **WHEN** a Captain check-in is dispatched, combining the persona prompt, the check-in orientation and a resolved order template
+- **THEN** every source tells Raven to use `ghostship-spawn` for gateway operations, and none describes an alternative authentication method or a hand-built `curl` call
 
-The same cookie-only pattern applies to steer and continue calls. `X-Internal-Secret`
-SHALL NOT be sent alongside the cookie on any of these calls.
+#### Scenario: Template dispatch step uses the skill
+- **WHEN** the `spec-driven-development` or `independent-review` template reaches a dispatch step
+- **THEN** it tells Raven to dispatch with `ghostship-spawn <persona>` after writing the pending intent marker, and to record the gateway response's `id` field as the task ID in the confirmation marker
 
-#### Scenario: Raven on Claude backend reads persona prompt and dispatches
+#### Scenario: Claude-backend Raven dispatches without a refusal
+- **WHEN** Raven on a claude-backend crew dispatches a persona during a check-in
+- **THEN** the dispatch is not refused by the crew's tool gate because of how the call was written
 
-- **WHEN** Raven is dispatched on a Claude backend crew and reads its persona prompt
-- **THEN** the persona prompt does not instruct Raven to read `.local_secret` or send
-  `X-Internal-Secret`, and Raven's spawn calls use cookie auth without attempting to
-  read a credential file directly
+#### Scenario: Helper missing
+- **WHEN** a check-in needs a gateway operation and `ghostship-spawn` is not available in the crew
+- **THEN** Raven mails the Admiral that the skill is missing and holds, and does not build a `curl` call to the gateway
 
-#### Scenario: Persona prompt and task text agree on auth method
-
-- **WHEN** Raven receives both its persona prompt (from `raven.json`) and the Captain
-  check-in task text (which includes `_RAVEN_GATEWAY_ORIENTATION`)
-- **THEN** both sources describe the same cookie-only authentication pattern, with no
-  contradiction between them
+#### Scenario: A refusal is reported, not escalated as an approval request
+- **WHEN** a `ghostship-spawn` call is refused by the tool gate
+- **THEN** Raven mails the Admiral which operation was refused and holds, without retrying in the same cycle, without offering an "approve" option, and without quoting the command line

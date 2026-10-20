@@ -3,7 +3,9 @@
 ## Purpose
 
 Defines which agents, skills, and steering docs a given crew type includes from the Academy's shared pool, via a manifest file colocated with that crew type's build definition, so a future crew type can select a different combination without any change to transport's copy logic.
+
 ## Requirements
+
 ### Requirement: Per-crew-type manifest file
 The system SHALL define crew composition via a JSON manifest file at `crews/<crew-type>/manifest.json`, with `agents`, `skills`, and `steering` keys. The manifest path SHALL be resolved dynamically from the crew-type registry entry's `dir` field rather than from a hardcoded constant. Each key's value SHALL be either the literal string `"*"` or a JSON array of exact names to include from the corresponding Academy pool: agent `.json` filenames, skill directory names, and steering doc `.md` filenames, respectively.
 
@@ -45,3 +47,13 @@ The system SHALL treat a missing manifest file, a missing key within an existing
 - **WHEN** the transport starts and all manifests reference only names that exist in their respective Academy pools
 - **THEN** no validation warning is logged for manifests
 
+### Requirement: Selected skills are delivered whole
+For every skill the crew manifest selects, `launch` SHALL copy every regular file in that skill's academy directory (symlinks and other special files are skipped) into the crew, keeping the relative layout under the skill's directory, not only its `SKILL.md`. Files that are executable in the academy SHALL be executable in the crew. Other files SHALL be readable and not executable.
+
+#### Scenario: Skill with a script
+- **WHEN** a crew is launched and its manifest selects a skill whose directory holds `SKILL.md` and `scripts/<name>` (executable)
+- **THEN** the crew's copy of that skill contains both files, and `scripts/<name>` is executable
+
+#### Scenario: SKILL.md-only skill unchanged
+- **WHEN** a selected skill's directory holds only `SKILL.md`
+- **THEN** the crew's copy of that skill is the same as before this change

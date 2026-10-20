@@ -29,11 +29,11 @@ The system SHALL grant each persona a distinct tool set matching its role, all d
 - **THEN** Raven's agent definition grants no `write` or `code` tool — it directs work by dispatching one of the five sanctioned personas, it does not implement anything itself
 
 ### Requirement: Raven is a sixth, coordination-only persona
-The system SHALL define Raven as a lean, general-purpose watcher and messenger persona. Raven's prompt SHALL describe only generic crew-watching and mail behaviour: reading all mailboxes (including Admiral), writing mail to any address, watching crew task state, dispatching named personas via the crew gateway REST API, and using the `kirocrew` CLI for routine ops. Raven's prompt SHALL NOT embed Captain-loop-specific behaviour (self-cancellation, standing-order ownership, OpenSpec store resolution, or cron job management).
+The system SHALL define Raven as a lean, general-purpose watcher and messenger persona. Raven's prompt SHALL describe only generic crew-watching and mail behaviour: reading all mailboxes (including Admiral), writing mail to any address, watching crew task state, dispatching named personas through the crew gateway (via the `ghostship-spawn` skill), and using the `kirocrew` CLI for routine ops. Raven's prompt SHALL NOT embed Captain-loop-specific behaviour (self-cancellation, standing-order ownership, OpenSpec store resolution, or cron job management).
 
 Captain-loop-specific behaviour — reading `/var/mail/captain`, self-cancelling when standing orders are met, the order-change contract, sanctioned persona list for dispatch, and OpenSpec store resolution — SHALL be injected by the Captain standing-order template at job creation time, not baked into the persona definition.
 
-Raven's prompt SHALL retain guidance on the four operations that require direct gateway REST API calls (dispatch a named persona, get per-task detail, steer a running task, continue a finished task) and how to authenticate those calls.
+Raven's prompt SHALL retain guidance on the four gateway operations the `kirocrew` CLI does not cover (dispatch a named persona, get per-task detail, steer a running task, continue a finished task), and SHALL direct Raven to perform them with the `ghostship-spawn` skill (see `persona-dispatch`) rather than describing how to build or authenticate a gateway REST call.
 
 #### Scenario: Raven dispatched directly reads all mailboxes
 - **WHEN** an Admiral dispatches Raven directly (not via Captain) to read or relay mail
@@ -49,7 +49,7 @@ Raven's prompt SHALL retain guidance on the four operations that require direct 
 
 #### Scenario: Raven's lean prompt still covers gateway auth
 - **WHEN** Raven needs to dispatch a named persona, steer a task, or continue a finished task
-- **THEN** Raven's base prompt provides guidance on using the gateway REST API with `.local_secret` authentication, since this is generic dispatch capability not Captain-loop-specific
+- **THEN** Raven's base prompt directs it to the `ghostship-spawn` skill for those operations, since this is generic dispatch capability not Captain-loop-specific, and the prompt does not mention `.local_secret`, `X-Internal-Secret` or `X-Session-Key`
 
 ### Requirement: OpenSpec workflow division by persona
 The system SHALL scope each persona's prompt to the intended OpenSpec workflow division: Spectre to explore/propose/update-change, Ghost to all six operations with apply-change as its implementation path, Banshee to explore/propose/update-change/apply-change for independent review and fixes, and Reaper to sync-specs/archive-change. Banshee SHALL hand specification synchronization and change archival to Reaper rather than owning those close-out operations.
