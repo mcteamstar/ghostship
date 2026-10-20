@@ -2,7 +2,7 @@
 
 ## 1. Write generation script
 
-- [ ] 1.1 Create `scripts/generate-openspec-skills.js` — for each skill, call the zero-arity template getter, assemble SKILL.md frontmatter (preserving `allowed-tools` from existing file), write to `academy/skills/<skill>/SKILL.md` — verify script runs without error and produces valid SKILL.md files
+- [x] 1.1 Create `scripts/generate-openspec-skills.js` — for each skill, call the zero-arity template getter, assemble SKILL.md frontmatter (preserving `allowed-tools` from existing file), write to `academy/skills/<skill>/SKILL.md` — verify script runs without error and produces valid SKILL.md files
 
 ## 2. Generate updated skills
 

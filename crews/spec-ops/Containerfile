@@ -30,7 +30,7 @@ RUN apt-get update -qq && \
 # to this binary, so it must be present for them to actually work. Pinned to
 # match the version the skills/ SKILL.md files were generated with (see each
 # file's `metadata.generatedBy`) — bumping the skills means bumping this too.
-RUN npm install -g @fission-ai/openspec@1.9.0
+RUN npm install -g @fission-ai/openspec@1.14.3
 
 # Optional agent toolchains (TRN-202). install.sh passes AGENT_TOOLCHAINS: the
 # optional backends listed in GA_AGENT_BACKENDS (kiro is bundled in the base
