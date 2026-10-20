@@ -626,7 +626,7 @@ class CrewLauncher:
             }
 
         # Copy agents/skills/steering via AcademyLoader
-        _loader = AcademyLoader(podman, container, composition_entry)
+        _loader = AcademyLoader(podman, container, composition_entry, acp_backend=backend)
         _loader_result = _loader.copy_all()
         copied_agents = _loader_result["agents"]
 

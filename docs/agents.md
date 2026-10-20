@@ -21,6 +21,30 @@ Ghost is the one agent with the full OpenSpec lifecycle (explore through archive
 
 Small, self-contained work can start and end with a single Ghost. Not every task needs the full cycle.
 
+## Academy delivery (TRN-264)
+
+Academy content — skills, steering docs, and MCP servers — is delivered to the
+backend-native harness paths of every crew via `mcteamstar/.agents`, which is
+baked into every crew image at build time as `/home/kirocrew/.agents`.
+
+At crew launch, `AcademyLoader` stages manifest-selected content into the
+in-container `.agents/` staging directories:
+
+| Content | Staged path | kiro harness | claude harness |
+|:--------|:------------|:-------------|:---------------|
+| Skills | `.agents/skills/<name>/` | `~/.kiro/skills/<name>/` | `~/.claude/skills/<name>/` |
+| Steering | `.agents/context/<name>.md` | `~/.kiro/steering/<name>.md` | `~/.claude/rules/<name>.md` |
+| MCP config | `.agents/mcp/servers.json` | `~/.kiro/mcp.json` | `~/.claude.json` |
+
+After staging, `AcademyLoader` calls `.agents/setup <backend>` inside the
+container, which wires the staged content to the backend-specific harness paths.
+New backends (e.g. `codex`, `opencode`) require no ghostship changes — only an
+update to `mcteamstar/.agents/setup`.
+
+**Agent persona JSON** (`academy/agents/*.json`) is delivered directly to
+`~/.kiro/agents/` for kiro-backend crews only. Persona JSON is a kiro-specific
+concept with no claude/codex equivalent.
+
 ## Captain
 
 Captain adds one autonomous mechanism on top of manual dispatch: a recurring `/api/crons` job named `captain` that dispatches Raven in a persistent session.
