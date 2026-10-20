@@ -14,6 +14,7 @@
 ## 3. Integration check
 
 - [x] 3.1 Run the full unit suite. Verify: `scripts/run.sh --unit` exits 0.
-- [ ] 3.2 On the live install after `ghostship upgrade`:
+- [x] 3.2 On the live install after `ghostship upgrade`:
   - Launch a claude crew, supply a small git repo, and dispatch ghost to commit a one-line change.
   - Evac the bundle and inspect the commit. Verify: the message has no `Co-Authored-By` line.
+  - Result (2026-10-20, transport and image at `098e73e`, KiroCrew 0.9.0): the rebuilt `spec-ops` image carries `/etc/claude-code/managed-settings.json` = `{"attribution": {"commit": "", "pr": ""}}`. On a claude crew (Claude Haiku 5.5), ghost was asked to commit a one-line README change "the way you normally commit", with no mention of attribution. The evac'd commit object (`2449939`, message `docs: add ghost check line to README`) has no `Co-Authored-By` line and no "Generated with Claude Code" text. Before this change, claude-crew commits carried `Co-Authored-By: Claude Haiku 5.5`.
