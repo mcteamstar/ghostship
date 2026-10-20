@@ -7,6 +7,10 @@
 - Added the `ghostship-spawn` Academy skill for safe named-persona dispatch, task status, steering, and continuation through the crew gateway.
 - Raven dispatches through the helper, so Captain autopilot no longer stalls on Claude crews because of hand-built gateway calls.
 
+### Claude crews
+
+- Claude crews no longer add Claude Code attribution to commits or PRs: no `Co-Authored-By` trailer and no "Generated with Claude Code" PR text. The setting is baked into the image, so existing claude crews need relaunching after `ghostship upgrade`.
+
 ## v0.8.0
 
 ### ⚠ Breaking changes — read before upgrading
