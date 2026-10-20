@@ -560,11 +560,42 @@ def _inspect_installed_api_key() -> str:
 
 
 def _find_podman() -> list | None:
-    """Return the podman command list, or None if podman is not available."""
+    """Return the podman command list targeting the right socket/machine, or None.
+
+    Mirrors _podman_cmd() but returns None instead of a bare fallback when
+    podman is not available. Used by _inspect_installed_url and
+    _inspect_installed_api_key, which need to reach the same instance that
+    hosts ga-transport (e.g. the dedicated ghost-academy socket on Linux).
+    """
+    import platform
+
+    base = None
     for cmd in (["podman"], ["podman-remote"]):
         if shutil.which(cmd[0]):
-            return cmd
-    return None
+            base = cmd[0]
+            break
+    if base is None:
+        return None
+
+    # Honour the same dedicated socket/machine logic as _podman_cmd()
+    sock = os.environ.get("PODMAN_SOCK", "")
+    if sock:
+        return [base, "--url", f"unix://{sock}"]
+
+    machine = os.environ.get("GA_MACHINE_NAME", "ghost-academy")
+    dedicated = os.environ.get("GA_DEDICATED_MACHINE", "true").lower() == "true"
+
+    if platform.system() == "Darwin":
+        if dedicated:
+            return [base, "--connection", machine]
+    else:
+        if dedicated:
+            runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+            sock_path = f"{runtime}/{machine}/podman.sock"
+            if os.path.exists(sock_path):
+                return [base, "--url", f"unix://{sock_path}"]
+
+    return [base]
 
 
 def _is_safe_url(url: str) -> bool:
