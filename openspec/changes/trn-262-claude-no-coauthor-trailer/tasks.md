@@ -13,7 +13,7 @@
 
 ## 3. Integration check
 
-- [ ] 3.1 Run the full unit suite. Verify: `scripts/run.sh --unit` exits 0.
+- [x] 3.1 Run the full unit suite. Verify: `scripts/run.sh --unit` exits 0.
 - [ ] 3.2 On the live install after `ghostship upgrade`:
   - Launch a claude crew, supply a small git repo, and dispatch ghost to commit a one-line change.
   - Evac the bundle and inspect the commit. Verify: the message has no `Co-Authored-By` line.
