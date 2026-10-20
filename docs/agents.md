@@ -11,7 +11,7 @@ Every ghostship ships the same six KiroCrew agent personas, defined in
 | **Banshee** | Review/fix operative — independent second pass; finds bugs, runs tests, traces to root | explore, propose, update-change, apply-change |
 | **Reaper** | Cleanup operative — closes out finished changes | sync-specs, archive-change |
 | **Wraith** | Recon/docs operative — research and docs writing; read-only over code | explore |
-| **Raven** | Watcher/coordinator — skims mailboxes, checks task state, dispatches bounded next steps. Captain-loop behaviour injected via standing-order template. | dispatch via `kirocrew` CLI + gateway REST API |
+| **Raven** | Watcher/coordinator — skims mailboxes, checks task state, dispatches bounded next steps. Captain-loop behaviour injected via standing-order template. | dispatch via `kirocrew` CLI + `ghostship-spawn` skill |
 
 Tool grants differ per worker. Ghost, Spectre, and Banshee have the full set (`read grep glob write code shell web_search web_fetch`); Reaper has all except `code` (`read grep glob write shell web_search web_fetch`); Wraith has `read grep glob shell web_search web_fetch` (no `write`, no `code`). Raven has `read grep glob shell` only.
 
@@ -33,7 +33,7 @@ Both forms append the resolved order to `captain@localhost`. `captain(..., actio
 
 `transport://orders` returns a summary index; `transport://orders/{name}` returns the full resolved body.
 
-**Known limitation — Claude and Codex backend crews:** Captain autopilot does not run on non-kiro backend crews. Raven cannot read the crew gateway's local IPC secret that the `sdd` and `independent-review` templates need for dispatching other personas. Drive Claude or Codex crews manually with `dispatch`, `pickup`, and `steer`.
+**Claude-backend support:** Captain autopilot now dispatches through the manifest-delivered `ghostship-spawn` skill, so Raven no longer needs the gateway's local IPC secret. Relaunch an existing crew after upgrading so it receives the helper and refreshed Raven prompt. Manual relay (`dispatch`, `pickup`, `steer`) remains available when an operator intentionally chooses not to run the Captain loop.
 
 ## Steering, not enforcement
 

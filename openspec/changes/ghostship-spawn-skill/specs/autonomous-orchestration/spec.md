@@ -13,7 +13,7 @@ Raven SHALL treat a refused tool call on a gateway operation as a crew gate bloc
 
 #### Scenario: Template dispatch step uses the skill
 - **WHEN** the `spec-driven-development` or `independent-review` template reaches a dispatch step
-- **THEN** it tells Raven to dispatch with `ghostship-spawn <persona>` after writing the pending intent marker, and to record the task id from its JSON output in the confirmation marker
+- **THEN** it tells Raven to dispatch with `ghostship-spawn <persona>` after writing the pending intent marker, and to record the gateway response's `id` field as the task ID in the confirmation marker
 
 #### Scenario: Claude-backend Raven dispatches without a refusal
 - **WHEN** Raven on a claude-backend crew dispatches a persona during a check-in

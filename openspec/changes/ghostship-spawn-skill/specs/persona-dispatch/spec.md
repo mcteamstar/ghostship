@@ -7,7 +7,7 @@ Defines the in-crew `ghostship-spawn` helper that agents use to dispatch, inspec
 ### Requirement: ghostship-spawn covers the gateway operations the kirocrew CLI does not
 Every crew whose manifest selects the `ghostship-spawn` skill SHALL provide a `ghostship-spawn` command that agents can run from their shell, with these forms:
 
-- `ghostship-spawn <persona>` dispatches a new task to the named persona, with the task text read from standard input.
+- `ghostship-spawn <persona>` dispatches a new retained task to the named persona, with the task text read from standard input; its request sets `keep: true` so the task remains available for later status, steering or continuation.
 - `ghostship-spawn --status <task_id>` returns that task's detail.
 - `ghostship-spawn --steer <task_id>` redirects a running task, with the message read from standard input.
 - `ghostship-spawn --continue <task_id>` resumes a finished task, with the task text read from standard input.
@@ -18,7 +18,7 @@ Each form SHALL call the crew's own gateway and write the gateway's JSON respons
 
 #### Scenario: Dispatch a named persona
 - **WHEN** an agent runs `ghostship-spawn ghost` with the task text on standard input
-- **THEN** a ghost task is created on the crew's gateway with exactly that task text, and standard output carries the gateway's JSON response, including the new task's id
+- **THEN** a retained ghost task is created on the crew's gateway with exactly that task text, and standard output carries the gateway's JSON response, including the new task's `id` field
 
 #### Scenario: Steer and continue use the same command
 - **WHEN** an agent runs `ghostship-spawn --steer <task_id>` or `ghostship-spawn --continue <task_id>` with text on standard input

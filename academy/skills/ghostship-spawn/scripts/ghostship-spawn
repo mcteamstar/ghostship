@@ -16,10 +16,22 @@ _COOKIE_NAME = "mc_token_5476"
 _DEFAULT_ORIGIN = _BASE_URL
 _PERSONA_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# RFC 6265 cookie-octet, bounded so malformed input cannot become a header
+# injection or be echoed through a library exception.
+_COOKIE_VALUE_RE = re.compile(
+    r"^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]{1,4096}$"
+)
 
 
 class SpawnError(Exception):
     """A user-facing helper failure."""
+
+
+class _NoRedirect(request.HTTPRedirectHandler):
+    """Keep the fixed-destination guarantee across gateway responses."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _usage_error() -> SpawnError:
@@ -70,6 +82,8 @@ def _read_cookie() -> str:
         raise SpawnError("could not read dashboard cookie") from exc
     if not cookie:
         raise SpawnError("dashboard cookie is empty")
+    if not _COOKIE_VALUE_RE.fullmatch(cookie):
+        raise SpawnError("dashboard cookie has invalid format")
     return cookie
 
 
@@ -91,7 +105,7 @@ def _request_gateway(
     operation: str,
     method: str,
     path: str,
-    payload: dict[str, str] | None,
+    payload: dict[str, object] | None,
     cookie: str,
 ) -> str:
     data = None
@@ -104,8 +118,9 @@ def _request_gateway(
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
-    # The base URL and path are constants/validated values; no caller input can
-    # redirect this request away from the crew's own loopback gateway.
+    # The base URL and path are constants/validated values. Disable redirects
+    # as well: following a gateway-supplied Location could send the cookie or
+    # request body away from the crew's own loopback gateway.
     req = request.Request(
         f"{_BASE_URL}{path}",
         data=data,
@@ -113,7 +128,8 @@ def _request_gateway(
         method=method,
     )
     try:
-        with request.build_opener(request.ProxyHandler({})).open(req, timeout=30) as response:
+        opener = request.build_opener(request.ProxyHandler({}), _NoRedirect())
+        with opener.open(req, timeout=30) as response:
             status = getattr(response, "status", None)
             if status is None:
                 status = response.getcode()
@@ -126,9 +142,11 @@ def _request_gateway(
         detail = _response_text(body, cookie)
         raise SpawnError(f"{operation} failed: HTTP {exc.code}: {detail}") from exc
     except (error.URLError, OSError) as exc:
-        raise SpawnError(f"{operation} failed: {exc}") from exc
+        detail = _redact(str(exc), cookie)
+        raise SpawnError(f"{operation} failed: {detail}") from exc
     except Exception as exc:
-        raise SpawnError(f"{operation} failed: {exc}") from exc
+        detail = _redact(str(exc), cookie)
+        raise SpawnError(f"{operation} failed: {detail}") from exc
 
     detail = _response_text(body, cookie)
     if not 200 <= status < 300:
@@ -140,9 +158,11 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         operation, value, path = _parse_args(argv)
-        payload: dict[str, str] | None
+        payload: dict[str, object] | None
         if operation == "dispatch":
-            payload = {"task": _read_task_text(), "agent": value or ""}
+            # Keep named-persona runs retained so status/steer/continue and
+            # the SDD follow-up protocol work after the initial turn.
+            payload = {"task": _read_task_text(), "agent": value or "", "keep": True}
             method = "POST"
         elif operation == "status":
             payload = None

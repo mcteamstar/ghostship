@@ -278,7 +278,7 @@ With member-based dispatch (TRN-186/187) working correctly, the `slot` parameter
 
 ### Known limitations
 
-- **Captain autopilot does not run on the Claude backend.** Raven declines to read the crew gateway's local IPC secret, which the `spec-driven-development` and `independent-review` templates need to dispatch other personas. Drive Claude crews with a manual relay (`dispatch`, `pickup`, `steer`) until this is fixed.
+- **Captain autopilot on Claude backend (resolved in v0.8.1).** At this release, Raven could not use the gateway's local IPC secret; v0.8.1 delivers `ghostship-spawn` for cookie-authenticated persona dispatch. Relaunch an existing crew after upgrading so it receives the helper and refreshed Raven prompt.
 - **Claude OAuth credentials go stale after the first token refresh.** Each crew receives a copy of `ga-claude-auth`. About eight hours after login, the first crew to run refreshes the token inside its own container, and later crews fail with "OAuth session expired and could not be refreshed". Work around it by logging in again (`POST /logout/claude`, then `POST /login/claude`) or by using `GA_CREW_ANTHROPIC_API_KEY`.
 - **The default install is not authenticated.** `ga-portal` is published on all interfaces at `PORT` and `GA_API_KEY` is empty by default, so anyone who can reach the host can use every MCP tool. Set `GA_API_KEY` on any machine reachable from another host.
 

@@ -29,7 +29,8 @@ _spec.loader.exec_module(spawn)
 class _Handler(BaseHTTPRequestHandler):
     requests: list[dict] = []
     response_status = 200
-    response_body = b'{"task_id":"task-1"}'
+    response_body = b'{"id":"task-1"}'
+    response_headers: dict[str, str] = {}
 
     def _record(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -44,6 +45,8 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self.send_response(self.response_status)
         self.send_header("Content-Type", "application/json")
+        for name, value in self.response_headers.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(self.response_body)
 
@@ -61,7 +64,8 @@ class TestGhostshipSpawn(TestCase):
         self.thread.start()
         _Handler.requests = []
         _Handler.response_status = 200
-        _Handler.response_body = b'{"task_id":"task-1"}'
+        _Handler.response_body = b'{"id":"task-1"}'
+        _Handler.response_headers = {}
         self.cookie = "cookie-secret-for-test"
         self.cookie_path = self._tmp_cookie_path()
         self.cookie_path.write_text(self.cookie, encoding="utf-8")
@@ -102,11 +106,33 @@ class TestGhostshipSpawn(TestCase):
     def test_dispatch_request(self) -> None:
         rc, output, error = self._run(["ghost"], "do the work\n")
         self.assertEqual(rc, 0, error)
-        self.assertEqual(json.loads(output), {"task_id": "task-1"})
+        self.assertEqual(json.loads(output), {"id": "task-1"})
         request = _Handler.requests[0]
         self.assertEqual((request["method"], request["path"]), ("POST", "/api/spawn"))
-        self.assertEqual(json.loads(request["body"]), {"task": "do the work\n", "agent": "ghost"})
+        self.assertEqual(
+            json.loads(request["body"]),
+            {"task": "do the work\n", "agent": "ghost", "keep": True},
+        )
         self.assertEqual(request["headers"]["Cookie"], f"mc_token_5476={self.cookie}")
+
+    def test_gateway_redirect_is_not_followed(self) -> None:
+        _Handler.response_status = 302
+        _Handler.response_headers = {"Location": "/redirect"}
+        rc, output, error = self._run(["ghost"], "task")
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "")
+        self.assertIn("HTTP 302", error)
+        self.assertEqual(len(_Handler.requests), 1)
+
+    def test_invalid_cookie_is_rejected_without_echo(self) -> None:
+        self.cookie_path.write_text("top-secret\r\nX-Leak: yes", encoding="utf-8")
+        rc, output, error = self._run(["ghost"], "task")
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "")
+        self.assertIn("invalid format", error)
+        self.assertNotIn("top-secret", output + error)
+        self.assertNotIn("X-Leak", output + error)
+        self.assertEqual(_Handler.requests, [])
 
     def test_status_steer_and_continue_paths_and_bodies(self) -> None:
         cases = [

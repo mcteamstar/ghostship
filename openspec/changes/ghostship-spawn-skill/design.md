@@ -27,14 +27,14 @@ See proposal.md for why. All KiroCrew facts below were checked against the exact
 ### 1. Helper is a fixed-destination Python program (Admiral sign-off)
 `scripts/ghostship-spawn` is a Python 3 program that uses only `urllib.request` and the standard library, no `curl`.
 - **Destination.** The base URL is a constant, `http://localhost:5476`, and the paths are built only from the subcommand and a `task_id` validated against `^[A-Za-z0-9_-]{1,64}$`. Nothing in argv, stdin or the environment can change host, port or path.
-- **Auth.** It reads `/home/kirocrew/.kiro/crew/.dashboard_cookie` and sends `Cookie: mc_token_5476=<value>`, plus `Origin` taken from the first entry of `KIROCREW_CORS_ORIGINS`, falling back to `http://localhost:5476`. `Origin` is a header, not the destination.
+- **Auth.** It reads `/home/kirocrew/.kiro/crew/.dashboard_cookie`, validates the value as a bounded RFC 6265 cookie value, and sends `Cookie: mc_token_5476=<value>`, plus `Origin` taken from the first entry of `KIROCREW_CORS_ORIGINS`, falling back to `http://localhost:5476`. `Origin` is a header, not the destination.
 - **Bodies.**
-  - dispatch: `{"task": <stdin>, "agent": <persona>}`
+  - dispatch: `{"task": <stdin>, "agent": <persona>, "keep": true}` so the run remains available for status, steering and continuation;
   - steer: `{"message": <stdin>}`
   - continue: `{"task": <stdin>}`
   - `--status` sends a GET with no body.
 - **Persona.** Validated against `^[a-z][a-z0-9-]{0,31}$`; the gateway decides whether the persona exists.
-- **Output.** The response body goes to stdout. On a non-2xx, or a connection or cookie error, it prints `ghostship-spawn: <op> failed: HTTP <status>: <body>` (or the error) to stderr, exits 1, and never includes the cookie.
+- **Output.** The gateway response body goes to stdout unchanged; the dispatch task ID is its `id` field. On a non-2xx, redirect, connection or cookie error, it prints `ghostship-spawn: <op> failed: HTTP <status>: <body>` (or the error) to stderr, exits 1, and never includes the cookie. The HTTP client does not follow redirects, so a response cannot move the request away from the fixed loopback destination.
 
 The exfil tier never sees this body, by design. That is acceptable only because the destination is fixed to the crew's own loopback gateway. The Admiral signed off on this exception in place of disabling `data-exfil-curl-file-body` crew-wide (which would weaken it for every agent and destination) or relying on inline-JSON quoting (which is what drifts).
 
@@ -54,7 +54,7 @@ Raven runs `~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn …`, an
 - a refused call is a gate block, so report the operation and hold, and never offer an "approve" option or quote the command into mail;
 - if the skill is missing, report and hold.
 
-Both templates keep their intent protocol but replace the auth sentence with "dispatch with `ghostship-spawn <persona>` and record `task_id` from its JSON output". The cookie path, `curl` and every internal-header mention are removed from all prompt sources.
+Both templates keep their intent protocol but replace the auth sentence with "dispatch with `ghostship-spawn <persona>` and record the gateway response's `id` field as the task ID". The cookie path, `curl` and every internal-header mention are removed from all prompt sources.
 
 ### 5. Guard test across all prompt sources
 One unit test loads `raven.json`, `_RAVEN_GATEWAY_ORIENTATION`, every `academy/orders/*.md`, both raw and after `_substitute_placeholders`, and the resolved `_CAPTAIN_CHECKIN_TASK`. It asserts that none contains `.local_secret`, `X-Internal-Secret`, `X-Session-Key`, `.dashboard_cookie`, `curl` or any exfil data-file pattern, and that each source mentions `ghostship-spawn`.

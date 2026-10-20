@@ -18,7 +18,7 @@
 - [x] 1.2 Add `academy/skills/ghostship-spawn/SKILL.md` in the style of `ghostship-mail`:
   - front-matter with `name`, a `description` saying when to use it, `allowed-tools` for the script path, and `metadata`;
   - the four forms with examples, using heredoc stdin;
-  - the JSON output and how to read `task_id`;
+  - the JSON output and how to read the gateway response's `id` field as the task ID;
   - "keep briefs short and describe commands, don't quote them";
   - "on a claude crew a refusal is a gate block: report and hold".
   Verify: `tests/unit/test_skill_contracts.py` (or the existing skill front-matter test) passes for the new skill.
@@ -39,7 +39,7 @@
   - refusal handling with no "approve" option and no quoted command;
   - report and hold if the skill is missing.
   Remove the cookie path, `curl` and the internal-header text. Verify: the guard test in 3.3 passes.
-- [x] 3.2 In `academy/orders/spec-driven-development.md` (around line 60) and `academy/orders/independent-review.md` (around line 15), replace the `/api/spawn` + `X-Internal-Secret`/`X-Session-Key` instruction with "dispatch with `ghostship-spawn <persona>` and write the confirmation marker with the `task_id` from its JSON output". Keep the intent and idempotency protocol unchanged. Verify: the guard test in 3.3 passes, and the existing template tests in `tests/unit/test_captain.py` pass.
+- [x] 3.2 In `academy/orders/spec-driven-development.md` (around line 60) and `academy/orders/independent-review.md` (around line 15), replace the `/api/spawn` + `X-Internal-Secret`/`X-Session-Key` instruction with "dispatch with `ghostship-spawn <persona>` and write the confirmation marker with the gateway response's `id` field as the task ID". Keep the intent and idempotency protocol unchanged. Verify: the guard test in 3.3 passes, and the existing template tests in `tests/unit/test_captain.py` pass.
 - [x] 3.3 Add the guard test from design Decision 5. It loads `raven.json`, `_RAVEN_GATEWAY_ORIENTATION`, every `academy/orders/*.md` (raw and after `_substitute_placeholders`) and the resolved check-in task text, and asserts that:
   - none contains `.local_secret`, `X-Internal-Secret`, `X-Session-Key`, `.dashboard_cookie`, `curl`, `-d @`, `--data @` or `--data-binary @`;
   - each mentions `ghostship-spawn`.

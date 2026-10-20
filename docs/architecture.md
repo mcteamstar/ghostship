@@ -24,7 +24,7 @@ Development inside a ghostship follows [OpenSpec](https://github.com/Fission-AI/
 
 ### Ghostship-spawn gateway skill
 
-`ghostship-spawn` is an Academy skill copied into every manifest-selected crew with its complete directory, including executable helper scripts. It provides the four gateway operations not covered by the `kirocrew` CLI: named-persona dispatch, task detail, steering, and continuation. The helper sends cookie-authenticated requests only to the crew's fixed loopback gateway; agents do not assemble REST calls or handle the session cookie. Its task input should stay short and describe commands rather than quote literal command lines.
+`ghostship-spawn` is an Academy skill copied into every manifest-selected crew with its complete directory, including executable helper scripts. It provides the four gateway operations not covered by the `kirocrew` CLI: named-persona dispatch, task detail, steering, and continuation. The helper sends cookie-authenticated requests only to the crew's fixed loopback gateway; agents do not assemble REST calls or handle the session cookie. Dispatch requests retained runs (`keep=true`) so the returned gateway `id` remains usable for status, steering and continuation. The helper does not follow gateway redirects. Its task input should stay short and describe commands rather than quote literal command lines.
 
 Claude crews run in KiroCrew's `default` mode under its hook gate. KiroCrew does not write `bypassPermissions`; `dangerously_skip_permissions` only approves calls the gate allows and cannot override a gate denial.
 

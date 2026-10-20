@@ -15,8 +15,7 @@ itself; never look for, copy, or report either credential.
 
 ## Dispatch a named persona
 
-Put the task text on standard input. The helper prints the gateway's JSON reply;
-read the returned `task_id` for the confirmation marker.
+Put the task text on standard input. The helper prints the gateway's JSON reply; for dispatch, use its `id` field as the task ID for the confirmation marker.
 
 ```bash
 ~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn ghost <<'EOF'
