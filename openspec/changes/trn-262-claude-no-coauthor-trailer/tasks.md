@@ -4,7 +4,7 @@
 
 - [x] 1.1 Add `crews/spec-ops/toolchains/claude-managed-settings.json` with exactly `{"attribution": {"commit": "", "pr": ""}}` (design Decision 2). In `claude.sh`, after the npm installs, install it to `/etc/claude-code/managed-settings.json` (mode 0644) and add a header comment explaining why it sits outside the home volume. Verify: `sh -n crews/spec-ops/toolchains/claude.sh` passes, and `python3 -m json.tool` parses the JSON file.
 - [x] 1.2 Unit test in `tests/unit/` that loads the JSON file and asserts that `attribution.commit` and `attribution.pr` are both `""`, that `includeCoAuthoredBy` is absent, and that `claude.sh` references the file and `/etc/claude-code/managed-settings.json`. Verify: the test passes, and fails if either string is made non-empty.
-- [x] 1.3 The file is installed only by `claude.sh`, so an image without the claude toolchain never gets it. Verify: `grep -rn managed-settings crews/` matches only `claude.sh` and the JSON file.
+- [x] 1.3 The file is installed only by `claude.sh`, so an image without the claude toolchain never gets it. Verify: `grep -rn managed-settings crews/` has references only in `claude.sh` (the JSON has no `managed-settings` key); `test -f crews/spec-ops/toolchains/claude-managed-settings.json`; and the `Containerfile` loop invokes only `/tmp/toolchains/$name.sh` for selected `AGENT_TOOLCHAINS` before removing `/tmp/toolchains`, so an empty or non-claude toolchain list leaves no managed-settings file in the final image.
 
 ## 2. Docs
 
