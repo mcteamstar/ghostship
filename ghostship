@@ -273,6 +273,28 @@ def cmd_stop(args: list) -> int:
 # Subcommand: status
 # ---------------------------------------------------------------------------
 
+# Compose runs with --project-name ga, so the portal's `ga-portal-data` volume
+# is created as `ga_ga-portal-data`. The bare name covers older installs.
+_PORTAL_DATA_VOLUMES = ("ga_ga-portal-data", "ga-portal-data")
+
+
+def _portal_data_mountpoint(podman: list) -> "str | None":
+    """Return the portal data volume's mountpoint, or None if neither name exists."""
+    import json as _json
+    for name in _PORTAL_DATA_VOLUMES:
+        result = subprocess.run(
+            podman + ["volume", "inspect", name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            continue
+        vols = _json.loads(result.stdout or "[]")
+        if vols:
+            return vols[0].get("Mountpoint", "")
+    return None
+
+
 def cmd_status(args: list) -> int:
     podman = _podman_cmd()
 
@@ -394,21 +416,12 @@ def cmd_status(args: list) -> int:
     # Portal is always on (GA_PORTAL_ENABLED was removed in TRN-103)
     portal_tls_mode = os.environ.get("GA_PORTAL_TLS_MODE", "internal")
     if portal_tls_mode == "internal":
-        # Try to locate the volume mountpoint for ga-portal-data
         try:
-            import json as _json
-            vol_inspect = subprocess.run(
-                podman + ["volume", "inspect", "ga-portal-data"],
-                capture_output=True,
-                text=True,
-            )
-            if vol_inspect.returncode == 0:
-                vols = _json.loads(vol_inspect.stdout)
-                if vols:
-                    mountpoint = vols[0].get("Mountpoint", "")
-                    cert_path = f"{mountpoint}/caddy/pki/authorities/local/root.crt"
-                    print(f"  Caddy TLS: internal CA (trust once with: podman exec ga-portal caddy trust)")
-                    print(f"  CA cert:   {cert_path}")
+            mountpoint = _portal_data_mountpoint(podman)
+            if mountpoint is not None:
+                cert_path = f"{mountpoint}/caddy/pki/authorities/local/root.crt"
+                print(f"  Caddy TLS: internal CA (trust once with: podman exec ga-portal caddy trust)")
+                print(f"  CA cert:   {cert_path}")
             else:
                 print("  Caddy TLS: internal CA (ga-portal-data volume not found — run install.sh first)")
         except Exception:

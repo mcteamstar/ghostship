@@ -124,3 +124,29 @@ class TestCmdUpgradeSkills(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── portal data volume lookup ────────────────────────────────────────────────
+
+class TestPortalDataMountpoint(unittest.TestCase):
+    """status finds the portal volume under its Compose name (ga_ga-portal-data)."""
+
+    def _fake_run(self, existing: dict):
+        def _run(cmd, **_kw):
+            name = cmd[-1]
+            if name in existing:
+                return MagicMock(returncode=0, stdout=f'[{{"Mountpoint": "{existing[name]}"}}]')
+            return MagicMock(returncode=125, stdout="")
+        return _run
+
+    def test_compose_prefixed_name_is_found(self):
+        with patch.object(gs.subprocess, "run", side_effect=self._fake_run({"ga_ga-portal-data": "/vol/prefixed"})):
+            self.assertEqual(gs._portal_data_mountpoint(["podman"]), "/vol/prefixed")
+
+    def test_bare_name_is_fallback(self):
+        with patch.object(gs.subprocess, "run", side_effect=self._fake_run({"ga-portal-data": "/vol/bare"})):
+            self.assertEqual(gs._portal_data_mountpoint(["podman"]), "/vol/bare")
+
+    def test_neither_name_returns_none(self):
+        with patch.object(gs.subprocess, "run", side_effect=self._fake_run({})):
+            self.assertIsNone(gs._portal_data_mountpoint(["podman"]))

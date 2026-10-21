@@ -457,6 +457,9 @@ class AcademyLoader:
                 for source in sorted(skill_dir.rglob("*"), key=lambda path: path.as_posix()):
                     if source.is_symlink():
                         continue
+                    # Python bytecode left by local test runs never belongs in a crew.
+                    if "__pycache__" in source.relative_to(skill_dir).parts or source.suffix == ".pyc":
+                        continue
                     try:
                         source_stat = source.lstat()
                     except OSError:

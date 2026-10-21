@@ -2,6 +2,8 @@
 
 import json
 import os
+import platform
+import subprocess
 import time
 
 import httpx2 as httpx
@@ -14,10 +16,34 @@ GHOSTSHIP_E2E_KIRO_AUTH = os.environ.get("GHOSTSHIP_E2E_KIRO_AUTH", "") not in (
 # container directly (no transport MCP tool exposes a stop-without-nuke path).
 # Override via GHOSTSHIP_PODMAN_SOCKET when pointing at a remote or
 # non-default socket path.
-GHOSTSHIP_PODMAN_SOCKET = os.environ.get(
-    "GHOSTSHIP_PODMAN_SOCKET",
-    "/run/user/1000/ghost-academy/podman.sock",
-)
+_LINUX_DEFAULT_SOCKET = "/run/user/1000/ghost-academy/podman.sock"
+
+
+def _default_podman_socket() -> str:
+    """The transport's Podman API socket for this host.
+
+    On macOS the dedicated machine forwards its API socket to a host path that
+    `podman machine inspect` reports; it is the same (rootless) instance the
+    transport and crews run in. Elsewhere, or if the lookup fails, use the
+    Linux default.
+    """
+    if platform.system() == "Darwin":
+        machine = os.environ.get("GA_MACHINE_NAME", "ghost-academy")
+        try:
+            out = subprocess.run(
+                ["podman", "machine", "inspect", machine,
+                 "--format", "{{.ConnectionInfo.PodmanSocket.Path}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            path = out.stdout.strip()
+            if out.returncode == 0 and path:
+                return path
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return _LINUX_DEFAULT_SOCKET
+
+
+GHOSTSHIP_PODMAN_SOCKET = os.environ.get("GHOSTSHIP_PODMAN_SOCKET") or _default_podman_socket()
 
 # Probe reachability once at import time so @skipUnless guards work in CI
 # without a live portal. GHOSTSHIP_E2E_URL defaults to localhost:64057 so

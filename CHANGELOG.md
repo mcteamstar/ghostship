@@ -16,6 +16,13 @@
 
 - Claude crews no longer add Claude Code attribution to commits or PRs: no `Co-Authored-By` trailer and no "Generated with Claude Code" PR text. The setting is baked into the image, so existing claude crews need relaunching after `ghostship upgrade`.
 
+### Fixed
+
+- When a crew gateway rejects a request and recovery gives up, the error now includes the gateway's HTTP status and response (redacted, up to 500 characters). Before, MCP callers saw only "crew … is unresponsive", even for a plain rejection such as `Agent 'ghost' not found`. A rejected request now says so, instead of suggesting a crew health check.
+- `ghostship status` and the install output show the Caddy CA certificate path. Both looked up `ga-portal-data`, but Compose creates the volume as `ga_ga-portal-data`.
+- Academy skills no longer carry Python bytecode (`__pycache__/`, `*.pyc`) into crews.
+- Order templates tell Raven that a change's artifacts describe the target behaviour, so a change that rewrites Raven's own rules no longer makes Raven hold on a rule that isn't live yet.
+
 ## v0.8.0
 
 ### ⚠ Breaking changes — read before upgrading

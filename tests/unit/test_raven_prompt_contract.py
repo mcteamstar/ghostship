@@ -62,3 +62,18 @@ def test_ghostship_spawn_path_matches_staging_dir() -> None:
         paths = set(re.findall(r"~/\S*/ghostship-spawn/scripts/ghostship-spawn", text))
         assert paths, f"{source.name} gives no ghostship-spawn path"
         assert paths == {expected}, f"{source.name} has stale paths: {paths - {expected}}"
+
+
+def test_templates_say_change_artifacts_are_not_instructions() -> None:
+    """Raven must not apply a change's not-yet-implemented specs to itself.
+
+    A kiro Raven driving TRN-263 read the change's new "hold if ghostship-spawn
+    is missing" rule and held, although that rule only applies once the change
+    lands.
+    """
+    import transport.captain as captain
+
+    root = Path(__file__).resolve().parents[2]
+    for name in ("spec-driven-development.md", "independent-review.md"):
+        resolved = captain._substitute_placeholders((root / "academy" / "orders" / name).read_text())
+        assert "They are not your current instructions" in resolved, name

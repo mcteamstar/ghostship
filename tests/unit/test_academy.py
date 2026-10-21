@@ -123,6 +123,28 @@ def test_stage_skills_destination_is_agents_skills_dir(tmp_path: Path) -> None:
     )
 
 
+def test_stage_skills_skips_bytecode_caches(tmp_path: Path) -> None:
+    """__pycache__/ and *.pyc left by local test runs are not staged."""
+    import transport.academy as academy
+
+    skill = tmp_path / "myskill"
+    (skill / "scripts" / "__pycache__").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("content\n", encoding="utf-8")
+    (skill / "scripts" / "x").write_text("#!/bin/sh\n", encoding="utf-8")
+    (skill / "scripts" / "__pycache__" / "x.cpython-313.pyc").write_bytes(b"\x00bytecode")
+    (skill / "scripts" / "stray.pyc").write_bytes(b"\x00bytecode")
+
+    podman = _CapturePodman()
+    with (
+        patch.object(academy, "_SKILLS_DIR", tmp_path),
+        patch.object(academy, "_load_crew_manifest", return_value={"skills": "*"}),
+    ):
+        academy.AcademyLoader(podman, "gs-test")._stage_skills()
+
+    members = _archive_members(podman.archives[0][2])
+    assert set(members) == {"SKILL.md", "scripts/x"}
+
+
 # ── _stage_steering tests ─────────────────────────────────────────────────────
 
 def test_stage_steering_puts_files_in_agents_context(tmp_path: Path) -> None:

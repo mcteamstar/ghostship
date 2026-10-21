@@ -571,11 +571,64 @@ def _phase0_transient_503(
     raise last_exc
 
 
+# Upper bound on how much of a gateway error body is echoed back to callers.
+_GATEWAY_DETAIL_LIMIT = 500
+_COOKIE_PATTERN = re.compile(r"mc_token_\d+=[^;\s\"']+")
+
+
+def _gateway_error_detail(exc: BaseException | None, crew: dict | None) -> tuple[str, bool]:
+    """Describe the gateway's final HTTP error for a give-up message.
+
+    Returns ``(suffix, is_client_error)``. ``suffix`` is empty unless *exc* is
+    an ``httpx.HTTPStatusError``; otherwise it carries the status code and the
+    response body, with the crew's cookie and any ``mc_token_<port>=`` value
+    redacted, whitespace collapsed and the body truncated to
+    ``_GATEWAY_DETAIL_LIMIT`` characters.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return "", False
+    status = exc.response.status_code
+    try:
+        body = exc.response.text or ""
+    except Exception:
+        body = ""
+    cookie = (crew or {}).get("cookie")
+    if cookie:
+        body = body.replace(cookie, "[redacted]")
+    body = _COOKIE_PATTERN.sub("mc_token=[redacted]", body)
+    body = " ".join(body.split())[:_GATEWAY_DETAIL_LIMIT]
+    return f" Last gateway response: HTTP {status}: {body}", 400 <= status < 500
+
+
+def _unresponsive_error(
+    crew_id: str,
+    what: str,
+    crew: dict | None,
+    last_exc: BaseException | None,
+) -> CrewUnresponsiveError:
+    """Build the give-up error, carrying the gateway's last HTTP error if any.
+
+    A 4xx means the gateway is up and refused the request, so the usual
+    "check crew status" suggestion is replaced with one that points at the
+    gateway's own response.
+    """
+    detail, client_error = _gateway_error_detail(last_exc, crew)
+    if client_error:
+        suggestion = "The crew gateway rejected the request; see the response above."
+    else:
+        suggestion = "Suggestion: check crew status with crews() or try again in a moment."
+    return CrewUnresponsiveError(
+        f"crew {crew_id} is unresponsive — {what}.{detail} {suggestion}"
+    )
+
+
 def _phase1_stale_cookie(
     crew: dict,
     crew_id: str,
     method: str,
     path: str,
+    *,
+    trigger_exc: BaseException | None = None,
     **kw: Any,
 ) -> Any:
     """Phase 1: stale cookie — attempt cookie refresh then retry once.
@@ -597,10 +650,12 @@ def _phase1_stale_cookie(
         "Crew %s stale-cookie phase — attempting cookie refresh",
         crew_id,
     )
+    last_exc: BaseException | None = trigger_exc
     if _refresh_cookie(crew, crew_id):
         try:
             return _crew_api(crew, method, path, **kw)
         except Exception as _retry_exc:
+            last_exc = _retry_exc
             logger.warning(
                 "Crew %s phase-1 retry failed after cookie refresh: %s — "
                 "escalating to full restart",
@@ -616,11 +671,11 @@ def _phase1_stale_cookie(
     try:
         crew = _ensure_crew_running(crew, crew_id)
     except RuntimeError:
-        raise CrewUnresponsiveError(
-            f"crew {crew_id} is unresponsive — transport attempted "
-            f"cookie refresh and container restart but the gateway "
-            f"did not recover. Suggestion: check crew status with "
-            f"crews() or try again in a moment."
+        raise _unresponsive_error(
+            crew_id,
+            "transport attempted cookie refresh and container restart but "
+            "the gateway did not recover",
+            crew, last_exc,
         )
     # TRN-238 QA-2: crew was nuked during the restart — the registry entry is
     # gone, so there is nothing to call the API against. Surface a clear error.
@@ -630,12 +685,13 @@ def _phase1_stale_cookie(
         )
     try:
         return _crew_api(crew, method, path, **kw)
-    except Exception:
-        raise CrewUnresponsiveError(
-            f"crew {crew_id} is unresponsive — transport attempted "
-            f"cookie refresh and container restart but the gateway "
-            f"did not recover. Suggestion: check crew status with "
-            f"crews() or try again in a moment."
+    except Exception as final_exc:
+        raise _unresponsive_error(
+            crew_id,
+            "transport attempted cookie refresh and container restart but "
+            "the gateway did not recover",
+            crew,
+            final_exc if isinstance(final_exc, httpx.HTTPStatusError) else last_exc,
         )
 
 
@@ -670,11 +726,11 @@ def _phase2_dead_gateway(
         # Gateway is actually alive — transient error, retry directly
         try:
             return _crew_api(crew, method, path, **kw)
-        except Exception:
-            raise CrewUnresponsiveError(
-                f"crew {crew_id} is unresponsive — gateway responded to "
-                f"liveness probe but API call failed twice. Suggestion: "
-                f"check crew status with crews() or try again in a moment."
+        except Exception as retry_exc:
+            raise _unresponsive_error(
+                crew_id,
+                "gateway responded to liveness probe but API call failed twice",
+                crew, retry_exc,
             )
     logger.info(
         "Crew %s gateway confirmed dead — restarting",
@@ -702,12 +758,11 @@ def _phase2_dead_gateway(
         )
     try:
         return _crew_api(crew, method, path, **kw)
-    except Exception:
-        raise CrewUnresponsiveError(
-            f"crew {crew_id} is unresponsive — transport attempted "
-            f"container restart but the gateway did not recover. "
-            f"Suggestion: check crew status with crews() or try "
-            f"again in a moment."
+    except Exception as retry_exc:
+        raise _unresponsive_error(
+            crew_id,
+            "transport attempted container restart but the gateway did not recover",
+            crew, retry_exc,
         )
 
 
@@ -772,7 +827,9 @@ def _crew_api_with_recovery(
             if status == 400 and path.endswith("/continue"):
                 raise
             # ── Phase 1: stale cookie ─────────────────────────────────────────
-            return _phase1_stale_cookie(crew, crew_id, method, path, **kw)
+            return _phase1_stale_cookie(
+                crew, crew_id, method, path, trigger_exc=e, **kw
+            )
 
         except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
             # ── Phase 2: connection error / dead gateway ──────────────────────

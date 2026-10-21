@@ -318,8 +318,8 @@ class TestAuthGate(unittest.TestCase):
 @unittest.skipUnless(
     GHOSTSHIP_E2E_URL and GHOSTSHIP_E2E_KIRO_AUTH,
     "GHOSTSHIP_E2E_URL and GHOSTSHIP_E2E_KIRO_AUTH both required (opt-in: logs "
-    "out every crew's kiro-cli identity and needs a human to approve the "
-    "device prompt during the run)",
+    "out the transport's stored kiro credential, so later launches need a "
+    "fresh login, and needs a human to approve the device prompt during the run)",
 )
 class TestKiroAuthCycle(unittest.TestCase):
     """Exercises the real /login, /logout device-auth flow.

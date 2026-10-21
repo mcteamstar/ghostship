@@ -1327,9 +1327,15 @@ echo "✓ Caddy initial-config.json written to ${DATA_DIR}/caddy/initial-config.
 if [[ "${GA_PORTAL_TLS_MODE:-off}" == "internal" ]]; then
   # Resolve the host-side volume mountpoint for ga-portal-data.
   _CADDY_DATA_MOUNTPOINT=""
-  if ${_PODMAN_CMD} volume exists ga-portal-data 2>/dev/null; then
-    _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect ga-portal-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
-  fi
+  # Compose's --project-name ga prefixes the volume (ga_ga-portal-data); the
+  # bare name covers older installs.
+  for _portal_vol in ga_ga-portal-data ga-portal-data; do
+    if ${_PODMAN_CMD} volume exists "${_portal_vol}" 2>/dev/null; then
+      _CADDY_DATA_MOUNTPOINT="$(${_PODMAN_CMD} volume inspect "${_portal_vol}" --format '{{.Mountpoint}}' 2>/dev/null || true)"
+      break
+    fi
+  done
+  unset _portal_vol
   _CADDY_ROOT_CERT_PATH="${_CADDY_DATA_MOUNTPOINT:-(ga-portal-data not yet created)}/caddy/pki/authorities/local/root.crt"
   echo ""
   echo "── Caddy internal CA ─────────────────────────────────────────────────"
