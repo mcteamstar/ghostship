@@ -91,7 +91,7 @@ Use the `ghostship-spawn` skill to dispatch personas and manage their tasks via
 the crew gateway. Always invoke by full path — it is not on PATH as a bare command:
 
 ```bash
-~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn <persona>
+~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn <persona>
 ```
 
 See `skills/ghostship-spawn/SKILL.md` for the full usage pattern. Never attempt

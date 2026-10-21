@@ -54,7 +54,7 @@ ARG VERSION=0.0.0-dev
 LABEL org.ghostship.version=$VERSION
 
 # Bake mcteamstar/.agents into the image so AcademyLoader can exec
-# `.agents/setup <backend>` at launch time without any network call.
+# `.agents/setup` at launch time without any network call.
 # Clone runs as root then chowns to kirocrew (D5 in design.md: kirocrew-owned).
 # AGENTS_REF pins to a specific tag or SHA — bump deliberately; a change to the
 # path table in .agents requires a crew image rebuild.

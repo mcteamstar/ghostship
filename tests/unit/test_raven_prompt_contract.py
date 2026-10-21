@@ -36,3 +36,29 @@ def test_all_raven_prompt_sources_use_ghostship_spawn() -> None:
         assert "ghostship-spawn" in text, name
         for token in forbidden:
             assert token not in text, f"{token!r} leaked into {name}"
+
+
+def test_ghostship_spawn_path_matches_staging_dir() -> None:
+    """Every documented helper path points at where AcademyLoader stages skills.
+
+    TRN-264 moved skill delivery to ~/.agents/skills/. A stale path makes Raven
+    hold with "ghostship-spawn not at required path".
+    """
+    import re
+
+    import transport.academy as academy
+
+    repo = Path(__file__).resolve().parents[2]
+    expected = (
+        academy._AGENTS_SKILLS_DIR.replace("/home/kirocrew", "~")
+        + "/ghostship-spawn/scripts/ghostship-spawn"
+    )
+    sources = [
+        repo / "academy" / "skills" / "ghostship-spawn" / "SKILL.md",
+        repo / "academy" / "steering" / "STANDING_ORDERS.md",
+    ]
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        paths = set(re.findall(r"~/\S*/ghostship-spawn/scripts/ghostship-spawn", text))
+        assert paths, f"{source.name} gives no ghostship-spawn path"
+        assert paths == {expected}, f"{source.name} has stale paths: {paths - {expected}}"

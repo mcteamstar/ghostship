@@ -1,7 +1,7 @@
 ---
 name: ghostship-spawn
 description: Dispatch named personas and inspect, steer, or continue their tasks through the crew's own gateway. Use this when the kirocrew CLI does not provide the required gateway operation.
-allowed-tools: Bash(~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn:*)
+allowed-tools: Bash(~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn:*)
 metadata:
   author: ghostship
   version: "1.0"
@@ -18,7 +18,7 @@ itself; never look for, copy, or report either credential.
 Put the task text on standard input. The helper prints the gateway's JSON reply; for dispatch, use its `id` field as the task ID for the confirmation marker.
 
 ```bash
-~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn ghost <<'EOF'
+~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn ghost <<'EOF'
 SDD dispatch intent-... change-name ghost — implement the remaining tasks.
 EOF
 ```
@@ -26,13 +26,13 @@ EOF
 ## Get task detail
 
 ```bash
-~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn --status TASK_ID
+~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --status TASK_ID
 ```
 
 ## Steer a running task
 
 ```bash
-~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn --steer TASK_ID <<'EOF'
+~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --steer TASK_ID <<'EOF'
 Continue with the newly supplied context and keep the existing task scope.
 EOF
 ```
@@ -40,7 +40,7 @@ EOF
 ## Continue a finished task
 
 ```bash
-~/.kiro/crew/skills/ghostship-spawn/scripts/ghostship-spawn --continue TASK_ID <<'EOF'
+~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --continue TASK_ID <<'EOF'
 Resume from the last checked-off item and report the validation result.
 EOF
 ```

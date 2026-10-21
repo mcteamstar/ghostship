@@ -36,14 +36,18 @@ in-container `.agents/` staging directories:
 | Steering | `.agents/context/<name>.md` | `~/.kiro/steering/<name>.md` | `~/.claude/rules/<name>.md` |
 | MCP config | `.agents/mcp/servers.json` | `~/.kiro/mcp.json` | `~/.claude.json` |
 
-After staging, `AcademyLoader` calls `.agents/setup <backend>` inside the
-container, which wires the staged content to the backend-specific harness paths.
+After staging, `AcademyLoader` calls `.agents/setup` inside the container with
+no harness argument. Setup detects which harnesses are installed in the image and
+wires the staged content to each one's native paths, whatever the crew's own
+backend.
 New backends (e.g. `codex`, `opencode`) require no ghostship changes — only an
 update to `mcteamstar/.agents/setup`.
 
 **Agent persona JSON** (`academy/agents/*.json`) is delivered directly to
-`~/.kiro/agents/` for kiro-backend crews only. Persona JSON is a kiro-specific
-concept with no claude/codex equivalent.
+`~/.kiro/agents/` for every crew, whatever its backend. That directory is
+KiroCrew's persona registry: the gateway reads it on every backend to resolve
+named dispatch (`ghost`, `raven`, ...) and to build each session's persona
+prompt. Without it, a claude or codex crew refuses every named dispatch.
 
 ## Captain
 

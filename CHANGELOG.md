@@ -7,6 +7,11 @@
 - Added the `ghostship-spawn` Academy skill for safe named-persona dispatch, task status, steering, and continuation through the crew gateway.
 - Raven dispatches through the helper, so Captain autopilot no longer stalls on Claude crews because of hand-built gateway calls.
 
+### Academy delivery (TRN-264)
+
+- Academy skills, steering and MCP now reach every harness in the crew, not only kiro. At launch the transport stages them into `~/.agents/` and runs `.agents/setup`, which wires them into the native paths of every harness it detects in the image (for example `~/.claude/skills/` and `~/.claude/rules/` for Claude Code). Claude crews previously received none of the academy skills or steering docs.
+- Agent personas (`academy/agents/*.json`) are still delivered to `~/.kiro/agents/` on every backend. That directory is KiroCrew's persona registry, which the gateway needs to resolve named dispatch on claude and codex crews as well as kiro.
+
 ### Claude crews
 
 - Claude crews no longer add Claude Code attribution to commits or PRs: no `Co-Authored-By` trailer and no "Generated with Claude Code" PR text. The setting is baked into the image, so existing claude crews need relaunching after `ghostship upgrade`.

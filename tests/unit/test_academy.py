@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -272,8 +273,8 @@ def test_stage_mcp_no_mcp_servers_key(tmp_path: Path) -> None:
 
 # ── _run_setup tests ──────────────────────────────────────────────────────────
 
-def test_run_setup_calls_agents_setup_with_backend() -> None:
-    """_run_setup execs .agents/setup <backend> in the container."""
+def test_run_setup_calls_agents_setup_without_harness_arg() -> None:
+    """_run_setup execs bare .agents/setup so it wires every detected harness."""
     import transport.academy as academy
 
     podman = _CapturePodman()
@@ -281,19 +282,20 @@ def test_run_setup_calls_agents_setup_with_backend() -> None:
     loader._run_setup()
 
     exec_cmds = [cmd for _, cmd in podman.execs]
-    assert ["/home/kirocrew/.agents/setup", "kiro"] in exec_cmds
+    assert ["/home/kirocrew/.agents/setup"] in exec_cmds
 
 
-def test_run_setup_uses_acp_backend() -> None:
-    """_run_setup uses the configured acp_backend, not hardcoded 'kiro'."""
+@pytest.mark.parametrize("backend", ["kiro", "claude", "codex"])
+def test_run_setup_ignores_crew_backend(backend: str) -> None:
+    """The crew's backend never narrows setup to a single harness."""
     import transport.academy as academy
 
     podman = _CapturePodman()
-    loader = academy.AcademyLoader(podman, "gs-test", acp_backend="claude")
+    loader = academy.AcademyLoader(podman, "gs-test", acp_backend=backend)
     loader._run_setup()
 
-    exec_cmds = [cmd for _, cmd in podman.execs]
-    assert ["/home/kirocrew/.agents/setup", "claude"] in exec_cmds
+    setup_cmds = [cmd for _, cmd in podman.execs if cmd and cmd[0] == "/home/kirocrew/.agents/setup"]
+    assert setup_cmds == [["/home/kirocrew/.agents/setup"]]
 
 
 def test_run_setup_logs_warning_on_failure() -> None:
@@ -380,12 +382,17 @@ def test_copy_all_kiro_calls_copy_agents(tmp_path: Path) -> None:
     assert result["agents"] == ["ghost.json"]
 
 
-def test_copy_all_claude_skips_copy_agents(tmp_path: Path) -> None:
-    """copy_all for claude backend does NOT call _copy_agents."""
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_copy_all_delivers_personas_for_every_backend(backend: str) -> None:
+    """copy_all calls _copy_agents on non-kiro backends too.
+
+    ~/.kiro/agents/ is KiroCrew's persona registry. Without it a claude or
+    codex crew refuses every named dispatch ("Agent 'ghost' not found").
+    """
     import transport.academy as academy
 
     podman = _CapturePodman()
-    loader = academy.AcademyLoader(podman, "gs-test", acp_backend="claude")
+    loader = academy.AcademyLoader(podman, "gs-test", acp_backend=backend)
 
     called = {}
     loader._stage_skills = lambda: []
@@ -396,8 +403,8 @@ def test_copy_all_claude_skips_copy_agents(tmp_path: Path) -> None:
 
     result = loader.copy_all()
 
-    assert not called.get("agents"), "_copy_agents must NOT be called for claude backend"
-    assert result["agents"] == [], "agents list must be empty for claude backend"
+    assert called.get("agents"), f"_copy_agents must be called for {backend} backend"
+    assert result["agents"] == ["ghost.json"]
 
 
 def test_copy_all_returns_expected_keys() -> None:
@@ -411,12 +418,13 @@ def test_copy_all_returns_expected_keys() -> None:
     loader._stage_steering = lambda: ["steering.md"]
     loader._stage_mcp = lambda: None
     loader._run_setup = lambda: None
+    loader._copy_agents = lambda: ["ghost.json"]
 
     result = loader.copy_all()
     assert set(result.keys()) == {"agents", "skills", "steering"}
     assert result["skills"] == ["skill-a"]
     assert result["steering"] == ["steering.md"]
-    assert result["agents"] == []  # codex: no persona JSON
+    assert result["agents"] == ["ghost.json"]
 
 
 def test_acp_backend_defaults_to_kiro() -> None:

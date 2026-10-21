@@ -342,12 +342,11 @@ class AcademyLoader:
 
     ``AcademyLoader(podman, container, composition_entry=None, acp_backend="kiro")``
     stages Academy content into the in-container ``.agents/`` directories, then
-    execs ``.agents/setup <backend>`` to wire it to the backend's native harness
-    paths (TRN-264).
+    execs ``.agents/setup`` to wire it to the native paths of every harness it
+    detects in the image (TRN-264).
 
-    The ``acp_backend`` parameter selects which backend's harness paths ``setup``
-    targets.  For kiro backends, agent persona JSON is also delivered to
-    ``~/.kiro/agents/`` — that delivery is kiro-only (no equivalent in claude/codex).
+    Agent persona JSON is always delivered to ``~/.kiro/agents/``, KiroCrew's
+    persona registry, whatever the crew's ``acp_backend``.
 
     Usage::
 
@@ -356,7 +355,7 @@ class AcademyLoader:
         # result == {"agents": [...], "skills": [...], "steering": [...]}
 
     The ``agents`` list in the result contains agent JSON filenames copied to
-    ``~/.kiro/agents/`` (kiro backend only); it is used to populate
+    ``~/.kiro/agents/``; it is used to populate
     ``enrolled_agents`` in the crew registry.
     """
 
@@ -387,10 +386,10 @@ class AcademyLoader:
             ``copy("skills")`` and ``copy("steering")`` stage content into the
             ``.agents/`` directories but do **not** call ``_run_setup()``.  The
             staged content is therefore not wired to the backend's harness paths
-            until ``.agents/setup <backend>`` runs.  Prefer ``copy_all()`` for
+            until ``.agents/setup`` runs.  Prefer ``copy_all()`` for
             normal crew setup; use this method only when you need a single-kind
             operation and will call ``_run_setup()`` yourself.  ``copy("agents")``
-            is exempt — it writes directly to ``~/.kiro/agents/`` (kiro-only).
+            is exempt — it writes directly to ``~/.kiro/agents/``.
         """
         if kind == "agents":
             return self._copy_agents()
@@ -407,24 +406,24 @@ class AcademyLoader:
         """Stage all Academy asset kinds and wire them via .agents/setup.
 
         Stages skills, steering, and MCP into the in-container .agents/
-        staging directories, then execs ``.agents/setup <backend>`` to wire
-        everything to the backend's native harness paths.
+        staging directories, then execs ``.agents/setup`` to wire everything to
+        the native paths of every harness it detects in the crew image.
 
-        For kiro backend crews, agent persona JSON is also delivered to
-        ``~/.kiro/agents/`` after setup runs.
+        Agent persona JSON is always delivered to ``~/.kiro/agents/``, whatever
+        the crew's backend: it is KiroCrew's persona registry, which the gateway
+        reads for every backend to resolve named dispatch and build each
+        session's persona prompt.
 
         Returns ``{"agents": [...], "skills": [...], "steering": [...]}``.
-        The ``agents`` list contains agent JSON filenames (kiro-only; empty
-        for other backends) used to populate ``enrolled_agents``.
+        The ``agents`` list contains agent JSON filenames used to populate
+        ``enrolled_agents``.
         """
         staged_skills = self._stage_skills()
         staged_steering = self._stage_steering()
         self._stage_mcp()
         self._run_setup()
-        # Persona JSON delivery: kiro backend only (no claude/codex equivalent)
-        copied_agents: list[str] = []
-        if self._acp_backend == "kiro":
-            copied_agents = self._copy_agents()
+        # Persona JSON is KiroCrew's registry, required on every backend.
+        copied_agents = self._copy_agents()
         return {
             "agents": copied_agents,
             "skills": staged_skills,
@@ -535,8 +534,8 @@ class AcademyLoader:
         Replaces the old mcp.json delivery in ``_copy_agents()``.
         After env-var substitution, each resolved entry gets ``"disabled": false``
         so academy-delivered servers are active by default (D3 in design.md).
-        ``.agents/setup <backend>`` reads this file and writes the backend-native
-        MCP config (e.g. kiro mcp.json, claude .claude.json).
+        ``.agents/setup`` reads this file and writes each detected harness's
+        native MCP config (e.g. kiro mcp.json, claude .claude.json).
         """
         manifest = _load_crew_manifest(self._composition_entry)
         mcp_servers_list = manifest.get("mcpServers")
@@ -598,36 +597,37 @@ class AcademyLoader:
             )
 
     def _run_setup(self) -> None:
-        """Exec .agents/setup <backend> inside the crew container.
+        """Exec .agents/setup inside the crew container.
 
         A single call after all staging is complete wires skills, steering, and
-        MCP to the backend's native harness paths.  Non-zero exit is logged as
+        MCP to the native paths of every harness ``.agents/setup`` detects in
+        the image, not only the crew's own backend. Harness detection is left
+        to ``.agents/setup``.  Non-zero exit is logged as
         a warning; crew launch continues so agents receive no academy wiring
         rather than failing to launch (per spec: graceful degradation).
         """
         try:
             self._podman.container_exec(
                 self._container,
-                [_AGENTS_SETUP, self._acp_backend],
+                [_AGENTS_SETUP],
             )
-            logger.info(
-                "Ran .agents/setup %s in %s", self._acp_backend, self._container
-            )
+            logger.info("Ran .agents/setup in %s", self._container)
         except Exception as e:
             logger.warning(
-                "AcademyLoader: .agents/setup %s failed in %s: %s — "
+                "AcademyLoader: .agents/setup failed in %s: %s — "
                 "crew will launch without academy wiring",
-                self._acp_backend, self._container, e,
+                self._container, e,
             )
 
-    # ── Agent persona JSON delivery (kiro only) ───────────────────────────────
+    # ── Agent persona JSON delivery (every backend) ───────────────────────────
 
     def _copy_agents(self) -> list[str]:
         """Copy agent JSONs selected by the crew manifest to ~/.kiro/agents/.
 
-        Kiro-only: agent persona JSON is a kiro-specific concept with no
-        claude/codex equivalent.  Only called from ``copy_all()`` when
-        ``acp_backend == "kiro"``.
+        Required for every backend: ``~/.kiro/agents/`` is KiroCrew's persona
+        registry, not a kiro-cli-only location. Without it a claude or codex
+        crew's gateway knows only its built-in agents and refuses named
+        dispatch (``Agent 'ghost' not found``).
         """
         agents_src = Path("/agents")
         if not agents_src.exists():
