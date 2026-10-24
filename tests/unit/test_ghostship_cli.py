@@ -150,3 +150,73 @@ class TestPortalDataMountpoint(unittest.TestCase):
     def test_neither_name_returns_none(self):
         with patch.object(gs.subprocess, "run", side_effect=self._fake_run({})):
             self.assertIsNone(gs._portal_data_mountpoint(["podman"]))
+
+
+# ── macOS CA cert extraction hint (TRN-268) ──────────────────────────────────
+
+class TestCmdStatusMacOSHint(unittest.TestCase):
+    """cmd_status prints podman machine ssh extraction hint on macOS only."""
+
+    def _make_volume_run(self, mountpoint: str):
+        """Return a subprocess.run side-effect that resolves ga_ga-portal-data volume."""
+        def _run(cmd, **_kw):
+            # Detect the inspect call for the ga-transport container
+            if "ga-transport" in cmd:
+                return MagicMock(
+                    returncode=0,
+                    stdout="running\t2026-01-01T00:00:00Z\t{}",
+                    stderr="",
+                )
+            name = cmd[-1]
+            if name == "ga_ga-portal-data":
+                return MagicMock(returncode=0, stdout=f'[{{"Mountpoint": "{mountpoint}"}}]')
+            return MagicMock(returncode=125, stdout="", stderr="")
+        return _run
+
+    def _run_cmd_status_with_platform(self, platform: str, env_overrides: dict | None = None):
+        """Run cmd_status with GA_PORTAL_TLS_MODE=internal and the given sys.platform."""
+        env = {"GA_PORTAL_TLS_MODE": "internal"}
+        if env_overrides:
+            env.update(env_overrides)
+        out = io.StringIO()
+        fake_run = self._make_volume_run("/var/home/user/volumes/ga-portal-data/_data")
+        with patch.object(gs.subprocess, "run", side_effect=fake_run), \
+             patch.object(gs.shutil, "which", return_value="/usr/bin/podman"), \
+             patch.dict(gs.os.environ, env, clear=False), \
+             patch.object(gs.sys, "platform", platform), \
+             patch("sys.stdout", out):
+            gs.cmd_status([])
+        return out.getvalue()
+
+    def test_darwin_prints_podman_machine_ssh(self):
+        """On darwin, stdout contains the podman machine ssh extraction command."""
+        output = self._run_cmd_status_with_platform("darwin")
+        self.assertIn("podman machine ssh", output)
+        self.assertIn("security add-trusted-cert", output)
+
+    def test_linux_does_not_print_extraction_hint(self):
+        """On linux, stdout does not contain the macOS extraction hint."""
+        output = self._run_cmd_status_with_platform("linux")
+        self.assertNotIn("podman machine ssh", output)
+        self.assertNotIn("security add-trusted-cert", output)
+
+    def test_darwin_uses_ga_machine_name_env(self):
+        """GA_MACHINE_NAME overrides the default machine name in the hint."""
+        output = self._run_cmd_status_with_platform(
+            "darwin", env_overrides={"GA_MACHINE_NAME": "my-custom-machine"}
+        )
+        self.assertIn("my-custom-machine", output)
+
+    def test_darwin_default_machine_name(self):
+        """Default machine name is ghost-academy when GA_MACHINE_NAME is unset."""
+        env = {"GA_PORTAL_TLS_MODE": "internal"}
+        out = io.StringIO()
+        fake_run = self._make_volume_run("/var/home/user/volumes/ga-portal-data/_data")
+        with patch.object(gs.subprocess, "run", side_effect=fake_run), \
+             patch.object(gs.shutil, "which", return_value="/usr/bin/podman"), \
+             patch.dict(gs.os.environ, env, clear=False), \
+             patch.object(gs.sys, "platform", "darwin"), \
+             patch("sys.stdout", out):
+            gs.os.environ.pop("GA_MACHINE_NAME", None)
+            gs.cmd_status([])
+        self.assertIn("ghost-academy", out.getvalue())
