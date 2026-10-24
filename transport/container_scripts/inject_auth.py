@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """Inject kiro-cli auth rows into a crew container's SQLite DB.
 
-Runs inside a crew container via ``python3 /scripts/inject_auth.py <db_path> <b64_rows>``.
+Runs inside a crew container via
+``python3 /scripts/inject_auth.py <db_path>``, where the payload
+(a base64-encoded JSON list of ``[key, value]`` pairs) is written to the
+process's stdin by the caller.
+
+Reading the payload via stdin rather than argv ensures the auth credential
+never appears in ``/proc/<pid>/cmdline`` (secret-delivery-hardening spec,
+TRN-269).
 
 The DB schema and migrations are pre-seeded in the crew image, so kiro-cli
 finds them already applied — direct INSERT, no migration wait needed.
 
 Args (argv):
-    1. db_path  — path to the kiro-cli SQLite DB
-    2. b64_rows — base64-encoded JSON list of [key, value] pairs
+    1. db_path — path to the kiro-cli SQLite DB
+
+Stdin:
+    base64-encoded JSON list of [key, value] pairs
 
 Prints ``injected <N> auth rows`` on success.
 """
@@ -35,10 +44,11 @@ def inject_auth(db_path: str, b64_rows: str) -> int:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: inject_auth.py <db_path> <b64_rows>", file=sys.stderr)
+    if len(argv) != 2:
+        print("usage: inject_auth.py <db_path>  (payload on stdin)", file=sys.stderr)
         return 2
-    count = inject_auth(argv[1], argv[2])
+    b64_rows = sys.stdin.read().strip()
+    count = inject_auth(argv[1], b64_rows)
     print(f"injected {count} auth rows")
     return 0
 
