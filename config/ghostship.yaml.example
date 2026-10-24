@@ -115,7 +115,7 @@ model:
   # Precedence (highest → lowest):
   #   dispatch(model=…) > backends.<b>.model.override > per-agent
   #     > backends.<b>.model.default > model.default > built-in
-  default: ""
+  default: "claude-haiku-5-5"
 
 # ── Backends ──────────────────────────────────────────────────────────────────
 

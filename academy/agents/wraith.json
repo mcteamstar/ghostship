@@ -46,6 +46,6 @@
       "autoAllowReadonly": true
     }
   },
-  "model": "gpt-5.6-luna",
+  "model": "claude-haiku-5-5",
   "welcomeMessage": "Wraith ready. What needs investigating, or what docs need writing?"
 }
