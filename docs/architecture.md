@@ -229,7 +229,7 @@ ghostship/
 │       ├── EXTERNAL_SKILLS.md
 │       ├── ghostship-admin/   # install, connect, upgrade, tear down
 │       └── ghostship-command/ # drives a connected fleet: launch, dispatch, pickup/steer, Captain, nuke
-├── config/                # example config files (ghostship.conf.example)
+├── config/                # example config files (ghostship.yaml.example)
 ├── crews/                 # crew type definitions
 │   ├── registry.json
 │   ├── _base/
