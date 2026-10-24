@@ -174,16 +174,15 @@ Restarting a stopped crew never picks up a rebuilt image — only `nuke` + `laun
 
 ```bash
 ./start.sh                            # auto-discovers config
-./start.sh --config ~/ghostship.conf  # explicit config
+./start.sh --config ~/ghostship.yaml  # explicit config
 ./start.sh --machine-name my-academy  # override machine name
 ```
 
 `start.sh` uses `podman compose up -d` against a Compose file generated at install time at `${DATA_DIR}/compose.yml`.
 
 Config discovery order (first match wins):
-1. `<ghostship-dir>/ghostship.conf`
-2. `~/ghostship.conf`
-3. `~/.config/ghostship/ghostship.conf`
+1. `config/ghostship.yaml` (repo directory)
+2. macOS: `~/Library/Application Support/ghost-academy/ghostship.yaml` / Linux: `${XDG_CONFIG_HOME:-$HOME/.config}/ghost-academy/ghostship.yaml`
 
 On Linux with systemd, `start.sh` uses `systemctl --user start` for the Podman service. Without systemd (WSL) it spawns the service as a background process directly.
 

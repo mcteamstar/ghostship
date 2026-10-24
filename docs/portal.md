@@ -144,12 +144,12 @@ When `GA_API_KEY` is set, the `/mcp*` and `/files/*` routes require `Authorizati
 Portal is installed automatically by `install.sh`. Set the TLS mode in your config:
 
 ```bash
-# ghostship.conf
+# ghostship.yaml
 GA_PORTAL_TLS_MODE=internal   # or tailscale / acme / off
 ```
 
 ```bash
-./install.sh --config ./ghostship.conf
+./install.sh --config ./ghostship.yaml
 ```
 
 ## Auth upgrade paths
