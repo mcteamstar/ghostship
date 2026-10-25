@@ -2,26 +2,50 @@
 
 ## v0.8.1
 
+### Default agent model changed to `claude-haiku-5-5` (TRN-266)
+
+- All six academy agent personas now default to `claude-haiku-5-5` (was `gpt-5.6-luna`). At 0.06× credits for requests up to 100K tokens, Haiku 5.5 is the most cost-efficient model available and a strong fit for high-volume agentic work.
+- `model.default` in `config/ghostship.yaml.example` is set to `claude-haiku-5-5` so the intent is explicit even when no per-backend override is configured. Existing `backends.<b>.model.override` entries continue to win.
+
 ### Crew orchestration
 
-- Added the `ghostship-spawn` Academy skill for safe named-persona dispatch, task status, steering, and continuation through the crew gateway.
-- Raven dispatches through the helper, so Captain autopilot no longer stalls on Claude crews because of hand-built gateway calls.
+- Added the `ghostship-spawn` Academy skill (TRN-263) for safe named-persona dispatch, task status, steering, and continuation through the crew gateway. Raven dispatches through the helper, so Captain autopilot no longer stalls on Claude crews because of hand-built gateway calls.
 
 ### Academy delivery (TRN-264)
 
 - Academy skills, steering and MCP now reach every harness in the crew, not only kiro. At launch the transport stages them into `~/.agents/` and runs `.agents/setup`, which wires them into the native paths of every harness it detects in the image (for example `~/.claude/skills/` and `~/.claude/rules/` for Claude Code). Claude crews previously received none of the academy skills or steering docs.
 - Agent personas (`academy/agents/*.json`) are still delivered to `~/.kiro/agents/` on every backend. That directory is KiroCrew's persona registry, which the gateway needs to resolve named dispatch on claude and codex crews as well as kiro.
 
+### OpenSpec upgrade (TRN-265)
+
+- Bundled OpenSpec CLI upgraded from `1.9.0` to `1.14.3` in the spec-ops crew image. All six `openspec-*` academy skills regenerated with the new version's templates.
+
 ### Claude crews
 
-- Claude crews no longer add Claude Code attribution to commits or PRs: no `Co-Authored-By` trailer and no "Generated with Claude Code" PR text. The setting is baked into the image, so existing claude crews need relaunching after `ghostship upgrade`.
+- Claude crews no longer add Claude Code attribution to commits or PRs: no `Co-Authored-By` trailer and no "Generated with Claude Code" PR text (TRN-262). The setting is baked into the image, so existing claude crews need relaunching after `ghostship upgrade`.
+
+### Security (TRN-269)
+
+- kiro-cli auth credentials are now delivered to crew containers over stdin rather than as a command-line argument. Previously the base64-encoded session token (~90-day lifetime) appeared in `/proc/<pid>/cmdline` inside the container and in Podman exec history on the host. The fix mirrors the pattern already used by `inject_policy.py`.
 
 ### Fixed
 
+- `_schedule_monitor` and `_captain_monitor` now check for the `_NUKED_DURING_RESTART` sentinel before using the `_ensure_crew_running` result as a dict (TRN-268). Previously a nuke-during-restart race silently dropped the affected job for one cycle.
+- `httpx.ReadTimeout` and `httpx.WriteTimeout` are now caught by the Phase 2 recovery path in `_crew_api_with_recovery` (TRN-268). Previously they escaped recovery, bypassed container restart, and surfaced as unformatted errors at the MCP tool boundary. (`httpx.TimeoutException` is used as the base class, covering `ConnectTimeout` as well.)
+- `CredentialStore.get()` now logs a warning when a credential file contains corrupt JSON or an invalid base64 payload, instead of returning `None` silently (TRN-268).
+- `install.sh` no longer fails with an unbound variable on macOS when the Podman machine name is not set during CA certificate extraction (TRN-268).
 - When a crew gateway rejects a request and recovery gives up, the error now includes the gateway's HTTP status and response (redacted, up to 500 characters). Before, MCP callers saw only "crew … is unresponsive", even for a plain rejection such as `Agent 'ghost' not found`. A rejected request now says so, instead of suggesting a crew health check.
 - `ghostship status` and the install output show the Caddy CA certificate path. Both looked up `ga-portal-data`, but Compose creates the volume as `ga_ga-portal-data`.
 - Academy skills no longer carry Python bytecode (`__pycache__/`, `*.pyc`) into crews.
 - Order templates tell Raven that a change's artifacts describe the target behaviour, so a change that rewrites Raven's own rules no longer makes Raven hold on a rule that isn't live yet.
+- `_find_podman` now honours the dedicated socket for status URL detection.
+- `ghostship status` uses `GA_HOST_URL` when no host port binding is present.
+
+### Docs (TRN-267)
+
+- `docs/architecture.md`: base image tag corrected to `ghcr.io/kirodotdev/kirocrew:0.9.0` (was `0.9.0-insider.4`).
+- `docs/release-notes-0.6.0.md`: added a deprecation banner pointing to this changelog — that document's credential and config instructions are no longer current.
+- `docs/portal.md`: dashboard port range size corrected to 64 (was incorrectly documented as 1024).
 
 ## v0.8.0
 
