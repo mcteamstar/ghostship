@@ -61,6 +61,8 @@ GA_CREW_ACP_BACKEND=claude   # make it the default for new crews
   `POST /login/claude/code` with the pasted code → `GET /login/claude` until
   `"complete"`. Re-authenticate with `POST /logout/claude` then `POST /login/claude`.
 
+> **Note (v0.8.0+):** Credential management moved to `ghostship auth login claude` in v0.8.0. `GA_CREW_ANTHROPIC_API_KEY` is no longer read by the installer or transport; use `ghostship auth login claude` to store credentials instead. See [docs/auth.md](auth.md).
+
 **Custom endpoint:** `GA_CREW_ANTHROPIC_BASE_URL` lets you point Claude-backend crews
 at a local LLM proxy (litellm, OpenRouter, etc.) without rebuilding the image.
 
@@ -71,7 +73,9 @@ when the Claude backend is selected.
 **Known limitation:** Claude OAuth tokens expire after roughly eight hours. The first
 crew to reach that point refreshes the token inside its own container; other running
 crews may then fail with "OAuth session expired." Workaround: `POST /logout/claude`
-then `POST /login/claude`, or use `GA_CREW_ANTHROPIC_API_KEY` instead.
+then `POST /login/claude`, or use `GA_CREW_ANTHROPIC_API_KEY` instead. _(Note:
+`GA_CREW_ANTHROPIC_API_KEY` was removed in v0.8.0; use `ghostship auth login claude`
+instead — see [docs/auth.md](auth.md).)_
 
 ### Codex backend
 
@@ -123,6 +127,8 @@ v0.6.0 fixes this end to end for kiro-backend crews:
 Raven cannot read the crew gateway's local IPC secret that the `sdd` and
 `independent-review` templates need. Use manual dispatch (`dispatch`, `pickup`, `steer`)
 for non-kiro crews until this is fixed.
+
+> **Resolved in v0.8.1:** The `ghostship-spawn` Academy skill (TRN-263) resolved this limitation. Captain autopilot now works on Claude and Codex backend crews — Raven dispatches through the helper rather than making hand-built gateway calls.
 
 ---
 
@@ -207,9 +213,13 @@ upgrade are handled automatically by `install.sh` and the transport:
 
 - **Captain autopilot on Claude/Codex backends is not supported.** Drive non-kiro
   crews manually with `dispatch`, `pickup`, and `steer`.
+
+  > **Resolved in v0.8.1:** The `ghostship-spawn` Academy skill (TRN-263) resolved this limitation. Captain autopilot now works on Claude and Codex backend crews.
 - **Claude OAuth tokens expire after ~8 hours.** The first crew to hit expiry refreshes
   inside its container; other running crews may fail. Workaround: re-login or use
-  `GA_CREW_ANTHROPIC_API_KEY`.
+  `GA_CREW_ANTHROPIC_API_KEY`. _(Note: `GA_CREW_ANTHROPIC_API_KEY` was removed in
+  v0.8.0 — credential management moved to `ghostship auth login claude`. See
+  [docs/auth.md](auth.md).)_
 - **Default install is unauthenticated.** `GA_API_KEY` is empty by default. Set it on
   any machine reachable from another host.
 

@@ -48,7 +48,7 @@ The built-in `spec-ops` loadout is designed for **Spec-Driven Development** usin
 
 Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup v2 and Podman rootless. Verified on Ubuntu 22.04+.
 
-> **Model access:** Ghostship defaults to `claude-haiku-5-5`, which requires a Pro subscription or higher. See [kiro.dev/docs/models](https://kiro.dev/docs/models/) for available models by tier, and [docs/configuration.md](docs/configuration.md) to override.
+> **Model access:** Ghostship defaults to `claude-haiku-5-5` on the kiro backend, which requires a Pro subscription or higher. (Crews on other backends resolve models via their own namespace — see [docs/configuration.md](docs/configuration.md).) See [kiro.dev/docs/models](https://kiro.dev/docs/models/) for available models by tier, and [docs/configuration.md](docs/configuration.md) to override.
 
 ### Setup
 
@@ -155,3 +155,4 @@ Registered as `ghostship`:
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, remote deployment, extending the crew image
 - [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions, auth upgrade paths
 - [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
+- [docs/release-notes-0.8.1.md](docs/release-notes-0.8.1.md) — v0.8.1 release notes (hotfix + two feature additions)

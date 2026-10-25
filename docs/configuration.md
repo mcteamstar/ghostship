@@ -498,7 +498,7 @@ until an operator switches it on.
 
 The disabled posture is **not pinned** in `config.local.json`; it relies on the
 verified upstream default. Verification against the pinned base image's gateway
-(`ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4`, `kiro_crew` 0.9.0rc4) showed the
+(`ghcr.io/kirodotdev/kirocrew:0.9.0`, `kiro_crew` 0.9.0) showed the
 `knowledge` config section has **no single `auto_ingest` boolean** to pin — the
 ingest toggles are separate fields (`knowledge.auto_ingest_artifacts`,
 `knowledge.auto_add_documents`), each already defaulting to `false`. Pinning a
