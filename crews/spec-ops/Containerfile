@@ -56,11 +56,10 @@ LABEL org.ghostship.version=$VERSION
 # Bake mcteamstar/.agents into the image so AcademyLoader can exec
 # `.agents/setup` at launch time without any network call.
 # Clone runs as root then chowns to kirocrew (D5 in design.md: kirocrew-owned).
-# AGENTS_REF pins to a specific tag or SHA — bump deliberately; a change to the
-# path table in .agents requires a crew image rebuild.
-# The label lets install.sh detect a changed pin and force a cache-less rebuild.
+# AGENTS_REF pins to a specific SHA — bump deliberately for each .agents update;
+# a changed SHA triggers a cache-less rebuild via the org.ghostship.agents_ref label.
 ARG AGENTS_URL="https://github.com/mcteamstar/.agents.git"
-ARG AGENTS_REF="main"
+ARG AGENTS_REF="639a9bd0db07adb41b419a3ff1e9cd0ddd8b0374"
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends git && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \

@@ -422,6 +422,12 @@ def cmd_status(args: list) -> int:
                 cert_path = f"{mountpoint}/caddy/pki/authorities/local/root.crt"
                 print(f"  Caddy TLS: internal CA (trust once with: podman exec ga-portal caddy trust)")
                 print(f"  CA cert:   {cert_path}")
+                # TRN-268: on macOS the mountpoint is inside the Podman VM — print an extraction hint
+                if sys.platform == "darwin":
+                    machine = os.environ.get("GA_MACHINE_NAME", "ghost-academy")
+                    print(f"  (VM path — to extract to host, run:)")
+                    print(f"    podman machine ssh {machine} cat {cert_path} > ~/ghost-academy-root.crt")
+                    print(f"  Then trust: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/ghost-academy-root.crt")
             else:
                 print("  Caddy TLS: internal CA (ga-portal-data volume not found — run install.sh first)")
         except Exception:

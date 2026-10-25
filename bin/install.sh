@@ -1341,6 +1341,12 @@ if [[ "${GA_PORTAL_TLS_MODE:-off}" == "internal" ]]; then
   echo "── Caddy internal CA ─────────────────────────────────────────────────"
   echo "TLS mode: internal (Caddy built-in CA)"
   echo "Root CA cert: ${_CADDY_ROOT_CERT_PATH}"
+  # TRN-268: on macOS the mountpoint is inside the Podman VM — print an extraction hint
+  if [[ "$(uname -s)" == "Darwin" ]] && [[ -n "${_CADDY_DATA_MOUNTPOINT}" ]]; then
+    echo "  (VM path — to extract to host, run:)"
+    echo "    podman machine ssh ${_MACHINE:+${_MACHINE} }cat ${_CADDY_ROOT_CERT_PATH} > ~/ghost-academy-root.crt"
+    echo "  Then trust it: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/ghost-academy-root.crt"
+  fi
   echo ""
   echo "After ga-portal starts, run this once to trust the CA:"
   echo "  podman exec ga-portal caddy trust"
