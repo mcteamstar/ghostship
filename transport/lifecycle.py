@@ -1000,11 +1000,15 @@ def _inject_auth(podman: PodmanClient, container: str, auth_b64: str) -> bool:
 
     The DB schema and migrations are pre-seeded in the crew image, so kiro-cli
     finds them already applied — direct INSERT, no migration wait needed.
+
+    The auth payload is delivered via stdin (not argv) so ``auth_b64`` never
+    appears in ``/proc/<pid>/cmdline`` (secret-delivery-hardening spec, TRN-269).
     Returns True if successful.
     """
-    podman.container_exec_checked(
+    podman.container_exec_stdin(
         container,
-        ["python3", f"{SCRIPTS_DIR}/inject_auth.py", KIRO_CLI_DB, auth_b64],
+        ["python3", f"{SCRIPTS_DIR}/inject_auth.py", KIRO_CLI_DB],
+        auth_b64.encode("utf-8"),
     )
     logger.info("Auth injected for %s", container)
     return True

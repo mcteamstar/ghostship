@@ -833,3 +833,64 @@ class TestInjectPolicyStdinDelivery(unittest.TestCase):
                 data = _json.loads(base64.b64decode(stdin_data.strip()).decode())
                 self.assertEqual(data["policy_signing_key"], secret)
                 self.assertIn("policy", data)
+
+
+# ---------------------------------------------------------------------------
+# TRN-269: inject_auth uses stdin, not argv (secret-delivery-hardening)
+# ---------------------------------------------------------------------------
+
+class TestInjectAuthStdin(unittest.TestCase):
+    """Assert that _inject_auth delivers the auth payload via stdin, not argv.
+
+    TRN-269: passing auth_b64 as argv exposes it in /proc/<pid>/cmdline.
+    The fix: container_exec_stdin is used and auth_b64 does NOT appear in argv.
+    Mirrors the structure of TestInjectPolicyStdinDelivery (TRN-260 H-1).
+    """
+
+    def setUp(self):
+        try:
+            from lifecycle import _inject_auth  # container flat layout
+        except ModuleNotFoundError:
+            from transport.lifecycle import _inject_auth  # local dev
+        self._inject_auth = _inject_auth
+
+    def _make_podman(self):
+        from tests.fakes import FakePodmanClient
+        podman = FakePodmanClient()
+        podman.exec_responses["test-container"] = "injected 2 auth rows"
+        return podman
+
+    def test_uses_container_exec_stdin_not_exec_checked(self):
+        """_inject_auth must call container_exec_stdin, not container_exec_checked."""
+        import base64 as _b64, json as _json
+        auth_b64 = _b64.b64encode(_json.dumps([["key1", "val1"]]).encode()).decode()
+        podman = self._make_podman()
+        self._inject_auth(podman, "test-container", auth_b64)
+        call_types = [c[0] for c in podman.calls]
+        self.assertIn("container_exec_stdin", call_types)
+        self.assertNotIn("container_exec_checked", call_types)
+
+    def test_auth_b64_not_in_argv(self):
+        """The auth payload must not appear in any argv element."""
+        import base64 as _b64, json as _json
+        auth_b64 = _b64.b64encode(_json.dumps([["key1", "val1"]]).encode()).decode()
+        podman = self._make_podman()
+        self._inject_auth(podman, "test-container", auth_b64)
+        for call in podman.calls:
+            if call[0] == "container_exec_stdin":
+                cmd = call[2]  # (type, container, cmd, stdin_data)
+                for arg in cmd:
+                    self.assertNotIn(auth_b64, arg,
+                        f"auth_b64 found in argv element {arg!r}")
+
+    def test_auth_b64_delivered_via_stdin(self):
+        """The auth payload must be present in the stdin_data bytes."""
+        import base64 as _b64, json as _json
+        auth_b64 = _b64.b64encode(_json.dumps([["key1", "val1"]]).encode()).decode()
+        podman = self._make_podman()
+        self._inject_auth(podman, "test-container", auth_b64)
+        for call in podman.calls:
+            if call[0] == "container_exec_stdin":
+                stdin_data = call[3]
+                self.assertIn(auth_b64.encode("utf-8"), stdin_data,
+                    "auth_b64 not found in stdin_data bytes")
