@@ -293,9 +293,9 @@ class Config:
     # Upstream base image used for ephemeral containers that only need kiro-cli
     # (e.g. login containers). Must match the FROM pin in
     # crews/_base/admission/Containerfile.
-    # 2026-10-17: bumped insider.4 → v0.9.0 stable. Multi-arch index digest —
-    # resolves correctly on amd64 (starport/Linux) and arm64 (corsair/Mac).
-    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:108e6b94890ab6ce390d4f5103b096747a6b8eb51e7d020463641551e71ab94c"
+    # 2026-10-26: bumped v0.9.0 → v0.10.0 stable (TRN-271). Multi-arch index
+    # digest — resolves correctly on amd64 (starport/Linux) and arm64 (corsair/Mac).
+    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:62ebe7a796e7653857d34b5daf08a93e123bf2af66559bc3bacb1c7af1eeaed2"
 
     # ── Crew lifecycle ───────────────────────────────────────────────────────
     ga_max_crews: int = 20
@@ -483,7 +483,7 @@ class Config:
                 "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
-            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew@sha256:108e6b94890ab6ce390d4f5103b096747a6b8eb51e7d020463641551e71ab94c"),
+            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew@sha256:62ebe7a796e7653857d34b5daf08a93e123bf2af66559bc3bacb1c7af1eeaed2"),
             ga_max_crews=_env_int("GA_MAX_CREWS", "20"),
             ga_max_active_crews=_env_int("GA_MAX_ACTIVE_CREWS", "3"),
             ga_idle_timeout_secs=_env_int("GA_IDLE_TIMEOUT_SECS", "300"),

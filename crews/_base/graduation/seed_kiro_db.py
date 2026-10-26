@@ -4,15 +4,15 @@ Baked into the crew image at build time so kiro-cli finds the DB already
 initialised — transport only needs to INSERT auth_kv rows at launch,
 with no migration wait and no restart cycle.
 
-⚠️  Migration schema for KiroCrew v0.9.0 stable / kiro-cli 2.32.0 (6 rows, versions 0-5, max_version 5).
-    Verified 2026-10-17 against ghcr.io/kirodotdev/kirocrew:0.9.0 (sha256:a6156d268507...):
-    result (6, 5). Schema is byte-identical to insider.4 (kiro-cli 2.27.1): migrations
+⚠️  Migration schema for KiroCrew v0.10.0 stable / kiro-cli 2.34.0 (6 rows, versions 0-5, max_version 5).
+    Verified 2026-10-26 against ghcr.io/kirodotdev/kirocrew@sha256:62ebe7a796e7653857d34b5daf08a93e123bf2af66559bc3bacb1c7af1eeaed2:
+    result (6, 5). Schema is byte-identical to v0.9.0 stable (kiro-cli 2.32.0): migrations
     000_migration_table..005_auth_table, final history columns (id, command, shell, pid,
     session_id, cwd, start_time, hostname, exit_code, end_time, duration) match this seed
-    exactly. No new migration (no 006_+) exists in kiro-cli 2.32.0.
+    exactly. No new migration (no 006_+) exists in kiro-cli 2.34.0.
     Removed vs 0.5.0 seed: conversations, conversations_v2 (+2 indexes), extracted_kas_versions.
-    Verification method (2026-10-17): migration SQL extracted statically from
-    /usr/local/bin/kiro-cli in the v0.9.0 stable image layer — no DB execution.
+    Verification method (2026-10-26): migration SQL extracted statically from
+    /usr/local/bin/kiro-cli in the v0.10.0 stable image layer — no DB execution.
     When updating the FROM pin to a newer kirocrew version, re-verify. On a Podman host:
       podman run --rm ghcr.io/kirodotdev/kirocrew:<tag> python3 -c \
         "import sqlite3; c=sqlite3.connect('/home/kirocrew/.local/share/kiro-cli/data.sqlite3'); \

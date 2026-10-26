@@ -17,8 +17,8 @@ FROM ${MID_IMAGE}
 #
 # ⚠️  FRAGILITY WARNING — read before updating kirocrew:
 # This schema and migration count (6 rows, versions 0–5) was extracted from
-# kiro-cli as shipped with kirocrew v0.9.0 stable (kiro-cli 2.32.0, verified
-# 2026-10-17 by static layer inspection — see seed_kiro_db.py header). If kiro-cli
+# kiro-cli as shipped with kirocrew v0.10.0 stable (kiro-cli 2.34.0, verified
+# 2026-10-26 by static layer inspection — see seed_kiro_db.py header). If kiro-cli
 # adds new migrations in a future kirocrew release, this pre-seeded DB will be
 # missing them and kiro-cli may fail to start or behave incorrectly in crew
 # containers.
