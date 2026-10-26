@@ -21,11 +21,12 @@
 # 2026-10-17: bumped insider.4 → v0.9.0 stable. Multi-arch index digest —
 # resolves correctly on amd64 (starport/Linux) and arm64 (corsair/Mac).
 # TRN-271: bumped v0.9.0 → v0.10.0. Multi-arch index digest (2026-10-26).
+#           Resolves to amd64 on starport/Linux, arm64 on corsair/Mac.
 # ⚠️  The graduation-layer DB seed (crews/_base/graduation/seed_kiro_db.py) MUST
 #     be re-verified against this exact base image before release — see TRN-271
 #     tasks.md §1/§5. Bumping this pin without that verification is the silent
 #     auth-injection regression the change guards against.
-ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:62ebe7a796e7653857d34b5daf08a93e123bf2af66559bc3bacb1c7af1eeaed2
+ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90
 FROM ${KC_BASE_IMAGE}
 
 USER root

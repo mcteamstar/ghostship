@@ -5,7 +5,7 @@ initialised — transport only needs to INSERT auth_kv rows at launch,
 with no migration wait and no restart cycle.
 
 ⚠️  Migration schema for KiroCrew v0.10.0 stable / kiro-cli 2.34.0 (6 rows, versions 0-5, max_version 5).
-    Verified 2026-10-26 against ghcr.io/kirodotdev/kirocrew@sha256:62ebe7a796e7653857d34b5daf08a93e123bf2af66559bc3bacb1c7af1eeaed2:
+    Verified 2026-10-26 against ghcr.io/kirodotdev/kirocrew@sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90:
     result (6, 5). Schema is byte-identical to v0.9.0 stable (kiro-cli 2.32.0): migrations
     000_migration_table..005_auth_table, final history columns (id, command, shell, pid,
     session_id, cwd, start_time, hostname, exit_code, end_time, duration) match this seed
