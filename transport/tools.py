@@ -558,7 +558,7 @@ def launch(
                  crew keeps this backend for its whole life, including restarts;
                  authentication uses that backend's stored credential.
 
-    Returns crew_id and status once the gateway is ready (~120s).
+    Returns crew_id and status once the gateway is ready (~60s).
     """
     # Resolve effective dashboard: explicit arg wins; None falls back to site default.
     effective_dashboard = dashboard if dashboard is not None else cfg.ga_dashboard_default
@@ -878,7 +878,7 @@ def launch(
         logger.info("Started %s", container)
 
         crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-        if not _wait_gateway(crew_url, timeout=120):
+        if not _wait_gateway(crew_url, timeout=60):
             if dashboard_port is not None:
                 _caddy_portal.release_port(dashboard_port)
             _cleanup_crew(podman, container, volume, home_volume)
@@ -890,7 +890,7 @@ def launch(
                 pass
             with registry:
                 registry._reg["crews"].pop(crew_id, None)
-            return {"error": f"Gateway not ready within 120s for crew {crew_id}"}
+            return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
         result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend)
         # _finish_crew_setup error-dict paths have already called _cleanup_crew
