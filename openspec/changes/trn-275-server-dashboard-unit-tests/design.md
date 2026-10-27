@@ -36,7 +36,7 @@ invocation keeps each test class scoped to one class.
 
 **Construct `DashboardGate` with injected dependencies.**
 `DashboardGate.__init__` already takes `session_ttl_secs`, `api_key`, and
-`tls_mode` as explicit arguments — no patching needed. Tests construct an
+`external_url` as explicit arguments — no patching needed. Tests construct an
 instance with known values and call handler methods via `scope`/`send`/`receive`.
 
 **Test `_validate_next_url` as a pure function.**
