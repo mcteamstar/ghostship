@@ -51,6 +51,17 @@ network:
     certfile: ""
     keyfile: ""
 
+  # Comma-separated list of CIDR blocks whose connections are trusted to supply
+  # an accurate X-Forwarded-For header for rate-limit key derivation. Leave
+  # empty (default) when the transport is not behind a proxy. Example:
+  #   trusted_proxy_cidr: "10.0.0.0/8,172.16.0.0/12"
+  trusted_proxy_cidr: ""
+
+  # When true, refuse to start when GA_TRANSPORT_SECRET is absent and the
+  # transport bind address is non-loopback. Default false (warn-only).
+  # Set to true to enforce secret presence on external-bind deployments.
+  require_secret_on_external_bind: false
+
 # ── Crew ──────────────────────────────────────────────────────────────────────
 
 crew:

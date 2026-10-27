@@ -72,6 +72,28 @@ def _env_float(name: str, default: str) -> float:
 _config_logger = logging.getLogger(__name__)
 
 
+def _parse_trusted_proxy_cidr(raw: str) -> list:
+    """Parse a comma-separated list of CIDR strings into ``ip_network`` objects.
+
+    Returns an empty list when ``raw`` is blank (default — no trusted proxies).
+    Raises ``ConfigError`` if any entry is not a valid CIDR.
+    """
+    if not raw or not raw.strip():
+        return []
+    networks = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            raise ConfigError(
+                f"GA_TRUSTED_PROXY_CIDR contains invalid CIDR {entry!r}"
+            ) from None
+    return networks
+
+
 _CADDY_TLS_MODES: frozenset[str] = frozenset({"internal", "tailscale", "acme", "off"})
 _ACP_BACKEND_VALUES: frozenset[str] = frozenset({"kiro", "claude", "codex"})
 _ALWAYS_ENABLED_BACKEND = "kiro"
@@ -344,6 +366,17 @@ class Config:
     # ── Transport security ────────────────────────────────────────────────────
     ga_tls_certfile: str = ""
     ga_tls_keyfile: str = ""
+    # Comma-separated list of CIDR blocks whose connections are trusted to
+    # supply an accurate X-Forwarded-For header (H-2 / TRN-272). When empty
+    # (default) XFF is never trusted — safe for loopback-only and direct
+    # deployments. Set to e.g. "10.0.0.0/8,172.16.0.0/12" when operating
+    # behind a load balancer or Caddy on a different host.
+    ga_trusted_proxy_cidr: str = ""
+    # When True (default False), refuse to start when GA_TRANSPORT_SECRET is absent
+    # and the transport bind address is non-loopback. When False, emit a CRITICAL
+    # log but continue (warn-only). Set GA_REQUIRE_SECRET_ON_EXTERNAL_BIND=true
+    # to harden production deployments.
+    ga_require_secret_on_external_bind: bool = False
 
     # ── Caddy reverse proxy ───────────────────────────────────────────────────
     # ga-portal (Caddy) is a required architectural component: it owns the main
@@ -505,6 +538,8 @@ class Config:
             ga_dashboard_default=os.environ.get("GA_DASHBOARD_DEFAULT", "").lower() in ("1", "true", "yes"),
             ga_tls_certfile=os.environ.get("GA_TLS_CERTFILE", "").strip(),
             ga_tls_keyfile=os.environ.get("GA_TLS_KEYFILE", "").strip(),
+            ga_trusted_proxy_cidr=os.environ.get("GA_TRUSTED_PROXY_CIDR", "").strip(),
+            ga_require_secret_on_external_bind=os.environ.get("GA_REQUIRE_SECRET_ON_EXTERNAL_BIND", "").lower() in ("1", "true", "yes"),
             ga_portal_tls_mode=_validate_caddy_tls_mode(
                 os.environ.get("GA_PORTAL_TLS_MODE", "off").strip()
             ),

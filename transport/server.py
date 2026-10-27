@@ -176,12 +176,12 @@ except ModuleNotFoundError:
     )
 
 try:
-    from config import Config, api_key_exposure, inert_backend_settings  # container: both files flat in /app
+    from config import Config, api_key_exposure, inert_backend_settings, _parse_trusted_proxy_cidr, is_loopback as _is_loopback, _is_wildcard as _is_wildcard_bind  # container: both files flat in /app
 except ImportError:
     # Local dev: transport/ is a package dir, and a bare `import config` can
     # resolve to the repo-root config/ namespace package (which has no Config),
     # raising ImportError rather than ModuleNotFoundError — fall back either way.
-    from transport.config import Config, api_key_exposure, inert_backend_settings
+    from transport.config import Config, api_key_exposure, inert_backend_settings, _parse_trusted_proxy_cidr, is_loopback as _is_loopback, _is_wildcard as _is_wildcard_bind
 
 try:
     from registry import (  # container: flat /app/
@@ -567,6 +567,10 @@ def _load_transport_secret() -> str:
     Reads /run/secrets/ga-transport-secret. Returns empty string when the file is
     absent (allows transport to start in dev/test environments without the
     secret). Registers the value with the log redaction filter when non-empty.
+
+    When the secret is absent and the bind address is non-loopback, logs at
+    CRITICAL level. If GA_REQUIRE_SECRET_ON_EXTERNAL_BIND is set, refuses to
+    start instead (raises SystemExit).
     """
     _logger = logging.getLogger(__name__)
     secret_path = Path("/run/secrets/ga-transport-secret")
@@ -579,10 +583,28 @@ def _load_transport_secret() -> str:
     except Exception:
         pass
 
-    _logger.warning(
-        "GA_TRANSPORT_SECRET is not set — TransportSecretMiddleware will run in "
-        "pass-through mode. Set up ga-transport-secret via install.sh for production."
-    )
+    # Check whether the bind address is non-loopback (I-6).
+    bind = cfg.ga_transport_bind
+    if not _is_loopback(bind) and not _is_wildcard_bind(bind):
+        if cfg.ga_require_secret_on_external_bind:
+            _logger.critical(
+                "GA_TRANSPORT_SECRET is not set and transport is bound to %s "
+                "(non-loopback). Refusing to start — set GA_TRANSPORT_SECRET or "
+                "set GA_REQUIRE_SECRET_ON_EXTERNAL_BIND=false to allow warn-only.",
+                bind,
+            )
+            raise SystemExit(1)
+        _logger.critical(
+            "GA_TRANSPORT_SECRET is not set — TransportSecretMiddleware will run "
+            "in pass-through mode, but transport is bound to %s (non-loopback). "
+            "Set up ga-transport-secret via install.sh for production.",
+            bind,
+        )
+    else:
+        _logger.warning(
+            "GA_TRANSPORT_SECRET is not set — TransportSecretMiddleware will run in "
+            "pass-through mode. Set up ga-transport-secret via install.sh for production."
+        )
     return ""
 
 
@@ -880,7 +902,7 @@ mcp = MCPServer(
 _dashboard_gate = DashboardGate(
     session_ttl_secs=cfg.ga_portal_session_ttl_secs,
     api_key=GA_API_KEY,
-    tls_mode=cfg.ga_portal_tls_mode,
+    external_url=cfg.public_base_url(),
 )
 
 # Per-crew asyncio lock registry serialising concurrent _ensure_crew_running
@@ -1774,7 +1796,13 @@ if __name__ == "__main__":
     # GA_RATE_LIMIT_ENABLED=false.
     _rate_limiters = _build_rate_limiters()
     if _rate_limiters is not None:
-        app = RateLimitMiddleware(app, limiters=_rate_limiters, api_key=GA_API_KEY)
+        _trusted_proxy_networks = _parse_trusted_proxy_cidr(cfg.ga_trusted_proxy_cidr)
+        app = RateLimitMiddleware(
+            app,
+            limiters=_rate_limiters,
+            api_key=GA_API_KEY,
+            trusted_proxy_networks=_trusted_proxy_networks,
+        )
         logger.info(
             "HTTP rate limiting: enabled (%s)",
             ", ".join(

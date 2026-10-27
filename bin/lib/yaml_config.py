@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import re
 import shlex
 import sys
 from typing import Any
@@ -86,6 +87,8 @@ DEFAULTS: dict[str, str] = {
     "GA_API_KEY": "",
     "GA_TLS_CERTFILE": "",
     "GA_TLS_KEYFILE": "",
+    "GA_TRUSTED_PROXY_CIDR": "",
+    "GA_REQUIRE_SECRET_ON_EXTERNAL_BIND": "false",
     # ── crew lifecycle ──
     "GA_MAX_CREWS": "20",
     "GA_MAX_ACTIVE_CREWS": "3",
@@ -167,6 +170,8 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("network", "api_key"): "GA_API_KEY",
     ("network", "tls", "certfile"): "GA_TLS_CERTFILE",
     ("network", "tls", "keyfile"): "GA_TLS_KEYFILE",
+    ("network", "trusted_proxy_cidr"): "GA_TRUSTED_PROXY_CIDR",
+    ("network", "require_secret_on_external_bind"): "GA_REQUIRE_SECRET_ON_EXTERNAL_BIND",
     # crew
     ("crew", "max_crews"): "GA_MAX_CREWS",
     ("crew", "max_active"): "GA_MAX_ACTIVE_CREWS",
@@ -765,6 +770,9 @@ def _coerce_yaml_scalar(value: str) -> Any:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
+_SAFE_KEY_RE = re.compile(r"^[A-Z0-9_]+$")
+
+
 def _cmd_resolve(args: argparse.Namespace) -> int:
     merged = resolve_config(
         repo_path=args.repo or "",
@@ -779,6 +787,12 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     for key in sorted(env):
+        if not _SAFE_KEY_RE.match(key):
+            sys.stderr.write(
+                f"error: unsafe key name {key!r} — "
+                "keys must match [A-Z0-9_]+; aborting to prevent shell injection\n"
+            )
+            return 1
         # Shell-quote the value so eval is safe for spaces/special chars.
         sys.stdout.write(f"{key}={shlex.quote(env[key])}\n")
     return 0

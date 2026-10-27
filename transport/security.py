@@ -108,6 +108,17 @@ def register_secret(value: str) -> None:
             _REGISTERED_SECRETS.add(value)
 
 
+def deregister_secret(value: str) -> None:
+    """Remove a secret value from the redaction set (e.g. after crew nuke).
+
+    No-op if the value was never registered or does not meet the length
+    threshold. Safe to call with empty/short values.
+    """
+    if value and len(value) >= 8:
+        with _REGISTERED_LOCK:
+            _REGISTERED_SECRETS.discard(value)
+
+
 def redact(text: str) -> str:
     """Replace any registered secret value in ``text`` with the marker."""
     if not text:
@@ -229,17 +240,18 @@ def verify_password(password: str, stored: str) -> bool:
     """Verify a password against a stored hash (constant-time where possible)."""
     if not password or not stored:
         return False
-    try:
-        if stored.startswith("$argon2") and _argon2_available():
-            from argon2 import PasswordHasher
-            from argon2.exceptions import VerifyMismatchError
+    if stored.startswith("$argon2") and _argon2_available():
+        from argon2 import PasswordHasher
+        from argon2.exceptions import VerifyInvalidHashError, VerifyMismatchError
 
-            try:
-                PasswordHasher().verify(stored, password)
-                return True
-            except VerifyMismatchError:
-                return False
-        if stored.startswith("scrypt$"):
+        try:
+            PasswordHasher().verify(stored, password)
+            return True
+        except (VerifyMismatchError, VerifyInvalidHashError):
+            return False
+        # Any other exception (ImportError, MemoryError, programming bug) propagates.
+    if stored.startswith("scrypt$"):
+        try:
             _algo, n, r, p, salt_hex, dk_hex = stored.split("$")
             dk = hashlib.scrypt(
                 password.encode("utf-8"),
@@ -251,8 +263,8 @@ def verify_password(password: str, stored: str) -> bool:
                 maxmem=_SCRYPT_MAXMEM,
             )
             return hmac.compare_digest(dk.hex(), dk_hex)
-    except Exception:
-        return False
+        except (ValueError, TypeError):
+            return False
     return False
 
 

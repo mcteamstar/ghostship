@@ -77,6 +77,7 @@ try:
         registry,
         _get_crew,
         _delete_crew_secret,
+        _read_crew_secret,
         _write_crew_secret,
         _find_batch_by_task_ids,
         _update_batch_status,
@@ -86,6 +87,7 @@ except ModuleNotFoundError:
         registry,
         _get_crew,
         _delete_crew_secret,
+        _read_crew_secret,
         _write_crew_secret,
         _find_batch_by_task_ids,
         _update_batch_status,
@@ -1245,6 +1247,11 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         _captain_order_locks.pop(crew_id, None)
 
     # Remove the per-crew signing-secret file (best-effort).
+    # Deregister the secret value first so it is no longer redacted from future
+    # log output (I-4: prune _REGISTERED_SECRETS on nuke to avoid unbounded growth).
+    _crew_signing_secret = _read_crew_secret(crew_id)
+    if _crew_signing_secret:
+        _security.deregister_secret(_crew_signing_secret)
     _delete_crew_secret(crew_id)
 
     # Evict per-crew in-memory state so nuked crew_ids do not accumulate
@@ -1834,17 +1841,18 @@ def dispatch(
         return {"error": str(e)}
 
     task_id = result.get("id")
+    if not task_id:
+        return {"error": "spawn returned no task id"}
     now = datetime.now(timezone.utc)
     created_at = now.isoformat()
 
     # Record task timestamps in-memory
-    if task_id:
-        with _task_timestamps_lock:
-            _task_timestamps[task_id] = {
-                "created_at": created_at,
-                "started_at": None,
-                "completed_at": None,
-            }
+    with _task_timestamps_lock:
+        _task_timestamps[task_id] = {
+            "created_at": created_at,
+            "started_at": None,
+            "completed_at": None,
+        }
 
     # Write last_task_at to crew's registry entry
     _record_last_task_at(crew_id, created_at)
