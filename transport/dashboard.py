@@ -27,6 +27,7 @@ import hmac
 import logging
 import secrets
 import threading
+import unicodedata
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -57,6 +58,9 @@ def _validate_next_url(url: str) -> str:
     """
     if not url:
         return "/"
+    # NFKC normalise before any check: collapses Unicode lookalike sequences
+    # that could bypass path prefix or scheme guards (L-1 / SEC-09).
+    url = unicodedata.normalize("NFKC", url)
     # Must be a relative path starting with / but not // (protocol-relative).
     # The leading-slash guard already blocks javascript: and //evil.com inputs.
     if not url.startswith("/") or url.startswith("//"):
@@ -74,17 +78,21 @@ class DashboardGate:
     Owns:
       - ``_throttle``    — brute-force protection for /dashboard/login.
       - ``_sessions``    — bounded, revocable gs_session store.
-      - ``_csrf_token``  — process-lifetime CSRF token embedded in the login form.
       - ``_port_crew``   — dashboard-port → crew_id map for forward_auth lookups.
       - ``_port_crew_lock`` — guards read-modify-write of ``_port_crew``.
 
     Constructor dependencies (previously implicit module globals):
       - ``session_ttl_secs`` — gs_session lifetime (``cfg.ga_portal_session_ttl_secs``).
       - ``api_key``          — ``GA_API_KEY``; empty means open-access dashboard.
-      - ``tls_mode``         — ``cfg.ga_portal_tls_mode``; "off" ⇒ no Secure cookie flag.
+      - ``external_url``     — transport's public base URL (``cfg.public_base_url()``);
+                               Secure cookie flag is set when scheme is ``https://``.
     """
 
-    def __init__(self, session_ttl_secs: float, api_key: str, tls_mode: str) -> None:
+    # Cookie name for the CSRF token (SameSite=Strict, HttpOnly=False so JS
+    # can read it and echo it in the form body — cookie-echo pattern, H-1).
+    _CSRF_COOKIE = "gs_csrf"
+
+    def __init__(self, session_ttl_secs: float, api_key: str, external_url: str) -> None:
         # Dashboard login is guarded by security.Throttle (brute-force
         # protection) and gs_session cookies are backed by
         # security.SessionStore (bounded, revocable). Both carry their own
@@ -93,12 +101,10 @@ class DashboardGate:
         # throttle window).
         self._throttle = _security.Throttle(max_failures=5, window_secs=900)
         self._sessions = _security.SessionStore(lifetime_secs=session_ttl_secs)
-        # Single random token generated at construction and held for the process
-        # lifetime. Embedded in the GET /dashboard/login form and validated on
-        # every POST before the API-key check (design.md D1).
-        self._csrf_token: str = secrets.token_hex(32)
         self._api_key = api_key
-        self._tls_mode = tls_mode
+        # Secure flag on gs_session and gs_csrf cookies: set when the transport's
+        # external URL uses HTTPS (L-2 / TRN-272).
+        self._secure = external_url.startswith("https://")
         # Portal (ga-portal) is the sole dashboard proxy. Port→crew mapping is
         # retained for forward_auth lookups by handle_auth.
         self._port_crew: dict[int, str] = {}  # port → crew_id
@@ -147,15 +153,21 @@ class DashboardGate:
             form = await request.form()
             provided = str(form.get("ga_api_key", ""))
             # Read and validate CSRF token before touching the API-key path.
+            # Cookie-echo pattern (H-1 / TRN-272): the form echoes the value of
+            # the gs_csrf cookie; compare the echoed form field against the
+            # cookie to verify same-origin submission.
             # Fail-fast on forged submissions (design.md D4).
             provided_csrf = str(form.get("csrf_token", ""))
+            cookie_csrf = request.cookies.get(self._CSRF_COOKIE, "")
             # Capture the submitted next URL so the server — not the client —
             # is the source of truth for the post-login redirect target.
             next_url = _validate_next_url(str(form.get("next", "/")))
         except Exception:
             return Response(status_code=400)
 
-        if not hmac.compare_digest(provided_csrf, self._csrf_token):
+        # Both fields must be non-empty and identical; constant-time compare
+        # prevents timing oracles on the CSRF check.
+        if not cookie_csrf or not hmac.compare_digest(provided_csrf, cookie_csrf):
             return Response(status_code=403)
 
         if not hmac.compare_digest(provided, self._api_key):
@@ -167,9 +179,8 @@ class DashboardGate:
         token = self._sessions.issue()
         # Build Set-Cookie header manually — avoids starlette version
         # differences and is more explicit about the exact cookie attributes.
-        # The Secure flag is only set when the portal runs behind TLS;
-        # a plain-HTTP portal must not set Secure or the browser drops the cookie.
-        secure_attr = "; Secure" if self._tls_mode != "off" else ""
+        # The Secure flag is set when the external URL scheme is https:// (L-2).
+        secure_attr = "; Secure" if self._secure else ""
         cookie_value = (
             f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"
         )
@@ -252,15 +263,17 @@ class DashboardGate:
         browser.
         """
         # Logout is a state-changing POST — validate the CSRF token before any
-        # session check, matching the login POST pattern. Reject a missing or
-        # mismatched token with 403.
+        # session check, matching the login POST pattern. Cookie-echo: compare
+        # the echoed form field against the gs_csrf cookie (H-1 / TRN-272).
+        # Reject a missing or mismatched token with 403.
         try:
             form = await request.form()
             provided_csrf = str(form.get("csrf_token", ""))
         except Exception:
             return Response(status_code=400)
 
-        if not hmac.compare_digest(provided_csrf, self._csrf_token):
+        cookie_csrf = request.cookies.get(self._CSRF_COOKIE, "")
+        if not cookie_csrf or not hmac.compare_digest(provided_csrf, cookie_csrf):
             return Response(status_code=403)
 
         token = request.cookies.get("gs_session", "")
@@ -284,14 +297,12 @@ class DashboardGate:
         """GET /dashboard/login — serve the minimal HTML login form.
 
         Accepts an optional ``?next=<url>`` query parameter for post-login
-        redirect.
+        redirect. Issues a fresh per-request CSRF nonce as the ``gs_csrf``
+        cookie (SameSite=Strict, HttpOnly=False) so the form JS can read and
+        echo it in the POST body (cookie-echo pattern, H-1 / TRN-272).
         """
         next_url = _validate_next_url(request.query_params.get("next", "/"))
         next_url_escaped = _security.encode_html_attr(next_url)
-        # Embed the CSRF token in the form so POST /dashboard/login can validate
-        # it. encode_html_attr applied for defence-in-depth (hex output is already
-        # safe, but the pattern matches next_url_escaped usage above).
-        csrf_token_escaped = _security.encode_html_attr(self._csrf_token)
         # Read the per-request CSP nonce from the ASGI scope (D2). When
         # SecurityHeadersMiddleware ran, it stored a fresh CSPRNG token at
         # scope["csp_nonce"]. In contexts without the middleware (unit tests,
@@ -299,6 +310,15 @@ class DashboardGate:
         # is empty — the page still works; browsers simply have no nonce to match.
         nonce = request.scope.get("csp_nonce") if hasattr(request, "scope") else None
         nonce_attr = f' nonce="{nonce}"' if nonce else ""
+        # Generate a per-request CSRF nonce (H-1). The nonce is set as the
+        # gs_csrf cookie (SameSite=Strict, HttpOnly=False) so the login-form JS
+        # can read it with document.cookie and echo it in the POST body. The POST
+        # handler compares the echoed form field against the cookie value.
+        csrf_nonce = secrets.token_hex(32)
+        secure_attr = "; Secure" if self._secure else ""
+        csrf_cookie = (
+            f"{self._CSRF_COOKIE}={csrf_nonce}; SameSite=Strict{secure_attr}; Path=/"
+        )
         # Simple HTML login page — no external dependencies. All CSS/JS inline.
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -356,7 +376,7 @@ class DashboardGate:
   <h1>Ghost Academy</h1>
   <form id="f" method="post" action="/dashboard/login">
     <input type="hidden" name="next" value="{next_url_escaped}">
-    <input type="hidden" name="csrf_token" value="{csrf_token_escaped}">
+    <input type="hidden" name="csrf_token" id="csrf_token" value="">
     <div class="field">
       <label for="k">API Key</label>
       <div class="pw-wrap">
@@ -380,6 +400,16 @@ class DashboardGate:
   const err = document.getElementById('err');
   const key = document.getElementById('k');
   const toggle = document.getElementById('toggle');
+  const csrfField = document.getElementById('csrf_token');
+
+  // Cookie-echo CSRF (H-1 / TRN-272): read the gs_csrf cookie set by the
+  // server on this GET and echo it in the hidden form field before submit.
+  // SameSite=Strict on the cookie ensures a cross-origin forged POST cannot
+  // attach it; the server compares form field vs cookie value.
+  (function () {{
+    const match = document.cookie.match(/(?:^|;\\s*)gs_csrf=([^;]+)/);
+    if (match) {{ csrfField.value = decodeURIComponent(match[1]); }}
+  }})();
 
   // Password show/hide toggle — switches input type between password and text.
   toggle.addEventListener('click', () => {{
@@ -394,6 +424,10 @@ class DashboardGate:
 
   f.addEventListener('submit', async e => {{
     e.preventDefault();
+    // Refresh the CSRF echo immediately before submit in case the cookie was
+    // updated (e.g. page loaded, then navigated away and back without reload).
+    const match = document.cookie.match(/(?:^|;\\s*)gs_csrf=([^;]+)/);
+    if (match) {{ csrfField.value = decodeURIComponent(match[1]); }}
     const fd = new FormData(f);
     const r = await fetch('/dashboard/login', {{method:'POST', body: fd}});
     if (r.ok) {{
@@ -411,4 +445,8 @@ class DashboardGate:
 </script>
 </body>
 </html>"""
-        return Response(content=html, media_type="text/html; charset=utf-8")
+        return Response(
+            content=html,
+            media_type="text/html; charset=utf-8",
+            headers={"Set-Cookie": csrf_cookie},
+        )

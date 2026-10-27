@@ -236,21 +236,40 @@ class RateLimitMiddleware(AsyncMiddlewareBase):
 
     _EXEMPT: frozenset[str] = frozenset({"/health", "/version"})
 
-    def __init__(self, app, limiters: "dict[str, _security.RateLimiter]", api_key: str = "") -> None:
+    def __init__(self, app, limiters: "dict[str, _security.RateLimiter]", api_key: str = "", trusted_proxy_networks: "list | None" = None) -> None:
         super().__init__(app)
         self._limiters = limiters
         self._api_key = api_key
+        # Parsed ip_network objects from GA_TRUSTED_PROXY_CIDR (H-2 / TRN-272).
+        # XFF is only trusted when the ASGI client IP falls within one of these
+        # networks. Empty list (default) means XFF is never used.
+        self._trusted_proxy_networks: list = trusted_proxy_networks or []
 
     def _caller_key(self, scope: dict, bearer_token: str | None) -> str:
-        # Source IP: X-Forwarded-For first hop, else ASGI client.
-        source_ip = None
-        for k, v in scope.get("headers", []):
-            if k == b"x-forwarded-for":
-                source_ip = v.decode("latin-1").split(",")[0].strip()
-                break
+        # Source IP: honour X-Forwarded-For only when the ASGI client IP is
+        # within a trusted proxy CIDR (GA_TRUSTED_PROXY_CIDR, H-2 / TRN-272).
+        # When the CIDR list is empty (default) or the client is not in it,
+        # fall back to the ASGI client IP unconditionally.
+        import ipaddress as _ipaddress
+
+        client = scope.get("client")
+        asgi_ip: str = client[0] if client else "unknown"
+
+        source_ip: str | None = None
+        if self._trusted_proxy_networks and asgi_ip != "unknown":
+            try:
+                asgi_addr = _ipaddress.ip_address(asgi_ip)
+                if any(asgi_addr in net for net in self._trusted_proxy_networks):
+                    # Trusted proxy — use XFF first hop.
+                    for k, v in scope.get("headers", []):
+                        if k == b"x-forwarded-for":
+                            source_ip = v.decode("latin-1").split(",")[0].strip()
+                            break
+            except ValueError:
+                pass  # malformed client IP — fall through to ASGI IP
+
         if source_ip is None:
-            client = scope.get("client")
-            source_ip = client[0] if client else "unknown"
+            source_ip = asgi_ip
 
         if not bearer_token:
             return source_ip

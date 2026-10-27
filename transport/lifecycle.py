@@ -2831,7 +2831,17 @@ def _dispatch_batch(
     per-task slot names are not generated.
     """
     # Size validation (task 2.3).
-    max_tasks = int(os.environ.get("GA_BATCH_MAX_TASKS", "20"))
+    _raw_max_tasks = os.environ.get("GA_BATCH_MAX_TASKS", "20")
+    try:
+        max_tasks = int(_raw_max_tasks)
+    except ValueError:
+        try:
+            from config import ConfigError  # container: flat /app/
+        except ImportError:
+            from transport.config import ConfigError  # local dev
+        raise ConfigError(
+            f"GA_BATCH_MAX_TASKS must be an integer, got: {_raw_max_tasks!r}"
+        ) from None
     if len(tasks) == 0 or len(tasks) == 1:
         return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
     if len(tasks) > max_tasks:

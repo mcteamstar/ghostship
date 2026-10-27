@@ -933,17 +933,22 @@ async def _handle_login_get(request: Request) -> Response:
     nukes the temp container, clears _login_pending, returns {status: "complete"}.
     Returns 404 if no login flow is in progress.
     """
-    pending = KIRO_FLOW.state
-
-    if pending is None:
-        return PlainTextResponse("No login in progress.", status_code=404)
+    # H-8 / TRN-272: read state and pin the container name under the flow lock
+    # to close the TOCTOU window between reading KIRO_FLOW.state and
+    # dereferencing pending["container"]. A concurrent abort() can clear state
+    # between these two reads; holding the lock ensures atomicity.
+    with KIRO_FLOW._lock:
+        pending = KIRO_FLOW._pending
+        if pending is None:
+            return PlainTextResponse("No login in progress.", status_code=404)
+        container = pending["container"]
 
     try:
         podman = _get_podman()
     except Exception as e:
         return PlainTextResponse(str(e), status_code=500)
 
-    auth_b64 = _lc()._read_auth_from_crew(podman, pending["container"])
+    auth_b64 = _lc()._read_auth_from_crew(podman, container)
     if not auth_b64:
         return JSONResponse({"status": "pending"})
 
@@ -1070,10 +1075,13 @@ async def _handle_claude_login_get(request: Request) -> Response:
     returns {"status": "complete"}.
     Returns 404 if no Claude login flow is in progress.
     """
-    pending = CLAUDE_FLOW.state
-
-    if pending is None:
-        return PlainTextResponse("No Claude login in progress.", status_code=404)
+    # H-8 / TRN-272: read state and pin values under the flow lock.
+    with CLAUDE_FLOW._lock:
+        pending = CLAUDE_FLOW._pending
+        if pending is None:
+            return PlainTextResponse("No Claude login in progress.", status_code=404)
+        login_url = pending.get("login_url")
+        pty_sock = pending.get("pty_sock")
 
     try:
         podman = _get_podman()
@@ -1095,7 +1103,7 @@ async def _handle_claude_login_get(request: Request) -> Response:
     if not tar_bytes:
         return JSONResponse({
             "status": "pending",
-            "login_url": pending.get("login_url"),
+            "login_url": login_url,
         })
 
     # ── Auth complete — store via credential store + write legacy ga-claude-auth ─
@@ -1130,7 +1138,6 @@ async def _handle_claude_login_get(request: Request) -> Response:
         )
     # Close the PTY socket (the flow does not) and nuke the temp container,
     # whether the flow completed or was cancelled while we polled.
-    pty_sock = pending.get("pty_sock")
     if pty_sock is not None:
         try:
             pty_sock.close()
@@ -1241,10 +1248,12 @@ async def _handle_codex_login_get(request: Request) -> Response:
     returns {"status": "complete"}.
     Returns 404 if no Codex login flow is in progress.
     """
-    pending = CODEX_FLOW.state
-
-    if pending is None:
-        return PlainTextResponse("No Codex login in progress.", status_code=404)
+    # H-8 / TRN-272: read state and pin values under the flow lock.
+    with CODEX_FLOW._lock:
+        pending = CODEX_FLOW._pending
+        if pending is None:
+            return PlainTextResponse("No Codex login in progress.", status_code=404)
+        login_url = pending.get("login_url")
 
     try:
         podman = _get_podman()
@@ -1256,7 +1265,7 @@ async def _handle_codex_login_get(request: Request) -> Response:
     if not tar_bytes:
         return JSONResponse({
             "status": "pending",
-            "login_url": pending.get("login_url"),
+            "login_url": login_url,
         })
 
     # ── Auth complete — write ga-codex-auth ───────────────────────────────────
