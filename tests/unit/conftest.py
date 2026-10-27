@@ -250,6 +250,139 @@ def _install_transport_stubs() -> None:
             "cryptography.hazmat.primitives.asymmetric.ed25519": ed25519_mod,
         })
 
+    # ── mcp (used by server.py for MCPServer) ─────────────────────────────────
+    if "mcp" not in sys.modules:
+        mcp_mod = types.ModuleType("mcp")
+        mcp_server_mod = types.ModuleType("mcp.server")
+        mcp_mcpserver_mod = types.ModuleType("mcp.server.mcpserver")
+        mcp_server_server_mod = types.ModuleType("mcp.server.mcpserver.server")
+
+        class MCPServer:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+            def tool(self, *args: Any, **kwargs: Any) -> Any:
+                def decorator(fn: Any) -> Any:
+                    return fn
+                return decorator
+
+            def resource(self, *args: Any, **kwargs: Any) -> Any:
+                def decorator(fn: Any) -> Any:
+                    return fn
+                return decorator
+
+            def streamable_http_app(self, *args: Any, **kwargs: Any) -> Any:
+                return None
+
+        mcp_server_server_mod.MCPServer = MCPServer  # type: ignore[attr-defined]
+        mcp_mcpserver_mod.server = mcp_server_server_mod  # type: ignore[attr-defined]
+        mcp_server_mod.mcpserver = mcp_mcpserver_mod  # type: ignore[attr-defined]
+        mcp_mod.server = mcp_server_mod  # type: ignore[attr-defined]
+        sys.modules.update({
+            "mcp": mcp_mod,
+            "mcp.server": mcp_server_mod,
+            "mcp.server.mcpserver": mcp_mcpserver_mod,
+            "mcp.server.mcpserver.server": mcp_server_server_mod,
+        })
+
+    # ── uvicorn (used by server.py for Config/Server classes) ─────────────────
+    if "uvicorn" not in sys.modules:
+        uvicorn_mod = types.ModuleType("uvicorn")
+
+        class UvicornConfig:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        class UvicornServer:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+            async def serve(self) -> None:
+                pass
+
+        uvicorn_mod.Config = UvicornConfig  # type: ignore[attr-defined]
+        uvicorn_mod.Server = UvicornServer  # type: ignore[attr-defined]
+        uvicorn_mod._unit_test_stub = True  # type: ignore[attr-defined]
+        sys.modules["uvicorn"] = uvicorn_mod
+
+    # ── starlette.applications, starlette.websockets, starlette.routing.Mount ─
+    # starlette core (responses/requests/routing) is already stubbed above.
+    # server.py additionally imports starlette.applications.Starlette and
+    # starlette.routing.Mount — add those if starlette is already installed.
+    if "starlette" in sys.modules:
+        starlette_mod2 = sys.modules["starlette"]
+        starlette_responses2 = sys.modules.get("starlette.responses")
+        starlette_routing2 = sys.modules.get("starlette.routing")
+
+        # starlette.applications
+        if "starlette.applications" not in sys.modules:
+            st_app = types.ModuleType("starlette.applications")
+
+            class Starlette:
+                def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    pass
+
+            st_app.Starlette = Starlette  # type: ignore[attr-defined]
+            starlette_mod2.applications = st_app  # type: ignore[attr-defined]
+            sys.modules["starlette.applications"] = st_app
+
+        # starlette.websockets (imported in a try/except in server.py)
+        if "starlette.websockets" not in sys.modules:
+            st_ws = types.ModuleType("starlette.websockets")
+
+            class WebSocket:
+                def __init__(self, scope: Any, receive: Any, send: Any) -> None:
+                    self.scope = scope
+                    self._receive = receive
+                    self._send = send
+
+                async def accept(self, *args: Any, **kwargs: Any) -> None:
+                    pass
+
+                async def close(self, *args: Any, **kwargs: Any) -> None:
+                    pass
+
+                async def receive(self) -> dict:
+                    return {"type": "websocket.disconnect"}
+
+                async def send_text(self, data: str) -> None:
+                    pass
+
+                async def send_bytes(self, data: bytes) -> None:
+                    pass
+
+            class WebSocketDisconnect(Exception):
+                pass
+
+            st_ws.WebSocket = WebSocket  # type: ignore[attr-defined]
+            st_ws.WebSocketDisconnect = WebSocketDisconnect  # type: ignore[attr-defined]
+            starlette_mod2.websockets = st_ws  # type: ignore[attr-defined]
+            sys.modules["starlette.websockets"] = st_ws
+
+        # starlette.routing.Mount (may not exist in existing stub)
+        if starlette_routing2 is not None and not hasattr(starlette_routing2, "Mount"):
+            class Mount:
+                def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    pass
+
+            starlette_routing2.Mount = Mount  # type: ignore[attr-defined]
+
+    # ── websockets (optional; server.py uses try/except) ──────────────────────
+    if "websockets" not in sys.modules:
+        ws_mod = types.ModuleType("websockets")
+        ws_exc = types.ModuleType("websockets.exceptions")
+
+        class ConnectionClosedError(Exception):
+            pass
+
+        ws_exc.ConnectionClosedError = ConnectionClosedError  # type: ignore[attr-defined]
+        ws_mod.exceptions = ws_exc  # type: ignore[attr-defined]
+        ws_mod._unit_test_stub = True  # type: ignore[attr-defined]
+        sys.modules.update({
+            "websockets": ws_mod,
+            "websockets.exceptions": ws_exc,
+        })
+
 
 # Install stubs at module import time (before any transport module is loaded)
 _install_transport_stubs()
