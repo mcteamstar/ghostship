@@ -1,10 +1,8 @@
 # Tasks: TRN-273 — Quality and Correctness Fixes
 
-- [ ] M-3: Validate key names in `yaml_config.py` before `eval`-able emission; add allowlist or switch to safe output format
-- [ ] M-6: Make `dispatch()` always return `{"error": ...}` on gateway failure; never return a dict missing `task_id`
-- [ ] I-2: Add assertion/guard in `CrewRegistry.batch_*` that detects reentrant use under `with registry:`; document the contract
-- [ ] I-3: Narrow `except` clause in `verify_password` to `(ValueError, TypeError)`; let unexpected exceptions propagate
-- [ ] I-4: Add `deregister_secret()` to `security.py`; call from nuke cleanup path so `_REGISTERED_SECRETS` doesn't grow indefinitely
-- [ ] I-6: Add startup warning when `GA_TRANSPORT_SECRET` is unset and the transport bind address is not loopback
-- [ ] L-4: Fix `_validate_model("")` to raise `ValueError` instead of returning `None` silently
+- [ ] M-3: Add key-name validation in `yaml_config.py` — restrict emitted keys to `[A-Z0-9_]+`; abort with error on any non-matching key name before shell eval
+- [ ] M-6: Audit `dispatch()` and `batch_dispatch()` return paths — ensure every success path returns a non-None `task_id`; every failure path returns `{"error": ...}`
+- [ ] I-3: Narrow bare `except Exception` in `verify_password` (`security.py:254`) to argon2-specific exceptions; let unexpected exceptions propagate
+- [ ] I-4: Add `deregister_secret(value: str)` to `security.py`; call from nuke cleanup path to prune `_REGISTERED_SECRETS`
+- [ ] I-6: In `server.py` startup, if `GA_TRANSPORT_SECRET` is absent and bind address is non-loopback, log at `CRITICAL` level (not just `WARNING`)
 - [ ] Run unit tests and e2e suite; confirm all pass
