@@ -38,6 +38,9 @@
 
 ## Deploy
 
-- [ ] Update ghostship submodule pointer in `mcteamstar/adjutant` to new release branch
-- [ ] `cd ~/development/mcteamstar/adjutant/hyperv && ./deploy.sh starport`
-- [ ] Verify carrier crews are healthy after restart
+- [x] Update ghostship submodule pointer in `mcteamstar/adjutant` to new release branch
+  **DONE:** `adjutant` commit `7dcddd5` bumped submodule to `release/0.9.0` tip (`15454c6`)
+- [x] `cd ~/development/mcteamstar/adjutant/hyperv && ./deploy.sh starport`
+  **DONE:** Deployed 2026-10-27; transport and crew images rebuilt as `0.9.0` / `0.9.0-spec-ops`
+- [x] Verify carrier crews are healthy after restart
+  **DONE:** e2e against carrier — 25 passed, 2 skipped (expected), 2 errors (Podman socket locality — pass when run from starport)
