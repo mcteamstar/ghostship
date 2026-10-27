@@ -258,3 +258,27 @@ def test_wizard_offers_login_only_for_unconfigured_backend(
     assert "kiro" not in logged, f"kiro was already configured, got {logged!r}"
     assert "already configured" in proc.stdout
 
+
+
+# ── Unquoted heredocs must not run commands by accident ──────────────────────
+
+class TestHeredocBackticks:
+    """An unquoted heredoc (``<<EOF``) expands backticks as command
+    substitution. A comment inside the generated compose.yml once quoted
+    ``ghostship auth login`` in backticks, so every install ran the CLI with
+    no backend. Intentional substitutions in these heredocs use ``$(...)``."""
+
+    def test_no_backticks_in_unquoted_heredocs(self, install_sh_text: str) -> None:
+        offenders = []
+        delimiter = None
+        for lineno, line in enumerate(install_sh_text.splitlines(), start=1):
+            if delimiter is None:
+                m = re.search(r"<<-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*$", line)
+                if m:
+                    delimiter = m.group(1)
+                continue
+            if line.strip() == delimiter:
+                delimiter = None
+            elif "`" in line:
+                offenders.append(f"{lineno}: {line.strip()}")
+        assert not offenders, "backticks in unquoted heredoc:\n" + "\n".join(offenders)

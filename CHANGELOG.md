@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.9.1
+
+### Default model ID fixed for kiro crews (hotfix)
+
+- The v0.8.1 default `claude-haiku-5-5` is Claude Code's spelling. Kiro rejects it, and every task on a kiro crew using the default failed with the misleading error `profileArn is required for this request`.
+- All six academy personas now use `claude-haiku-5.5`. Verified on 0.9.0 crews: kiro accepts the dotted ID, and Claude Code resolves it to `claude-haiku-5-5` (confirmed from the session transcript's served model).
+- `model.default` in `config/ghostship.yaml.example` is back to empty. The personas carry the default model, and an empty global fallback means codex crews no longer inherit a Claude model ID from a copied example. The example now notes each backend's model ID spelling.
+
+### Installer no longer runs `ghostship auth login` by accident
+
+- A comment inside the unquoted compose.yml heredoc in `bin/install.sh` quoted `ghostship auth login` in backticks, which bash ran as command substitution on every install. It failed harmlessly with `error: backend required` and left a garbled comment in the generated compose.yml. The comment is removed, and a new test (`TestHeredocBackticks`) fails if backticks reappear in any unquoted heredoc.
+
+### Upgrade notes
+
+- If you set `claude-haiku-5-5` yourself in `backends.kiro.model.*`, a `dispatch(model=...)` call or a schedule, change it to `claude-haiku-5.5`. Re-run `./install.sh` to sync the updated personas; existing crews pick them up when nuked and re-launched.
+
 ## v0.9.0
 
 ### Base image bump to KiroCrew 0.10.0 (TRN-271)
