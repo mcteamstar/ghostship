@@ -2,14 +2,43 @@
 
 ## v0.9.0
 
-### Base image bump to KiroCrew 0.10.0
+### Base image bump to KiroCrew 0.10.0 (TRN-271)
 
 - Crew image now extends `ghcr.io/kirodotdev/kirocrew:0.10.0` (multi-arch index digest `sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90`, covering arm64 and amd64).
+- kiro-cli bumped 2.32.0 → 2.34.0. Migration schema unchanged at (6, 5) — no `seed_kiro_db.py` logic changes needed.
 - Re-run `./install.sh` to rebuild the crew image and pick up KC 0.10.0. Existing crews keep their current image until nuked and re-launched.
 
-### ghostship 0.9.0
+### Security hardening (TRN-272)
 
-This release ships as ghostship version 0.9.0.
+- **Per-session CSRF tokens** — `DashboardGate` now issues a unique `gs_csrf` nonce per session (cookie-echo pattern) instead of a single process-wide token. A forged or mismatched CSRF token returns 403 before the API key is evaluated.
+- **XFF rate-limit bypass fixed** — `_caller_key()` in `auth.py` previously trusted `X-Forwarded-For` unconditionally. Clients could spoof the header to evade per-IP rate limiting. XFF is now only honoured from CIDRs listed in the new `GA_TRUSTED_PROXY_CIDR` config key; unauthenticated requests use the ASGI client address.
+- **Login race (TOCTOU) fixed** — `login.py` login handlers for kiro, Claude, and Codex now hold the flow lock across the state-read → container-dereference window. A concurrent `abort()` could previously race between those two steps and dereference a nil container pointer.
+- **Open-redirect NFKC normalisation** — `_validate_next_url()` now NFKC-normalises the `next` parameter before validation. Unicode lookalike sequences that bypassed the existing prefix/scheme guards are now caught.
+- **`Secure` cookie flag on `gs_session`** — the session cookie now carries `Secure` when the transport's external URL is `https://`.
+- **`GA_BATCH_MAX_TASKS` config error** — a non-integer value previously raised an uncaught `ValueError` at startup; it now raises a `ConfigError` with a clear message.
+
+### Quality and correctness fixes (TRN-273)
+
+- **`yaml_config.py` key injection guard** — `bin/install.sh` evals output from `yaml_config.py`. Key names are now validated against `[A-Z0-9_]+` before emission; a malformed YAML key can no longer inject shell.
+- **`dispatch()` null `task_id` guard** — certain gateway error paths returned `{"task_id": null}` on what appeared to be a success path. Every non-error response from `dispatch()` now always carries a non-null `task_id` string; any error path returns `{"error": ...}`.
+- **`verify_password` bare except narrowed** — `security.py` previously caught `Exception` broadly in `verify_password`, swallowing unexpected bugs. The except is now narrowed to argon2-specific exceptions.
+- **`_REGISTERED_SECRETS` pruned on nuke** — the set of registered secrets in `security.py` was never pruned, so secrets from nuked crews accumulated indefinitely. `deregister_secret()` is now called from the nuke cleanup path.
+- **Startup warning elevated on non-loopback bind** — when `GA_TRANSPORT_SECRET` is unset and the transport binds to a non-loopback interface, the startup log is now CRITICAL (was WARNING). A new `GA_REQUIRE_SECRET_ON_EXTERNAL_BIND` config key can be used to hard-fail instead of warn.
+
+### Docs refresh (TRN-274)
+
+- `docs/architecture.md`, `docs/configuration.md`: base image references updated to KC 0.10.0 / multi-arch digest `b6d0b9a3...`.
+- `CHANGELOG.md`: this v0.9.0 section added.
+- `docs/portal.md`: port range corrected from "1024 ports" to "64 ports default" (`GA_DASHBOARD_PORT_RANGE_SIZE=64`); firewall example corrected from `64058:65081` to `64058:64121/tcp`.
+- `docs/configuration.md`: `CREW_GATEWAY_PORT` source file corrected to `transport/constants.py`; `KIRO_API_KEY` description updated (moved to credential store, not removed); `GA_DASHBOARD_PORT_RANGE_SIZE` added to configuration table; duplicate `PODMAN_SOCKET` entry removed.
+- `docs/troubleshooting.md`: TRN-16 annotation updated to archived.
+- `docs/release-notes-0.6.0.md`: stale `ghostship.conf` and `GA_AGENT_BACKENDS` references annotated.
+
+### Unit test coverage (TRN-275)
+
+- Added `tests/unit/test_server.py` — covers `_extract_crew_proxy_parts`, `_sanitise_query_string`, `_parse_ttl_seconds`, `_jwt_exp`, `_cookie_near_expiry`, and `_handle_health`.
+- Added `tests/unit/test_dashboard.py` — covers `_validate_next_url` (open-redirect guard, NFKC, backslash, control characters), `DashboardGate` CSRF token uniqueness and forged-CSRF rejection, `gs_session` cookie flags (SameSite, Secure, HttpOnly).
+- Unit test count: 912 → 975.
 
 ## v0.8.1
 
