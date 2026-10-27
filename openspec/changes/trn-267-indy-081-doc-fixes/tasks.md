@@ -20,8 +20,9 @@
 
 ## 4. configuration.md — KC_BASE_IMAGE description
 
-- [ ] 4.1 In `docs/configuration.md`, update the `KC_BASE_IMAGE` table-row description
+- [x] 4.1 In `docs/configuration.md`, update the `KC_BASE_IMAGE` table-row description
   to reference the stable `0.9.0` tag instead of the insider qualifier `0.9.0-insider.4`
+  _(superseded by TRN-274 H-10 — updated further to `0.10.0` multi-arch digest)_
 
 ## 5. README.md — model access note
 

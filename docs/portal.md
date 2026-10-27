@@ -186,7 +186,7 @@ Replace the `forward_auth` block with a `caddy-security` auth policy. Recommende
 The UI port range must be reachable from your browser:
 
 ```bash
-sudo ufw allow 64058:65081/tcp
+sudo ufw allow 64058:64121/tcp
 ```
 
 `install.sh` adds this rule automatically.
@@ -203,7 +203,8 @@ Allocated ports are stored in `crews.json`. On transport restart, all crew ports
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Hostname for `tailscale` and `acme` modes |
 | `PORT` | `64057` | Port Caddy listens on |
 | `GA_PORTAL_SESSION_TTL_SECS` | `86400` | Session cookie TTL (seconds) |
-| `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First port in the UI port range (1024 ports allocated) |
+| `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First port in the UI port range (64 ports (default; configurable via `GA_DASHBOARD_PORT_RANGE_SIZE`)) |
+| `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of host ports in the dashboard proxy port range (`portal.dashboard.port_range.size`). |
 
 See [configuration.md](configuration.md) for the full variable reference.
 

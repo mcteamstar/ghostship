@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.0
+
+### Base image bump to KiroCrew 0.10.0
+
+- Crew image now extends `ghcr.io/kirodotdev/kirocrew:0.10.0` (multi-arch index digest `sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90`, covering arm64 and amd64).
+- Re-run `./install.sh` to rebuild the crew image and pick up KC 0.10.0. Existing crews keep their current image until nuked and re-launched.
+
+### ghostship 0.9.0
+
+This release ships as ghostship version 0.9.0.
+
 ## v0.8.1
 
 ### Default agent model changed to `claude-haiku-5-5` (TRN-266)

@@ -20,7 +20,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_FILE_SECRET` | unset (generated once, stored in `DATA_DIR/ga-file-secret`) | HMAC secret signing presigned file URLs. The stored secret survives transport restarts. `install.sh` does not pass an override. |
 | `TRANSPORT_DATA_DIR` | `/data` (pinned) | Container-side data directory the transport reads/writes. Effectively pinned to `/data` in the standard install: `DATA_DIR` is always bind-mounted as `/data`, and the value is hardcoded (TRN-213) rather than read from the environment. Changing it would require a custom compose override. |
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`), from `network.api_key` or `install.sh --api-key <key>`. Resolution order: `--api-key` > `network.api_key` > the key saved by an earlier `--api-key` (`--api-key ""` clears the saved key). `network.api_key` has three states: a string enables auth; unset is fine on a loopback `HOST`, but on any other `HOST` the install warns and aborts and the transport refuses to start; `false` is the explicit opt-out that allows unauthenticated non-loopback access (for deployments behind their own auth layer — Tailscale, VPN, reverse proxy) with a warning. **Never log, print, or embed this value.** See [auth.md](auth.md). |
-| `GA_REQUIRE_API_KEY` | _(deprecated)_ | Deprecated, along with `network.require_api_key`. `off` is treated as `network.api_key: false` when no key is set from any source; `error` and `warn` are ignored with a warning (an unset key on a non-loopback `HOST` now always aborts). |
+| `GA_REQUIRE_API_KEY` | _(removed)_ | **Removed.** Use `network.api_key` (or `network.api_key: false` to opt out explicitly). `off` was previously treated as `network.api_key: false` when no key is set from any source; `error` and `warn` are no longer accepted. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. Checked against `MemAvailable` from `/proc/meminfo` (falls back to `MemFree`), polled every 5 s for up to 60 s. Set to `0` to disable. |
@@ -35,7 +35,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
 | `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
 | `GA_CREW_AGENT` | `kiro` | Which agent backend to build and run. Comma-separated list for multi-toolchain builds; first entry is the runtime default for crews launched without a `backend` argument. Any enabled backend can be chosen per crew with `launch(crew_id, backend="claude")`; the crew keeps it for its whole life, including restarts. Values: `kiro` (default, KiroCrew-native kiro-cli), `claude` (Claude Code ACP backend), `codex` (Codex ACP backend). Kiro is always in the enabled set (appended if not listed). `install.sh` builds one toolchain per listed backend and passes the full list as the container environment. Login routes (`POST /login/{backend}/{method}`) only accept enabled backends. Re-run `ghostship install` after changing it. Deprecated aliases: `GA_CREW_ACP_BACKEND` and `GA_AGENT_BACKENDS` are accepted with a warning for one release cycle. |
-| Backend credentials | _(not config)_ | **Removed in TRN-233.** `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and `KIRO_API_KEY` are no longer configuration — the installer ignores them with a warning. Manage backend credentials with `ghostship auth login\|logout\|status`; they are stored in `DATA_DIR/credentials/` and resolved per launch. See [auth.md](auth.md). |
+| Backend credentials | _(not config)_ | **Moved to credential store (TRN-233).** `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and `OPENAI_API_KEY` are no longer configuration — the installer ignores them with a warning. `KIRO_API_KEY` was moved to the credential store and is now managed via `ghostship auth login kiro --method api-key`. Manage all backend credentials with `ghostship auth login\|logout\|status`; they are stored in `DATA_DIR/credentials/` and resolved per launch. See [auth.md](auth.md). |
 | `ANTHROPIC_BASE_URL` (formerly `GA_CREW_ANTHROPIC_BASE_URL`) | _(unset)_ | Claude backend. Optional Anthropic-compatible endpoint URL injected as `ANTHROPIC_BASE_URL` into crew containers when `GA_CREW_AGENT=claude`. When set, allows operators to redirect Claude-backend crew traffic to a local LLM proxy (litellm, OpenRouter, LM Studio, etc.) without image changes. Has no effect when `GA_CREW_AGENT` does not include `claude`. |
 | `OPENAI_BASE_URL` (formerly `GA_CREW_OPENAI_BASE_URL`) | _(unset)_ | Codex backend. Optional OpenAI-compatible endpoint URL injected as `OPENAI_BASE_URL` into crew containers when `GA_CREW_AGENT=codex`. When set, redirects Codex-backend crew traffic to an OpenAI-compatible endpoint without image changes, and the `launch()` network WARNING names this endpoint instead of `api.openai.com`. Has no effect when `GA_CREW_AGENT` does not include `codex`. |
 | ~~`GA_INCLUDE_CLAUDE_AGENT`~~, ~~`GA_INCLUDE_CODEX_AGENT`~~ | _(removed)_ | **Removed in TRN-202.** Replaced by `GA_CREW_AGENT` (`GA_CREW_AGENT=claude`, `codex`, or `claude,codex`). Setting either variable, to any value including `false`, stops `install.sh` and the transport with an error naming the replacement. |
@@ -55,7 +55,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of host ports in the dashboard proxy port range. Config-file-only. |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
-| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:108e6b94890ab6ce390d4f5103b096747a6b8eb51e7d020463641551e71ab94c` — the pinned `0.9.0` digest)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
+| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90` — the pinned `0.10.0` multi-arch index digest)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path on the **host** to an operator-managed directory of additional standing-order template `.md` files. Must be an absolute path (error otherwise). When set and the path exists, it is bind-mounted read-only at `/mnt/orders` inside the container; the container receives `GA_ORDERS_DIR=/mnt/orders`. A warning is logged if the path is set but missing. Config-file-only. |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). Unrecognised values fall back to `off` with a WARNING. |
@@ -72,7 +72,6 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path (`images.podman_socket`). Override when the socket is in a non-standard location. |
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. Set when building or tagging the image under a different name. |
 | `KC_BASE_IMAGE` | _(Containerfile digest)_ | KiroCrew base image for ephemeral login containers. Set when pinning to a different version for testing. |
 | `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine/service name. Only needed when running two ghostship instances side-by-side on the same host. |
@@ -89,6 +88,7 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 | `GA_RATE_LIMIT_MCP` | `300:60` | See above. |
 | `GA_RATE_LIMIT_FILES` | `60:60` | See above. |
 | `GA_RATE_LIMIT_CREW_API` | `120:60` | See above. |
+| `images.agents_ref` | _(unset, uses `main`)_ | Pin for `mcteamstar/.agents` baked into the crew image (`machine.images.agents_ref`). Academy content is staged via `.agents/setup <backend>` at crew launch. Set to a specific tag or SHA for reproducible builds. A changed value forces a crew image rebuild. |
 
 > **Network topology:** Two static Podman networks replace the retired `ga-net`:
 > - **`ga-portside`** — `ga-portal` ↔ `ga-transport` only. Crew containers are not on this network.
@@ -99,7 +99,7 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 > **Upgrading from `ga-net`:** The transport automatically migrates existing crew containers from `ga-net` to `ga-starboard` on first startup after the upgrade. No operator action required. `ga-net` is removed when empty.
 
 > **Internal constant — not user-settable:**
-> `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each crew container's gateway over `ga-starboard`. It is hardcoded in `server.py` and is not configurable.
+> `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each crew container's gateway over `ga-starboard`. It is defined in `transport/constants.py:21` and imported everywhere else.
 
 ## Model precedence
 
@@ -259,7 +259,7 @@ default, is documented in **`config/ghostship.yaml.example`** — copy it to
 | `backends` | `default` (list); `<b>.model.override`/`<b>.model.default`; `kiro.identity_center.url`/`.region`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KC_MODEL_<B>_OVERRIDE`/`_DEFAULT`, `KIRO_IDENTITY_PROVIDER`, … |
 | `portal` | `tls_mode`, `domain`, `session_ttl_secs`, `dashboard.default`, `dashboard.port_range.start`/`.size`, `rate_limit.*` | `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, … |
 | `machine` | `dedicated`, `name`, `resources.cpus`/`resources.memory_mb`/`resources.disk_gb` | `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, … |
-| `machine.images` | `podman_socket`, `kc_image`, `kc_base_image` | `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE` |
+| `machine.images` | `podman_socket`, `kc_image`, `kc_base_image`, `agents_ref` | `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE`, _(pin; forces image rebuild on change)_ |
 
 An unrecognised key produces a warning and is ignored (the install continues).
 A YAML syntax error aborts the install with a parse error.

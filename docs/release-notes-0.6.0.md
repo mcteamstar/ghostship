@@ -227,11 +227,23 @@ upgrade are handled automatically by `install.sh` and the transport:
 
 ## Upgrading
 
-1. Update `ghostship.conf`:
-   - Replace `GA_INCLUDE_CLAUDE_AGENT=true` → `GA_AGENT_BACKENDS=claude`
-   - Replace `GA_INCLUDE_CODEX_AGENT=true` → `GA_AGENT_BACKENDS=codex`
+1. Update `ghostship.yaml`:
+   - Replace `GA_INCLUDE_CLAUDE_AGENT=true` → add `claude` to `backends.default`
+   - Replace `GA_INCLUDE_CODEX_AGENT=true` → add `codex` to `backends.default`
    - Remove any reference to `GA_INCLUDE_CLAUDE_AGENT` or `GA_INCLUDE_CODEX_AGENT`
      entirely (even `=false` triggers the error).
+
+   Example `ghostship.yaml` for multi-backend:
+   ```yaml
+   backends:
+     default:
+       - kiro
+       - claude
+       - codex
+   ```
+
+   > **Note:** `ghostship.conf` (the old flat shell format) was replaced by `ghostship.yaml` in v0.8.0. `GA_AGENT_BACKENDS` was deprecated in TRN-213 and replaced by `backends.default`. See [configuration.md](configuration.md#config-file) for migration details.
+
 2. Re-run `./install.sh`. The crew image will be rebuilt to pick up the new base image
    and any newly enabled backends.
 3. Existing crews use the old image until nuked and re-launched. Evacuate anything you

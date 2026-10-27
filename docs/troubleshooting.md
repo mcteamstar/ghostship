@@ -190,20 +190,13 @@ transport's outer gate triggers first and provides a clearer error.
 
 ## Bootstrap crash (`_bootstrap.p`)
 
-**Status:** Known issue, tracked in TRN-16. A fix is pending.
-
-If a crew container crashes during early startup with a traceback referencing
-`_bootstrap.p` or `pickle` deserialization, this is a known race condition in
-the crew image's initial setup. The workaround is to nuke and relaunch:
+This was a known race condition (TRN-16, now resolved) in the crew image's initial setup. If you encounter a container crash during early startup with a traceback referencing `_bootstrap.p` or `pickle` deserialization, the workaround is to nuke and relaunch:
 
 ```bash
 # Via MCP:
 nuke(crew_id="<id>", confirm=True)
 launch(crew_id="<id>")
 ```
-
-This section will be expanded with root cause and permanent fix once TRN-16
-is applied.
 
 ## Dedicated Podman Machine
 
