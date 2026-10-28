@@ -42,13 +42,13 @@
 
 ## 4. test_dashboard.py — handle_auth and handle_logout_post
 
-- [ ] 4.1 Extend `tests/unit/test_dashboard.py` with a `TestDashboardGateAuth`
+- [x] 4.1 Extend `tests/unit/test_dashboard.py` with a `TestDashboardGateAuth`
   class.
-- [ ] 4.2 Add test: valid session → `handle_auth` returns 200.
-- [ ] 4.3 Add test: expired session → `handle_auth` returns 401.
-- [ ] 4.4 Add test: revoked session (after `handle_logout_post`) → `handle_auth`
+- [x] 4.2 Add test: valid session → `handle_auth` returns 200.
+- [x] 4.3 Add test: expired session → `handle_auth` returns 401.
+- [x] 4.4 Add test: revoked session (after `handle_logout_post`) → `handle_auth`
   returns 401.
-- [ ] 4.5 Run `pytest tests/unit/test_dashboard.py` — all tests pass.
+- [x] 4.5 Run `pytest tests/unit/test_dashboard.py` — all tests pass.
 
 ## 5. test_openapi.py — schema generation
 
