@@ -1,50 +1,50 @@
 ## 1. Launcher waiter timeout
 
-- [ ] 1.1 In `transport/launcher.py`, find `event.wait(timeout=45)` (line ~316)
+- [x] 1.1 In `transport/launcher.py`, find `event.wait(timeout=45)` (line ~316)
   and change to `event.wait(timeout=150)`.
-- [ ] 1.2 Update any related comment that references the 45 s value.
-- [ ] 1.3 Run `pytest tests/unit/test_launcher.py` (if it exists) to confirm no
+- [x] 1.2 Update any related comment that references the 45 s value.
+- [x] 1.3 Run `pytest tests/unit/test_launcher.py` (if it exists) to confirm no
   tests rely on the 45 s value. If they do, update the test to use 150.
 
 ## 2. SessionStore._sweep on revoke
 
-- [ ] 2.1 In `transport/security.py`, add a `self._sweep()` call inside
+- [x] 2.1 In `transport/security.py`, add a `self._sweep()` call inside
   `SessionStore.revoke()` after the token is added to `_revoked`.
-- [ ] 2.2 Add a one-line comment to `RateLimiter` documenting the memory bound:
+- [x] 2.2 Add a one-line comment to `RateLimiter` documenting the memory bound:
   `# Memory bound: O(unique_source_ips × window_secs) — lazy per-key eviction, no global sweep.`
-- [ ] 2.3 Run `pytest tests/unit/test_security.py` (once TRN-278 lands) or confirm
+- [x] 2.3 Run `pytest tests/unit/test_security.py` (once TRN-278 lands) or confirm
   existing security tests still pass.
 
 ## 3. _ensure_running_locks cleanup on nuke
 
-- [ ] 3.1 In `transport/server.py`, find the nuke handler / cleanup path and add
+- [x] 3.1 In `transport/server.py`, find the nuke handler / cleanup path and add
   `_ensure_running_locks.pop(crew_id, None)` to remove the stale entry.
-- [ ] 3.2 Confirm no existing tests break.
+- [x] 3.2 Confirm no existing tests break.
 
 ## 4. test_captain_engine.py
 
-- [ ] 4.1 Create `tests/unit/test_captain_engine.py`. Import functions from
+- [x] 4.1 Create `tests/unit/test_captain_engine.py`. Import functions from
   `transport.captain_engine` (or `captain_engine` in container flat layout).
-- [ ] 4.2 Add `_check_in_memory_pressure` test: mock host memory below threshold →
+- [x] 4.2 Add `_check_in_memory_pressure` test: mock host memory below threshold →
   returns non-zero pressure level.
-- [ ] 4.3 Add `_mail_admiral` failure-safe test: mock mail delivery to raise →
+- [x] 4.3 Add `_mail_admiral` failure-safe test: mock mail delivery to raise →
   function does not propagate the exception.
-- [ ] 4.4 Add `_captain_do_status` stopped-crew test: pass a stopped crew dict →
+- [x] 4.4 Add `_captain_do_status` stopped-crew test: pass a stopped crew dict →
   returns without raising, includes status field.
-- [ ] 4.5 Add `_captain_do_stop` idempotency test: call twice → second call does
+- [x] 4.5 Add `_captain_do_stop` idempotency test: call twice → second call does
   not raise.
-- [ ] 4.6 Run `pytest tests/unit/test_captain_engine.py` — all tests pass.
+- [x] 4.6 Run `pytest tests/unit/test_captain_engine.py` — all tests pass.
 
 ## 5. pytest-cov in CI
 
-- [ ] 5.1 In `scripts/run.sh`, add `--cov=transport --cov-report=term-missing` to
+- [x] 5.1 In `scripts/run.sh`, add `--cov=transport --cov-report=term-missing` to
   the `pytest` invocation in the `unit` target.
-- [ ] 5.2 Confirm `pytest-cov` is listed in test dependencies
+- [x] 5.2 Confirm `pytest-cov` is listed in test dependencies
   (`requirements-test.txt` or equivalent). Add it if missing.
-- [ ] 5.3 Run `bash scripts/run.sh --unit` locally — coverage report is printed,
+- [x] 5.3 Run `bash scripts/run.sh --unit` locally — coverage report is printed,
   all tests pass.
 
 ## 6. Verification
 
-- [ ] 6.1 Run full unit suite: `bash scripts/run.sh --unit` — all tests pass with
+- [x] 6.1 Run full unit suite: `bash scripts/run.sh --unit` — all tests pass with
   coverage report.
