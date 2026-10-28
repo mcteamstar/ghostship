@@ -269,23 +269,7 @@ class TestHeredocBackticks:
     no backend. Intentional substitutions in these heredocs use ``$(...)``."""
 
     def test_no_backticks_in_unquoted_heredocs(self, install_sh_text: str) -> None:
-        offenders = []
-        delimiter = None
-        for lineno, line in enumerate(install_sh_text.splitlines(), start=1):
-            if delimiter is None:
-                # An unquoted delimiter anywhere on the line, even when a
-                # redirect or pipe follows it (cat <<EOF > file). A quoted
-                # delimiter (<<'EOF' or <<"EOF") disables expansion, so it
-                # never matches here, and neither does a <<< here-string.
-                m = re.search(r"(?<!<)<<(?!<)-?\s*([A-Za-z_][A-Za-z0-9_]*)\b", line)
-                if m:
-                    delimiter = m.group(1)
-                continue
-            if line.strip() == delimiter:
-                delimiter = None
-            elif "`" in line:
-                offenders.append(f"{lineno}: {line.strip()}")
-        assert not offenders, "backticks in unquoted heredoc:\n" + "\n".join(offenders)
+        self._check_no_backticks(install_sh_text, "bin/install.sh")
 
     @staticmethod
     def _check_no_backticks(text: str, label: str) -> None:
