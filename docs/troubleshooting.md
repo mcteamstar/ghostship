@@ -198,6 +198,19 @@ nuke(crew_id="<id>", confirm=True)
 launch(crew_id="<id>")
 ```
 
+## "profileArn is required for this request"
+
+This error occurs during dispatch or authentication. Two common causes:
+
+**Stale kiro credential** — the stored token has expired or become invalid. Fix by cycling auth:
+
+```bash
+ghostship auth logout kiro
+ghostship auth login kiro
+```
+
+**Wrong model-ID spelling** — for example `claude-haiku-5-5` instead of `claude-haiku-5.5` (hyphens vs dots). Update the model ID in your configuration and re-run `./install.sh` to apply it.
+
 ## Dedicated Podman Machine
 
 These issues apply only when `GA_DEDICATED_MACHINE=true`.

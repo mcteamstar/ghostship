@@ -129,7 +129,7 @@ Every `dispatch` requests a retained run (`keep=true`), keeping each task's sess
 - **`slot=None` (default)** — enrolled persona agents route into their attested `member-<slug>` session (visible in the dashboard, able to make downstream spawn calls). Unenrolled agents dispatch headless.
 - **`slot=False`** — explicit headless regardless of enrollment, saving ~250 MB RSS per dispatch.
 
-`steer(task_id, message, crew_id, force=False)` defaults to turn-boundary behaviour: a running task receives `/steer`; a completed task uses `/continue`. With `force=True` on a running task, transport calls `DELETE /api/spawn/{task_id}` then `POST /api/spawn/{task_id}/continue` and returns `force_redeployed`. A completed task follows the normal `/continue` path even with `force=True`.
+`steer(task_id, message, crew_id, force=False)` defaults to turn-boundary behaviour: a running task receives `/steer`; a completed task uses `/continue`. With `force=True` on a running task, transport calls `DELETE /api/spawn/{task_id}` then `POST /api/spawn/{task_id}/continue` and returns `force_redeployed`. A completed task follows the normal `/continue` path even with `force=True`. On claude and codex backends the gateway may return `steer_unsupported`, in which case transport falls back to `mode=follow_up` and the response carries `action: "follow_up_queued"`. A `503 session_starting` response means the task process has not started yet — retry rather than using `force=True`.
 
 Recurring jobs created by `schedule` use `persistent_session=True` on `/api/crons`.
 
