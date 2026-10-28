@@ -6,6 +6,7 @@ steer". Now:
 
 - a ``steer_unsupported`` refusal (claude and codex can't interrupt mid-turn)
   is retried as ``mode='follow_up'`` and reported as ``follow_up_queued``;
+- a task that finishes mid-steer (409 not_running) is continued instead;
 - any other refusal returns a structured error with the gateway's status and
   body, on the interrupt, force and continue paths alike.
 """
@@ -53,20 +54,34 @@ _UNSUPPORTED = (
     '{"error": "steer_unsupported: this run\'s backend cannot guarantee a '
     'mid-turn steer - use mode=\'follow_up\'", "code": "steer_failed"}'
 )
+_NOT_RUNNING = '{"error": "not_running: run finished - use spawn_continue", "code": "not_running"}'
 
 
 def test_running_steer_gateway_error_returns_structured_error():
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
-        raise _status_error(503, f"session_starting cookie={_COOKIE}")
+        raise _status_error(502, f"steer rejected by provider cookie={_COOKIE}")
+
+    result = _run_steer(api)
+
+    assert "HTTP 502" in result["error"]
+    assert "steer rejected by provider" in result["error"]
+    assert _COOKIE not in result["error"]
+    assert "force=True" in result["hint"]
+
+
+def test_session_starting_hint_says_retry_not_force():
+    def api(crew, crew_id, method, path, **kw):
+        if method == "GET":
+            return {"done": False}
+        raise _status_error(503, '{"error": "session_starting: retry", "code": "session_starting"}')
 
     result = _run_steer(api)
 
     assert "HTTP 503" in result["error"]
-    assert "session_starting" in result["error"]
-    assert _COOKIE not in result["error"]
-    assert "force=True" in result["hint"]
+    assert "retry" in result["hint"]
+    assert not result["hint"].startswith("steer(..., force=True)")
 
 
 def test_steer_unsupported_falls_back_to_follow_up():
@@ -85,6 +100,7 @@ def test_steer_unsupported_falls_back_to_follow_up():
     assert sent == [{"message": "stop"}, {"message": "stop", "mode": "follow_up"}]
     assert result["action"] == "follow_up_queued"
     assert result["task_id"] == "t1"
+    assert "pickup(crew_id=...)" in result["note"]
 
 
 def test_follow_up_refusal_returns_structured_error():
@@ -93,12 +109,46 @@ def test_follow_up_refusal_returns_structured_error():
             return {"done": False}
         if "mode" not in kw["json"]:
             raise _status_error(502, _UNSUPPORTED)
-        raise _status_error(409, '{"error": "not_running", "code": "not_running"}')
+        raise _status_error(503, '{"error": "shutting_down", "code": "steer_failed"}')
 
     result = _run_steer(api)
 
     assert "follow-up" in result["error"]
-    assert "HTTP 409" in result["error"]
+    assert "HTTP 503" in result["error"]
+
+
+def test_task_finishing_before_interrupt_is_continued():
+    calls = []
+
+    def api(crew, crew_id, method, path, **kw):
+        calls.append((method, path))
+        if method == "GET":
+            return {"done": False}
+        if path.endswith("/steer"):
+            raise _status_error(409, _NOT_RUNNING)
+        return {"id": "t2"}
+
+    result = _run_steer(api)
+
+    assert calls[-1] == ("POST", "/api/spawn/t1/continue")
+    assert result == {"task_id": "t2", "crew_id": "c1", "action": "redeployed", "message": "stop"}
+
+
+def test_task_finishing_before_follow_up_is_continued():
+    def api(crew, crew_id, method, path, **kw):
+        if method == "GET":
+            return {"done": False}
+        if path.endswith("/steer"):
+            if "mode" not in kw["json"]:
+                raise _status_error(502, _UNSUPPORTED)
+            raise _status_error(409, _NOT_RUNNING)
+        assert kw["json"] == {"task": "stop"}
+        return {"id": "t3"}
+
+    result = _run_steer(api)
+
+    assert result["action"] == "redeployed"
+    assert result["task_id"] == "t3"
 
 
 def test_continue_on_finished_task_gateway_error_returns_structured_error():
@@ -113,7 +163,7 @@ def test_continue_on_finished_task_gateway_error_returns_structured_error():
     assert "HTTP 404" in result["error"]
 
 
-def test_force_steer_gateway_error_returns_structured_error():
+def test_force_steer_resume_failure_says_task_was_stopped():
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
@@ -123,8 +173,21 @@ def test_force_steer_gateway_error_returns_structured_error():
 
     result = _run_steer(api, force=True)
 
-    assert "force steer for task t1" in result["error"]
+    assert "after force stop" in result["error"]
+    assert "stopped and was not resumed" in result["error"]
     assert "HTTP 409" in result["error"]
+
+
+def test_force_steer_stop_failure_returns_structured_error():
+    def api(crew, crew_id, method, path, **kw):
+        if method == "GET":
+            return {"done": False}
+        raise _status_error(500, '{"error": "boom"}')
+
+    result = _run_steer(api, force=True)
+
+    assert "force stop of task t1" in result["error"]
+    assert "HTTP 500" in result["error"]
 
 
 def test_running_steer_success_unchanged():

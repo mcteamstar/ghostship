@@ -159,7 +159,8 @@ backends:
 
   claude:
     # Per-backend model control for claude crews (see kiro.model above).
-    # Claude Code uses hyphenated model IDs (claude-haiku-5-5).
+    # Claude Code's native model IDs are hyphenated (claude-haiku-5-5); it
+    # also accepts the dotted kiro form (claude-haiku-5.5) the personas use.
     model:
       override: ""
       default: ""

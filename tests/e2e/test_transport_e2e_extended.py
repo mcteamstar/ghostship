@@ -253,11 +253,17 @@ class TestSteerTool(unittest.TestCase):
         steer_result = _mcp_call("steer", task_id=task_id, crew_id=self.CREW_ID, message=message)
         self.assertFalse(_is_error(steer_result), f"Steer returned error: {steer_result}")
         action = steer_result.get("action")
-        self.assertIn(action, ("steered", "follow_up_queued"), steer_result)
+        self.assertIn(action, ("steered", "follow_up_queued", "redeployed"), steer_result)
         print(f"[e2e] steer action: {action}", flush=True)
 
         # The agent must act on the message, not just have it accepted: a 200
         # that was silently dropped is what hid this bug before.
+        if action == "redeployed":
+            # The task finished before the steer landed, so steer continued its
+            # session as a new task; that task must carry the instruction out.
+            result = self._wait(steer_result["task_id"], lambda s: s.get("done"), timeout=180)
+            self.assertIn(token, result.get("result", ""), f"Continuation was not acted on: {result}")
+            return
         final = self._wait(task_id, lambda s: s.get("done"), timeout=300)
         if action == "steered":
             self.assertIn(token, final.get("result", ""), f"Interrupt steer was not acted on: {final}")

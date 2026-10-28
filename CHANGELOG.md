@@ -6,7 +6,7 @@
 
 - The v0.8.1 default `claude-haiku-5-5` is Claude Code's spelling. Kiro rejects it, and every task on a kiro crew using the default failed with the misleading error `profileArn is required for this request`.
 - All six academy personas now use `claude-haiku-5.5`. Verified on 0.9.0 crews: kiro accepts the dotted ID, and Claude Code resolves it to `claude-haiku-5-5` (confirmed from the session transcript's served model).
-- `model.default` in `config/ghostship.yaml.example` is back to empty. The personas carry the default model, and an empty global fallback means codex crews no longer inherit a Claude model ID from a copied example. The example now notes each backend's model ID spelling.
+- `model.default` in `config/ghostship.yaml.example` is back to empty. The personas carry the default model, so the global fallback is no longer needed. Codex crews still get `claude-haiku-5.5` from the personas, because a persona's model outranks `backends.codex.model.default`; set `backends.codex.model.override` to run codex crews on a codex model. The example now notes each backend's model ID spelling.
 
 ### Installer no longer runs `ghostship auth login` by accident
 

@@ -273,7 +273,11 @@ class TestHeredocBackticks:
         delimiter = None
         for lineno, line in enumerate(install_sh_text.splitlines(), start=1):
             if delimiter is None:
-                m = re.search(r"<<-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*$", line)
+                # An unquoted delimiter anywhere on the line, even when a
+                # redirect or pipe follows it (cat <<EOF > file). A quoted
+                # delimiter (<<'EOF' or <<"EOF") disables expansion, so it
+                # never matches here, and neither does a <<< here-string.
+                m = re.search(r"(?<!<)<<(?!<)-?\s*([A-Za-z_][A-Za-z0-9_]*)\b", line)
                 if m:
                     delimiter = m.group(1)
                 continue

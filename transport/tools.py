@@ -1871,10 +1871,11 @@ def dispatch(
     return response
 
 
-def _steer_gateway_error(exc: httpx.HTTPStatusError, crew: dict, what: str) -> dict:
-    """Structured error for a gateway refusal during steer, carrying its status and body."""
-    detail, _ = _gateway_error_detail(exc, crew)
-    return {"error": f"crew gateway rejected {what}.{detail}"}
+def _response_body(exc: httpx.HTTPStatusError) -> str:
+    try:
+        return exc.response.text or ""
+    except Exception:
+        return ""
 
 
 def _is_steer_unsupported(exc: httpx.HTTPStatusError) -> bool:
@@ -1883,11 +1884,35 @@ def _is_steer_unsupported(exc: httpx.HTTPStatusError) -> bool:
     KiroCrew answers 502 ``steer_failed`` with a ``steer_unsupported`` detail and
     asks for ``mode='follow_up'`` instead.
     """
+    return exc.response.status_code == 502 and "steer_unsupported" in _response_body(exc)
+
+
+def _is_not_running(exc: httpx.HTTPStatusError) -> bool:
+    """True when the run finished between our status check and the steer (409 not_running)."""
+    return exc.response.status_code == 409 and "not_running" in _response_body(exc)
+
+
+def _is_session_starting(exc: httpx.HTTPStatusError) -> bool:
+    """True when the run is alive but its session hasn't registered yet (503 session_starting)."""
+    return exc.response.status_code == 503 and "session_starting" in _response_body(exc)
+
+
+def _steer_call(
+    crew: dict, crew_id: str, method: str, path: str, what: str, **kw: Any,
+) -> tuple[Any, dict | None, httpx.HTTPStatusError | None]:
+    """Make one gateway call for steer without letting it raise.
+
+    Returns ``(response, None, None)`` on success, or ``(None, error, exc)`` where
+    ``error`` is the caller-facing dict and ``exc`` is the gateway's
+    HTTPStatusError (``None`` when the crew was unresponsive instead).
+    """
     try:
-        body = exc.response.text or ""
-    except Exception:
-        body = ""
-    return exc.response.status_code == 502 and "steer_unsupported" in body
+        return _crew_api_with_recovery(crew, crew_id, method, path, **kw), None, None
+    except CrewUnresponsiveError as e:
+        return None, {"error": str(e)}, None
+    except httpx.HTTPStatusError as e:
+        detail, _ = _gateway_error_detail(e, crew)
+        return None, {"error": f"crew gateway rejected {what}.{detail}"}, e
 
 
 @_registry_guard
@@ -1907,10 +1932,12 @@ def steer(
     direction, provide new information. On backends that cannot interrupt a
     turn mid-flight (claude, codex) the message is queued instead and
     delivered as a continuation when the current turn ends; the response then
-    reports ``action: "follow_up_queued"``. With ``force=True``, hard-stops the
+    reports ``action: "follow_up_queued"``, and the continuation appears as a
+    new task in ``pickup(crew_id=...)``. With ``force=True``, hard-stops the
     underlying process before resuming the same session with the message.
     For completed tasks: resumes the existing session via /continue —
     the agent picks up where it left off with full prior context intact.
+    A task that finishes while being steered is continued the same way.
     Sessions persist until the crew is nuked.
     Also: redirect, update, continue, follow up, add context.
 
@@ -1924,55 +1951,59 @@ def steer(
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
-    try:
-        s = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
-    except CrewUnresponsiveError as e:
-        return {"error": str(e)}
-    except httpx.HTTPStatusError as e:
-        return _steer_gateway_error(e, crew, f"status lookup for task {task_id}")
-    if s.get("done", False):
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                          json={"task": message})
-        except CrewUnresponsiveError as e:
-            return {"error": str(e)}
-        except httpx.HTTPStatusError as e:
-            return _steer_gateway_error(e, crew, f"continue for finished task {task_id}")
-        return {"task_id": r.get("id", task_id), "crew_id": crew_id,
-                "action": "redeployed", "message": message}
-    if force:
-        try:
-            _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/spawn/{task_id}")
-            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                          json={"task": message})
-        except CrewUnresponsiveError as e:
-            return {"error": str(e)}
-        except httpx.HTTPStatusError as e:
-            return _steer_gateway_error(e, crew, f"force steer for task {task_id}")
-        return {"task_id": r.get("id", task_id), "crew_id": crew_id,
-                "action": "force_redeployed", "message": message}
-    try:
-        _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer", json={"message": message})
-    except CrewUnresponsiveError as e:
-        return {"error": str(e)}
-    except httpx.HTTPStatusError as e:
-        if not _is_steer_unsupported(e):
-            err = _steer_gateway_error(e, crew, f"steer for running task {task_id}")
-            err["hint"] = "steer(..., force=True) stops the task and resumes its session with the message."
+
+    def _continue(action: str, what: str) -> dict:
+        r, err, _ = _steer_call(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
+                                what, json={"task": message})
+        if err:
             return err
+        return {"task_id": r.get("id", task_id), "crew_id": crew_id,
+                "action": action, "message": message}
+
+    s, err, _ = _steer_call(crew, crew_id, "GET", f"/api/spawn/{task_id}",
+                            f"status lookup for task {task_id}")
+    if err:
+        return err
+    if s.get("done", False):
+        return _continue("redeployed", f"continue for finished task {task_id}")
+    if force:
+        _, err, _ = _steer_call(crew, crew_id, "DELETE", f"/api/spawn/{task_id}",
+                                f"force stop of task {task_id}")
+        if err:
+            return err
+        return _continue(
+            "force_redeployed",
+            f"resume of task {task_id} after force stop (the task is stopped and was not resumed)",
+        )
+
+    path = f"/api/spawn/{task_id}/steer"
+    _, err, exc = _steer_call(crew, crew_id, "POST", path,
+                              f"steer for running task {task_id}", json={"message": message})
+    if exc is not None and _is_not_running(exc):
+        # Finished between the status check and the steer: continue it instead.
+        return _continue("redeployed", f"continue for finished task {task_id}")
+    if exc is not None and _is_steer_unsupported(exc):
         # The backend can't interrupt mid-turn: queue the message for delivery
         # as a continuation once the current turn ends.
-        try:
-            _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer",
-                                    json={"message": message, "mode": "follow_up"})
-        except CrewUnresponsiveError as e2:
-            return {"error": str(e2)}
-        except httpx.HTTPStatusError as e2:
-            return _steer_gateway_error(e2, crew, f"follow-up for running task {task_id}")
+        _, err, exc = _steer_call(crew, crew_id, "POST", path,
+                                  f"follow-up for running task {task_id}",
+                                  json={"message": message, "mode": "follow_up"})
+        if exc is not None and _is_not_running(exc):
+            return _continue("redeployed", f"continue for finished task {task_id}")
+        if err:
+            return err
         return {"task_id": task_id, "crew_id": crew_id, "action": "follow_up_queued",
                 "message": message,
                 "note": "This backend can't interrupt a running turn; the message is "
-                        "delivered when the current turn ends. Use force=True to stop it now."}
+                        "delivered as a new continuation task when the current turn ends "
+                        "(see pickup(crew_id=...)). Use force=True to stop it now."}
+    if err:
+        if exc is not None and _is_session_starting(exc):
+            err["hint"] = ("The task's session is still starting; retry once it has made "
+                           "a tool call. force=True would stop it instead.")
+        elif exc is not None:
+            err["hint"] = "steer(..., force=True) stops the task and resumes its session with the message."
+        return err
     return {"task_id": task_id, "crew_id": crew_id, "action": "steered", "message": message}
 
 
