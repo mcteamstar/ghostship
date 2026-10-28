@@ -445,5 +445,99 @@ class TestDashboardGateCookieFlags(unittest.TestCase):
         self.assertTrue(cookie.startswith("gs_session="))
 
 
+# ── TestDashboardGatePortRangeValidation ─────────────────────────────────────
+
+
+class TestDashboardGatePortRangeValidation(unittest.TestCase):
+    """handle_auth returns 400 for ports outside the configured range (H-2 / TRN-279)."""
+
+    PORT_BASE = 64058
+    PORT_RANGE_SIZE = 4  # small range for deterministic tests
+
+    def _gate_with_session(self):
+        try:
+            import dashboard as _d
+        except ModuleNotFoundError:
+            from transport import dashboard as _d
+        gate = _d.DashboardGate(
+            session_ttl_secs=3600,
+            api_key="testkey",
+            external_url="http://localhost",
+            port_base=self.PORT_BASE,
+            port_range_size=self.PORT_RANGE_SIZE,
+        )
+        # Issue a valid session so auth checks don't short-circuit on session.
+        token = gate._sessions.issue()
+        return gate, token
+
+    def _auth_request(self, token, port_str=None, query_params=None):
+        if query_params is None:
+            query_params = {}
+        if port_str is not None:
+            query_params = dict(query_params, port=port_str)
+        return FakeRequest(
+            cookies={"gs_session": token} if token else {},
+            query_params=query_params,
+        )
+
+    def _run_auth(self, gate, request):
+        async def run():
+            return await gate.handle_auth(request)
+        return _run(run())
+
+    def test_port_below_range_returns_400(self):
+        gate, token = self._gate_with_session()
+        req = self._auth_request(token, port_str=str(self.PORT_BASE - 1))
+        resp = self._run_auth(gate, req)
+        async def get_status():
+            msgs = await _collect_response(resp)
+            return _status_of(msgs)
+        status = _run(get_status())
+        self.assertEqual(status, 400)
+
+    def test_port_above_range_returns_400(self):
+        gate, token = self._gate_with_session()
+        req = self._auth_request(token, port_str=str(self.PORT_BASE + self.PORT_RANGE_SIZE))
+        resp = self._run_auth(gate, req)
+        async def get_status():
+            msgs = await _collect_response(resp)
+            return _status_of(msgs)
+        status = _run(get_status())
+        self.assertEqual(status, 400)
+
+    def test_port_within_range_proceeds(self):
+        gate, token = self._gate_with_session()
+        # Register a port within range.
+        port_in_range = self.PORT_BASE + 1
+        gate.register_port("crew-1", port_in_range)
+        req = self._auth_request(token, port_str=str(port_in_range))
+        resp = self._run_auth(gate, req)
+        async def get_status():
+            msgs = await _collect_response(resp)
+            return _status_of(msgs)
+        status = _run(get_status())
+        self.assertEqual(status, 200)
+
+    def test_missing_port_not_rejected(self):
+        gate, token = self._gate_with_session()
+        req = self._auth_request(token)  # no port param
+        resp = self._run_auth(gate, req)
+        async def get_status():
+            msgs = await _collect_response(resp)
+            return _status_of(msgs)
+        status = _run(get_status())
+        self.assertEqual(status, 200)
+
+    def test_non_integer_port_returns_400(self):
+        gate, token = self._gate_with_session()
+        req = self._auth_request(token, port_str="notanumber")
+        resp = self._run_auth(gate, req)
+        async def get_status():
+            msgs = await _collect_response(resp)
+            return _status_of(msgs)
+        status = _run(get_status())
+        self.assertEqual(status, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

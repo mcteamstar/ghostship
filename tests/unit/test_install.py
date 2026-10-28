@@ -286,3 +286,39 @@ class TestHeredocBackticks:
             elif "`" in line:
                 offenders.append(f"{lineno}: {line.strip()}")
         assert not offenders, "backticks in unquoted heredoc:\n" + "\n".join(offenders)
+
+    @staticmethod
+    def _check_no_backticks(text: str, label: str) -> None:
+        """Scan *text* for backticks inside unquoted heredocs; assert none found."""
+        offenders = []
+        delimiter = None
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if delimiter is None:
+                m = re.search(r"(?<!<)<<(?!<)-?\s*([A-Za-z_][A-Za-z0-9_]*)\b", line)
+                if m:
+                    delimiter = m.group(1)
+                continue
+            if line.strip() == delimiter:
+                delimiter = None
+            elif "`" in line:
+                offenders.append(f"{lineno}: {line.strip()}")
+        assert not offenders, f"backticks in unquoted heredoc in {label}:\n" + "\n".join(offenders)
+
+    def test_no_backticks_in_run_sh(self) -> None:
+        """scripts/run.sh must not contain backticks in unquoted heredocs."""
+        run_sh = REPO_ROOT / "scripts" / "run.sh"
+        if not run_sh.exists():
+            pytest.skip("scripts/run.sh not found")
+        self._check_no_backticks(run_sh.read_text(encoding="utf-8"), "scripts/run.sh")
+
+    def test_no_backticks_in_container_scripts(self) -> None:
+        """All .sh files under transport/container_scripts/ must not have backticks in unquoted heredocs."""
+        scripts_dir = REPO_ROOT / "transport" / "container_scripts"
+        sh_files = sorted(scripts_dir.glob("*.sh")) if scripts_dir.is_dir() else []
+        if not sh_files:
+            pytest.skip("no .sh files found under transport/container_scripts/")
+        for sh_path in sh_files:
+            self._check_no_backticks(
+                sh_path.read_text(encoding="utf-8"),
+                str(sh_path.relative_to(REPO_ROOT)),
+            )

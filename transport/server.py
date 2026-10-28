@@ -903,6 +903,8 @@ _dashboard_gate = DashboardGate(
     session_ttl_secs=cfg.ga_portal_session_ttl_secs,
     api_key=GA_API_KEY,
     external_url=cfg.public_base_url(),
+    port_base=cfg.ga_dashboard_port_range_start,
+    port_range_size=cfg.ga_dashboard_port_range_size,
 )
 
 # Per-crew asyncio lock registry serialising concurrent _ensure_crew_running

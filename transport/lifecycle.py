@@ -574,6 +574,9 @@ def _phase0_transient_503(
 # Upper bound on how much of a gateway error body is echoed back to callers.
 _GATEWAY_DETAIL_LIMIT = 500
 _COOKIE_PATTERN = re.compile(r"mc_token_\d+=[^;\s\"']+")
+_BEARER_PATTERN = re.compile(r"(?i)Authorization\s*:\s*Bearer\s+\S+")
+_GS_SESSION_PATTERN = re.compile(r"gs_session=[^;\s\"']+")
+_GS_CSRF_PATTERN = re.compile(r"gs_csrf=[^;\s\"']+")
 
 
 def _gateway_error_detail(exc: BaseException | None, crew: dict | None) -> tuple[str, bool]:
@@ -596,6 +599,9 @@ def _gateway_error_detail(exc: BaseException | None, crew: dict | None) -> tuple
     if cookie:
         body = body.replace(cookie, "[redacted]")
     body = _COOKIE_PATTERN.sub("mc_token=[redacted]", body)
+    body = _BEARER_PATTERN.sub("Authorization: Bearer [redacted]", body)
+    body = _GS_SESSION_PATTERN.sub("gs_session=[redacted]", body)
+    body = _GS_CSRF_PATTERN.sub("gs_csrf=[redacted]", body)
     body = " ".join(body.split())[:_GATEWAY_DETAIL_LIMIT]
     return f" Last gateway response: HTTP {status}: {body}", 400 <= status < 500
 
