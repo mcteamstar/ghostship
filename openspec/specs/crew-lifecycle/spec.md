@@ -227,6 +227,21 @@ runtime.
   post-restart gateway startup window, before KiroCrew 0.5.0 makes that
   directory write-protected at runtime
 
+### Requirement: Waiter timeout is sufficient for worst-case leader restart
+
+The waiter `event.wait(timeout=...)` in `transport/launcher.py` SHALL be set to at
+least 150 seconds. The leader restart path under memory pressure can exceed 120
+seconds; a shorter timeout causes waiters to raise a spurious 502 while the leader
+is still making progress.
+
+#### Scenario: Waiter does not time out during normal leader restart
+- **WHEN** a leader restart takes up to 120 seconds to complete
+- **THEN** waiters do not raise a timeout error before the leader signals completion
+
+#### Scenario: Waiter timeout is >= 150 seconds
+- **WHEN** `transport/launcher.py` is read
+- **THEN** the `event.wait(timeout=...)` value is >= 150
+
 ### Requirement: Concurrent restart outcome reads are generation-stable
 
 The restart serialization mechanism uses a per-crew `threading.Event` to wake waiters after the leader records an outcome. The transport SHALL maintain a `_startup_generation: dict[str, int]` map (guarded by `_startup_events_lock`, with the same lifecycle as `_startup_events`) that records the current generation number for each crew. When a new leader is elected for `crew_id`, the generation counter for that crew SHALL be incremented (or initialized to 0 on first use). A waiter SHALL capture the generation before calling `event.wait()`. After `event.wait()` returns, the waiter SHALL re-read the generation under `_startup_events_lock`. If the generation has changed, a new restart cycle has started; the waiter SHALL NOT read `_crew_restart_outcomes` for the old cycle but instead SHALL treat the wait as a timeout (raise a RuntimeError indicating concurrent restart cycle confusion) or retry `_ensure_crew_running` from the top.

@@ -313,7 +313,7 @@ class CrewLauncher:
             # Another caller is already restarting — wait for it then return
             # the refreshed crew dict
             logger.info("Crew %s restart already in progress — waiting", crew_id)
-            event.wait(timeout=45)
+            event.wait(timeout=150)
             # Read the outcome the leader recorded before firing the Event.
             with self._startup_events_lock:
                 outcome = self._crew_restart_outcomes.get(crew_id)
