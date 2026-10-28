@@ -610,12 +610,28 @@ class TestDashboardGateAuth(unittest.TestCase):
         self.assertEqual(_status_of(msgs), 401)
 
     def test_expired_session_returns_401(self):
-        """A token issued with past expiry is not valid → handle_auth returns 401."""
-        gate = self._gate()
-        # Issue a token, then immediately expire it by revoking it.
-        token = gate._sessions.issue()
-        gate._sessions.revoke(token)
-        msgs = self._run_auth(gate, token)
+        """A token whose TTL has elapsed → handle_auth returns 401.
+
+        Issue the token with a past timestamp so it is already beyond its
+        lifetime when validate() is called with the real wall clock.  This
+        tests genuine time-based expiry, not the revocation path (which has
+        its own test below).
+        """
+        import time as _time
+        try:
+            import dashboard as _d
+        except ModuleNotFoundError:
+            from transport import dashboard as _d
+        # A 1-second TTL gate; issue with a timestamp 10 seconds in the past.
+        short_gate = _d.DashboardGate(
+            session_ttl_secs=1,
+            api_key="testkey",
+            external_url="http://localhost",
+        )
+        past = _time.time() - 10
+        token = short_gate._sessions.issue(now=past)
+        # Token is now expired (issued 10 s ago, lifetime 1 s).
+        msgs = self._run_auth(short_gate, token)
         self.assertEqual(_status_of(msgs), 401)
 
     def test_revoked_session_after_logout_returns_401(self):

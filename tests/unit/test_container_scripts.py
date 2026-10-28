@@ -184,6 +184,38 @@ class TestTransferRaw(unittest.TestCase):
             result = _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True)
             self.assertIn("unpacked", result)
 
+    @unittest.skipIf(sys.version_info < (3, 12), "filter='data' path-traversal guard only on Python 3.12+")
+    def test_path_traversal_member_rejected_python312(self):
+        """filter='data' causes tarfile to raise OutsideDestinationError for ../
+        members, preventing extraction outside the destination directory.
+
+        This confirms the security invariant that transfer_raw.transfer() in
+        unpack mode cannot be used to write files outside the intended dest.
+        """
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            info = tarfile.TarInfo(name="../traversal_escape.txt")
+            data = b"should not escape"
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        traversal_bytes = buf.getvalue()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_path = os.path.join(tmpdir, "traversal.tar")
+            dest_path = os.path.join(tmpdir, "extracted")
+            stage_path = os.path.join(tmpdir, "stage_trav")
+            os.makedirs(stage_path)
+            with open(src_path, "wb") as f:
+                f.write(traversal_bytes)
+            # filter="data" raises on path-traversal member names.
+            with self.assertRaises(Exception):
+                _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True)
+            # The escaped file must not exist outside dest.
+            self.assertFalse(
+                os.path.exists(os.path.join(tmpdir, "traversal_escape.txt")),
+                "path-traversal member must not be written outside the destination",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
