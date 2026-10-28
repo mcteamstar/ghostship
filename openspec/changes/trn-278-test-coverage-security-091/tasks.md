@@ -1,21 +1,21 @@
 ## 1. test_security.py — security primitives
 
-- [ ] 1.1 Create `tests/unit/test_security.py`. Confirm `freezegun` is in test
+- [x] 1.1 Create `tests/unit/test_security.py`. Confirm `freezegun` is in test
   dependencies (check `requirements-test.txt` or `pyproject.toml`).
-- [ ] 1.2 Add `hash_password`/`verify_password` round-trip tests: correct password
+- [x] 1.2 Add `hash_password`/`verify_password` round-trip tests: correct password
   → True, wrong password → False, empty string password.
-- [ ] 1.3 Add `Throttle` tests: lockout after `max_failures`, unlock after window
+- [x] 1.3 Add `Throttle` tests: lockout after `max_failures`, unlock after window
   expiry, reset on `record_success`.
-- [ ] 1.4 Add `SessionStore` tests using `freezegun` for time manipulation: issue
+- [x] 1.4 Add `SessionStore` tests using `freezegun` for time manipulation: issue
   → validate → revoke cycle; expired token rejected; revoked token rejected
   immediately.
-- [ ] 1.5 Add `validate_str` bounds tests: too long, contains disallowed chars,
+- [x] 1.5 Add `validate_str` bounds tests: too long, contains disallowed chars,
   valid input passes.
-- [ ] 1.6 Add `SecretRedactionFilter` test: exception in redaction returns original
+- [x] 1.6 Add `SecretRedactionFilter` test: exception in redaction returns original
   message without crashing.
-- [ ] 1.7 Remove the phantom exclusion for `test_trn70_security.py` from
+- [x] 1.7 Remove the phantom exclusion for `test_trn70_security.py` from
   `scripts/security_scan.py` (line 76).
-- [ ] 1.8 Run `pytest tests/unit/test_security.py` — all tests pass.
+- [x] 1.8 Run `pytest tests/unit/test_security.py` — all tests pass.
 
 ## 2. test_files.py — HMAC sign/verify
 
