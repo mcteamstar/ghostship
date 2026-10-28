@@ -52,12 +52,12 @@
 
 ## 5. test_openapi.py — schema generation
 
-- [ ] 5.1 Create `tests/unit/test_openapi.py`.
-- [ ] 5.2 Add `_to_openapi_path` tests: path params, static segments.
-- [ ] 5.3 Add `_default_tag` tests: known and unknown paths.
-- [ ] 5.4 Add `generate_schema` round-trip: stub a minimal routes dict → returned
+- [x] 5.1 Create `tests/unit/test_openapi.py`.
+- [x] 5.2 Add `_to_openapi_path` tests: path params, static segments.
+- [x] 5.3 Add `_default_tag` tests: known and unknown paths.
+- [x] 5.4 Add `generate_schema` round-trip: stub a minimal routes dict → returned
   schema has required OpenAPI 3.1 fields (`openapi`, `info`, `paths`).
-- [ ] 5.5 Run `pytest tests/unit/test_openapi.py` — all tests pass.
+- [x] 5.5 Run `pytest tests/unit/test_openapi.py` — all tests pass.
 
 ## 6. Verification
 
