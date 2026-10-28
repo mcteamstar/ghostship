@@ -32,13 +32,13 @@
 
 ## 3. test_container_scripts.py — container scripts
 
-- [ ] 3.1 Create `tests/unit/test_container_scripts.py`. Add
+- [x] 3.1 Create `tests/unit/test_container_scripts.py`. Add
   `transport/container_scripts/` to `sys.path` in a module-level fixture.
-- [ ] 3.2 Add `inject_policy.py` sign_policy HMAC round-trip test.
-- [ ] 3.3 Add `transfer_raw.py` extraction mode tests (at least: normal extraction,
+- [x] 3.2 Add `inject_policy.py` sign_policy HMAC round-trip test.
+- [x] 3.3 Add `transfer_raw.py` extraction mode tests (at least: normal extraction,
   path-traversal attempt rejected). Add Python 3.12 version guard for
   `filter="data"` behaviour.
-- [ ] 3.4 Run `pytest tests/unit/test_container_scripts.py` — all tests pass.
+- [x] 3.4 Run `pytest tests/unit/test_container_scripts.py` — all tests pass.
 
 ## 4. test_dashboard.py — handle_auth and handle_logout_post
 
