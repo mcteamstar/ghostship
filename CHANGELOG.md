@@ -22,6 +22,7 @@
 ### Upgrade notes
 
 - If you set `claude-haiku-5-5` yourself in `backends.kiro.model.*`, a `dispatch(model=...)` call or a schedule, change it to `claude-haiku-5.5`. Re-run `./install.sh` to sync the updated personas; existing crews pick them up when nuked and re-launched.
+- A stale kiro credential produces the same `profileArn is required for this request` error, even with the dotted model ID. If kiro tasks still fail with it, run `ghostship auth logout kiro` then `ghostship auth login kiro`; running crews pick up the new credential in place.
 
 ## v0.9.0
 
