@@ -61,4 +61,4 @@
 
 ## 6. Verification
 
-- [ ] 6.1 Run full unit suite: `bash scripts/run.sh --unit` — all tests pass.
+- [x] 6.1 Run full unit suite: `bash scripts/run.sh --unit` — all tests pass.
