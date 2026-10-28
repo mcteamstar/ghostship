@@ -831,3 +831,14 @@ a full server.
 
 - **WHEN** `_handle_health` is called with a minimal GET request scope
 - **THEN** the response SHALL be HTTP 200 with a plain-text `ok` body
+
+### Requirement: pytest-cov is run in CI
+
+The CI test invocation SHALL include `--cov=transport` (or equivalent) so that
+coverage gaps surface automatically on every pull request rather than requiring
+manual inspection.
+
+#### Scenario: CI pytest invocation includes coverage reporting
+- **WHEN** the CI test workflow runs
+- **THEN** a coverage report for `transport/` is generated
+- **THEN** coverage gaps are visible in the PR output
