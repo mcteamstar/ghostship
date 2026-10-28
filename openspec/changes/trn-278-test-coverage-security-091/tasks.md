@@ -19,16 +19,16 @@
 
 ## 2. test_files.py — HMAC sign/verify
 
-- [ ] 2.1 Create `tests/unit/test_files.py`. Use `monkeypatch` to set
+- [x] 2.1 Create `tests/unit/test_files.py`. Use `monkeypatch` to set
   `GA_FILE_SECRET` to a fixed test value before importing file functions.
-- [ ] 2.2 Add sign/verify round-trip tests: `_sign_file_url` + `_verify_file_token`
+- [x] 2.2 Add sign/verify round-trip tests: `_sign_file_url` + `_verify_file_token`
   for GET and PUT methods.
-- [ ] 2.3 Add tampered signature test: modify `sig` param → verification fails.
-- [ ] 2.4 Add expired token test: sign with past expiry → verification fails.
-- [ ] 2.5 Add mode mismatch test: GET token used on PUT → rejected.
-- [ ] 2.6 Add `_safe_workspace_path` path traversal tests: `../` sequences and
+- [x] 2.3 Add tampered signature test: modify `sig` param → verification fails.
+- [x] 2.4 Add expired token test: sign with past expiry → verification fails.
+- [x] 2.5 Add mode mismatch test: GET token used on PUT → rejected.
+- [x] 2.6 Add `_safe_workspace_path` path traversal tests: `../` sequences and
   absolute paths are rejected.
-- [ ] 2.7 Run `pytest tests/unit/test_files.py` — all tests pass.
+- [x] 2.7 Run `pytest tests/unit/test_files.py` — all tests pass.
 
 ## 3. test_container_scripts.py — container scripts
 
