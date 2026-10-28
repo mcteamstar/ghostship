@@ -417,6 +417,20 @@ class TestRateLimitMiddleware(unittest.TestCase):
         _run(mw(_make_scope("GET", "/mcp/list", client=("5.5.5.9", 1)), _receive, _collect_send()[1]))
         self.assertTrue(limiter._hits)
 
+    def test_dashboard_auth_get_matched(self):
+        """GET /dashboard/auth is matched to the dashboard_auth limiter."""
+        limiter = self._limiter(max_requests=5)
+        mw, app = self._make_middleware({"dashboard_auth": limiter})
+        _run(mw(_make_scope("GET", "/dashboard/auth", client=("5.5.5.10", 1)), _receive, _collect_send()[1]))
+        self.assertTrue(limiter._hits)  # dashboard_auth limiter consumed
+
+    def test_dashboard_login_post_matched(self):
+        """POST /dashboard/login is matched to the dashboard_auth limiter."""
+        limiter = self._limiter(max_requests=5)
+        mw, app = self._make_middleware({"dashboard_auth": limiter})
+        _run(mw(_make_scope("POST", "/dashboard/login", client=("5.5.5.11", 1)), _receive, _collect_send()[1]))
+        self.assertTrue(limiter._hits)  # dashboard_auth limiter consumed
+
 
 # ── BearerAuthMiddleware — pass-through and rejection paths ───────────────────
 

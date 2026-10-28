@@ -88,3 +88,27 @@ def test_no_http_error_keeps_original_message() -> None:
         "crew x is unresponsive — it failed. "
         "Suggestion: check crew status with crews() or try again in a moment."
     )
+
+
+def test_bearer_token_is_redacted() -> None:
+    """Authorization: Bearer <token> in the gateway body is redacted."""
+    body = "Authorization: Bearer supersecrettoken123 some other text"
+    message, _ = _run_with_gateway(400, body)
+    assert "supersecrettoken123" not in message
+    assert "Bearer [redacted]" in message
+
+
+def test_gs_session_is_redacted() -> None:
+    """gs_session=<value> in the gateway body is redacted."""
+    body = "gs_session=mysessionvalue123; other cookie data"
+    message, _ = _run_with_gateway(400, body)
+    assert "mysessionvalue123" not in message
+    assert "gs_session=[redacted]" in message
+
+
+def test_gs_csrf_is_redacted() -> None:
+    """gs_csrf=<value> in the gateway body is redacted."""
+    body = "gs_csrf=mycsrftoken456; path=/"
+    message, _ = _run_with_gateway(400, body)
+    assert "mycsrftoken456" not in message
+    assert "gs_csrf=[redacted]" in message
