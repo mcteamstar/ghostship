@@ -12,6 +12,13 @@
 
 - A comment inside the unquoted compose.yml heredoc in `bin/install.sh` quoted `ghostship auth login` in backticks, which bash ran as command substitution on every install. It failed harmlessly with `error: backend required` and left a garbled comment in the generated compose.yml. The comment is removed, and a new test (`TestHeredocBackticks`) fails if backticks reappear in any unquoted heredoc.
 
+### Steering a running claude task works again
+
+- KiroCrew 0.10.0 refuses a mid-turn interrupt on backends that can't guarantee one (claude, codex) and asks for `mode='follow_up'`. `steer` didn't send a mode, so every running-task steer on a claude crew failed with a generic `Error executing tool steer`. On 0.8.1 the same request returned OK but the message never reached the agent.
+- `steer` now falls back to `mode='follow_up'` when the gateway answers `steer_unsupported`, and returns `action: "follow_up_queued"`. The message is delivered as a continuation of the same conversation when the current turn ends; it appears as a new task in `pickup(crew_id=...)`. Kiro crews still interrupt mid-turn (`action: "steered"`). `force=True` still stops the task immediately on either backend.
+- Any other gateway refusal during steer (interrupt, force, continue or status lookup) now returns a structured error with the gateway's HTTP status and redacted response body. A `503 session_starting` means the task's session hasn't started yet; retry once it has made a tool call.
+- The e2e steer test now checks that the agent actually acts on the message, not just that the call returned OK.
+
 ### Upgrade notes
 
 - If you set `claude-haiku-5-5` yourself in `backends.kiro.model.*`, a `dispatch(model=...)` call or a schedule, change it to `claude-haiku-5.5`. Re-run `./install.sh` to sync the updated personas; existing crews pick them up when nuked and re-launched.

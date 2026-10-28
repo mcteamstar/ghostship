@@ -188,6 +188,7 @@ try:
         _dispatch_batch,
         _ensure_crew_running,
         _finish_crew_setup,
+        _gateway_error_detail,
         _initiate_claude_login,
         _initiate_codex_login,
         _initiate_login,
@@ -217,6 +218,7 @@ except ModuleNotFoundError:
         _dispatch_batch,
         _ensure_crew_running,
         _finish_crew_setup,
+        _gateway_error_detail,
         _initiate_claude_login,
         _initiate_codex_login,
         _initiate_login,
@@ -1869,6 +1871,25 @@ def dispatch(
     return response
 
 
+def _steer_gateway_error(exc: httpx.HTTPStatusError, crew: dict, what: str) -> dict:
+    """Structured error for a gateway refusal during steer, carrying its status and body."""
+    detail, _ = _gateway_error_detail(exc, crew)
+    return {"error": f"crew gateway rejected {what}.{detail}"}
+
+
+def _is_steer_unsupported(exc: httpx.HTTPStatusError) -> bool:
+    """True when the run's backend refuses a mid-turn interrupt (claude, codex).
+
+    KiroCrew answers 502 ``steer_failed`` with a ``steer_unsupported`` detail and
+    asks for ``mode='follow_up'`` instead.
+    """
+    try:
+        body = exc.response.text or ""
+    except Exception:
+        body = ""
+    return exc.response.status_code == 502 and "steer_unsupported" in body
+
+
 @_registry_guard
 def steer(
     task_id: str,
@@ -1883,7 +1904,10 @@ def steer(
     Use force=True to hard-stop a running task before resuming its session.
 
     For running tasks: redirects the agent — add constraints, correct
-    direction, provide new information. With ``force=True``, hard-stops the
+    direction, provide new information. On backends that cannot interrupt a
+    turn mid-flight (claude, codex) the message is queued instead and
+    delivered as a continuation when the current turn ends; the response then
+    reports ``action: "follow_up_queued"``. With ``force=True``, hard-stops the
     underlying process before resuming the same session with the message.
     For completed tasks: resumes the existing session via /continue —
     the agent picks up where it left off with full prior context intact.
@@ -1904,12 +1928,16 @@ def steer(
         s = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
     except CrewUnresponsiveError as e:
         return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        return _steer_gateway_error(e, crew, f"status lookup for task {task_id}")
     if s.get("done", False):
         try:
             r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
                           json={"task": message})
         except CrewUnresponsiveError as e:
             return {"error": str(e)}
+        except httpx.HTTPStatusError as e:
+            return _steer_gateway_error(e, crew, f"continue for finished task {task_id}")
         return {"task_id": r.get("id", task_id), "crew_id": crew_id,
                 "action": "redeployed", "message": message}
     if force:
@@ -1919,12 +1947,32 @@ def steer(
                           json={"task": message})
         except CrewUnresponsiveError as e:
             return {"error": str(e)}
+        except httpx.HTTPStatusError as e:
+            return _steer_gateway_error(e, crew, f"force steer for task {task_id}")
         return {"task_id": r.get("id", task_id), "crew_id": crew_id,
                 "action": "force_redeployed", "message": message}
     try:
         _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer", json={"message": message})
     except CrewUnresponsiveError as e:
         return {"error": str(e)}
+    except httpx.HTTPStatusError as e:
+        if not _is_steer_unsupported(e):
+            err = _steer_gateway_error(e, crew, f"steer for running task {task_id}")
+            err["hint"] = "steer(..., force=True) stops the task and resumes its session with the message."
+            return err
+        # The backend can't interrupt mid-turn: queue the message for delivery
+        # as a continuation once the current turn ends.
+        try:
+            _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer",
+                                    json={"message": message, "mode": "follow_up"})
+        except CrewUnresponsiveError as e2:
+            return {"error": str(e2)}
+        except httpx.HTTPStatusError as e2:
+            return _steer_gateway_error(e2, crew, f"follow-up for running task {task_id}")
+        return {"task_id": task_id, "crew_id": crew_id, "action": "follow_up_queued",
+                "message": message,
+                "note": "This backend can't interrupt a running turn; the message is "
+                        "delivered when the current turn ends. Use force=True to stop it now."}
     return {"task_id": task_id, "crew_id": crew_id, "action": "steered", "message": message}
 
 
