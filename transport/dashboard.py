@@ -92,7 +92,7 @@ class DashboardGate:
     # can read it and echo it in the form body — cookie-echo pattern, H-1).
     _CSRF_COOKIE = "gs_csrf"
 
-    def __init__(self, session_ttl_secs: float, api_key: str, external_url: str) -> None:
+    def __init__(self, session_ttl_secs: float, api_key: str, external_url: str, *, port_base: int = 64058, port_range_size: int = 64) -> None:
         # Dashboard login is guarded by security.Throttle (brute-force
         # protection) and gs_session cookies are backed by
         # security.SessionStore (bounded, revocable). Both carry their own
@@ -105,6 +105,9 @@ class DashboardGate:
         # Secure flag on gs_session and gs_csrf cookies: set when the transport's
         # external URL uses HTTPS (L-2 / TRN-272).
         self._secure = external_url.startswith("https://")
+        # Port range for forward_auth validation (H-2 / TRN-279).
+        self._port_base = port_base
+        self._port_range_size = port_range_size
         # Portal (ga-portal) is the sole dashboard proxy. Port→crew mapping is
         # retained for forward_auth lookups by handle_auth.
         self._port_crew: dict[int, str] = {}  # port → crew_id
@@ -229,10 +232,13 @@ class DashboardGate:
         if port_str:
             try:
                 port_int = int(port_str)
+                # H-2 / TRN-279: reject ports outside the configured dashboard range.
+                if not (self._port_base <= port_int < self._port_base + self._port_range_size):
+                    return Response(status_code=400)
                 with self._port_crew_lock:
                     crew_id = self._port_crew.get(port_int)
             except ValueError:
-                pass
+                return Response(status_code=400)
 
         if crew_id is None:
             # Fallback: check X-Forwarded-Port or X-Dashboard-Port header

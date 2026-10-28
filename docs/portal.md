@@ -44,7 +44,7 @@ Caddy sits in front of all traffic:
 Two routing tiers:
 
 1. **Main port (443/80)** — static server written at install time. Handles MCP, file-transfer, health, and auth/login endpoints.
-2. **Per-crew dashboard ports (64058–65081)** — one Caddy server per port, added/removed live via the Caddy admin API on `launch`/`nuke`.
+2. **Per-crew dashboard ports (64058–64121)** — one Caddy server per port, added/removed live via the Caddy admin API on `launch`/`nuke`.
 
 ## Dashboard proxy
 

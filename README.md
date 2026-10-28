@@ -156,3 +156,5 @@ Registered as `ghostship`:
 - [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions, auth upgrade paths
 - [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
 - [docs/release-notes-0.8.1.md](docs/release-notes-0.8.1.md) — v0.8.1 release notes (hotfix + two feature additions)
+- [CHANGELOG.md#v090](CHANGELOG.md#v090) — v0.9.0 release notes
+- [CHANGELOG.md#v091](CHANGELOG.md#v091) — v0.9.1 release notes
