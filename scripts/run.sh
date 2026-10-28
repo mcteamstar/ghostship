@@ -67,7 +67,7 @@ OVERALL_EXIT=0
 
 run_unit() {
   local category_exit=0
-  python3 -m pytest tests/unit -m "not slow" || category_exit=$?
+  python3 -m pytest tests/unit -m "not slow" --cov=transport --cov-report=term-missing || category_exit=$?
 
   return "$category_exit"
 }
