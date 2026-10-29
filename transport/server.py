@@ -1554,73 +1554,172 @@ LIGHTHOUSE_HTML = """\
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lighthouse — Fleet Overview</title>
+  <title>👻 Lighthouse — Ghostship Fleet</title>
   <style>
-    /* Minimal reset + layout */
+    /* ── Reset ───────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Deep-space base ─────────────────────────────────────── */
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      background: #0f1117; color: #e2e8f0;
-      padding: 1.5rem; min-height: 100vh;
+      background-color: #080c14;
+      /* Nebula glow: teal top-right, purple bottom-left */
+      background-image:
+        radial-gradient(ellipse 60% 40% at 85% 10%, rgba(14,116,144,0.12) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 35% at 10% 90%, rgba(109,40,217,0.10) 0%, transparent 65%),
+        radial-gradient(ellipse 30% 20% at 50% 50%, rgba(15,23,42,0.6) 0%, transparent 100%);
+      color: #e2e8f0;
+      padding: 1.75rem 2rem;
+      min-height: 100vh;
     }
-    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #f8fafc; }
-    .subtitle { font-size: 0.85rem; color: #64748b; margin-bottom: 1.5rem; }
-    #status { font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.75rem; }
+
+    /* ── Starfield overlay (pure CSS, no images) ─────────────── */
+    body::before {
+      content: "";
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image:
+        radial-gradient(1px 1px at 12% 18%, rgba(255,255,255,0.55) 0%, transparent 100%),
+        radial-gradient(1px 1px at 28% 72%, rgba(255,255,255,0.40) 0%, transparent 100%),
+        radial-gradient(1px 1px at 43% 31%, rgba(255,255,255,0.60) 0%, transparent 100%),
+        radial-gradient(1px 1px at 57% 85%, rgba(255,255,255,0.35) 0%, transparent 100%),
+        radial-gradient(1px 1px at 68% 14%, rgba(255,255,255,0.50) 0%, transparent 100%),
+        radial-gradient(1px 1px at 79% 58%, rgba(255,255,255,0.45) 0%, transparent 100%),
+        radial-gradient(1px 1px at  8% 63%, rgba(255,255,255,0.30) 0%, transparent 100%),
+        radial-gradient(1px 1px at 92% 42%, rgba(255,255,255,0.55) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 35% 52%, rgba(180,220,255,0.50) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 74% 27%, rgba(200,180,255,0.45) 0%, transparent 100%),
+        radial-gradient(2px 2px at 55% 8%,  rgba(255,255,255,0.70) 0%, transparent 100%),
+        radial-gradient(2px 2px at 20% 95%, rgba(255,255,255,0.60) 0%, transparent 100%);
+    }
+
+    /* ── Header ──────────────────────────────────────────────── */
+    .header { position: relative; z-index: 1; margin-bottom: 1.5rem; }
+    h1 {
+      font-size: 1.6rem; font-weight: 700; letter-spacing: -0.01em;
+      color: #f1f5f9;
+      text-shadow: 0 0 20px rgba(139,92,246,0.4), 0 0 40px rgba(14,116,144,0.3);
+    }
+    .subtitle { font-size: 0.82rem; color: #475569; margin-top: 0.2rem; }
+    #status {
+      font-size: 0.78rem; color: #64748b; margin-bottom: 0.9rem;
+      position: relative; z-index: 1;
+    }
     #status.error { color: #f87171; }
-    table {
-      width: 100%; border-collapse: collapse;
-      background: #1e2330; border-radius: 8px; overflow: hidden;
+
+    /* ── Fleet table ─────────────────────────────────────────── */
+    .table-wrap {
+      position: relative; z-index: 1;
+      border-radius: 10px; overflow: hidden;
+      border: 1px solid rgba(139,92,246,0.15);
+      box-shadow: 0 0 0 1px rgba(14,116,144,0.08),
+                  0 4px 32px rgba(0,0,0,0.5),
+                  0 0 60px rgba(109,40,217,0.06);
     }
+    table { width: 100%; border-collapse: collapse; background: rgba(13,18,30,0.95); }
     th, td {
-      padding: 0.6rem 0.9rem; text-align: left;
-      border-bottom: 1px solid #2d3748; font-size: 0.85rem;
+      padding: 0.65rem 1rem; text-align: left;
+      border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.84rem;
     }
-    th { background: #161c28; color: #94a3b8; text-transform: uppercase;
-         font-size: 0.7rem; letter-spacing: 0.05em; }
-    tr.data-row:hover { background: #252d3d; cursor: pointer; }
-    tr.data-row { transition: background 0.1s; }
+    th {
+      background: rgba(8,12,20,0.98);
+      color: #475569; text-transform: uppercase;
+      font-size: 0.68rem; letter-spacing: 0.07em; font-weight: 600;
+    }
+    tr.data-row { transition: background 0.15s; cursor: pointer; }
+    tr.data-row:hover { background: rgba(139,92,246,0.07); }
+    tr.data-row.open  { background: rgba(14,116,144,0.06); }
     tr.data-row td:first-child::after {
-      content: " ▸"; color: #334155; font-size: 0.7rem;
+      content: " ▸"; color: #1e3a5f; font-size: 0.65rem; margin-left: 3px;
     }
-    tr.data-row.open td:first-child::after { content: " ▾"; color: #60a5fa; }
-    .badge {
-      display: inline-block; padding: 0.15rem 0.5rem;
-      border-radius: 9999px; font-size: 0.7rem; font-weight: 600;
+    tr.data-row.open td:first-child::after { content: " ▾"; color: #7c3aed; }
+
+    /* ── Detail panel ────────────────────────────────────────── */
+    .detail-row td {
+      background: rgba(5,8,16,0.98);
+      padding: 0.9rem 1.5rem;
+      border-bottom: 1px solid rgba(139,92,246,0.10);
     }
-    .badge-running  { background: #065f46; color: #6ee7b7; }
-    .badge-stopped  { background: #3b1e1e; color: #f87171; }
-    .badge-unknown  { background: #374151; color: #9ca3af; }
-    .detail-row td  { background: #151a25; padding: 0.75rem 1.5rem; }
-    .detail-inner   { border-left: 3px solid #334155; padding-left: 0.75rem; }
-    .detail-table   {
+    .detail-inner {
+      border-left: 2px solid rgba(109,40,217,0.4);
+      padding-left: 1rem;
+    }
+    .detail-table {
       width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem;
     }
-    .detail-table td { padding: 0.25rem 0.5rem; }
-    a { color: #60a5fa; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .spinner { display: inline-block; animation: spin 1s linear infinite; }
-    .empty-cell { text-align: center; color: #64748b; }
+    .detail-table th {
+      background: transparent; color: #334155;
+      font-size: 0.68rem; padding: 0.2rem 0.4rem;
+    }
+    .detail-table td { padding: 0.3rem 0.4rem; color: #94a3b8; }
+    .detail-table tr:hover td { color: #e2e8f0; }
+    .detail-section { color: #7c3aed; font-size: 0.78rem; font-weight: 600;
+                      text-transform: uppercase; letter-spacing: 0.06em;
+                      margin-top: 0.75rem; margin-bottom: 0.25rem; }
+
+    /* ── Status badges ───────────────────────────────────────── */
+    .badge {
+      display: inline-block; padding: 0.15rem 0.55rem;
+      border-radius: 9999px; font-size: 0.68rem; font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+    .badge-running {
+      background: rgba(6,95,70,0.7); color: #6ee7b7;
+      box-shadow: 0 0 8px rgba(110,231,183,0.25);
+    }
+    .badge-stopped  { background: rgba(59,30,30,0.7); color: #fca5a5; }
+    .badge-unknown  { background: rgba(30,35,48,0.7); color: #64748b; }
+
+    /* ── Crew-name pill badges ───────────────────────────────── */
+    .agent-count {
+      font-size: 0.67rem; font-weight: 600;
+      background: rgba(14,116,144,0.25); color: #67e8f9;
+      border: 1px solid rgba(14,116,144,0.3);
+      border-radius: 4px; padding: 1px 6px; margin-left: 6px;
+      vertical-align: middle;
+      box-shadow: 0 0 6px rgba(103,232,249,0.15);
+    }
+    .captain-badge {
+      font-size: 0.67rem; font-weight: 600;
+      border-radius: 4px; padding: 1px 6px; margin-left: 5px;
+      vertical-align: middle;
+    }
+    .captain-on {
+      background: rgba(109,40,217,0.25); color: #c4b5fd;
+      border: 1px solid rgba(109,40,217,0.35);
+      box-shadow: 0 0 8px rgba(196,181,253,0.15);
+    }
+    .captain-off {
+      background: rgba(30,35,50,0.6); color: #4b5563;
+      border: 1px solid rgba(75,85,99,0.2);
+    }
+
+    /* ── Misc ────────────────────────────────────────────────── */
+    .stopped-row td { opacity: 0.55; }
+    .empty-cell { text-align: center; color: #334155; padding: 2rem !important; }
     .hidden { display: none; }
-    .agent-count { font-size: 0.7rem; background: #1e3a5f; color: #7dd3fc;
-                   border-radius: 4px; padding: 1px 5px; margin-left: 6px;
-                   vertical-align: middle; }
-    .captain-badge { font-size: 0.7rem; border-radius: 4px; padding: 1px 5px;
-                     margin-left: 6px; vertical-align: middle; }
-    .captain-on  { background: #2d1f5e; color: #c4b5fd; }
-    .captain-off { background: #1e2330; color: #64748b; }
-    .stopped-row td { opacity: 0.6; }
-    .mono { font-family: monospace; font-size: 0.85em; color: #94a3b8; }
+    .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.82em; color: #64748b; }
+    a { color: #818cf8; text-decoration: none; }
+    a:hover { color: #a5b4fc; text-decoration: underline; }
     @keyframes spin  { to { transform: rotate(360deg); } }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+    @keyframes drift {
+      0%   { text-shadow: 0 0 20px rgba(139,92,246,0.4), 0 0 40px rgba(14,116,144,0.3); }
+      50%  { text-shadow: 0 0 28px rgba(139,92,246,0.6), 0 0 50px rgba(14,116,144,0.4); }
+      100% { text-shadow: 0 0 20px rgba(139,92,246,0.4), 0 0 40px rgba(14,116,144,0.3); }
+    }
+    h1 { animation: drift 6s ease-in-out infinite; }
     .spinner     { display: inline-block; animation: spin  1s   linear     infinite; }
-    .running-dot { display: inline-block; animation: pulse 1.2s ease-in-out infinite;
+    .running-dot { display: inline-block; animation: pulse 1.4s ease-in-out infinite;
                    color: #6ee7b7; }
   </style>
 </head>
 <body>
-  <h1>&#x1F6A7; Lighthouse</h1>
-  <p class="subtitle">Fleet overview &mdash; refreshes every 5 s</p>
+  <div class="header">
+    <h1>&#x1F47B; Lighthouse</h1>
+    <p class="subtitle">Ghostship fleet overview &mdash; refreshes every 5 s</p>
+  </div>
   <div id="status">Loading&hellip;</div>
+  <div class="table-wrap">
   <table id="fleet-table">
     <thead>
       <tr>
@@ -1635,10 +1734,11 @@ LIGHTHOUSE_HTML = """\
     </thead>
     <tbody id="fleet-body">
       <tr><td colspan="7" class="empty-cell">
-        <span class="spinner">&#9696;</span> Fetching fleet data&hellip;
+        Fetching fleet data&hellip;
       </td></tr>
     </tbody>
   </table>
+  </div>
 
   <script>
   /* Lighthouse SPA — vanilla JS only (D5: no external dependencies). */
@@ -1784,7 +1884,7 @@ LIGHTHOUSE_HTML = """\
       /* Captain state inline */
       const cap = crew.captain;
       if (cap) {
-        html += "<br><strong>Captain</strong><table class=\\"detail-table\\">" +
+        html += "<div class=\\"detail-section\\">Captain</div><table class=\\"detail-table\\">" +
           "<tr><th>State</th><th>Schedule</th><th>Current task</th></tr>" +
           "<tr><td>" + (cap.enabled ? "active" : "paused") + "</td>" +
           "<td>" + esc(cap.schedule || "—") + "</td>" +
@@ -1802,7 +1902,7 @@ LIGHTHOUSE_HTML = """\
       if (!agents || agents.length === 0) {
         return "<em>No active tasks.</em>";
       }
-      let html = "<strong>Active tasks</strong><table class=\\"detail-table\\">" +
+      let html = "<div class=\\"detail-section\\">Active tasks</div><table class=\\"detail-table\\">" +
         "<tr><th>ID</th><th>Agent</th><th>Done</th><th>Elapsed</th></tr>";
       agents.forEach(function (a) {
         html +=
@@ -1826,7 +1926,7 @@ LIGHTHOUSE_HTML = """\
             ? cronsData.jobs.filter(function (j) { return j.type !== "captain"; })
             : [];
           if (jobs.length === 0) return;
-          let html = "<br><strong>Scheduled jobs</strong><table class=\\"detail-table\\">" +
+          let html = "<div class=\\"detail-section\\">Scheduled jobs</div><table class=\\"detail-table\\">" +
             "<tr><th>Name</th><th>Agent</th><th>Schedule</th></tr>";
           jobs.forEach(function (j) {
             html +=
