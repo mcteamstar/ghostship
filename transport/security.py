@@ -517,6 +517,7 @@ def _csp_with_nonce(nonce: str) -> str:
         f"default-src 'self'; "
         f"script-src 'self' 'nonce-{nonce}'; "
         f"style-src 'self' 'nonce-{nonce}'; "
+        f"font-src 'self' data:; "
         f"frame-ancestors 'none'; object-src 'none'"
     )
 
