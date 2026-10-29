@@ -57,10 +57,24 @@ the same origin. Useful paths include `/api/spawn` (tasks), `/api/crons`
 (schedule/captain state), and `/api/mailboxes` (mail summary). These paths are
 proxied by the existing crew API proxy — no new proxy routes are needed.
 
-#### Scenario: Expanding a crew row fetches task and captain state
+Active agent data is sourced from the fleet payload (`agents` array per crew) to
+avoid an extra fetch per row. Per-crew cron/schedule data is fetched from
+`/crews/{crew_id}/api/crons` only when the operator expands a row and the crew is
+running. For stopped crews, a message is shown explaining that live schedule data
+is unavailable.
+
+#### Scenario: Expanding a crew row shows agent and captain state
 - **WHEN** the operator expands a crew row in the Lighthouse UI
-- **THEN** the SPA issues one or more `GET /crews/{crew_id}/api/*` requests
-- **THEN** the response data is displayed in the expanded panel
+- **THEN** the SPA renders active tasks from the fleet payload agents array
+- **THEN** captain state (enabled/paused, schedule, current task) is rendered
+  from the `captain` field in the fleet payload
+- **THEN** for running crews, non-captain scheduled jobs are fetched from
+  `/crews/{crew_id}/api/crons` and appended
+
+#### Scenario: Stopped crew detail shows appropriate message
+- **WHEN** the operator expands a stopped crew row
+- **THEN** task and captain state from the registry are shown (no gateway probe)
+- **THEN** a message indicates live schedule data is unavailable
 
 ### Requirement: Link to per-crew KC dashboard
 
@@ -76,6 +90,80 @@ browser tab.
 #### Scenario: Crew without dashboard_url shows no link
 - **WHEN** a crew's entry in `/api/crews` has `dashboard_url: null`
 - **THEN** no dashboard link is rendered for that row
+
+### Requirement: Fleet table shows crew busyness at a glance
+
+The Lighthouse SPA SHALL surface per-crew activity state in the fleet table without
+requiring row expansion. The crew name cell SHALL show:
+- An "N active" badge (cyan) when the crew has active (not-done) agent tasks
+- A captain state badge ("⚑ captain" in purple when active, "⚑ paused" in muted
+  when paused) when the crew has a captain schedule entry
+
+Stopped crews SHALL be visually de-emphasised (reduced opacity). The `running`
+status badge SHALL use a subtle green glow to distinguish live crews. Uptime SHALL
+show `—` for stopped crews.
+
+#### Scenario: Active crew shows task count and captain badge
+- **WHEN** a crew has active (not-done) agent tasks and an active captain
+- **THEN** the crew name cell shows a cyan "N active" badge and a purple "⚑ captain" badge
+
+#### Scenario: Paused captain shown distinctly
+- **WHEN** a crew's captain schedule exists but is disabled
+- **THEN** a muted "⚑ paused" badge is shown in the crew name cell
+
+#### Scenario: Stopped crew is de-emphasised
+- **WHEN** a crew has status "stopped"
+- **THEN** the row is rendered at reduced opacity and uptime shows "—"
+
+### Requirement: Click affordance and expandable row detail
+
+Each data row in the fleet table SHALL show a `▸` indicator in the crew name cell
+to signal it is clickable. Clicking the row toggles an expanded detail panel showing
+active tasks and captain/schedule state. The expanded state SHALL be preserved across
+5-second poll refreshes — the panel does not collapse on re-render.
+
+#### Scenario: Row expand and collapse
+- **WHEN** the operator clicks a crew row
+- **THEN** a detail panel appears beneath the row with active tasks and captain state
+- **THEN** clicking the row again collapses the detail panel
+- **THEN** the indicator changes from `▸` to `▾` when expanded
+
+#### Scenario: Open rows survive poll refresh
+- **WHEN** a row is expanded and the 5 s poll fires
+- **THEN** the detail panel remains open after the re-render
+
+### Requirement: Relative timestamps
+
+The "Last Task" column SHALL display timestamps as human-readable relative strings
+("just now", "3m ago", "2h ago", "4d ago") rather than absolute datetime strings.
+
+#### Scenario: Recent timestamp shown as relative
+- **WHEN** `last_task_at` is 90 seconds ago
+- **THEN** the cell shows "1m ago"
+
+### Requirement: CSP-compliant inline SPA
+
+The Lighthouse SPA HTML returned by `GET /` SHALL comply with the transport's
+nonce-based Content Security Policy. The handler SHALL inject the per-request
+`csp_nonce` (from `request.scope["csp_nonce"]`) into the `<style>` and `<script>`
+nonce attributes. No inline `style=` attributes SHALL be used in JS-generated HTML;
+all dynamic styling SHALL use CSS classes.
+
+#### Scenario: No CSP violations on page load
+- **WHEN** `GET /` is loaded in a browser with the transport's CSP headers active
+- **THEN** no Content Security Policy violations are reported in the browser console
+
+### Requirement: Ghostship brand theme
+
+The Lighthouse SPA SHALL use a visual theme consistent with the Ghostship brand:
+deep space / cosmic nebula aesthetic with a dark background, CSS starfield, nebula
+glow gradients, ghost emoji header, and per-role colour accents (teal for active
+tasks, purple for captain/Raven, green glow for running status).
+
+#### Scenario: Page loads with cosmic theme
+- **WHEN** `GET /` is loaded
+- **THEN** the page has a deep space dark background with subtle nebula glow
+- **THEN** the header shows the 👻 ghost emoji with a pulsing purple/teal glow
 
 ### Requirement: Lighthouse is read-only in this change
 

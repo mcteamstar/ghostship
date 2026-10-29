@@ -43,7 +43,12 @@ The response shape SHALL be:
           "done": "<boolean>",
           "elapsed_secs": "<integer>"
         }
-      ]
+      ],
+      "captain": {
+        "enabled": "<boolean>",
+        "schedule": "<string>",
+        "current_task_id": "<string | null>"
+      } | null
     }
   ],
   "host_memory_available_gb": "<number | null>",
@@ -65,6 +70,30 @@ The response shape SHALL be:
 #### Scenario: Empty fleet returns valid response
 - **WHEN** no crews are registered and `GET /api/crews` is called
 - **THEN** the response is HTTP 200 with `{"crews": [], "active_crews": 0, ...}`
+
+### Requirement: `GET /api/crews` includes captain schedule state per crew
+
+Each crew entry in the `GET /api/crews` response SHALL include a `captain` field
+reflecting the crew's captain schedule entry from the transport registry. When a
+captain schedule entry exists, the field SHALL be an object with `enabled`
+(boolean), `schedule` (human-readable string derived from `interval_secs` or
+`cron_expr`), and `current_task_id` (string or null). When no captain entry exists,
+`captain` SHALL be null.
+
+The captain state SHALL be read from the crew's registry entry directly (no gateway
+probe) so it is available for stopped crews without waking them.
+
+#### Scenario: Crew with active captain returns captain object
+- **WHEN** `GET /api/crews` is called for a fleet containing a crew with a captain schedule
+- **THEN** that crew's entry includes `"captain": {"enabled": true, "schedule": "every 3600s", "current_task_id": "<id>"}`
+
+#### Scenario: Crew with paused captain returns enabled false
+- **WHEN** `GET /api/crews` is called and a crew's captain schedule is disabled
+- **THEN** that crew's entry includes `"captain": {"enabled": false, ...}`
+
+#### Scenario: Crew without captain returns null
+- **WHEN** `GET /api/crews` is called and a crew has no captain schedule entry
+- **THEN** that crew's entry includes `"captain": null`
 
 ### Requirement: `GET /api/crews` shares data assembly with the MCP `crews()` tool
 
