@@ -258,30 +258,19 @@ class CrewLauncher:
 
         c = _to_crew(crew_id, crew)
 
-        # D5: Check for an in-progress restart BEFORE probing/stopping the
-        # container. If a concurrent leader is already restarting this crew,
-        # go straight to the waiter path — probing or stopping the container
-        # mid-restart is wrong.
-        with self._startup_events_lock:
-            _early_in_progress = crew_id in self._startup_events
-
-        if not _early_in_progress:
-            if podman.container_is_running(c.container):
-                # Gateway liveness probe: a running container may have a dead
-                # gateway
-                if _probe_gateway(c.gateway_url()):
-                    if touch:
-                        _touch_crew(crew_id)
-                    return crew
-                # Gateway is dead inside a running container — fall through to
-                # restart
-                logger.info(
-                    "Crew %s container running but gateway probe failed — "
-                    "restarting", crew_id,
-                )
-                podman.container_stop(c.container)
-
-        # Serialise concurrent restarts for this crew
+        # H-3 fix (D3): Consolidate the early in-progress check and the leader
+        # election under a single lock acquisition. The previous two-step
+        # pattern (lock → read _early_in_progress → release, then later
+        # lock → election → release) had a race window: a concurrent caller
+        # could register as leader between the first release and the second
+        # acquisition. With a single lock acquisition the check-and-elect is
+        # atomic.
+        #
+        # If another restart is already in progress, become a waiter immediately
+        # without probing the container (probing or stopping mid-restart is wrong,
+        # per D5). If no restart is in progress, register as leader, release the
+        # lock, then probe the container — if it is alive with a live gateway,
+        # de-register and return early; otherwise proceed with the restart work.
         with self._startup_events_lock:
             if crew_id in self._startup_events:
                 event = self._startup_events[crew_id]
@@ -292,16 +281,7 @@ class CrewLauncher:
                 event = threading.Event()
                 self._startup_events[crew_id] = event
                 is_leader = True
-                # Drop any outcome left by a PRIOR leader for this crew. The
-                # outcome map is never popped on completion (its read happens
-                # after event.set(), so it cannot be cleared in the leader's
-                # finally without racing the waiter), so a stale entry survives
-                # between cycles. If we did not clear it, a waiter whose
-                # event.wait() times out would read the previous cycle's failure
-                # and raise an unrelated exception. Clearing at election makes
-                # the map hold at most one entry per crew AND guarantees a
-                # timed-out waiter sees None (→ explicit timeout error) rather
-                # than a stale outcome.
+                # Drop any outcome left by a PRIOR leader for this crew.
                 self._crew_restart_outcomes.pop(crew_id, None)
                 # Increment generation for this new restart cycle
                 self._startup_generation[crew_id] = (
@@ -309,7 +289,34 @@ class CrewLauncher:
                 )
                 _waiter_gen = self._startup_generation[crew_id]
 
-        if not is_leader:
+        if is_leader:
+            # As leader, probe the container now (outside the lock — network
+            # I/O cannot be held under the startup events lock). If the
+            # container is running and the gateway is alive, no restart is
+            # needed: de-register ourselves and return early.
+            if podman.container_is_running(c.container):
+                if _probe_gateway(c.gateway_url()):
+                    # Container is healthy — no restart needed.
+                    # Record a success outcome and fire event.set() before
+                    # de-registering so any waiter that arrived between our
+                    # election (where we registered the event) and this
+                    # early-exit is unblocked rather than stranded for 150s.
+                    with self._startup_events_lock:
+                        self._crew_restart_outcomes[crew_id] = (True, None)
+                        self._startup_events.pop(crew_id, None)
+                    event.set()
+                    if touch:
+                        _touch_crew(crew_id)
+                    return crew
+                # Gateway is dead inside a running container — fall through to
+                # the restart body below.
+                logger.info(
+                    "Crew %s container running but gateway probe failed — "
+                    "restarting", crew_id,
+                )
+                podman.container_stop(c.container)
+
+        else:
             # Another caller is already restarting — wait for it then return
             # the refreshed crew dict
             logger.info("Crew %s restart already in progress — waiting", crew_id)
