@@ -483,7 +483,7 @@ def _build_crews_payload(podman) -> dict:
             pass  # crew may be idle/stopped — agents list stays empty
         # Captain state from registry (no gateway probe needed — registry is always readable)
         try:
-            schedules = registry.get_schedules(cid)
+            schedules = info.get("schedules", [])
             captain_entry = next(
                 (s for s in schedules if s.get("type") == "captain"), None
             )
