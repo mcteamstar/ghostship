@@ -2,6 +2,46 @@
 
 ## v0.9.1
 
+### `free-will` Captain order template (aliases: `free`, `willy`) (TRN-281)
+
+- New built-in Captain template for open-ended autonomous captaincy. Pass `template="willy"` alongside `message=` to give Raven a freeform standing order with full agent autonomy and no structured SDD lifecycle.
+- Raven self-cancels on completion; open-ended/recurring instructions continue on each check-in.
+- `transport/captain.py`: `_resolve_order_template()` gains a `message` parameter and `<message>` placeholder substitution. Message and template can now be provided together when the template uses `<message>`.
+- `transport/captain_engine.py`: relaxed the `message`/`template` mutual-exclusion constraint to allow both when the template accepts a message.
+- Docs updated: `README.md`, `docs/architecture.md`, `docs/agents.md`, `ghostship-command` skill.
+
+### Security hardening (indy-0.9.1 findings, TRN-279)
+
+- **`transport/dashboard.py`**: `gs_session` cookie changed from `SameSite=Lax` to `SameSite=Strict`; port range validation added to `DashboardGate.handle_auth`; logout cookie-clear now conditional on Secure flag.
+- **`transport/lifecycle.py`**: bearer token, `gs_session`, and CSRF token patterns added to `_gateway_error_detail` redaction.
+- **`transport/server.py`**: minor auth path cleanup.
+- New unit tests: `TestDashboardGatePortRangeValidation`, `TestRateLimitMiddleware` dashboard coverage, `TestHeredocBackticks` extended to `scripts/run.sh` and container scripts.
+
+### Docs refresh (indy-0.9.1 findings, TRN-277)
+
+- `docs/troubleshooting.md`: corrected `_inject_auth`, `_read_auth_from_crew`, `_mint_cookie` file attribution from `server.py` → `lifecycle.py` (lines 322, 344).
+- `docs/portal.md`: port range upper bound corrected from 65081 to 64121 (line 47).
+- `docs/configuration.md`: fixed "all interfaces" claim (line 336) — default is `127.0.0.1`; deprecated alias qualifier updated.
+- `README.md` / `CHANGELOG.md`: Further reading links updated.
+
+### Test coverage — security primitives (indy-0.9.1 findings, TRN-278)
+
+- `tests/unit/test_security.py` (new): hash/verify round-trip, `Throttle` lockout/unlock, `SessionStore` issue/validate/revoke/expiry, `validate_str`, `SecretRedactionFilter`.
+- `tests/unit/test_files.py` (new): HMAC sign/verify, expired token, mode mismatch, path-traversal rejection.
+- `tests/unit/test_container_scripts.py` (new): `inject_policy.py` sign_policy, `transfer_raw.py` extraction.
+- `tests/unit/test_dashboard.py` extended: `handle_auth` and `handle_logout_post` session validity paths.
+- `tests/unit/test_openapi.py` (new): `_to_openapi_path`, `_default_tag`, `generate_schema` round-trip.
+- `scripts/security_scan.py`: removed phantom exclusion for `test_trn70_security.py`.
+- Total unit tests: 1107 (up from 975 at v0.9.0).
+
+### Quality and reliability (indy-0.9.1 findings, TRN-276)
+
+- `transport/launcher.py`: waiter timeout raised from 45 s to 150 s — prevents spurious 502 errors when leader restart exceeds 45 s under memory pressure.
+- `transport/security.py`: `SessionStore._sweep()` now called in `revoke()` so revoked tokens are pruned immediately; `RateLimiter` memory-bound comment added.
+- `transport/server.py`: `_ensure_running_locks` entry removed on crew nuke to prevent unbounded growth.
+- `tests/unit/test_captain_engine.py` (new): direct unit tests for all eight `captain_engine.py` exported functions.
+- `scripts/run.sh`: `--cov=transport --cov-report=term-missing` added to unit test invocation.
+
 ### Default model ID fixed for kiro crews (hotfix)
 
 - The v0.8.1 default `claude-haiku-5-5` is Claude Code's spelling. Kiro rejects it, and every task on a kiro crew using the default failed with the misleading error `profileArn is required for this request`.
