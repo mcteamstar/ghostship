@@ -71,9 +71,9 @@ def _iter_files():
             continue
         if path.suffix.lower() in SKIP_SUFFIXES:
             continue
-        # Skip the scanner and the security tests (they contain sample patterns).
+        # Skip the scanner itself (it contains sample patterns).
         rel = path.relative_to(REPO).as_posix()
-        if rel in ("scripts/security_scan.py", "tests/unit/test_trn70_security.py"):
+        if rel == "scripts/security_scan.py":
             continue
         yield path
 

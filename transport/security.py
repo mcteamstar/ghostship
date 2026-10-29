@@ -346,6 +346,7 @@ class RateLimiter:
     window_secs: float
     _hits: dict[str, list[float]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    # Memory bound: O(unique_source_ips × window_secs) — lazy per-key eviction, no global sweep.
 
     def _prune(self, key: str, now: float) -> list[float]:
         stamps = [t for t in self._hits.get(key, []) if now - t < self.window_secs]
@@ -439,6 +440,7 @@ class SessionStore:
         with self._lock:
             self._revoked.add(token)
             self._issued.pop(token, None)
+            self._sweep(time.time())
 
 
 # ── Input validation (input-validation) ──────────────────────────────────────

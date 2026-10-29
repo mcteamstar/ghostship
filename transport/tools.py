@@ -1288,6 +1288,25 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     except Exception:
         pass  # monitors may not be loaded yet (e.g. tests); skip silently
 
+    # Evict the per-crew asyncio.Lock from server._ensure_running_locks so
+    # nuked crew_ids do not accumulate indefinitely (the lock is recreated
+    # lazily on next access if the crew is re-launched).
+    try:
+        try:
+            from server import (  # container: flat /app/
+                _ensure_running_locks,
+                _ensure_running_locks_lock,
+            )
+        except ModuleNotFoundError:
+            from transport.server import (  # local dev
+                _ensure_running_locks,
+                _ensure_running_locks_lock,
+            )
+        with _ensure_running_locks_lock:
+            _ensure_running_locks.pop(crew_id, None)
+    except Exception:
+        pass  # server may not be loaded yet (e.g. tests); skip silently
+
     logger.info("Crew %s nuked", crew_id)
     return {"crew_id": crew_id, "status": "nuked", "container": container}
 

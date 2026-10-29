@@ -831,3 +831,39 @@ a full server.
 
 - **WHEN** `_handle_health` is called with a minimal GET request scope
 - **THEN** the response SHALL be HTTP 200 with a plain-text `ok` body
+
+### Requirement: pytest-cov is run in CI
+
+The CI test invocation SHALL include `--cov=transport` (or equivalent) so that
+coverage gaps surface automatically on every pull request rather than requiring
+manual inspection.
+
+#### Scenario: CI pytest invocation includes coverage reporting
+- **WHEN** the CI test workflow runs
+- **THEN** a coverage report for `transport/` is generated
+- **THEN** coverage gaps are visible in the PR output
+
+### Requirement: Critical transport modules have direct unit test coverage
+
+The unit test suite SHALL include direct tests for the following modules that
+previously had zero dedicated coverage:
+- `transport/security.py` — via `tests/unit/test_security.py`
+- `transport/files.py` HMAC machinery — via `tests/unit/test_files.py`
+- `transport/container_scripts/inject_policy.py` and `transfer_raw.py` — via
+  `tests/unit/test_container_scripts.py`
+- `transport/openapi.py` schema generation — via `tests/unit/test_openapi.py`
+
+Each test file SHALL contain at minimum: one passing test per exported function or
+security-relevant path, with a named failure mode the test guards.
+
+#### Scenario: test_security.py exists and passes
+- **WHEN** `pytest tests/unit/test_security.py` is run
+- **THEN** all tests pass with no errors
+
+#### Scenario: test_files.py exists and passes
+- **WHEN** `pytest tests/unit/test_files.py` is run
+- **THEN** all tests pass with no errors
+
+#### Scenario: test_openapi.py exists and passes
+- **WHEN** `pytest tests/unit/test_openapi.py` is run
+- **THEN** all tests pass with no errors
