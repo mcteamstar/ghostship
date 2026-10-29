@@ -1289,7 +1289,10 @@ AUTH_EOF
 fi
 
 # Build the Lighthouse session-gated route.
-# When GA_API_KEY is set: use forward_auth to validate gs_session, then proxy.
+# When GA_API_KEY is set: use a reverse_proxy-based forward_auth equivalent
+# (standard Caddy modules only — no caddy-security plugin) to validate the
+# gs_session cookie, then proxy to the transport.  This mirrors the pattern
+# used by caddy.py for the per-crew dashboard ports.
 # When GA_API_KEY is unset: passthrough only — no login step needed (Tailscale-gated).
 if [[ -n "${GA_API_KEY:-}" ]]; then
   _LIGHTHOUSE_ROUTE=$(cat <<LIGHTHOUSE_EOF
@@ -1298,10 +1301,24 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
               "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
               "handle": [
                 {
-                  "handler": "forward_auth",
-                  "uri": "http://ga-transport:64057/dashboard/auth",
-                  "copy_headers": ["Cookie"],
-                  "header_up": [{"header": "X-Transport-Token", "value": "{file./run/secrets/ga-transport-secret}"}]
+                  "handler": "reverse_proxy",
+                  "upstreams": [{"dial": "ga-transport:64057"}],
+                  "rewrite": {"method": "GET", "uri": "/dashboard/auth"},
+                  "headers": {
+                    "request": {
+                      "set": {
+                        "X-Forwarded-Method": ["{http.request.method}"],
+                        "X-Forwarded-Uri": ["{http.request.uri}"],
+                        "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"]
+                      }
+                    }
+                  },
+                  "handle_response": [
+                    {
+                      "match": {"status_code": [2]},
+                      "routes": [{"handle": [{"handler": "vars"}]}]
+                    }
+                  ]
                 },
                 {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}
               ]
