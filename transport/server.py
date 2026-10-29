@@ -1762,7 +1762,7 @@ LIGHTHOUSE_HTML = """\
           "<tr><td class=\\"mono\\">" + esc((a.task_id || a.id || "—").slice(0, 12)) + "</td>" +
           "<td>" + esc(a.agent || "—") + "</td>" +
           "<td>" + (a.done ? "✓" : "<span class=\\"running-dot\\">●</span>") + "</td>" +
-          "<td>" + fmtUptime(a.elapsed_secs || a.elapsed) + "</td></tr>";
+          "<td>" + (a.done && !(a.elapsed_secs || a.elapsed) ? "—" : fmtUptime(a.elapsed_secs || a.elapsed)) + "</td></tr>";
       });
       return html + "</table>";
     }
