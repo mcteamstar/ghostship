@@ -1514,3 +1514,47 @@ class TestMintCookieAndRefreshCookie(unittest.TestCase):
         # refresh must return True and update the registry entry
         self.assertTrue(result)
         self.assertEqual(backing["crews"][crew_id].get("cookie"), "NEW-COOKIE-XYZ")
+
+
+
+
+class TestResolveDispatchSlotTrue(unittest.TestCase):
+    """_resolve_dispatch_slot: slot=True logs a warning and proceeds as slot=None."""
+
+    def setUp(self):
+        from transport.lifecycle import _resolve_dispatch_slot
+        self._resolve_dispatch_slot = _resolve_dispatch_slot
+
+    def _enrolled_crew(self):
+        """Return a plain dict crew with 'ghost' enrolled."""
+        return {"enrolled_agents": ["ghost"]}
+
+    def _unenrolled_crew(self):
+        """Return a plain dict crew with no enrolled agents."""
+        return {"enrolled_agents": []}
+
+    def test_slot_true_logs_warning(self):
+        """slot=True must emit a WARNING log."""
+        import logging
+        with self.assertLogs("transport.lifecycle", level=logging.WARNING) as cm:
+            self._resolve_dispatch_slot("ghost", True, self._enrolled_crew())
+        self.assertTrue(
+            any("slot=True" in line for line in cm.output),
+            f"No 'slot=True' warning found; got: {cm.output}",
+        )
+
+    def test_slot_true_enrolled_proceeds_as_member_slot(self):
+        """slot=True on enrolled agent resolves to member slot (same as slot=None)."""
+        import logging
+        with self.assertLogs("transport.lifecycle", level=logging.WARNING):
+            eff_slot, parent = self._resolve_dispatch_slot("ghost", True, self._enrolled_crew())
+        self.assertEqual(eff_slot, "ghost")
+        self.assertEqual(parent, "dashboard:member-ghost")
+
+    def test_slot_true_unenrolled_proceeds_as_headless(self):
+        """slot=True on unenrolled agent resolves to headless (same as slot=None)."""
+        import logging
+        with self.assertLogs("transport.lifecycle", level=logging.WARNING):
+            eff_slot, parent = self._resolve_dispatch_slot("ghost", True, self._unenrolled_crew())
+        self.assertIsNone(eff_slot)
+        self.assertIsNone(parent)

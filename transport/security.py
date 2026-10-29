@@ -263,7 +263,7 @@ def verify_password(password: str, stored: str) -> bool:
                 maxmem=_SCRYPT_MAXMEM,
             )
             return hmac.compare_digest(dk.hex(), dk_hex)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OSError, OverflowError):
             return False
     return False
 

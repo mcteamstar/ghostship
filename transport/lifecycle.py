@@ -1784,6 +1784,12 @@ def _resolve_dispatch_slot(
         enrolled: frozenset[str] = frozenset(crew.enrolled_agents or [])
     else:
         enrolled = frozenset(crew.get("enrolled_agents") or [])
+    if slot is True:
+        logger.warning(
+            "_resolve_dispatch_slot: slot=True is not a valid value; "
+            "treating as slot=None (member-slot or headless resolution proceeds normally)"
+        )
+        slot = None
     if slot is None and agent in enrolled:
         # Echo the agent name (clean) not "member-<agent>" (implementation detail).
         return agent, f"dashboard:member-{agent}"

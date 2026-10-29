@@ -391,18 +391,40 @@ def _steer_captain_checkin(
             crew, crew_id, "POST", f"/api/spawn/{current_task_id}/continue",
             json=continue_body,
         )
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        # TRN-285 M-4: classify by inspecting exc.response.status_code and
+        # exc.request.url.path directly — not by string-sniffing the message.
+        #
+        # /continue returns 400 Bad Request when the Raven task has completed
+        # and its session is gone. Treat it the same as 404: fall back to a
+        # fresh dispatch and clear the stale current_task_id.
+        if status_code == 400 and exc.request.url.path.endswith("/continue"):
+            logger.info(
+                "Captain check-in: session %s gone for crew %s (400 on /continue) — re-dispatching",
+                current_task_id, crew_id,
+            )
+            try:
+                with registry:
+                    for s in registry.get_schedules(crew_id):
+                        if s.get("type") == "captain":
+                            s["current_task_id"] = None
+                            break
+            except Exception as clear_exc:
+                logger.warning(
+                    "Captain check-in: could not clear current_task_id for crew %s: %s",
+                    crew_id, clear_exc,
+                )
+            return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+        # Any other HTTPStatusError (e.g. 500) is propagated to the caller.
+        raise
     except Exception as exc:
         err_str = str(exc)
         # /continue returns 404 with code "conversation_gone" when the session
         # is no longer available (container restart, etc.).
-        # TRN-230: /continue also returns 400 Bad Request when the Raven task
-        # has completed and its session is gone — _crew_api_with_recovery now
-        # re-raises this as a raw HTTPStatusError rather than routing to
-        # phase-1 stale-cookie recovery.  Treat it the same as 404: fall back
-        # to a fresh dispatch and clear the stale current_task_id.
-        if "conversation_gone" in err_str or "404" in err_str or ("400 Bad Request" in err_str and "/continue" in err_str):
+        if "conversation_gone" in err_str or "404" in err_str:
             logger.info(
-                "Captain check-in: session %s gone for crew %s (400/404) — re-dispatching",
+                "Captain check-in: session %s gone for crew %s (404) — re-dispatching",
                 current_task_id, crew_id,
             )
             # Clear the stale current_task_id so the next monitor tick doesn't
@@ -542,11 +564,21 @@ def _captain_do_order(
         if effective_interval:
             next_fire = now + effective_interval
         else:
-            # cron schedule: fire in at most 60s for first fire, then the
-            # monitor will respect the cron expression via next_fire_at.
-            # Exact cron scheduling is future work; for now treat cron as
-            # interval=60 for the first fire and store cron_expr for display.
-            next_fire = now + 60
+            # cron schedule: compute the next cron tick after now.
+            # Use croniter when available (same pattern as _advance_next_fire_at
+            # in registry.py); fall back to now+60 if croniter is absent or the
+            # expression is invalid.
+            next_fire = now + 60  # default fallback
+            if effective_cron:
+                try:
+                    from croniter import croniter as _croniter
+                    next_fire = _croniter(effective_cron, now).get_next(float)
+                except Exception as _cron_err:
+                    logger.warning(
+                        "_captain_do_order: croniter failed for cron_expr %r, "
+                        "falling back to now+60: %s",
+                        effective_cron, _cron_err,
+                    )
 
         schedule_entry: dict[str, Any] = {
             "type": "captain",
