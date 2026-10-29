@@ -1600,7 +1600,11 @@ LIGHTHOUSE_HTML = """\
                    border-radius: 4px; padding: 1px 5px; margin-left: 6px;
                    vertical-align: middle; }
     .mono { font-family: monospace; font-size: 0.85em; color: #94a3b8; }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes spin  { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .spinner     { display: inline-block; animation: spin  1s   linear     infinite; }
+    .running-dot { display: inline-block; animation: pulse 1.2s ease-in-out infinite;
+                   color: #6ee7b7; }
   </style>
 </head>
 <body>
@@ -1650,7 +1654,17 @@ LIGHTHOUSE_HTML = """\
     function fmtDate(iso) {
       if (!iso) return "—";
       try {
-        return new Date(iso).toLocaleString();
+        const d = new Date(iso);
+        const now = new Date();
+        const diffMs = now - d;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHrs  = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        if (diffMins < 1)   return "just now";
+        if (diffMins < 60)  return diffMins + "m ago";
+        if (diffHrs  < 24)  return diffHrs  + "h ago";
+        if (diffDays < 7)   return diffDays  + "d ago";
+        return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
       } catch (e) { return iso; }
     }
 
@@ -1747,7 +1761,7 @@ LIGHTHOUSE_HTML = """\
         html +=
           "<tr><td class=\\"mono\\">" + esc((a.task_id || a.id || "—").slice(0, 12)) + "</td>" +
           "<td>" + esc(a.agent || "—") + "</td>" +
-          "<td>" + (a.done ? "✓" : "<span class=\\"spinner\\">&#9696;</span>") + "</td>" +
+          "<td>" + (a.done ? "✓" : "<span class=\\"running-dot\\">●</span>") + "</td>" +
           "<td>" + fmtUptime(a.elapsed_secs || a.elapsed) + "</td></tr>";
       });
       return html + "</table>";
