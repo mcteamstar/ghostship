@@ -488,9 +488,12 @@ def _build_crews_payload(podman) -> dict:
                 (s for s in schedules if s.get("type") == "captain"), None
             )
             if captain_entry is not None:
+                interval = captain_entry.get("interval_secs")
+                cron = captain_entry.get("cron_expr")
+                schedule_str = cron or (f"every {interval}s" if interval else "")
                 entry["captain"] = {
                     "enabled": captain_entry.get("enabled", True),
-                    "schedule": captain_entry.get("schedule", ""),
+                    "schedule": schedule_str,
                     "current_task_id": captain_entry.get("current_task_id"),
                 }
             else:
