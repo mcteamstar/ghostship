@@ -311,3 +311,294 @@ class TestCaptainDoStop(unittest.TestCase):
             result = _captain_do_stop(self.crew_id)
 
         self.assertIn("error", result)
+
+
+# ---------------------------------------------------------------------------
+# TRN-284: New tests for _dispatch_captain_checkin and _captain_do_order
+# ---------------------------------------------------------------------------
+
+class TestDispatchCaptainCheckinMemoryPressure(unittest.TestCase):
+    """_dispatch_captain_checkin: memory-pressure skip path (task 4.1)."""
+
+    def setUp(self):
+        self.crew_id = "pressure-crew"
+        self.crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
+
+    def _call(self):
+        from transport.captain_engine import _dispatch_captain_checkin
+        return _dispatch_captain_checkin(self.crew_dict, self.crew_id)
+
+    def _fake_lc(self):
+        fake_lc = MagicMock()
+        fake_lc._require_crew.return_value = self.crew_dict
+        fake_lc._to_crew.return_value = self.crew_obj
+        fake_lc._write_dashboard_cookie = MagicMock()
+        fake_lc._crew_api_with_recovery = MagicMock()
+        return fake_lc
+
+    def test_memory_pressure_no_spawn_and_error_starts_with_marker(self):
+        """When host memory is below threshold, dispatch raises _MemoryPressureSkip
+        with an error message that starts with the memory_pressure marker."""
+        from transport.captain_engine import _MemoryPressureSkip, _MEMORY_PRESSURE_MARKER
+
+        # Patch enrolled agents check
+        crew_with_raven = dict(self.crew_dict)
+        crew_with_raven["enrolled_agents"] = ["raven"]
+        self.crew_obj.enrolled_agents = ["raven"]
+
+        # Patch _get_host_memory_gb_cached to return a value below threshold
+        # (return not-None means below threshold)
+        with (
+            patch("transport.captain_engine._lc", return_value=self._fake_lc()),
+            patch("transport.captain_engine._get_podman", return_value=MagicMock()),
+            patch("transport.captain_engine._get_host_memory_gb_cached",
+                  return_value=0.3),  # below GA_RESOURCE_CRITICAL_GB
+            patch.object(_reg_mod, "_load_registry",
+                         return_value={"crews": {
+                             self.crew_id: crew_with_raven,
+                         }}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = {"crews": {self.crew_id: crew_with_raven}}
+            with self.assertRaises(_MemoryPressureSkip) as ctx:
+                self._call()
+        self.assertTrue(
+            str(ctx.exception).startswith(_MEMORY_PRESSURE_MARKER),
+            f"Expected error to start with {_MEMORY_PRESSURE_MARKER!r}, "
+            f"got: {str(ctx.exception)!r}",
+        )
+
+    def test_memory_pressure_no_spawn_called(self):
+        """Under memory pressure, POST /api/spawn is never called."""
+        from transport.captain_engine import _MemoryPressureSkip
+
+        crew_with_raven = dict(self.crew_dict)
+        crew_with_raven["enrolled_agents"] = ["raven"]
+        self.crew_obj.enrolled_agents = ["raven"]
+
+        fake_lc = self._fake_lc()
+
+        with (
+            patch("transport.captain_engine._lc", return_value=fake_lc),
+            patch("transport.captain_engine._get_podman", return_value=MagicMock()),
+            patch("transport.captain_engine._get_host_memory_gb_cached",
+                  return_value=0.3),
+            patch.object(_reg_mod, "_load_registry",
+                         return_value={"crews": {self.crew_id: crew_with_raven}}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = {"crews": {self.crew_id: crew_with_raven}}
+            try:
+                self._call()
+            except _MemoryPressureSkip:
+                pass
+        # _crew_api_with_recovery should never have been called
+        fake_lc._crew_api_with_recovery.assert_not_called()
+
+
+class TestDispatchCaptainCheckinClaudeModelOverride(unittest.TestCase):
+    """_dispatch_captain_checkin: Claude backend uses crew model (task 4.2)."""
+
+    def setUp(self):
+        self.crew_id = "claude-crew"
+
+    def test_claude_backend_uses_crew_model_not_raven_model(self):
+        """For a Claude-backend crew with a configured model, the spawn request
+        uses that crew model rather than a raven.json default model."""
+        from transport.captain_engine import _dispatch_captain_checkin
+
+        crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        crew_dict["acp_backend"] = "claude"
+        crew_dict["model"] = "claude-sonnet-4-5"
+        crew_dict["enrolled_agents"] = ["raven"]
+
+        crew_obj = _fake_crew_obj(self.crew_id, running=True)
+        crew_obj.acp_backend = "claude"
+        crew_obj.enrolled_agents = ["raven"]
+
+        fake_lc = MagicMock()
+        fake_lc._require_crew.return_value = crew_dict
+        fake_lc._to_crew.return_value = crew_obj
+        fake_lc._write_dashboard_cookie = MagicMock()
+
+        spawn_calls = []
+
+        def fake_crew_api(crew, crew_id, method, path, **kwargs):
+            if method == "POST" and "/api/spawn" in path:
+                spawn_calls.append(kwargs.get("json", {}))
+                return {"id": "task-claude-001"}
+            return {}
+
+        fake_lc._crew_api_with_recovery.side_effect = fake_crew_api
+
+        with (
+            patch("transport.captain_engine._lc", return_value=fake_lc),
+            patch("transport.captain_engine._get_podman", return_value=MagicMock()),
+            patch("transport.captain_engine._get_host_memory_gb_cached",
+                  return_value=None),  # no memory pressure
+            patch.object(_reg_mod, "_load_registry",
+                         return_value={"crews": {
+                             self.crew_id: crew_dict,
+                         }}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = {"crews": {self.crew_id: crew_dict}}
+            result = _dispatch_captain_checkin(crew_dict, self.crew_id)
+
+        self.assertEqual(result, "task-claude-001")
+        self.assertEqual(len(spawn_calls), 1)
+        # The spawn body must carry the crew model
+        self.assertEqual(spawn_calls[0].get("model"), "claude-sonnet-4-5")
+
+
+class TestSteerCaptainCheckinFallback(unittest.TestCase):
+    """_steer_captain_checkin: 400-on-continue falls back to dispatch (task 4.3)."""
+
+    def setUp(self):
+        self.crew_id = "steer-fallback-crew"
+        self.crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
+        self.crew_obj.enrolled_agents = ["raven"]
+
+    def test_400_on_continue_triggers_redispatch(self):
+        """When /continue returns 400, _steer_captain_checkin falls back to
+        _dispatch_captain_checkin (fresh dispatch)."""
+        from transport.captain_engine import _steer_captain_checkin
+
+        captain_sched = {
+            "type": "captain",
+            "current_task_id": "old-task-001",
+            "model": None,
+            "enabled": True,
+        }
+        crew_dict = dict(self.crew_dict)
+        crew_dict["enrolled_agents"] = ["raven"]
+        crew_dict["schedules"] = [captain_sched]
+
+        fake_lc = MagicMock()
+        fake_lc._require_crew.return_value = crew_dict
+        fake_lc._to_crew.return_value = self.crew_obj
+        fake_lc._write_dashboard_cookie = MagicMock()
+
+        # /continue raises with "400 Bad Request" and "/continue" in the message
+        try:
+            import httpx2 as httpx
+        except ModuleNotFoundError:
+            import httpx
+
+        bad_resp = MagicMock()
+        bad_resp.status_code = 400
+        bad_resp.text = "400 Bad Request"
+        err_400 = httpx.HTTPStatusError(
+            "400 Bad Request /continue",
+            request=None,
+            response=bad_resp,
+        )
+        err_400_str = "400 Bad Request /api/spawn/old-task-001/continue"
+
+        dispatched_tasks = []
+
+        def fake_crew_api(crew, crew_id, method, path, **kwargs):
+            if "/continue" in path:
+                raise RuntimeError(err_400_str)
+            if method == "POST" and "/api/spawn" in path:
+                dispatched_tasks.append(kwargs.get("json", {}))
+                return {"id": "redispatch-001"}
+            return {}
+
+        fake_lc._crew_api_with_recovery.side_effect = fake_crew_api
+
+        with (
+            patch("transport.captain_engine._lc", return_value=fake_lc),
+            patch("transport.captain_engine._get_podman", return_value=MagicMock()),
+            patch("transport.captain_engine._get_host_memory_gb_cached",
+                  return_value=None),
+            patch.object(_reg_mod, "_load_registry",
+                         return_value={"crews": {self.crew_id: crew_dict}}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = {"crews": {self.crew_id: crew_dict}}
+            result = _steer_captain_checkin(crew_dict, self.crew_id)
+
+        # A fresh dispatch must have been made
+        self.assertEqual(result, "redispatch-001")
+
+
+class TestCaptainDoOrderReorder(unittest.TestCase):
+    """_captain_do_order: re-order of existing schedule does not duplicate (task 4.4)."""
+
+    def setUp(self):
+        self.crew_id = "reorder-crew"
+        self.crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
+        self.crew_obj.enrolled_agents = ["raven"]
+
+    def _fake_lc(self):
+        fake_lc = MagicMock()
+        fake_lc._require_crew.return_value = self.crew_dict
+        fake_lc._to_crew.return_value = self.crew_obj
+        fake_lc._ensure_crew_running.return_value = self.crew_dict
+        fake_lc._write_dashboard_cookie = MagicMock()
+        fake_lc._crew_api_with_recovery = MagicMock(
+            return_value={"id": "new-raven-task"}
+        )
+        return fake_lc
+
+    def test_existing_captain_entry_is_updated_not_duplicated(self):
+        """Calling _captain_do_order when a captain entry already exists updates
+        the entry rather than adding a second one."""
+        from transport.captain_engine import _captain_do_order
+
+        existing_captain = {
+            "type": "captain",
+            "name": "__captain__",
+            "interval_secs": 300,
+            "cron_expr": None,
+            "next_fire_at": 9999999999.0,
+            "agent": "raven",
+            "message": "check in",
+            "enabled": True,
+            "model": None,
+            "current_task_id": "existing-task-id",
+        }
+        crew_dict = dict(self.crew_dict)
+        crew_dict["schedules"] = [existing_captain]
+
+        backing = {"crews": {self.crew_id: crew_dict}}
+
+        with (
+            patch("transport.captain_engine._lc", return_value=self._fake_lc()),
+            patch("transport.captain_engine._get_podman", return_value=MagicMock()),
+            patch("transport.captain_engine._get_host_memory_gb_cached",
+                  return_value=None),
+            patch("transport.captain_engine._append_captain_mail"),
+            patch("transport.captain_engine._delete_sentinel_file"),
+            patch.object(_reg_mod, "_load_registry", return_value=backing),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = backing
+
+            result = _captain_do_order(
+                crew_id=self.crew_id,
+                message="new standing order",
+                template=None,
+                change_name=None,
+                cron=None,
+                interval=None,  # no new interval — reuses existing
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+        self.assertNotIn("error", result)
+
+        # Count captain-type schedules — must be exactly 1 (no duplication)
+        captain_entries = [
+            s for s in backing["crews"].get(self.crew_id, {}).get("schedules", [])
+            if s.get("type") == "captain"
+        ]
+        self.assertEqual(
+            len(captain_entries), 1,
+            f"Expected 1 captain entry, found {len(captain_entries)}",
+        )
