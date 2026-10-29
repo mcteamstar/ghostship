@@ -486,7 +486,7 @@ class TestSteerCaptainCheckinFallback(unittest.TestCase):
         fake_lc._to_crew.return_value = self.crew_obj
         fake_lc._write_dashboard_cookie = MagicMock()
 
-        # /continue raises with "400 Bad Request" and "/continue" in the message
+        # /continue raises httpx.HTTPStatusError 400 (TRN-285 M-4 classification)
         try:
             import httpx2 as httpx
         except ModuleNotFoundError:
@@ -495,18 +495,19 @@ class TestSteerCaptainCheckinFallback(unittest.TestCase):
         bad_resp = MagicMock()
         bad_resp.status_code = 400
         bad_resp.text = "400 Bad Request"
+        bad_req = MagicMock()
+        bad_req.url.path = "/api/spawn/old-task-001/continue"
         err_400 = httpx.HTTPStatusError(
             "400 Bad Request /continue",
-            request=None,
+            request=bad_req,
             response=bad_resp,
         )
-        err_400_str = "400 Bad Request /api/spawn/old-task-001/continue"
 
         dispatched_tasks = []
 
         def fake_crew_api(crew, crew_id, method, path, **kwargs):
             if "/continue" in path:
-                raise RuntimeError(err_400_str)
+                raise err_400
             if method == "POST" and "/api/spawn" in path:
                 dispatched_tasks.append(kwargs.get("json", {}))
                 return {"id": "redispatch-001"}
@@ -591,10 +592,10 @@ class TestCaptainDoOrderReorder(unittest.TestCase):
                 change_name=None,
                 cron=None,
                 interval=None,  # no new interval — reuses existing
+                timezone="UTC",
                 fire_immediately=False,
                 model=None,
             )
-
 
         # Count captain-type schedules — must be exactly 1 (no duplication)
         captain_entries = [
@@ -647,10 +648,12 @@ class TestCaptainDoOrderCronFirstFire(unittest.TestCase):
                 change_name=None,
                 cron=cron,
                 interval=interval,
+                timezone="UTC",
                 fire_immediately=False,
                 model=None,
             )
 
+    def test_cron_next_fire_at_is_next_cron_tick(self):
         """With cron='0 9 * * *' at 08:00, next_fire_at should be ≈next 09:00, not now+60."""
         import time as _time
         # Pick a known reference time: 2026-01-01 08:00:00 UTC
