@@ -1803,8 +1803,17 @@ async def _handle_lighthouse_get(request: Request) -> Response:
     Returns the Lighthouse HTML inline; session enforcement is at the Caddy
     layer via ``forward_auth`` (same pattern as ``/crews/*/ui``), so this
     handler lives in ``public_routes`` of ``BearerAuthMiddleware``.
+
+    Injects the per-request CSP nonce (set by SecurityHeadersMiddleware in
+    scope["csp_nonce"]) into the <style> and <script> tags so they satisfy
+    the nonce-based Content-Security-Policy header.
     """
-    return HTMLResponse(LIGHTHOUSE_HTML)
+    nonce = request.scope.get("csp_nonce") if hasattr(request, "scope") else None
+    nonce_attr = f' nonce="{nonce}"' if nonce else ""
+    html = LIGHTHOUSE_HTML.replace("<style>", f"<style{nonce_attr}>", 1).replace(
+        "<script>", f"<script{nonce_attr}>", 1
+    )
+    return HTMLResponse(html)
 
 
 async def _handle_api_crews_get(request: Request) -> Response:
