@@ -1,5 +1,79 @@
 # Changelog
 
+## v0.10.0
+
+### Lighthouse — fleet observability dashboard (TRN-97)
+
+- `GET /` on the transport now serves the **Lighthouse** fleet dashboard — a read-only
+  browser view of all crews, their status, active tasks, captain state, and schedule
+  without requiring an active MCP agent session.
+- `GET /api/crews` added as a first-class REST endpoint returning the full fleet
+  payload (same data as the MCP `crews()` tool, now including per-crew `captain` state).
+- Captain state (`enabled`, `schedule`, `current_task_id`) included in the fleet
+  payload for both the REST endpoint and the MCP tool.
+- Caddy `ga-lighthouse` route added — session-gated via `DashboardGate` `forward_auth`
+  chain (same `gs_session` cookie as per-crew dashboards). Works with and without
+  `GA_API_KEY`.
+- SPA features: 5 s polling, crew busyness badges (active task count, captain
+  state), expandable row detail (active tasks + captain section), stopped-crew
+  dimming, relative timestamps, click affordance.
+- Visual theme: deep space / cosmic nebula aesthetic — starfield CSS, nebula glow
+  gradients, IM Fell English heading, Spectral body, ghost crew colour palette
+  (teal for active tasks, purple for captain/Raven). All fonts embedded as woff2
+  data URIs — no external CDN dependency.
+- CSP-compliant: per-request nonce injection, no inline styles, `font-src data:`
+  directive added to `SecurityHeadersMiddleware`.
+- 25 new unit tests in `test_fleet.py`; `conftest.py` extended with `HTMLResponse`
+  stub and `media_type` content-type header support.
+
+### Race condition fixes in lifecycle layer (TRN-283)
+
+- **H-1** `_refresh_cookie`: crew dict cookie mutation now inside the registry lock —
+  no observable stale-cookie window for concurrent callers.
+- **H-2** `_reconcile_registry`: write-back now re-checks each candidate deletion
+  against its `created_at` timestamp before removing — concurrent re-launch is
+  safe.
+- **H-3** `ensure_running`: early-in-progress check and leader election consolidated
+  under a single lock acquisition — double-stop and dual-leader races eliminated.
+- 3 regression tests added to `test_lifecycle.py`.
+
+### Test coverage — podman, lifecycle, tools (TRN-284)
+
+- **`tests/unit/test_podman.py`** (new) — PodmanClient against a mock HTTP transport;
+  FakePodmanClient interface parity test.
+- **`tests/unit/test_tools.py`** (new) — `nuke()`, `schedule()`, `dispatch()` error
+  paths, `resource_agents`, `resource_jobs`, `supply`/`evac`/`pickup` branches.
+- **`test_lifecycle.py`** extended — `_reconcile_registry`, `_reseed_crew_schedules`,
+  `_mint_cookie`/`_refresh_cookie`, `_prewarm_crew`.
+- **`test_captain_engine.py`** extended — `_dispatch_captain_checkin` memory pressure
+  and claude backend model override, `_steer_captain_checkin` 400-continue branch,
+  `_captain_do_order` re-order.
+- **`test_server.py`**, **`test_files.py`**, **`test_academy.py`** targeted additions.
+- Total unit tests: **1195** (up from 1132 at v0.9.1).
+
+### Quality fixes (TRN-285)
+
+- **M-1** `verify_password()` scrypt branch now catches `OSError` and `OverflowError`
+  in addition to `ValueError`/`TypeError` — crafted extreme hash parameters return
+  `False` instead of raising.
+- **M-2** `_resolve_dispatch_slot()`: `slot=True` now logs a WARNING and falls back
+  to `None` instead of silently producing headless dispatch.
+- **M-3** `_captain_do_order()`: cron schedules now evaluate the first `next_fire_at`
+  from the cron expression rather than hardcoding `now + 60s`.
+- **M-4** `_steer_captain_checkin()`: error classification now uses
+  `exc.response.status_code` and `exc.request.url.path` instead of fragile
+  string-matching on the exception message.
+
+### e2e test robustness
+
+- `scripts/run.sh`: e2e suite now runs sequentially (`-p no:xdist`) — concurrent
+  launches under xdist caused spurious failures on memory-constrained hosts.
+- `TestCaptainStatusStoppedCrew.setUpClass`: raises `SkipTest` instead of
+  `RuntimeError` when the Podman socket is unreachable — remote e2e runs skip
+  cleanly instead of erroring.
+- `setUpModule` in `test_transport_e2e_extended.py`: retries once after a 15 s pause
+  on shared-crew launch failure.
+
 ## v0.9.1
 
 ### `free-will` Captain order template (aliases: `free`, `willy`) (TRN-281)
