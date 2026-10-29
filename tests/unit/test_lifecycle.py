@@ -1151,3 +1151,81 @@ class TestEnsureRunningOneStartPerCrew(_EnsureRunningBase):
         for r in results:
             self.assertIsInstance(r, dict)
         self.assertEqual(self.crews[CREW_ID]["status"], "running")
+
+
+# ── Banshee finding: leader early-exit must unblock waiters ──────────────────
+# H-3 introduced a new race: the leader registers in _startup_events, releases
+# the lock to probe the container (network I/O), and a concurrent caller arrives
+# during the probe — it sees the event and becomes a waiter.  If the probe
+# succeeds and the leader exits early (healthy container), it used to pop the
+# event without calling event.set(), stranding the waiter for 150 s.
+# Fix: record (True, None) outcome and call event.set() before de-registering.
+
+class TestEnsureRunningLeaderEarlyExitUnblocksWaiters(_EnsureRunningBase):
+    """Leader early-exit (healthy container) must unblock any concurrent waiter
+    that arrived between the leader's election and the probe completion."""
+
+    def setUp(self):
+        super().setUp()
+        # Override: container is RUNNING so the leader takes the early-exit path.
+        self.podman._containers[CONTAINER]["running"] = True
+        self.crews[CREW_ID]["status"] = "running"
+
+    def test_waiter_is_unblocked_when_leader_early_exits(self):
+        """If the leader finds a healthy container and returns early, any waiter
+        that registered during the probe must be unblocked (not stranded 150 s)."""
+        import time as _time
+
+        probe_started = threading.Event()
+        probe_may_continue = threading.Event()
+
+        life = self.life
+
+        # Wrap _probe_gateway so the leader signals when it starts the probe,
+        # then waits for the test to send T2 in before completing.
+        real_probe = life._probe_gateway.__wrapped__ if hasattr(
+            life._probe_gateway, "__wrapped__") else None
+
+        def _slow_probe(url):
+            probe_started.set()          # signal: T2, come in now
+            probe_may_continue.wait(timeout=5)  # wait for T2 to register
+            return True                  # healthy — leader will early-exit
+
+        # Replace the already-patched _probe_gateway with our slow version.
+        life._probe_gateway = _slow_probe
+
+        results: list = []
+        errors: list = []
+
+        def _call():
+            try:
+                crew = dict(self.crews[CREW_ID])
+                results.append(self.launcher.ensure_running(crew, CREW_ID))
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_call, name="leader")
+        t2 = threading.Thread(target=_call, name="waiter")
+
+        t1.start()
+        # Wait until the leader is inside the probe, then launch T2.
+        probe_started.wait(timeout=5)
+        t2.start()
+        # Give T2 a moment to see the event and call event.wait().
+        _time.sleep(0.05)
+        # Now let the probe finish — T1 will probe-succeed and early-exit.
+        probe_may_continue.set()
+
+        t1.join(timeout=5)
+        # T2 should NOT wait 150 s — it should be unblocked by the leader.
+        t2.join(timeout=5)
+
+        self.assertFalse(t1.is_alive(), "leader thread did not finish in time")
+        self.assertFalse(t2.is_alive(),
+            "waiter thread is still blocked — leader early-exit did not call event.set()")
+        self.assertEqual(errors, [], f"unexpected errors: {errors}")
+        self.assertEqual(len(results), 2,
+            f"expected 2 results (leader + waiter), got {results}")
+        # Neither result should be the nuked sentinel.
+        for r in results:
+            self.assertIsInstance(r, dict)

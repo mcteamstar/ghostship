@@ -296,11 +296,15 @@ class CrewLauncher:
             # needed: de-register ourselves and return early.
             if podman.container_is_running(c.container):
                 if _probe_gateway(c.gateway_url()):
-                    # Container is healthy — no restart needed. De-register.
+                    # Container is healthy — no restart needed.
+                    # Record a success outcome and fire event.set() before
+                    # de-registering so any waiter that arrived between our
+                    # election (where we registered the event) and this
+                    # early-exit is unblocked rather than stranded for 150s.
                     with self._startup_events_lock:
+                        self._crew_restart_outcomes[crew_id] = (True, None)
                         self._startup_events.pop(crew_id, None)
-                        # Also clear the stale outcome we registered.
-                        self._crew_restart_outcomes.pop(crew_id, None)
+                    event.set()
                     if touch:
                         _touch_crew(crew_id)
                     return crew
