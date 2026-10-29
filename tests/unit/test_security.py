@@ -51,6 +51,34 @@ class TestHashPassword(unittest.TestCase):
     def test_verify_empty_stored_returns_false(self):
         self.assertFalse(_security.verify_password("a-password", ""))
 
+    def test_verify_scrypt_oserror_returns_false(self):
+        """scrypt raising OSError (e.g. OpenSSL unavailable) returns False without raising."""
+        import hashlib
+        from unittest.mock import patch
+        stored = (
+            "scrypt$32768$8$1$"
+            + "00" * 16  # salt_hex (16 bytes = 32 hex chars)
+            + "$"
+            + "00" * 32  # dk_hex (32 bytes = 64 hex chars)
+        )
+        with patch.object(hashlib, "scrypt", side_effect=OSError("test")):
+            result = _security.verify_password("password", stored)
+        self.assertFalse(result)
+
+    def test_verify_scrypt_overflowerror_returns_false(self):
+        """scrypt raising OverflowError (e.g. extreme parameters) returns False without raising."""
+        import hashlib
+        from unittest.mock import patch
+        stored = (
+            "scrypt$32768$8$1$"
+            + "00" * 16
+            + "$"
+            + "00" * 32
+        )
+        with patch.object(hashlib, "scrypt", side_effect=OverflowError("test")):
+            result = _security.verify_password("password", stored)
+        self.assertFalse(result)
+
 
 # ── TestThrottle ──────────────────────────────────────────────────────────────
 

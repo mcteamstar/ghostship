@@ -18,6 +18,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+try:
+    import httpx2 as httpx
+except ModuleNotFoundError:
+    import httpx
+
 import transport.registry as _reg_mod
 from transport.registry import registry
 from tests.fakes import FakePodmanClient
@@ -311,3 +316,252 @@ class TestCaptainDoStop(unittest.TestCase):
             result = _captain_do_stop(self.crew_id)
 
         self.assertIn("error", result)
+
+
+# ── M-3 _captain_do_order cron first-fire ─────────────────────────────────────
+
+
+class TestCaptainDoOrderCronFirstFire(unittest.TestCase):
+    """_captain_do_order: cron schedules compute next_fire_at from the expression."""
+
+    def setUp(self):
+        self.crew_id = "cron-crew"
+        self.crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
+        self.podman = FakePodmanClient()
+
+    def _fake_lc(self, crew_dict=None):
+        fake_lc = MagicMock()
+        fake_lc._require_crew.return_value = crew_dict or self.crew_dict
+        fake_lc._to_crew.return_value = self.crew_obj
+        fake_lc._ensure_crew_running.return_value = crew_dict or self.crew_dict
+        fake_lc._delete_sentinel_file = MagicMock()
+        return fake_lc
+
+    def _call(self, cron=None, interval=None, fake_lc=None):
+        from transport.captain_engine import _captain_do_order
+        _lc = fake_lc or self._fake_lc()
+        with (
+            patch("transport.captain_engine._lc", return_value=_lc),
+            patch("transport.captain_engine._get_podman", return_value=self.podman),
+            patch("transport.captain_engine._append_captain_mail"),
+            patch("transport.captain_engine._delete_sentinel_file"),
+            patch.object(_reg_mod, "_load_registry", return_value={"crews": {
+                self.crew_id: self.crew_dict,
+            }}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = {"crews": {self.crew_id: self.crew_dict}}
+            return _captain_do_order(
+                crew_id=self.crew_id,
+                message="test order",
+                template=None,
+                change_name=None,
+                cron=cron,
+                interval=interval,
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+    def test_cron_next_fire_at_is_next_cron_tick(self):
+        """With cron='0 9 * * *' at 08:00, next_fire_at should be ≈next 09:00, not now+60."""
+        import time as _time
+        # Pick a known reference time: 2026-01-01 08:00:00 UTC
+        from datetime import datetime, timezone
+        ref_ts = datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc).timestamp()
+        expected_next_09 = datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc).timestamp()
+
+        captured = {}
+
+        def fake_upsert(crew_id, entry):
+            captured["entry"] = dict(entry)
+
+        with (
+            patch("transport.captain_engine._lc", return_value=self._fake_lc()),
+            patch("transport.captain_engine._get_podman", return_value=self.podman),
+            patch("transport.captain_engine._append_captain_mail"),
+            patch("transport.captain_engine._delete_sentinel_file"),
+            patch("transport.captain_engine.time") as mock_time,
+            patch.object(_reg_mod, "_load_registry", return_value={"crews": {
+                self.crew_id: self.crew_dict,
+            }}),
+            patch.object(_reg_mod, "_save_registry"),
+            patch.object(registry, "upsert_schedule", side_effect=fake_upsert),
+        ):
+            mock_time.time.return_value = ref_ts
+            registry._reg = {"crews": {self.crew_id: self.crew_dict}}
+            from transport.captain_engine import _captain_do_order
+            _captain_do_order(
+                crew_id=self.crew_id,
+                message="test order",
+                template=None,
+                change_name=None,
+                cron="0 9 * * *",
+                interval=None,
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+        self.assertIn("entry", captured, "upsert_schedule was not called")
+        next_fire_at = captured["entry"].get("next_fire_at")
+        self.assertIsNotNone(next_fire_at)
+        # Should be close to 09:00, not now+60 (08:01)
+        self.assertAlmostEqual(next_fire_at, expected_next_09, delta=5,
+            msg=f"next_fire_at={next_fire_at} expected ~{expected_next_09} (09:00), "
+                f"not ~{ref_ts + 60} (now+60)")
+
+    def test_interval_still_uses_60s_initial_delay(self):
+        """With interval=3600, next_fire_at should be now + 3600, not a cron tick."""
+        import time as _time
+        from datetime import datetime, timezone
+        ref_ts = datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc).timestamp()
+
+        captured = {}
+
+        def fake_upsert(crew_id, entry):
+            captured["entry"] = dict(entry)
+
+        with (
+            patch("transport.captain_engine._lc", return_value=self._fake_lc()),
+            patch("transport.captain_engine._get_podman", return_value=self.podman),
+            patch("transport.captain_engine._append_captain_mail"),
+            patch("transport.captain_engine._delete_sentinel_file"),
+            patch("transport.captain_engine.time") as mock_time,
+            patch.object(_reg_mod, "_load_registry", return_value={"crews": {
+                self.crew_id: self.crew_dict,
+            }}),
+            patch.object(_reg_mod, "_save_registry"),
+            patch.object(registry, "upsert_schedule", side_effect=fake_upsert),
+        ):
+            mock_time.time.return_value = ref_ts
+            registry._reg = {"crews": {self.crew_id: self.crew_dict}}
+            from transport.captain_engine import _captain_do_order
+            _captain_do_order(
+                crew_id=self.crew_id,
+                message="test order",
+                template=None,
+                change_name=None,
+                cron=None,
+                interval=3600,
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+        self.assertIn("entry", captured, "upsert_schedule was not called")
+        next_fire_at = captured["entry"].get("next_fire_at")
+        self.assertIsNotNone(next_fire_at)
+        self.assertAlmostEqual(next_fire_at, ref_ts + 3600, delta=5,
+            msg=f"next_fire_at={next_fire_at} expected ~{ref_ts + 3600} (now+3600)")
+
+
+# ── M-4 _steer_captain_checkin httpx status-code classification ───────────────
+
+
+class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
+    """_steer_captain_checkin: httpx.HTTPStatusError classification (TRN-285 M-4)."""
+
+    def setUp(self):
+        self.crew_id = "steer-crew"
+        self.crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
+        self.podman = FakePodmanClient()
+        # Pre-populate a captain schedule entry with a task_id
+        self._schedule = {
+            "type": "captain",
+            "crew_id": self.crew_id,
+            "enabled": True,
+            "job_id": None,
+            "current_task_id": "task-abc",
+            "model": None,
+            "interval_secs": 3600,
+            "cron_expr": None,
+        }
+        self.crew_dict_with_sched = dict(self.crew_dict)
+        self.crew_dict_with_sched["schedules"] = [self._schedule]
+
+    def _make_httpx_error(self, status_code: int, url_path: str):
+        """Build a minimal httpx.HTTPStatusError with the given status and path."""
+        response = MagicMock()
+        response.status_code = status_code
+        request = MagicMock()
+        request.url.path = url_path
+        return httpx.HTTPStatusError(
+            f"HTTP {status_code}",
+            request=request,
+            response=response,
+        )
+
+    def _call_steer(self, api_side_effect):
+        """Call _steer_captain_checkin with _crew_api_with_recovery raising api_side_effect."""
+        import transport.captain_engine as _ce
+        fake_lc = MagicMock()
+        fake_lc._require_crew.return_value = self.crew_dict_with_sched
+        fake_lc._to_crew.return_value = self.crew_obj
+        fake_lc._crew_api_with_recovery.side_effect = api_side_effect
+        fake_lc._write_dashboard_cookie = MagicMock()
+
+        with (
+            patch("transport.captain_engine._lc", return_value=fake_lc),
+            patch("transport.captain_engine._get_podman", return_value=self.podman),
+            patch.object(_reg_mod, "_load_registry", return_value={"crews": {
+                self.crew_id: self.crew_dict_with_sched,
+            }}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = {"crews": {self.crew_id: self.crew_dict_with_sched}}
+            registry._reg["crews"][self.crew_id]["schedules"] = [dict(self._schedule)]
+            from transport.captain_engine import _steer_captain_checkin
+            return _steer_captain_checkin(self.crew_dict_with_sched, self.crew_id)
+
+    def test_400_on_continue_triggers_redispatch(self):
+        """HTTPStatusError 400 on /continue triggers steer fallback (re-dispatch)."""
+        exc = self._make_httpx_error(400, f"/api/spawn/task-abc/continue")
+        new_task_id = "new-task-id"
+
+        # On re-dispatch (after 400), _dispatch_captain_checkin will call
+        # _crew_api_with_recovery again; make it succeed for the re-dispatch.
+        call_count = [0]
+        def side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise exc  # first call: raise 400
+            # second call: return a new task
+            return {"id": new_task_id}
+
+        fake_lc = MagicMock()
+        fake_lc._require_crew.return_value = self.crew_dict_with_sched
+        fake_lc._to_crew.return_value = self.crew_obj
+        fake_lc._crew_api_with_recovery.side_effect = side_effect
+        fake_lc._write_dashboard_cookie = MagicMock()
+
+        with (
+            patch("transport.captain_engine._lc", return_value=fake_lc),
+            patch("transport.captain_engine._get_podman", return_value=self.podman),
+            patch("transport.captain_engine._check_in_memory_pressure", return_value=None),
+            patch.object(_reg_mod, "_load_registry", return_value={"crews": {
+                self.crew_id: self.crew_dict_with_sched,
+            }}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = {"crews": {self.crew_id: self.crew_dict_with_sched}}
+            registry._reg["crews"][self.crew_id]["schedules"] = [dict(self._schedule)]
+            # Enroll raven so dispatch does not fail enrollment check
+            registry._reg["crews"][self.crew_id]["enrolled_agents"] = ["raven"]
+            from transport.captain_engine import _steer_captain_checkin
+            result = _steer_captain_checkin(self.crew_dict_with_sched, self.crew_id)
+
+        # Should have returned the new task id (re-dispatched)
+        self.assertEqual(result, new_task_id)
+        self.assertEqual(call_count[0], 2)  # first call raised, second succeeded
+
+    def test_500_on_continue_is_propagated(self):
+        """HTTPStatusError 500 is NOT treated as continue-400; it propagates."""
+        exc = self._make_httpx_error(500, "/api/spawn/task-abc/continue")
+
+        with self.assertRaises(httpx.HTTPStatusError) as cm:
+            self._call_steer(api_side_effect=exc)
+
+        self.assertEqual(cm.exception.response.status_code, 500)
