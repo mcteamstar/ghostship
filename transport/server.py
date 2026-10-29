@@ -1594,6 +1594,7 @@ LIGHTHOUSE_HTML = """\
     a { color: #60a5fa; text-decoration: none; }
     a:hover { text-decoration: underline; }
     .spinner { display: inline-block; animation: spin 1s linear infinite; }
+    .empty-cell { text-align: center; color: #64748b; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -1614,7 +1615,7 @@ LIGHTHOUSE_HTML = """\
       </tr>
     </thead>
     <tbody id="fleet-body">
-      <tr><td colspan="7" style="text-align:center;color:#64748b;">
+      <tr><td colspan="7" class="empty-cell">
         <span class="spinner">&#9696;</span> Fetching fleet data&hellip;
       </td></tr>
     </tbody>
@@ -1669,7 +1670,7 @@ LIGHTHOUSE_HTML = """\
       const crews = data.crews || [];
       if (crews.length === 0) {
         bodyEl.innerHTML =
-          "<tr><td colspan=\\"7\\" style=\\"text-align:center;color:#64748b;\\">No crews registered.</td></tr>";
+          "<tr><td colspan=\\"7\\" class=\\"empty-cell\\">No crews registered.</td></tr>";
         return;
       }
 
