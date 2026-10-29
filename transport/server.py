@@ -91,7 +91,7 @@ import httpx2 as httpx
 from mcp.server.mcpserver.server import MCPServer
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse, PlainTextResponse, JSONResponse
+from starlette.responses import Response, StreamingResponse, PlainTextResponse, JSONResponse, HTMLResponse
 from starlette.routing import Route, Mount
 try:
     from starlette.websockets import WebSocket as _StarletteWebSocket, WebSocketDisconnect as _StarletteWebSocketDisconnect
@@ -1545,6 +1545,296 @@ async def _handle_version_get(request: Request) -> Response:
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
 
+# ── Lighthouse SPA (TRN-97) ─────────────────────────────────────────────────
+# Inline HTML string; no build step, no static-file mount.
+# Pattern follows _handle_login_get in dashboard.py (D1 decision).
+LIGHTHOUSE_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lighthouse — Fleet Overview</title>
+  <style>
+    /* Minimal reset + layout */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117; color: #e2e8f0;
+      padding: 1.5rem; min-height: 100vh;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #f8fafc; }
+    .subtitle { font-size: 0.85rem; color: #64748b; margin-bottom: 1.5rem; }
+    #status { font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.75rem; }
+    #status.error { color: #f87171; }
+    table {
+      width: 100%; border-collapse: collapse;
+      background: #1e2330; border-radius: 8px; overflow: hidden;
+    }
+    th, td {
+      padding: 0.6rem 0.9rem; text-align: left;
+      border-bottom: 1px solid #2d3748; font-size: 0.85rem;
+    }
+    th { background: #161c28; color: #94a3b8; text-transform: uppercase;
+         font-size: 0.7rem; letter-spacing: 0.05em; }
+    tr.data-row:hover { background: #252d3d; cursor: pointer; }
+    .badge {
+      display: inline-block; padding: 0.15rem 0.5rem;
+      border-radius: 9999px; font-size: 0.7rem; font-weight: 600;
+    }
+    .badge-running  { background: #065f46; color: #6ee7b7; }
+    .badge-stopped  { background: #3b1e1e; color: #f87171; }
+    .badge-unknown  { background: #374151; color: #9ca3af; }
+    .detail-row td  { background: #151a25; padding: 0.75rem 1.5rem; }
+    .detail-inner   { border-left: 3px solid #334155; padding-left: 0.75rem; }
+    .detail-table   {
+      width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem;
+    }
+    .detail-table td { padding: 0.25rem 0.5rem; }
+    a { color: #60a5fa; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .spinner { display: inline-block; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>&#x1F6A7; Lighthouse</h1>
+  <p class="subtitle">Fleet overview &mdash; refreshes every 5 s</p>
+  <div id="status">Loading&hellip;</div>
+  <table id="fleet-table">
+    <thead>
+      <tr>
+        <th>Crew</th>
+        <th>Status</th>
+        <th>Backend</th>
+        <th>Composition</th>
+        <th>Uptime</th>
+        <th>Last Task</th>
+        <th>Dashboard</th>
+      </tr>
+    </thead>
+    <tbody id="fleet-body">
+      <tr><td colspan="7" style="text-align:center;color:#64748b;">
+        <span class="spinner">&#9696;</span> Fetching fleet data&hellip;
+      </td></tr>
+    </tbody>
+  </table>
+
+  <script>
+  /* Lighthouse SPA — vanilla JS only (D5: no external dependencies). */
+  (function () {
+    "use strict";
+
+    const REFRESH_INTERVAL = 5000; // ms
+    const statusEl  = document.getElementById("status");
+    const bodyEl    = document.getElementById("fleet-body");
+
+    /* ── helpers ─────────────────────────────────────────────────── */
+
+    function fmtUptime(secs) {
+      if (secs == null) return "—";
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      if (h > 0) return h + "h " + m + "m";
+      if (m > 0) return m + "m " + s + "s";
+      return s + "s";
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return "—";
+      try {
+        return new Date(iso).toLocaleString();
+      } catch (e) { return iso; }
+    }
+
+    function statusBadge(status) {
+      const cls =
+        status === "running" ? "badge-running" :
+        status === "stopped" ? "badge-stopped" : "badge-unknown";
+      return "<span class=\\"badge " + cls + "\\">" + esc(status) + "</span>";
+    }
+
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    /* ── fetch and render fleet ──────────────────────────────────── */
+
+    function render(data) {
+      const crews = data.crews || [];
+      if (crews.length === 0) {
+        bodyEl.innerHTML =
+          "<tr><td colspan=\\"7\\" style=\\"text-align:center;color:#64748b;\\">No crews registered.</td></tr>";
+        return;
+      }
+
+      const rows = crews.map(function (crew) {
+        const dashLink = crew.dashboard_url
+          ? "<a href=\\"" + esc(crew.dashboard_url) + "\\" target=\\"_blank\\" " +
+            "rel=\\"noopener noreferrer\\">open</a>"
+          : "—";
+        return (
+          "<tr class=\\"data-row\\" data-crew-id=\\"" + esc(crew.crew_id) + "\\">" +
+          "<td>" + esc(crew.crew_id) + "</td>" +
+          "<td>" + statusBadge(crew.status) + "</td>" +
+          "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
+          "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
+          "<td>" + fmtUptime(crew.uptime_secs) + "</td>" +
+          "<td>" + fmtDate(crew.last_task_at) + "</td>" +
+          "<td>" + dashLink + "</td>" +
+          "</tr>" +
+          /* placeholder detail row — hidden by default */
+          "<tr class=\\"detail-row\\" id=\\"detail-" + esc(crew.crew_id) + "\\" " +
+          "style=\\"display:none;\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">" +
+          "Loading details&hellip;</div></td></tr>"
+        );
+      });
+      bodyEl.innerHTML = rows.join("");
+
+      /* wire up row-click to toggle detail */
+      bodyEl.querySelectorAll("tr.data-row").forEach(function (tr) {
+        tr.addEventListener("click", function () {
+          const crewId  = tr.getAttribute("data-crew-id");
+          const detailTr = document.getElementById("detail-" + crewId);
+          if (!detailTr) return;
+          if (detailTr.style.display === "none") {
+            detailTr.style.display = "";
+            loadDetail(crewId, detailTr.querySelector(".detail-inner"));
+          } else {
+            detailTr.style.display = "none";
+          }
+        });
+      });
+    }
+
+    function loadDetail(crewId, container) {
+      const spawnUrl = "/crews/" + encodeURIComponent(crewId) + "/api/spawn";
+      const cronsUrl = "/crews/" + encodeURIComponent(crewId) + "/api/crons";
+
+      Promise.all([
+        fetch(spawnUrl, { credentials: "include" }).then(function (r) {
+          return r.ok ? r.json() : null;
+        }).catch(function () { return null; }),
+        fetch(cronsUrl, { credentials: "include" }).then(function (r) {
+          return r.ok ? r.json() : null;
+        }).catch(function () { return null; }),
+      ]).then(function (results) {
+        const spawnData = results[0];
+        const cronsData = results[1];
+        let html = "";
+
+        /* active tasks */
+        const agents = Array.isArray(spawnData)
+          ? spawnData
+          : (spawnData && Array.isArray(spawnData.agents) ? spawnData.agents : []);
+        if (agents.length > 0) {
+          html += "<strong>Active tasks</strong><table class=\\"detail-table\\">" +
+            "<tr><th>ID</th><th>Agent</th><th>Done</th><th>Elapsed</th></tr>";
+          agents.forEach(function (a) {
+            html +=
+              "<tr><td>" + esc(a.id || "—") + "</td>" +
+              "<td>" + esc(a.agent || "—") + "</td>" +
+              "<td>" + (a.done ? "✓" : "…") + "</td>" +
+              "<td>" + fmtUptime(a.elapsed) + "</td></tr>";
+          });
+          html += "</table>";
+        } else {
+          html += "<em>No active tasks.</em>";
+        }
+
+        /* scheduled jobs */
+        const jobs = Array.isArray(cronsData)
+          ? cronsData
+          : (cronsData && Array.isArray(cronsData.jobs) ? cronsData.jobs : []);
+        if (jobs.length > 0) {
+          html += "<br><strong>Cron jobs</strong><table class=\\"detail-table\\">" +
+            "<tr><th>ID</th><th>Name</th><th>Agent</th><th>Schedule</th></tr>";
+          jobs.forEach(function (j) {
+            html +=
+              "<tr><td>" + esc(j.id || j.job_id || "—") + "</td>" +
+              "<td>" + esc(j.name || "—") + "</td>" +
+              "<td>" + esc(j.agent || "—") + "</td>" +
+              "<td>" + esc(j.schedule || j.cron_expr || "—") + "</td></tr>";
+          });
+          html += "</table>";
+        }
+
+        container.innerHTML = html || "<em>No detail available.</em>";
+      });
+    }
+
+    function refresh() {
+      fetch("/api/crews", { credentials: "include" })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          return resp.json();
+        })
+        .then(function (data) {
+          statusEl.textContent =
+            "Active: " + (data.active_crews || 0) +
+            " / " + (data.max_active_crews || "?") +
+            " \\u00B7 " + new Date().toLocaleTimeString();
+          statusEl.className = "";
+          render(data);
+        })
+        .catch(function (err) {
+          statusEl.textContent = "Fetch error: " + err;
+          statusEl.className = "error";
+        });
+    }
+
+    refresh();
+    setInterval(refresh, REFRESH_INTERVAL);
+  })();
+  </script>
+</body>
+</html>
+"""
+
+
+async def _handle_lighthouse_get(request: Request) -> Response:
+    """GET / — serve the Lighthouse fleet overview SPA (TRN-97).
+
+    Returns the Lighthouse HTML inline; session enforcement is at the Caddy
+    layer via ``forward_auth`` (same pattern as ``/crews/*/ui``), so this
+    handler lives in ``public_routes`` of ``BearerAuthMiddleware``.
+    """
+    return HTMLResponse(LIGHTHOUSE_HTML)
+
+
+async def _handle_api_crews_get(request: Request) -> Response:
+    """GET /api/crews — return fleet JSON (TRN-97).
+
+    Calls ``_build_crews_payload`` from ``transport.tools`` to share the same
+    assembly logic as the MCP ``crews()`` tool (D2 decision). Session
+    enforcement is at the Caddy layer; the handler is in ``public_routes``.
+    """
+    try:
+        try:
+            from tools import _build_crews_payload, _get_podman  # container: flat /app/
+        except ModuleNotFoundError:
+            from transport.tools import _build_crews_payload  # local dev
+            from transport.podman import _get_podman  # local dev
+
+        podman = None
+        try:
+            podman = _get_podman()
+        except Exception:
+            pass  # no Podman client — payload still valid, just no liveness probes
+
+        payload = _build_crews_payload(podman)
+    except Exception as exc:
+        logger.error("_handle_api_crews_get: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse(payload)
+
+
 # ── OpenAPI schema ──────────────────────────────────────────────────
 # Generated once at startup (after all routes are defined) and cached here.
 # task 2.2: handler that returns the cached schema.
@@ -1743,6 +2033,9 @@ if __name__ == "__main__":
         ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
         ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
         ("GET",  "/openapi.json"): _handle_openapi_get,
+        # Lighthouse SPA and fleet REST API (TRN-97) — session-gated at Caddy layer.
+        ("GET",  "/"): _handle_lighthouse_get,
+        ("GET",  "/api/crews"): _handle_api_crews_get,
     }
     _openapi_schema = _openapi.generate_schema(
         routes=_openapi_schema_routes,
@@ -1790,6 +2083,10 @@ if __name__ == "__main__":
             # without Caddy's forward-auth check having passed first.
             ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+            # Lighthouse SPA and fleet REST API (TRN-97) — session-gated at
+            # Caddy layer via forward_auth / gs_session cookie (D3, D4).
+            ("GET",  "/"): _handle_lighthouse_get,
+            ("GET",  "/api/crews"): _handle_api_crews_get,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all

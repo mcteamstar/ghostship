@@ -1288,6 +1288,38 @@ AUTH_EOF
 )
 fi
 
+# Build the Lighthouse session-gated route.
+# When GA_API_KEY is set: use forward_auth to validate gs_session, then proxy.
+# When GA_API_KEY is unset: passthrough only — no login step needed (Tailscale-gated).
+if [[ -n "${GA_API_KEY:-}" ]]; then
+  _LIGHTHOUSE_ROUTE=$(cat <<LIGHTHOUSE_EOF
+            {
+              "@id": "ga-lighthouse",
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
+              "handle": [
+                {
+                  "handler": "forward_auth",
+                  "uri": "http://ga-transport:64057/dashboard/auth",
+                  "copy_headers": ["Cookie"],
+                  "header_up": [{"header": "X-Transport-Token", "value": "{file./run/secrets/ga-transport-secret}"}]
+                },
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}
+              ]
+            },
+LIGHTHOUSE_EOF
+)
+else
+  # No API key — passthrough only (Tailscale-gated install).
+  _LIGHTHOUSE_ROUTE=$(cat <<LIGHTHOUSE_EOF
+            {
+              "@id": "ga-lighthouse",
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
+            },
+LIGHTHOUSE_EOF
+)
+fi
+
 # Generate initial-config.json — main server only, no per-crew servers.
 cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
 {
@@ -1300,6 +1332,7 @@ cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
           ${_AUTO_HTTPS}
           "routes": [
 ${_AUTH_ROUTES}
+${_LIGHTHOUSE_ROUTE}
             {
               "@id": "ga-transport-misc",
               "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout", "/logout*", "/crews/*/captain/stop"]}],

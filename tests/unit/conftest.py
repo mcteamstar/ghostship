@@ -127,7 +127,13 @@ def _install_transport_stubs() -> None:
                 self.status_code = status_code
                 self.body = content.encode("utf-8") if isinstance(content, str) else content
                 raw_headers: list[tuple[bytes, bytes]] = []
-                for k, v in (headers or {}).items():
+                # Include content-type derived from media_type so tests can
+                # inspect it via the response headers (TRN-97).
+                all_headers: dict[str, str] = {}
+                if media_type:
+                    all_headers["content-type"] = media_type
+                all_headers.update(headers or {})
+                for k, v in all_headers.items():
                     raw_headers.append((k.lower().encode("latin-1"), v.encode("latin-1")))
                 self._raw_headers = raw_headers
 
@@ -186,6 +192,16 @@ def _install_transport_stubs() -> None:
         starlette_responses.PlainTextResponse = PlainTextResponse  # type: ignore[attr-defined]
         starlette_responses.JSONResponse = JSONResponse  # type: ignore[attr-defined]
         starlette_requests.Request = Request  # type: ignore[attr-defined]
+
+        class HTMLResponse(Response):
+            """Minimal stub for starlette.responses.HTMLResponse (TRN-97)."""
+
+            def __init__(self, content: str = "", status_code: int = 200,
+                         headers: dict | None = None) -> None:
+                super().__init__(content=content, status_code=status_code,
+                                 headers=headers, media_type="text/html; charset=utf-8")
+
+        starlette_responses.HTMLResponse = HTMLResponse  # type: ignore[attr-defined]
 
         class StreamingResponse(Response):
             """Minimal stub for starlette.responses.StreamingResponse."""

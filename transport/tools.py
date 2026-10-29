@@ -353,26 +353,31 @@ def _registry_guard(fn):
     return _wrapped
 
 
-@_registry_guard
-def crews() -> dict:
-    """Situational awareness — list all crews and what's running before deciding what to do next.
+def _build_crews_payload(podman) -> dict:
+    """Assemble the full fleet payload dict shared by the MCP ``crews`` tool and
+    the REST ``GET /api/crews`` endpoint.
 
-    Shows crew_id, container, status, created_at, and last_task_at for each,
-    plus uptime_secs (seconds since the container started; present only for
-    running crews, null otherwise).
-    Also includes active agents (tasks) running inside each crew — each with
-    task_id, agent, done, and elapsed_secs. For live per-task detail (current
-    tool, latest output) use `pickup`, not this overview.
-    Also: list crews, show workspaces, what's running, sitrep.
+    ``podman`` is the Podman client instance (or None if it could not be
+    obtained).  The returned dict has the same shape as the MCP tool result:
+
+    .. code-block:: json
+
+        {
+          "crews": [...],
+          "host_memory_available_gb": <float|null>,
+          "active_crews": <int>,
+          "max_active_crews": <int>
+        }
+
+    Side-effect: stale ``running`` → ``stopped`` corrections are written back to
+    the registry (same behaviour as before the extraction).
     """
     with registry:
         _crews_data = dict(registry._reg.get("crews", {}))
 
     # Host memory visibility
-    podman = None
     try:
-        podman = _get_podman()
-        host_mem = _get_host_memory_gb_cached(podman)
+        host_mem = _get_host_memory_gb_cached(podman) if podman is not None else None
     except Exception:
         host_mem = None
 
@@ -500,6 +505,26 @@ def crews() -> dict:
         "active_crews": active_crews,
         "max_active_crews": GA_MAX_ACTIVE_CREWS,
     }
+
+
+@_registry_guard
+def crews() -> dict:
+    """Situational awareness — list all crews and what's running before deciding what to do next.
+
+    Shows crew_id, container, status, created_at, and last_task_at for each,
+    plus uptime_secs (seconds since the container started; present only for
+    running crews, null otherwise).
+    Also includes active agents (tasks) running inside each crew — each with
+    task_id, agent, done, and elapsed_secs. For live per-task detail (current
+    tool, latest output) use `pickup`, not this overview.
+    Also: list crews, show workspaces, what's running, sitrep.
+    """
+    podman = None
+    try:
+        podman = _get_podman()
+    except Exception:
+        pass
+    return _build_crews_payload(podman)
 
 
 def resource_compositions() -> str:
