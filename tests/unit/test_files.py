@@ -177,9 +177,11 @@ class TestSafeWorkspacePath(unittest.TestCase):
 
     def test_normal_path_resolves(self):
         import tempfile
+        from pathlib import Path
         with tempfile.TemporaryDirectory() as tmpdir:
+            resolved_root = str(Path(tmpdir).resolve())
             result = _files._safe_workspace_path(tmpdir, "subdir/file.txt")
-            self.assertTrue(str(result).startswith(tmpdir))
+            self.assertTrue(str(result).startswith(resolved_root))
 
     def test_path_traversal_rejected(self):
         import tempfile
@@ -196,9 +198,11 @@ class TestSafeWorkspacePath(unittest.TestCase):
         leading slash is just formatting, not a filesystem root escape.
         """
         import tempfile
+        from pathlib import Path
         with tempfile.TemporaryDirectory() as tmpdir:
+            resolved_root = str(Path(tmpdir).resolve())
             result = _files._safe_workspace_path(tmpdir, "/etc/passwd")
-            self.assertTrue(str(result).startswith(tmpdir))
+            self.assertTrue(str(result).startswith(resolved_root))
 
     def test_deeply_nested_traversal_rejected(self):
         import tempfile
@@ -208,9 +212,11 @@ class TestSafeWorkspacePath(unittest.TestCase):
 
     def test_valid_nested_path_accepted(self):
         import tempfile
+        from pathlib import Path
         with tempfile.TemporaryDirectory() as tmpdir:
+            resolved_root = str(Path(tmpdir).resolve())
             result = _files._safe_workspace_path(tmpdir, "a/b/c/file.txt")
-            self.assertTrue(str(result).startswith(tmpdir))
+            self.assertTrue(str(result).startswith(resolved_root))
 
 
 if __name__ == "__main__":
