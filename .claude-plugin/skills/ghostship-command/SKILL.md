@@ -329,10 +329,16 @@ The built-in `independent-review` template (alias: `indy`) dispatches Banshee ×
 collects their findings, and mails a consolidated report to Admiral. Use it for
 periodic or pre-release audits.
 
+The built-in `free-will` template (aliases: `free`, `willy`) executes a freeform
+standing order with full agent autonomy — Raven picks whatever agents and approach
+best fit the task. Pass both `template="willy"` and `message="do X"` together.
+Self-cancels on completion; continues on each check-in for open-ended/recurring
+instructions. Use for any task that doesn't need SDD structure.
+
 **Available built-in templates:** `spec-driven-development` (`sdd`, `specky`),
-`independent-review` (`indy`). Read `transport://orders` for the index or
-`transport://orders/{name}` for a template's full body — the list is
-install-configurable and may include custom templates.
+`independent-review` (`indy`), `free-will` (`free`, `willy`). Read
+`transport://orders` for the index or `transport://orders/{name}` for a template's
+full body — the list is install-configurable and may include custom templates.
 
 For monitoring orders (watch a one-shot task, report when done), write a
 free-form message and Raven will pause the cron after sending the completion

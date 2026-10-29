@@ -100,6 +100,9 @@ For standard OpenSpec work use the built-in `sdd` template:
 For multi-angle review use the `independent-review` template:
 `captain(crew_id, action="order", template="independent-review", interval=<n>)`. On each tick, Raven dispatches four concurrent reviewers (Banshee × 3 for security/quality/test-coverage, Wraith for docs) and mails a consolidated summary to the Admiral.
 
+For open-ended autonomous work use the `free-will` template (alias: `willy`):
+`captain(crew_id, action="order", template="willy", message="<order>", interval=<n>)`. Raven executes the instruction with full agent autonomy and self-cancels on completion.
+
 `captain(..., action="status")` reports Raven job state, last-run summary, and mailbox counts. `action="stop"` pauses the job without deleting history or the mailbox.
 
 `transport://orders` returns a summary index (name + one-line description per template). `transport://orders/{name}` returns the full resolved body. `GA_ORDERS_DIR` lets operators point at custom `.md` templates that merge with and can override `academy/orders/`.
