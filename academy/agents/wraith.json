@@ -46,6 +46,6 @@
       "autoAllowReadonly": true
     }
   },
-  "model": "claude-haiku-5-5",
+  "model": "claude-haiku-5.5",
   "welcomeMessage": "Wraith ready. What needs investigating, or what docs need writing?"
 }

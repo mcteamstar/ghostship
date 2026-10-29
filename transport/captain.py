@@ -296,6 +296,7 @@ def _validate_captain_change_name(change_name: str) -> None:
 def _resolve_order_template(
     template: str | None,
     change_name: str | None,
+    message: str | None = None,
 ) -> str:
     if template is None:
         raise ValueError("Unknown Captain order template: None")
@@ -325,6 +326,10 @@ def _resolve_order_template(
         for name in names:
             _validate_captain_change_name(name)
         body = body.replace("<changes>", change_name)
+    if "<message>" in body:
+        if not message:
+            raise ValueError(f"Template {template!r} requires message")
+        body = body.replace("<message>", message)
     return body
 
 

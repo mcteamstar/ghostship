@@ -23,7 +23,7 @@ Ghostship runs each crew in its own container with a dedicated Podman volume. Ea
 
 As **Admiral**, command your crews over MCP from any agent. Delegate to the crew's **Captain** or be the captain yourself. All ships in your *fleet* run side-by-side without colliding and can be tailored to your tactical needs.
 
-The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Agents default to `claude-haiku-5-5` (configurable and overridable; see [docs/configuration.md](docs/configuration.md)).
+The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Agents default to `claude-haiku-5.5` (configurable and overridable; see [docs/configuration.md](docs/configuration.md)).
 
 ![Ghostship demo: launch three crews, close the session, come back later, pick up results, nuke](docs/images/demo.gif)
 
@@ -48,7 +48,7 @@ The built-in `spec-ops` loadout is designed for **Spec-Driven Development** usin
 
 Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup v2 and Podman rootless. Verified on Ubuntu 22.04+.
 
-> **Model access:** Ghostship defaults to `claude-haiku-5-5` on the kiro backend, which requires a Pro subscription or higher. (Crews on other backends resolve models via their own namespace — see [docs/configuration.md](docs/configuration.md).) See [kiro.dev/docs/models](https://kiro.dev/docs/models/) for available models by tier, and [docs/configuration.md](docs/configuration.md) to override.
+> **Model access:** Ghostship defaults to `claude-haiku-5.5` on the kiro backend, which requires a Pro subscription or higher. (Crews on other backends resolve models via their own namespace — see [docs/configuration.md](docs/configuration.md).) See [kiro.dev/docs/models](https://kiro.dev/docs/models/) for available models by tier, and [docs/configuration.md](docs/configuration.md) to override.
 
 ### Setup
 
@@ -141,7 +141,7 @@ Registered as `ghostship`:
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace. |
 | <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, git bundle, or directory tar (`pack=True`) from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
-| <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order. Built-in templates: `sdd` (drives named OpenSpec changes through the Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a name or comma-separated list) and `independent-review` (four concurrent reviewers — Wraith for docs, three Banshees for security/quality/test-coverage — mailing a consolidated report to the Admiral). |
+| <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order. Built-in templates: `sdd` (drives named OpenSpec changes through the Spectre → Ghost → Banshee → Reaper lifecycle; `change_name` accepts a name or comma-separated list), `independent-review` (four concurrent reviewers — Wraith for docs, three Banshees for security/quality/test-coverage — mailing a consolidated report to the Admiral), and `free-will` (alias: `willy`) — open-ended autonomous captaincy; pass `template="willy"` and `message=` together for any task without a structured lifecycle. |
 | <img src="docs/images/tool-schedule.png" width="256"> | `schedule` | Book, cancel, or list recurring tasks. `action="create"` with `cron`, `interval`, or `delay`; `action="cancel"` by job_id; `action="list"` returns all active jobs. |
 | <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas via the KiroCrew spawn API — lightweight, immediate, no persistent session attached. Returns a `task_id`. Pass `tasks=[...]` for atomic batch dispatch; response includes `batch_id` and per-task `task_ids`. By default (`slot=None`) enrolled persona agents route into their attested member DM slot (visible in the dashboard); pass `slot=False` to dispatch headless with no session (saves ~250 MB per slot process). |
 | <img src="docs/images/tool-steer.png" width="256"> | `steer` | Guide a running task or continue a completed one; `force=True` hard-stops before continuing. |
@@ -156,3 +156,5 @@ Registered as `ghostship`:
 - [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions, auth upgrade paths
 - [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
 - [docs/release-notes-0.8.1.md](docs/release-notes-0.8.1.md) — v0.8.1 release notes (hotfix + two feature additions)
+- [CHANGELOG.md#v090](CHANGELOG.md#v090) — v0.9.0 release notes
+- [CHANGELOG.md#v091](CHANGELOG.md#v091) — v0.9.1 release notes

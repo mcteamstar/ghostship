@@ -188,6 +188,7 @@ try:
         _dispatch_batch,
         _ensure_crew_running,
         _finish_crew_setup,
+        _gateway_error_detail,
         _initiate_claude_login,
         _initiate_codex_login,
         _initiate_login,
@@ -217,6 +218,7 @@ except ModuleNotFoundError:
         _dispatch_batch,
         _ensure_crew_running,
         _finish_crew_setup,
+        _gateway_error_detail,
         _initiate_claude_login,
         _initiate_codex_login,
         _initiate_login,
@@ -1286,6 +1288,25 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     except Exception:
         pass  # monitors may not be loaded yet (e.g. tests); skip silently
 
+    # Evict the per-crew asyncio.Lock from server._ensure_running_locks so
+    # nuked crew_ids do not accumulate indefinitely (the lock is recreated
+    # lazily on next access if the crew is re-launched).
+    try:
+        try:
+            from server import (  # container: flat /app/
+                _ensure_running_locks,
+                _ensure_running_locks_lock,
+            )
+        except ModuleNotFoundError:
+            from transport.server import (  # local dev
+                _ensure_running_locks,
+                _ensure_running_locks_lock,
+            )
+        with _ensure_running_locks_lock:
+            _ensure_running_locks.pop(crew_id, None)
+    except Exception:
+        pass  # server may not be loaded yet (e.g. tests); skip silently
+
     logger.info("Crew %s nuked", crew_id)
     return {"crew_id": crew_id, "status": "nuked", "container": container}
 
@@ -1308,16 +1329,21 @@ def captain(
     or Captain autopilot (a recurring Raven check-in drives the full cycle
     unattended). Captain is the autopilot path.
 
-    ``order`` requires exactly one of ``message`` or ``template``. A named
-    template is resolved before it is written to ``captain@localhost``;
+    ``order`` requires ``message`` or ``template`` (or both when using a template
+    that accepts a message, such as ``free-will``). A named template is resolved
+    before it is written to ``captain@localhost``;
     ``spec-driven-development`` (aliases: ``sdd``, ``specky``) is the built-in
     template and uses ``change_name`` to name the OpenSpec change it should
     drive — pass a comma-separated list for parallel multi-change execution
     with automatic worktree isolation.
     ``independent-review`` (alias: ``indy``) is the built-in review template;
     ``change_name`` is optional — when provided it scopes the review to that
-    change; when omitted it reviews the entire codebase. The resolved order
-    shares the same recurring Raven check-in as a hand-written message.
+    change; when omitted it reviews the entire codebase.
+    ``free-will`` (aliases: ``free``, ``willy``) is the open-ended autonomous
+    template — Raven executes the ``message`` instruction with full agent
+    autonomy and self-cancels on completion; pass both ``template="willy"``
+    and ``message=`` together. The resolved order shares the same recurring
+    Raven check-in as a hand-written message.
     ``stop`` pauses that check-in without deleting it, and ``status`` reports
     its durable state.
 
@@ -1331,11 +1357,14 @@ def captain(
     Args:
         crew_id: Which crew's Captain to manage. Required.
         action: One of ``order``, ``stop``, or ``status``.
-        message: Free-form standing order text.
+        message: Free-form standing order text. Required when no template is
+            given. Also accepted alongside ``free-will`` (and any template
+            that uses a ``<message>`` placeholder) to supply the instruction.
         template: Name of a built-in standing-order template. Available
             templates: ``spec-driven-development`` / ``sdd`` / ``specky``
             (single or multi-change lifecycle), ``independent-review`` /
-            ``indy`` (scoped or whole-codebase review).
+            ``indy`` (scoped or whole-codebase review), ``free-will`` /
+            ``free`` / ``willy`` (open-ended autonomous captaincy).
         change_name: Substitution value for a template. For ``sdd``, accepts
             a single change name or a comma-separated list for multi-change
             mode. For ``independent-review``, optional — omit to review the
@@ -1869,6 +1898,50 @@ def dispatch(
     return response
 
 
+def _response_body(exc: httpx.HTTPStatusError) -> str:
+    try:
+        return exc.response.text or ""
+    except Exception:
+        return ""
+
+
+def _is_steer_unsupported(exc: httpx.HTTPStatusError) -> bool:
+    """True when the run's backend refuses a mid-turn interrupt (claude, codex).
+
+    KiroCrew answers 502 ``steer_failed`` with a ``steer_unsupported`` detail and
+    asks for ``mode='follow_up'`` instead.
+    """
+    return exc.response.status_code == 502 and "steer_unsupported" in _response_body(exc)
+
+
+def _is_not_running(exc: httpx.HTTPStatusError) -> bool:
+    """True when the run finished between our status check and the steer (409 not_running)."""
+    return exc.response.status_code == 409 and "not_running" in _response_body(exc)
+
+
+def _is_session_starting(exc: httpx.HTTPStatusError) -> bool:
+    """True when the run is alive but its session hasn't registered yet (503 session_starting)."""
+    return exc.response.status_code == 503 and "session_starting" in _response_body(exc)
+
+
+def _steer_call(
+    crew: dict, crew_id: str, method: str, path: str, what: str, **kw: Any,
+) -> tuple[Any, dict | None, httpx.HTTPStatusError | None]:
+    """Make one gateway call for steer without letting it raise.
+
+    Returns ``(response, None, None)`` on success, or ``(None, error, exc)`` where
+    ``error`` is the caller-facing dict and ``exc`` is the gateway's
+    HTTPStatusError (``None`` when the crew was unresponsive instead).
+    """
+    try:
+        return _crew_api_with_recovery(crew, crew_id, method, path, **kw), None, None
+    except CrewUnresponsiveError as e:
+        return None, {"error": str(e)}, None
+    except httpx.HTTPStatusError as e:
+        detail, _ = _gateway_error_detail(e, crew)
+        return None, {"error": f"crew gateway rejected {what}.{detail}"}, e
+
+
 @_registry_guard
 def steer(
     task_id: str,
@@ -1883,10 +1956,15 @@ def steer(
     Use force=True to hard-stop a running task before resuming its session.
 
     For running tasks: redirects the agent — add constraints, correct
-    direction, provide new information. With ``force=True``, hard-stops the
+    direction, provide new information. On backends that cannot interrupt a
+    turn mid-flight (claude, codex) the message is queued instead and
+    delivered as a continuation when the current turn ends; the response then
+    reports ``action: "follow_up_queued"``, and the continuation appears as a
+    new task in ``pickup(crew_id=...)``. With ``force=True``, hard-stops the
     underlying process before resuming the same session with the message.
     For completed tasks: resumes the existing session via /continue —
     the agent picks up where it left off with full prior context intact.
+    A task that finishes while being steered is continued the same way.
     Sessions persist until the crew is nuked.
     Also: redirect, update, continue, follow up, add context.
 
@@ -1900,31 +1978,59 @@ def steer(
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
-    try:
-        s = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
-    except CrewUnresponsiveError as e:
-        return {"error": str(e)}
+
+    def _continue(action: str, what: str) -> dict:
+        r, err, _ = _steer_call(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
+                                what, json={"task": message})
+        if err:
+            return err
+        return {"task_id": r.get("id", task_id), "crew_id": crew_id,
+                "action": action, "message": message}
+
+    s, err, _ = _steer_call(crew, crew_id, "GET", f"/api/spawn/{task_id}",
+                            f"status lookup for task {task_id}")
+    if err:
+        return err
     if s.get("done", False):
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                          json={"task": message})
-        except CrewUnresponsiveError as e:
-            return {"error": str(e)}
-        return {"task_id": r.get("id", task_id), "crew_id": crew_id,
-                "action": "redeployed", "message": message}
+        return _continue("redeployed", f"continue for finished task {task_id}")
     if force:
-        try:
-            _crew_api_with_recovery(crew, crew_id, "DELETE", f"/api/spawn/{task_id}")
-            r = _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                          json={"task": message})
-        except CrewUnresponsiveError as e:
-            return {"error": str(e)}
-        return {"task_id": r.get("id", task_id), "crew_id": crew_id,
-                "action": "force_redeployed", "message": message}
-    try:
-        _crew_api_with_recovery(crew, crew_id, "POST", f"/api/spawn/{task_id}/steer", json={"message": message})
-    except CrewUnresponsiveError as e:
-        return {"error": str(e)}
+        _, err, _ = _steer_call(crew, crew_id, "DELETE", f"/api/spawn/{task_id}",
+                                f"force stop of task {task_id}")
+        if err:
+            return err
+        return _continue(
+            "force_redeployed",
+            f"resume of task {task_id} after force stop (the task is stopped and was not resumed)",
+        )
+
+    path = f"/api/spawn/{task_id}/steer"
+    _, err, exc = _steer_call(crew, crew_id, "POST", path,
+                              f"steer for running task {task_id}", json={"message": message})
+    if exc is not None and _is_not_running(exc):
+        # Finished between the status check and the steer: continue it instead.
+        return _continue("redeployed", f"continue for finished task {task_id}")
+    if exc is not None and _is_steer_unsupported(exc):
+        # The backend can't interrupt mid-turn: queue the message for delivery
+        # as a continuation once the current turn ends.
+        _, err, exc = _steer_call(crew, crew_id, "POST", path,
+                                  f"follow-up for running task {task_id}",
+                                  json={"message": message, "mode": "follow_up"})
+        if exc is not None and _is_not_running(exc):
+            return _continue("redeployed", f"continue for finished task {task_id}")
+        if err:
+            return err
+        return {"task_id": task_id, "crew_id": crew_id, "action": "follow_up_queued",
+                "message": message,
+                "note": "This backend can't interrupt a running turn; the message is "
+                        "delivered as a new continuation task when the current turn ends "
+                        "(see pickup(crew_id=...)). Use force=True to stop it now."}
+    if err:
+        if exc is not None and _is_session_starting(exc):
+            err["hint"] = ("The task's session is still starting; retry once it has made "
+                           "a tool call. force=True would stop it instead.")
+        elif exc is not None:
+            err["hint"] = "steer(..., force=True) stops the task and resumes its session with the message."
+        return err
     return {"task_id": task_id, "crew_id": crew_id, "action": "steered", "message": message}
 
 

@@ -154,6 +154,14 @@ The middleware SHALL track request counts per caller identity and return HTTP 42
 - **WHEN** a request path starts with `/mcp`
 - **THEN** the `mcp` limiter is applied
 
+#### Scenario: GET /dashboard/auth is matched to dashboard_auth limiter
+- **WHEN** a `GET /dashboard/auth` request arrives
+- **THEN** the `dashboard_auth` limiter is applied
+
+#### Scenario: POST /dashboard/login is matched to dashboard_auth limiter
+- **WHEN** a `POST /dashboard/login` request arrives
+- **THEN** the `dashboard_auth` limiter is applied
+
 ### Requirement: BearerAuthMiddleware enforces static API-key authentication
 
 When `api_key` is non-empty, all HTTP requests (except public paths) SHALL require exactly one well-formed `Authorization: Bearer <key>` header matching the configured key. Requests with missing, duplicate, malformed, or wrong tokens SHALL receive HTTP 401. The `/health` path SHALL always pass through. When `api_key` is empty the bearer check SHALL be skipped entirely.

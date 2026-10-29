@@ -481,13 +481,16 @@ def _captain_do_order(
     """
     has_message = message is not None
     has_template = template is not None
-    if has_message == has_template:
-        return {"error": "order requires exactly one of message or template"}
+    if not has_message and not has_template:
+        return {"error": "order requires message or template (or both when the template accepts a message)"}
+    if has_message and not has_template:
+        # Raw message path — no template
+        pass
     if cron is not None and interval is not None:
         return {"error": "Provide cron or interval, not both"}
     if has_template:
         try:
-            order_message = _resolve_order_template(template, change_name)
+            order_message = _resolve_order_template(template, change_name, message=message)
         except ValueError as exc:
             return {"error": str(exc)}
     else:

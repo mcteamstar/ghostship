@@ -1140,11 +1140,6 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
       GA_BATCH_MAX_TASKS: "${GA_BATCH_MAX_TASKS:-20}"
       GA_PICKUP_MAX_POLL_SECS: "${GA_PICKUP_MAX_POLL_SECS:-30}"
       GA_CREW_AGENT: "${GA_CREW_AGENT:-kiro}"
-      # Backend credentials (Anthropic/OpenAI API keys, the Claude OAuth token
-      # and KIRO_API_KEY) are NOT delivered here. They are managed out of band
-      # with `ghostship auth login` and resolved per launch from the credential
-      # store (TRN-233); the installer neither reads nor mounts them. Only the
-      # non-secret base URLs remain in the environment.
       ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
       OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
       KIRO_IDENTITY_PROVIDER: "${KIRO_IDENTITY_PROVIDER:-}"

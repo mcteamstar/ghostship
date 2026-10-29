@@ -216,42 +216,74 @@ class TestSteerTool(unittest.TestCase):
         except Exception:
             pass
 
-    def test_steer_running_task_returns_ok(self):
-        # Dispatch a task that will definitely still be running when we steer it.
-        # Using pickup with timeout_secs polls the gateway — the task won't
-        # complete before our steer call since it has to start the agent first.
+    def _wait(self, task_id, until, timeout):
+        deadline = time.time() + timeout
+        status = {}
+        while time.time() < deadline:
+            status = _mcp_call("pickup", crew_id=self.CREW_ID, task_id=task_id)
+            if until(status):
+                return status
+            time.sleep(3)
+        self.fail(f"Task {task_id} did not reach the expected state in {timeout}s: {status}")
+
+    def test_steer_running_task_changes_course(self):
+        # A run of separate tool calls keeps the task mid-turn long enough to
+        # steer it, and gives the agent a point between calls to act on it.
         dispatch = _mcp_call(
             "dispatch",
             crew_id=self.CREW_ID,
             agent="ghost",
-            task="Wait 25 seconds before doing anything, then say DONE.",
+            task=(
+                "Run `sleep 8` with the shell tool, 10 times, as 10 separate tool "
+                "calls (never combine them). After each call, say which number call "
+                "it was. If you receive a new instruction, follow it."
+            ),
         )
         task_id = dispatch.get("task_id")
         self.assertIsNotNone(task_id)
 
-        # Poll until the task is actually running (done=false, elapsed > 0)
-        print(f"[e2e] waiting for task {task_id} to start...", flush=True)
-        deadline = time.time() + 30
-        started = False
-        while time.time() < deadline:
-            status = _mcp_call("pickup", crew_id=self.CREW_ID, task_id=task_id)
-            if not status.get("done") and status.get("elapsed_secs", 0) > 0:
-                print(f"[e2e] task running ({status.get('elapsed_secs')}s), steering...", flush=True)
-                started = True
-                break
-            time.sleep(2)
+        # Steer only once the agent is really working (a tool has run). Elapsed
+        # time alone isn't enough: a kiro session can take minutes to start,
+        # and a steer before then is refused with session_starting.
+        print(f"[e2e] waiting for task {task_id} to make a tool call...", flush=True)
+        self._wait(task_id, lambda s: s.get("done") or s.get("last_tool"), timeout=300)
 
-        self.assertTrue(started, f"Task {task_id} never started within 30s")
-
-        # Steer — verify the transport accepted the call with the right shape
-        steer_result = _mcp_call(
-            "steer",
-            task_id=task_id,
-            crew_id=self.CREW_ID,
-            message="Actually just say DONE immediately.",
-        )
+        token = f"STEERED-{task_id[:6].upper()}"
+        message = f"New instruction: stop the sleep calls now and reply with exactly {token}."
+        steer_result = _mcp_call("steer", task_id=task_id, crew_id=self.CREW_ID, message=message)
         self.assertFalse(_is_error(steer_result), f"Steer returned error: {steer_result}")
-        self.assertIn("task_id", steer_result, f"No task_id in steer response: {steer_result}")
+        action = steer_result.get("action")
+        self.assertIn(action, ("steered", "follow_up_queued", "redeployed"), steer_result)
+        print(f"[e2e] steer action: {action}", flush=True)
+
+        # The agent must act on the message, not just have it accepted: a 200
+        # that was silently dropped is what hid this bug before.
+        if action == "redeployed":
+            # The task finished before the steer landed, so steer continued its
+            # session as a new task; that task must carry the instruction out.
+            result = self._wait(steer_result["task_id"], lambda s: s.get("done"), timeout=180)
+            self.assertIn(token, result.get("result", ""), f"Continuation was not acted on: {result}")
+            return
+        final = self._wait(task_id, lambda s: s.get("done"), timeout=300)
+        if action == "steered":
+            self.assertIn(token, final.get("result", ""), f"Interrupt steer was not acted on: {final}")
+            return
+
+        # follow_up_queued: the message runs as a new continuation task once
+        # the original turn ends.
+        deadline = time.time() + 120
+        follow_up = None
+        while time.time() < deadline and follow_up is None:
+            listing = _mcp_call("pickup", crew_id=self.CREW_ID)
+            follow_up = next(
+                (t for t in listing.get("tasks", []) if t.get("task", "").startswith(message[:60])),
+                None,
+            )
+            if follow_up is None:
+                time.sleep(3)
+        self.assertIsNotNone(follow_up, "Follow-up continuation task never appeared")
+        result = self._wait(follow_up["task_id"], lambda s: s.get("done"), timeout=180)
+        self.assertIn(token, result.get("result", ""), f"Follow-up was not acted on: {result}")
 
     def test_steer_nonexistent_task(self):
         result = _mcp_call(

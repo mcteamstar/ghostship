@@ -404,12 +404,12 @@ class TestResolveOrderTemplate(unittest.TestCase):
     the test does not depend on any on-disk template's exact token.
     """
 
-    def _resolve(self, body, change_name):
+    def _resolve(self, body, change_name, message=None):
         import transport.captain as captain
         with patch.object(
             captain, "_load_order_template", return_value=("desc", body)
         ):
-            return captain._resolve_order_template("ctrl", change_name)
+            return captain._resolve_order_template("ctrl", change_name, message=message)
 
     def test_change_with_valid_name_injected(self):
         result = self._resolve("implement <change> now", "trn-245-test")
@@ -438,6 +438,24 @@ class TestResolveOrderTemplate(unittest.TestCase):
         import transport.captain as captain
         with self.assertRaises(ValueError):
             captain._resolve_order_template(None, "trn-245-test")
+
+    def test_message_placeholder_substituted(self):
+        result = self._resolve("Standing order: <message>", None, message="investigate disk usage")
+        self.assertIn("investigate disk usage", result)
+        self.assertNotIn("<message>", result)
+
+    def test_message_placeholder_without_message_raises(self):
+        with self.assertRaises(ValueError):
+            self._resolve("Standing order: <message>", None, message=None)
+
+    def test_message_placeholder_with_empty_message_raises(self):
+        with self.assertRaises(ValueError):
+            self._resolve("Standing order: <message>", None, message="")
+
+    def test_no_message_placeholder_message_ignored(self):
+        # Templates that don't use <message> accept message= without error
+        result = self._resolve("do the thing", None, message="ignored")
+        self.assertEqual(result.strip(), "do the thing")
 
 
 # ── 7.1 _captain_standing_view ──────────────────────────────────────────────────

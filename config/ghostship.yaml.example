@@ -126,7 +126,7 @@ model:
   # Precedence (highest → lowest):
   #   dispatch(model=…) > backends.<b>.model.override > per-agent
   #     > backends.<b>.model.default > model.default > built-in
-  default: "claude-haiku-5-5"
+  default: ""
 
 # ── Backends ──────────────────────────────────────────────────────────────────
 
@@ -145,7 +145,8 @@ backends:
     #   override — forces ALL kiro agents to this model, ignoring per-agent
     #              config. Use when a backend only supports a specific model set.
     #   default  — fallback for kiro agents with no per-agent model set
-    #              (more specific than the global model.default).
+    #              (more specific than the global model.default). Kiro uses
+    #              dotted model IDs (claude-haiku-5.5, not claude-haiku-5-5).
     model:
       override: ""
       default: ""
@@ -158,6 +159,8 @@ backends:
 
   claude:
     # Per-backend model control for claude crews (see kiro.model above).
+    # Claude Code's native model IDs are hyphenated (claude-haiku-5-5); it
+    # also accepts the dotted kiro form (claude-haiku-5.5) the personas use.
     model:
       override: ""
       default: ""

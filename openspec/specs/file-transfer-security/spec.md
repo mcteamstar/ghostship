@@ -201,3 +201,65 @@ file-upload HTTP handlers) SHALL produce an audit event. The event SHALL record 
 - **WHEN** a file-handler request presents a token whose `expires` timestamp is in the past
 - **THEN** an audit event with `action="verify_file_token"` and `outcome="expired"` is recorded
 
+### Requirement: Gateway error response body is redacted before surfacing to callers
+Any transport function that surfaces an HTTP error response body from a crew gateway call to an MCP tool caller SHALL redact credential and session material from the body text. At minimum the following patterns SHALL be replaced with a `[redacted]` placeholder before the text reaches any log line or tool response: the crew's session cookie value, `mc_token_<port>=<value>` substrings, any `Authorization: Bearer <value>` substring, and cookie attribute values for `gs_session` and `gs_csrf`. Whitespace SHALL be collapsed and the body SHALL be truncated to a bounded maximum before emission.
+
+#### Scenario: Crew cookie is redacted from gateway error body
+- **WHEN** a crew gateway returns an HTTP error response whose body contains the crew's session cookie value
+- **THEN** the error text surfaced to the MCP caller does not contain the raw cookie value; it is replaced with `[redacted]`
+
+#### Scenario: mc_token cookie is redacted from gateway error body
+- **WHEN** a crew gateway returns an HTTP error response whose body contains a `mc_token_<port>=<value>` substring
+- **THEN** the error text surfaced to the MCP caller replaces the value with `mc_token=[redacted]`
+
+#### Scenario: Authorization Bearer value is redacted from gateway error body
+- **WHEN** a crew gateway returns an HTTP error response whose body contains an `Authorization: Bearer <token>` substring
+- **THEN** the error text surfaced to the MCP caller does not contain the raw token value; the Bearer value is replaced with `[redacted]`
+
+#### Scenario: gs_session cookie value is redacted from gateway error body
+- **WHEN** a crew gateway returns an HTTP error response whose body contains a `gs_session=<value>` cookie substring
+- **THEN** the error text surfaced to the MCP caller does not contain the raw session token; it is replaced with `[redacted]`
+
+#### Scenario: gs_csrf cookie value is redacted from gateway error body
+- **WHEN** a crew gateway returns an HTTP error response whose body contains a `gs_csrf=<value>` cookie substring
+- **THEN** the error text surfaced to the MCP caller does not contain the raw CSRF token; it is replaced with `[redacted]`
+
+#### Scenario: Body is truncated to a bounded maximum
+- **WHEN** a crew gateway returns an HTTP error response with a body longer than the configured maximum
+- **THEN** the body is truncated to that maximum length before being surfaced to the caller, regardless of redaction
+
+#### Scenario: Body with no sensitive material passes through (redacted only)
+- **WHEN** a crew gateway returns an HTTP error response whose body contains no credential or session material
+- **THEN** the error text surfaced to the caller is the (possibly truncated) raw body text with whitespace collapsed, unchanged by the redaction pass
+
+
+### Requirement: HMAC sign/verify machinery has direct unit tests
+
+`tests/unit/test_files.py` SHALL include direct tests for the HMAC token signing
+and verification functions in `transport/files.py`, covering:
+
+- A valid signed URL verifies successfully
+- A tampered signature is rejected
+- An expired token is rejected
+- A token signed for GET cannot be used on a PUT (mode mismatch)
+- Path-traversal attempts are rejected by `_safe_workspace_path`
+
+#### Scenario: Valid signed URL verifies
+- **WHEN** a URL is signed with `_sign_file_url` and verified with `_verify_file_token`
+- **THEN** verification succeeds and returns the expected payload
+
+#### Scenario: Tampered signature is rejected
+- **WHEN** the `sig` query parameter is modified after signing
+- **THEN** `_verify_file_token` raises or returns a failure
+
+#### Scenario: Expired token is rejected
+- **WHEN** a token is signed with an expiry in the past
+- **THEN** `_verify_file_token` rejects it
+
+#### Scenario: Mode mismatch is rejected
+- **WHEN** a token signed for GET method is used in a PUT request
+- **THEN** `_verify_file_token` rejects it
+
+#### Scenario: Path traversal is rejected
+- **WHEN** a path containing `../` or absolute path components is passed to `_safe_workspace_path`
+- **THEN** the function raises or returns a safe rejection

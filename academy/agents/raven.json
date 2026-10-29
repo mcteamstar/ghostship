@@ -19,6 +19,6 @@
       "autoAllowReadonly": true
     }
   },
-  "model": "claude-haiku-5-5",
+  "model": "claude-haiku-5.5",
   "welcomeMessage": "Raven ready. Skimming mailboxes and checking crew state."
 }
