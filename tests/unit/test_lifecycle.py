@@ -894,3 +894,260 @@ class TestInjectAuthStdin(unittest.TestCase):
                 stdin_data = call[3]
                 self.assertIn(auth_b64.encode("utf-8"), stdin_data,
                     "auth_b64 not found in stdin_data bytes")
+
+
+# ── TRN-283: New regression tests ────────────────────────────────────────────
+
+# ── Task 1.2: H-1 _refresh_cookie atomic cookie update ───────────────────────
+
+class TestRefreshCookieAtomic(unittest.TestCase):
+    """TRN-283 H-1: after _refresh_cookie, the crew dict's cookie matches the
+    registry (no observable stale-cookie window)."""
+
+    def setUp(self):
+        import transport.lifecycle as life
+        import transport.registry as reg_mod
+        from tests.fakes import FakePodmanClient
+
+        self.life = life
+        self.reg_mod = reg_mod
+        self.podman = FakePodmanClient()
+        self.podman.add_container("gs-test", running=True)
+
+        # Stable backing dict so registry writes persist across context-manager
+        # enters (same helper used by _EnsureRunningBase).
+        self.crews = _patch_registry_backing(self, reg_mod, {
+            CREW_ID: {
+                "container": "gs-test",
+                "cookie": "old-cookie",
+                "status": "running",
+            },
+        })
+
+        NEW_COOKIE = "fresh-cookie-abc"
+        self._patchers = [
+            patch.object(life, "_get_podman", return_value=self.podman),
+            patch.object(life, "_mint_cookie", return_value=NEW_COOKIE),
+            patch.object(life, "_mint_internal_cookie", return_value=None),
+            patch.object(life, "_write_dashboard_cookie", return_value=False),
+        ]
+        for p in self._patchers:
+            p.start()
+        self.addCleanup(self._stop_all)
+        self.new_cookie = NEW_COOKIE
+
+    def _stop_all(self):
+        for p in self._patchers:
+            p.stop()
+
+    def test_cookie_in_dict_matches_registry_after_refresh(self):
+        """H-1: crew['cookie'] and registry cookie are both updated atomically."""
+        crew = dict(self.crews[CREW_ID])
+        from transport.lifecycle import _refresh_cookie
+        result = _refresh_cookie(crew, CREW_ID)
+        self.assertTrue(result, "_refresh_cookie should return True on success")
+        # The crew dict passed by reference is updated in-place.
+        self.assertEqual(
+            crew["cookie"], self.new_cookie,
+            "crew dict cookie not updated by _refresh_cookie",
+        )
+        # The registry entry is updated under the same lock.
+        self.assertEqual(
+            self.crews[CREW_ID]["cookie"], self.new_cookie,
+            "registry cookie not updated by _refresh_cookie",
+        )
+        # Both must match — no stale-cookie window.
+        self.assertEqual(
+            crew["cookie"], self.crews[CREW_ID]["cookie"],
+            "crew dict and registry cookie diverged (H-1 race window present)",
+        )
+
+
+# ── Tasks 2.3 & 2.4: H-2 _reconcile_registry timestamp guard ─────────────────
+
+class TestReconcileRegistryTimestampGuard(unittest.TestCase):
+    """TRN-283 H-2: _reconcile_registry write-back skips deletion when a
+    concurrent re-registration has changed the created_at timestamp."""
+
+    def setUp(self):
+        import transport.lifecycle as life
+        import transport.registry as reg_mod
+        from tests.fakes import FakePodmanClient
+
+        self.life = life
+        self.reg_mod = reg_mod
+        self.podman = FakePodmanClient()
+        self._patchers: list = []
+
+    def _seed(self, crews: dict) -> dict:
+        return _patch_registry_backing(self, self.reg_mod, crews)
+
+    def _stop_all(self):
+        for p in self._patchers:
+            p.stop()
+
+    def tearDown(self):
+        self._stop_all()
+
+    def _patch_lifecycle(self, extra_patches: list | None = None):
+        """Patch lifecycle collaborators to make _reconcile_registry runnable."""
+        life = self.life
+        self._patchers = [
+            patch.object(life, "_get_podman", return_value=self.podman),
+            patch.object(life, "_sweep_expired_logins"),
+            patch.object(life, "_deployed_agent_names", return_value=[]),
+            patch.object(life, "_enroll_crew_members"),
+        ]
+        if extra_patches:
+            self._patchers.extend(extra_patches)
+        for p in self._patchers:
+            p.start()
+
+    def test_concurrent_reregistration_skips_deletion(self):
+        """H-2: if created_at changed between snapshot and write-back, don't delete."""
+        import copy
+        CREW_X = "crew-x"
+        ORIGINAL_CREATED_AT = "2026-01-01T00:00:00+00:00"
+        NEW_CREATED_AT = "2026-10-01T12:00:00+00:00"
+
+        # Seed the backing dict with deep copies so the snapshot shallow-copy
+        # in _reconcile_registry does not alias the live entries. Without this,
+        # mutating the backing dict during the loop also mutates the snapshot's
+        # info dict and defeats the timestamp guard test.
+        entry = {
+            "container": "gs-crew-x",
+            "cookie": "abc",
+            "status": "stopped",
+            "created_at": ORIGINAL_CREATED_AT,
+        }
+        crews = self._seed({CREW_X: copy.deepcopy(entry)})
+
+        from transport.lifecycle import _reconcile_registry
+
+        self._patch_lifecycle()
+
+        # Simulate concurrent re-registration: when container_exists is called
+        # (between snapshot and write-back in the reconcile loop), update the
+        # live registry entry's created_at to a NEW value. The snapshot already
+        # captured ORIGINAL_CREATED_AT before this call, so the guard fires.
+        # Use an attribute on the wrapper so it only fires once (idempotent).
+        original_exists = self.podman.container_exists
+        _mutated = [False]
+
+        def _exists_and_update(name):
+            result = original_exists(name)
+            if name == "gs-crew-x" and not _mutated[0]:
+                _mutated[0] = True
+                # Update the LIVE backing dict entry's created_at.
+                crews[CREW_X]["created_at"] = NEW_CREATED_AT
+            return result
+
+        self.podman.container_exists = _exists_and_update
+
+        _reconcile_registry()
+
+        # The crew must NOT have been deleted because created_at changed
+        # (concurrent re-registration detected).
+        self.assertTrue(
+            _mutated[0],
+            "side effect never fired — test setup issue",
+        )
+        self.assertIn(
+            CREW_X, crews,
+            "H-2: crew was deleted despite concurrent re-registration (created_at changed)",
+        )
+
+    def test_no_concurrent_reregistration_deletes_gone_crew(self):
+        """H-2 normal path: crew whose container is gone and created_at unchanged is removed."""
+        CREW_X = "crew-x"
+        CREATED_AT = "2026-01-01T00:00:00+00:00"
+
+        # Container does NOT exist → should be removed. created_at does not change.
+        crews = self._seed({
+            CREW_X: {
+                "container": "gs-crew-x",
+                "cookie": "abc",
+                "status": "stopped",
+                "created_at": CREATED_AT,
+            },
+        })
+
+        from transport.lifecycle import _reconcile_registry
+        self._patch_lifecycle()
+        _reconcile_registry()
+
+        # The crew MUST be removed because its container is gone and created_at
+        # was not changed by a concurrent re-registration.
+        self.assertNotIn(
+            CREW_X, crews,
+            "H-2 normal path: gone crew was NOT removed from registry",
+        )
+
+
+# ── Task 3.3: H-3 ensure_running single-lock election ────────────────────────
+
+class TestEnsureRunningOneStartPerCrew(_EnsureRunningBase):
+    """TRN-283 H-3: two threads both entering ensure_running for the same crew
+    simultaneously must start the container exactly once."""
+
+    def test_two_threads_start_container_exactly_once(self):
+        """H-3: concurrent ensure_running calls elect one leader; container
+        is restarted exactly once (one restart cycle, not two)."""
+        # The ensure_running restart cycle calls container_start twice per cycle:
+        # once for the initial start, then again after re-patching config.
+        # One leader running one restart cycle → 2 container_start calls total.
+        # Two leaders each running a restart cycle → 4 calls total.
+        # We assert exactly 2 calls, proving only one restart cycle ran.
+        starts: list = []
+        real_start = self.podman.container_start
+        leader_started = threading.Event()
+
+        def _slow_counting_start(name):
+            starts.append(name)
+            if len(starts) == 1:
+                # Signal on the first start so the second thread enters
+                # ensure_running while the leader is mid-restart.
+                leader_started.set()
+                import time as _time
+                _time.sleep(0.25)
+            real_start(name)
+
+        self.podman.container_start = _slow_counting_start
+
+        results: list = []
+        errors: list = []
+
+        def _call():
+            try:
+                crew = dict(self.crews[CREW_ID])
+                results.append(self.launcher.ensure_running(crew, CREW_ID))
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_call)
+        t2 = threading.Thread(target=_call)
+        t1.start()
+        # Give t1 a moment to enter ensure_running and register as leader.
+        leader_started.wait(timeout=5)
+        t2.start()
+
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        self.assertFalse(t1.is_alive(), "t1 did not finish")
+        self.assertFalse(t2.is_alive(), "t2 did not finish")
+
+        self.assertEqual(errors, [], f"unexpected errors: {errors}")
+        self.assertEqual(len(results), 2, f"expected two results, got {results}")
+
+        # One restart cycle calls container_start exactly twice (initial start +
+        # post-config-patch restart). Two restart cycles would be 4 calls.
+        # Assert exactly 2: only one restart cycle ran.
+        self.assertEqual(
+            len(starts), 2,
+            f"container_start called {len(starts)} time(s); expected 2 (one restart cycle). "
+            f"If 4, two restart cycles ran (H-3 election race not fixed).",
+        )
+        # Both callers returned a crew dict (not the nuked sentinel).
+        for r in results:
+            self.assertIsInstance(r, dict)
+        self.assertEqual(self.crews[CREW_ID]["status"], "running")
