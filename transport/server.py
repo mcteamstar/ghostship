@@ -1595,6 +1595,7 @@ LIGHTHOUSE_HTML = """\
     a:hover { text-decoration: underline; }
     .spinner { display: inline-block; animation: spin 1s linear infinite; }
     .empty-cell { text-align: center; color: #64748b; }
+    .hidden { display: none; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -1691,7 +1692,7 @@ LIGHTHOUSE_HTML = """\
           "</tr>" +
           /* placeholder detail row — hidden by default */
           "<tr class=\\"detail-row\\" id=\\"detail-" + esc(crew.crew_id) + "\\" " +
-          "style=\\"display:none;\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">" +
+          "class=\\"hidden\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">" +
           "Loading details&hellip;</div></td></tr>"
         );
       });
@@ -1703,11 +1704,11 @@ LIGHTHOUSE_HTML = """\
           const crewId  = tr.getAttribute("data-crew-id");
           const detailTr = document.getElementById("detail-" + crewId);
           if (!detailTr) return;
-          if (detailTr.style.display === "none") {
-            detailTr.style.display = "";
+          if (detailTr.classList.contains("hidden")) {
+            detailTr.classList.remove("hidden");
             loadDetail(crewId, detailTr.querySelector(".detail-inner"));
           } else {
-            detailTr.style.display = "none";
+            detailTr.classList.add("hidden");
           }
         });
       });
