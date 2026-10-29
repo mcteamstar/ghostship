@@ -73,4 +73,5 @@
 
 - [x] 6.1 Run `bash scripts/run.sh --unit` — all tests pass.
 - [x] 6.2 Confirm new test file count: `ls tests/unit/test_*.py | wc -l` should be
-  37 (adding test_podman.py and test_tools.py to the current 35).
+  36 (adding test_podman.py and test_tools.py to the pre-TRN-284 baseline of 34;
+  the original estimate of 35 was off by one — there were 34 test files, not 35).
