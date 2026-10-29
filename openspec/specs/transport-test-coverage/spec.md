@@ -151,6 +151,14 @@ The test suite SHALL exercise every branch of `_reconcile_registry` using a mock
 - **WHEN** `_reconcile_registry` runs AND a registry entry has status "launching" but the container does not exist
 - **THEN** that entry is removed from the registry
 
+#### Scenario: _mint_cookie returns a non-empty token and stores it in the registry
+- **WHEN** `_mint_cookie` is called for a running crew
+- **THEN** it returns a non-empty token string and the token is written into the registry entry for that crew
+
+#### Scenario: _refresh_cookie updates the in-memory entry atomically
+- **WHEN** `_refresh_cookie` is called while a crew is active
+- **THEN** the registry entry's cookie field is updated atomically without a window where a stale cookie is observable (regression guard for H-1 fix)
+
 ### Requirement: _idle_monitor test coverage
 
 The test suite SHALL exercise `_idle_monitor` single-iteration logic using
@@ -510,6 +518,14 @@ The test suite SHALL exercise the three captain schedule type branches in `_rese
 - **WHEN** `_reseed_crew_schedules` runs and the captain schedule has no `current_task_id`
 - **THEN** `_dispatch_captain_checkin` is called to start a fresh check-in
 
+#### Scenario: Captain schedule in registry is re-registered after simulated restart
+- **WHEN** `_reseed_crew_schedules` runs after a transport restart and a captain schedule entry is present in the registry
+- **THEN** that schedule entry is re-registered with the gateway
+
+#### Scenario: Missing schedule entry is skipped without error
+- **WHEN** `_reseed_crew_schedules` runs and a crew has no schedule entry in the registry
+- **THEN** no exception is raised and the crew is silently skipped
+
 ### Requirement: _append_captain_mail I/O path test coverage
 The test suite SHALL exercise `_append_captain_mail` with a mock `container_exec`, covering: signing secret present → signed mail written with valid `X-Admiral-Sig` header; no signing secret → unsigned mail written. Related mailbox read helpers (`_mail_count`, `_read_all_mail_counts`, `_skim_all_mailboxes`) SHALL be tested with mock tar archive responses.
 
@@ -821,6 +837,21 @@ as unit tests with no I/O, no live server, and no Podman dependency.
 - **WHEN** `_cookie_near_expiry` is called with a JWT whose expiry is well beyond the near-expiry threshold
 - **THEN** it returns `False`
 
+#### Scenario: Crew API proxy handler returns 404 on unknown crew
+
+- **WHEN** the crew API proxy handler receives a request for a crew ID not present in the registry
+- **THEN** it returns HTTP 404
+
+#### Scenario: Crew API proxy handler constructs correct upstream URL
+
+- **WHEN** the crew API proxy handler proxies a request for a known crew
+- **THEN** the upstream URL uses the crew's registered host and port
+
+#### Scenario: UI proxy handler refreshes cookie when gs_session is missing
+
+- **WHEN** the UI proxy handler receives a request with no `gs_session` cookie
+- **THEN** a cookie-refresh is attempted before proxying
+
 ### Requirement: Health endpoint unit test coverage
 
 The transport health endpoint SHALL be testable by importing the handler
@@ -867,3 +898,96 @@ security-relevant path, with a named failure mode the test guards.
 #### Scenario: test_openapi.py exists and passes
 - **WHEN** `pytest tests/unit/test_openapi.py` is run
 - **THEN** all tests pass with no errors
+
+#### Scenario: files.py path-traversal is rejected
+- **WHEN** `_safe_workspace_path` is called with a path such as `../../etc/passwd` that resolves outside the workspace root
+- **THEN** the path is rejected without accessing the filesystem
+
+#### Scenario: files.py HMAC token expiry is rejected
+- **WHEN** an upload request carries an expired HMAC token
+- **THEN** the upload is rejected with an appropriate error response
+
+#### Scenario: files.py HMAC mode-mismatch is rejected
+- **WHEN** an upload request carries a valid HMAC token but for a different operation mode
+- **THEN** the upload is rejected
+
+#### Scenario: files.py git-bundle clone fallback is exercised
+- **WHEN** `_transfer_upload` is called and the direct upload fails
+- **THEN** the git-bundle clone fallback path is attempted
+
+### Requirement: PodmanClient has dedicated unit tests
+
+`transport/podman.py` SHALL have a dedicated `tests/unit/test_podman.py` that
+exercises PodmanClient against a mock or patched HTTP transport. Key paths covered
+SHALL include container create/start/stop/inspect, `container_exec_stdin`, archive
+put/get, network create/connect/disconnect, volume create/remove, and error handling
+(HTTP 500, malformed JSON, socket failure).
+
+`FakePodmanClient` in `conftest.py` SHALL be verified to implement the same interface
+as the real `PodmanClient` (same method signatures and return shapes for all methods
+it stubs).
+
+#### Scenario: PodmanClient error paths produce structured exceptions
+- **WHEN** the Podman socket returns HTTP 500 for a container operation
+- **THEN** PodmanClient raises a typed exception (not a bare dict or silent None)
+
+#### Scenario: FakePodmanClient matches real PodmanClient interface
+- **WHEN** FakePodmanClient is instantiated in tests
+- **THEN** it exposes the same public methods as PodmanClient with compatible signatures
+
+### Requirement: tools.py MCP API surface has dedicated unit tests
+
+`transport/tools.py` SHALL have a dedicated `tests/unit/test_tools.py` covering:
+- `nuke()` with `confirm=True` and `confirm=False`
+- `schedule()` validation: missing name, invalid interval, cancel non-existent job
+- `dispatch()` error paths: crew not found, gateway unreachable
+- `_schedule_cancel` success and not-found paths
+- `resource_agents` and `resource_jobs` MCP resource handlers
+- `supply` / `evac` / `pickup` branch coverage for stopped and running crews
+
+#### Scenario: nuke() requires explicit confirmation
+- **WHEN** `nuke(crew_id="x", confirm=False)` is called
+- **THEN** no container operation is performed and a preview response is returned
+
+#### Scenario: dispatch() returns structured error on crew-not-found
+- **WHEN** `dispatch(crew_id="nonexistent", ...)` is called
+- **THEN** the response contains an `error` field describing the failure
+
+### Requirement: captain_engine.py dispatch and steer paths have unit tests
+
+`tests/unit/test_captain_engine.py` SHALL cover:
+- `_dispatch_captain_checkin` with memory pressure skip and model override
+- `_steer_captain_checkin` with 400-continue branch and non-400 error
+- `_captain_do_order` for interval vs cron schedule, and re-order of existing schedule
+- `_record_memory_pressure_cycle` escalation at threshold boundary
+
+#### Scenario: Memory pressure skips dispatch
+- **WHEN** `_dispatch_captain_checkin` is called and host memory is below threshold
+- **THEN** no spawn call is made and `immediate_dispatch_error` starts with `memory_pressure:`
+
+#### Scenario: Claude backend model override is respected
+- **WHEN** `_dispatch_captain_checkin` is called for a crew with `acp_backend="claude"` and a configured default model
+- **THEN** the spawn request uses the crew model, not the raven.json model
+
+#### Scenario: _steer_captain_checkin 400-on-continue falls back to interrupt steer
+- **WHEN** `_crew_api` raises `httpx.HTTPStatusError` with status 400 on `/continue`
+- **THEN** a steer (interrupt) call is attempted instead
+
+#### Scenario: _captain_do_order re-order of existing schedule does not duplicate
+- **WHEN** `_captain_do_order` is called when a captain entry already exists in the registry
+- **THEN** the existing entry is updated, not duplicated
+
+### Requirement: academy.py composition registry has error-path tests
+
+`tests/unit/test_academy.py` SHALL cover:
+- `_load_composition_registry` with missing file (returns default compositions)
+- `_load_composition_registry` with malformed JSON (logs error, returns default)
+- `AcademyLoader._stage_mcp` with `${VAR}` substitution and missing variable
+
+#### Scenario: _load_composition_registry returns defaults on missing file
+- **WHEN** `_load_composition_registry` is called and the registry file does not exist
+- **THEN** it returns the default compositions without raising
+
+#### Scenario: _load_composition_registry returns defaults on malformed JSON
+- **WHEN** `_load_composition_registry` is called and the registry file contains malformed JSON
+- **THEN** it logs an error and returns the default compositions
