@@ -391,5 +391,50 @@ class TestHandleHealth(unittest.TestCase):
         self.assertIn("http.response.body", types_)
 
 
+# ── TestCrewApiProxy404OnUnknownCrew (TRN-284 task 5.1) ──────────────────────
+
+class TestCrewApiProxyUnknownCrew(unittest.TestCase):
+    """_handle_crew_api_proxy returns 404 when the crew_id is unknown.
+
+    TRN-284 task 5.1: verify the crew API proxy handler returns 404 for a
+    crew_id that is not present in the registry.
+    """
+
+    def _handler(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s._handle_crew_api_proxy
+
+    def test_unknown_crew_returns_404(self):
+        """GET /crews/unknown-xyz/api/spawn should return 404."""
+        from unittest.mock import patch, MagicMock
+        import transport.registry as _reg_mod
+
+        handler = self._handler()
+
+        scope = _make_scope("GET", "/crews/unknown-xyz/api/spawn")
+        messages, send = _collect_send()
+
+        async def _invoke():
+            from starlette.requests import Request
+            req = Request(scope, _receive)
+            resp = await handler(req)
+            await resp(scope, _receive, send)
+
+        # Patch _require_crew to raise KeyError (crew not found)
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+
+        with patch.object(_s, "_require_crew", side_effect=KeyError("unknown-xyz")):
+            _run(_invoke())
+
+        status = _status_of(messages)
+        self.assertEqual(status, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

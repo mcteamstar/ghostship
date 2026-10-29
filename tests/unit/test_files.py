@@ -218,6 +218,17 @@ class TestSafeWorkspacePath(unittest.TestCase):
             result = _files._safe_workspace_path(tmpdir, "a/b/c/file.txt")
             self.assertTrue(str(result).startswith(resolved_root))
 
+    def test_double_dotdot_etc_passwd_rejected(self):
+        """../../etc/passwd must raise ValueError because it resolves outside the workspace.
+
+        TRN-284 task 5.2: Explicitly verify the canonical path-traversal probe
+        used in security scanners is rejected by _safe_workspace_path.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError):
+                _files._safe_workspace_path(tmpdir, "../../etc/passwd")
+
 
 if __name__ == "__main__":
     unittest.main()
