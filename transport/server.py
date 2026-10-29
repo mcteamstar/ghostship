@@ -1596,6 +1596,10 @@ LIGHTHOUSE_HTML = """\
     .spinner { display: inline-block; animation: spin 1s linear infinite; }
     .empty-cell { text-align: center; color: #64748b; }
     .hidden { display: none; }
+    .agent-count { font-size: 0.7rem; background: #1e3a5f; color: #7dd3fc;
+                   border-radius: 4px; padding: 1px 5px; margin-left: 6px;
+                   vertical-align: middle; }
+    .mono { font-family: monospace; font-size: 0.85em; color: #94a3b8; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -1667,6 +1671,9 @@ LIGHTHOUSE_HTML = """\
 
     /* ── fetch and render fleet ──────────────────────────────────── */
 
+    /* Track which crew detail rows are open across renders. */
+    const openDetails = new Set();
+
     function render(data) {
       const crews = data.crews || [];
       if (crews.length === 0) {
@@ -1680,9 +1687,16 @@ LIGHTHOUSE_HTML = """\
           ? "<a href=\\"" + esc(crew.dashboard_url) + "\\" target=\\"_blank\\" " +
             "rel=\\"noopener noreferrer\\">open</a>"
           : "—";
+        /* Agents from fleet payload — no extra fetch needed for basic task list. */
+        const agents = Array.isArray(crew.agents) ? crew.agents : [];
+        const agentBadge = agents.length > 0
+          ? " <span class=\\"agent-count\\">" + agents.length + " active</span>"
+          : "";
+        const isOpen = openDetails.has(crew.crew_id);
+        const detailClass = "detail-row" + (isOpen ? "" : " hidden");
         return (
           "<tr class=\\"data-row\\" data-crew-id=\\"" + esc(crew.crew_id) + "\\">" +
-          "<td>" + esc(crew.crew_id) + "</td>" +
+          "<td>" + esc(crew.crew_id) + agentBadge + "</td>" +
           "<td>" + statusBadge(crew.status) + "</td>" +
           "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
           "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
@@ -1690,85 +1704,81 @@ LIGHTHOUSE_HTML = """\
           "<td>" + fmtDate(crew.last_task_at) + "</td>" +
           "<td>" + dashLink + "</td>" +
           "</tr>" +
-          /* placeholder detail row — hidden by default */
-          "<tr class=\\"detail-row\\" id=\\"detail-" + esc(crew.crew_id) + "\\" " +
-          "class=\\"hidden\\"><td colspan=\\"7\\"><div class=\\"detail-inner\\">" +
-          "Loading details&hellip;</div></td></tr>"
+          "<tr class=\\"" + detailClass + "\\" id=\\"detail-" + esc(crew.crew_id) + "\\">" +
+          "<td colspan=\\"7\\"><div class=\\"detail-inner\\">" +
+          (isOpen ? renderAgents(agents) : "") +
+          "</div></td></tr>"
         );
       });
       bodyEl.innerHTML = rows.join("");
 
-      /* wire up row-click to toggle detail */
+      /* Wire up row-click to toggle detail. */
       bodyEl.querySelectorAll("tr.data-row").forEach(function (tr) {
         tr.addEventListener("click", function () {
-          const crewId  = tr.getAttribute("data-crew-id");
+          const crewId   = tr.getAttribute("data-crew-id");
           const detailTr = document.getElementById("detail-" + crewId);
           if (!detailTr) return;
           if (detailTr.classList.contains("hidden")) {
+            openDetails.add(crewId);
             detailTr.classList.remove("hidden");
-            loadDetail(crewId, detailTr.querySelector(".detail-inner"));
+            /* Populate from fleet data already in hand, then fetch crons. */
+            const crew = (data.crews || []).find(function (c) {
+              return c.crew_id === crewId;
+            });
+            const agents = crew && Array.isArray(crew.agents) ? crew.agents : [];
+            const inner = detailTr.querySelector(".detail-inner");
+            inner.innerHTML = renderAgents(agents);
+            loadCrons(crewId, inner, crew ? crew.status : "stopped");
           } else {
+            openDetails.delete(crewId);
             detailTr.classList.add("hidden");
           }
         });
       });
     }
 
-    function loadDetail(crewId, container) {
-      const spawnUrl = "/crews/" + encodeURIComponent(crewId) + "/api/spawn";
+    function renderAgents(agents) {
+      if (!agents || agents.length === 0) {
+        return "<em>No active tasks.</em>";
+      }
+      let html = "<strong>Active tasks</strong><table class=\\"detail-table\\">" +
+        "<tr><th>ID</th><th>Agent</th><th>Done</th><th>Elapsed</th></tr>";
+      agents.forEach(function (a) {
+        html +=
+          "<tr><td class=\\"mono\\">" + esc((a.task_id || a.id || "—").slice(0, 12)) + "</td>" +
+          "<td>" + esc(a.agent || "—") + "</td>" +
+          "<td>" + (a.done ? "✓" : "<span class=\\"spinner\\">&#9696;</span>") + "</td>" +
+          "<td>" + fmtUptime(a.elapsed_secs || a.elapsed) + "</td></tr>";
+      });
+      return html + "</table>";
+    }
+
+    function loadCrons(crewId, container, status) {
+      if (status === "stopped") {
+        /* Gateway is down — crons not queryable, but that is expected. */
+        return;
+      }
       const cronsUrl = "/crews/" + encodeURIComponent(crewId) + "/api/crons";
-
-      Promise.all([
-        fetch(spawnUrl, { credentials: "include" }).then(function (r) {
-          return r.ok ? r.json() : null;
-        }).catch(function () { return null; }),
-        fetch(cronsUrl, { credentials: "include" }).then(function (r) {
-          return r.ok ? r.json() : null;
-        }).catch(function () { return null; }),
-      ]).then(function (results) {
-        const spawnData = results[0];
-        const cronsData = results[1];
-        let html = "";
-
-        /* active tasks */
-        const agents = Array.isArray(spawnData)
-          ? spawnData
-          : (spawnData && Array.isArray(spawnData.agents) ? spawnData.agents : []);
-        if (agents.length > 0) {
-          html += "<strong>Active tasks</strong><table class=\\"detail-table\\">" +
-            "<tr><th>ID</th><th>Agent</th><th>Done</th><th>Elapsed</th></tr>";
-          agents.forEach(function (a) {
-            html +=
-              "<tr><td>" + esc(a.id || "—") + "</td>" +
-              "<td>" + esc(a.agent || "—") + "</td>" +
-              "<td>" + (a.done ? "✓" : "…") + "</td>" +
-              "<td>" + fmtUptime(a.elapsed) + "</td></tr>";
-          });
-          html += "</table>";
-        } else {
-          html += "<em>No active tasks.</em>";
-        }
-
-        /* scheduled jobs */
-        const jobs = Array.isArray(cronsData)
-          ? cronsData
-          : (cronsData && Array.isArray(cronsData.jobs) ? cronsData.jobs : []);
-        if (jobs.length > 0) {
-          html += "<br><strong>Cron jobs</strong><table class=\\"detail-table\\">" +
-            "<tr><th>ID</th><th>Name</th><th>Agent</th><th>Schedule</th></tr>";
+      fetch(cronsUrl, { credentials: "include" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; })
+        .then(function (cronsData) {
+          const jobs = cronsData && Array.isArray(cronsData.jobs) ? cronsData.jobs : [];
+          if (jobs.length === 0) return;
+          let html = "<br><strong>Scheduled jobs</strong><table class=\\"detail-table\\">" +
+            "<tr><th>Name</th><th>Agent</th><th>Schedule</th></tr>";
           jobs.forEach(function (j) {
             html +=
-              "<tr><td>" + esc(j.id || j.job_id || "—") + "</td>" +
-              "<td>" + esc(j.name || "—") + "</td>" +
+              "<tr><td>" + esc(j.name || "—") + "</td>" +
               "<td>" + esc(j.agent || "—") + "</td>" +
               "<td>" + esc(j.schedule || j.cron_expr || "—") + "</td></tr>";
           });
           html += "</table>";
-        }
-
-        container.innerHTML = html || "<em>No detail available.</em>";
-      });
+          container.innerHTML += html;
+        });
     }
+
+
 
     function refresh() {
       fetch("/api/crews", { credentials: "include" })
