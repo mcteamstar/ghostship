@@ -1578,6 +1578,11 @@ LIGHTHOUSE_HTML = """\
     th { background: #161c28; color: #94a3b8; text-transform: uppercase;
          font-size: 0.7rem; letter-spacing: 0.05em; }
     tr.data-row:hover { background: #252d3d; cursor: pointer; }
+    tr.data-row { transition: background 0.1s; }
+    tr.data-row td:first-child::after {
+      content: " ▸"; color: #334155; font-size: 0.7rem;
+    }
+    tr.data-row.open td:first-child::after { content: " ▾"; color: #60a5fa; }
     .badge {
       display: inline-block; padding: 0.15rem 0.5rem;
       border-radius: 9999px; font-size: 0.7rem; font-weight: 600;
@@ -1599,6 +1604,11 @@ LIGHTHOUSE_HTML = """\
     .agent-count { font-size: 0.7rem; background: #1e3a5f; color: #7dd3fc;
                    border-radius: 4px; padding: 1px 5px; margin-left: 6px;
                    vertical-align: middle; }
+    .captain-badge { font-size: 0.7rem; border-radius: 4px; padding: 1px 5px;
+                     margin-left: 6px; vertical-align: middle; }
+    .captain-on  { background: #2d1f5e; color: #c4b5fd; }
+    .captain-off { background: #1e2330; color: #64748b; }
+    .stopped-row td { opacity: 0.6; }
     .mono { font-family: monospace; font-size: 0.85em; color: #94a3b8; }
     @keyframes spin  { to { transform: rotate(360deg); } }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -1703,24 +1713,36 @@ LIGHTHOUSE_HTML = """\
           : "—";
         /* Agents from fleet payload — no extra fetch needed for basic task list. */
         const agents = Array.isArray(crew.agents) ? crew.agents : [];
-        const agentBadge = agents.length > 0
-          ? " <span class=\\"agent-count\\">" + agents.length + " active</span>"
+        const activeAgents = agents.filter(function (a) { return !a.done; });
+        const agentBadge = activeAgents.length > 0
+          ? " <span class=\\"agent-count\\">" + activeAgents.length + " active</span>"
           : "";
+
+        /* Captain state badge */
+        const cap = crew.captain;
+        const captainBadge = cap
+          ? (cap.enabled
+              ? " <span class=\\"captain-badge captain-on\\">⚑ captain</span>"
+              : " <span class=\\"captain-badge captain-off\\">⚑ paused</span>")
+          : "";
+
         const isOpen = openDetails.has(crew.crew_id);
+        const isStopped = crew.status !== "running";
+        const rowClass = "data-row" + (isOpen ? " open" : "") + (isStopped ? " stopped-row" : "");
         const detailClass = "detail-row" + (isOpen ? "" : " hidden");
         return (
-          "<tr class=\\"data-row\\" data-crew-id=\\"" + esc(crew.crew_id) + "\\">" +
-          "<td>" + esc(crew.crew_id) + agentBadge + "</td>" +
+          "<tr class=\\"" + rowClass + "\\" data-crew-id=\\"" + esc(crew.crew_id) + "\\">" +
+          "<td>" + esc(crew.crew_id) + agentBadge + captainBadge + "</td>" +
           "<td>" + statusBadge(crew.status) + "</td>" +
           "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
           "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
-          "<td>" + fmtUptime(crew.uptime_secs) + "</td>" +
+          "<td>" + (isStopped ? "—" : fmtUptime(crew.uptime_secs)) + "</td>" +
           "<td>" + fmtDate(crew.last_task_at) + "</td>" +
           "<td>" + dashLink + "</td>" +
           "</tr>" +
           "<tr class=\\"" + detailClass + "\\" id=\\"detail-" + esc(crew.crew_id) + "\\">" +
           "<td colspan=\\"7\\"><div class=\\"detail-inner\\">" +
-          (isOpen ? renderAgents(agents) : "") +
+          (isOpen ? renderDetail(crew) : "") +
           "</div></td></tr>"
         );
       });
@@ -1732,23 +1754,48 @@ LIGHTHOUSE_HTML = """\
           const crewId   = tr.getAttribute("data-crew-id");
           const detailTr = document.getElementById("detail-" + crewId);
           if (!detailTr) return;
+          const dataRow  = tr;
           if (detailTr.classList.contains("hidden")) {
             openDetails.add(crewId);
             detailTr.classList.remove("hidden");
-            /* Populate from fleet data already in hand, then fetch crons. */
+            dataRow.classList.add("open");
             const crew = (data.crews || []).find(function (c) {
               return c.crew_id === crewId;
             });
-            const agents = crew && Array.isArray(crew.agents) ? crew.agents : [];
             const inner = detailTr.querySelector(".detail-inner");
-            inner.innerHTML = renderAgents(agents);
-            loadCrons(crewId, inner, crew ? crew.status : "stopped");
+            inner.innerHTML = renderDetail(crew);
+            if (crew && crew.status === "running") {
+              loadCrons(crewId, inner);
+            }
           } else {
             openDetails.delete(crewId);
             detailTr.classList.add("hidden");
+            dataRow.classList.remove("open");
           }
         });
       });
+    }
+
+    function renderDetail(crew) {
+      if (!crew) return "<em>No data.</em>";
+      const agents = Array.isArray(crew.agents) ? crew.agents : [];
+      let html = renderAgents(agents);
+
+      /* Captain state inline */
+      const cap = crew.captain;
+      if (cap) {
+        html += "<br><strong>Captain</strong><table class=\\"detail-table\\">" +
+          "<tr><th>State</th><th>Schedule</th><th>Current task</th></tr>" +
+          "<tr><td>" + (cap.enabled ? "active" : "paused") + "</td>" +
+          "<td>" + esc(cap.schedule || "—") + "</td>" +
+          "<td class=\\"mono\\">" + esc((cap.current_task_id || "—").slice(0, 12)) + "</td>" +
+          "</tr></table>";
+      }
+
+      if (crew.status !== "running") {
+        html += "<br><em class=\\"empty-cell\\">Crew is stopped — live schedule data unavailable.</em>";
+      }
+      return html;
     }
 
     function renderAgents(agents) {
@@ -1767,17 +1814,17 @@ LIGHTHOUSE_HTML = """\
       return html + "</table>";
     }
 
-    function loadCrons(crewId, container, status) {
-      if (status === "stopped") {
-        /* Gateway is down — crons not queryable, but that is expected. */
-        return;
-      }
+    function loadCrons(crewId, container) {
+      /* Fetches non-captain gateway cron jobs. Captain state is rendered
+         inline by renderDetail from the fleet payload. */
       const cronsUrl = "/crews/" + encodeURIComponent(crewId) + "/api/crons";
       fetch(cronsUrl, { credentials: "include" })
         .then(function (r) { return r.ok ? r.json() : null; })
         .catch(function () { return null; })
         .then(function (cronsData) {
-          const jobs = cronsData && Array.isArray(cronsData.jobs) ? cronsData.jobs : [];
+          const jobs = cronsData && Array.isArray(cronsData.jobs)
+            ? cronsData.jobs.filter(function (j) { return j.type !== "captain"; })
+            : [];
           if (jobs.length === 0) return;
           let html = "<br><strong>Scheduled jobs</strong><table class=\\"detail-table\\">" +
             "<tr><th>Name</th><th>Agent</th><th>Schedule</th></tr>";

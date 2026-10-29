@@ -481,6 +481,22 @@ def _build_crews_payload(podman) -> dict:
                 ]
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
+        # Captain state from registry (no gateway probe needed — registry is always readable)
+        try:
+            schedules = registry.get_schedules(cid)
+            captain_entry = next(
+                (s for s in schedules if s.get("type") == "captain"), None
+            )
+            if captain_entry is not None:
+                entry["captain"] = {
+                    "enabled": captain_entry.get("enabled", True),
+                    "schedule": captain_entry.get("schedule", ""),
+                    "current_task_id": captain_entry.get("current_task_id"),
+                }
+            else:
+                entry["captain"] = None
+        except Exception:
+            entry["captain"] = None
         result.append(entry)
 
     # Write back any stale running→stopped corrections discovered above, in a
