@@ -29,7 +29,7 @@ Two routing tiers:
 
 ## Radar fleet dashboard
 
-`GET /` serves the Radar SPA — a browser view of all crews without requiring an MCP session. See [lighthouse.md](lighthouse.md) for full documentation.
+`GET /` serves the Radar SPA — a browser view of all crews without requiring an MCP session. See [radar.md](radar.md) for full documentation.
 
 Radar runs as its own container (`ga-radar`) on `ga-portside`. Caddy proxies `/` and `/api/crews*` to `ga-radar:8080`; Radar in turn calls `ga-transport`'s internal `/internal/crews` endpoint using the shared transport secret.
 

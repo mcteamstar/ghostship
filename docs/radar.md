@@ -1,8 +1,8 @@
-# Lighthouse — Fleet Dashboard
+# Radar — Fleet Dashboard
 
-Lighthouse is the ghostship fleet observability dashboard. Opening `GET /` in a browser shows all crews, their status, active tasks, Captain state, and schedule — no MCP agent session required.
+Radar is the ghostship fleet observability dashboard. Opening `GET /` in a browser shows all crews, their status, active tasks, Captain state, and schedule — no MCP agent session required.
 
-## Accessing Lighthouse
+## Accessing Radar
 
 Navigate to the transport URL in a browser:
 
@@ -11,7 +11,7 @@ http://localhost:64057/          # local dev (no API key)
 https://your-portal-hostname/    # production (API key required)
 ```
 
-When `GA_API_KEY` is set, you will be redirected to `/dashboard/login` first. Log in once; the `gs_session` cookie covers all subsequent dashboard and Lighthouse requests in the same browser session.
+When `GA_API_KEY` is set, you will be redirected to `/dashboard/login` first. Log in once; the `gs_session` cookie covers all subsequent dashboard and Radar requests in the same browser session.
 
 ## What it shows
 
@@ -79,4 +79,4 @@ Response shape:
 
 ## Auth
 
-Lighthouse is session-gated via `gs_session` cookie. No bearer token needed for `GET /` or `GET /api/crews`. When `GA_API_KEY` is unset, session check is skipped. See [portal.md#auth](portal.md#auth).
+Radar is session-gated via `gs_session` cookie. No bearer token needed for `GET /` or `GET /api/crews`. When `GA_API_KEY` is unset, session check is skipped. See [portal.md#auth](portal.md#auth).

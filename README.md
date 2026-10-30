@@ -153,7 +153,7 @@ Registered as `ghostship`:
 - [docs/auth.md](docs/auth.md) — auth flow, identity provider config, credential management
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, remote deployment, extending the crew image
 - [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions
-- [docs/lighthouse.md](docs/lighthouse.md) — fleet observability dashboard (`GET /`) and REST API
+- [docs/radar.md](docs/radar.md) — Radar fleet dashboard (`GET /`) and REST API
 - [docs/troubleshooting.md](docs/troubleshooting.md) — debugging guide, known workarounds
 - [docs/manual-install.md](docs/manual-install.md) — non-standard distro prerequisites
 - [CHANGELOG.md](CHANGELOG.md) — release notes
