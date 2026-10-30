@@ -1,28 +1,35 @@
 # Spec Delta
 
-## ADDED Requirements
+## MODIFIED Capabilities
 
-### Requirement: Main port returns a useful response for crew dashboard paths
+### crew-ui-proxy
 
-The transport's main Caddy port (`:64057`) SHALL NOT return an empty HTTP 200
-for requests to `/crews/{crew_id}/ui` or `/crews/{crew_id}/ui/*`. When a crew
-has an allocated `dashboard_port`, the main port SHALL redirect the browser to
-the per-crew dedicated port URL (`http://<host>:<dashboard_port>/`). When the
-crew has no allocated dashboard port, the main port SHALL return HTTP 404.
+#### ADDED Requirement: Transport strips Accept-Encoding from crew proxy requests
 
-#### Scenario: Main port redirects to per-crew dashboard port
+The transport's crew UI proxy (`_handle_crew_ui_proxy`) MUST strip the
+`Accept-Encoding` header from all outbound requests to crew gateways. This
+ensures crew gateways always return uncompressed responses that the transport
+can pass through transparently.
 
-- **WHEN** `GET /crews/my-crew/ui` is requested on the main port
-- **AND** the crew has an allocated `dashboard_port`
-- **THEN** the main port returns HTTP 302 redirecting to `http://<host>:<dashboard_port>/`
+**Rationale:** The transport proxies raw bytes using `_async_http.stream()`
+without decompressing the response body. If `Accept-Encoding` is forwarded,
+the crew gateway may return compressed content. The transport strips
+`Content-Encoding` from all proxied responses (hop-by-hop header handling),
+so the browser receives compressed bytes with no encoding hint and cannot
+decompress them — causing a JS parse failure.
 
-#### Scenario: Main port returns 404 when no dashboard port allocated
+#### Scenario: Crew gateway always receives uncompressed request
 
-- **WHEN** `GET /crews/my-crew/ui` is requested on the main port
-- **AND** the crew has no allocated `dashboard_port` (launched without `dashboard=True`)
-- **THEN** the main port returns HTTP 404
+- **WHEN** a browser sends `GET /crews/{id}/ui/assets/main.js` with
+  `Accept-Encoding: gzip, br`
+- **THEN** the transport forwards the request to the crew gateway WITHOUT
+  an `Accept-Encoding` header
+- **AND** the crew gateway returns an uncompressed response
+- **AND** the browser successfully parses the JS asset
 
-#### Scenario: Main port does not return empty 200 for crew UI paths
+#### Scenario: Asset response is valid JS, not binary
 
-- **WHEN** `GET /crews/my-crew/ui/assets/main.js` is requested on the main port
-- **THEN** the response is NOT HTTP 200 with `Content-Length: 0`
+- **GIVEN** a running crew with a dashboard port
+- **WHEN** `GET /crews/{id}/ui/assets/main.js` is proxied through the transport
+- **THEN** the response body starts with valid JS text (e.g. `const `)
+- **AND** the response does NOT contain gzip magic bytes (`0x1f 0x8b`)

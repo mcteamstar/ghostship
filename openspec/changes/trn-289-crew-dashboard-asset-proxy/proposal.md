@@ -2,38 +2,64 @@
 
 ## Why
 
-When a crew is launched with `dashboard=True`, the per-crew KC dashboard is
-accessible at a dedicated Caddy port (e.g. `localhost:64058/`). KiroCrew's SPA
-loads correctly at that URL — assets, navigation, and WebSocket all work.
+When a crew is launched with `dashboard=True`, the per-crew KiroCrew dashboard
+is accessible at a dedicated Caddy port (e.g. `localhost:64058/`). Loading the
+SPA at that URL fails with:
 
-However, `GET /crews/{id}/ui/` on the **main port** (`localhost:64057`) returns
-`HTTP 200 Content-Length: 0` — Caddy has no matching route for that path on the
-main port, so requests fall through to Caddy's default empty-body response.
-When the browser opens this URL, KiroCrew's HTML is not returned, and if a stale
-page attempts to load its asset chunks they receive empty bodies, causing
-`SyntaxError: illegal character U+FFFD` (null byte parsed as JS).
+```
+Uncaught SyntaxError: Invalid or unexpected token (in /assets/main-DtG7OZ5a.js:1:2)
+```
 
-The transport proxy handler for `/crews/*/ui` does exist and would work — it
-just isn't wired into the main Caddy port's route config.
+The browser receives the JS asset as 573 KB of valid text (`const __vite__mapDep...`)
+when fetched directly via `fetch()`, but the `<script>` tag that executes the
+same asset during page load gets binary garbage (`U+FFFD` replacement characters)
+causing a parse failure.
+
+## Root Cause
+
+The transport proxy chain is:
+
+```
+browser → :64058/ → Caddy (caddy.py) → transport:64057/crews/{id}/ui{path} → gs-{id}:5476/
+```
+
+The transport's `_handle_crew_ui_proxy` strips certain headers from the
+**response** before passing it to the browser (`_HOP_BY_HOP_HEADERS`, which
+includes `content-encoding`). This is correct when httpx decompresses the body
+— but the transport uses `_async_http.stream()` which streams the raw bytes
+without decompressing.
+
+The real problem is on the **request** side: the browser sends
+`Accept-Encoding: gzip, br` in the request. The transport forwards this header
+unchanged to the crew gateway (`gs-{id}:5476`). The gateway honours it and
+returns a gzip-compressed response with `Content-Encoding: gzip`. The transport
+then strips `Content-Encoding` from the response headers (hop-by-hop) without
+decompressing the body. The browser receives 129 KB of gzip binary labelled as
+`text/javascript` with no `Content-Encoding` header telling it to decompress →
+parse failure.
+
+Direct `fetch()` calls work because the Fetch API decompresses transparently
+inside the browser. The `<script>` tag evaluation fails because by the time the
+compressed bytes reach the JS engine, the content-type and content-encoding
+metadata that would trigger browser-side decompression has been lost.
 
 ## What Changes
 
-- Add `/crews/*/ui*` to the main Caddy port route config in `bin/install.sh`,
-  proxying to `ga-transport` the same way other crew routes are handled
-- Alternatively, redirect `/crews/{id}/ui` on the main port to the per-crew
-  dedicated port URL (cleaner, avoids maintaining two proxy paths)
-- Either fix ensures the main port gives a useful response instead of an empty 200
+Strip `accept-encoding` from the outbound proxy request in
+`_STRIPPED_CREW_PROXY_HEADERS` so the crew gateway always returns uncompressed
+content. This is the minimal, correct fix — it prevents the mismatch between
+what the gateway sends and what the transport passes through.
 
 ## Capabilities
 
 ### Modified Capabilities
 
-- `crew-ui-spa-routing`: Add requirement that accessing the crew dashboard via
-  the main port gives a correct response (either serving the SPA or redirecting
-  to the dedicated port URL) rather than an empty HTTP 200.
+- `crew-ui-proxy`: Add a requirement that the transport MUST strip
+  `Accept-Encoding` from proxied requests to crew gateways, so that gateways
+  never return compressed responses that the transport cannot transparently
+  pass through.
 
 ## Impact
 
-- `bin/install.sh` — main Caddy port route config (`ga-transport-misc` or a
-  new route entry)
-- No changes to `ga-radar`, `ga-transport` proxy logic, or `caddy.py`
+- `transport/server.py` — add `"accept-encoding"` to `_STRIPPED_CREW_PROXY_HEADERS`
+- No changes to `caddy.py`, `install.sh`, `ga-radar`, or any other component
