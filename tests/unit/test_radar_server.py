@@ -42,6 +42,9 @@ def _evict_starlette_stubs() -> None:
 
 
 import importlib.util as _importlib_util
+import pytest
+
+pytestmark = pytest.mark.slow  # ASGI/asyncio tests hang on CI; run locally only
 
 _radar_server_module = None
 
