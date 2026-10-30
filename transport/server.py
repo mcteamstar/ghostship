@@ -964,6 +964,12 @@ _STRIPPED_CREW_PROXY_HEADERS: frozenset[str] = frozenset({
     "cookie",
     "authorization",
     "x-transport-token",
+    # Strip Accept-Encoding so the crew gateway never sends compressed responses.
+    # The transport strips Content-Encoding from upstream responses (to prevent
+    # the browser from double-decompressing) but does NOT decompress the body —
+    # so if the upstream sends gzip/br, the browser receives binary garbage with
+    # no Content-Encoding hint and fails to parse it (U+FFFD / SyntaxError).
+    "accept-encoding",
 })
 
 
