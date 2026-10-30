@@ -337,3 +337,121 @@ These are two distinct lifecycle operations and should not be confused:
 
 Idle-stop is what keeps a fleet of crews from consuming resources when inactive.
 Nuke is for when a crew's purpose is fully served and its data is no longer needed.
+
+### Podman machine not started (macOS)
+
+**Symptom:** The Podman socket path exists but every command returns "connection
+refused" or "failed to connect to socket".
+
+This usually means the `ghostship` Podman machine was stopped (e.g. after a
+reboot or `podman machine stop`).
+
+1. Check which machines exist and their state:
+   ```bash
+   podman machine list
+   ```
+2. Start the ghostship machine:
+   ```bash
+   podman machine start ghostship
+   ```
+3. Verify the machine is running and the socket is live:
+   ```bash
+   podman machine list
+   # Look for "ghostship" in the list with state "Running"
+
+   podman info --format '{{.Host.RemoteSocket.Path}}'
+   # Should print a non-empty socket path
+   ```
+4. Once the machine is running, retry your ghostship command.
+
+If the machine does not appear in `podman machine list`, it was never
+initialised — run `./install.sh` to create it.
+
+### Dedicated Podman service socket permissions (Linux)
+
+**Symptom:** `ghostship status` or any podman command fails with "permission
+denied" on the socket, or the socket file is owned by a different user.
+
+When `GA_DEDICATED_MACHINE=true`, ghostship uses a dedicated systemd socket
+unit (`podman-ghostship.socket`) that creates a socket at
+`/run/user/$(id -u)/podman/ghostship.sock`. If the socket is owned by root
+or by another user, the rootless podman client cannot connect.
+
+1. Check ownership and permissions of the runtime directory:
+   ```bash
+   ls -la /run/user/$(id -u)/
+   # Expected: the directory and its contents are owned by your uid
+   ```
+2. Check the status of the dedicated socket unit:
+   ```bash
+   systemctl --user status podman-ghostship.socket
+   ```
+3. If the unit is failed or the socket is missing, reload and restart:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user restart podman-ghostship.socket
+   ```
+4. Verify the socket is available and connectable:
+   ```bash
+   ls -la /run/user/$(id -u)/podman/ghostship.sock
+   podman --url unix:///run/user/$(id -u)/podman/ghostship.sock info
+   ```
+
+If the unit file itself is missing, re-run `./install.sh` — it writes the
+systemd unit files and enables the socket.
+
+### Socket exists but Podman returns errors
+
+**Symptom:** The socket file exists and the service is running, but podman
+commands fail with errors like:
+
+```
+ERRO[0000] cannot set up namespace: ...
+ERRO[0000] exec container process ...
+```
+
+This typically indicates a rootless namespace conflict.
+
+1. Check that `newuidmap` and `newgidmap` are installed and have the `setuid`
+   bit set:
+   ```bash
+   which newuidmap
+   ls -la $(which newuidmap)
+   # Expected: -rwsr-xr-x ... (the 's' in the owner execute bit is the setuid bit)
+   ```
+   If the bit is missing, install the `shadow-utils` or `uidmap` package
+   and verify the setuid bit is restored:
+   ```bash
+   sudo chmod u+s $(which newuidmap) $(which newgidmap)
+   ```
+2. Verify `/etc/subuid` and `/etc/subgid` have entries for your user:
+   ```bash
+   grep "^$(whoami):" /etc/subuid
+   grep "^$(whoami):" /etc/subgid
+   # Expected: myuser:100000:65536
+   ```
+   If entries are missing, add them:
+   ```bash
+   sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(whoami)"
+   ```
+3. Re-run the migration to apply the new sub-id ranges:
+   ```bash
+   podman system migrate
+   ```
+
+**Last resort — reset Podman storage:**
+
+> ⚠️ **Data loss warning:** `podman system reset --force` permanently deletes
+> **all** Podman containers, images, and volumes for your user — including
+> any ghostship crew containers and their workspaces. Run `evac` on all
+> active crews before proceeding. This cannot be undone.
+
+```bash
+podman system reset --force
+```
+
+After a reset, rebuild the ghostship images and restart:
+
+```bash
+./install.sh
+```

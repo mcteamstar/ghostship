@@ -314,3 +314,16 @@ for all fleet operations (launch, dispatch, pickup, steer, captain, evac, nuke).
 To configure what crews can do after installation — adding agent personas,
 skills, MCP servers, or building new crew compositions — use
 **`ghostship-capability`**.
+
+
+## Upgrading skills
+
+After pulling a new ghostship version that includes updated academy skills, run:
+
+```bash
+ghostship upgrade --skills
+```
+
+This rebuilds container images, restarts the transport, and re-runs
+`ghostship setup` to refresh skill symlinks. For full details on when to use
+`--skills` and manual fallback steps, see `docs/manual-install.md#upgrading`.

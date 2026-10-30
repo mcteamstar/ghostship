@@ -475,7 +475,7 @@ def _probe_gateway(crew_url: str) -> bool:
     try:
         r = _http.get(f"{crew_url}/", timeout=5.0)
         return 200 <= r.status_code < 300
-    except Exception:
+    except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
         return False
 
 
@@ -492,7 +492,7 @@ def _refresh_cookie(crew, crew_id: str) -> bool:
     """
     try:
         podman = _get_podman()
-    except Exception:
+    except (FileNotFoundError, RuntimeError, OSError):
         return False
 
     c = _to_crew(crew_id, crew)
@@ -592,6 +592,7 @@ def _gateway_error_detail(exc: BaseException | None, crew: dict | None) -> tuple
     if not isinstance(exc, httpx.HTTPStatusError):
         return "", False
     status = exc.response.status_code
+    # best-effort: response body read can fail on incomplete/closed streams; fallback is an empty string
     try:
         body = exc.response.text or ""
     except Exception:
@@ -946,6 +947,7 @@ def _prewarm_crew(crew, crew_id: str) -> dict:
     c = _to_crew(crew_id, crew)
 
     # 2.3: idempotency — a fresh warm marker on a running container is a no-op.
+    # best-effort: podman availability is optional here; if unavailable, assume not running
     try:
         podman = _get_podman()
         container_running = podman.container_is_running(c.container)
@@ -1034,6 +1036,7 @@ def _wait_gateway(url: str, timeout: int = 30) -> bool:
         try:
             if _http.get(f"{url}/api/ready", timeout=2.0).status_code == 200:
                 return True
+        # best-effort: connection errors during gateway startup are expected; retry until timeout
         except Exception:
             pass
         time.sleep(1.0)
@@ -1233,18 +1236,22 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
 def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume: str) -> None:
     # Each step is best-effort — a failed launch may mean the container or
     # volumes were never created, so not-found errors are silently ignored.
+    # best-effort: container may not exist if launch failed before container creation
     try:
         podman.container_stop(container)
     except Exception:
         pass
+    # best-effort: container may not exist if launch failed before container creation
     try:
         podman.container_remove(container)
     except Exception:
         pass
+    # best-effort: volume may not exist if launch failed before volume creation
     try:
         podman.volume_remove(volume)
     except Exception:
         pass
+    # best-effort: volume may not exist if launch failed before volume creation
     try:
         podman.volume_remove(home_volume)
     except Exception:
@@ -1254,6 +1261,7 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
     # Derive the crew_id from the container name (gs-<crew_id>) so every
     # launch-failure path and the nuke path clean it up. Best-effort — a launch
     # that failed before secret_create just no-ops.
+    # best-effort: secret may not exist if launch failed before secret creation
     try:
         if container.startswith(CREW_CONTAINER_PREFIX):
             crew_id = container[len(CREW_CONTAINER_PREFIX):]
@@ -1460,6 +1468,7 @@ def _reconcile_registry() -> None:
     Also sweeps any orphaned ga-login-* containers left over from a transport
     restart that occurred mid-login flow.
     """
+    # best-effort: podman may be unavailable on startup; reconciliation is skipped, not fatal
     try:
         podman = _get_podman()
     except Exception:
@@ -2142,6 +2151,7 @@ def _run_pty_login_flow(
             if pattern.search(text):
                 try:
                     pty_sock.sendall(answer)
+                # best-effort: PTY may have closed before the prompt was answered
                 except Exception:
                     pass
                 answered.add(idx)
@@ -2198,6 +2208,7 @@ def _run_pty_login_flow(
         pty_sock.setblocking(True)
 
         def _drain() -> None:
+            # best-effort: PTY drain runs in background; socket errors on EOF are expected and non-fatal
             try:
                 while True:
                     chunk = pty_sock.recv(4096)
@@ -2208,6 +2219,7 @@ def _run_pty_login_flow(
             finally:
                 try:
                     pty_sock.close()
+                # best-effort: socket close in finally; ignore errors if already closed
                 except Exception:
                     pass
 
@@ -2512,6 +2524,7 @@ def _abort_claude_pending_login(podman: "PodmanClient") -> bool:
     result = CLAUDE_FLOW.abort(podman)
     # Close the PTY socket if present (abort() does not close it)
     if pty_sock is not None:
+        # best-effort: socket may already be closed if the PTY drain thread finished
         try:
             pty_sock.close()
         except Exception:

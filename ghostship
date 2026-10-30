@@ -376,6 +376,7 @@ def cmd_status(args: list) -> int:
                 h = total_seconds // 3600
                 m = (total_seconds % 3600) // 60
                 uptime_str = f"{h}h {m}m"
+        # best-effort: uptime calculation from container timestamp; fall back to raw string
         except Exception:
             uptime_str = started_at
 
@@ -430,7 +431,7 @@ def cmd_status(args: list) -> int:
                     print(f"  Then trust: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/ghost-academy-root.crt")
             else:
                 print("  Caddy TLS: internal CA (ga-portal-data volume not found — run install.sh first)")
-        except Exception:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, OSError):
             print("  Caddy TLS: internal CA (run: podman exec ga-portal caddy trust)")
 
     return 0
@@ -547,7 +548,7 @@ def _inspect_installed_url() -> str:
         for item in json.loads(result.stdout.strip()) or []:
             if isinstance(item, str) and item.startswith("GA_HOST_URL="):
                 return item.split("=", 1)[1].strip().rstrip("/")
-    except Exception:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     return ""
 
@@ -573,7 +574,7 @@ def _inspect_installed_api_key() -> str:
                     return key_path.read_text().strip()
                 except (OSError, PermissionError):
                     pass
-    except Exception:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     return ""
 
@@ -671,6 +672,7 @@ def _poll_flow(base_url: str, backend: str, api_key: str | None,
             poll = _http_json(poll_url, "GET", api_key=api_key)
         except urllib.error.HTTPError as exc:
             print()
+            # best-effort: HTTP error body read; fall back to exc.reason on read failure
             try:
                 body = exc.read().decode("utf-8", errors="replace").strip()
             except Exception:
@@ -737,6 +739,7 @@ def auth_login(args: list) -> int:
 
     # For kiro identity-center, fetch defaults from transport config if not set.
     if backend == "kiro" and (not identity_provider or not region):
+        # best-effort: transport config fetch for identity-center defaults; will prompt if still missing
         try:
             _status = _http_json(f"{base_url}/login/kiro", "GET", api_key=api_key)
             _ic = _status.get("identity_center") or {}
@@ -823,6 +826,7 @@ def auth_login(args: list) -> int:
                 body={"secret": secret}, api_key=api_key,
             )
         except urllib.error.HTTPError as exc:
+            # best-effort: HTTP error body read; fall back to exc.reason on read failure
             try:
                 body = exc.read().decode("utf-8", errors="replace").strip()
             except Exception:
@@ -881,6 +885,7 @@ def auth_login(args: list) -> int:
             body=request_body, api_key=api_key,
         )
     except urllib.error.HTTPError as exc:
+        # best-effort: HTTP error body read; fall back to exc.reason on read failure
         try:
             body = exc.read().decode("utf-8", errors="replace").strip()
         except Exception:
@@ -928,6 +933,7 @@ def auth_login(args: list) -> int:
                 body={"code": code}, api_key=api_key,
             )
         except urllib.error.HTTPError as exc:
+            # best-effort: HTTP error body read; fall back to exc.reason on read failure
             try:
                 body = exc.read().decode("utf-8", errors="replace").strip()
             except Exception:
@@ -969,6 +975,7 @@ def auth_logout(args: list) -> int:
     try:
         _http_json(f"{base_url}/logout/{backend}", "POST", body={}, api_key=api_key)
     except urllib.error.HTTPError as exc:
+        # best-effort: HTTP error body read; fall back to exc.reason on read failure
         try:
             body = exc.read().decode("utf-8", errors="replace").strip()
         except Exception:
@@ -995,6 +1002,7 @@ def auth_status(args: list) -> int:
             resp = _http_json(f"{base_url}/login/{backend}", "GET", api_key=api_key)
             results[backend] = resp
         except urllib.error.HTTPError as exc:
+            # best-effort: HTTP error body read; fall back to exc.reason on read failure
             try:
                 body = exc.read().decode("utf-8", errors="replace").strip()
             except Exception:
