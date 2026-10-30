@@ -1312,10 +1312,10 @@ fi
 # used by caddy.py for the per-crew dashboard ports.
 # When GA_API_KEY is unset: passthrough only — no login step needed (Tailscale-gated).
 if [[ -n "${GA_API_KEY:-}" ]]; then
-  _LIGHTHOUSE_ROUTE=$(cat <<LIGHTHOUSE_EOF
+  _RADAR_ROUTE=$(cat <<RADAR_EOF
             {
               "@id": "ga-radar",
-              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*"]}],
               "handle": [
                 {
                   "handler": "reverse_proxy",
@@ -1352,17 +1352,17 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
                 {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-radar:8080"}], ${_PORTAL_TOKEN_HEADER}}
               ]
             },
-LIGHTHOUSE_EOF
+RADAR_EOF
 )
 else
   # No API key — passthrough only (Tailscale-gated install).
-  _LIGHTHOUSE_ROUTE=$(cat <<LIGHTHOUSE_EOF
+  _RADAR_ROUTE=$(cat <<RADAR_EOF
             {
               "@id": "ga-radar",
-              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*"]}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-radar:8080"}], ${_PORTAL_TOKEN_HEADER}}]
             },
-LIGHTHOUSE_EOF
+RADAR_EOF
 )
 fi
 
@@ -1378,7 +1378,7 @@ cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
           ${_AUTO_HTTPS}
           "routes": [
 ${_AUTH_ROUTES}
-${_LIGHTHOUSE_ROUTE}
+${_RADAR_ROUTE}
             {
               "@id": "ga-transport-misc",
               "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout", "/logout*", "/crews/*/captain/stop"]}],
