@@ -230,5 +230,272 @@ class TestSafeWorkspacePath(unittest.TestCase):
                 _files._safe_workspace_path(tmpdir, "../../etc/passwd")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# T3 — TestFileGetHandler and TestFilePutHandler  (TRN-292)
+# ─────────────────────────────────────────────────────────────────────────────
+
+import asyncio
+from unittest.mock import MagicMock, patch
+
+
+def _async_run(coro):
+    """Run a coroutine using a new event loop, then RESTORE a new event loop.
+
+    Python 3.12 deprecates asyncio.get_event_loop() after asyncio.run() has
+    been called (asyncio.run() closes and clears the thread's event loop).
+    test_fleet.py uses asyncio.get_event_loop(), so we must not leave the
+    event loop in a closed/absent state. We install a fresh loop after each
+    run so downstream tests still find one.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        # Restore a fresh running loop so asyncio.get_event_loop() keeps working.
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+try:
+    from starlette.requests import Request as StarletteRequest
+except ImportError:
+    # stub already installed via conftest; get it directly
+    import sys as _sys
+    StarletteRequest = _sys.modules["starlette.requests"].Request
+
+
+class _FakeRequest:
+    """Minimal request stub for _handle_file_get / _handle_file_put."""
+
+    def __init__(self, crew_id: str, path: str, query_params: dict | None = None,
+                 body_bytes: bytes = b""):
+        self.path_params = {"crew_id": crew_id, "path": path}
+        self.query_params = query_params or {}
+        self._body = body_bytes
+
+    async def body(self) -> bytes:
+        return self._body
+
+
+def _valid_get_params(crew_id: str, path: str) -> dict:
+    """Build a valid (non-expired) query-param dict for _handle_file_get."""
+    url = _files._sign_file_url(crew_id, path)
+    qs = url.split("?", 1)[1]
+    return dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
+
+
+def _valid_put_params(crew_id: str, path: str) -> dict:
+    """Build a valid (non-expired) query-param dict for _handle_file_put."""
+    url = _files._sign_upload_url(crew_id, path)
+    qs = url.split("?", 1)[1]
+    return dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
+
+
+class TestFileGetHandler(unittest.TestCase):
+    """_handle_file_get: GET handler status-code contract (FG1–FG5)."""
+
+    def _get(self, crew_id: str, path: str, query_params: dict | None = None):
+        req = _FakeRequest(crew_id, path, query_params)
+        return _async_run(_files._handle_file_get(req))
+
+    # ── FG1 — expired token → 403 ─────────────────────────────────────────
+
+    def test_fg1_expired_token_403(self):
+        """FG1: expired token → 403 Forbidden."""
+        import time as _time
+        past = str(int(_time.time()) - 10)
+        import hashlib as _hashlib, hmac as _hmac
+        payload = f"test-crew:workspace/file.txt:{past}:GET::"
+        sig = _hmac.HMAC(
+            _TEST_FILE_SECRET.encode(),
+            payload.encode(),
+            digestmod=_hashlib.sha256,
+        ).hexdigest()
+        resp = self._get("test-crew", "workspace/file.txt",
+                         {"expires": past, "sig": sig})
+        self.assertEqual(resp.status_code, 403)
+
+    # ── FG2 — invalid crew_id format → 400 ───────────────────────────────
+
+    def test_fg2_invalid_crew_id_400(self):
+        """FG2: crew_id 'INVALID_CREW!!' fails CREW_ID_RE → 400."""
+        resp = self._get("INVALID_CREW!!", "file.txt")
+        self.assertEqual(resp.status_code, 400)
+
+    # ── FG3 — missing crew (KeyError from _require_crew) → 404 ───────────
+
+    def test_fg3_missing_crew_404(self):
+        """FG3: _require_crew raises KeyError → 404."""
+        params = _valid_get_params("test-crew", "workspace/file.txt")
+        with patch.object(_files._lifecycle, "_require_crew",
+                          side_effect=KeyError("test-crew")):
+            resp = self._get("test-crew", "workspace/file.txt", params)
+        self.assertEqual(resp.status_code, 404)
+
+    # ── FG4 — running crew, plain file → 200 ─────────────────────────────
+
+    def test_fg4_running_crew_plain_file_200(self):
+        """FG4: valid token, crew running, plain file served → 200."""
+        from unittest.mock import MagicMock, patch
+        params = _valid_get_params("test-crew", "workspace/file.txt")
+
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        fake_podman = MagicMock()
+        fake_podman.container_is_running.return_value = True
+
+        # _crew_api for the running path: exec returns file bytes via archive API
+        import io, tarfile as _tarfile
+
+        # Build a tar archive containing the file
+        buf = io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as t:
+            content = b"hello world"
+            info = _tarfile.TarInfo(name="workspace/file.txt")
+            info.size = len(content)
+            t.addfile(info, io.BytesIO(content))
+        buf.seek(0)
+
+        fake_archive_resp = MagicMock()
+        fake_archive_resp.iter_bytes.return_value = iter([buf.read()])
+        fake_podman.container_archive_get.return_value = fake_archive_resp
+
+        fake_crew_obj = MagicMock()
+        fake_crew_obj.container = "gs-test-crew"
+
+        with patch.object(_files._lifecycle, "_require_crew",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_ensure_crew_running",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_to_crew",
+                          return_value=fake_crew_obj), \
+             patch.object(_files, "_get_podman", return_value=fake_podman):
+            resp = self._get("test-crew", "workspace/file.txt", params)
+        self.assertEqual(resp.status_code, 200)
+
+    # ── FG5 — stopped crew, archive API path → 200 (not 404) ─────────────
+
+    def test_fg5_stopped_crew_archive_api_200(self):
+        """FG5: stopped crew serves file via archive API → 200, not 404."""
+        params = _valid_get_params("test-crew", "workspace/file.txt")
+
+        fake_crew = {"container": "gs-test-crew", "status": "stopped"}
+        fake_podman = MagicMock()
+        fake_podman.container_is_running.return_value = False
+
+        import io, tarfile as _tarfile
+        buf = io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as t:
+            content = b"stopped file"
+            info = _tarfile.TarInfo(name="workspace/file.txt")
+            info.size = len(content)
+            t.addfile(info, io.BytesIO(content))
+        buf.seek(0)
+
+        fake_archive_resp = MagicMock()
+        fake_archive_resp.iter_bytes.return_value = iter([buf.read()])
+        fake_podman.container_archive_get.return_value = fake_archive_resp
+
+        fake_crew_obj = MagicMock()
+        fake_crew_obj.container = "gs-test-crew"
+
+        with patch.object(_files._lifecycle, "_require_crew",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_to_crew",
+                          return_value=fake_crew_obj), \
+             patch.object(_files, "_get_podman", return_value=fake_podman):
+            resp = self._get("test-crew", "workspace/file.txt", params)
+        self.assertEqual(resp.status_code, 200)
+
+
+class TestFilePutHandler(unittest.TestCase):
+    """_handle_file_put: PUT handler status-code contract (FP1–FP5)."""
+
+    def _put(self, crew_id: str, path: str, query_params: dict | None = None,
+             body: bytes = b"content"):
+        req = _FakeRequest(crew_id, path, query_params, body_bytes=body)
+        return _async_run(_files._handle_file_put(req))
+
+    # ── FP1 — expired token → 403 ─────────────────────────────────────────
+
+    def test_fp1_expired_token_403(self):
+        """FP1: expired PUT token → 403 Forbidden."""
+        import time as _time
+        past = str(int(_time.time()) - 10)
+        import hashlib as _hashlib, hmac as _hmac
+        # mode="" means plain PUT; flags=""
+        payload = f"test-crew:workspace/file.txt:{past}:POST::"
+        sig = _hmac.HMAC(
+            _TEST_FILE_SECRET.encode(),
+            payload.encode(),
+            digestmod=_hashlib.sha256,
+        ).hexdigest()
+        resp = self._put("test-crew", "workspace/file.txt",
+                         {"expires": past, "sig": sig})
+        self.assertEqual(resp.status_code, 403)
+
+    # ── FP2 — invalid crew_id → 400 ──────────────────────────────────────
+
+    def test_fp2_invalid_crew_id_400(self):
+        """FP2: crew_id contains uppercase/special chars → 400."""
+        resp = self._put("BAD_CREW!", "file.txt")
+        self.assertEqual(resp.status_code, 400)
+
+    # ── FP3 — empty body → 400 ───────────────────────────────────────────
+
+    def test_fp3_empty_body_400(self):
+        """FP3: empty body with otherwise valid token → 400."""
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        with patch.object(_files._lifecycle, "_require_crew",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_ensure_crew_running",
+                          return_value=fake_crew):
+            resp = self._put("test-crew", "workspace/file.txt", params, body=b"")
+        self.assertEqual(resp.status_code, 400)
+
+    # ── FP4 — successful plain upload → 200 ──────────────────────────────
+
+    def test_fp4_successful_upload_200(self):
+        """FP4: valid token, body present, _transfer_upload succeeds → 200."""
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        fake_crew_obj = MagicMock()
+        fake_crew_obj.container = "gs-test-crew"
+
+        with patch.object(_files._lifecycle, "_require_crew",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_ensure_crew_running",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_to_crew",
+                          return_value=fake_crew_obj), \
+             patch.object(_files, "_get_podman", return_value=MagicMock()), \
+             patch.object(_files, "_transfer_upload",
+                          return_value="wrote to /workspace/file.txt"):
+            resp = self._put("test-crew", "workspace/file.txt", params,
+                             body=b"hello data")
+        self.assertEqual(resp.status_code, 200)
+
+    # ── FP5 — _transfer_upload raises → 500 ──────────────────────────────
+
+    def test_fp5_transfer_upload_raises_500(self):
+        """FP5: _transfer_upload raises RuntimeError → 500."""
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        fake_crew_obj = MagicMock()
+        fake_crew_obj.container = "gs-test-crew"
+
+        with patch.object(_files._lifecycle, "_require_crew",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_ensure_crew_running",
+                          return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_to_crew",
+                          return_value=fake_crew_obj), \
+             patch.object(_files, "_get_podman", return_value=MagicMock()), \
+             patch.object(_files, "_transfer_upload",
+                          side_effect=RuntimeError("upload failed")):
+            resp = self._put("test-crew", "workspace/file.txt", params,
+                             body=b"some data")
+        self.assertEqual(resp.status_code, 500)
+
+
 if __name__ == "__main__":
     unittest.main()

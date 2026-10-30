@@ -282,5 +282,144 @@ class TestSecretRedactionFilter(unittest.TestCase):
         self.assertTrue(result)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# T4 — TestCspNonce, TestNeedsRehash, TestOutputEncoding  (TRN-292)
+# ─────────────────────────────────────────────────────────────────────────────
+
+import re
+from unittest.mock import patch
+from urllib.parse import unquote
+
+
+class TestCspNonce(unittest.TestCase):
+    """generate_csp_nonce: length, charset, uniqueness, return type (N1–N4)."""
+
+    def _nonce(self) -> str:
+        return _security.generate_csp_nonce()
+
+    # ── N1 — length ≥ 16 chars ────────────────────────────────────────────
+
+    def test_n1_length_at_least_16(self):
+        """N1: nonce is at least 16 characters long."""
+        self.assertGreaterEqual(len(self._nonce()), 16)
+
+    # ── N2 — charset is URL-safe base64 only ─────────────────────────────
+
+    def test_n2_charset_url_safe_base64(self):
+        """N2: only [A-Za-z0-9_-] — no padding '=' and no '+' or '/'."""
+        nonce = self._nonce()
+        self.assertTrue(
+            re.fullmatch(r"[A-Za-z0-9_\-]+", nonce),
+            f"Nonce contains unexpected characters: {nonce!r}",
+        )
+
+    # ── N3 — uniqueness: 100 calls all distinct ───────────────────────────
+
+    def test_n3_uniqueness_100_calls(self):
+        """N3: 100 calls produce 100 distinct nonces."""
+        nonces = [self._nonce() for _ in range(100)]
+        self.assertEqual(len(set(nonces)), 100)
+
+    # ── N4 — return type is str ───────────────────────────────────────────
+
+    def test_n4_return_type_is_str(self):
+        """N4: return type is str."""
+        self.assertIsInstance(self._nonce(), str)
+
+
+class TestNeedsRehash(unittest.TestCase):
+    """needs_rehash: argon2 available/unavailable and stored hash prefixes (R1–R5)."""
+
+    # ── R1 — argon2 available + argon2 stored → False ────────────────────
+
+    def test_r1_argon2_available_argon2_stored_false(self):
+        """R1: argon2 available + $argon2 stored → needs_rehash is False."""
+        with patch.object(_security, "_argon2_available", return_value=True):
+            result = _security.needs_rehash("$argon2id$v=19$m=65536,t=3,p=4$salt$hash")
+        self.assertFalse(result)
+
+    # ── R2 — argon2 available + scrypt stored → True ─────────────────────
+
+    def test_r2_argon2_available_scrypt_stored_true(self):
+        """R2: argon2 available + scrypt stored → needs_rehash is True (upgrade candidate)."""
+        with patch.object(_security, "_argon2_available", return_value=True):
+            result = _security.needs_rehash("scrypt$32768$8$1$aabbcc$ddeeff")
+        self.assertTrue(result)
+
+    # ── R3 — argon2 available + bcrypt stored → True ─────────────────────
+
+    def test_r3_argon2_available_bcrypt_stored_true(self):
+        """R3: argon2 available + bcrypt stored → needs_rehash is True."""
+        with patch.object(_security, "_argon2_available", return_value=True):
+            result = _security.needs_rehash("$2b$12$somebcrypthash")
+        self.assertTrue(result)
+
+    # ── R4 — no argon2 + scrypt stored → False ───────────────────────────
+
+    def test_r4_no_argon2_scrypt_stored_false(self):
+        """R4: argon2 unavailable + scrypt stored → needs_rehash is False."""
+        with patch.object(_security, "_argon2_available", return_value=False):
+            result = _security.needs_rehash("scrypt$32768$8$1$aabbcc$ddeeff")
+        self.assertFalse(result)
+
+    # ── R5 — no argon2 + plaintext stored → True ─────────────────────────
+
+    def test_r5_no_argon2_plaintext_stored_true(self):
+        """R5: argon2 unavailable + plaintext (no prefix) → needs_rehash is True."""
+        with patch.object(_security, "_argon2_available", return_value=False):
+            result = _security.needs_rehash("plaintextpassword")
+        self.assertTrue(result)
+
+
+class TestOutputEncoding(unittest.TestCase):
+    """encode_html_text, encode_html_attr, encode_url_component (E1–E5)."""
+
+    # ── E1 — encode_html_text escapes <>&  but not quotes ────────────────
+
+    def test_e1_html_text_escapes_lt_gt_amp(self):
+        """E1: <, >, & are escaped; ' and \" are not."""
+        result = _security.encode_html_text('<script>alert("x&y")</script>')
+        self.assertIn("&lt;", result)
+        self.assertIn("&gt;", result)
+        self.assertIn("&amp;", result)
+        # Quotes must NOT be escaped in a text context.
+        self.assertNotIn("&quot;", result)
+        self.assertNotIn("&#x27;", result)
+
+    # ── E2 — encode_html_attr escapes <>&" ────────────────────────────────
+
+    def test_e2_html_attr_escapes_lt_gt_amp_quot(self):
+        """E2: <, >, &, and \" are all escaped in an attribute context."""
+        result = _security.encode_html_attr('<a href="x&y">')
+        self.assertIn("&lt;", result)
+        self.assertIn("&gt;", result)
+        self.assertIn("&amp;", result)
+        self.assertIn("&quot;", result)
+
+    # ── E3 — encode_url_component encodes spaces and slashes ─────────────
+
+    def test_e3_url_component_encodes_space_and_slash(self):
+        """E3: space → %20, / → %2F."""
+        result = _security.encode_url_component("hello world/path")
+        self.assertIn("%20", result)
+        self.assertIn("%2F", result)
+
+    # ── E4 — encode_url_component round-trips via urllib.parse.unquote ───
+
+    def test_e4_url_component_roundtrip(self):
+        """E4: unquote(encode(x)) == x."""
+        original = "hello world/path?q=1&r=2"
+        encoded = _security.encode_url_component(original)
+        self.assertEqual(unquote(encoded), original)
+
+    # ── E5 — encode_html_text passes safe ASCII through unchanged ─────────
+
+    def test_e5_html_text_safe_ascii_unchanged(self):
+        """E5: safe ASCII (no HTML-special chars) passes through unchanged."""
+        safe = "Hello, World! This is fine 123."
+        result = _security.encode_html_text(safe)
+        self.assertEqual(result, safe)
+
+
 if __name__ == "__main__":
     unittest.main()
