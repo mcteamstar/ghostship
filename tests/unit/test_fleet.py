@@ -1,11 +1,10 @@
-"""Unit tests for TRN-97 Lighthouse changes.
+"""Unit tests for TRN-97/TRN-286 Lighthouse changes.
 
 Covers:
   - _build_crews_payload: empty fleet, running crew, stopped crew, crew with
     dashboard_url.
-  - _handle_api_crews_get: 200 JSON, correct Content-Type, correct shape when
-    fleet is empty.
-  - _handle_lighthouse_get: 200 HTML, correct Content-Type, non-empty body.
+  - _handle_internal_crews_get: 200 JSON, correct Content-Type, correct shape
+    when fleet is empty or has one crew.
 """
 
 from __future__ import annotations
@@ -272,16 +271,19 @@ class TestBuildCrewsPayloadDashboardUrl(unittest.TestCase):
         self.assertIn("62000", url)
 
 
-# ── _handle_api_crews_get tests ───────────────────────────────────────────────
+# ── _handle_internal_crews_get tests ─────────────────────────────────────────
 
-class TestHandleApiCrewsGet(unittest.TestCase):
-    """_handle_api_crews_get returns correct HTTP 200 JSON response."""
+class TestHandleInternalCrewsGet(unittest.TestCase):
+    """GET /internal/crews returns fleet payload with valid X-Transport-Token,
+    and 401 when the token is missing or wrong (enforced by TransportSecretMiddleware
+    which wraps the whole app — these tests call the handler directly so they
+    only verify the payload shape)."""
 
     def _run_handler(self, registry_data: dict) -> tuple[list[dict], bytes]:
         _s = _import_server()
         _reg_mod = _import_registry_module()
-        handler = _s._handle_api_crews_get
-        scope = _make_scope("GET", "/api/crews")
+        handler = _s._handle_internal_crews_get
+        scope = _make_scope("GET", "/internal/crews")
         messages, send = _collect_send()
 
         async def _invoke():
@@ -329,44 +331,6 @@ class TestHandleApiCrewsGet(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual(len(data["crews"]), 1)
         self.assertEqual(data["crews"][0]["crew_id"], "delta")
-
-
-# ── _handle_lighthouse_get tests ──────────────────────────────────────────────
-
-class TestHandleLighthouseGet(unittest.TestCase):
-    """_handle_lighthouse_get returns HTTP 200 with non-empty HTML body."""
-
-    def _run_handler(self) -> tuple[list[dict], bytes]:
-        _s = _import_server()
-        handler = _s._handle_lighthouse_get
-        scope = _make_scope("GET", "/")
-        messages, send = _collect_send()
-
-        async def _invoke():
-            from starlette.requests import Request
-            req = Request(scope, _receive)
-            resp = await handler(req)
-            await resp(scope, _receive, send)
-
-        _run(_invoke())
-        return messages, _body_of(messages)
-
-    def test_status_200(self):
-        messages, _ = self._run_handler()
-        self.assertEqual(_status_of(messages), 200)
-
-    def test_content_type_html(self):
-        messages, _ = self._run_handler()
-        ct = _headers_of(messages).get("content-type", "")
-        self.assertIn("text/html", ct)
-
-    def test_body_non_empty(self):
-        _, body = self._run_handler()
-        self.assertGreater(len(body), 0)
-
-    def test_body_contains_html_tag(self):
-        _, body = self._run_handler()
-        self.assertIn(b"<html", body.lower())
 
 
 if __name__ == "__main__":

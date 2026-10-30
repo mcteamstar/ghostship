@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>👻 Lighthouse — Ghostship Fleet</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="header">
+    <h1>&#x1F47B; Lighthouse</h1>
+    <p class="subtitle">Ghostship fleet overview &mdash; refreshes every 5 s</p>
+  </div>
+  <div id="status">Loading&hellip;</div>
+  <div class="table-wrap">
+  <table id="fleet-table">
+    <thead>
+      <tr>
+        <th>Crew</th>
+        <th>Status</th>
+        <th>Backend</th>
+        <th>Composition</th>
+        <th>Uptime</th>
+        <th>Last Task</th>
+        <th>Dashboard</th>
+      </tr>
+    </thead>
+    <tbody id="fleet-body">
+      <tr><td colspan="7" class="empty-cell">
+        Fetching fleet data&hellip;
+      </td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1001,6 +1001,11 @@ ${_PODMAN_CMD} build -t localhost/transport:latest \
   "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
+echo "Building localhost/ga-lighthouse:latest ..."
+${_PODMAN_CMD} build -t localhost/ga-lighthouse:latest \
+  "$GHOSTSHIP_DIR/lighthouse/" \
+  && echo "✓ lighthouse image built" || { echo "✗ lighthouse image build failed"; exit 1; }
+
 # ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
 
 ${_PODMAN_CMD} secret rm ga-api-key 2>/dev/null || true
@@ -1178,6 +1183,18 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
+  ga-lighthouse:
+    image: localhost/ga-lighthouse:latest
+    container_name: ga-lighthouse
+    restart: unless-stopped
+    networks:
+      - ga-portside
+    environment:
+      TRANSPORT_URL: "http://ga-transport:64057"
+    secrets:
+      - ga-transport-secret
+    depends_on:
+      - ga-transport
   ga-portal:
     image: docker.io/caddy:2
     container_name: ga-portal
@@ -1332,7 +1349,7 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
                     }
                   ]
                 },
-                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-lighthouse:8080"}], ${_PORTAL_TOKEN_HEADER}}
               ]
             },
 LIGHTHOUSE_EOF
@@ -1343,7 +1360,7 @@ else
             {
               "@id": "ga-lighthouse",
               "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-transport:64057"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-lighthouse:8080"}], ${_PORTAL_TOKEN_HEADER}}]
             },
 LIGHTHOUSE_EOF
 )
