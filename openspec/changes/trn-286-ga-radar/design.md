@@ -1,11 +1,11 @@
-# Design — TRN-286 ga-lighthouse container
+# Design — TRN-286 ga-radar container
 
 ## Architecture
 
 ```
                     ga-portside network
                     ┌─────────────────────────────────────────┐
-Browser ──► ga-portal ──► ga-lighthouse ──► ga-transport      │
+Browser ──► ga-portal ──► ga-radar ──► ga-transport      │
                     │         :8080              :64057        │
                     │                                ↓         │
                     │                        ga-starboard      │
@@ -15,9 +15,9 @@ Browser ──► ga-portal ──► ga-lighthouse ──► ga-transport      
 MCP client ──► ga-portal ──► ga-transport
 ```
 
-## New container: ga-lighthouse
+## New container: ga-radar
 
-**Image:** `localhost/ga-lighthouse:latest` — built at install time from `lighthouse/Containerfile`
+**Image:** `localhost/ga-radar:latest` — built at install time from `radar/Containerfile`
 
 **Runtime:** Python + FastAPI (same stack as transport, minimal deps)
 
@@ -37,7 +37,7 @@ MCP client ──► ga-portal ──► ga-transport
 
 ## Transport changes
 
-- Remove `_handle_lighthouse_get()` and `LIGHTHOUSE_HTML` from `server.py`
+- Remove `_handle_radar_get()` and `LIGHTHOUSE_HTML` from `server.py`
 - Remove the public `GET /api/crews` route from `server.py`
 - Add `GET /internal/crews` — same payload as current `/api/crews`, bound to portside callers only (validated by `X-Transport-Token` from Caddy, or by source IP check since portside is a trusted network)
 - `BearerAuthMiddleware`: `/internal/crews` added to `_TRANSPORT_SECRET_ONLY_ROUTES` (requires `X-Transport-Token`, no bearer key)
@@ -48,7 +48,7 @@ Update `_LIGHTHOUSE_ROUTE` in `bin/install.sh`:
 
 ```
 # Before: reverse_proxy to ga-transport
-# After: reverse_proxy to ga-lighthouse:8080
+# After: reverse_proxy to ga-radar:8080
 ```
 
 The `forward_auth` chain, redirect-on-401, and session gating are unchanged — those stay at the portal layer.
@@ -56,7 +56,7 @@ The `forward_auth` chain, redirect-on-401, and session gating are unchanged — 
 ## File layout
 
 ```
-lighthouse/
+radar/
 ├── Containerfile          # FROM python:3.12-slim, installs fastapi+uvicorn
 ├── requirements.txt       # fastapi, uvicorn, httpx
 ├── server.py              # FastAPI app: serves static + proxies /api/crews
@@ -68,7 +68,7 @@ lighthouse/
 
 ## Internal API contract
 
-Lighthouse calls transport at:
+Radar calls transport at:
 ```
 GET http://ga-transport:64057/internal/crews
 X-Transport-Token: <shared secret>
@@ -78,11 +78,11 @@ Response: identical to current `/api/crews` response shape. No change to the pay
 
 ## Compose changes
 
-`install.sh` generates `compose.yml` — add `ga-lighthouse` service:
+`install.sh` generates `compose.yml` — add `ga-radar` service:
 
 ```yaml
-ga-lighthouse:
-  image: localhost/ga-lighthouse:latest
+ga-radar:
+  image: localhost/ga-radar:latest
   networks:
     - ga-portside
   environment:
@@ -94,22 +94,22 @@ ga-lighthouse:
     - ga-transport
 ```
 
-`ga-lighthouse` reads the transport secret from `/run/secrets/ga-transport-secret` at startup (same pattern as `ga-transport`). No plaintext secret in the environment.
+`ga-radar` reads the transport secret from `/run/secrets/ga-transport-secret` at startup (same pattern as `ga-transport`). No plaintext secret in the environment.
 
 ## Build changes
 
-`install.sh` builds `ga-lighthouse` image after `ga-transport`:
+`install.sh` builds `ga-radar` image after `ga-transport`:
 ```bash
-podman build -t localhost/ga-lighthouse:latest lighthouse/
+podman build -t localhost/ga-radar:latest radar/
 ```
 
 ## Security
 
-- `ga-lighthouse` is on `ga-portside` — it can reach `ga-transport` but not crew containers
-- The `X-Transport-Token` authenticates lighthouse → transport calls (same mechanism Caddy uses)
-- Browser never reaches `ga-transport` for UI traffic — all UI goes through `ga-lighthouse`
-- No secrets stored in the lighthouse container (token passed via environment from compose)
+- `ga-radar` is on `ga-portside` — it can reach `ga-transport` but not crew containers
+- The `X-Transport-Token` authenticates radar → transport calls (same mechanism Caddy uses)
+- Browser never reaches `ga-transport` for UI traffic — all UI goes through `ga-radar`
+- No secrets stored in the radar container (token passed via environment from compose)
 
 ## Migration
 
-Existing installs: `ghostship upgrade` rebuilds images and restarts. The `ga-lighthouse` container is new — compose creates it. The old `LIGHTHOUSE_HTML` route on transport returns 404 after upgrade (Caddy now routes to lighthouse before the request reaches transport). No data migration needed.
+Existing installs: `ghostship upgrade` rebuilds images and restarts. The `ga-radar` container is new — compose creates it. The old `LIGHTHOUSE_HTML` route on transport returns 404 after upgrade (Caddy now routes to radar before the request reaches transport). No data migration needed.
