@@ -316,7 +316,7 @@ class Config:
     # (e.g. login containers). Must match the FROM pin in
     # crews/_base/admission/Containerfile.
     # 2026-10-26: bumped v0.9.0 → v0.10.0 stable (TRN-271). Multi-arch index
-    # digest — resolves correctly on amd64 (starport/Linux) and arm64 (corsair/Mac).
+    # digest — resolves correctly on amd64 (Linux) and arm64 (macOS).
     kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90"
 
     # ── Crew lifecycle ───────────────────────────────────────────────────────

@@ -91,7 +91,7 @@ import httpx2 as httpx
 from mcp.server.mcpserver.server import MCPServer
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse, PlainTextResponse, JSONResponse
+from starlette.responses import Response, StreamingResponse, PlainTextResponse, JSONResponse, HTMLResponse
 from starlette.routing import Route, Mount
 try:
     from starlette.websockets import WebSocket as _StarletteWebSocket, WebSocketDisconnect as _StarletteWebSocketDisconnect
@@ -964,6 +964,12 @@ _STRIPPED_CREW_PROXY_HEADERS: frozenset[str] = frozenset({
     "cookie",
     "authorization",
     "x-transport-token",
+    # Strip Accept-Encoding so the crew gateway never sends compressed responses.
+    # The transport strips Content-Encoding from upstream responses (to prevent
+    # the browser from double-decompressing) but does NOT decompress the body —
+    # so if the upstream sends gzip/br, the browser receives binary garbage with
+    # no Content-Encoding hint and fails to parse it (U+FFFD / SyntaxError).
+    "accept-encoding",
 })
 
 
@@ -1545,6 +1551,38 @@ async def _handle_version_get(request: Request) -> Response:
     return JSONResponse({"transport": TRANSPORT_VERSION})
 
 
+
+
+async def _handle_internal_crews_get(request: Request) -> Response:
+    """GET /internal/crews — portside-internal fleet data endpoint (TRN-286).
+
+    Same payload as the former public ``/api/crews``, but accessible only from
+    portside callers presenting a valid ``X-Transport-Token`` (validated by
+    ``TransportSecretMiddleware`` / ``_TRANSPORT_SECRET_ONLY_ROUTES``).  No
+    bearer key required — this is a portside-internal route consumed by the
+    ga-radar container.
+    """
+    try:
+        try:
+            from tools import _build_internal_fleet_payload, _get_podman  # container: flat /app/
+        except ModuleNotFoundError:
+            from transport.tools import _build_internal_fleet_payload  # local dev
+            from transport.podman import _get_podman  # local dev
+
+        podman = None
+        try:
+            podman = _get_podman()
+        except Exception:
+            pass  # no Podman client — payload still valid, just no liveness probes
+
+        payload = _build_internal_fleet_payload(podman)
+    except Exception as exc:
+        logger.error("_handle_internal_crews_get: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse(payload)
+
+
 # ── OpenAPI schema ──────────────────────────────────────────────────
 # Generated once at startup (after all routes are defined) and cached here.
 # task 2.2: handler that returns the cached schema.
@@ -1743,6 +1781,9 @@ if __name__ == "__main__":
         ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
         ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
         ("GET",  "/openapi.json"): _handle_openapi_get,
+        # Internal portside fleet data endpoint (TRN-286) — transport-secret-only,
+        # no bearer key required. Consumed by ga-radar.
+        ("GET",  "/internal/crews"): _handle_internal_crews_get,
     }
     _openapi_schema = _openapi.generate_schema(
         routes=_openapi_schema_routes,
@@ -1790,6 +1831,9 @@ if __name__ == "__main__":
             # without Caddy's forward-auth check having passed first.
             ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
+            # Internal portside fleet data endpoint (TRN-286) — transport-secret-only,
+            # no bearer key required. Consumed by ga-radar on ga-portside.
+            ("GET",  "/internal/crews"): _handle_internal_crews_get,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all

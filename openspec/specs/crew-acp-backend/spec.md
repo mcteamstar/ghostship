@@ -76,7 +76,7 @@ The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=claude`
 - **THEN** the WARNING log at launch names `api.anthropic.com` as the required outbound destination
 
 #### Scenario: Base URL set — custom endpoint injected
-- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ANTHROPIC_BASE_URL` is set (e.g. `http://supply.penguin-piano.ts.net:11434`)
+- **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ANTHROPIC_BASE_URL` is set (e.g. `http://my-inference-server:11434`)
 - **THEN** `ANTHROPIC_BASE_URL` is set to that value in the crew container's environment at creation time
 - **THEN** Claude Code routes API calls to the configured endpoint instead of `api.anthropic.com`
 - **THEN** the WARNING log at launch reflects the overridden endpoint
@@ -99,7 +99,7 @@ The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=codex` 
 - **THEN** the WARNING log at launch names `api.openai.com` as the required outbound destination
 
 #### Scenario: Base URL set — custom endpoint injected
-- **WHEN** `GA_CREW_ACP_BACKEND=codex` and `OPENAI_BASE_URL` is set (e.g. `http://supply.penguin-piano.ts.net:11434/v1`)
+- **WHEN** `GA_CREW_ACP_BACKEND=codex` and `OPENAI_BASE_URL` is set (e.g. `http://my-inference-server:11434/v1`)
 - **THEN** `OPENAI_BASE_URL` is set to that value in the crew container's environment at creation time
 - **THEN** Codex routes API calls to the configured endpoint instead of `api.openai.com`
 - **THEN** the WARNING log at launch reflects the overridden endpoint

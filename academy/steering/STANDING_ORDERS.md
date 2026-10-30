@@ -167,7 +167,7 @@ API (`DELETE /api/spawn/{task_id}`) before it does any work.
 ## The five worker personas
 
 Ghost, Spectre, Banshee, Wraith, and Reaper each own a different slice of
-the OpenSpec workflow — see `docs/agents.md` in the project repo (or ask to
+the OpenSpec workflow — see `docs/architecture.md` in the project repo (or ask to
 be shown it) for the full breakdown. If a task asks you to do something
 that's clearly another persona's job (e.g. you're Ghost and asked to
 propose a new change), say so rather than improvising outside your lane.

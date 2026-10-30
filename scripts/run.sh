@@ -9,8 +9,18 @@ cd "$REPO_DIR"
 # ── venv bootstrap ────────────────────────────────────────────────────────────
 # Create and activate a local venv with transport deps so tests run consistently
 # without polluting the system Python. uv is used when available, else venv+pip.
+# Skipped when:
+#   - SKIP_VENV=1 is set explicitly
+#   - GITHUB_ACTIONS=true (CI pre-installs deps; venv bootstrap adds ~30s)
+#   - required deps are already importable in the current Python
 VENV_DIR="$REPO_DIR/.venv"
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+_need_venv() {
+  python3 -c "import starlette, httpx, pytest, mcp" 2>/dev/null && return 1
+  return 0
+}
+if [[ "${SKIP_VENV:-0}" == "1" ]] || [[ "${GITHUB_ACTIONS:-}" == "true" ]] || ! _need_venv; then
+  : # deps already available — skip bootstrap
+elif [[ ! -x "$VENV_DIR/bin/python" ]]; then
   printf '=== Creating .venv ===\n'
   if command -v uv &>/dev/null; then
     uv venv "$VENV_DIR" --quiet
@@ -20,9 +30,12 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
     python3 -m venv "$VENV_DIR"
     "$VENV_DIR/bin/pip" install --quiet -r "$REPO_DIR/transport/requirements.txt"
   fi
+  # shellcheck source=/dev/null
+  source "$VENV_DIR/bin/activate"
+else
+  # shellcheck source=/dev/null
+  source "$VENV_DIR/bin/activate"
 fi
-# shellcheck source=/dev/null
-source "$VENV_DIR/bin/activate"
 # ─────────────────────────────────────────────────────────────────────────────
 
 declare -a SELECTED_CATEGORIES=()
@@ -123,7 +136,7 @@ for category in "${SELECTED_CATEGORIES[@]}"; do
       ;;
     e2e)
       run_category e2e \
-        python3 -m pytest tests/e2e -n 2 --dist loadfile
+        python3 -m pytest tests/e2e -p no:xdist
       ;;
   esac
 done

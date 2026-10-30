@@ -263,7 +263,7 @@ def verify_password(password: str, stored: str) -> bool:
                 maxmem=_SCRYPT_MAXMEM,
             )
             return hmac.compare_digest(dk.hex(), dk_hex)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OSError, OverflowError):
             return False
     return False
 
@@ -517,6 +517,7 @@ def _csp_with_nonce(nonce: str) -> str:
         f"default-src 'self'; "
         f"script-src 'self' 'nonce-{nonce}'; "
         f"style-src 'self' 'nonce-{nonce}'; "
+        f"font-src 'self' data:; "
         f"frame-ancestors 'none'; object-src 'none'"
     )
 

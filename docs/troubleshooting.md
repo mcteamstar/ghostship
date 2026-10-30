@@ -188,16 +188,6 @@ The transport patches three thresholds into each crew's KiroCrew config:
 Set `GA_SPAWN_MIN_MEMORY_GB` lower than `GA_MIN_FREE_MEM_GB` so the
 transport's outer gate triggers first and provides a clearer error.
 
-## Bootstrap crash (`_bootstrap.p`)
-
-This was a known race condition (TRN-16, now resolved) in the crew image's initial setup. If you encounter a container crash during early startup with a traceback referencing `_bootstrap.p` or `pickle` deserialization, the workaround is to nuke and relaunch:
-
-```bash
-# Via MCP:
-nuke(crew_id="<id>", confirm=True)
-launch(crew_id="<id>")
-```
-
 ## "profileArn is required for this request"
 
 This error occurs during dispatch or authentication. Two common causes:
@@ -308,70 +298,31 @@ podman-gs images
 
 ## Known workarounds
 
-These are deliberate hacks for upstream bugs or limitations. Each is marked with
-`# WORKAROUND:` in the source and should be removed when the upstream issue is fixed.
+These are deliberate hacks for upstream limitations, marked `# WORKAROUND:` in the source.
 
-### spawn_min_memory_gb not read from config files (KiroCrew bug)
+### spawn_min_memory_gb not read from config files (KiroCrew)
 
-**Symptom:** Agent spawns are refused with "only N GB available (need 4 GB)" even
-after setting `spawn_min_memory_gb: 0` in `config.local.json` or `config.json`.
+**Symptom:** Agent spawns are refused with "only N GB available (need 4 GB)" even after setting `spawn_min_memory_gb: 0` in config.
 
-**Root cause:** KiroCrew's `AgentConfig` loader explicitly constructs the config
-object from a dict but never reads `spawn_min_memory_gb` — the field always uses
-its dataclass default of `4.0`. Other fields (`resource_pressure_gb`,
-`resource_critical_gb`) are read correctly. Only `spawn_min_memory_gb` is affected.
+**Root cause:** KiroCrew's config loader does not read `spawn_min_memory_gb` from config files — the field always uses its dataclass default of `4.0`. Other threshold fields are read correctly.
 
-**Workaround (in `_ensure_crew_running`):** After every container restart, re-run
-`_patch_crew_config` (which writes `spawn_min_memory_gb=0` into `config.json`),
-then stop and restart the gateway so it re-seeds `config.json` before the loader
-runs. This adds one extra stop/start cycle to every auto-restart but is the only
-reliable way to keep the spawn gate disabled across restarts.
-
-**Remove when:** KiroCrew upstream fixes `AgentConfig.load()` to read
-`spawn_min_memory_gb` from `config.local.json`.
+**Workaround:** After every container restart, `_patch_crew_config` re-writes `spawn_min_memory_gb=0` into `config.json` and restarts the gateway. This adds one extra stop/start cycle to every auto-restart.
 
 ### Direct SQLite writes into kiro-cli's internal database
 
-**Location:** `_inject_auth`, `_read_auth_from_crew` in `transport/server.py`.
+**Location:** `_inject_auth`, `_read_auth_from_crew` in `transport/lifecycle.py`.
 
-**What we do:** Write auth rows directly into kiro-cli's `auth_kv` SQLite table
-using `INSERT OR REPLACE`, bypassing kiro-cli's own migration and ORM layer. We
-also read rows back the same way to copy auth between containers.
+**What we do:** Write auth rows directly into kiro-cli's `auth_kv` SQLite table using `INSERT OR REPLACE`, bypassing kiro-cli's own ORM layer. We also read rows back to copy auth between containers.
 
-**Why it's fragile:** If kiro-cli changes the `auth_kv` schema (renames the table,
-adds a NOT NULL column, changes key names, or moves to a different storage
-backend), auth injection silently fails — no error is raised, crews just fail to
-authenticate. The comment "schema and migrations are pre-seeded in the crew image"
-is true but only holds as long as the upstream schema is stable.
-
-**Why we do it:** kiro-cli provides no external API for injecting auth. The only
-alternative is running `kiro-cli login` inside every new crew container, which
-requires a full device auth flow per crew. Direct DB writes let us authenticate
-once and propagate to all crews.
-
-**Remove when:** kiro-cli exposes an official mechanism for pre-seeding auth
-(config file, env var, or CLI flag).
+**Why:** kiro-cli provides no external API for injecting auth. Direct DB writes let us authenticate once and propagate to all crews without running a full device auth flow per container.
 
 ### Cookie minting via `kirocrew token` + HTTP Set-Cookie header scraping
 
-**Location:** `_mint_cookie` in `transport/server.py`.
+**Location:** `_mint_cookie` in `transport/lifecycle.py`.
 
-**What we do:** Run `kirocrew token --ttl <ttl>` inside the container to get a
-short-lived token, then make an HTTP GET to the gateway with that token as a query
-param and scrape the `mc_token_5476=` value from the `Set-Cookie` response header
-by string splitting.
+**What we do:** Run `kirocrew token --ttl <ttl>` inside the container to get a short-lived token, then make an HTTP GET to the gateway with that token as a query param and scrape the `mc_token_5476=` value from the `Set-Cookie` response header.
 
-**Why it's fragile:** The cookie name `mc_token_5476` is port-specific — it
-embeds the gateway port. If the port changes, the scraping logic breaks silently
-(no cookie found, all crew operations fail). The token-exchange flow is also
-undocumented internal KiroCrew API that could change without notice.
-
-**Why we do it:** The gateway requires a session cookie for all API calls. There
-is no documented way to mint one from outside the gateway. The `kirocrew token`
-subcommand is the only path we found.
-
-**Remove when:** KiroCrew exposes a stable, documented way to obtain a session
-credential for the gateway REST API.
+**Why:** The gateway requires a session cookie for all API calls. There is no documented way to mint one from outside the gateway.
 
 ### Idle-stop vs. nuke
 
@@ -386,3 +337,127 @@ These are two distinct lifecycle operations and should not be confused:
 
 Idle-stop is what keeps a fleet of crews from consuming resources when inactive.
 Nuke is for when a crew's purpose is fully served and its data is no longer needed.
+
+## Podman Runtime Failures
+
+These sections cover Podman failures that occur after a successful install — the
+machine or socket was working before and stopped working (e.g. after a reboot,
+a permission change, or a corrupted storage state).
+
+### Podman machine not started (macOS)
+
+**Symptom:** The Podman socket path exists but every command returns "connection
+refused" or "failed to connect to socket".
+
+This usually means the `ghostship` Podman machine was stopped (e.g. after a
+reboot or `podman machine stop`).
+
+1. Check which machines exist and their state:
+   ```bash
+   podman machine list
+   ```
+2. Start the ghostship machine:
+   ```bash
+   podman machine start ghostship
+   ```
+3. Verify the machine is running and the socket is live:
+   ```bash
+   podman machine list
+   # Look for "ghostship" in the list with state "Running"
+
+   podman info --format '{{.Host.RemoteSocket.Path}}'
+   # Should print a non-empty socket path
+   ```
+4. Once the machine is running, retry your ghostship command.
+
+If the machine does not appear in `podman machine list`, it was never
+initialised — run `./install.sh` to create it.
+
+### Dedicated Podman service socket permissions (Linux)
+
+**Symptom:** `ghostship status` or any podman command fails with "permission
+denied" on the socket, or the socket file is owned by a different user.
+
+When `GA_DEDICATED_MACHINE=true`, ghostship uses a dedicated systemd socket
+unit (`podman-ghostship.socket`) that creates a socket at
+`/run/user/$(id -u)/podman/ghostship.sock`. If the socket is owned by root
+or by another user, the rootless podman client cannot connect.
+
+1. Check ownership and permissions of the runtime directory:
+   ```bash
+   ls -la /run/user/$(id -u)/
+   # Expected: the directory and its contents are owned by your uid
+   ```
+2. Check the status of the dedicated socket unit:
+   ```bash
+   systemctl --user status podman-ghostship.socket
+   ```
+3. If the unit is failed or the socket is missing, reload and restart:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user restart podman-ghostship.socket
+   ```
+4. Verify the socket is available and connectable:
+   ```bash
+   ls -la /run/user/$(id -u)/podman/ghostship.sock
+   podman --url unix:///run/user/$(id -u)/podman/ghostship.sock info
+   ```
+
+If the unit file itself is missing, re-run `./install.sh` — it writes the
+systemd unit files and enables the socket.
+
+### Socket exists but Podman returns errors
+
+**Symptom:** The socket file exists and the service is running, but podman
+commands fail with errors like:
+
+```
+ERRO[0000] cannot set up namespace: ...
+ERRO[0000] exec container process ...
+```
+
+This typically indicates a rootless namespace conflict.
+
+1. Check that `newuidmap` and `newgidmap` are installed and have the `setuid`
+   bit set:
+   ```bash
+   which newuidmap
+   ls -la $(which newuidmap)
+   # Expected: -rwsr-xr-x ... (the 's' in the owner execute bit is the setuid bit)
+   ```
+   If the bit is missing, install the `shadow-utils` or `uidmap` package
+   and verify the setuid bit is restored:
+   ```bash
+   sudo chmod u+s $(which newuidmap) $(which newgidmap)
+   ```
+2. Verify `/etc/subuid` and `/etc/subgid` have entries for your user:
+   ```bash
+   grep "^$(whoami):" /etc/subuid
+   grep "^$(whoami):" /etc/subgid
+   # Expected: myuser:100000:65536
+   ```
+   If entries are missing, add them:
+   ```bash
+   sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(whoami)"
+   ```
+3. Re-run the migration to apply the new sub-id ranges:
+   ```bash
+   podman system migrate
+   ```
+
+**Last resort — reset Podman storage:**
+
+> ⚠️ **Data loss warning:** `podman system reset --force` permanently deletes
+> **all** Podman containers, images, and volumes for your user — including
+> any ghostship crew containers and their workspaces. Run `evac` on all
+> active crews before proceeding. This cannot be undone.
+
+```bash
+podman system reset --force
+```
+
+After a reset, rebuild the ghostship images and restart:
+
+```bash
+./install.sh
+```

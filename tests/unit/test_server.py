@@ -391,5 +391,107 @@ class TestHandleHealth(unittest.TestCase):
         self.assertIn("http.response.body", types_)
 
 
+# ── TestCrewApiProxy404OnUnknownCrew (TRN-284 task 5.1) ──────────────────────
+
+class TestCrewUiProxyStripsAcceptEncoding(unittest.TestCase):
+    """_handle_crew_ui_proxy strips Accept-Encoding from forwarded requests.
+
+    TRN-289: The transport streams raw bytes without decompressing. If
+    Accept-Encoding is forwarded, the crew gateway may return gzip-compressed
+    content. The transport strips Content-Encoding from responses (hop-by-hop)
+    without decompressing the body, so the browser receives binary garbage.
+    Stripping Accept-Encoding at source prevents this.
+    """
+
+    def _server(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def test_accept_encoding_in_stripped_set(self):
+        """accept-encoding is present in _STRIPPED_CREW_PROXY_HEADERS (TRN-289)."""
+        _s = self._server()
+        self.assertIn(
+            "accept-encoding",
+            _s._STRIPPED_CREW_PROXY_HEADERS,
+            "accept-encoding must be in _STRIPPED_CREW_PROXY_HEADERS so crew "
+            "gateways never return compressed responses the transport cannot "
+            "transparently pass through (TRN-289 fix)",
+        )
+
+    def test_stripped_headers_excludes_accept_encoding_from_forward(self):
+        """forward_headers dict built from a request does not contain accept-encoding."""
+        _s = self._server()
+
+        # Simulate the header-filtering logic used in _handle_crew_ui_proxy:
+        #   forward_headers = {k: v for k, v in request.headers.items()
+        #                       if k.lower() not in _STRIPPED_CREW_PROXY_HEADERS}
+        incoming = {
+            "accept-encoding": "gzip, br",
+            "accept": "application/javascript",
+            "user-agent": "Mozilla/5.0",
+            "host": "localhost:64058",
+        }
+        forward_headers = {
+            k: v
+            for k, v in incoming.items()
+            if k.lower() not in _s._STRIPPED_CREW_PROXY_HEADERS
+        }
+
+        self.assertNotIn(
+            "accept-encoding",
+            forward_headers,
+            "accept-encoding must be filtered out by _STRIPPED_CREW_PROXY_HEADERS",
+        )
+        # Unrelated headers are preserved
+        self.assertIn("accept", forward_headers)
+        self.assertIn("user-agent", forward_headers)
+
+
+class TestCrewApiProxyUnknownCrew(unittest.TestCase):
+    """_handle_crew_api_proxy returns 404 when the crew_id is unknown.
+
+    TRN-284 task 5.1: verify the crew API proxy handler returns 404 for a
+    crew_id that is not present in the registry.
+    """
+
+    def _handler(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s._handle_crew_api_proxy
+
+    def test_unknown_crew_returns_404(self):
+        """GET /crews/unknown-xyz/api/spawn should return 404."""
+        from unittest.mock import patch, MagicMock
+        import transport.registry as _reg_mod
+
+        handler = self._handler()
+
+        scope = _make_scope("GET", "/crews/unknown-xyz/api/spawn")
+        messages, send = _collect_send()
+
+        async def _invoke():
+            from starlette.requests import Request
+            req = Request(scope, _receive)
+            resp = await handler(req)
+            await resp(scope, _receive, send)
+
+        # Patch _require_crew to raise KeyError (crew not found)
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+
+        with patch.object(_s, "_require_crew", side_effect=KeyError("unknown-xyz")):
+            _run(_invoke())
+
+        status = _status_of(messages)
+        self.assertEqual(status, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -353,26 +353,31 @@ def _registry_guard(fn):
     return _wrapped
 
 
-@_registry_guard
-def crews() -> dict:
-    """Situational awareness — list all crews and what's running before deciding what to do next.
+def _build_crews_payload(podman) -> dict:
+    """Assemble the full fleet payload dict shared by the MCP ``crews`` tool and
+    the REST ``GET /api/crews`` endpoint.
 
-    Shows crew_id, container, status, created_at, and last_task_at for each,
-    plus uptime_secs (seconds since the container started; present only for
-    running crews, null otherwise).
-    Also includes active agents (tasks) running inside each crew — each with
-    task_id, agent, done, and elapsed_secs. For live per-task detail (current
-    tool, latest output) use `pickup`, not this overview.
-    Also: list crews, show workspaces, what's running, sitrep.
+    ``podman`` is the Podman client instance (or None if it could not be
+    obtained).  The returned dict has the same shape as the MCP tool result:
+
+    .. code-block:: json
+
+        {
+          "crews": [...],
+          "host_memory_available_gb": <float|null>,
+          "active_crews": <int>,
+          "max_active_crews": <int>
+        }
+
+    Side-effect: stale ``running`` → ``stopped`` corrections are written back to
+    the registry (same behaviour as before the extraction).
     """
     with registry:
         _crews_data = dict(registry._reg.get("crews", {}))
 
     # Host memory visibility
-    podman = None
     try:
-        podman = _get_podman()
-        host_mem = _get_host_memory_gb_cached(podman)
+        host_mem = _get_host_memory_gb_cached(podman) if podman is not None else None
     except Exception:
         host_mem = None
 
@@ -476,6 +481,25 @@ def crews() -> dict:
                 ]
         except Exception:
             pass  # crew may be idle/stopped — agents list stays empty
+        # Captain state from registry (no gateway probe needed — registry is always readable)
+        try:
+            schedules = info.get("schedules", [])
+            captain_entry = next(
+                (s for s in schedules if s.get("type") == "captain"), None
+            )
+            if captain_entry is not None:
+                interval = captain_entry.get("interval_secs")
+                cron = captain_entry.get("cron_expr")
+                schedule_str = cron or (f"every {interval}s" if interval else "")
+                entry["captain"] = {
+                    "enabled": captain_entry.get("enabled", True),
+                    "schedule": schedule_str,
+                    "current_task_id": captain_entry.get("current_task_id"),
+                }
+            else:
+                entry["captain"] = None
+        except Exception:
+            entry["captain"] = None
         result.append(entry)
 
     # Write back any stale running→stopped corrections discovered above, in a
@@ -500,6 +524,155 @@ def crews() -> dict:
         "active_crews": active_crews,
         "max_active_crews": GA_MAX_ACTIVE_CREWS,
     }
+
+
+def _build_internal_fleet_payload(podman) -> dict:
+    """Assemble the portside-internal fleet payload for ``GET /internal/crews``.
+
+    This is a registry-reads-only variant of ``_build_crews_payload``.  It
+    differs in two important ways:
+
+    1. **No gateway calls.** The ``agents`` key is always set to ``[]``
+       regardless of whether crew containers are running.  No call to
+       ``_crew_api(info, "GET", "/api/spawn")`` is made.  This invariant holds
+       even if a crew has active tasks — the internal endpoint intentionally
+       omits live agent data so ga-radar can poll at 5-second intervals without
+       hammering per-crew gateways.
+
+    2. **``captain.last_checkin_at`` included.** When a captain schedule entry
+       exists the returned captain dict includes ``last_checkin_at`` (the ISO
+       8601 timestamp of the most recent completed check-in as recorded in the
+       registry, or ``None`` when no check-in has been recorded yet).
+
+    All other fields (``crew_id``, ``status``, ``composition``, ``acp_backend``,
+    ``uptime_secs``, ``last_task_at``, ``dashboard_url``, ``policy_version``,
+    ``gateway_healthy``, ``container``) are identical to ``_build_crews_payload``.
+    """
+    with registry:
+        _crews_data = dict(registry._reg.get("crews", {}))
+
+    # Host memory visibility
+    try:
+        host_mem = _get_host_memory_gb_cached(podman) if podman is not None else None
+    except Exception:
+        host_mem = None
+
+    result = []
+    corrections: list[str] = []
+    for cid, info in _crews_data.items():
+        status = info.get("status", "unknown")
+        if status == "running" and podman is not None:
+            if not podman.container_is_running(info["container"]):
+                status = "stopped"
+                gateway_healthy = False
+                corrections.append(cid)
+            else:
+                crew_url = _crew_url(info)
+                gateway_healthy = _probe_gateway(crew_url)
+        elif status != "running":
+            gateway_healthy = False
+        else:
+            crew_url = _crew_url(info)
+            gateway_healthy = _probe_gateway(crew_url)
+
+        entry = {
+            "crew_id": cid,
+            "container": info["container"],
+            "status": status,
+            "composition": info.get("composition", "kirocrew"),
+            "created_at": info.get("created_at"),
+            "last_task_at": info.get("last_task_at"),
+            "gateway_healthy": gateway_healthy,
+            "crew_image_version": info.get("crew_image_version", "unknown"),
+            "acp_backend": info.get("acp_backend", "kiro"),
+            # agents: always [] — no gateway call made (registry-only contract)
+            "agents": [],
+        }
+        _ui_p = info.get("dashboard_port")
+        if _ui_p is not None:
+            _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
+            if cfg.ga_host_url:
+                from urllib.parse import urlparse as _urlparse3
+                _ph = _urlparse3(cfg.ga_host_url)
+                entry["dashboard_url"] = f"{_caddy_scheme}://{_ph.hostname}:{_ui_p}/"
+            else:
+                entry["dashboard_url"] = f"{_caddy_scheme}://localhost:{_ui_p}/"
+        else:
+            entry["dashboard_url"] = None
+        if "policy_version" in info:
+            entry["policy_version"] = info["policy_version"]
+        entry["uptime_secs"] = None
+        if status == "running" and podman is not None:
+            try:
+                inspect = podman.container_inspect(info["container"])
+                started_raw = inspect.get("State", {}).get("StartedAt")
+                if started_raw:
+                    started_at = datetime.fromisoformat(
+                        started_raw.replace("Z", "+00:00")
+                    )
+                    if started_at.tzinfo is None:
+                        started_at = started_at.replace(tzinfo=timezone.utc)
+                    entry["uptime_secs"] = int(
+                        (datetime.now(timezone.utc) - started_at).total_seconds()
+                    )
+            except Exception:
+                entry["uptime_secs"] = None
+        # Captain state from registry — includes last_checkin_at (internal contract)
+        try:
+            schedules = info.get("schedules", [])
+            captain_entry = next(
+                (s for s in schedules if s.get("type") == "captain"), None
+            )
+            if captain_entry is not None:
+                interval = captain_entry.get("interval_secs")
+                cron = captain_entry.get("cron_expr")
+                schedule_str = cron or (f"every {interval}s" if interval else "")
+                entry["captain"] = {
+                    "enabled": captain_entry.get("enabled", True),
+                    "schedule": schedule_str,
+                    "current_task_id": captain_entry.get("current_task_id"),
+                    "last_checkin_at": captain_entry.get("last_checkin_at"),
+                }
+            else:
+                entry["captain"] = None
+        except Exception:
+            entry["captain"] = None
+        result.append(entry)
+
+    if corrections:
+        with registry:
+            for cid in corrections:
+                entry2 = registry._reg["crews"].get(cid)
+                if entry2 is not None and entry2.get("status") == "running":
+                    entry2["status"] = "stopped"
+
+    active_crews = sum(1 for e in result if e.get("status") == "running")
+    return {
+        "crews": result,
+        "host_memory_available_gb": host_mem,
+        "active_crews": active_crews,
+        "max_active_crews": GA_MAX_ACTIVE_CREWS,
+    }
+
+
+@_registry_guard
+def crews() -> dict:
+    """Situational awareness — list all crews and what's running before deciding what to do next.
+
+    Shows crew_id, container, status, created_at, and last_task_at for each,
+    plus uptime_secs (seconds since the container started; present only for
+    running crews, null otherwise).
+    Also includes active agents (tasks) running inside each crew — each with
+    task_id, agent, done, and elapsed_secs. For live per-task detail (current
+    tool, latest output) use `pickup`, not this overview.
+    Also: list crews, show workspaces, what's running, sitrep.
+    """
+    podman = None
+    try:
+        podman = _get_podman()
+    except Exception:
+        pass
+    return _build_crews_payload(podman)
 
 
 def resource_compositions() -> str:

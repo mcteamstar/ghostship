@@ -3,7 +3,7 @@ name: ghostship-admin
 description: Install, configure, connect a client to, upgrade, or tear down a ghostship transport — Podman prerequisites, the `ghostship` CLI (`ghostship install`/`ghostship start`/`ghostship uninstall`/`ghostship init`/`ghostship status`), the transport's own API-key auth, and rebuilding images. Use when there's no MCP connection to `ghostship` yet, or when the task is about the transport host itself (bringing it up, connecting a new client, upgrading, tearing it down) rather than driving an already-running fleet — for that, use `ghostship-command` instead.
 metadata:
   author: ghostship
-  version: "0.9.1"
+  version: "0.10.0"
 ---
 
 # Ghostship Admin
@@ -314,3 +314,16 @@ for all fleet operations (launch, dispatch, pickup, steer, captain, evac, nuke).
 To configure what crews can do after installation — adding agent personas,
 skills, MCP servers, or building new crew compositions — use
 **`ghostship-capability`**.
+
+
+## Upgrading skills
+
+After pulling a new ghostship version that includes updated academy skills, run:
+
+```bash
+ghostship upgrade --skills
+```
+
+This rebuilds container images, restarts the transport, and re-runs
+`ghostship setup` to refresh skill symlinks. For full details on when to use
+`--skills` and manual fallback steps, see `docs/manual-install.md#upgrading`.

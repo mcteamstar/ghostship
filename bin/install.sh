@@ -1001,6 +1001,11 @@ ${_PODMAN_CMD} build -t localhost/transport:latest \
   "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
+echo "Building localhost/ga-radar:latest ..."
+${_PODMAN_CMD} build -t localhost/ga-radar:latest \
+  "$GHOSTSHIP_DIR/radar/" \
+  && echo "✓ radar image built" || { echo "✗ radar image build failed"; exit 1; }
+
 # ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
 
 ${_PODMAN_CMD} secret rm ga-api-key 2>/dev/null || true
@@ -1178,6 +1183,18 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
+  ga-radar:
+    image: localhost/ga-radar:latest
+    container_name: ga-radar
+    restart: unless-stopped
+    networks:
+      - ga-portside
+    environment:
+      TRANSPORT_URL: "http://ga-transport:64057"
+    secrets:
+      - ga-transport-secret
+    depends_on:
+      - ga-transport
   ga-portal:
     image: docker.io/caddy:2
     container_name: ga-portal
@@ -1288,6 +1305,67 @@ AUTH_EOF
 )
 fi
 
+# Build the Radar session-gated route.
+# When GA_API_KEY is set: use a reverse_proxy-based forward_auth equivalent
+# (standard Caddy modules only — no caddy-security plugin) to validate the
+# gs_session cookie, then proxy to the transport.  This mirrors the pattern
+# used by caddy.py for the per-crew dashboard ports.
+# When GA_API_KEY is unset: passthrough only — no login step needed (Tailscale-gated).
+if [[ -n "${GA_API_KEY:-}" ]]; then
+  _RADAR_ROUTE=$(cat <<RADAR_EOF
+            {
+              "@id": "ga-radar",
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/static/*"]}],
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{"dial": "ga-transport:64057"}],
+                  "rewrite": {"method": "GET", "uri": "/dashboard/auth"},
+                  "headers": {
+                    "request": {
+                      "set": {
+                        "X-Forwarded-Method": ["{http.request.method}"],
+                        "X-Forwarded-Uri": ["{http.request.uri}"],
+                        "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"]
+                      }
+                    }
+                  },
+                  "handle_response": [
+                    {
+                      "match": {"status_code": [2]},
+                      "routes": [{"handle": [{"handler": "vars"}]}]
+                    },
+                    {
+                      "match": {"status_code": [4]},
+                      "routes": [{
+                        "handle": [{
+                          "handler": "static_response",
+                          "status_code": 302,
+                          "headers": {
+                            "Location": ["/dashboard/login?next={http.request.uri}"]
+                          }
+                        }]
+                      }]
+                    }
+                  ]
+                },
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-radar:8080"}], ${_PORTAL_TOKEN_HEADER}}
+              ]
+            },
+RADAR_EOF
+)
+else
+  # No API key — passthrough only (Tailscale-gated install).
+  _RADAR_ROUTE=$(cat <<RADAR_EOF
+            {
+              "@id": "ga-radar",
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/static/*"]}],
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-radar:8080"}], ${_PORTAL_TOKEN_HEADER}}]
+            },
+RADAR_EOF
+)
+fi
+
 # Generate initial-config.json — main server only, no per-crew servers.
 cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
 {
@@ -1300,6 +1378,7 @@ cat > "${DATA_DIR}/caddy/initial-config.json" <<CADDY_EOF
           ${_AUTO_HTTPS}
           "routes": [
 ${_AUTH_ROUTES}
+${_RADAR_ROUTE}
             {
               "@id": "ga-transport-misc",
               "match": [{"path": ["/health", "/version", "/openapi.json", "/dashboard/*", "/login", "/login*", "/logout", "/logout*", "/crews/*/captain/stop"]}],

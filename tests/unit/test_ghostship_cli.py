@@ -220,3 +220,57 @@ class TestCmdStatusMacOSHint(unittest.TestCase):
             gs.os.environ.pop("GA_MACHINE_NAME", None)
             gs.cmd_status([])
         self.assertIn("ghost-academy", out.getvalue())
+
+
+# ── _inspect_installed_url exception narrowing (TRN-290) ─────────────────────
+
+class TestInspectInstalledUrlExceptionNarrowing(unittest.TestCase):
+    """_inspect_installed_url returns '' on subprocess failure and malformed JSON (task 1.6)."""
+
+    def test_returns_empty_string_on_nonzero_returncode(self):
+        """Returns '' when podman inspect exits non-zero (missing container)."""
+        with patch.object(gs, "_find_podman", return_value=["podman"]), \
+             patch.object(gs.subprocess, "run",
+                          return_value=MagicMock(returncode=125, stdout="", stderr="Error: no container")):
+            result = gs._inspect_installed_url()
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_on_malformed_json(self):
+        """Returns '' when podman inspect returns malformed JSON output."""
+        with patch.object(gs, "_find_podman", return_value=["podman"]), \
+             patch.object(gs.subprocess, "run",
+                          return_value=MagicMock(returncode=0, stdout="not-valid-json")):
+            result = gs._inspect_installed_url()
+        self.assertEqual(result, "")
+
+    def test_returns_url_on_valid_output(self):
+        """Returns the GA_HOST_URL value when podman inspect succeeds."""
+        env_json = '["GA_HOST_URL=https://example.com", "OTHER=val"]'
+        with patch.object(gs, "_find_podman", return_value=["podman"]), \
+             patch.object(gs.subprocess, "run",
+                          return_value=MagicMock(returncode=0, stdout=env_json)):
+            result = gs._inspect_installed_url()
+        self.assertEqual(result, "https://example.com")
+
+    def test_returns_empty_when_no_ga_host_url_in_env(self):
+        """Returns '' when env list has no GA_HOST_URL entry."""
+        env_json = '["OTHER=val", "ANOTHER=foo"]'
+        with patch.object(gs, "_find_podman", return_value=["podman"]), \
+             patch.object(gs.subprocess, "run",
+                          return_value=MagicMock(returncode=0, stdout=env_json)):
+            result = gs._inspect_installed_url()
+        self.assertEqual(result, "")
+
+    def test_returns_empty_when_podman_not_found(self):
+        """Returns '' when _find_podman returns None (podman binary absent)."""
+        with patch.object(gs, "_find_podman", return_value=None):
+            result = gs._inspect_installed_url()
+        self.assertEqual(result, "")
+
+    def test_returns_empty_on_timeout(self):
+        """Returns '' when subprocess raises TimeoutExpired."""
+        with patch.object(gs, "_find_podman", return_value=["podman"]), \
+             patch.object(gs.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired(["podman"], 5)):
+            result = gs._inspect_installed_url()
+        self.assertEqual(result, "")

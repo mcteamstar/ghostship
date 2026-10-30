@@ -12,15 +12,14 @@ These variables are written into the transport container's environment by `insta
 | `GA_MAX_CREWS` | `20` | Maximum registered crews (running + stopped). Stopped crews cost no memory; this is a housekeeping limit. |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum simultaneously running crews. Enforced on restart — if the running count equals this limit, restart is refused until another crew idles out. Values ≤ 0 all disable the limit. At ~2–3 GB per running crew, the default of 3 fits an 8 GB host. |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before the container is stopped. |
-| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json` — the **lowest**-precedence level, used only when no per-agent and no per-backend model is set. Set via `--model-default`. There is no global override (removed in TRN-257); use the per-backend `KC_MODEL_<B>_OVERRIDE` vars instead. See [Model precedence](#model-precedence). |
+| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json` — the **lowest**-precedence level, used only when no per-agent and no per-backend model is set. Set via `--model-default`. There is no global override; use the per-backend `KC_MODEL_<B>_OVERRIDE` vars instead. See [Model precedence](#model-precedence). |
 | `KC_MODEL_<B>_OVERRIDE` | _(unset)_ | Per-backend model lock for backend `<B>` ∈ {`KIRO`, `CLAUDE`, `CODEX`}, from `backends.<b>.model.override`. Forces every agent on that backend to the named model, overriding per-agent config. Beaten only by a dispatch-time `model=`. |
 | `KC_MODEL_<B>_DEFAULT` | _(unset)_ | Per-backend fallback model for backend `<B>`, from `backends.<b>.model.default`. Used when an agent on that backend has no per-agent model; more specific than `KC_MODEL_DEFAULT`. |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. On Linux uses host uid (`id -u`); on macOS uses the `podman machine` guest uid (`podman machine ssh -- id -u`), which may differ. |
 | `GA_HOST_URL` | derived from `HOST` | Public base URL baked into presigned `evac`/`supply` links and crew CORS origins (`network.host_url`, `--public-url`). When unset: `http://localhost:<PORT>` for a loopback or wildcard `HOST`, `http://<HOST>:<PORT>` for a specific address. Set it explicitly for a DNS name or TLS. |
 | `GA_FILE_SECRET` | unset (generated once, stored in `DATA_DIR/ga-file-secret`) | HMAC secret signing presigned file URLs. The stored secret survives transport restarts. `install.sh` does not pass an override. |
-| `TRANSPORT_DATA_DIR` | `/data` (pinned) | Container-side data directory the transport reads/writes. Effectively pinned to `/data` in the standard install: `DATA_DIR` is always bind-mounted as `/data`, and the value is hardcoded (TRN-213) rather than read from the environment. Changing it would require a custom compose override. |
+| `TRANSPORT_DATA_DIR` | `/data` (pinned) | Container-side data directory the transport reads/writes. Effectively pinned to `/data` in the standard install: `DATA_DIR` is always bind-mounted as `/data`. Changing it would require a custom compose override. |
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`), from `network.api_key` or `install.sh --api-key <key>`. Resolution order: `--api-key` > `network.api_key` > the key saved by an earlier `--api-key` (`--api-key ""` clears the saved key). `network.api_key` has three states: a string enables auth; unset is fine on a loopback `HOST`, but on any other `HOST` the install warns and aborts and the transport refuses to start; `false` is the explicit opt-out that allows unauthenticated non-loopback access (for deployments behind their own auth layer — Tailscale, VPN, reverse proxy) with a warning. **Never log, print, or embed this value.** See [auth.md](auth.md). |
-| `GA_REQUIRE_API_KEY` | _(removed)_ | **Removed.** Use `network.api_key` (or `network.api_key: false` to opt out explicitly). `off` was previously treated as `network.api_key: false` when no key is set from any source; `error` and `warn` are no longer accepted. |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. Checked against `MemAvailable` from `/proc/meminfo` (falls back to `MemFree`), polled every 5 s for up to 60 s. Set to `0` to disable. |
@@ -30,17 +29,14 @@ These variables are written into the transport container's environment by `insta
 | `GA_MACHINE_DISK` | `100` | Disk in GB for the dedicated Podman machine VM (macOS only). Backed by a sparse file. Ignored on Linux. |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Patched into each crew's `spawn_min_memory_gb` (KiroCrew subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate fires first. |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Patched into each crew's `resource_pressure_gb` — KiroCrew throttles subagent spawning below this threshold. |
-| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Patched into each crew's `resource_critical_gb` — KiroCrew refuses subagent spawning below this hard floor. Also used by the transport as the pre-dispatch probe threshold for captain check-ins (TRN-225). |
+| `GA_RESOURCE_CRITICAL_GB` | `1.0` | Patched into each crew's `resource_critical_gb` — KiroCrew refuses subagent spawning below this hard floor. Also used by the transport as the pre-dispatch probe threshold for captain check-ins. |
 | `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` | `3` | Consecutive captain check-in cycles skipped or refused for host memory pressure (available memory below `GA_RESOURCE_CRITICAL_GB`) before the transport mails `admiral@localhost` once. Edge-triggered: one mail per threshold crossing; the counter resets on the next successful dispatch. |
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
 | `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
-| `GA_CREW_AGENT` | `kiro` | Which agent backend to build and run. Comma-separated list for multi-toolchain builds; first entry is the runtime default for crews launched without a `backend` argument. Any enabled backend can be chosen per crew with `launch(crew_id, backend="claude")`; the crew keeps it for its whole life, including restarts. Values: `kiro` (default, KiroCrew-native kiro-cli), `claude` (Claude Code ACP backend), `codex` (Codex ACP backend). Kiro is always in the enabled set (appended if not listed). `install.sh` builds one toolchain per listed backend and passes the full list as the container environment. Login routes (`POST /login/{backend}/{method}`) only accept enabled backends. Re-run `ghostship install` after changing it. Deprecated aliases: `GA_CREW_ACP_BACKEND` and `GA_AGENT_BACKENDS` are accepted with a warning for one release cycle. |
-| Backend credentials | _(not config)_ | **Moved to credential store (TRN-233).** `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and `OPENAI_API_KEY` are no longer configuration — the installer ignores them with a warning. `KIRO_API_KEY` was moved to the credential store and is now managed via `ghostship auth login kiro --method api-key`. Manage all backend credentials with `ghostship auth login\|logout\|status`; they are stored in `DATA_DIR/credentials/` and resolved per launch. See [auth.md](auth.md). |
-| `ANTHROPIC_BASE_URL` (formerly `GA_CREW_ANTHROPIC_BASE_URL`) | _(unset)_ | Claude backend. Optional Anthropic-compatible endpoint URL injected as `ANTHROPIC_BASE_URL` into crew containers when `GA_CREW_AGENT=claude`. When set, allows operators to redirect Claude-backend crew traffic to a local LLM proxy (litellm, OpenRouter, LM Studio, etc.) without image changes. Has no effect when `GA_CREW_AGENT` does not include `claude`. |
-| `OPENAI_BASE_URL` (formerly `GA_CREW_OPENAI_BASE_URL`) | _(unset)_ | Codex backend. Optional OpenAI-compatible endpoint URL injected as `OPENAI_BASE_URL` into crew containers when `GA_CREW_AGENT=codex`. When set, redirects Codex-backend crew traffic to an OpenAI-compatible endpoint without image changes, and the `launch()` network WARNING names this endpoint instead of `api.openai.com`. Has no effect when `GA_CREW_AGENT` does not include `codex`. |
-| ~~`GA_INCLUDE_CLAUDE_AGENT`~~, ~~`GA_INCLUDE_CODEX_AGENT`~~ | _(removed)_ | **Removed in TRN-202.** Replaced by `GA_CREW_AGENT` (`GA_CREW_AGENT=claude`, `codex`, or `claude,codex`). Setting either variable, to any value including `false`, stops `install.sh` and the transport with an error naming the replacement. |
-| ~~`GA_CREW_ACP_BACKEND`~~ | _(deprecated)_ | **Deprecated in TRN-213.** Use `GA_CREW_AGENT` instead. Accepted with a deprecation warning for one release. Maps directly to `GA_CREW_AGENT`. |
-| ~~`GA_AGENT_BACKENDS`~~ | _(deprecated)_ | **Deprecated in TRN-213.** Use `GA_CREW_AGENT` instead. Accepted with a deprecation warning for one release. Maps to `GA_CREW_AGENT`. |
+| `GA_CREW_AGENT` | `kiro` | Which agent backend to build and run. Comma-separated list for multi-toolchain builds; first entry is the runtime default for crews launched without a `backend` argument. Any enabled backend can be chosen per crew with `launch(crew_id, backend="claude")`; the crew keeps it for its whole life, including restarts. Values: `kiro` (default, KiroCrew-native kiro-cli), `claude` (Claude Code ACP backend), `codex` (Codex ACP backend). Kiro is always in the enabled set (appended if not listed). `install.sh` builds one toolchain per listed backend and passes the full list as the container environment. Login routes (`POST /login/{backend}/{method}`) only accept enabled backends. Re-run `ghostship install` after changing it. |
+| Backend credentials | _(not config)_ | Backend credentials are managed via `ghostship auth login|logout|status` and stored in `DATA_DIR/credentials/`, resolved per crew launch. `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, and `KIRO_API_KEY` are not config file variables — the installer ignores them. See [auth.md](auth.md). |
+| `ANTHROPIC_BASE_URL` | _(unset)_ | Claude backend. Optional Anthropic-compatible endpoint URL injected as `ANTHROPIC_BASE_URL` into crew containers when `GA_CREW_AGENT=claude`. When set, allows operators to redirect Claude-backend crew traffic to a local LLM proxy (litellm, OpenRouter, LM Studio, etc.) without image changes. Has no effect when `GA_CREW_AGENT` does not include `claude`. |
+| `OPENAI_BASE_URL` | _(unset)_ | Codex backend. Optional OpenAI-compatible endpoint URL injected as `OPENAI_BASE_URL` into crew containers when `GA_CREW_AGENT=codex`. When set, redirects Codex-backend crew traffic to an OpenAI-compatible endpoint without image changes, and the `launch()` network WARNING names this endpoint instead of `api.openai.com`. Has no effect when `GA_CREW_AGENT` does not include `codex`. |
 | `GA_TLS_CERTFILE` | _(unset)_ | Path to a TLS certificate file on the **host**. Setting both this and `GA_TLS_KEYFILE` enables direct TLS termination. The cert file's parent directory is bind-mounted read-only at `/mnt/tls` inside the container; the container sees the path as `/mnt/tls/<basename>`. Both vars must be set together or both left unset; both must share the same parent directory (error otherwise). |
 | `GA_TLS_KEYFILE` | _(unset)_ | Path to the TLS private key on the **host**, paired with `GA_TLS_CERTFILE`. Same volume-mount behaviour as `GA_TLS_CERTFILE`. |
 | `GA_RATE_LIMIT_ENABLED` | `true` | Master switch for HTTP rate limiting. Set to `false` to disable `RateLimitMiddleware` entirely. See [Rate limiting](#rate-limiting). |
@@ -58,9 +54,9 @@ These variables are written into the transport container's environment by `insta
 | `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90` — the pinned `0.10.0` multi-arch index digest)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path on the **host** to an operator-managed directory of additional standing-order template `.md` files. Must be an absolute path (error otherwise). When set and the path exists, it is bind-mounted read-only at `/mnt/orders` inside the container; the container receives `GA_ORDERS_DIR=/mnt/orders`. A warning is logged if the path is set but missing. Config-file-only. |
-| `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. One of: `internal` (Caddy built-in CA; requires a one-time `caddy trust` step), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt; requires `GA_PORTAL_DOMAIN` and ports 80/443), `off` (plain HTTP). Unrecognised values fall back to `off` with a WARNING. |
+| `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. See [portal.md](portal.md) for mode descriptions. Unrecognised values fall back to `off` with a WARNING. |
 | `GA_PORTAL_DOMAIN` | _(unset)_ | Domain name for ACME certificate requests. Required when `GA_PORTAL_TLS_MODE=acme`. |
-| `PORT` / ~~`GA_PORTAL_PORT`~~ | `64057` | Port Caddy listens on. `GA_PORTAL_PORT` is the deprecated alias; `install.sh` auto-migrates config files still using it. |
+| `PORT` | `64057` | Port Caddy listens on. Set via `install.sh --port <port>`. |
 | `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard/login`. Sessions are in-memory and reset on transport restart. |
 | `GA_TRANSPORT_SECRET` | _(auto-generated by `install.sh`)_ | **Not user-settable directly.** Shared secret between `ga-portal` (Caddy) and `ga-transport`. Generated with `openssl rand -hex 32`, stored as Podman secret `ga-transport-secret`. Caddy injects it as `X-Transport-Token` on every upstream request; the transport rejects requests with a missing or wrong token with HTTP 401. Preserved across reinstalls. To rotate: delete the `ga-transport-secret` Podman secret and re-run `install.sh`. |
 
@@ -73,30 +69,14 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 | Variable | Default | Description |
 |:---------|:--------|:------------|
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. Set when building or tagging the image under a different name. |
-| `KC_BASE_IMAGE` | _(Containerfile digest)_ | KiroCrew base image for ephemeral login containers. Set when pinning to a different version for testing. |
 | `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine/service name. Only needed when running two ghostship instances side-by-side on the same host. |
-| `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Wall-clock timeout per task (seconds). Increase for long-running multi-step orchestration tasks. |
-| `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | KiroCrew subagent spawn admission gate. KiroCrew subagent spawn admission gate (`crew.memory.spawn_min_memory_gb`). |
-| `GA_RESOURCE_PRESSURE_GB` | `2.0` | KiroCrew memory throttle threshold. |
-| `GA_RESOURCE_CRITICAL_GB` | `1.0` | KiroCrew memory hard-stop threshold. |
-| `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` | `3` | Memory-pressure escalation cycle count before Admiral mail. |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Host free-memory floor for crew startup. Set to `0` to disable. Useful on memory-constrained hosts. |
-| `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First port in the dashboard proxy range. Only needed when port conflicts occur on the default range. |
-| `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of ports in the dashboard proxy range. |
-| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | Per-endpoint rate limit. Override only to tune emergency traffic limits; the master switch `GA_RATE_LIMIT_ENABLED` is the correct production knob. |
-| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | See above. |
-| `GA_RATE_LIMIT_MCP` | `300:60` | See above. |
-| `GA_RATE_LIMIT_FILES` | `60:60` | See above. |
-| `GA_RATE_LIMIT_CREW_API` | `120:60` | See above. |
 | `images.agents_ref` | _(unset, uses `main`)_ | Pin for `mcteamstar/.agents` baked into the crew image (`machine.images.agents_ref`). Academy content is staged via `.agents/setup <backend>` at crew launch. Set to a specific tag or SHA for reproducible builds. A changed value forces a crew image rebuild. |
 
-> **Network topology:** Two static Podman networks replace the retired `ga-net`:
+> **Network topology:** Two static Podman networks:
 > - **`ga-portside`** — `ga-portal` ↔ `ga-transport` only. Crew containers are not on this network.
 > - **`ga-starboard`** — `ga-transport` ↔ all crew containers (`gs-*`) and login containers.
 >
 > Crew containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` cannot reach crew containers by hostname. See `docs/architecture.md` for the full security model.
->
-> **Upgrading from `ga-net`:** The transport automatically migrates existing crew containers from `ga-net` to `ga-starboard` on first startup after the upgrade. No operator action required. `ga-net` is removed when empty.
 
 > **Internal constant — not user-settable:**
 > `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each crew container's gateway over `ga-starboard`. It is defined in `transport/constants.py:21` and imported everywhere else.
@@ -139,7 +119,7 @@ from config: the override (level 2) is hard-patched into every agent file, and
 the fallback (levels 4→5→6) is written as `default_model` only when it resolves
 to a non-empty value. Levels 1 and 3 are applied by the gateway at dispatch time.
 
-> **No global override.** A single global model override was removed in TRN-257:
+> **No global override.**
 > no one model is reachable across backends with different model namespaces
 > (kiro, claude and codex name models differently), so a global lock breaks the
 > moment a crew runs on another backend. Per-backend overrides give the same
@@ -166,14 +146,6 @@ to a non-empty value. Levels 1 and 3 are applied by the gateway at dispatch time
 - **One fallback everywhere**: set only `model.default`.
 - **KiroCrew default everywhere**: leave all of them unset.
 
-### Migrating from `model.override`
-
-The global `model.override` key (and its `KC_MODEL_OVERRIDE` env var) has been
-**removed**. An existing `ghostship.yaml` that still sets `model.override` loads
-with a warning and the value is **ignored**. To keep the same "force this model"
-behaviour, set `backends.<b>.model.override` for each backend you want to
-constrain — e.g. move `model.override: X` to `backends.kiro.model.override: X`
-(and add `claude`/`codex` entries if those backends are enabled).
 
 ## Interactive setup
 
@@ -208,9 +180,7 @@ vars the transport reads via `Config.from_env()`. Every config file is an
 **override file** — you only specify the keys you want to change from the
 built-in defaults.
 
-> `ghostship.conf` (the old flat shell format) is **no longer read**. An
-> existing `config/ghostship.conf` is auto-migrated on the next install — see
-> [Migration from ghostship.conf](#migration-from-ghostshipconf) below.
+> `ghostship.conf` (the old flat shell format) is **no longer read**. An existing `config/ghostship.conf` is auto-migrated on the next install.
 
 ### Resolution order
 
@@ -297,20 +267,7 @@ CLI flags override any config-file value:
 
 ### Migration from ghostship.conf
 
-When `install.sh` finds `config/ghostship.conf` with no `config/ghostship.yaml`
-alongside it, it **auto-migrates** before loading config:
-
-1. Reads the old conf, maps each known key to its YAML path, and writes
-   `config/ghostship.yaml` holding **only the non-default values**.
-2. Any conf key it does not recognise is preserved as a
-   `# UNKNOWN: KEY=value` comment in the new file, and the install prints a
-   warning listing those keys for you to handle manually. Backend credentials
-   and the retired `GA_AGENT_BACKENDS` key are deliberately dropped, not
-   migrated (credentials are managed with `ghostship auth login <backend>`).
-3. Renames the old file to `config/ghostship.conf.bak` and prints a notice.
-
-The install then proceeds with the migrated file. To roll back, rename
-`config/ghostship.conf.bak` back to `config/ghostship.conf` and downgrade.
+`install.sh` auto-migrates an existing `config/ghostship.conf` to `config/ghostship.yaml` on first run — reads the old conf, maps keys to their YAML equivalents, writes a new file, and renames the old one to `.bak`.
 
 ## Client-only install
 
@@ -333,7 +290,7 @@ See [Repository transfer](architecture.md#repository-transfer) in architecture.m
 
 ## Deployment security boundary
 
-`install.sh` publishes Caddy (`ga-portal`) on all interfaces (`0.0.0.0`) at `PORT`. With `GA_API_KEY` unset, MCP requests are not authenticated, so anyone who can reach the host can use every tool. Set `GA_API_KEY` on any machine reachable from another host, restrict the port with a host firewall, and terminate TLS at a trusted reverse proxy or encrypted VPN.
+`install.sh` publishes Caddy (`ga-portal`) on `127.0.0.1` at `PORT` by default. With `GA_API_KEY` unset, MCP requests are not authenticated, so anyone who can reach the host can use every tool. Set `GA_API_KEY` on any machine reachable from another host, restrict the port with a host firewall, and terminate TLS at a trusted reverse proxy or encrypted VPN.
 
 File-transfer routes use HMAC presigned-URL authorization and do **not** require the API key. A valid presigned URL is a bearer capability until its TTL expires, regardless of `GA_API_KEY`. See [auth.md](auth.md).
 
@@ -357,15 +314,7 @@ Rate limit exceeded. Retry after <window_secs> seconds.
 
 `Retry-After` is the full window duration. `/health` and `/version` are unconditionally exempt. Paths not matched by any registered limiter pass through without a rate check.
 
-| Variable | Default | Endpoint |
-|:---------|:--------|:---------|
-| `GA_RATE_LIMIT_ENABLED` | `true` | Master switch. `false` removes the middleware entirely and logs an `INFO` confirmation. |
-| `GA_RATE_LIMIT_LOGIN_GET` | `30:60` | `GET /login` |
-| `GA_RATE_LIMIT_LOGIN_POST` | `5:300` | `POST /login` |
-| `GA_RATE_LIMIT_MCP` | `300:60` | `/mcp` and sub-paths |
-| `GA_RATE_LIMIT_FILES` | `60:60` | `/files/*` |
-| `GA_RATE_LIMIT_CREW_API` | `120:60` | `/crews/{id}/api/*` |
-| `GA_RATE_LIMIT_DASHBOARD_AUTH` | `600:60` | `/dashboard/auth` — Caddy `forward_auth` endpoint |
+Per-endpoint limits are configured via the `GA_RATE_LIMIT_*` env vars. See the env var table above.
 
 **State is in-memory only.** Restarting the transport resets all counters.
 

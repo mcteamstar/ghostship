@@ -475,7 +475,7 @@ def _probe_gateway(crew_url: str) -> bool:
     try:
         r = _http.get(f"{crew_url}/", timeout=5.0)
         return 200 <= r.status_code < 300
-    except Exception:
+    except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
         return False
 
 
@@ -492,7 +492,7 @@ def _refresh_cookie(crew, crew_id: str) -> bool:
     """
     try:
         podman = _get_podman()
-    except Exception:
+    except (FileNotFoundError, RuntimeError, OSError):
         return False
 
     c = _to_crew(crew_id, crew)
@@ -508,13 +508,14 @@ def _refresh_cookie(crew, crew_id: str) -> bool:
             registry._reg["crews"][crew_id]["cookie"] = new_cookie
             if new_internal:
                 registry._reg["crews"][crew_id]["internal_cookie"] = new_internal
+        # H-1 fix: update the in-memory crew dict inside the lock so the
+        # registry write and the local reference are both updated atomically.
+        # This eliminates the stale-cookie window where the registry is already
+        # updated but the caller's local dict still holds the old cookie.
+        c.cookie = new_cookie
+        if isinstance(crew, dict):
+            crew["cookie"] = new_cookie
 
-    # Update the in-memory crew so the caller can use it immediately.
-    # Both the Crew view (c) and the original dict (if crew is a dict) are
-    # updated for backward compatibility with callers that still pass plain dicts.
-    c.cookie = new_cookie
-    if isinstance(crew, dict):
-        crew["cookie"] = new_cookie
     if new_internal:
         c.internal_cookie = new_internal
         if isinstance(crew, dict):
@@ -591,6 +592,7 @@ def _gateway_error_detail(exc: BaseException | None, crew: dict | None) -> tuple
     if not isinstance(exc, httpx.HTTPStatusError):
         return "", False
     status = exc.response.status_code
+    # best-effort: response body read can fail on incomplete/closed streams; fallback is an empty string
     try:
         body = exc.response.text or ""
     except Exception:
@@ -945,6 +947,7 @@ def _prewarm_crew(crew, crew_id: str) -> dict:
     c = _to_crew(crew_id, crew)
 
     # 2.3: idempotency — a fresh warm marker on a running container is a no-op.
+    # best-effort: podman availability is optional here; if unavailable, assume not running
     try:
         podman = _get_podman()
         container_running = podman.container_is_running(c.container)
@@ -1033,6 +1036,7 @@ def _wait_gateway(url: str, timeout: int = 30) -> bool:
         try:
             if _http.get(f"{url}/api/ready", timeout=2.0).status_code == 200:
                 return True
+        # best-effort: connection errors during gateway startup are expected; retry until timeout
         except Exception:
             pass
         time.sleep(1.0)
@@ -1232,18 +1236,22 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
 def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume: str) -> None:
     # Each step is best-effort — a failed launch may mean the container or
     # volumes were never created, so not-found errors are silently ignored.
+    # best-effort: container may not exist if launch failed before container creation
     try:
         podman.container_stop(container)
     except Exception:
         pass
+    # best-effort: container may not exist if launch failed before container creation
     try:
         podman.container_remove(container)
     except Exception:
         pass
+    # best-effort: volume may not exist if launch failed before volume creation
     try:
         podman.volume_remove(volume)
     except Exception:
         pass
+    # best-effort: volume may not exist if launch failed before volume creation
     try:
         podman.volume_remove(home_volume)
     except Exception:
@@ -1253,6 +1261,7 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
     # Derive the crew_id from the container name (gs-<crew_id>) so every
     # launch-failure path and the nuke path clean it up. Best-effort — a launch
     # that failed before secret_create just no-ops.
+    # best-effort: secret may not exist if launch failed before secret creation
     try:
         if container.startswith(CREW_CONTAINER_PREFIX):
             crew_id = container[len(CREW_CONTAINER_PREFIX):]
@@ -1459,6 +1468,7 @@ def _reconcile_registry() -> None:
     Also sweeps any orphaned ga-login-* containers left over from a transport
     restart that occurred mid-login flow.
     """
+    # best-effort: podman may be unavailable on startup; reconciliation is skipped, not fatal
     try:
         podman = _get_podman()
     except Exception:
@@ -1493,8 +1503,17 @@ def _reconcile_registry() -> None:
     # Snapshot the registry under the lock, then release it before the
     # per-crew restart loop so the lock is not held across gateway waits
     # (up to 30s each).  Per-crew write-backs re-acquire the lock individually.
+    # H-2 fix: also capture created_at values for all entries AT SNAPSHOT TIME
+    # under the lock, so the write-back can detect concurrent re-registrations.
     with registry:
         snapshot = dict(registry._reg["crews"])
+        # Capture created_at under the same lock as the snapshot. This ensures
+        # the write-back compares against the value at snapshot time, not a
+        # value that may have been mutated by a concurrent launch() in the
+        # interval between the snapshot and the write-back.
+        snapshot_created_at: dict[str, str | None] = {
+            cid: entry.get("created_at") for cid, entry in snapshot.items()
+        }
 
     to_remove = []
     updates: dict[str, dict] = {}  # cid -> fields to merge back
@@ -1546,7 +1565,21 @@ def _reconcile_registry() -> None:
     try:
         with registry:
             for cid in to_remove:
-                registry._reg["crews"].pop(cid, None)
+                # H-2 fix: re-read the live entry and skip deletion if its
+                # created_at differs from the snapshot value. A differing
+                # created_at means the crew was re-registered concurrently
+                # (e.g. a new launch() ran between the snapshot and here) and
+                # we must not destroy the new entry.
+                live_entry = registry._reg["crews"].get(cid)
+                if live_entry is None:
+                    continue  # already removed — nothing to do
+                if live_entry.get("created_at") != snapshot_created_at.get(cid):
+                    logger.info(
+                        "Reconcile: skipping deletion of crew %s — "
+                        "created_at changed (concurrent re-registration)", cid,
+                    )
+                    continue
+                del registry._reg["crews"][cid]
             for cid, fields in updates.items():
                 if cid in registry._reg["crews"]:
                     registry._reg["crews"][cid].update(fields)
@@ -1760,6 +1793,12 @@ def _resolve_dispatch_slot(
         enrolled: frozenset[str] = frozenset(crew.enrolled_agents or [])
     else:
         enrolled = frozenset(crew.get("enrolled_agents") or [])
+    if slot is True:
+        logger.warning(
+            "_resolve_dispatch_slot: slot=True is not a valid value; "
+            "treating as slot=None (member-slot or headless resolution proceeds normally)"
+        )
+        slot = None
     if slot is None and agent in enrolled:
         # Echo the agent name (clean) not "member-<agent>" (implementation detail).
         return agent, f"dashboard:member-{agent}"
@@ -2112,6 +2151,7 @@ def _run_pty_login_flow(
             if pattern.search(text):
                 try:
                     pty_sock.sendall(answer)
+                # best-effort: PTY may have closed before the prompt was answered
                 except Exception:
                     pass
                 answered.add(idx)
@@ -2168,6 +2208,7 @@ def _run_pty_login_flow(
         pty_sock.setblocking(True)
 
         def _drain() -> None:
+            # best-effort: PTY drain runs in background; socket errors on EOF are expected and non-fatal
             try:
                 while True:
                     chunk = pty_sock.recv(4096)
@@ -2178,6 +2219,7 @@ def _run_pty_login_flow(
             finally:
                 try:
                     pty_sock.close()
+                # best-effort: socket close in finally; ignore errors if already closed
                 except Exception:
                     pass
 
@@ -2482,6 +2524,7 @@ def _abort_claude_pending_login(podman: "PodmanClient") -> bool:
     result = CLAUDE_FLOW.abort(podman)
     # Close the PTY socket if present (abort() does not close it)
     if pty_sock is not None:
+        # best-effort: socket may already be closed if the PTY drain thread finished
         try:
             pty_sock.close()
         except Exception:

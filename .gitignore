@@ -10,3 +10,8 @@ config/*.yaml
 config/*.conf.bak
 !config/*.conf.example
 !config/*.yaml.example
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/

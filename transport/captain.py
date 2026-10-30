@@ -120,6 +120,7 @@ def _list_order_templates() -> list[tuple[str, str]]:
             if path.name.startswith("."):
                 continue
             stem = path.stem
+            # best-effort: template front-matter parsing; a malformed file gets empty description
             try:
                 description, aliases, _body = _parse_order_front_matter(
                     path.read_text(encoding="utf-8")
@@ -144,6 +145,7 @@ def _list_order_templates() -> list[tuple[str, str]]:
                     templates[stem] = description
                     for alias in aliases:
                         templates[alias] = description
+                # best-effort: user-defined template front-matter parsing; a malformed file gets empty description
                 except Exception:
                     templates[stem] = ""
         else:
@@ -194,6 +196,7 @@ def _load_order_template(name: str) -> tuple[str, str]:
                     if name in aliases:
                         template_path = candidate
                         break
+                # best-effort: skip candidates whose front-matter is malformed during alias scan
                 except Exception:
                     continue
             if template_path is not None:
@@ -237,6 +240,7 @@ def _parse_order_front_matter(content: str) -> tuple[str, list[str], str]:
                     # Parse inline list: aliases: ["a", "b"] or aliases: [a, b]
                     import ast as _ast
                     aliases_val = line[len("aliases:"):].strip()
+                    # best-effort: malformed aliases value in front-matter; silently skip
                     try:
                         parsed = _ast.literal_eval(aliases_val)
                         if isinstance(parsed, list):
@@ -572,6 +576,7 @@ def _skim_all_mailboxes(
         dict mapping each of the 8 mailbox names to a list of
         ``{"subject": str, "received_at": str | None}`` dicts.
     """
+    # best-effort: mail subject scan via exec may fail on stopped or unresponsive containers; fall through to archive API
     try:
         result = _read_all_mail_subjects(podman, container)
         if result:
@@ -586,6 +591,7 @@ def _skim_all_mailboxes(
     out: dict[str, list[dict]] = {}
     for name in _ALL_MAIL_MAILBOXES:
         mailbox_path = f"/var/mail/{name}"
+        # best-effort: archive API may fail for individual mailboxes; return empty list for those
         try:
             out[name] = _read_mail_subjects_archive(podman, container, mailbox_path)
         except Exception:
@@ -649,6 +655,7 @@ def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[dict]:
                     received_at: str | None = None
                     date_header = msg.get("Date", "")
                     if date_header:
+                        # best-effort: mail Date header parsing; date formats vary across MUAs
                         try:
                             dt = _email_utils.parsedate_to_datetime(date_header)
                             received_at = dt.astimezone(_timezone.utc).isoformat()
@@ -664,11 +671,14 @@ def _read_maildir_subjects_from_tar(tar_bytes_or_stream: Any) -> list[dict]:
                                         date_header,
                                     )
                                 received_at = dt.isoformat()
+                            # best-effort: unparseable Date header; received_at stays None
                             except Exception:
                                 received_at = None
                     subjects.append({"subject": subject, "received_at": received_at})
+                # best-effort: skip malformed individual mail messages in the tar
                 except Exception:
                     pass
+    # best-effort: tar parsing of maildir archive; return whatever subjects were parsed
     except Exception:
         pass
     return subjects
@@ -696,6 +706,7 @@ def _read_mail_subjects_archive(
         messages in ``new/`` and ``cur/``. Returns an empty list on any archive
         API failure (container does not exist, mailbox absent, etc.).
     """
+    # best-effort: archive API may fail (container absent, mailbox missing, network error); return empty
     try:
         response = podman.container_archive_get(container, mailbox_path)
         # Collect the full tar bytes from the response stream before parsing,
@@ -725,6 +736,7 @@ def _read_sentinel_file(podman: "PodmanClient", container: str) -> str | None:
     """
     import tarfile as _tarfile
     import io as _io
+    # best-effort: sentinel file read via archive API; absent file or stopped container returns None
     try:
         response = podman.container_archive_get(container, _SENTINEL_WORKSPACE_PATH)
         tar_bytes = b"".join(response.iter_bytes())
@@ -830,6 +842,7 @@ def _captain_standing_view(
     # Read last_checkin_at and current_task_id from the crew's captain schedule entry
     last_checkin_at: str | None = None
     current_task_id: str | None = None
+    # best-effort: registry schedule read; missing or corrupt schedule entry is non-fatal
     try:
         with registry:
             crew_entry = registry._reg.get("crews", {}).get(crew_id, {})

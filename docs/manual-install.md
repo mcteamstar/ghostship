@@ -71,16 +71,11 @@ systemctl --user enable --now podman.socket
 ls -l /run/user/$(id -u)/podman/podman.sock
 ```
 
-## Continue Setup
-
-Once podman is installed and verified, re-run:
+Once Podman is verified, run:
 
 ```bash
 ./install.sh
 ```
-
-The script will detect podman on PATH, skip the package-manager step, and
-proceed with socket setup, image builds, and transport container launch.
 
 ## Troubleshooting
 
@@ -96,3 +91,68 @@ proceed with socket setup, image builds, and transport container launch.
   allow overriding the socket path without a config file. It is the only
   variable with this behaviour. For all other settings, use `--config <path>`
   or CLI flags (see [configuration.md](configuration.md)).
+
+## Upgrading
+
+### When to use `--skills`
+
+Run `ghostship upgrade --skills` after pulling a new ghostship version that
+ships updated academy skills (agents, steering files, or skill scripts in
+`academy/`). The flag ensures that:
+
+1. Container images are rebuilt from the new source.
+2. The transport container is restarted with the updated images.
+3. `ghostship setup` runs automatically to refresh the skill symlinks in
+   `~/.kiro/skills/ghostship-admin` and the other registered harnesses.
+
+Without `--skills`, `ghostship upgrade` only rebuilds and restarts the
+container images — skill symlinks are not updated, so new or changed skill
+files remain unreachable until `ghostship setup` is run separately.
+
+**Rule of thumb:** if a release's changelog or `SKILL.md` mentions changes
+to academy skills, use `--skills`.
+
+### What `ghostship upgrade --skills` does
+
+```
+ghostship upgrade --skills
+```
+
+Internally this is equivalent to:
+
+```bash
+# 1. Rebuild images and restart transport
+./install.sh
+
+# 2. Re-run setup to refresh skill symlinks for each configured harness
+ghostship setup
+```
+
+### Verify skill symlinks are current
+
+After upgrading, confirm the symlinks point to the new files:
+
+```bash
+# Check the ghostship-admin skill symlink target
+ls -la ~/.kiro/skills/ghostship-admin
+# The symlink should point into the current ghostship source tree
+
+# Or re-run setup explicitly to force a refresh
+ghostship setup --agent kiro    # for the kiro harness
+ghostship setup --agent claude  # for the claude harness
+```
+
+### Manual fallback steps
+
+If `ghostship upgrade --skills` is unavailable (older version) or fails
+partway through, run the steps manually:
+
+```bash
+# Step 1: rebuild images and restart
+./install.sh
+
+# Step 2: refresh skill symlinks
+ghostship setup
+```
+
+Each step is idempotent — re-running either one is safe.

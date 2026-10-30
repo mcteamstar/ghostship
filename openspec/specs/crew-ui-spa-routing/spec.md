@@ -70,6 +70,26 @@ When `GA_DASHBOARD_PORT_ENABLED=false`, the transport SHALL skip all port alloca
 - **WHEN** `GA_DASHBOARD_PORT_ENABLED=false` and `launch(dashboard=True)` is called
 - **THEN** no port is allocated and `dashboard_url` is `null` in the response
 
+### Requirement: Transport strips Accept-Encoding from crew proxy requests
+
+The transport's crew UI proxy MUST strip the `Accept-Encoding` header from all outbound requests to crew gateways. This ensures crew gateways always return uncompressed responses that the transport can pass through transparently.
+
+The transport proxies raw bytes via `_async_http.stream()` without decompressing the response body. If `Accept-Encoding` is forwarded, the crew gateway may return compressed content. The transport strips `Content-Encoding` from all proxied responses (hop-by-hop header handling), so the browser receives compressed bytes with no encoding hint and cannot decompress them — causing a JS parse failure.
+
+#### Scenario: Crew gateway always receives uncompressed request
+
+- **WHEN** a browser sends `GET /crews/{id}/ui/assets/main.js` with `Accept-Encoding: gzip, br`
+- **THEN** the transport forwards the request to the crew gateway WITHOUT an `Accept-Encoding` header
+- **AND** the crew gateway returns an uncompressed response
+- **AND** the browser successfully parses the JS asset
+
+#### Scenario: Asset response is valid JS, not binary
+
+- **GIVEN** a running crew with a dashboard port
+- **WHEN** `GET /crews/{id}/ui/assets/main.js` is proxied through the transport
+- **THEN** the response body starts with valid JS text (e.g. `const `)
+- **AND** the response does NOT contain gzip magic bytes (`0x1f 0x8b`)
+
 ### Requirement: Portal reads message content from REST, not WebSocket payload bodies
 
 The ghostship portal SHALL read message content (assistant text, tool-call titles, tool output) exclusively from the REST API (`GET /api/sessions/{id}/messages`). The portal MAY consume WebSocket messages only for session-state change notifications (turn started, turn ended, new-message signal). The portal SHALL NOT depend on `assistant_content`, `tool_title`, or any other non-user content field being present in WebSocket broadcast payloads. This separation ensures that upstream WS broadcast redaction of non-user content is invisible to the portal.

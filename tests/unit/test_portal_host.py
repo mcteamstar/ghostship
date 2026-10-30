@@ -28,6 +28,7 @@ PORTAL_LIB = REPO_ROOT / "bin" / "lib" / "portal_host.sh"
 
 BASH = shutil.which("bash")
 needs_bash = pytest.mark.skipif(not BASH, reason="bash not available")
+needs_bash = pytest.mark.slow(needs_bash)  # bash subprocess tests are slow on CI
 
 
 def _run(script: str, tmp_path: Path) -> subprocess.CompletedProcess:

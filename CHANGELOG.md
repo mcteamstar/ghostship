@@ -1,5 +1,94 @@
 # Changelog
 
+## v0.10.0
+
+### Radar — fleet observability dashboard (TRN-97, TRN-286)
+
+- `GET /` serves the **Radar** fleet dashboard — a read-only browser view of all
+  crews, their status, active tasks, captain state, and schedule without requiring
+  an active MCP agent session.
+- Radar runs as its own dedicated container (`ga-radar`) on the portside network.
+  Caddy proxies `/` and `/api/crews*` to `ga-radar:8080`; Radar calls
+  `ga-transport`'s internal `/internal/crews` endpoint using the transport secret.
+- `GET /api/crews` REST endpoint returns the full fleet payload (same data as the
+  MCP `crews()` tool), including per-crew `captain` state and `last_checkin_at`.
+- Captain state (`enabled`, `schedule`, `current_task_id`, `last_checkin_at`)
+  included in the fleet payload for both the REST endpoint and the MCP tool.
+- Caddy `ga-radar` route session-gates `/` and `/api/crews*` via `forward_auth`
+  (same `gs_session` cookie as per-crew dashboards). Works with and without
+  `GA_API_KEY`.
+- SPA features: 5 s polling, "Refreshed at" timestamp, running-first sort with
+  Inactive divider, Age column, crew busyness badges (active task count, captain
+  state), expandable row detail (active tasks + captain section), stopped-crew
+  dimming, relative timestamps, click affordance, ghost emoji favicon.
+- Visual theme: deep space / cosmic nebula aesthetic — starfield CSS, nebula glow
+  gradients, IM Fell English heading, Spectral body, ghost crew colour palette
+  (teal for active tasks, purple for captain/Raven). All fonts embedded as woff2
+  data URIs — no external CDN dependency.
+- CSP-compliant: per-request nonce injection, no inline styles, `font-src data:`
+  directive added to `SecurityHeadersMiddleware`.
+- 25 new unit tests in `test_fleet.py`; `conftest.py` extended with `HTMLResponse`
+  stub and `media_type` content-type header support.
+
+### Crew dashboard asset proxy fix (TRN-289)
+
+- Fixed: KiroCrew SPA assets (`/assets/*.js`) failed to parse when loaded through
+  the transport's crew UI proxy with `SyntaxError: Invalid or unexpected token`.
+- Root cause: transport forwarded `Accept-Encoding: gzip, br` to the crew gateway,
+  which returned compressed content. The transport stripped `Content-Encoding` from
+  the response (hop-by-hop) without decompressing — browser received binary gzip
+  labelled as `text/javascript`.
+- Fix: `accept-encoding` added to `_STRIPPED_CREW_PROXY_HEADERS` so crew gateways
+  always return uncompressed responses.
+
+### Race condition fixes in lifecycle layer (TRN-283)
+
+- **H-1** `_refresh_cookie`: crew dict cookie mutation now inside the registry lock —
+  no observable stale-cookie window for concurrent callers.
+- **H-2** `_reconcile_registry`: write-back now re-checks each candidate deletion
+  against its `created_at` timestamp before removing — concurrent re-launch is
+  safe.
+- **H-3** `ensure_running`: early-in-progress check and leader election consolidated
+  under a single lock acquisition — double-stop and dual-leader races eliminated.
+- 3 regression tests added to `test_lifecycle.py`.
+
+### Test coverage — podman, lifecycle, tools (TRN-284)
+
+- **`tests/unit/test_podman.py`** (new) — PodmanClient against a mock HTTP transport;
+  FakePodmanClient interface parity test.
+- **`tests/unit/test_tools.py`** (new) — `nuke()`, `schedule()`, `dispatch()` error
+  paths, `resource_agents`, `resource_jobs`, `supply`/`evac`/`pickup` branches.
+- **`test_lifecycle.py`** extended — `_reconcile_registry`, `_reseed_crew_schedules`,
+  `_mint_cookie`/`_refresh_cookie`, `_prewarm_crew`.
+- **`test_captain_engine.py`** extended — `_dispatch_captain_checkin` memory pressure
+  and claude backend model override, `_steer_captain_checkin` 400-continue branch,
+  `_captain_do_order` re-order.
+- **`test_server.py`**, **`test_files.py`**, **`test_academy.py`** targeted additions.
+- Total unit tests: **1199** (up from 1132 at v0.9.1).
+
+### Quality fixes (TRN-285)
+
+- **M-1** `verify_password()` scrypt branch now catches `OSError` and `OverflowError`
+  in addition to `ValueError`/`TypeError` — crafted extreme hash parameters return
+  `False` instead of raising.
+- **M-2** `_resolve_dispatch_slot()`: `slot=True` now logs a WARNING and falls back
+  to `None` instead of silently producing headless dispatch.
+- **M-3** `_captain_do_order()`: cron schedules now evaluate the first `next_fire_at`
+  from the cron expression rather than hardcoding `now + 60s`.
+- **M-4** `_steer_captain_checkin()`: error classification now uses
+  `exc.response.status_code` and `exc.request.url.path` instead of fragile
+  string-matching on the exception message.
+
+### e2e test robustness
+
+- `scripts/run.sh`: e2e suite now runs sequentially (`-p no:xdist`) — concurrent
+  launches under xdist caused spurious failures on memory-constrained hosts.
+- `TestCaptainStatusStoppedCrew.setUpClass`: raises `SkipTest` instead of
+  `RuntimeError` when the Podman socket is unreachable — remote e2e runs skip
+  cleanly instead of erroring.
+- `setUpModule` in `test_transport_e2e_extended.py`: retries once after a 15 s pause
+  on shared-crew launch failure.
+
 ## v0.9.1
 
 ### `free-will` Captain order template (aliases: `free`, `willy`) (TRN-281)
@@ -8,7 +97,7 @@
 - Raven self-cancels on completion; open-ended/recurring instructions continue on each check-in.
 - `transport/captain.py`: `_resolve_order_template()` gains a `message` parameter and `<message>` placeholder substitution. Message and template can now be provided together when the template uses `<message>`.
 - `transport/captain_engine.py`: relaxed the `message`/`template` mutual-exclusion constraint to allow both when the template accepts a message.
-- Docs updated: `README.md`, `docs/architecture.md`, `docs/agents.md`, `ghostship-command` skill.
+- Docs updated: `README.md`, `docs/architecture.md`, `ghostship-command` skill.
 
 ### Security hardening (indy-0.9.1 findings, TRN-279)
 
@@ -327,7 +416,7 @@ The unit test suite was rewritten around dependency injection and a `FakePodmanC
 
 ### Features
 
-- **Headless Claude auth with `CLAUDE_CODE_OAUTH_TOKEN` (TRN-226).** The long-lived token from `claude setup-token` is now set in `ghostship.conf`, delivered as the `ga-claude-code-oauth-token` Podman secret, and injected into Claude-backend crews as `CLAUDE_CODE_OAUTH_TOKEN`. Every crew uses the same token, so the OAuth refresh-staleness limitation (see v0.6.0) does not apply. Each Claude crew gets exactly one credential, in this order: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. See [docs/auth.md](docs/auth.md#claude-headless-auth-recommended).
+- **Headless Claude auth with `CLAUDE_CODE_OAUTH_TOKEN` (TRN-226).** The long-lived token from `claude setup-token` is now set in `ghostship.conf`, delivered as the `ga-claude-code-oauth-token` Podman secret, and injected into Claude-backend crews as `CLAUDE_CODE_OAUTH_TOKEN`. Every crew uses the same token, so the OAuth refresh-staleness limitation (see v0.6.0) does not apply. Each Claude crew gets exactly one credential, in this order: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. See [docs/auth.md](docs/auth.md#setup-token-headless-recommended).
 
 ### Fixes
 
@@ -605,7 +694,7 @@ Crew dashboards are now proxied through `ga-portal` (Caddy) rather than per-port
 - `launch(dashboard=True)` registers a per-crew Caddy server via the admin API and returns a `dashboard_url`. `nuke` removes it. Transport startup re-registers from `crews.json` (idempotent, no Caddy restarts).
 - Every dashboard port is gated by a `gs_session` cookie. Unauthenticated requests go to `/dashboard/login`; `POST /dashboard/login` issues the cookie when `GA_API_KEY` is correct (open-access when `GA_API_KEY` is unset).
 - The transport injects the `mc_token_5476` crew session cookie before forwarding to the crew gateway, resolving a 403 IP-mismatch that occurred when Caddy proxied directly.
-- **TLS modes:** `off` (plain HTTP, default), `internal` (Caddy built-in CA), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt). Configured via `GA_PORTAL_TLS_MODE`. See [docs/caddy.md](docs/caddy.md).
+- **TLS modes:** `off` (plain HTTP, default), `internal` (Caddy built-in CA), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt). Configured via `GA_PORTAL_TLS_MODE`. See [docs/portal.md#tls-modes](docs/portal.md#tls-modes).
 - When `GA_API_KEY` is set, Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` at the edge before requests reach the transport.
 
 ### Network isolation
