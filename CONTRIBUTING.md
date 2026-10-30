@@ -1,6 +1,6 @@
 # Contributing to Ghostship
 
-Before contributing, read [docs/forks.md](docs/forks.md) — it explains how
+Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) — it explains how
 ghostship is meant to be consumed and when a fork is the right answer rather
 than a PR upstream. Most customisation work belongs in your own fork, not here.
 

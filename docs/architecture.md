@@ -2,419 +2,180 @@
 
 ## Components
 
-**ga-transport** — the MCP server (`transport/server.py`). Runs as a container started by `podman-compose` from the `compose.yml` that `install.sh` generates. It publishes no host port; Caddy (`ga-portal`) fronts it on `PORT`, published on all interfaces. Manages crew containers via the Podman socket and exposes the `ghostship` tools. Optionally runs on a **dedicated Podman machine** (macOS) or **dedicated systemd socket-activated instance** (Linux) — see `GA_DEDICATED_MACHINE` in [configuration.md](configuration.md).
+**ga-transport** — the MCP server (`transport/server.py`). Runs as a container started by `podman-compose` from the `compose.yml` that `install.sh` generates. Manages crew containers via the Podman socket and exposes the `ghostship` MCP tools. Fronted by Caddy (`ga-portal`) — see [portal.md](portal.md).
 
-**Crew containers** — on-demand KiroCrew instances (`localhost/spec-ops:latest`), named `gs-<id>`. Each has a workspace volume (`gs-vol-<id>`) and a home volume (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join `ga-starboard` so transport can reach them by name (`http://gs-<id>:5476`). Isolated from `ga-portal` by network topology — see [Networking](#networking-trn-107-portsidestarboard-split).
+**Crew containers** — on-demand KiroCrew instances (`localhost/spec-ops:latest`), named `gs-<id>`. Each has a workspace volume (`gs-vol-<id>`) and a home volume (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join `ga-starboard` so the transport can reach them by name (`http://gs-<id>:5476`).
 
-**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.10.0` (Debian 12, Python 3.12, git, curl). Adds Node.js 24 LTS and the `openspec` CLI. Built locally at install time as `localhost/spec-ops:latest` via three stages:
+**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.10.0`. Built locally at install time as `localhost/spec-ops:latest` in three stages:
 
-1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`. Extends `ghcr.io/kirodotdev/kirocrew:0.10.0`.
-2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. When `GA_CREW_AGENT` includes optional backends (`claude`, `codex`), the corresponding toolchain scripts are run here. Extends `base-admission`.
-3. **`base-graduation`** — pre-seeds the kiro-cli SQLite DB schema (`seed_kiro_db.py`) so auth injection works without migrations at every launch. Extends the `spec-ops` intermediate image.
+1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`.
+2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. Optional backend toolchains (`claude`, `codex`) are layered here when enabled.
+3. **`base-graduation`** — pre-seeds the kiro-cli SQLite DB schema so auth injection works at launch without running migrations.
 
 See [configuration.md](configuration.md#extending-the-crew-image) to add packages.
 
 ## Ghost Academy
 
-![Fleet and crew hierarchy: Admiral → fleet → ghostship → crew → Captain → agents](images/docs-fleet-hierarchy.png)
+![Fleet and crew hierarchy](images/docs-fleet-hierarchy.png)
 
-Every ghostship shares the same foundation: [`academy/agents/`](../academy/agents/), [`academy/skills/`](../academy/skills/), and [`academy/steering/`](../academy/steering/) — bind-mounted into transport and copied into every crew at `launch`, filtered by the crew type's manifest (`crews/<crew-type>/manifest.json`). The current `spec-ops` type uses `"*"` for every key; the manifest structure supports narrower per-type selection.
+Every ghostship shares the same foundation: `academy/agents/`, `academy/skills/`, and `academy/steering/` — bind-mounted into the transport and copied into every crew at `launch`, filtered by the crew type's manifest (`crews/<crew-type>/manifest.json`).
 
-Development inside a ghostship follows [OpenSpec](https://github.com/Fission-AI/OpenSpec)'s spec-driven workflow — explore → propose → apply → archive — split across five worker personas. See [agents.md](agents.md) and [Steering](#steering).
+### Agents
 
-### Ghostship-spawn gateway skill
+Six KiroCrew personas. The five workers split the [OpenSpec](https://github.com/Fission-AI/OpenSpec) spec-driven workflow; Raven is the Captain's dispatch persona.
 
-`ghostship-spawn` is an Academy skill copied into every manifest-selected crew with its complete directory, including executable helper scripts. It provides the four gateway operations not covered by the `kirocrew` CLI: named-persona dispatch, task detail, steering, and continuation. The helper sends cookie-authenticated requests only to the crew's fixed loopback gateway; agents do not assemble REST calls or handle the session cookie. Dispatch requests retained runs (`keep=true`) so the returned gateway `id` remains usable for status, steering and continuation. The helper does not follow gateway redirects. Its task input should stay short and describe commands rather than quote literal command lines.
+| Agent | Role | Tool grants |
+|:------|:-----|:------------|
+| **Ghost** | General-purpose — executes one well-scoped task end to end; full OpenSpec lifecycle | `read grep glob write code shell web_search web_fetch` |
+| **Spectre** | Planning — investigates, scaffolds proposals, revises plans | same as Ghost |
+| **Banshee** | Review/fix — independent second pass; finds bugs, runs tests, fixes | same as Ghost |
+| **Reaper** | Cleanup — syncs delta specs and archives completed changes | `read grep glob write shell web_search web_fetch` |
+| **Wraith** | Recon/docs — research and documentation; read-only over code | `read grep glob shell web_search web_fetch` |
+| **Raven** | Watcher/coordinator — checks task state, dispatches personas, drives the Captain loop | `read grep glob shell` |
 
-Claude crews run in KiroCrew's `default` mode under its hook gate. KiroCrew does not write `bypassPermissions`; `dangerously_skip_permissions` only approves calls the gate allows and cannot override a gate denial.
+Small, self-contained work can start and end with a single Ghost dispatch. Not every task needs the full cycle.
+
+Academy content is delivered to each backend's native harness paths (`~/.kiro/skills/`, `~/.claude/skills/`, etc.) via `mcteamstar/.agents`, baked into every crew image and configured by `AcademyLoader` at launch. Adding a new backend requires no ghostship changes — only an update to `.agents/setup`.
+
+### ghostship-spawn skill
+
+Copied into every crew. Provides the four gateway operations not covered by the `kirocrew` CLI: named-persona dispatch, task detail, steering, and continuation. Sends cookie-authenticated requests only to the crew's fixed loopback gateway. Task input should stay short and describe commands rather than quote literal command lines. Dispatch uses `keep=true` so the returned `id` remains usable for status, steer, and continuation.
 
 ## Crew lifecycle
 
 ```
 launch(crew_id, backend=None)
-  0. Resolve the crew's backend: `backend` if given, else the transport
-     default (first entry of GA_CREW_AGENT). It must be enabled (kiro always;
-     claude/codex when listed), otherwise launch returns backend_not_enabled.
-     Every backend-specific step below (credential, login flow, env, config
-     and model patches) uses this value, and it is recorded as `acp_backend`
-     in the registry. Restarts re-apply the recorded backend, never the
-     current default.
-  1. Check the ga-kiro-auth file (DATA_DIR/ga-kiro-auth, not a Podman secret)
-     └── missing → start kiro-cli device auth flow, return login URL
-                   call launch again after auth to finish setup
-  2. Create gs-vol-<id> + gs-home-<id> volumes
-  3. Generate the Admiral Ed25519 keypair and register the public key as a
-     Podman secret (`admiral-pubkey-<id>`). Must precede container creation:
-     a Podman secret can only be attached at create time. The private seed is
-     persisted (hex, mode 0600) to DATA_DIR/secrets/<id>.admiral_secret;
-     crews.json stores only a non-reversible identifier.
-  4. Start crew container with the public key as a read-only secret at
-     `/run/secrets/.admiral_public_key` (root-owned, 0444). Placed outside
-     home/workspace volumes — Podman creates secret parent dirs as root:root,
-     which would block the crew from writing its own config.
-  5. Wait for gateway ready (GET / on :5476, 90s timeout)
-  6. Inject kiro-cli auth rows into crew's SQLite DB
-  7. Patch KiroCrew config (agent, dangerously_skip_permissions=true,
-     spawn_min_memory_gb, resource_pressure_gb, resource_critical_gb,
-     subagent_timeout_secs, subagent_max_turns, default_agent=ghost,
-     reasoning_effort=max, config.agents section for all 6 personas)
-     These thresholds govern KiroCrew's internal subagent admission; set
-     lower than GA_MIN_FREE_MEM_GB so the transport's outer memory gate fires first.
-  8. Restart container (workers pick up auth + config)
-  9. Wait for gateway ready again
-  10. Copy manifest-selected agent JSONs from /agents bind-mount
-  11. Copy manifest-selected skill dirs from /skills bind-mount
-  12. Copy manifest-selected steering docs from /steering bind-mount
-  13. Seed a shared OpenSpec store at the workspace root (see below)
-  14. GA_GIT_AUTHOR_NAME/GA_GIT_AUTHOR_EMAIL are set as container env vars at
-      create time — no action needed at this step
-  15. Inject governance policy: HMAC-SHA256-sign the canonical policy body and
-      write security_policy.json + admission_policy.json into ~/.kiro/crew/.
-      Failure is logged but never aborts launch.
-  16. Patch agent model files to the pinned model in each agent's JSON
-  17. Mint a session token (TTL 24h), exchange for cookie
-  18. Enroll all 6 personas: POST /api/members/{slug}/thread for each agent
-      creates a DM binding and a member session identity (attested). The
-      enrolled_agents list is persisted in the crew registry so dispatch
-      can route each persona into its member-<slug> slot automatically.
-  19. Register in /data/crews.json with last_used set to setup completion time
-  └── returns { status: "ready" } (~30s)
+  1. Resolve backend (given > transport default). Must be enabled.
+  2. Check credentials — missing → return login URL; call launch again after auth.
+  3. Create volumes: gs-vol-<id> + gs-home-<id>
+  4. Generate Admiral Ed25519 keypair; register public key as Podman secret.
+  5. Start crew container with the public key at /run/secrets/.admiral_public_key.
+  6. Wait for gateway ready (:5476, 90 s timeout)
+  7. Inject kiro-cli auth rows into SQLite DB
+  8. Patch KiroCrew config (agents, memory thresholds, reasoning, subagent limits)
+  9. Restart container (picks up auth + config)
+  10. Wait for gateway ready again
+  11. Copy agents, skills, steering from Academy bind-mount
+  12. Seed shared OpenSpec store at workspace root
+  13. Inject governance policy (HMAC-signed security_policy.json + admission_policy.json)
+  14. Patch agent model files
+  15. Mint session token, exchange for cookie
+  16. Enroll all 6 personas (attested member-<slug> DM bindings)
+  17. Register in crews.json → returns { status: "ready" } (~30 s)
 
 nuke(crew_id, confirm=True)
   └── stop container, remove container + both volumes, deregister
 ```
 
+### Shared OpenSpec store
+
+Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. `launch` seeds a shared OpenSpec store one level above at the workspace root (`openspec init --force`), so all agents resolve to the same store automatically.
+
 ### Repository transfer
 
-See [configuration.md](configuration.md#git-repository-transfer) for bundle instructions. Create a bundle locally, call `supply(path="repo", crew_id="<id>", bundle=True)`, and POST the bundle bytes to the returned URL. For extraction, call `evac(path="repo", ..., bundle=True)` and clone or fetch the downloaded bundle.
+Call `supply(path="repo", crew_id="<id>", bundle=True)` and POST a git bundle to the returned URL. For extraction, call `evac(path="repo", ..., bundle=True)` and clone the downloaded bundle.
 
-**Presigned URLs are self-authenticating.** URLs returned by `evac` and `supply` include a short-lived HMAC token (`sig` + `expires` query parameters) that encodes the crew, path, operation, and expiry. Any HTTP client (including bare `curl` or a browser) can use these URLs **without** an `Authorization: Bearer` header — the token is the credential. Both Caddy (the reverse proxy) and the Python transport's `BearerAuthMiddleware` are configured to exempt `/files/` requests that carry a `sig` parameter from the Bearer check; the presigned token verifier is the sole auth gate. An invalid or expired `sig` returns HTTP 403, not 401.
+**Presigned URLs are self-authenticating.** `evac`/`supply` URLs carry a short-lived HMAC token (`sig` + `expires`). Any HTTP client can use them without an `Authorization` header — both Caddy and `BearerAuthMiddleware` exempt `/files/` requests with a valid `sig`. An invalid or expired token returns HTTP 403.
 
-### Captain supervision
+## Captain supervision
 
-The manual persona sequence is the default. To opt in: call `captain(crew_id, action="order", message="<standing order>", interval=<n>)` or supply a cron expression. Transport appends the order to `captain@localhost` and creates a recurring `/api/crons` job that dispatches Raven. When `interval` is set, Raven is dispatched immediately by default — `fire_immediately=False` suppresses this.
+`captain(crew_id, action="order", ...)` creates a recurring cron job that dispatches Raven each tick. When `interval` is set, Raven is dispatched immediately by default.
 
-For standard OpenSpec work use the built-in `sdd` template:
-`captain(crew_id, action="order", template="sdd", change_name="<change>", interval=<n>)`. Raven assesses OpenSpec status and `tasks.md`, dispatches Spectre while planning is incomplete, Ghost while tasks remain unchecked, Banshee for review, and Reaper to sync and archive after a clean review. One unresolved review cycle may be fixed and re-reviewed; further findings are escalated to the Admiral. `change_name` accepts a single name or comma-separated list for parallel multi-change execution with automatic worktree isolation.
+Built-in templates:
 
-For multi-angle review use the `independent-review` template:
-`captain(crew_id, action="order", template="independent-review", interval=<n>)`. On each tick, Raven dispatches four concurrent reviewers (Banshee × 3 for security/quality/test-coverage, Wraith for docs) and mails a consolidated summary to the Admiral.
+| Template | Alias | What Raven does |
+|:---------|:------|:----------------|
+| `spec-driven-development` | `sdd` | Full OpenSpec lifecycle: Spectre → Ghost → Banshee → Reaper. `change_name` accepts a comma-separated list for parallel multi-change execution. |
+| `independent-review` | `indy` | Four concurrent reviewers (Banshee × 3 for security/quality/test-coverage, Wraith for docs). Consolidated summary mailed to Admiral. Omit `change_name` for whole-codebase review. |
+| `free-will` | `willy` | Open-ended: Raven executes `message=` with full autonomy. Self-cancels on completion. |
 
-For open-ended autonomous work use the `free-will` template (alias: `willy`):
-`captain(crew_id, action="order", template="willy", message="<order>", interval=<n>)`. Raven executes the instruction with full agent autonomy and self-cancels on completion.
+`action="status"` reports job state and mailbox counts. `action="stop"` pauses without clearing history.
 
-`captain(..., action="status")` reports Raven job state, last-run summary, and mailbox counts. `action="stop"` pauses the job without deleting history or the mailbox.
+`transport://orders` returns the template index. `GA_ORDERS_DIR` lets operators add or override templates.
 
-`transport://orders` returns a summary index (name + one-line description per template). `transport://orders/{name}` returns the full resolved body. `GA_ORDERS_DIR` lets operators point at custom `.md` templates that merge with and can override `academy/orders/`.
+## Dispatch and sessions
 
-Captain autopilot dispatches through the manifest-delivered `ghostship-spawn` skill, including on Claude-backend crews. Relaunch an existing crew after upgrading so it receives the helper and refreshed Raven prompts; use manual relay (`dispatch`, `pickup`, `steer`) only when an operator intentionally chooses not to run the Captain loop.
+Every `dispatch` requests a retained run (`keep=true`). Tasks run as isolated subagent processes in `subagent_<task_id>/` with no persistent session attached by default.
 
-## Steering
+**Slot modes:**
+- `slot=None` (default) — enrolled personas route into their attested `member-<slug>` dashboard session (~250 MB RSS).
+- `slot=False` — explicit headless; saves ~250 MB RSS per dispatch.
 
-kiro-cli loads every `.md` under `~/.kiro/steering/` for every session — steering is crew-wide standing context every dispatched task gets automatically. `_copy_steering` copies manifest-selected files from `academy/steering/` into that path at every `launch`.
+`steer(task_id, message, force=False)` — running tasks receive `/steer`; completed tasks use `/continue`. `force=True` hard-stops a running task first. On claude/codex backends the gateway may return `steer_unsupported`; transport falls back to `mode=follow_up` (`action: "follow_up_queued"`).
 
-Kept deliberately narrow: environment facts every persona needs (working-directory isolation, shared OpenSpec store, when to use mail) — not project conventions, which belong in whatever repo the caller delivers into `repo/`. See [academy/steering/STANDING_ORDERS.md](../academy/steering/STANDING_ORDERS.md).
+`pickup(task_id=None, timeout_secs=0)` — `timeout_secs=0` checks once; `>0` polls every 3 s. Always includes mail counts. Returns early with `reason: "admiral_mail"` if Admiral mail arrives during polling.
 
-## Shared OpenSpec store
+## Idle stop and auto-restart
 
-Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. Without intervention, two agents could never share OpenSpec state — each would resolve to its own private, empty store.
+Crews stop after `GA_IDLE_TIMEOUT_SECS` (default 300 s) of no activity. Active dispatches and cron executions refresh the timestamp. An enabled Captain schedule alone does not pin a crew alive.
 
-`launch` closes this by running `openspec init --tools none --no-animation --force` once at the workspace root, one level above every `subagent_*/` dir. All dispatched tasks then resolve to the same shared store automatically. The store sits as a sibling to `repo/`, never inside it. `--force` makes the call idempotent.
+`_ensure_crew_running` transparently restarts a stopped container before forwarding any `dispatch`, `pickup`, `steer`, `evac`, `supply`, or `schedule` call. Concurrent restart races are serialised per-crew.
 
-## Task retention and force-stop
+## Networking
 
-Every `dispatch` requests a retained run (`keep=true`), keeping each task's session data available for continuation after a forceful stop.
+Two static Podman networks:
 
-**Dispatch model:** Tasks are dispatched via KiroCrew's `/api/spawn` endpoint — each runs as an isolated subagent process with its own working directory (`subagent_<task_id>/`). This is the minimal-overhead path: no persistent `kiro-cli-chat` session is attached, and the process exits when the task completes. Dashboard session slots (`slot=` on `dispatch`) attach a `kiro-cli-chat` session for browser visibility at the cost of ~250 MB RSS per slot.
+```
+  Internet / host
+       │
+  [ga-portal] ──────── ga-portside ─── [ga-transport]
+                                               │
+                                         ga-starboard
+                                               │
+                              [gs-alpha]  [gs-beta]  ...
+```
 
-`dispatch()` has two slot modes:
+- **ga-portside** — Caddy ↔ transport only. Crew containers cannot reach Caddy.
+- **ga-starboard** — transport ↔ crew containers only. Caddy cannot reach crews.
 
-- **`slot=None` (default)** — enrolled persona agents route into their attested `member-<slug>` session (visible in the dashboard, able to make downstream spawn calls). Unenrolled agents dispatch headless.
-- **`slot=False`** — explicit headless regardless of enrollment, saving ~250 MB RSS per dispatch.
+`GA_TRANSPORT_SECRET` is generated at install time, mounted into both Caddy and the transport. Caddy injects `X-Transport-Token` on every upstream request; the transport rejects any request missing it.
 
-`steer(task_id, message, crew_id, force=False)` defaults to turn-boundary behaviour: a running task receives `/steer`; a completed task uses `/continue`. With `force=True` on a running task, transport calls `DELETE /api/spawn/{task_id}` then `POST /api/spawn/{task_id}/continue` and returns `force_redeployed`. A completed task follows the normal `/continue` path even with `force=True`. On claude and codex backends the gateway may return `steer_unsupported`, in which case transport falls back to `mode=follow_up` and the response carries `action: "follow_up_queued"`. A `503 session_starting` response means the task process has not started yet — retry rather than using `force=True`.
+## Operator governance
 
-Recurring jobs created by `schedule` use `persistent_session=True` on `/api/crons`.
+Transport writes HMAC-signed governance policy files into `~/.kiro/crew/` inside each container during setup. The gateway enforces this ceiling — a tampered policy causes a signature mismatch at startup. Policy is set once at launch; to change it, nuke and relaunch.
 
-`pickup(task_id=None, crew_id=None, timeout_secs=0)` — unified status and polling tool.
+Policy templates live in `academy/policies/`. The default (`default.json`) covers platform integrity: blocks `git push`, `gh`, pipe-to-shell, and messaging integrations. Custom templates are supported; see [configuration.md](configuration.md).
 
-- **timeout_secs=0 (default):** check once and return immediately.
-- **timeout_secs > 0:** poll every 3s until the task completes or the timeout elapses; returns not-done state on timeout.
+Claude and codex backend governance follows the same HMAC-signed policy model. Claude crews run under KiroCrew's hook gate (`default` mode). Codex crews use KiroCrew's `read-only` session mode as the mechanism — no approval-suppression flag is injected.
 
-`pickup` always includes mail state:
-
-- **Single-task:** `agent_mail` (unread count for the task's agent persona) and `admiral_mail`.
-- **List-all:** `mail_summary` (dict of persona → count) and `admiral_mail`.
-
-When polling, `pickup` captures the Admiral mail count at loop start. If the count increases mid-poll, it returns early with `reason: "admiral_mail"`.
-
-## Idle stop + auto-restart
-
-Crew containers stop after `GA_IDLE_TIMEOUT_SECS` (default 300s) of no activity, tracked via `last_used`. Active `dispatch` tasks and cron executions refresh the timestamp. An enabled schedule alone does not pin a crew.
-
-**Captain check-in interval:** Recommended Raven check-in is 60s (`interval=60`), keeping the gap between worker completion and Raven's next check inside the 300s idle window.
-
-`_ensure_crew_running` transparently restarts a stopped container, waits for the gateway, and refreshes the session cookie before forwarding the request. Called by `dispatch`, `pickup`, `steer`, `evac`, `supply`, and `schedule`. Concurrent restart races are serialised with a per-crew `threading.Event`.
-
-## Known workarounds
-
-Deliberate hacks for upstream bugs or limitations. Each is marked `# WORKAROUND:` in the source. See [docs/troubleshooting.md](troubleshooting.md#known-workarounds) for the full inventory and removal conditions.
+External network requirements: Claude crews need outbound access to `api.anthropic.com:443`; Codex crews need `api.openai.com:443` (or `OPENAI_BASE_URL`). The transport logs a warning at launch when these backends are used.
 
 ## Rebuilding images
 
-`podman start` restarts the *existing* container — it does not recreate from the current image tag. Rebuilding an image has no effect on existing containers; only a fresh `podman run` picks up the new image.
+`podman start` restarts the existing container — it does not recreate from the current image. Only a fresh `nuke` + `launch` picks up a rebuilt image.
 
-| You rebuilt... | What needs recreating | How |
-|:----------------|:-----------------------|:----|
-| `transport/` (`localhost/transport:latest`) | The `ga-transport` container | `./install.sh` — `podman rm -f`s and re-`run`s `ga-transport`, no crew impact |
-| `crews/spec-ops/Containerfile` (`localhost/spec-ops:latest`) | Each existing crew container | `nuke(crew_id)` then `launch(crew_id)` — destroys workspace and home volumes; pull anything needed via `evac` first |
-
-Restarting a stopped crew never picks up a rebuilt image — only `nuke` + `launch` recreates against the current image.
-
-## Starting and restarting
-
-`./start.sh` brings ghostship back up after a stop — starts the Podman service (or machine on macOS) and `ga-transport`.
-
-```bash
-./start.sh                            # auto-discovers config
-./start.sh --config ~/ghostship.yaml  # explicit config
-./start.sh --machine-name my-academy  # override machine name
-```
-
-`start.sh` uses `podman compose up -d` against a Compose file generated at install time at `${DATA_DIR}/compose.yml`.
-
-Config discovery order (first match wins):
-1. `config/ghostship.yaml` (repo directory)
-2. macOS: `~/Library/Application Support/ghost-academy/ghostship.yaml` / Linux: `${XDG_CONFIG_HOME:-$HOME/.config}/ghost-academy/ghostship.yaml`
-
-On Linux with systemd, `start.sh` uses `systemctl --user start` for the Podman service. Without systemd (WSL) it spawns the service as a background process directly.
-
-**Linger (Linux):** `install.sh` runs `loginctl enable-linger` so the user's systemd slice stays alive after logout — required for unattended operation on headless/SSH-only servers. See `docs/troubleshooting.md` for verification.
-
-On transport startup, `_reconcile_registry` checks all registered crews:
-- Container missing → remove from registry
-- Container stopped → restart it, refresh cookie, mark running
+| You rebuilt... | What needs recreating |
+|:----------------|:-----------------------|
+| `transport/` | `./install.sh` (re-creates `ga-transport`, no crew impact) |
+| `crews/spec-ops/Containerfile` | `nuke` + `launch` each affected crew (evac first) |
 
 ## Project layout
 
 ```
 ghostship/
-├── install.sh             # builds images, sets up podman service/machine, runs transport
-├── start.sh               # starts Podman + ga-transport; run after a reboot or manual stop
-├── uninstall.sh           # tears down transport; --purge-auth also removes kiro-cli credentials
-├── transport/             # transport MCP server
-│   ├── Containerfile
+├── install.sh             # builds images, Podman service, runs transport
+├── start.sh               # starts Podman + ga-transport after reboot/stop
+├── uninstall.sh           # tears down transport; --purge-auth removes credentials
+├── transport/             # MCP server
 │   ├── server.py
-│   ├── constants.py       # canonical infrastructure constants (ports, prefixes, paths)
-│   ├── container_scripts/ # helper scripts baked into crew images at /scripts/
+│   ├── constants.py       # canonical infrastructure constants
+│   ├── container_scripts/ # helper scripts baked into crew images
 │   └── requirements.txt
-├── academy/               # Ghost Academy: the shared pool crews are composed from
-│   ├── agents/            # KiroCrew agent definitions — see docs/agents.md
-│   │   ├── ghost.json
-│   │   ├── spectre.json
-│   │   ├── banshee.json
-│   │   ├── wraith.json
-│   │   ├── reaper.json
-│   │   └── raven.json
-│   ├── skills/            # KiroCrew skill files, manifest-selected per crew type
-│   │   ├── openspec-*/    # explore/propose/apply-change/update-change/sync-specs/archive-change
-│   │   └── ghostship-mail/  # inter-agent mbox messaging
-│   ├── steering/          # crew-wide standing context — see docs/architecture.md#steering
-│   │   └── STANDING_ORDERS.md
-│   ├── orders/            # built-in Captain standing-order templates (e.g. sdd)
-│   └── policies/          # governance policy templates (bind-mounted as /policies/<composition>.json)
-├── .claude-plugin/        # dual-format plugin package (Agent Plugins v1.0.0 + Claude Code)
-│   ├── plugin.json
-│   ├── .claude-plugin/plugin.json
-│   ├── mcp.json
-│   ├── .mcp.json
-│   ├── marketplace.json
-│   ├── PACKAGING.md
+├── academy/               # Ghost Academy: shared agent pool
+│   ├── agents/            # KiroCrew agent definitions (ghost, spectre, ...)
+│   ├── skills/            # KiroCrew skills (openspec-*, ghostship-mail, ...)
+│   ├── steering/          # Crew-wide standing context
+│   ├── orders/            # Built-in Captain templates (sdd, indy, free-will)
+│   └── policies/          # Governance policy templates
+├── .claude-plugin/        # Agent Plugins + Claude Code plugin package
 │   └── skills/
-│       ├── EXTERNAL_SKILLS.md
-│       ├── ghostship-admin/   # install, connect, upgrade, tear down
-│       └── ghostship-command/ # drives a connected fleet: launch, dispatch, pickup/steer, Captain, nuke
-├── config/                # example config files (ghostship.yaml.example)
+│       ├── ghostship-admin/    # install, connect, upgrade
+│       └── ghostship-command/  # drive a connected fleet
+├── config/                # ghostship.yaml.example
 ├── crews/                 # crew type definitions
-│   ├── registry.json
-│   ├── _base/
-│   │   ├── admission/     # stage 1: mail stack + auth layer
-│   │   └── graduation/    # stage 3: kiro-cli DB pre-seed
-│   └── spec-ops/          # stage 2: adds Node.js 24 LTS + openspec CLI
-│       ├── Containerfile
-│       └── manifest.json
-├── tests/                 # test suite (unit/, integration/, e2e/)
-├── openspec/              # this project's own OpenSpec state (config.yaml, changes/, specs/)
-└── docs/                  # this folder
+│   ├── _base/             # base-admission + base-graduation stages
+│   └── spec-ops/          # spec-ops composition (Node.js + openspec)
+├── tests/                 # unit/, integration/, e2e/
+├── openspec/              # this project's own OpenSpec state
+└── docs/                  # documentation
 ```
-
-## Operator governance
-
-Ghostship uses the KiroCrew **operator tier** — a static-file-at-boot governance model where transport writes config into each crew container during setup and the gateway enforces it as an unforgeable ceiling the agent cannot weaken.
-
-### Policy injection
-
-During `_finish_crew_setup`:
-
-1. Transport reads a policy template from `/policies/<composition>.json` (bind-mounted from `academy/policies/`), falling back to `/policies/default.json`.
-2. The canonical (sorted-keys) JSON body is HMAC-SHA256 signed with the crew's `policy_signing_key` — distinct from the Admiral keypair.
-3. Two files are written into `~/.kiro/crew/` inside the container:
-   - `security_policy.json` — the governance ceiling
-   - `admission_policy.json` — contains `require_policy_signature: true` and the HMAC signature
-4. `policy_version` is stored in the crew registry and returned in `launch()` and `crews()` responses.
-
-Policy injection failure is logged but never aborts launch.
-
-### Policy templates
-
-| Template | Used by | Description |
-|:---------|:--------|:------------|
-| `default.json` | `spec-ops` (and any composition without its own template) | Platform-integrity focus: blocks `git push`, `gh`, pipe-to-shell, messaging integrations |
-| `research.json` | `kirocrew-research` | Same as default; starting point for customisation |
-| `strict.json` | Example only (not applied by default) | Adds `sandbox.min_level`, `filesystem.write` bounds, broader command denials |
-
-### Security properties
-
-- The container is the security boundary. Default policy covers platform integrity only — no filesystem, sandbox, or network restrictions.
-- Policy is HMAC-signed with `policy_signing_key`. A tampered policy causes a signature mismatch and the gateway refuses to continue.
-- The Admiral private key never enters the container, so the agent cannot forge an Admiral standing order. The agent can read `policy_signing_key` from `admission_policy.json` and could forge a policy signature — see [auth.md](auth.md) for the threat model.
-- Policy is set once at launch. To change policy, nuke and relaunch.
-
-### Claude backend governance gap (TRN-167)
-
-When a crew's backend is `claude` (the default via `GA_CREW_AGENT=claude`, or `launch(..., backend="claude")`), the Claude Code ACP server (`claude-agent-acp`) runs inside each crew container instead of `kiro-cli`. This changes the trust model in one important way:
-
-- **Claude tool calls run under KiroCrew's hook gate.** Claude crews use KiroCrew's `default` mode; KiroCrew does not write `bypassPermissions`. The `dangerously_skip_permissions` setting only approves calls that the gate allows and cannot override a gate denial.
-
-- **The signed security policy ceiling is still enforced.** The operator governance policy (`academy/policies/default.json` or a custom template) is HMAC-signed and injected as `security_policy.json` + `admission_policy.json` into every crew at setup time, regardless of backend. The gateway enforces this ceiling and a tampered policy causes a signature mismatch at startup. Crew images are built with `claude-agent-acp` only when `claude` is in `GA_CREW_AGENT`; the transport refuses to start with `claude` as the default backend otherwise, so a crew never starts without it. Without that check it would fail to spawn agents.
-
-### Claude backend external network requirement (TRN-167)
-
-Crews running with `GA_CREW_AGENT=claude` require outbound HTTPS access to **`api.anthropic.com`**. The transport emits a `WARNING`-level log entry naming this host at every `launch()` call when the Claude backend is selected. Deployments with egress firewalls must add `api.anthropic.com:443` to their allow list before launching Claude-backend crews.
-
-### Codex backend governance model (TRN-172)
-
-When a crew's backend is `codex` (the default via `GA_CREW_AGENT=codex`, or `launch(..., backend="codex")`), the Codex ACP adapter (`codex-acp`) runs inside each crew container instead of `kiro-cli`. Its trust model parallels the Claude backend but rests on a different mechanism:
-
-- **KiroCrew's per-call tool approval gate is bypassed** — but by design, not by an approval-suppression flag. KiroCrew verifies at `session/new` that the codex session advertises `mode=read-only` before the first prompt; the read-only mode is the mechanism, so there is no ghostship-side approval-suppression environment variable to inject (unlike the Claude backend's `CLAUDE_CODE_HEADLESS=1`). ghostship's job is simply not to fight this — the per-call kiro approval gate does not apply to a codex session.
-
-- **The signed security policy ceiling is still enforced.** As with every backend, the HMAC-signed operator governance policy is injected as `security_policy.json` + `admission_policy.json` into every crew at setup time and enforced at the gateway; a tampered policy causes a signature mismatch at startup. Crew images are built with `codex-acp` only when `codex` is in `GA_CREW_AGENT`; the transport refuses to start with `codex` as the default backend otherwise, so a crew never starts without it.
-
-- **The ACP-v1 read-visibility gap is compensated, not fixed.** ghostship's sensitive-path read block cannot see reads the codex adapter performs. This gap is closed by KiroCrew's OS-boundary credential mask (`adapter_hidden_credential_dirs`), which covers `~/.codex/auth.json` — this is KiroCrew's control at the OS boundary, not something ghostship re-implements. ghostship does not weaken the container's standard credential-tier confinement.
-
-### Codex backend external network requirement (TRN-172)
-
-Crews running with `GA_CREW_AGENT=codex` require outbound HTTPS access to **`api.openai.com`** (or the endpoint configured via `OPENAI_BASE_URL`). The transport emits a `WARNING`-level log entry naming the effective endpoint at every `launch()` call when the Codex backend is selected. Deployments with egress firewalls must add `api.openai.com:443` (or the configured base URL's host) to their allow list before launching Codex-backend crews.
-
-## Networking
-
-Ghost Academy uses two static Podman networks:
-
-```
-  Internet / host
-       │
-  [ga-portal] ──────────────────────────────┐
-       │        ga-portside                  │
-  [ga-transport]                            │
-       │        ga-starboard                │
-  [gs-alpha]  [gs-beta]  [gs-gamma]  ...   │
-  (all crews, login containers)             │
-                                           │
-  GA_TRANSPORT_SECRET flows on ga-portside ───┘
-  (ga-transport rejects any request missing X-Transport-Token)
-```
-
-**ga-portside** — connects `ga-portal` (Caddy) and `ga-transport` only. Crew containers are NOT on this network.
-
-**ga-starboard** — connects `ga-transport` and all crew containers (`gs-*`) plus ephemeral `ga-login-*` containers. `ga-portal` is NOT on this network.
-
-### Three-control security model
-
-1. **Network split** — `ga-portal` cannot resolve crew container hostnames; crew containers cannot resolve `ga-portal`.
-2. **GA_TRANSPORT_SECRET** — `ga-portal` injects `X-Transport-Token` on every upstream request. `ga-transport`'s `TransportSecretMiddleware` rejects missing or wrong tokens (HTTP 401). Crew containers can dial `ga-transport` at TCP but never receive `GA_TRANSPORT_SECRET` and cannot forge the header.
-3. **IP-bound cookies** — crew gateway cookies (`mc_token_5476`) are bound to the originating IP. Cross-crew session attempts return 403.
-
-### GA_TRANSPORT_SECRET lifecycle
-
-- Generated by `install.sh` using `openssl rand -hex 32`, stored as Podman secret `ga-transport-secret` (idempotent).
-- Mounted into `ga-transport` at `/run/secrets/ga-transport-secret`.
-- Mounted into `ga-portal`; Caddy reads it via `{file./run/secrets/ga-transport-secret}` in the reverse proxy config.
-- Registered with the transport's log redaction filter at startup; never appears in logs or errors.
-
-
-## Transport module class model (TRN-240)
-
-The transport layer was refactored from pure functions operating on raw dicts to
-a set of typed domain classes. The class model is documented here for reference.
-
-### `Crew` dataclass  (`transport/crew.py`)
-
-The typed counterpart to the raw `crews[crew_id]` dict stored in `crews.json`.
-Carries all crew identity, runtime state, and scheduling state.
-
-Key fields: `crew_id`, `container`, `volume`, `home_volume`, `port`, `cookie`,
-`internal_cookie`, `status`, `composition`, `acp_backend`, `created_at`,
-`last_used`, `enrolled_agents`, `schedules`, `batches`.
-
-In-memory only (D2, never serialised): `warm_until` (ACP prewarm marker).
-
-Methods: `gateway_url()` → `http://{container}:{port}`, `cookie_header()`,
-`is_idle(timeout_secs)`, `is_warm()`, `to_dict()` (JSON-serialisable),
-`from_dict(crew_id, d)` (classmethod).
-
-### `CrewRegistry`  (`transport/registry.py`)
-
-Context-manager CRUD registry over `crews.json`. Acquires `_registry_lock`
-on `__enter__`, loads the JSON file, saves on clean `__exit__` (never on
-exception — prevents corrupt partial writes), releases the lock in `finally`.
-
-```python
-with registry:
-    crew = registry.get("demo")
-    crew.status = "running"
-    registry.put(crew)
-```
-
-Methods: `get(crew_id) -> Crew | None`, `put(crew)`, `remove(crew_id)`,
-`list() -> list[Crew]`, `touch(crew_id)`.
-
-Delegation methods (route to module-level implementations): `get_schedules`,
-`upsert_schedule`, `remove_schedule`, `advance_next_fire_at`, `write_batch`,
-`get_batch`, `update_batch_status`, `delete_batch`, `find_batch_by_task_ids`,
-`write_secret`, `read_secret`, `delete_secret`.
-
-Singleton: `registry = CrewRegistry(REGISTRY_PATH)` (importable from
-`transport.registry`).
-
-### `AcademyLoader`  (`transport/academy.py`)
-
-Parameterised copier for Academy assets (agents, skills, steering) into a
-running crew container.
-
-```python
-loader = AcademyLoader(podman, container, composition_entry)
-result = loader.copy_all()  # {"agents": [...], "skills": [...], "steering": [...]}
-```
-
-`copy(kind)` → `_copy_agents()` / `_copy_skills()` / `_copy_steering()`.
-Unknown kind raises `ValueError`. `copy_all()` calls all three and returns the
-combined result dict. The existing `_copy_agents`, `_copy_skills`,
-`_copy_steering` module-level functions in `lifecycle.py` are one-line
-wrappers delegating here.
-
-### Key design invariants (design.md)
-
-- **D1 non-reentrant lock**: `_crew_api_with_recovery` holds the per-crew
-  recovery lock for the whole call including any phase-2 restart into
-  `_ensure_crew_running`. Code reached while this lock is held must call
-  `_crew_api` directly (not `_crew_api_with_recovery`) to avoid a deadlock.
-- **D2 warm_until**: `warm_until` is in-memory only — it is never serialised
-  by `Crew.to_dict()` and is always initialised to `0.0` by `from_dict()`.
-- **D3 singleton registry**: `registry = CrewRegistry(REGISTRY_PATH)` at
-  module level in `registry.py`; import sites use `from transport.registry
-  import registry`.
-- **D4 _NUKED_DURING_RESTART sentinel**: returned by `_ensure_crew_running`
-  when a concurrent `nuke()` removes the crew's registry entry between
-  `container_start` and post-start setup. Callers compare identity
-  (`is _NUKED_DURING_RESTART`) and treat it as a normal expected outcome.
-

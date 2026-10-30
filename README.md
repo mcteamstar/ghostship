@@ -128,7 +128,7 @@ Six personas. The five workers split the [OpenSpec](https://github.com/Fission-A
 | <img src="docs/images/agent-wraith.png" width="256"> | **Wraith** | Recon and documentation operative — research, investigation, project docs; read-only over code and OpenSpec artifacts |
 | <img src="docs/images/agent-raven.png" width="256"> | **Raven** | Watcher and messenger — skims crew mailboxes, checks task state, carries messages between personas and the Admiral |
 
-See [docs/agents.md](docs/agents.md) for tool grants and enforcement details. See [docs/architecture.md](docs/architecture.md) for the full SDD workflow, git bundle seeding, and Captain supervision.
+See [docs/architecture.md](docs/architecture.md) for tool grants, the full SDD workflow, git bundle seeding, and Captain supervision.
 
 ### MCP Tools
 
@@ -149,12 +149,11 @@ Registered as `ghostship`:
 
 ## Further reading
 
-- [docs/architecture.md](docs/architecture.md) — components, crew lifecycle, idle-stop/auto-restart, reboot recovery, project layout
-- [docs/agents.md](docs/agents.md) — the six personas, OpenSpec ownership, and enforcement
-- [docs/auth.md](docs/auth.md) — auth flow, identity provider config, secret management
+- [docs/architecture.md](docs/architecture.md) — components, agents, crew lifecycle, Captain supervision, project layout
+- [docs/auth.md](docs/auth.md) — auth flow, identity provider config, credential management
 - [docs/configuration.md](docs/configuration.md) — full environment variable reference, remote deployment, extending the crew image
-- [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions, auth upgrade paths
-- [docs/forks.md](docs/forks.md) — fork model: visibility options, keeping current with upstream
-- [docs/release-notes-0.8.1.md](docs/release-notes-0.8.1.md) — v0.8.1 release notes (hotfix + two feature additions)
-- [CHANGELOG.md#v090](CHANGELOG.md#v090) — v0.9.0 release notes
-- [CHANGELOG.md#v091](CHANGELOG.md#v091) — v0.9.1 release notes
+- [docs/portal.md](docs/portal.md) — Caddy reverse proxy, TLS, dashboard sessions
+- [docs/lighthouse.md](docs/lighthouse.md) — fleet observability dashboard (`GET /`) and REST API
+- [docs/troubleshooting.md](docs/troubleshooting.md) — debugging guide, known workarounds
+- [docs/manual-install.md](docs/manual-install.md) — non-standard distro prerequisites
+- [CHANGELOG.md](CHANGELOG.md) — release notes
