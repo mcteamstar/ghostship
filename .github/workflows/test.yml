@@ -21,7 +21,7 @@ jobs:
         run: pip install -r transport/requirements.txt
 
       - name: Run tests
-        run: SKIP_VENV=1 scripts/run.sh --unit
+        run: scripts/run.sh --unit
 
       - name: Generate OpenAPI schema (TRN-129)
         run: python scripts/generate_openapi.py --output openapi.json
