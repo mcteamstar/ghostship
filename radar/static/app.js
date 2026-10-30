@@ -207,9 +207,7 @@
         })
         .then(function (data) {
           statusEl.textContent =
-            "Active: " + (data.active_crews || 0) +
-            " / " + (data.max_active_crews || "?") +
-            " · " + new Date().toLocaleTimeString();
+            "Refreshed at: " + new Date().toLocaleTimeString();
           statusEl.className = "";
           render(data);
         })
