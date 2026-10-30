@@ -64,7 +64,10 @@
         return;
       }
 
-      const rows = crews.map(function (crew) {
+      const running = crews.filter(function (c) { return c.status === "running"; });
+      const stopped = crews.filter(function (c) { return c.status !== "running"; });
+
+      function buildRow(crew) {
         const dashLink = crew.dashboard_url
           ? "<a href=\"" + esc(crew.dashboard_url) + "\" target=\"_blank\" " +
             "rel=\"noopener noreferrer\">open</a>"
@@ -94,7 +97,7 @@
           "<td>" + statusBadge(crew.status) + "</td>" +
           "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
           "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
-          "<td>" + (isStopped ? "—" : fmtUptime(crew.uptime_secs)) + "</td>" +
+          "<td>" + fmtDate(crew.created_at) + "</td>" +
           "<td>" + fmtDate(crew.last_task_at) + "</td>" +
           "<td>" + dashLink + "</td>" +
           "</tr>" +
@@ -103,8 +106,16 @@
           (isOpen ? renderDetail(crew) : "") +
           "</div></td></tr>"
         );
-      });
-      bodyEl.innerHTML = rows.join("");
+      }
+
+      const runningRows = running.map(buildRow);
+      const stoppedRows = stopped.map(buildRow);
+      let html = runningRows.join("");
+      if (stopped.length > 0) {
+        html += "<tr class=\"section-divider\"><td colspan=\"7\">Inactive</td></tr>";
+        html += stoppedRows.join("");
+      }
+      bodyEl.innerHTML = html;
 
       /* Wire up row-click to toggle detail. */
       bodyEl.querySelectorAll("tr.data-row").forEach(function (tr) {

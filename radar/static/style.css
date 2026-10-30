@@ -163,6 +163,27 @@
     /* ── Misc ────────────────────────────────────────────────── */
     .stopped-row td { opacity: 0.55; }
     .empty-cell { text-align: center; color: #334155; padding: 2rem !important; }
+    tr.section-divider td {
+      padding: 0.3rem 0.75rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #475569;
+      background: transparent;
+      border-bottom: 1px solid #1e293b;
+      cursor: default;
+    }
+    tr.section-divider td {
+      padding: 0.3rem 0.75rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #475569;
+      background: transparent;
+      border-bottom: 1px solid #1e293b;
+    }
     .hidden { display: none; }
     .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.82em; color: #64748b; }
     a { color: #818cf8; text-decoration: none; }
