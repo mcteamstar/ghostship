@@ -82,7 +82,7 @@
 - Raven self-cancels on completion; open-ended/recurring instructions continue on each check-in.
 - `transport/captain.py`: `_resolve_order_template()` gains a `message` parameter and `<message>` placeholder substitution. Message and template can now be provided together when the template uses `<message>`.
 - `transport/captain_engine.py`: relaxed the `message`/`template` mutual-exclusion constraint to allow both when the template accepts a message.
-- Docs updated: `README.md`, `docs/architecture.md`, `docs/agents.md`, `ghostship-command` skill.
+- Docs updated: `README.md`, `docs/architecture.md`, `ghostship-command` skill.
 
 ### Security hardening (indy-0.9.1 findings, TRN-279)
 
@@ -401,7 +401,7 @@ The unit test suite was rewritten around dependency injection and a `FakePodmanC
 
 ### Features
 
-- **Headless Claude auth with `CLAUDE_CODE_OAUTH_TOKEN` (TRN-226).** The long-lived token from `claude setup-token` is now set in `ghostship.conf`, delivered as the `ga-claude-code-oauth-token` Podman secret, and injected into Claude-backend crews as `CLAUDE_CODE_OAUTH_TOKEN`. Every crew uses the same token, so the OAuth refresh-staleness limitation (see v0.6.0) does not apply. Each Claude crew gets exactly one credential, in this order: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. See [docs/auth.md](docs/auth.md#claude-headless-auth-recommended).
+- **Headless Claude auth with `CLAUDE_CODE_OAUTH_TOKEN` (TRN-226).** The long-lived token from `claude setup-token` is now set in `ghostship.conf`, delivered as the `ga-claude-code-oauth-token` Podman secret, and injected into Claude-backend crews as `CLAUDE_CODE_OAUTH_TOKEN`. Every crew uses the same token, so the OAuth refresh-staleness limitation (see v0.6.0) does not apply. Each Claude crew gets exactly one credential, in this order: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then `ga-claude-auth`. See [docs/auth.md](docs/auth.md#setup-token-headless-recommended).
 
 ### Fixes
 
@@ -679,7 +679,7 @@ Crew dashboards are now proxied through `ga-portal` (Caddy) rather than per-port
 - `launch(dashboard=True)` registers a per-crew Caddy server via the admin API and returns a `dashboard_url`. `nuke` removes it. Transport startup re-registers from `crews.json` (idempotent, no Caddy restarts).
 - Every dashboard port is gated by a `gs_session` cookie. Unauthenticated requests go to `/dashboard/login`; `POST /dashboard/login` issues the cookie when `GA_API_KEY` is correct (open-access when `GA_API_KEY` is unset).
 - The transport injects the `mc_token_5476` crew session cookie before forwarding to the crew gateway, resolving a 403 IP-mismatch that occurred when Caddy proxied directly.
-- **TLS modes:** `off` (plain HTTP, default), `internal` (Caddy built-in CA), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt). Configured via `GA_PORTAL_TLS_MODE`. See [docs/caddy.md](docs/caddy.md).
+- **TLS modes:** `off` (plain HTTP, default), `internal` (Caddy built-in CA), `tailscale` (browser-trusted `.ts.net` certs), `acme` (Let's Encrypt). Configured via `GA_PORTAL_TLS_MODE`. See [docs/portal.md#tls-modes](docs/portal.md#tls-modes).
 - When `GA_API_KEY` is set, Caddy enforces `Authorization: Bearer` on `/mcp*` and `/files/*` at the edge before requests reach the transport.
 
 ### Network isolation

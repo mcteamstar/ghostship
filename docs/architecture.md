@@ -50,7 +50,7 @@ launch(crew_id, backend=None)
   3. Create volumes: gs-vol-<id> + gs-home-<id>
   4. Generate Admiral Ed25519 keypair; register public key as Podman secret.
   5. Start crew container with the public key at /run/secrets/.admiral_public_key.
-  6. Wait for gateway ready (:5476, 90 s timeout)
+  6. Wait for gateway ready (:5476, 60 s timeout)
   7. Inject kiro-cli auth rows into SQLite DB
   8. Patch KiroCrew config (agents, memory thresholds, reasoning, subagent limits)
   9. Restart container (picks up auth + config)
@@ -64,7 +64,7 @@ launch(crew_id, backend=None)
   17. Register in crews.json → returns { status: "ready" } (~30 s)
 
 nuke(crew_id, confirm=True)
-  └── stop container, remove container + both volumes, deregister
+  └── stop container, remove container + both volumes, deregister (run evac first if you need to preserve workspace data)
 ```
 
 ### Shared OpenSpec store
@@ -140,7 +140,11 @@ Claude and codex backend governance follows the same HMAC-signed policy model. C
 
 External network requirements: Claude crews need outbound access to `api.anthropic.com:443`; Codex crews need `api.openai.com:443` (or `OPENAI_BASE_URL`). The transport logs a warning at launch when these backends are used.
 
+See [auth.md#admiral-mail-signing](auth.md#admiral-mail-signing) for the Ed25519 signing scheme and HMAC-SHA256 policy-signing details.
+
 ## Rebuilding images
+
+> **Note:** `podman start` restarts an existing stopped container from its current state — it does **not** recreate it from the image. Only a fresh `nuke` + `launch` picks up changes to the image.
 
 `podman start` restarts the existing container — it does not recreate from the current image. Only a fresh `nuke` + `launch` picks up a rebuilt image.
 
@@ -169,11 +173,14 @@ ghostship/
 │   └── policies/          # Governance policy templates
 ├── .claude-plugin/        # Agent Plugins + Claude Code plugin package
 │   └── skills/
-│       ├── ghostship-admin/    # install, connect, upgrade
-│       └── ghostship-command/  # drive a connected fleet
+│       ├── ghostship-admin/       # install, connect, upgrade
+│       ├── ghostship-capability/  # configure agent personas, skills, crew compositions
+│       └── ghostship-command/     # drive a connected fleet
 ├── config/                # ghostship.yaml.example
 ├── crews/                 # crew type definitions
 │   ├── _base/             # base-admission + base-graduation stages
+│   ├── _worker/           # minimal worker image (no openspec, no backends)
+│   ├── registry.json      # crew type registry
 │   └── spec-ops/          # spec-ops composition (Node.js + openspec)
 ├── tests/                 # unit/, integration/, e2e/
 ├── openspec/              # this project's own OpenSpec state

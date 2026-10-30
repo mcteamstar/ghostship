@@ -79,8 +79,4 @@ Response shape:
 
 ## Auth
 
-Lighthouse is session-gated at the Caddy layer via the same `gs_session` cookie used by per-crew dashboards — no bearer token is needed in the browser. The `GET /` and `GET /api/crews` routes are in `BearerAuthMiddleware`'s `public_routes`; Caddy's `forward_auth` handler validates the cookie before proxying.
-
-When `GA_API_KEY` is unset (local dev), the `forward_auth` check is skipped and the page loads directly.
-
-See [portal.md](portal.md) for the full auth flow and session configuration.
+Lighthouse is session-gated via `gs_session` cookie. No bearer token needed. When `GA_API_KEY` is unset, session check is skipped. See [portal.md#auth](portal.md#auth).

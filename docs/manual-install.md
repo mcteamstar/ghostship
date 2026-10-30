@@ -71,16 +71,11 @@ systemctl --user enable --now podman.socket
 ls -l /run/user/$(id -u)/podman/podman.sock
 ```
 
-## Continue Setup
-
-Once podman is installed and verified, re-run:
+Once Podman is verified, run:
 
 ```bash
 ./install.sh
 ```
-
-The script will detect podman on PATH, skip the package-manager step, and
-proceed with socket setup, image builds, and transport container launch.
 
 ## Troubleshooting
 

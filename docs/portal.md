@@ -83,9 +83,7 @@ When `GA_API_KEY` is set, `/mcp*` and `/files/*` require `Authorization: Bearer 
 
 ### Auth upgrade paths
 
-Caddy supports config-only upgrades. Replace the `forward_auth` handler with:
-- **`basicauth`** — simple username/password for ops tooling.
-- **`caddy-security` (SSO/OIDC)** — build a custom Caddy image with [`xcaddy`](https://github.com/caddyserver/xcaddy) and the [`caddy-security`](https://github.com/greenpau/caddy-security) plugin.
+Auth upgrade paths are outside ghostship's supported config. For SSO/OIDC, build a custom `ga-portal` image using [xcaddy](https://github.com/caddyserver/xcaddy) with [caddy-security](https://github.com/greenpau/caddy-security) plugin.
 
 ## Firewall
 

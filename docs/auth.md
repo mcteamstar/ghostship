@@ -25,6 +25,8 @@ Per-backend methods:
 | claude  | `oauth` (Pro/Max), `api-key`, `setup-token` |
 | codex   | `chatgpt` (ChatGPT sign-in), `api-key` |
 
+> **Credential management:** one active credential per backend. Logging in with a new method replaces the previous one. Non-secret backend base URLs (`backends.<b>.base_url`) can be set in `config/ghostship.yaml`.
+
 ## Kiro auth
 
 ### Log in
@@ -55,6 +57,8 @@ backends:
       url: "https://identitycenter.amazonaws.com/ssoins-abc123"
       region: "us-east-1"
 ```
+
+Set defaults in `config/ghostship.yaml` under `backends.kiro.identity_center` — see [configuration.md#config-file](configuration.md#config-file).
 
 ### Secret rotation
 
@@ -94,7 +98,7 @@ UNAUTHENTICATED  ──[POST /login/kiro/builder-id]──►  PENDING  ──[G
 
 Enable the Claude backend by adding `claude` to `backends.agent` in `config/ghostship.yaml` and re-running `ghostship install`.
 
-### Setup-token (headless, recommended)
+### Setup-token (headless, recommended) {#setup-token-headless-recommended}
 
 1. On your own machine: `claude setup-token`, approve in browser, copy the token.
 2. `ghostship auth login claude --method setup-token` and paste the token.
@@ -111,19 +115,17 @@ The CLI starts a flow, prints the URL, and polls for completion. After approval 
 
 OAuth tokens may expire over time. Re-authenticate with `ghostship auth logout claude` then `ghostship auth login claude`.
 
-### Credential precedence
-
-One active credential per backend. Logging in with a new method replaces the previous one. `backends.claude.base_url` (non-secret) can be set in `config/ghostship.yaml` to point at a proxy.
-
 ### Auth API
 
 ```
-UNAUTHENTICATED  ──[POST /login/claude]──►  PENDING  ──[POST /login/claude/code]──►  CODE SUBMITTED  ──[GET /login/claude → complete]──►  AUTHENTICATED
-               ◄──────────────────────────────────────────────[POST /logout/claude]──────────────────────────────────────────────────────────────────────┘
+UNAUTHENTICATED  ──[POST /login/claude/oauth]──►  PENDING  ──[POST /login/claude/oauth/code]──►  CODE SUBMITTED  ──[GET /login/claude → complete]──►  AUTHENTICATED
+               ◄──────────────────────────────────────────────────[POST /logout/claude]──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **`POST /login/claude`** — starts the OAuth flow. Returns `{"login_url": "..."}`. Returns 409 if already authenticated or flow in progress.
-- **`POST /login/claude/code`** — body `{"code": "<code>#<state>"}`. Returns 202. The code is never logged.
+- **`POST /login/claude/oauth`** — starts the OAuth flow. Returns `{"login_url": "..."}`. Returns 409 if a flow is already in progress.
+- **`POST /login/claude/oauth/code`** — body `{"code": "<code>#<state>"}`. Returns 202. The code is never logged.
+- **`POST /login/claude/api-key`** — stores a pasted Anthropic API key.
+- **`POST /login/claude/setup-token`** — stores a pasted claude setup-token.
 - **`GET /login/claude`** — polls completion. Returns `complete` / `pending` / `410 expired`.
 - **`POST /logout/claude`** — cancels pending flow, removes credential. Idempotent. Running crews unaffected.
 
@@ -142,10 +144,6 @@ ghostship auth login codex   # presents method menu: chatgpt or api-key
 ```
 
 For `chatgpt`: the CLI starts a flow, prints the URL, and polls for completion. Approve in your browser.
-
-### Credential precedence
-
-One active credential per backend. `backends.codex.base_url` (`OPENAI_BASE_URL`, non-secret) can be set in `config/ghostship.yaml` to point at a proxy.
 
 ### Auth API
 
@@ -177,15 +175,19 @@ To rotate: `./install.sh --api-key <new-key>`. Update all MCP clients with the n
 
 ---
 
-## Admiral mail signing
+## Admiral mail signing {#admiral-mail-signing}
+
+### Ed25519 keypair
 
 At crew launch the transport generates an **Ed25519 keypair**. The private seed stays host-side and never enters the container. The public key is delivered as a read-only, root-owned Podman secret at `/run/secrets/.admiral_public_key`.
 
 Every standing order written to `/var/mail/captain` carries an `X-Admiral-Sig:` header. Raven calls `verify-admiral-sig` to confirm authenticity before acting.
 
-A separate `policy_signing_key` signs `security_policy.json` via HMAC-SHA256. A tampered policy causes a mismatch and the gateway refuses to start.
-
 **Storage:** `crews.json` stores only a non-reversible `sha256:<hex[:16]>` fingerprint per secret. The Admiral Ed25519 private seed is persisted to `DATA_DIR/secrets/<crew_id>` (mode `0600`).
+
+### HMAC-SHA256 policy signing
+
+A separate `policy_signing_key` signs `security_policy.json` via HMAC-SHA256. A tampered policy causes a mismatch and the gateway refuses to start.
 
 ### Threat model
 
