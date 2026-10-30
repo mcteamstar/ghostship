@@ -19,9 +19,9 @@
 #
 # TRN-219: bumped 0.8.0 → 0.9.0-insider.4 for the KiroCrew 0.9.0 upgrade.
 # 2026-10-17: bumped insider.4 → v0.9.0 stable. Multi-arch index digest —
-# resolves correctly on amd64 (starport/Linux) and arm64 (corsair/Mac).
+# resolves correctly on amd64 (Linux) and arm64 (macOS).
 # TRN-271: bumped v0.9.0 → v0.10.0. Multi-arch index digest (2026-10-26).
-#           Resolves to amd64 on starport/Linux, arm64 on corsair/Mac.
+#           Resolves to amd64 on Linux, arm64 on macOS.
 # ⚠️  The graduation-layer DB seed (crews/_base/graduation/seed_kiro_db.py) MUST
 #     be re-verified against this exact base image before release — see TRN-271
 #     tasks.md §1/§5. Bumping this pin without that verification is the silent

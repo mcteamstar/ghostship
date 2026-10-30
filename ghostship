@@ -383,7 +383,7 @@ def cmd_status(args: list) -> int:
     # transport, the transport has no host port binding. Resolution order:
     #   1. Host port binding (direct listen, no portal)
     #   2. GA_HOST_URL from container env (set by install.sh — captures remote
-    #      hosts and non-default ports such as port 80 on starport)
+    #      hosts and non-default ports such as port 80)
     #   3. localhost:<PORT> fallback
     port_str = "unknown"
     host_url = ""
