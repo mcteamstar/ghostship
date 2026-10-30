@@ -2,21 +2,25 @@
 
 ## v0.10.0
 
-### Lighthouse — fleet observability dashboard (TRN-97)
+### Radar — fleet observability dashboard (TRN-97, TRN-286)
 
-- `GET /` on the transport now serves the **Lighthouse** fleet dashboard — a read-only
-  browser view of all crews, their status, active tasks, captain state, and schedule
-  without requiring an active MCP agent session.
-- `GET /api/crews` added as a first-class REST endpoint returning the full fleet
-  payload (same data as the MCP `crews()` tool, now including per-crew `captain` state).
-- Captain state (`enabled`, `schedule`, `current_task_id`) included in the fleet
-  payload for both the REST endpoint and the MCP tool.
-- Caddy `ga-lighthouse` route added — session-gated via `DashboardGate` `forward_auth`
-  chain (same `gs_session` cookie as per-crew dashboards). Works with and without
+- `GET /` serves the **Radar** fleet dashboard — a read-only browser view of all
+  crews, their status, active tasks, captain state, and schedule without requiring
+  an active MCP agent session.
+- Radar runs as its own dedicated container (`ga-radar`) on the portside network.
+  Caddy proxies `/` and `/api/crews*` to `ga-radar:8080`; Radar calls
+  `ga-transport`'s internal `/internal/crews` endpoint using the transport secret.
+- `GET /api/crews` REST endpoint returns the full fleet payload (same data as the
+  MCP `crews()` tool), including per-crew `captain` state and `last_checkin_at`.
+- Captain state (`enabled`, `schedule`, `current_task_id`, `last_checkin_at`)
+  included in the fleet payload for both the REST endpoint and the MCP tool.
+- Caddy `ga-radar` route session-gates `/` and `/api/crews*` via `forward_auth`
+  (same `gs_session` cookie as per-crew dashboards). Works with and without
   `GA_API_KEY`.
-- SPA features: 5 s polling, crew busyness badges (active task count, captain
+- SPA features: 5 s polling, "Refreshed at" timestamp, running-first sort with
+  Inactive divider, Age column, crew busyness badges (active task count, captain
   state), expandable row detail (active tasks + captain section), stopped-crew
-  dimming, relative timestamps, click affordance.
+  dimming, relative timestamps, click affordance, ghost emoji favicon.
 - Visual theme: deep space / cosmic nebula aesthetic — starfield CSS, nebula glow
   gradients, IM Fell English heading, Spectral body, ghost crew colour palette
   (teal for active tasks, purple for captain/Raven). All fonts embedded as woff2
@@ -25,6 +29,17 @@
   directive added to `SecurityHeadersMiddleware`.
 - 25 new unit tests in `test_fleet.py`; `conftest.py` extended with `HTMLResponse`
   stub and `media_type` content-type header support.
+
+### Crew dashboard asset proxy fix (TRN-289)
+
+- Fixed: KiroCrew SPA assets (`/assets/*.js`) failed to parse when loaded through
+  the transport's crew UI proxy with `SyntaxError: Invalid or unexpected token`.
+- Root cause: transport forwarded `Accept-Encoding: gzip, br` to the crew gateway,
+  which returned compressed content. The transport stripped `Content-Encoding` from
+  the response (hop-by-hop) without decompressing — browser received binary gzip
+  labelled as `text/javascript`.
+- Fix: `accept-encoding` added to `_STRIPPED_CREW_PROXY_HEADERS` so crew gateways
+  always return uncompressed responses.
 
 ### Race condition fixes in lifecycle layer (TRN-283)
 
@@ -49,7 +64,7 @@
   and claude backend model override, `_steer_captain_checkin` 400-continue branch,
   `_captain_do_order` re-order.
 - **`test_server.py`**, **`test_files.py`**, **`test_academy.py`** targeted additions.
-- Total unit tests: **1195** (up from 1132 at v0.9.1).
+- Total unit tests: **1199** (up from 1132 at v0.9.1).
 
 ### Quality fixes (TRN-285)
 
