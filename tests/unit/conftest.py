@@ -39,7 +39,10 @@ def _install_transport_stubs() -> None:
     multiple times; the first call wins.
     """
     # ── httpx2 (the name used by podman.py) ───────────────────────────────────
-    if "httpx2" not in sys.modules:
+    # Always install the stub, even if the real httpx2 package is installed.
+    # Unit tests must never use real network connections; the stub enforces this.
+    # The check prevents re-installation if conftest was already called this session.
+    if not getattr(sys.modules.get("httpx2"), "_unit_test_stub", False):
         httpx2 = types.ModuleType("httpx2")
 
         class HTTPStatusError(Exception):
@@ -108,7 +111,7 @@ def _install_transport_stubs() -> None:
         sys.modules["httpx2"] = httpx2
 
     # ── httpx alias (imported by some transport modules as `import httpx`) ────
-    if "httpx" not in sys.modules:
+    if not getattr(sys.modules.get("httpx"), "_unit_test_stub", False):
         httpx = sys.modules.get("httpx2") or sys.modules["httpx2"]
         # Re-export as httpx so `import httpx` also resolves our stub
         sys.modules["httpx"] = httpx
