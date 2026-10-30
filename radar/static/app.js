@@ -40,7 +40,7 @@
       const cls =
         status === "running" ? "badge-running" :
         status === "stopped" ? "badge-stopped" : "badge-unknown";
-      return "<span class=\\"badge " + cls + "\\">" + esc(status) + "</span>";
+      return "<span class=\"badge " + cls + "\">" + esc(status) + "</span>";
     }
 
     function esc(s) {
@@ -60,28 +60,28 @@
       const crews = data.crews || [];
       if (crews.length === 0) {
         bodyEl.innerHTML =
-          "<tr><td colspan=\\"7\\" class=\\"empty-cell\\">No crews registered.</td></tr>";
+          "<tr><td colspan=\"7\" class=\"empty-cell\">No crews registered.</td></tr>";
         return;
       }
 
       const rows = crews.map(function (crew) {
         const dashLink = crew.dashboard_url
-          ? "<a href=\\"" + esc(crew.dashboard_url) + "\\" target=\\"_blank\\" " +
-            "rel=\\"noopener noreferrer\\">open</a>"
+          ? "<a href=\"" + esc(crew.dashboard_url) + "\" target=\"_blank\" " +
+            "rel=\"noopener noreferrer\">open</a>"
           : "—";
         /* Agents from fleet payload — no extra fetch needed for basic task list. */
         const agents = Array.isArray(crew.agents) ? crew.agents : [];
         const activeAgents = agents.filter(function (a) { return !a.done; });
         const agentBadge = activeAgents.length > 0
-          ? " <span class=\\"agent-count\\">" + activeAgents.length + " active</span>"
+          ? " <span class=\"agent-count\">" + activeAgents.length + " active</span>"
           : "";
 
         /* Captain state badge */
         const cap = crew.captain;
         const captainBadge = cap
           ? (cap.enabled
-              ? " <span class=\\"captain-badge captain-on\\">⚑ captain</span>"
-              : " <span class=\\"captain-badge captain-off\\">⚑ paused</span>")
+              ? " <span class=\"captain-badge captain-on\">⚑ captain</span>"
+              : " <span class=\"captain-badge captain-off\">⚑ paused</span>")
           : "";
 
         const isOpen = openDetails.has(crew.crew_id);
@@ -89,7 +89,7 @@
         const rowClass = "data-row" + (isOpen ? " open" : "") + (isStopped ? " stopped-row" : "");
         const detailClass = "detail-row" + (isOpen ? "" : " hidden");
         return (
-          "<tr class=\\"" + rowClass + "\\" data-crew-id=\\"" + esc(crew.crew_id) + "\\">" +
+          "<tr class=\"" + rowClass + "\" data-crew-id=\"" + esc(crew.crew_id) + "\">" +
           "<td>" + esc(crew.crew_id) + agentBadge + captainBadge + "</td>" +
           "<td>" + statusBadge(crew.status) + "</td>" +
           "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
@@ -98,8 +98,8 @@
           "<td>" + fmtDate(crew.last_task_at) + "</td>" +
           "<td>" + dashLink + "</td>" +
           "</tr>" +
-          "<tr class=\\"" + detailClass + "\\" id=\\"detail-" + esc(crew.crew_id) + "\\">" +
-          "<td colspan=\\"7\\"><div class=\\"detail-inner\\">" +
+          "<tr class=\"" + detailClass + "\" id=\"detail-" + esc(crew.crew_id) + "\">" +
+          "<td colspan=\"7\"><div class=\"detail-inner\">" +
           (isOpen ? renderDetail(crew) : "") +
           "</div></td></tr>"
         );
@@ -142,16 +142,16 @@
       /* Captain state inline */
       const cap = crew.captain;
       if (cap) {
-        html += "<div class=\\"detail-section\\">Captain</div><table class=\\"detail-table\\">" +
+        html += "<div class=\"detail-section\">Captain</div><table class=\"detail-table\">" +
           "<tr><th>State</th><th>Schedule</th><th>Current task</th></tr>" +
           "<tr><td>" + (cap.enabled ? "active" : "paused") + "</td>" +
           "<td>" + esc(cap.schedule || "—") + "</td>" +
-          "<td class=\\"mono\\">" + esc((cap.current_task_id || "—").slice(0, 12)) + "</td>" +
+          "<td class=\"mono\">" + esc((cap.current_task_id || "—").slice(0, 12)) + "</td>" +
           "</tr></table>";
       }
 
       if (crew.status !== "running") {
-        html += "<br><em class=\\"empty-cell\\">Crew is stopped — live schedule data unavailable.</em>";
+        html += "<br><em class=\"empty-cell\">Crew is stopped — live schedule data unavailable.</em>";
       }
       return html;
     }
@@ -160,13 +160,13 @@
       if (!agents || agents.length === 0) {
         return "<em>No active tasks.</em>";
       }
-      let html = "<div class=\\"detail-section\\">Active tasks</div><table class=\\"detail-table\\">" +
+      let html = "<div class=\"detail-section\">Active tasks</div><table class=\"detail-table\">" +
         "<tr><th>ID</th><th>Agent</th><th>Done</th><th>Elapsed</th></tr>";
       agents.forEach(function (a) {
         html +=
-          "<tr><td class=\\"mono\\">" + esc((a.task_id || a.id || "—").slice(0, 12)) + "</td>" +
+          "<tr><td class=\"mono\">" + esc((a.task_id || a.id || "—").slice(0, 12)) + "</td>" +
           "<td>" + esc(a.agent || "—") + "</td>" +
-          "<td>" + (a.done ? "✓" : "<span class=\\"running-dot\\">●</span>") + "</td>" +
+          "<td>" + (a.done ? "✓" : "<span class=\"running-dot\">●</span>") + "</td>" +
           "<td>" + (a.done && !(a.elapsed_secs || a.elapsed) ? "—" : fmtUptime(a.elapsed_secs || a.elapsed)) + "</td></tr>";
       });
       return html + "</table>";
@@ -184,7 +184,7 @@
             ? cronsData.jobs.filter(function (j) { return j.type !== "captain"; })
             : [];
           if (jobs.length === 0) return;
-          let html = "<div class=\\"detail-section\\">Scheduled jobs</div><table class=\\"detail-table\\">" +
+          let html = "<div class=\"detail-section\">Scheduled jobs</div><table class=\"detail-table\">" +
             "<tr><th>Name</th><th>Agent</th><th>Schedule</th></tr>";
           jobs.forEach(function (j) {
             html +=
@@ -209,7 +209,7 @@
           statusEl.textContent =
             "Active: " + (data.active_crews || 0) +
             " / " + (data.max_active_crews || "?") +
-            " \\u00B7 " + new Date().toLocaleTimeString();
+            " · " + new Date().toLocaleTimeString();
           statusEl.className = "";
           render(data);
         })
