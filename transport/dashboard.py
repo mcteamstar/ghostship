@@ -331,7 +331,7 @@ class DashboardGate:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ghost Academy — Login</title>
+<title>Ghostship — Login</title>
 <style{nonce_attr}>
   body {{ font-family: sans-serif; display: flex; align-items: center;
          justify-content: center; min-height: 100vh; margin: 0;
@@ -379,7 +379,7 @@ class DashboardGate:
 <body>
 <div class="card">
   <div class="hero" aria-hidden="true">👻</div>
-  <h1>Ghost Academy</h1>
+  <h1>Ghostship</h1>
   <form id="f" method="post" action="/dashboard/login">
     <input type="hidden" name="next" value="{next_url_escaped}">
     <input type="hidden" name="csrf_token" id="csrf_token" value="">
