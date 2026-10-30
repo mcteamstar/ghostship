@@ -1,4 +1,4 @@
-"""Unit tests for the ga-lighthouse server.py (TRN-286).
+"""Unit tests for the ga-radar server.py (TRN-286).
 
 Tests call the ASGI app directly without starlette TestClient to avoid
 httpx2/starlette version compatibility issues in the test venv.
@@ -21,9 +21,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 # ---------------------------------------------------------------------------
-# Ensure the lighthouse package is importable without installing.
+# Ensure the radar package is importable without installing.
 # ---------------------------------------------------------------------------
-_LIGHTHOUSE_DIR = Path(__file__).parents[2] / "lighthouse"
+_RADAR_DIR = Path(__file__).parents[2] / "radar"
 
 # Module names that may have been stubbed by conftest.py for transport tests.
 _STARLETTE_STUB_KEYS = [
@@ -41,28 +41,27 @@ def _evict_starlette_stubs() -> None:
                 del sys.modules[key]
 
 
-_lighthouse_server_module = None
+import importlib.util as _importlib_util
+
+_radar_server_module = None
 
 
-def _import_lighthouse_server():
-    global _lighthouse_server_module
-    if _lighthouse_server_module is not None:
-        return _lighthouse_server_module
+def _import_radar_server():
+    global _radar_server_module
+    if _radar_server_module is not None:
+        return _radar_server_module
 
     _evict_starlette_stubs()
 
-    spec_path = str(_LIGHTHOUSE_DIR)
-    if spec_path not in sys.path:
-        sys.path.insert(0, spec_path)
-
-    if "server" in sys.modules:
-        mod_file = getattr(sys.modules["server"], "__file__", "")
-        if "lighthouse" not in str(mod_file):
-            del sys.modules["server"]
-
-    import app as _s  # noqa: PLC0415
-    _lighthouse_server_module = _s
-    return _s
+    # Use importlib to load radar/server.py under a unique name so it never
+    # clobbers sys.modules["server"] (which test_server.py uses for transport).
+    spec = _importlib_util.spec_from_file_location(
+        "radar.server", _RADAR_DIR / "server.py"
+    )
+    mod = _importlib_util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    _radar_server_module = mod
+    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +138,11 @@ def _get_httpx():
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestLighthouseHealth(unittest.TestCase):
+class TestRadarHealth(unittest.TestCase):
     """GET /health returns 200 {"status": "ok"}."""
 
     def test_health_200(self):
-        server = _import_lighthouse_server()
+        server = _import_radar_server()
         scope = _make_scope("GET", "/health")
         messages, body = _run(_call(server.app, scope))
         self.assertEqual(_status_of(messages), 200)
@@ -152,11 +151,11 @@ class TestLighthouseHealth(unittest.TestCase):
 
 
 @unittest.skip("httpx/httpx2 mock incompatibility — pending test infra fix")
-class TestLighthouseApiCrewsSuccess(unittest.TestCase):
+class TestRadarApiCrewsSuccess(unittest.TestCase):
     """GET /api/crews proxies to transport and returns the payload."""
 
     def test_returns_fleet_payload(self):
-        server = _import_lighthouse_server()
+        server = _import_radar_server()
         httpx = _get_httpx()
         mock_payload = {
             "crews": [{"crew_id": "alpha", "status": "running"}],
@@ -185,11 +184,11 @@ class TestLighthouseApiCrewsSuccess(unittest.TestCase):
 
 
 @unittest.skip("httpx/httpx2 mock incompatibility — pending test infra fix")
-class TestLighthouseApiCrewsTransportDown(unittest.TestCase):
+class TestRadarApiCrewsTransportDown(unittest.TestCase):
     """GET /api/crews returns 502 when transport is unreachable."""
 
     def test_returns_502_on_request_error(self):
-        server = _import_lighthouse_server()
+        server = _import_radar_server()
         httpx = _get_httpx()
         scope = _make_scope("GET", "/api/crews")
 
@@ -211,7 +210,7 @@ class TestLighthouseApiCrewsTransportDown(unittest.TestCase):
         self.assertEqual(data["error"], "transport unreachable")
 
     def test_returns_502_on_transport_error_status(self):
-        server = _import_lighthouse_server()
+        server = _import_radar_server()
         httpx = _get_httpx()
         scope = _make_scope("GET", "/api/crews")
         mock_resp = httpx.Response(500, text="Internal Server Error")
@@ -231,11 +230,11 @@ class TestLighthouseApiCrewsTransportDown(unittest.TestCase):
         self.assertIn("error", data)
 
 
-class TestLighthouseIndex(unittest.TestCase):
+class TestRadarIndex(unittest.TestCase):
     """GET / returns the index.html with text/html content-type."""
 
     def test_index_returns_html(self):
-        server = _import_lighthouse_server()
+        server = _import_radar_server()
         scope = _make_scope("GET", "/")
         messages, body = _run(_call(server.app, scope))
         self.assertEqual(_status_of(messages), 200)
@@ -244,11 +243,11 @@ class TestLighthouseIndex(unittest.TestCase):
         self.assertIn(b"<html", body.lower())
 
 
-class TestLighthouseStaticFiles(unittest.TestCase):
+class TestRadarStaticFiles(unittest.TestCase):
     """GET /static/style.css and /static/app.js return correct content-types."""
 
     def test_style_css_content_type(self):
-        server = _import_lighthouse_server()
+        server = _import_radar_server()
         scope = _make_scope("GET", "/static/style.css")
         messages, body = _run(_call(server.app, scope))
         self.assertEqual(_status_of(messages), 200)
@@ -257,7 +256,7 @@ class TestLighthouseStaticFiles(unittest.TestCase):
         self.assertGreater(len(body), 100)
 
     def test_app_js_content_type(self):
-        server = _import_lighthouse_server()
+        server = _import_radar_server()
         scope = _make_scope("GET", "/static/app.js")
         messages, body = _run(_call(server.app, scope))
         self.assertEqual(_status_of(messages), 200)

@@ -1,5 +1,5 @@
 
-  /* Lighthouse SPA — vanilla JS only (D5: no external dependencies). */
+  /* Radar SPA — vanilla JS only (D5: no external dependencies). */
   (function () {
     "use strict";
 

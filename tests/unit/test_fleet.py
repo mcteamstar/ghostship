@@ -1,4 +1,4 @@
-"""Unit tests for TRN-97/TRN-286 Lighthouse changes.
+"""Unit tests for TRN-286 Radar changes.
 
 Covers:
   - _build_crews_payload: empty fleet, running crew, stopped crew, crew with

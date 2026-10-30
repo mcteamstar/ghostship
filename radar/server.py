@@ -1,8 +1,8 @@
-"""Lighthouse microservice — fleet dashboard SPA and browser-facing API.
+"""Radar microservice — fleet dashboard SPA and browser-facing API.
 
-Serves the Lighthouse SPA from static/ and proxies GET /api/crews to
+Serves the Radar SPA from static/ and proxies GET /api/crews to
 ga-transport's internal /internal/crews endpoint using the shared
-ga-transport-secret. Lighthouse is the only entry point for UI traffic;
+ga-transport-secret. Radar is the only entry point for UI traffic;
 browsers never reach ga-transport directly for fleet observability.
 
 Uses starlette directly (no fastapi dependency) so the test venv can import
@@ -26,7 +26,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-logger = logging.getLogger("lighthouse")
+logger = logging.getLogger("radar")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -101,7 +101,7 @@ async def api_crews(request: Request) -> Response:
 
 
 async def index(request: Request) -> FileResponse:
-    """GET / — serve the Lighthouse SPA root (index.html)."""
+    """GET / — serve the Radar SPA root (index.html)."""
     return FileResponse(str(_STATIC_DIR / "index.html"), media_type="text/html")
 
 

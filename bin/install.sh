@@ -1001,10 +1001,10 @@ ${_PODMAN_CMD} build -t localhost/transport:latest \
   "$GHOSTSHIP_DIR/transport/" \
   && echo "✓ transport image built" || { echo "✗ transport image build failed"; exit 1; }
 
-echo "Building localhost/ga-lighthouse:latest ..."
-${_PODMAN_CMD} build -t localhost/ga-lighthouse:latest \
-  "$GHOSTSHIP_DIR/lighthouse/" \
-  && echo "✓ lighthouse image built" || { echo "✗ lighthouse image build failed"; exit 1; }
+echo "Building localhost/ga-radar:latest ..."
+${_PODMAN_CMD} build -t localhost/ga-radar:latest \
+  "$GHOSTSHIP_DIR/radar/" \
+  && echo "✓ radar image built" || { echo "✗ radar image build failed"; exit 1; }
 
 # ── Podman secret for GA_API_KEY ──────────────────────────────────────────────
 
@@ -1183,9 +1183,9 @@ $(if [[ -n "${GA_TLS_CERTFILE:-}" ]]; then printf '      - %s:/mnt/tls:ro\n' "$(
     secrets:
       - ga-transport-secret
 $(if [[ -n "${GA_API_KEY:-}" ]]; then printf '      - ga-api-key\n'; fi)
-  ga-lighthouse:
-    image: localhost/ga-lighthouse:latest
-    container_name: ga-lighthouse
+  ga-radar:
+    image: localhost/ga-radar:latest
+    container_name: ga-radar
     restart: unless-stopped
     networks:
       - ga-portside
@@ -1305,7 +1305,7 @@ AUTH_EOF
 )
 fi
 
-# Build the Lighthouse session-gated route.
+# Build the Radar session-gated route.
 # When GA_API_KEY is set: use a reverse_proxy-based forward_auth equivalent
 # (standard Caddy modules only — no caddy-security plugin) to validate the
 # gs_session cookie, then proxy to the transport.  This mirrors the pattern
@@ -1314,7 +1314,7 @@ fi
 if [[ -n "${GA_API_KEY:-}" ]]; then
   _LIGHTHOUSE_ROUTE=$(cat <<LIGHTHOUSE_EOF
             {
-              "@id": "ga-lighthouse",
+              "@id": "ga-radar",
               "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
               "handle": [
                 {
@@ -1349,7 +1349,7 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
                     }
                   ]
                 },
-                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-lighthouse:8080"}], ${_PORTAL_TOKEN_HEADER}}
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "ga-radar:8080"}], ${_PORTAL_TOKEN_HEADER}}
               ]
             },
 LIGHTHOUSE_EOF
@@ -1358,9 +1358,9 @@ else
   # No API key — passthrough only (Tailscale-gated install).
   _LIGHTHOUSE_ROUTE=$(cat <<LIGHTHOUSE_EOF
             {
-              "@id": "ga-lighthouse",
+              "@id": "ga-radar",
               "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/crews/*/api/*"]}],
-              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-lighthouse:8080"}], ${_PORTAL_TOKEN_HEADER}}]
+              "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-radar:8080"}], ${_PORTAL_TOKEN_HEADER}}]
             },
 LIGHTHOUSE_EOF
 )

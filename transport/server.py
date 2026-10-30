@@ -1554,7 +1554,7 @@ async def _handle_internal_crews_get(request: Request) -> Response:
     portside callers presenting a valid ``X-Transport-Token`` (validated by
     ``TransportSecretMiddleware`` / ``_TRANSPORT_SECRET_ONLY_ROUTES``).  No
     bearer key required — this is a portside-internal route consumed by the
-    ga-lighthouse container.
+    ga-radar container.
     """
     try:
         try:
@@ -1776,7 +1776,7 @@ if __name__ == "__main__":
         ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
         ("GET",  "/openapi.json"): _handle_openapi_get,
         # Internal portside fleet data endpoint (TRN-286) — transport-secret-only,
-        # no bearer key required. Consumed by ga-lighthouse.
+        # no bearer key required. Consumed by ga-radar.
         ("GET",  "/internal/crews"): _handle_internal_crews_get,
     }
     _openapi_schema = _openapi.generate_schema(
@@ -1826,7 +1826,7 @@ if __name__ == "__main__":
             ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
             # Internal portside fleet data endpoint (TRN-286) — transport-secret-only,
-            # no bearer key required. Consumed by ga-lighthouse on ga-portside.
+            # no bearer key required. Consumed by ga-radar on ga-portside.
             ("GET",  "/internal/crews"): _handle_internal_crews_get,
         },
     )
