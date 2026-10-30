@@ -1317,6 +1317,18 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
                     {
                       "match": {"status_code": [2]},
                       "routes": [{"handle": [{"handler": "vars"}]}]
+                    },
+                    {
+                      "match": {"status_code": [4]},
+                      "routes": [{
+                        "handle": [{
+                          "handler": "static_response",
+                          "status_code": 302,
+                          "headers": {
+                            "Location": ["/dashboard/login?next={http.request.uri}"]
+                          }
+                        }]
+                      }]
                     }
                   ]
                 },
