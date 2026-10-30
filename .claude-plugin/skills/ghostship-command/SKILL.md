@@ -324,10 +324,11 @@ comma-separated list of change names as `change_name` and Raven sets up an
 isolated git worktree per change, drives each through the full SDD lifecycle
 concurrently, then merges all branches and runs tests in a reconciliation phase.
 
-The built-in `independent-review` template (alias: `indy`) dispatches Banshee × 3
-(security, quality, test-coverage) and Wraith (docs) concurrently on each check-in,
-collects their findings, and mails a consolidated report to Admiral. Use it for
-periodic or pre-release audits.
+The built-in `independent-review` template (alias: `indy`) dispatches Banshee × 6
+(security, quality, test-coverage-a/b/c, privacy) and Wraith (docs) concurrently on each check-in,
+collects their findings, and mails a consolidated report to Admiral. Indy now dispatches up to 7
+concurrent agents (1 Wraith + 6 Banshees); the existing memory-pressure backoff handles any refused
+spawns. Use it for periodic or pre-release audits.
 
 The built-in `free-will` template (aliases: `free`, `willy`) executes a freeform
 standing order with full agent autonomy — Raven picks whatever agents and approach
@@ -335,8 +336,16 @@ best fit the task. Pass both `template="willy"` and `message="do X"` together.
 Self-cancels on completion; continues on each check-in for open-ended/recurring
 instructions. Use for any task that doesn't need SDD structure.
 
+The built-in `privacy` template (aliases: `privacy-probe`, `scrub`) dispatches a single Banshee
+to scan the full codebase for infrastructure leakage and sensitive data exposure — hostnames,
+RFC-1918/Tailscale IP addresses, internal VM/service names, ticket references, real file paths,
+real names/emails, and internal URLs. RFC-standard example domains and loopback addresses are
+excluded. The Banshee mails its findings report directly to `raven@localhost` with subject
+`privacy probe complete`; Raven forwards to Admiral and self-cancels. Use for a targeted
+scrub before open-sourcing or when a manual `chore: scrub` commit is no longer enough.
+
 **Available built-in templates:** `spec-driven-development` (`sdd`, `specky`),
-`independent-review` (`indy`), `free-will` (`free`, `willy`). Read
+`independent-review` (`indy`), `free-will` (`free`, `willy`), `privacy` (`privacy-probe`, `scrub`). Read
 `transport://orders` for the index or `transport://orders/{name}` for a template's
 full body — the list is install-configurable and may include custom templates.
 
