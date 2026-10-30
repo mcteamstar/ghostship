@@ -1315,7 +1315,7 @@ if [[ -n "${GA_API_KEY:-}" ]]; then
   _RADAR_ROUTE=$(cat <<RADAR_EOF
             {
               "@id": "ga-radar",
-              "match": [{"path": ["/", "/api/crews", "/api/crews/*"]}],
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/static/*"]}],
               "handle": [
                 {
                   "handler": "reverse_proxy",
@@ -1359,7 +1359,7 @@ else
   _RADAR_ROUTE=$(cat <<RADAR_EOF
             {
               "@id": "ga-radar",
-              "match": [{"path": ["/", "/api/crews", "/api/crews/*"]}],
+              "match": [{"path": ["/", "/api/crews", "/api/crews/*", "/static/*"]}],
               "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": "ga-radar:8080"}], ${_PORTAL_TOKEN_HEADER}}]
             },
 RADAR_EOF
