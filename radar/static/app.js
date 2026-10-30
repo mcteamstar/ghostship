@@ -153,12 +153,16 @@
       /* Captain state inline */
       const cap = crew.captain;
       if (cap) {
+        const checkinRow = cap.last_checkin_at
+          ? "<tr><td colspan=\"3\"><strong>Last check-in:</strong> " +
+            fmtDate(cap.last_checkin_at) + "</td></tr>"
+          : "";
         html += "<div class=\"detail-section\">Captain</div><table class=\"detail-table\">" +
           "<tr><th>State</th><th>Schedule</th><th>Current task</th></tr>" +
           "<tr><td>" + (cap.enabled ? "active" : "paused") + "</td>" +
           "<td>" + esc(cap.schedule || "—") + "</td>" +
           "<td class=\"mono\">" + esc((cap.current_task_id || "—").slice(0, 12)) + "</td>" +
-          "</tr></table>";
+          "</tr>" + checkinRow + "</table>";
       }
 
       if (crew.status !== "running") {

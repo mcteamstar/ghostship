@@ -1558,9 +1558,9 @@ async def _handle_internal_crews_get(request: Request) -> Response:
     """
     try:
         try:
-            from tools import _build_crews_payload, _get_podman  # container: flat /app/
+            from tools import _build_internal_fleet_payload, _get_podman  # container: flat /app/
         except ModuleNotFoundError:
-            from transport.tools import _build_crews_payload  # local dev
+            from transport.tools import _build_internal_fleet_payload  # local dev
             from transport.podman import _get_podman  # local dev
 
         podman = None
@@ -1569,7 +1569,7 @@ async def _handle_internal_crews_get(request: Request) -> Response:
         except Exception:
             pass  # no Podman client — payload still valid, just no liveness probes
 
-        payload = _build_crews_payload(podman)
+        payload = _build_internal_fleet_payload(podman)
     except Exception as exc:
         logger.error("_handle_internal_crews_get: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)

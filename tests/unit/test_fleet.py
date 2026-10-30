@@ -70,6 +70,14 @@ def _body_of(messages) -> bytes:
 
 # ── import helpers ────────────────────────────────────────────────────────────
 
+def _import_build_internal_fleet_payload():
+    try:
+        from tools import _build_internal_fleet_payload  # container: flat /app/
+    except ModuleNotFoundError:
+        from transport.tools import _build_internal_fleet_payload  # local dev
+    return _build_internal_fleet_payload
+
+
 def _import_build_crews_payload():
     try:
         from tools import _build_crews_payload  # container: flat /app/
@@ -331,6 +339,74 @@ class TestHandleInternalCrewsGet(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual(len(data["crews"]), 1)
         self.assertEqual(data["crews"][0]["crew_id"], "delta")
+
+
+class TestInternalCrewsLastCheckinAt(unittest.TestCase):
+    """GET /internal/crews returns captain.last_checkin_at from registry."""
+
+    def _run_internal_handler(self, registry_data: dict) -> dict:
+        _build_internal_fleet_payload = _import_build_internal_fleet_payload()
+        _reg_mod = _import_registry_module()
+        podman = FakePodmanClient()
+        with patch.object(_reg_mod, "_load_registry", return_value=registry_data), \
+             patch("transport.lifecycle._probe_gateway", return_value=False):
+            return _build_internal_fleet_payload(podman)
+
+    def test_internal_crews_includes_last_checkin_at(self):
+        """captain.last_checkin_at is present and matches the registry value."""
+        checkin_ts = "2026-10-30T06:00:00+00:00"
+        registry_data = {
+            "crews": {
+                "echo": {
+                    "container": "ga-crew-echo",
+                    "status": "stopped",
+                    "composition": "kirocrew",
+                    "acp_backend": "kiro",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "last_task_at": None,
+                    "schedules": [
+                        {
+                            "type": "captain",
+                            "enabled": True,
+                            "interval_secs": 300,
+                            "last_checkin_at": checkin_ts,
+                        }
+                    ],
+                }
+            }
+        }
+        result = self._run_internal_handler(registry_data)
+        self.assertEqual(len(result["crews"]), 1)
+        crew = result["crews"][0]
+        self.assertIsNotNone(crew["captain"])
+        self.assertIn("last_checkin_at", crew["captain"])
+        self.assertEqual(crew["captain"]["last_checkin_at"], checkin_ts)
+
+    def test_internal_crews_agents_always_empty(self):
+        """agents is [] for the internal endpoint even if the crew has tasks.
+
+        No _crew_api mock is needed — the internal builder never calls it.
+        """
+        registry_data = {
+            "crews": {
+                "foxtrot": {
+                    "container": "ga-crew-foxtrot",
+                    "status": "stopped",
+                    "composition": "kirocrew",
+                    "acp_backend": "kiro",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "last_task_at": None,
+                    # No schedules key at all — captain should be None
+                }
+            }
+        }
+        # Intentionally no patch for _crew_api — the internal builder must not
+        # call it; if it did, the test would fail with an AttributeError.
+        result = self._run_internal_handler(registry_data)
+        self.assertEqual(len(result["crews"]), 1)
+        crew = result["crews"][0]
+        self.assertEqual(crew["agents"], [])
+        self.assertIsNone(crew["captain"])
 
 
 if __name__ == "__main__":
