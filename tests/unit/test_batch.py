@@ -138,6 +138,13 @@ class TestBatchDispatch(unittest.TestCase):
         else:
             self.assertEqual(_args[3], "pending")
 
+    def test_d1_batch_id_is_nonempty_string(self):
+        """D1: batch_id is a non-empty string in the response."""
+        result, _, _ = self._dispatch(["task A", "task B"])
+        batch_id = result.get("batch_id", "")
+        self.assertIsInstance(batch_id, str)
+        self.assertTrue(batch_id, "batch_id should be a non-empty string")
+
     # ── D2 — partial batch (second spawn raises CrewUnresponsiveError) ─────
 
     def test_d2_partial_batch_status(self):
@@ -148,6 +155,24 @@ class TestBatchDispatch(unittest.TestCase):
         ]
         result, _, _ = self._dispatch(["task A", "task B"], crew_api_side_effect=api_effects)
         self.assertEqual(result.get("status"), "partial")
+
+    def test_d2_partial_batch_only_first_task_id(self):
+        """D2: task_ids contains only the one successful id (not the failed one)."""
+        api_effects = [
+            {"id": "tid-only"},
+            _lifecycle.CrewUnresponsiveError("gateway down"),
+        ]
+        result, _, _ = self._dispatch(["task A", "task B"], crew_api_side_effect=api_effects)
+        self.assertEqual(result.get("task_ids"), ["tid-only"])
+
+    def test_d2_partial_batch_error_contains_gateway_down(self):
+        """D2: error message contains 'gateway down' (the original exception text)."""
+        api_effects = [
+            {"id": "tid-1"},
+            _lifecycle.CrewUnresponsiveError("gateway down"),
+        ]
+        result, _, _ = self._dispatch(["task A", "task B"], crew_api_side_effect=api_effects)
+        self.assertIn("gateway down", result.get("error", ""))
 
     def test_d2_partial_batch_error_surfaced(self):
         """D2: partial result carries a non-empty error string."""
@@ -308,6 +333,12 @@ class TestBatchPickup(unittest.TestCase):
         args, _ = ubs.call_args
         self.assertEqual(args[2], "complete")
 
+    def test_p1_completed_and_total_tasks_counts(self):
+        """P1: completed_tasks == 2 and total_tasks == 2 when both tasks done."""
+        result, _, _, _ = self._pickup(["tid-1", "tid-2"])
+        self.assertEqual(result.get("completed_tasks"), 2)
+        self.assertEqual(result.get("total_tasks"), 2)
+
     # ── P2 — snapshot mode (timeout=0) ────────────────────────────────────
 
     def test_p2_snapshot_mode_not_all_done(self):
@@ -418,6 +449,32 @@ class TestBatchPickup(unittest.TestCase):
                 read_all_mail_counts=MagicMock(side_effect=_read_mail),
             )
         self.assertEqual(result.get("reason"), "admiral_mail")
+
+    def test_p4_admiral_mail_done_false(self):
+        """P4: admiral-mail early return → result['done'] is False."""
+        mail_call_count = [0]
+        def _read_mail(p, c):
+            mail_call_count[0] += 1
+            if mail_call_count[0] <= 1:
+                return {"admiral": 0}
+            return {"admiral": 1}
+
+        def _pickup_side_effect(c, cid, tid, p, cont, ts):
+            return {"task_id": tid, "done": False, "error": ""}
+
+        with patch.object(_lifecycle.time, "monotonic", side_effect=[0.0, 0.5, 1.0, 100.0]), \
+             patch.object(_lifecycle.time, "sleep", MagicMock()):
+            result = _lifecycle._pickup_batch(
+                crew=_fake_crew(),
+                crew_id="test-crew",
+                task_ids=["tid-1", "tid-2"],
+                podman=MagicMock(),
+                container="gs-test",
+                timeout_secs=60,
+                pickup_single=MagicMock(side_effect=_pickup_side_effect),
+                read_all_mail_counts=MagicMock(side_effect=_read_mail),
+            )
+        self.assertFalse(result.get("done"))
 
     # ── P5 — lost task_id normalisation ──────────────────────────────────
 
