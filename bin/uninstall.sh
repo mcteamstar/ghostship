@@ -68,7 +68,7 @@ fi
 _HAS_DEDICATED_MACHINE=""
 _MACHINE_NAME="$GA_MACHINE_NAME"
 
-if [[ "$OS" == "Darwin" ]]; then
+if [[ "$OS" == "Darwin" && -z "${XDG_DATA_HOME:-}" ]]; then
   DATA_DIR="$HOME/Library/Application Support/${_MACHINE_NAME}/data"
 else
   DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${_MACHINE_NAME}/data"

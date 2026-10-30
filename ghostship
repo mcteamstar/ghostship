@@ -17,6 +17,8 @@ Subcommands:
 Run 'ghostship <subcommand> --help' for subcommand-specific flags.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import pathlib
