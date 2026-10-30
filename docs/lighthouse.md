@@ -36,14 +36,14 @@ The table polls `GET /api/crews` every 5 seconds. Open rows stay open across ref
 
 ## REST API
 
-`GET /api/crews` is the same data as the MCP `crews()` tool, available as plain JSON:
+`GET /api/crews` is the same data as the MCP `crews()` tool, available as plain JSON. The endpoint is served by the `ga-radar` container and proxied through Caddy — it is session-gated the same way as `GET /`:
 
 ```bash
 # No API key (local dev)
 curl http://localhost:64057/api/crews | jq
 
-# With API key
-curl -H "Authorization: Bearer <key>" https://your-host/api/crews | jq
+# With API key — requires a valid gs_session cookie (obtain via /dashboard/login)
+curl -b gs_session=<token> https://your-host/api/crews | jq
 ```
 
 Response shape:
@@ -79,4 +79,4 @@ Response shape:
 
 ## Auth
 
-Lighthouse is session-gated via `gs_session` cookie. No bearer token needed. When `GA_API_KEY` is unset, session check is skipped. See [portal.md#auth](portal.md#auth).
+Lighthouse is session-gated via `gs_session` cookie. No bearer token needed for `GET /` or `GET /api/crews`. When `GA_API_KEY` is unset, session check is skipped. See [portal.md#auth](portal.md#auth).

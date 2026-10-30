@@ -119,14 +119,15 @@ Two static Podman networks:
   Internet / host
        │
   [ga-portal] ──────── ga-portside ─── [ga-transport]
+                                    └── [ga-radar]
                                                │
                                          ga-starboard
                                                │
                               [gs-alpha]  [gs-beta]  ...
 ```
 
-- **ga-portside** — Caddy ↔ transport only. Crew containers cannot reach Caddy.
-- **ga-starboard** — transport ↔ crew containers only. Caddy cannot reach crews.
+- **ga-portside** — Caddy ↔ transport and Caddy ↔ radar only. Crew containers cannot reach Caddy.
+- **ga-starboard** — transport ↔ crew containers only. Caddy and radar cannot reach crews.
 
 `GA_TRANSPORT_SECRET` is generated at install time, mounted into both Caddy and the transport. Caddy injects `X-Transport-Token` on every upstream request; the transport rejects any request missing it.
 
@@ -165,6 +166,11 @@ ghostship/
 │   ├── constants.py       # canonical infrastructure constants
 │   ├── container_scripts/ # helper scripts baked into crew images
 │   └── requirements.txt
+├── radar/                 # fleet dashboard SPA + portside proxy
+│   ├── server.py          # starlette app: serves static/, proxies /api/crews → transport
+│   ├── Containerfile
+│   ├── requirements.txt
+│   └── static/            # HTML/CSS/JS baked into the image at build time
 ├── academy/               # Ghost Academy: shared agent pool
 │   ├── agents/            # KiroCrew agent definitions (ghost, spectre, ...)
 │   ├── skills/            # KiroCrew skills (openspec-*, ghostship-mail, ...)

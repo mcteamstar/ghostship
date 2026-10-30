@@ -9,10 +9,10 @@ Ghostship runs a Caddy container (`ga-portal`) as its TLS terminator, edge auth 
        │
   [ga-portal :443/:80]          (ga-portside network)
        │
-       ├── /              ──── forward_auth ──▶ ga-transport (Lighthouse dashboard)
+       ├── /              ──── forward_auth ──▶ ga-radar (Radar dashboard)
+       ├── /api/crews*    ──── forward_auth ──▶ ga-radar
        ├── /mcp*          ──── Bearer check ──▶ ga-transport
        ├── /files/*       ──── Bearer check ──▶ ga-transport
-       ├── /api/crews*    ──── forward_auth ──▶ ga-transport
        ├── /health        ──────────────────▶ ga-transport
        ├── /dashboard/*   ──────────────────▶ ga-transport
        │
@@ -24,14 +24,14 @@ Ghostship runs a Caddy container (`ga-portal`) as its TLS terminator, edge auth 
 
 Two routing tiers:
 
-1. **Main port (443/80)** — static config written at install time. Covers MCP, files, health, auth, the Lighthouse fleet dashboard (`/`), and the fleet API (`/api/crews`).
+1. **Main port (443/80)** — static config written at install time. Covers MCP, files, health, auth, the Radar fleet dashboard (`/`), and the fleet API (`/api/crews`).
 2. **Per-crew dashboard ports (64058–64121)** — one Caddy server per port, added/removed live via the Caddy admin API on `launch`/`nuke`.
 
-## Lighthouse fleet dashboard
+## Radar fleet dashboard
 
-`GET /` serves the Lighthouse SPA — a browser view of all crews without requiring an MCP session. See [lighthouse.md](lighthouse.md) for full documentation.
+`GET /` serves the Radar SPA — a browser view of all crews without requiring an MCP session. See [lighthouse.md](lighthouse.md) for full documentation.
 
-Authentication uses the `gs_session` cookie (same as per-crew dashboards). When `GA_API_KEY` is unset, the page loads directly. When set, the browser is redirected to `/dashboard/login` first.
+Radar runs as its own container (`ga-radar`) on `ga-portside`. Caddy proxies `/` and `/api/crews*` to `ga-radar:8080`; Radar in turn calls `ga-transport`'s internal `/internal/crews` endpoint using the shared transport secret.
 
 ## Dashboard proxy (per-crew KC)
 
