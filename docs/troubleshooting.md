@@ -338,6 +338,12 @@ These are two distinct lifecycle operations and should not be confused:
 Idle-stop is what keeps a fleet of crews from consuming resources when inactive.
 Nuke is for when a crew's purpose is fully served and its data is no longer needed.
 
+## Podman Runtime Failures
+
+These sections cover Podman failures that occur after a successful install — the
+machine or socket was working before and stopped working (e.g. after a reboot,
+a permission change, or a corrupted storage state).
+
 ### Podman machine not started (macOS)
 
 **Symptom:** The Podman socket path exists but every command returns "connection
