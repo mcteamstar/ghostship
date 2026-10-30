@@ -9,15 +9,16 @@ cd "$REPO_DIR"
 # ── venv bootstrap ────────────────────────────────────────────────────────────
 # Create and activate a local venv with transport deps so tests run consistently
 # without polluting the system Python. uv is used when available, else venv+pip.
-# Skipped automatically when:
-#   - SKIP_VENV=1 is set (CI, crew containers with pre-installed deps)
+# Skipped when:
+#   - SKIP_VENV=1 is set explicitly
+#   - GITHUB_ACTIONS=true (CI pre-installs deps; venv bootstrap adds ~30s)
 #   - required deps are already importable in the current Python
 VENV_DIR="$REPO_DIR/.venv"
 _need_venv() {
   python3 -c "import starlette, httpx, pytest, mcp" 2>/dev/null && return 1
   return 0
 }
-if [[ "${SKIP_VENV:-0}" == "1" ]] || ! _need_venv; then
+if [[ "${SKIP_VENV:-0}" == "1" ]] || [[ "${GITHUB_ACTIONS:-}" == "true" ]] || ! _need_venv; then
   : # deps already available — skip bootstrap
 elif [[ ! -x "$VENV_DIR/bin/python" ]]; then
   printf '=== Creating .venv ===\n'
