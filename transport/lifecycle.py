@@ -2798,8 +2798,9 @@ def _pickup_batch(
             results[tid] = res
             if res.get("done"):
                 done_count += 1
-                # Per-task status persistence (H-3): mark the task complete in
-                # _task_timestamps so partial progress survives a restart.
+                # Per-task status (H-3): mark the task complete in
+                # _task_timestamps so callers polling pickup can observe
+                # per-task completion within this process session.
                 with _task_timestamps_lock:
                     if tid in _task_timestamps:
                         _task_timestamps[tid]["status"] = "complete"
