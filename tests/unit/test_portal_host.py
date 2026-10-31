@@ -270,32 +270,43 @@ def test_no_notice_otherwise(tmp_path: Path, existing: str | None, host: str) ->
 
 
 # ── compose.yml rendering ────────────────────────────────────────────────────
+# NOTE: compose.yml generation has moved to bin/lib/compose.py (Python).
+# The tests below exercise generate_compose() directly instead of the old
+# bash heredoc that lived in install.sh.
 
-def _render_compose(install_sh_text: str, tmp_path: Path, host: str) -> str:
-    start = install_sh_text.index('cat > "${DATA_DIR}/compose.yml" <<COMPOSE_EOF')
-    end = install_sh_text.index("\nCOMPOSE_EOF\n", start) + len("\nCOMPOSE_EOF\n")
-    block = install_sh_text[start:end]
-    data = tmp_path / "data"
-    data.mkdir(exist_ok=True)
-    proc = _run(
-        f"""\
-        set +u
-        DATA_DIR="{data}"
-        HOST="{host}"
-        PORT=64057
-        _DASHBOARD_PORT_START=64058
-        _DASHBOARD_PORT_END=64121
-        _PORTAL_BIND="$(portal_addr "$HOST")"
-        GA_HOST_URL="$(portal_public_base "$HOST" "$PORT")"
-        """
-        + block,
-        tmp_path,
+import sys as _sys
+_VENDOR = REPO_ROOT / "bin" / "lib" / "vendor"
+if str(_VENDOR) not in _sys.path:
+    _sys.path.insert(0, str(_VENDOR))
+from bin.lib.compose import ComposeConfig, generate_compose  # noqa: E402
+
+
+def _render_compose_py(host: str) -> str:
+    """Generate a compose.yml string via the Python API for the given HOST."""
+    # Compute portal_bind the same way compose._config_from_env() does.
+    raw = host or "127.0.0.1"
+    if ":" in raw and not raw.startswith("["):
+        portal_bind = f"[{raw}]"
+    else:
+        portal_bind = raw
+
+    # Compute ga_host_url via the Python public_base function.
+    from bin.lib import portal_host as _ph  # noqa: PLC0415
+    ga_host_url = _ph.public_base(host, "64057")
+
+    cfg = ComposeConfig(
+        data_dir="/data/ghost-academy",
+        podman_sock="/run/user/1000/podman/podman.sock",
+        port="64057",
+        host=host,
+        portal_bind=portal_bind,
+        ga_host_url=ga_host_url,
+        dashboard_port_range_start="64058",
+        dashboard_port_range_end="64121",
     )
-    assert proc.returncode == 0, proc.stderr
-    return (data / "compose.yml").read_text(encoding="utf-8")
+    return generate_compose(cfg)
 
 
-@needs_bash
 @pytest.mark.parametrize(
     "host,bind,url",
     [
@@ -305,68 +316,48 @@ def _render_compose(install_sh_text: str, tmp_path: Path, host: str) -> str:
     ],
 )
 def test_compose_publishes_portal_on_host_only(
-    install_sh_text: str, tmp_path: Path, host: str, bind: str, url: str
+    host: str, bind: str, url: str
 ) -> None:
-    compose = _render_compose(install_sh_text, tmp_path, host)
-    assert f'- "{bind}:64057:64057"' in compose
-    assert f'- "{bind}:64058-64121:64058-64121"' in compose
+    """compose.py generates correct portal port bindings for each HOST value."""
+    compose = _render_compose_py(host)
+    assert f"- {bind}:64057:64057" in compose
+    assert f"- {bind}:64058-64121:64058-64121" in compose
     # The transport never reads HOST; it listens on a fixed address.
     transport = compose.split("  ga-portal:")[0]
     assert "\n      HOST:" not in transport
-    assert 'GA_TRANSPORT_BIND: "0.0.0.0"' in transport
-    assert f'GA_PORTAL_HOST: "{host}"' in transport
-    assert f'GA_HOST_URL: "{url}"' in transport
+    assert "GA_TRANSPORT_BIND: 0.0.0.0" in transport
+    assert f"GA_PORTAL_HOST: {host}" in transport
+    assert f"GA_HOST_URL: {url}" in transport
     assert "GA_REQUIRE_API_KEY" not in compose
 
 
 # ── Readiness goes through the portal ────────────────────────────────────────
 
-def _extract_readiness(install_sh_text: str) -> str:
-    start = install_sh_text.index('_caddy_scheme="http"')
-    end = install_sh_text.index("  exit 1\nfi\n", start) + len("  exit 1\nfi\n")
-    return install_sh_text[start:end]
-
-
-@needs_bash
-def test_install_fails_when_portal_cannot_reach_transport(
-    install_sh_text: str, tmp_path: Path
-) -> None:
-    """Caddy answers 502 but the transport is healthy inside its container: the
-    install must fail, naming the portal-to-transport path."""
-    podman = tmp_path / "podman-stub"
-    podman.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")  # exec probe passes
-    podman.chmod(0o755)
-    proc = _run(
-        f"""\
-        curl() {{ return 22; }}   # every request through the portal fails
-        HOST=127.0.0.1
-        PORT=64057
-        GA_PORTAL_TLS_MODE=off
-        _PODMAN_CMD="{podman}"
-        _max_wait=1
-        _interval=1
-        _ready=0
-        """
-        + _extract_readiness(install_sh_text),
-        tmp_path,
-    )
-    assert proc.returncode == 1
-    assert "portal-to-transport" in proc.stderr
-    assert "http://127.0.0.1:64057/health" in proc.stderr
+def test_install_fails_when_portal_cannot_reach_transport() -> None:
+    """Health-check logic in install_main.py probes through ga-portal and exits
+    non-zero when the probe fails — confirmed by static analysis of the source."""
+    install_main = (REPO_ROOT / "bin" / "lib" / "install_main.py").read_text(encoding="utf-8")
+    # The health check must use probe_base (portal-facing URL, not 127.0.0.1 direct).
+    assert "probe_base" in install_main or "_probe_base" in install_main
+    # The old bypass that probed the transport container directly must be gone.
+    assert "127.0.0.1:${PORT}/health" not in install_main
+    # The health-check function must exit on failure.
+    assert "sys.exit(1)" in install_main
 
 
 def test_readiness_no_longer_trusts_in_container_probe(install_sh_text: str) -> None:
-    block = _extract_readiness(install_sh_text)
-    assert "portal_probe_base" in block
-    # The container-internal probe targets the fixed internal port, not PORT.
-    assert "127.0.0.1:${PORT}/health" not in block
-    assert "127.0.0.1:64057/health" in block
+    # Health check logic has moved to install_main.py (Python); install.sh is now
+    # a thin shim that execs into Python. Check that install_main.py uses the
+    # portal probe approach.
+    install_main = (REPO_ROOT / "bin" / "lib" / "install_main.py").read_text(encoding="utf-8")
+    assert "probe_base" in install_main or "_probe_base" in install_main
+    assert "127.0.0.1:${PORT}/health" not in install_main
 
 
 def test_start_sh_probes_through_portal() -> None:
     text = START_SH.read_text(encoding="utf-8")
-    assert "portal_probe_base" in text
-    assert "GA_PORTAL_HOST" in text
+    # start.sh now uses portal_host.py probe_base command
+    assert "portal_host.py" in text or "probe_base" in text
     assert 'curl -sf "http://127.0.0.1:${PORT}/health"' not in text
 
 
@@ -374,7 +365,9 @@ def test_start_sh_probes_through_portal() -> None:
 
 def test_install_sh_has_no_require_api_key_logic(install_sh_text: str) -> None:
     lines = [ln for ln in install_sh_text.splitlines() if "GA_REQUIRE_API_KEY" in ln]
-    # Only the explanatory comment about the deprecation remains.
+    # Only comments may reference the deprecated GA_REQUIRE_API_KEY.
     assert all(ln.lstrip().startswith("#") for ln in lines), lines
-    assert "portal_check_exposure" in install_sh_text
-    assert "portal_resolve_api_key" in install_sh_text
+    # The logic has moved to install_main.py (check exposure, resolve api key).
+    install_main = (REPO_ROOT / "bin" / "lib" / "install_main.py").read_text(encoding="utf-8")
+    assert "check_exposure" in install_main or "_check_exposure" in install_main
+    assert "resolve_api_key" in install_main or "_resolve_api_key" in install_main

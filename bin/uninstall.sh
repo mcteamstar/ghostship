@@ -48,16 +48,26 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: config file does not exist or is not readable: $CONFIG_FILE" >&2
     exit 1
   fi
-  # Resolve via yaml_config.py — same mechanism as install.sh (TRN-253).
-  # PyYAML is vendored at bin/lib/vendor/yaml — no venv or pip needed.
   if ! command -v python3 >/dev/null 2>&1; then
     echo "Error: python3 is required to parse the YAML config." >&2; exit 1
   fi
-  _YAML_HELPER="$(dirname "${BASH_SOURCE[0]}")/lib/yaml_config.py"
-  _RESOLVED="$(PYTHONPATH="$(dirname "${BASH_SOURCE[0]}")/lib/vendor" python3 "$_YAML_HELPER" resolve --config "$CONFIG_FILE")" || {
-    echo "Error: failed to parse config file: $CONFIG_FILE" >&2; exit 1
-  }
-  eval "$_RESOLVED"
+  _GHOSTSHIP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  _uninstall_ops_out="$(
+    PYTHONPATH="${_GHOSTSHIP_DIR}/bin/lib/vendor" \
+    python3 "${_GHOSTSHIP_DIR}/bin/lib/uninstall_ops.py" \
+      --ghostship-dir "${_GHOSTSHIP_DIR}" \
+      --config "$CONFIG_FILE"
+  )" || { echo "Error: failed to parse config file: $CONFIG_FILE" >&2; exit 1; }
+  # Parse the KEY=value output (simple identifiers only — no quotes needed)
+  while IFS= read -r _line; do
+    _key="${_line%%=*}"
+    _val="${_line#*=}"
+    case "$_key" in
+      GA_MACHINE_NAME|GA_DEDICATED_MACHINE)
+        printf -v "$_key" '%s' "$_val" ;;
+    esac
+  done <<< "$_uninstall_ops_out"
+  unset _line _key _val _uninstall_ops_out _GHOSTSHIP_DIR
 fi
 
 # ── Detect dedicated machine/instance ─────────────────────────────────────────
