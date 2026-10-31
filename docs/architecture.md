@@ -86,8 +86,9 @@ Built-in templates:
 | Template | Alias | What Raven does |
 |:---------|:------|:----------------|
 | `spec-driven-development` | `sdd` | Full OpenSpec lifecycle: Spectre → Ghost → Banshee → Reaper. `change_name` accepts a comma-separated list for parallel multi-change execution. |
-| `independent-review` | `indy` | Four concurrent reviewers (Banshee × 3 for security/quality/test-coverage, Wraith for docs). Consolidated summary mailed to Admiral. Omit `change_name` for whole-codebase review. |
+| `independent-review` | `indy` | Seven concurrent reviewers (Banshee × 6 for security/quality/test-coverage-a/b/c/privacy, Wraith for docs). Dispatches up to 7 agents concurrently; memory-pressure backoff handles refused spawns. Consolidated summary mailed to Admiral. Omit `change_name` for whole-codebase review. |
 | `free-will` | `willy` | Open-ended: Raven executes `message=` with full autonomy. Self-cancels on completion. |
+| `privacy` | `privacy-probe`, `scrub` | Single Banshee scans the full codebase for infrastructure leakage across 7 categories (hostnames, RFC-1918/Tailscale IPs, VM/service names, ticket refs, real file paths, real names/emails, internal URLs). RFC-standard example domains and loopback addresses excluded. Report forwarded to Admiral; self-cancels. |
 
 `action="status"` reports job state and mailbox counts. `action="stop"` pauses without clearing history.
 

@@ -28,23 +28,22 @@ content. The template SHALL accept aliases `privacy-probe` and `scrub`.
 
 ### Requirement: privacy Banshee scans for internal infrastructure references
 
-The privacy Banshee SHALL scan all files in the repository for the following
-categories of internal reference and report each finding with file, line,
-category, quoted text, and a recommended action (remove / replace with
-placeholder / move to docs with disclaimer):
-
-1. Hostnames and FQDNs that are operator-specific or internal
-2. IP addresses in RFC-1918 ranges (10.x, 192.168.x, 172.16–31.x) or Tailscale range (100.x)
-3. Internal VM or service names used as identifiers outside of example/placeholder context
-4. Internal ticket identifiers in source comments or non-changelog prose
-5. Real filesystem paths containing a username or development directory
-6. Real names or email addresses outside of git authorship context
-7. Internal URLs baked into source strings, comments, or config examples
+The privacy Banshee SHALL scan all files in the repository for internal infrastructure references across seven categories, and report each finding with file, line, category, quoted text, and a recommended action.
 
 #### Scenario: Hostname found in source comment
 
 - **WHEN** a source file contains a comment referencing an internal hostname (e.g. `starport.penguin-piano.ts.net`)
 - **THEN** the Banshee SHALL include it in the report with category "hostname", the file and line, and recommended action
+
+#### Scenario: RFC-1918 IP address found outside example context
+
+- **WHEN** a source file, config, or doc contains a private IP address (e.g. `192.168.1.50`) outside an explicitly labeled example context
+- **THEN** the Banshee SHALL include it in the report with category "ip-address", the file and line, and recommended action
+
+#### Scenario: Example domains and loopback addresses excluded
+
+- **WHEN** a source file uses RFC-standard example domains (`example.com`, `example.org`, `example.net`) or loopback addresses (`localhost`, `127.0.0.1`, `::1`)
+- **THEN** the Banshee SHALL NOT include them as findings
 
 #### Scenario: Clean codebase produces empty findings
 
