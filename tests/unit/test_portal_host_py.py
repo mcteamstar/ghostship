@@ -270,3 +270,13 @@ class TestLegacyBindNotice:
         )
         legacy_bind_notice(str(compose), "0.0.0.0", "64057")
         assert capsys.readouterr().err == ""
+
+    def test_no_notice_when_already_loopback(self, tmp_path: Path, capsys) -> None:
+        # Moving from 0.0.0.0 to 127.0.0.1 should NOT emit the notice because
+        # the compose is already narrow-bound.
+        compose = tmp_path / "compose.yml"
+        compose.write_text(
+            '      - "127.0.0.1:64057:64057"\n', encoding="utf-8"
+        )
+        legacy_bind_notice(str(compose), "127.0.0.1", "64057")
+        assert capsys.readouterr().err == ""

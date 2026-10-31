@@ -44,7 +44,8 @@ def _evict_starlette_stubs() -> None:
 import importlib.util as _importlib_util
 import pytest
 
-pytestmark = pytest.mark.slow  # ASGI/asyncio tests hang on CI; run locally only
+# (pytestmark slow removed — test hang was caused by _make_scope missing the ASGI
+# spec_version field; fixed below.  The slow marker band-aid is gone per TRN-296.)
 
 _radar_server_module = None
 
@@ -85,6 +86,10 @@ def _make_scope(method: str, path: str) -> dict:
         "headers": [],
         "server": ("localhost", 8080),
         "root_path": "",
+        # spec_version >= 2.4 tells starlette's FileResponse to use the fast-path
+        # (send all bytes then return) instead of a collapsing task group that waits
+        # for http.disconnect — which never arrives in unit tests, causing a hang.
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
     }
 
 
