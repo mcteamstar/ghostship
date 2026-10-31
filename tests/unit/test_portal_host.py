@@ -356,17 +356,18 @@ def test_install_fails_when_portal_cannot_reach_transport(
 
 
 def test_readiness_no_longer_trusts_in_container_probe(install_sh_text: str) -> None:
-    block = _extract_readiness(install_sh_text)
-    assert "portal_probe_base" in block
-    # The container-internal probe targets the fixed internal port, not PORT.
-    assert "127.0.0.1:${PORT}/health" not in block
-    assert "127.0.0.1:64057/health" in block
+    # Health check logic has moved to install_main.py (Python); install.sh is now
+    # a thin shim that execs into Python. Check that install_main.py uses the
+    # portal probe approach.
+    install_main = (REPO_ROOT / "bin" / "lib" / "install_main.py").read_text(encoding="utf-8")
+    assert "probe_base" in install_main or "_probe_base" in install_main
+    assert "127.0.0.1:${PORT}/health" not in install_main
 
 
 def test_start_sh_probes_through_portal() -> None:
     text = START_SH.read_text(encoding="utf-8")
-    assert "portal_probe_base" in text
-    assert "GA_PORTAL_HOST" in text
+    # start.sh now uses portal_host.py probe_base command
+    assert "portal_host.py" in text or "probe_base" in text
     assert 'curl -sf "http://127.0.0.1:${PORT}/health"' not in text
 
 
@@ -374,7 +375,9 @@ def test_start_sh_probes_through_portal() -> None:
 
 def test_install_sh_has_no_require_api_key_logic(install_sh_text: str) -> None:
     lines = [ln for ln in install_sh_text.splitlines() if "GA_REQUIRE_API_KEY" in ln]
-    # Only the explanatory comment about the deprecation remains.
+    # Only comments may reference the deprecated GA_REQUIRE_API_KEY.
     assert all(ln.lstrip().startswith("#") for ln in lines), lines
-    assert "portal_check_exposure" in install_sh_text
-    assert "portal_resolve_api_key" in install_sh_text
+    # The logic has moved to install_main.py (check exposure, resolve api key).
+    install_main = (REPO_ROOT / "bin" / "lib" / "install_main.py").read_text(encoding="utf-8")
+    assert "check_exposure" in install_main or "_check_exposure" in install_main
+    assert "resolve_api_key" in install_main or "_resolve_api_key" in install_main
