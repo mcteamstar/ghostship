@@ -241,7 +241,8 @@ def _setup_macos_dedicated(
         capture_output=True,
         text=True,
     )
-    if machine not in list_result.stdout.split():
+    existing_machines = [n.rstrip("*") for n in list_result.stdout.split()]
+    if machine not in existing_machines:
         print(f"Initialising dedicated podman machine '{machine}'...")
         run(
             [
