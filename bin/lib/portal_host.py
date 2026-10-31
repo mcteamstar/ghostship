@@ -299,6 +299,32 @@ def main() -> None:
         port = args[3] if len(args) > 3 else "64057"
         legacy_bind_notice(compose_path, host, port)
 
+    elif cmd == "resolve_api_key":
+        # CLI interface for the bash shim in portal_host.sh.
+        # Args: DATA_DIR FLAG_PASSED FLAG_KEY GA_KEY GA_DISABLED GA_SOURCE GA_DEPRECATED_OFF
+        # Prints two lines suitable for eval in bash:
+        #   GA_API_KEY=<value>
+        #   GA_API_KEY_DISABLED=<value>
+        data_dir = args[1] if len(args) > 1 else ""
+        flag_passed = (args[2] if len(args) > 2 else "0") == "1"
+        flag_key = args[3] if len(args) > 3 else ""
+        ga_key = args[4] if len(args) > 4 else ""
+        ga_disabled = args[5] if len(args) > 5 else ""
+        ga_source = args[6] if len(args) > 6 else ""
+        ga_deprecated_off = args[7] if len(args) > 7 else ""
+        result = resolve_api_key(
+            data_dir,
+            api_key_flag_passed=flag_passed,
+            flag_api_key=flag_key,
+            ga_api_key=ga_key,
+            ga_api_key_disabled=ga_disabled,
+            ga_api_key_source=ga_source,
+            ga_api_key_deprecated_off=ga_deprecated_off,
+        )
+        # Print as shell assignment lines for eval
+        print(f"GA_API_KEY={result['ga_api_key']}")
+        print(f"GA_API_KEY_DISABLED={result['ga_api_key_disabled']}")
+
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)
