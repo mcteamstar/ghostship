@@ -2798,6 +2798,14 @@ def _pickup_batch(
             results[tid] = res
             if res.get("done"):
                 done_count += 1
+                # Per-task status (H-3): mark the task complete in
+                # _task_timestamps so callers polling pickup can observe
+                # per-task completion within this process session.
+                with _task_timestamps_lock:
+                    if tid in _task_timestamps:
+                        _task_timestamps[tid]["status"] = "complete"
+                        if _task_timestamps[tid]["completed_at"] is None:
+                            _task_timestamps[tid]["completed_at"] = datetime.now(timezone.utc).isoformat()
         return results, done_count
 
     while True:
@@ -2938,6 +2946,7 @@ def _dispatch_batch(
                 "created_at": task_created,
                 "started_at": None,
                 "completed_at": None,
+                "status": "pending",
             }
         _record_last_task_at(crew_id, task_created)
 

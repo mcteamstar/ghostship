@@ -870,5 +870,215 @@ class TestTrn233RateLimit(unittest.TestCase):
         self.assertFalse(limiter.recorded)
 
 
+# ── BearerAuthMiddleware — throttle behaviour (TRN-291) ──────────────────────
+
+class TestBearerThrottle(unittest.TestCase):
+    """TRN-291 H-5: bearer auth failure throttle wired to BearerAuthMiddleware."""
+
+    def _make_mw(self, api_key, max_failures=3, window_secs=300):
+        """Return a BearerAuthMiddleware with a small throttle for testing."""
+        from transport.auth import BearerAuthMiddleware
+        from transport.security import Throttle
+        app = _RecordingApp()
+        mw = BearerAuthMiddleware(app, api_key=api_key)
+        # Replace the throttle with a tight one so tests don't need many requests.
+        mw._bearer_throttle = Throttle(max_failures=max_failures, window_secs=float(window_secs))
+        return mw, app
+
+    # ── Test: throttle is inactive when api_key is empty ─────────────────────
+
+    def test_throttle_inactive_when_api_key_empty(self):
+        """No-auth mode: throttle is never consulted."""
+        mw, app = self._make_mw("", max_failures=1)
+        # Lock the throttle manually so it would fire if consulted.
+        for _ in range(2):
+            mw._bearer_throttle.record_failure("bearer", "127.0.0.1")
+        scope = _make_scope("GET", "/mcp", client=("127.0.0.1", 1))
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        # With api_key="" the middleware passes through to the downstream app —
+        # not 429 (throttled) and not 401 (auth rejected).
+        self.assertTrue(app.called)
+        status = _status_of(messages)
+        self.assertNotEqual(status, 429)
+        self.assertNotEqual(status, 401)
+
+    # ── Test: within-limit failures return 401 ────────────────────────────────
+
+    def test_within_limit_failures_return_401(self):
+        """Fewer than max_failures wrong-token requests return 401, not 429."""
+        mw, app = self._make_mw("correctkey", max_failures=3)
+        for _ in range(2):  # 2 < max_failures=3
+            messages, send = _collect_send()
+            _run(mw(
+                _make_scope("GET", "/mcp",
+                            headers={"authorization": "Bearer wrongtoken"},
+                            client=("1.2.3.4", 1)),
+                _receive, send,
+            ))
+            self.assertEqual(_status_of(messages), 401)
+
+    # ── Test: throttle triggers 429 after max_failures ────────────────────────
+
+    def test_throttle_triggers_429_after_max_failures(self):
+        """After max_failures failures the next attempt returns 429 + Retry-After."""
+        mw, app = self._make_mw("correctkey", max_failures=3, window_secs=60)
+        # Exhaust the limit.
+        for _ in range(3):
+            _run(mw(
+                _make_scope("GET", "/mcp",
+                            headers={"authorization": "Bearer wrongtoken"},
+                            client=("1.2.3.4", 2)),
+                _receive, _collect_send()[1],
+            ))
+        # Next request: locked out → 429.
+        messages, send = _collect_send()
+        _run(mw(
+            _make_scope("GET", "/mcp",
+                        headers={"authorization": "Bearer wrongtoken"},
+                        client=("1.2.3.4", 2)),
+            _receive, send,
+        ))
+        self.assertFalse(app.called)
+        self.assertEqual(_status_of(messages), 429)
+        header_names = {k.lower() for k, _ in _headers_of(messages)}
+        self.assertIn(b"retry-after", header_names)
+        # Body should mention rate limiting, not just auth failure.
+        body_parts = [m.get("body", b"") for m in messages if m.get("type") == "http.response.body"]
+        body = b"".join(body_parts).lower()
+        self.assertTrue(b"rate" in body or b"too many" in body or b"attempts" in body)
+
+    # ── Test: valid token resets throttle ─────────────────────────────────────
+
+    def test_valid_token_resets_throttle(self):
+        """After max_failures-1 failures, a correct token succeeds and resets the counter."""
+        mw, app = self._make_mw("correctkey", max_failures=3)
+        # Two wrong-token requests (max_failures-1=2).
+        for _ in range(2):
+            _run(mw(
+                _make_scope("GET", "/mcp",
+                            headers={"authorization": "Bearer wrongtoken"},
+                            client=("1.2.3.4", 3)),
+                _receive, _collect_send()[1],
+            ))
+        # Correct token — should succeed (200) and reset the throttle.
+        app.called = False
+        messages, send = _collect_send()
+        _run(mw(
+            _make_scope("GET", "/mcp",
+                        headers={"authorization": "Bearer correctkey"},
+                        client=("1.2.3.4", 3)),
+            _receive, send,
+        ))
+        self.assertTrue(app.called)
+
+        # Subsequent wrong-token request should return 401 (not 429),
+        # proving record_success cleared the counter.
+        app.called = False
+        messages, send = _collect_send()
+        _run(mw(
+            _make_scope("GET", "/mcp",
+                        headers={"authorization": "Bearer wrongtoken"},
+                        client=("1.2.3.4", 3)),
+            _receive, send,
+        ))
+        self.assertFalse(app.called)
+        self.assertEqual(_status_of(messages), 401)
+
+    # ── Test: throttle keys on source IP ──────────────────────────────────────
+
+    def test_throttle_keys_on_source_ip(self):
+        """Failures from IP A do not affect requests from IP B."""
+        mw, app = self._make_mw("correctkey", max_failures=2)
+        # Exhaust limit for IP A.
+        for _ in range(2):
+            _run(mw(
+                _make_scope("GET", "/mcp",
+                            headers={"authorization": "Bearer wrongtoken"},
+                            client=("10.0.0.1", 1)),
+                _receive, _collect_send()[1],
+            ))
+        # IP A is locked out.
+        messages_a, send_a = _collect_send()
+        _run(mw(
+            _make_scope("GET", "/mcp",
+                        headers={"authorization": "Bearer wrongtoken"},
+                        client=("10.0.0.1", 1)),
+            _receive, send_a,
+        ))
+        self.assertEqual(_status_of(messages_a), 429)
+
+        # IP B: should still return 401 (not 429) on a bad token.
+        messages_b, send_b = _collect_send()
+        app.called = False
+        _run(mw(
+            _make_scope("GET", "/mcp",
+                        headers={"authorization": "Bearer wrongtoken"},
+                        client=("10.0.0.2", 1)),
+            _receive, send_b,
+        ))
+        self.assertEqual(_status_of(messages_b), 401)
+
+    # ── Test: Retry-After value matches window ────────────────────────────────
+
+    def test_retry_after_value_matches_window(self):
+        """The Retry-After header value is the integer ceiling of window_secs."""
+        window = 120
+        mw, app = self._make_mw("correctkey", max_failures=1, window_secs=window)
+        # One wrong request locks the throttle (max_failures=1).
+        _run(mw(
+            _make_scope("GET", "/mcp",
+                        headers={"authorization": "Bearer wrongtoken"},
+                        client=("9.9.9.9", 1)),
+            _receive, _collect_send()[1],
+        ))
+        # Second request: locked → 429.
+        messages, send = _collect_send()
+        _run(mw(
+            _make_scope("GET", "/mcp",
+                        headers={"authorization": "Bearer wrongtoken"},
+                        client=("9.9.9.9", 1)),
+            _receive, send,
+        ))
+        self.assertEqual(_status_of(messages), 429)
+        retry_after_vals = [
+            v for k, v in _headers_of(messages) if k.lower() == b"retry-after"
+        ]
+        self.assertEqual(len(retry_after_vals), 1)
+        self.assertEqual(retry_after_vals[0], str(window).encode("latin-1"))
+
+    # ── Test: throttle is per-instance ────────────────────────────────────────
+
+    def test_throttle_is_per_instance(self):
+        """Two separate BearerAuthMiddleware instances share no throttle state."""
+        from transport.auth import BearerAuthMiddleware
+        from transport.security import Throttle
+        app1 = _RecordingApp()
+        mw1 = BearerAuthMiddleware(app1, api_key="mykey")
+        mw1._bearer_throttle = Throttle(max_failures=2, window_secs=300.0)
+
+        app2 = _RecordingApp()
+        mw2 = BearerAuthMiddleware(app2, api_key="mykey")
+        mw2._bearer_throttle = Throttle(max_failures=2, window_secs=300.0)
+
+        scope = _make_scope("GET", "/mcp",
+                            headers={"authorization": "Bearer wrongtoken"},
+                            client=("5.5.5.5", 1))
+
+        # Exhaust mw1's throttle from same IP.
+        for _ in range(2):
+            _run(mw1(scope, _receive, _collect_send()[1]))
+
+        # mw1 is now locked at that IP.
+        messages1, send1 = _collect_send()
+        _run(mw1(scope, _receive, send1))
+        self.assertEqual(_status_of(messages1), 429)
+
+        # mw2's throttle is fresh — same IP gets 401, not 429.
+        messages2, send2 = _collect_send()
+        _run(mw2(scope, _receive, send2))
+        self.assertEqual(_status_of(messages2), 401)
+
+
 if __name__ == "__main__":
     unittest.main()

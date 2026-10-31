@@ -345,6 +345,12 @@ if [[ -n "$CONFIG_FILE" ]]; then
     echo "Error: failed to parse config file: $CONFIG_FILE" >&2
     exit 1
   }
+  # Trust basis for eval: $_RESOLVED is the stdout of yaml_config.py, a vendored
+  # first-party Python helper. Its input is one or more YAML file paths supplied
+  # by this script itself — no user-controlled string is interpolated into the
+  # helper's output. The output format is shell-quoted KEY='value' lines (produced
+  # by shlex.quote) designed for eval. Prefer `source <(...)` or per-variable
+  # export if this format is ever refactored.
   eval "$_RESOLVED"
   echo "✓ Loaded config file: $CONFIG_FILE"
 else
@@ -358,6 +364,12 @@ else
     echo "Error: failed to resolve YAML config." >&2
     exit 1
   }
+  # Trust basis for eval: $_RESOLVED is the stdout of yaml_config.py, a vendored
+  # first-party Python helper. Its input is one or more YAML file paths supplied
+  # by this script itself — no user-controlled string is interpolated into the
+  # helper's output. The output format is shell-quoted KEY='value' lines (produced
+  # by shlex.quote) designed for eval. Prefer `source <(...)` or per-variable
+  # export if this format is ever refactored.
   eval "$_RESOLVED"
   if [[ "${_FOUND_CONFIG:-}" == "true" ]]; then
     echo "✓ Loaded YAML config (repo${_XDG_YAML:+ + XDG override when present})"

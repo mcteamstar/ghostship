@@ -102,6 +102,29 @@ def _request_source(scope_or_request: Any) -> str | None:
     return None
 
 
+def _parse_bearer_throttle_var(name: str, default: int) -> int:
+    """Parse a GA_BEARER_THROTTLE_* env var as a positive integer.
+
+    On any parse failure the default is returned and a WARNING naming the
+    variable is logged. Follows the same style as ``_parse_rate_limit_var``.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError("value must be a positive integer")
+        return value
+    except (ValueError, AttributeError) as e:
+        logger.warning(
+            "Could not parse %s=%r (expected a positive integer): %s. "
+            "Using default %d.",
+            name, raw, e, default,
+        )
+        return default
+
+
 def _parse_rate_limit_var(
     name: str, default_count: int, default_window: int
 ) -> tuple[int, int]:
@@ -372,6 +395,17 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
         self._file_app = file_app
         self._routes: dict[tuple[str, str], Any] = routes if routes is not None else {}
         self._public_routes: dict[tuple[str, str], Any] = public_routes if public_routes is not None else {}
+        # Per-IP bearer failure throttle (H-5). Defaults: 10 failures per
+        # 5-minute window, overridable via GA_BEARER_THROTTLE_MAX_FAILURES and
+        # GA_BEARER_THROTTLE_WINDOW_SECS. Instance attribute (not a module-level
+        # singleton) so each middleware instance has independent state — consistent
+        # with DashboardGate._throttle and design decision D1.
+        _throttle_max = _parse_bearer_throttle_var("GA_BEARER_THROTTLE_MAX_FAILURES", 10)
+        _throttle_window = _parse_bearer_throttle_var("GA_BEARER_THROTTLE_WINDOW_SECS", 300)
+        self._bearer_throttle = _security.Throttle(
+            max_failures=_throttle_max,
+            window_secs=float(_throttle_window),
+        )
 
     # Paths that bypass API-key auth (readiness probes, etc.)
     _PUBLIC_PATHS: set[str] = {"/health"}
@@ -539,6 +573,28 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 await response(scope, receive, send)
                 return
 
+        # Throttle check (H-5): before touching the token, check whether the
+        # source IP has exceeded the failure window. This is evaluated only when
+        # auth is enabled (self._key is non-empty). Checking before HMAC avoids
+        # a timing oracle — consistent with DashboardGate.handle_login_post.
+        source_ip = _request_source(scope) or "unknown"
+        if self._bearer_throttle.is_locked("bearer", source_ip):
+            retry_after = str(int(self._bearer_throttle.window_secs)).encode("latin-1")
+            await send({
+                "type": "http.response.start",
+                "status": 429,
+                "headers": [
+                    [b"content-type", b"text/plain; charset=utf-8"],
+                    [b"retry-after", retry_after],
+                ],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b"Too many failed authentication attempts. Retry after "
+                        + retry_after + b" seconds.",
+            })
+            return
+
         # Extract Authorization headers from the ASGI scope
         auth_values = [
             v.decode("latin-1")
@@ -548,6 +604,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
 
         # Reject: missing, duplicated, or malformed
         if len(auth_values) != 1:
+            self._bearer_throttle.record_failure("bearer", source_ip)
             await self._reject(send, scope)
             return
 
@@ -555,14 +612,19 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
         # Must be "Bearer <token>" (case-insensitive scheme)
         token = _parse_bearer_token(value)
         if token is None:
+            self._bearer_throttle.record_failure("bearer", source_ip)
             await self._reject(send, scope)
             return
 
         if not token or not hmac.compare_digest(token, self._key):
+            self._bearer_throttle.record_failure("bearer", source_ip)
             await self._reject(send, scope)
             return
 
-        # Auth passed — check login/logout routes before falling through to MCP
+        # Auth passed — record success to reset the throttle counter.
+        self._bearer_throttle.record_success("bearer", source_ip)
+
+        # Check login/logout routes before falling through to MCP
         handler = self._routes.get((scope["method"], scope["path"]))
         if handler is not None:
             request = Request(scope, receive)
