@@ -48,6 +48,19 @@
   infrastructure references (hostnames, Tailscale IPs, VM names, real paths,
   internal URLs) that should not appear in a public repo.
 
+### start.sh Python port (TRN-297)
+
+- `bin/start.sh` reduced from 170 lines to **35 lines** — a prereq-check shim
+  that `exec`s into `python3 bin/lib/start_main.py "$@"`, matching the pattern
+  established by `install.sh` in TRN-294.
+- `bin/lib/start_main.py` (new, 269 lines) handles all start logic: config
+  resolution via `start_ops.py`, Podman machine/socket start via
+  `podman_setup.py`, `podman compose up -d` via explicit `subprocess` env
+  dict (no eval), and health check via `urllib.request`.
+- Eliminates the last `eval "${_COMPOSE_ENV} podman compose ..."` pattern from
+  the start path.
+- 389-line test suite in `tests/unit/test_start_main.py`.
+
 ### Test coverage (TRN-292)
 
 - **`tests/unit/test_batch.py`** (new, 507 lines) — batch dispatch and pickup:
