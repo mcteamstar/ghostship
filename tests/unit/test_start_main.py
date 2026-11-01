@@ -87,42 +87,52 @@ class TestSuccessfulStart:
     health check passes."""
 
     def test_main_successful_start(self, compose_yml):
-        """main() exits 0 when all steps succeed."""
-        compose_file = compose_yml
-
-        mock_urlopen_calls = []
-
-        def fake_urlopen(url, timeout=5):
-            mock_urlopen_calls.append(url)
-            # Succeed on first call
-            return MagicMock()
-
+        """main() exits 0 when all steps succeed (end-to-end integration test)."""
         fake_proc = MagicMock()
         fake_proc.returncode = 0
+
+        health_check_calls = []
+
+        def fake_health_check(url, **kwargs):
+            health_check_calls.append(url)
 
         with (
             patch.object(start_main, "_resolve_config", return_value=_fake_cfg()),
             patch("start_main._podman_setup.PodmanConfig") as mock_podman_cfg_cls,
-            patch("start_main._podman_setup.setup_podman_linux", return_value="/run/user/1000/ghost-academy/podman.sock"),
-            patch("start_main._podman_setup.setup_podman_macos", return_value="/run/user/1000/podman/podman.sock"),
-            patch("platform.system", return_value="Linux"),
+            patch("start_main._podman_setup.setup_podman_linux",
+                  return_value="/run/user/1000/ghost-academy/podman.sock") as mock_setup_linux,
+            patch("start_main._podman_setup.setup_podman_macos",
+                  return_value="/run/user/1000/podman/podman.sock"),
+            patch("start_main._OS", "Linux"),
             patch("shutil.which", return_value="/usr/bin/podman-compose"),
             patch("subprocess.run", return_value=fake_proc),
-            patch.object(start_main, "_health_check"),
-            # Point data_dir computation to our tmp compose file
+            patch.object(start_main, "_health_check", side_effect=fake_health_check),
             patch("start_main.Path") as mock_path_cls,
         ):
-            # We need compose.yml to exist — patch the Path used inside main()
-            # More precisely, patch _compose_up and _health_check directly
-            pass
+            # Make Path(...) / "compose.yml" appear to be a real file
+            mock_compose_file = MagicMock()
+            mock_compose_file.is_file.return_value = True
+            mock_compose_file.__str__ = lambda self: str(compose_yml)
+            mock_path_cls.home.return_value = MagicMock()
+            # Build the chain: Path.home() / ".local" / "share" → xdg_data
+            xdg_mock = MagicMock()
+            xdg_mock.__truediv__ = lambda self, other: xdg_mock
+            xdg_mock.is_file.return_value = True
+            mock_path_cls.return_value.__truediv__.return_value = mock_compose_file
+            mock_path_cls.home.return_value.__truediv__.return_value = xdg_mock
+            xdg_mock.__truediv__ = lambda s, o: mock_compose_file
 
-        # Simpler approach: test sub-functions individually
-        # Test compose_up succeeds with returncode=0
-        fake_proc = MagicMock()
-        fake_proc.returncode = 0
-        with patch("subprocess.run", return_value=fake_proc):
-            # Should not raise
-            start_main._compose_up(compose_file, {"PATH": "/usr/bin"})
+            import argparse
+            with patch("argparse.ArgumentParser.parse_args",
+                       return_value=argparse.Namespace(config="", machine_name="")):
+                # Should not raise — happy path exits 0
+                start_main.main()
+
+            # Verify setup_podman_linux was invoked (podman runtime was started)
+            mock_setup_linux.assert_called_once()
+            # Verify _health_check was called with the correct probe URL
+            assert health_check_calls, "_health_check was not called"
+            assert "health" in health_check_calls[0]
 
     def test_compose_env_no_eval(self, compose_yml):
         """_compose_up passes env as explicit dict, never uses shell=True."""
@@ -147,14 +157,44 @@ class TestSuccessfulStart:
         assert kwargs.get("shell") is not True, "shell=True must never be used"
 
     def test_podman_already_running_continues(self, compose_yml):
-        """When podman_setup returns a socket path, compose up proceeds."""
-        compose_file = compose_yml
+        """When podman_setup returns a socket path (podman already running),
+        compose up proceeds using that socket."""
         fake_proc = MagicMock()
         fake_proc.returncode = 0
 
-        with patch("subprocess.run", return_value=fake_proc) as mock_run:
-            start_main._compose_up(compose_file, {})
-            assert mock_run.called
+        # Simulate setup_podman_linux succeeding (podman was already running;
+        # setup_podman returns the socket path without starting a new instance).
+        with (
+            patch.object(start_main, "_resolve_config", return_value=_fake_cfg()),
+            patch("start_main._podman_setup.PodmanConfig"),
+            patch("start_main._podman_setup.setup_podman_linux",
+                  return_value="/run/user/1000/ghost-academy/podman.sock") as mock_setup,
+            patch("start_main._OS", "Linux"),
+            patch("shutil.which", return_value="/usr/bin/podman-compose"),
+            patch("subprocess.run", return_value=fake_proc) as mock_run,
+            patch.object(start_main, "_health_check"),
+            patch("start_main.Path") as mock_path_cls,
+        ):
+            mock_compose_file = MagicMock()
+            mock_compose_file.is_file.return_value = True
+            mock_compose_file.__str__ = lambda self: str(compose_yml)
+            xdg_mock = MagicMock()
+            xdg_mock.__truediv__ = lambda s, o: mock_compose_file
+            mock_path_cls.home.return_value.__truediv__.return_value = xdg_mock
+
+            import argparse
+            with patch("argparse.ArgumentParser.parse_args",
+                       return_value=argparse.Namespace(config="", machine_name="")):
+                start_main.main()
+
+        # setup_podman_linux was called — it returned the existing socket path
+        mock_setup.assert_called_once()
+        # compose up was subsequently invoked
+        assert mock_run.called, "subprocess.run (compose up) was never called"
+        # The compose env should contain CONTAINER_HOST set from the returned socket
+        call_kwargs = mock_run.call_args[1]
+        assert "env" in call_kwargs
+        assert call_kwargs["env"].get("CONTAINER_HOST") == "unix:///run/user/1000/ghost-academy/podman.sock"
 
 
 # ---------------------------------------------------------------------------
