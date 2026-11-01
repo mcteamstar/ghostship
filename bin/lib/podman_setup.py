@@ -352,6 +352,8 @@ def resolve_socket_path(config: PodmanConfig) -> str:
 
     Uses XDG_RUNTIME_DIR and id -u (via subprocess, no eval).
     Respects PODMAN_SOCK env var as an override.
+    Only used on Linux — macOS uses the in-guest socket returned by
+    setup_podman_macos(), not a host filesystem socket.
     """
     env_override = os.environ.get("PODMAN_SOCK", "")
     if env_override:
@@ -359,7 +361,7 @@ def resolve_socket_path(config: PodmanConfig) -> str:
 
     uid = _get_local_uid()
     runtime_dir = config.xdg_runtime_dir or f"/run/user/{uid}"
-    if config.dedicated:
+    if config.dedicated and platform.system() == "Linux":
         return f"{runtime_dir}/{config.machine_name}/podman.sock"
     return f"{runtime_dir}/podman/podman.sock"
 
