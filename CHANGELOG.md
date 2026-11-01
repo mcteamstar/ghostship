@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.2
+
+### Bug fix — macOS dedicated Podman socket path (hotfix)
+
+- `resolve_socket_path()` in `podman_setup.py` now correctly gates the
+  `{machine_name}/podman.sock` path on Linux only. On macOS, dedicated
+  Podman machines use the in-guest socket (`/run/user/<uid>/podman/podman.sock`)
+  returned by `setup_podman_macos()` — not a host filesystem path.
+- The 0.10.1 Linux fix inadvertently broke `ghostship start` and `ghostship
+  upgrade` on macOS dedicated Podman machine installs with "machine already
+  exists" and `statfs: no such file or directory` errors.
+
 ## v0.10.1
 
 ### Security hardening (TRN-291)

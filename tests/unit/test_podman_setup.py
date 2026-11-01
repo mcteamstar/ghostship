@@ -124,7 +124,8 @@ class TestResolveSocketPath:
         config = _config(xdg_runtime_dir="/run/user/1234")
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PODMAN_SOCK", None)
-            path = resolve_socket_path(config)
+            with patch("podman_setup.platform.system", return_value="Linux"):
+                path = resolve_socket_path(config)
         assert path == "/run/user/1234/ghost-academy/podman.sock"
 
     def test_non_dedicated_uses_default_socket_name(self) -> None:
@@ -132,6 +133,14 @@ class TestResolveSocketPath:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PODMAN_SOCK", None)
             path = resolve_socket_path(config)
+        assert path == "/run/user/1234/podman/podman.sock"
+
+    def test_macos_dedicated_uses_default_socket_name(self) -> None:
+        config = _config(xdg_runtime_dir="/run/user/1234", dedicated=True)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PODMAN_SOCK", None)
+            with patch("podman_setup.platform.system", return_value="Darwin"):
+                path = resolve_socket_path(config)
         assert path == "/run/user/1234/podman/podman.sock"
 
     def test_env_override_wins(self) -> None:
