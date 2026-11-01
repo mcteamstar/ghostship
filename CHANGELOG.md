@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.10.1
+
+### Security hardening (TRN-291)
+
+- **Bearer token brute-force protection** — `BearerAuthMiddleware` now wires the
+  existing `FailureThrottle` from `security.py` to bearer auth, mirroring the
+  protection already on dashboard login. Repeated bad tokens return `429
+  Too Many Requests` with a `Retry-After` header.
+- **Batch task status persistence** — `_dispatch_batch` now writes
+  `"status": "pending"` per task at spawn time; `_pickup_batch` sets
+  `"status": "complete"` and `completed_at` when a task finishes. Per-task
+  status survives a transport restart mid-batch.
+- **eval trust documentation** — the two `eval "$_RESOLVED"` calls in
+  `bin/install.sh` now carry inline comments explaining the trust assumption
+  (controlled YAML schema, write-access required to exploit).
+- 7 new unit tests in `tests/unit/test_auth.py` covering throttle lock-out,
+  unlock, and bypass for unauthenticated (no-key) installs.
+
+### install.sh Python full modularisation (TRN-294)
+
+- `bin/install.sh` reduced from ~800 lines to **80 lines** — a prereq-check
+  shim that `exec`s into `python3 bin/lib/install_main.py "$@"`.
+- All install logic extracted into Python modules under `bin/lib/`:
+  `compose.py`, `caddy.py`, `agent_backends.py`, `portal_host.py`,
+  `podman_setup.py`, `wizard.py`, `install_main.py`, `start_ops.py`,
+  `uninstall_ops.py`, `portal_host_resolve.py`.
+- `bin/start.sh` and `bin/uninstall.sh` similarly reduced; all `eval
+  "$_RESOLVED"` patterns eliminated from all three scripts.
+- `portal_host.sh` retained as a bash-shim layer exposing shell functions
+  (`portal_resolve_api_key`, `portal_public_base`, etc.) that delegate to
+  `portal_host.py` — required by tests and any callers that source it.
+- **Bug fix**: `podman_setup.py` now strips the active-machine asterisk from
+  `podman machine list` output before checking existence — previously caused
+  `ghostship upgrade` to fail on any existing install with "machine already
+  exists".
+- 10 new Python test files covering the new modules.
+
+### Privacy probe and independent-review sharding (TRN-295)
+
+- **7 concurrent reviewers** in the `independent-review` Captain template (up
+  from 4): Wraith (docs), Banshee (security), Banshee (quality), Banshee
+  (privacy), and 3 × Banshee test-coverage shards (A/B/C). All 7 run
+  concurrently; the consolidated report waits for all reports before sending.
+- **`privacy` standalone template** added (`aliases: privacy-probe, scrub`).
+  Dispatches a single privacy-focused Banshee to scan for internal
+  infrastructure references (hostnames, Tailscale IPs, VM names, real paths,
+  internal URLs) that should not appear in a public repo.
+
+### Test coverage (TRN-292)
+
+- **`tests/unit/test_batch.py`** (new, 507 lines) — batch dispatch and pickup:
+  atomic multi-task dispatch, partial-batch 404 handling, timeout polling,
+  admiral-mail early-return, headless vs slotted dispatch.
+- **`tests/unit/test_files.py`** (new, 501 lines) — file transfer handlers:
+  `_handle_file_get` and `_handle_file_put` round-trips, presigned URL
+  expiry, bundle and tar pack modes, error paths.
+- **`tests/unit/test_security.py`** (new, 425 lines) — `security.py`
+  primitives: encoding helpers, CSP nonce generation, `needs_rehash` path,
+  `FailureThrottle` state machine.
+
+### Test suite reliability (TRN-296)
+
+- Removed ~250 lines of bash subprocess tests from `test_portal_host.py`
+  that hung indefinitely in the container environment. Pure-Python equivalents
+  in `test_portal_host_py.py` (extended) provide the same coverage.
+- Fixed `ModuleNotFoundError: No module named 'starlette'` in
+  `test_radar_server.py` — starlette stub handling corrected so the tests run
+  without the live package.
+- Removed `@pytest.mark.slow` band-aid and `slow` marker from `pytest.ini`
+  and `scripts/run.sh`.
+- Full unit suite now runs clean in ~85 s with no hangs: **1352 passed**.
+
 ## v0.10.0
 
 ### Radar — fleet observability dashboard (TRN-97, TRN-286)
