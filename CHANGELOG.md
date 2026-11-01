@@ -26,8 +26,8 @@
   `compose.py`, `caddy.py`, `agent_backends.py`, `portal_host.py`,
   `podman_setup.py`, `wizard.py`, `install_main.py`, `start_ops.py`,
   `uninstall_ops.py`, `portal_host_resolve.py`.
-- `bin/start.sh` and `bin/uninstall.sh` similarly reduced; all `eval
-  "$_RESOLVED"` patterns eliminated from all three scripts.
+- `bin/start.sh` and `bin/uninstall.sh` have eval patterns removed;
+  `start.sh` is fully ported to Python in TRN-297 (see below).
 - `portal_host.sh` retained as a bash-shim layer exposing shell functions
   (`portal_resolve_api_key`, `portal_public_base`, etc.) that delegate to
   `portal_host.py` — required by tests and any callers that source it.
