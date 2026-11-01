@@ -359,6 +359,8 @@ def resolve_socket_path(config: PodmanConfig) -> str:
 
     uid = _get_local_uid()
     runtime_dir = config.xdg_runtime_dir or f"/run/user/{uid}"
+    if config.dedicated:
+        return f"{runtime_dir}/{config.machine_name}/podman.sock"
     return f"{runtime_dir}/podman/podman.sock"
 
 
