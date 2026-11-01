@@ -35,6 +35,10 @@
   `podman machine list` output before checking existence — previously caused
   `ghostship upgrade` to fail on any existing install with "machine already
   exists".
+- **Bug fix**: `resolve_socket_path()` now includes the machine name in the
+  socket path for Linux dedicated instances (`{runtime_dir}/{machine_name}/podman.sock`)
+  — previously used the default non-dedicated path, causing compose to mount
+  the wrong socket.
 - 10 new Python test files covering the new modules.
 
 ### Privacy probe and independent-review sharding (TRN-295)
