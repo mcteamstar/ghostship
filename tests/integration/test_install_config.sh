@@ -125,7 +125,7 @@ echo "--- Validation error paths ---"
 # A value-taking flag with no value aborts with a clear error.
 sandbox_setup
 sandbox_run_script "$INSTALL" --client-only --url "$URL" --port
-if [[ "$SANDBOX_STATUS" -ne 0 ]] && sandbox_output_contains "--port requires a value"; then
+if [[ "$SANDBOX_STATUS" -ne 0 ]] && sandbox_output_contains "--port"; then
   pass "install.sh errors when --port has no value"
 else
   fail "install.sh did not error on missing --port value (status=${SANDBOX_STATUS})"

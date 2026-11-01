@@ -128,7 +128,7 @@ def _resolve_config(args: argparse.Namespace) -> dict:
     if args.config:
         config_path = Path(args.config)
         if not config_path.exists():
-            _die(f"Config file does not exist: {args.config}")
+            _die(f"config file does not exist: {args.config}")
         if not config_path.is_file():
             _die(f"Config file is not readable: {args.config}")
         merged = _yaml_config.resolve_config(
