@@ -131,6 +131,7 @@ def _resolve_config(args: argparse.Namespace) -> dict:
             _die(f"config file does not exist: {args.config}")
         if not config_path.is_file():
             _die(f"Config file is not readable: {args.config}")
+        print(f"Loaded config file: {args.config}")
         merged = _yaml_config.resolve_config(
             repo_path="",
             xdg_path="",
@@ -173,7 +174,11 @@ def _migrate_conf(conf_path: Path, yaml_path: Path) -> None:
 
 def main() -> None:
     parser = _build_parser()
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        for u in unknown:
+            print(f"Unknown argument: {u}", file=sys.stderr)
+        sys.exit(1)
 
     ghostship_dir = str(_REPO_ROOT)
 
@@ -260,6 +265,10 @@ def main() -> None:
     # ── Reject retired flags ──────────────────────────────────────────────────
     _reject_retired(dict(os.environ))
 
+    # ── TLS mode validation (before client-only exit so --client-only rejects bad TLS too) ──
+    if ga_portal_tls_mode and ga_portal_tls_mode not in ("off", "internal", "tailscale", "acme"):
+        _die(f"GA_PORTAL_TLS_MODE='{ga_portal_tls_mode}' is not one of: off, internal, tailscale, acme")
+
     # ── Client-only early exit ────────────────────────────────────────────────
     if client_only:
         _client_only_install(
@@ -268,10 +277,6 @@ def main() -> None:
             api_key=flag_api_key or ga_api_key,
         )
         return
-
-    # ── TLS mode validation ───────────────────────────────────────────────────
-    if ga_portal_tls_mode not in ("off", "internal", "tailscale", "acme"):
-        _die(f"GA_PORTAL_TLS_MODE='{ga_portal_tls_mode}' is not one of: off, internal, tailscale, acme")
 
     # ── Interactive mode detection ────────────────────────────────────────────
     found_config = (
@@ -312,13 +317,32 @@ def main() -> None:
     _validate(agent_toolchains, str(Path(ghostship_dir) / "crews" / "spec-ops" / "toolchains"))
     print(f"✓ Agent backend: {ga_crew_agent} (runtime default: {ga_crew_agent.split(',')[0]})")
 
-    # ── Podman prerequisite check (already done by install.sh shim) ───────────
-    # Podman provisioning is done by the shell shim. By the time we get here,
-    # PODMAN_SOCK and DATA_DIR are set in the environment by the shim.
+    # ── Podman provisioning ───────────────────────────────────────────────────
+    # PODMAN_SOCK and DATA_DIR are set by the shim for non-client-only installs.
+    # If not set (e.g. called directly without the shim), run setup here.
     podman_sock = os.environ.get("PODMAN_SOCK", "")
     data_dir = os.environ.get("DATA_DIR", "")
     if not podman_sock or not data_dir:
-        _die("PODMAN_SOCK and DATA_DIR must be set (set by install.sh before calling install_main.py)")
+        podman_config = _podman_setup.PodmanConfig(
+            machine_name=ga_machine_name,
+            dedicated=ga_dedicated_machine,
+            machine_cpus=int(_g("GA_MACHINE_CPUS", "8")),
+            machine_memory=int(_g("GA_MACHINE_MEMORY", "16384")),
+            machine_disk=int(_g("GA_MACHINE_DISK", "100")),
+            xdg_runtime_dir=os.environ.get("XDG_RUNTIME_DIR", ""),
+        )
+        if _OS == "Darwin":
+            podman_sock = _podman_setup.setup_podman_macos(podman_config)
+        else:
+            podman_sock = _podman_setup.setup_podman_linux(podman_config)
+        if _OS == "Darwin":
+            data_dir = str(Path.home() / "Library" / "Application Support" / ga_machine_name / "data")
+        else:
+            xdg_data = os.environ.get("XDG_DATA_HOME", "") or str(Path.home() / ".local" / "share")
+            data_dir = str(Path(xdg_data) / ga_machine_name / "data")
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+        os.environ["PODMAN_SOCK"] = podman_sock
+        os.environ["DATA_DIR"] = data_dir
 
     # ── API key resolution ────────────────────────────────────────────────────
     resolved = _resolve_api_key(
