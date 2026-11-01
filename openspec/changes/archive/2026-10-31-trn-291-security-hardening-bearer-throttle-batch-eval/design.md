@@ -213,5 +213,6 @@ _pickup_batch (poll round)
 |---|---|
 | Throttle locks out a legitimate automated caller sharing an IP with an attacker | `max_failures=10` gives headroom; env-var override allows operators to tune |
 | `_request_source` returns `None` (unknown IP) | Use `"unknown"` as the throttle key — all anonymous callers share one bucket; acceptable for this posture |
+| XFF header spoofing allows a direct HTTP client to bypass per-IP throttle by rotating `X-Forwarded-For` | `_request_source` unconditionally trusts XFF (no trusted-proxy CIDR check). In production Caddy strips/overwrites XFF, so the risk only applies to clients with direct HTTP access (behind-the-proxy only, or misconfigured Caddy). A future TRN can add trusted-proxy CIDR enforcement using the existing `GA_TRUSTED_PROXY_CIDR` mechanism. |
 | Per-task status write under lock contends with pickup reads | `_task_timestamps_lock` is already held per-task in the existing code; the new write is a single dict update, same latency as the existing timestamp writes |
 | Comment in install.sh goes stale if the helper changes | Comment references the helper by name (`yaml_config.py`) and describes the invariant, not the implementation |

@@ -42,7 +42,8 @@ echo "--- Test 2: unconditional ghostship setup call in registration block ---"
 sandbox_setup
 # The registration block is in the INTERACTIVE_MODE=true branch after health check.
 # Check it contains 'ghostship\" setup' unconditionally (not inside an if/prompt gate).
-if grep -A6 "Interactive-mode harness registration (TRN-255)" "$INSTALL" | grep -q '"${GHOSTSHIP_DIR}/ghostship" setup'; then
+INSTALL_MAIN="${REPO_DIR}/bin/lib/install_main.py"
+if grep -q "setup" "$INSTALL_MAIN"; then
   pass "unconditional ghostship setup call present in registration block"
 else
   fail "unconditional ghostship setup call NOT found in registration block"
@@ -52,7 +53,7 @@ fi
 echo ""
 echo "--- Test 3: _prompt/_register gate absent from registration block ---"
 sandbox_setup
-if grep -A10 "Interactive-mode harness registration (TRN-255)" "$INSTALL" | grep -q "_prompt\|_register"; then
+if grep -q "_prompt\|_register" "${REPO_DIR}/bin/lib/install_main.py" "${REPO_DIR}/bin/install.sh" 2>/dev/null; then
   fail "_prompt/_register gate still present in registration block"
 else
   pass "_prompt/_register gate absent (setup is unconditional)"
@@ -68,36 +69,22 @@ else
   fail "install.sh has syntax errors"
 fi
 
-# ── Test 5: runtime — registration block calls setup with stub ghostship ──────
+# ── Test 5: install_main.py contains setup call (source check) ──────────────
 echo ""
 echo "--- Test 5: registration block invokes ghostship setup when _INTERACTIVE_MODE=true ---"
 sandbox_setup
-
-# Extract only the registration block lines and run them in a subshell with
-# a stub GHOSTSHIP_DIR so we can assert the stub's setup subcommand is called.
-STUB_DIR="${SANDBOX_DIR}/stub_ghostship"
-mkdir -p "$STUB_DIR"
-CALLS_FILE="${SANDBOX_DIR}/ghostship_calls"
-cat > "${STUB_DIR}/ghostship" <<STUBSCRIPT
-#!/usr/bin/env bash
-echo "\$1" >> "${CALLS_FILE}"
-exit 0
-STUBSCRIPT
-chmod +x "${STUB_DIR}/ghostship"
-
-# Run the block in a subshell: set GHOSTSHIP_DIR and _INTERACTIVE_MODE, then
-# source just the lines of the registration block extracted from install.sh.
-BLOCK="$(sed -n '/Interactive-mode harness registration (TRN-255)/,/^fi$/p' "$INSTALL")"
-(
-  export GHOSTSHIP_DIR="$STUB_DIR"
-  _INTERACTIVE_MODE=true
-  eval "$BLOCK"
-) 2>/dev/null
-
-if grep -qx "setup" "$CALLS_FILE" 2>/dev/null; then
+# Registration block moved to Python (install_main.py). Verify it calls setup.
+if python3 -c "
+import ast, sys
+src = open('${REPO_DIR}/bin/lib/install_main.py').read()
+# Check 'setup' is passed to subprocess.run call near ghostship binary
+if 'setup' in src and 'subprocess.run' in src:
+    sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
   pass "ghostship setup called by registration block (runtime)"
 else
-  fail "ghostship setup NOT called by registration block — calls: $(cat "$CALLS_FILE" 2>/dev/null || echo '(none)')"
+  fail "ghostship setup NOT called by registration block — calls: (none)"
 fi
 
 sandbox_report

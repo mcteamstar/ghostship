@@ -434,7 +434,7 @@ def _block_registry_io(request):
 # ── Pytest marks ─────────────────────────────────────────────────────────────
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "slow: marks tests as slow")
+    # "slow" marker removed in TRN-296 — no tests carry that mark any more.
     config.addinivalue_line("markers", "integration: marks integration tests")
 
 

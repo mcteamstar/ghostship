@@ -1,0 +1,11 @@
+schema: spec-driven
+created: 2026-10-30
+goal: Extract bin/install.sh from a ~1633-line bash monolith into tested Python
+  modules under bin/lib/, shrinking install.sh to an ~80-line glue entry point
+  and eliminating the eval injection surface.
+affected_areas:
+  - bin/install.sh
+  - bin/lib/
+  - bin/start.sh
+  - bin/uninstall.sh
+  - tests/unit/
