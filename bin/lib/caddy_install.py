@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""caddy.py — Generate Caddy initial-config.json for Ghost Academy.
+"""caddy_install.py — Generate Caddy initial-config.json for Ghost Academy.
 
 Replaces the Caddy JSON heredoc in bin/install.sh.  Produces the full
 initial-config.json as a Python dict serialised with json.dumps; no
 string interpolation.
 
 Usage (CLI):
-    python3 bin/lib/caddy.py --output <path>
+    python3 bin/lib/caddy_install.py --output <path>
 
 All config is read from environment variables when running as a CLI entry
 point (mirroring install.sh's resolved environment).

@@ -125,6 +125,13 @@ class TestResolveSocketPath:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PODMAN_SOCK", None)
             path = resolve_socket_path(config)
+        assert path == "/run/user/1234/ghost-academy/podman.sock"
+
+    def test_non_dedicated_uses_default_socket_name(self) -> None:
+        config = _config(xdg_runtime_dir="/run/user/1234", dedicated=False)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PODMAN_SOCK", None)
+            path = resolve_socket_path(config)
         assert path == "/run/user/1234/podman/podman.sock"
 
     def test_env_override_wins(self) -> None:

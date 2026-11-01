@@ -1,7 +1,7 @@
-"""Unit tests for bin/lib/caddy.py (installer Caddy config generator).
+"""Unit tests for bin/lib/caddy_install.py (installer Caddy config generator).
 
 Note: tests/unit/test_caddy.py already covers transport/caddy.py (the
-runtime Caddy portal helper). This file covers bin/lib/caddy.py, the
+runtime Caddy portal helper). This file covers bin/lib/caddy_install.py, the
 installer module that generates initial-config.json.
 
 Tests run without a live Caddy process or any network access.
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from bin.lib.caddy import CaddyConfig, generate_caddy_config
+from bin.lib.caddy_install import CaddyConfig, generate_caddy_config
 
 
 # ---------------------------------------------------------------------------

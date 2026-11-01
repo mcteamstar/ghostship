@@ -118,8 +118,9 @@ def test_readiness_no_longer_trusts_in_container_probe(install_sh_text: str) -> 
 
 def test_start_sh_probes_through_portal() -> None:
     text = START_SH.read_text(encoding="utf-8")
-    # start.sh now uses portal_host.py probe_base command
-    assert "portal_host.py" in text or "probe_base" in text
+    # start.sh is now a thin shim that execs into start_main.py;
+    # probe_base logic lives in start_main.py not start.sh
+    assert "start_main.py" in text
     assert 'curl -sf "http://127.0.0.1:${PORT}/health"' not in text
 
 

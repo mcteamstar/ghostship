@@ -55,7 +55,7 @@ from portal_host import (
     resolve_api_key as _resolve_api_key,
 )
 from compose import ComposeConfig, generate_compose
-from caddy import CaddyConfig, generate_caddy_config
+from caddy_install import CaddyConfig, generate_caddy_config
 import podman_setup as _podman_setup
 import wizard as _wizard
 
