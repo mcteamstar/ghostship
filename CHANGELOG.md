@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.11.0
+
+### Base image bump to KiroCrew v0.11.1 (TRN-293)
+
+- Crew image now extends `ghcr.io/kirodotdev/kirocrew:0.11.1` (multi-arch index
+  digest `sha256:828ad5140a050414ef5bc9dd5c27e71bb92947ec31c8d2365eee7fa5eecbc587`,
+  covering arm64 and amd64). kiro-cli version inside crews: 2.37.0 (was 2.34.0).
+- **Memory WAL fix** — concurrent memory reads no longer block behind writes; WAL is
+  preserved when another process closes the DB. Critical for 7-concurrent-reviewer
+  independent-review template runs.
+- **Shell reader security fix** — closes a bypass where `bash -c 'cmd'` placed after
+  options/redirections was not caught by the deny-list parser. Applies to all
+  non-Wraith personas.
+- **Three CVEs resolved** — filelock (GHSA-v4x8-3wr5-3wq8), undici
+  (GHSA-4w7w-5xrc-9h26), zod (GHSA-mrhx-c7xc-m3w5).
+- Migration schema unchanged from v0.10.0: `(6, 5)` — `seed_kiro_db.py` logic
+  unchanged; verification annotation updated to v0.11.1 / kiro-cli 2.37.0 / 2026-11-02.
+- `GA_CREW_AGENT` remains `kiro` — KAS engine not adopted in this change.
+- New upstream default `--no-kas` install flag: Ghostship's `install.sh` passes
+  `--no-kas` automatically when it detects an existing `GA_CREW_AGENT=kiro` config,
+  so no operator action is required.
+- Re-run `./install.sh` to rebuild the crew image and pick up KC 0.11.1. Existing
+  crews keep their current image until nuked and re-launched.
+
 ## v0.10.2
 
 ### Bug fix — macOS dedicated Podman socket path (hotfix)
