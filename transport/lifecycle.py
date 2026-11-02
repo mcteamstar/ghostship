@@ -1203,7 +1203,12 @@ _LOGIN_PRECURSOR_KEYS = {"kirocli:odic:device-registration"}
 
 
 def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
-    """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON.
+    """Read auth rows from a crew container's kiro-cli DB, return as b64 JSON.
+
+    Returns a v2 payload (base64-encoded JSON dict with ``auth_kv`` and
+    ``state`` keys) so that kiro-cli 2.37.0's profile-selection requirement is
+    satisfied — ``api.codewhisperer.profile`` lives in the ``state`` table and
+    must be injected alongside the token rows in ``auth_kv``.
 
     Uses an inline python one-liner so this works in both crew containers
     (base-admission image, which has /scripts/) and ephemeral login containers
@@ -1213,19 +1218,25 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
     present — that row exists from the moment the flow *starts*, so it is not
     evidence the user has actually completed the grant.
     """
+    # kiro-cli 2.37.0 requires api.codewhisperer.profile in the state table for
+    # ACP token refresh.  Capture it alongside the auth_kv rows so inject_auth.py
+    # can write both tables (v2 payload format).
     extract = (
         "import sqlite3, json, base64; "
         f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
-        "rows = conn.execute('SELECT key, value FROM auth_kv').fetchall(); "
+        "auth_kv = conn.execute('SELECT key, value FROM auth_kv').fetchall(); "
+        "state = conn.execute(\"SELECT key, value FROM state WHERE key='api.codewhisperer.profile'\").fetchall(); "
         "conn.close(); "
-        "print(base64.b64encode(json.dumps(rows).encode()).decode())"
+        "payload = {'v': 2, 'auth_kv': auth_kv, 'state': state}; "
+        "print(base64.b64encode(json.dumps(payload).encode()).decode())"
     )
     try:
         b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
         if b64:
-            rows = json.loads(base64.b64decode(b64).decode())
-            if rows and any(
-                r[1] for r in rows if len(r) > 1 and r[0] not in _LOGIN_PRECURSOR_KEYS
+            payload = json.loads(base64.b64decode(b64).decode())
+            auth_kv_rows = payload.get("auth_kv", []) if isinstance(payload, dict) else payload
+            if auth_kv_rows and any(
+                r[1] for r in auth_kv_rows if len(r) > 1 and r[0] not in _LOGIN_PRECURSOR_KEYS
             ):
                 return b64
     except Exception as e:
