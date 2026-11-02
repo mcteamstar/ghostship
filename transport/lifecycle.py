@@ -1203,7 +1203,12 @@ _LOGIN_PRECURSOR_KEYS = {"kirocli:odic:device-registration"}
 
 
 def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
-    """Read auth_kv rows from a crew container's kiro-cli DB, return as b64 JSON.
+    """Read auth rows from a crew container's kiro-cli DB, return as b64 JSON.
+
+    Returns a v2 payload (base64-encoded JSON dict with ``auth_kv`` and
+    ``state`` keys) so that kiro-cli 2.37.0's profile-selection requirement is
+    satisfied — ``api.codewhisperer.profile`` lives in the ``state`` table and
+    must be injected alongside the token rows in ``auth_kv``.
 
     Uses an inline python one-liner so this works in both crew containers
     (base-admission image, which has /scripts/) and ephemeral login containers
@@ -1212,22 +1217,50 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
     Returns None while only the device-flow registration precursor row is
     present — that row exists from the moment the flow *starts*, so it is not
     evidence the user has actually completed the grant.
+
+    Retries up to _PROFILE_WAIT_RETRIES times (1s apart) waiting for
+    ``api.codewhisperer.profile`` to be set by the KiroCrew gateway after
+    the OIDC token lands — the gateway fetches the profile asynchronously.
+    If it is still absent after the wait, the v2 payload is returned without
+    the state row so the caller is not blocked indefinitely; inject_auth.py
+    handles a missing state list gracefully.
     """
+    # kiro-cli 2.37.0 requires api.codewhisperer.profile in the state table for
+    # ACP token refresh.  Capture it alongside the auth_kv rows so inject_auth.py
+    # can write both tables (v2 payload format).
+    _PROFILE_WAIT_RETRIES = 30  # up to 30s for the gateway to set the profile
     extract = (
         "import sqlite3, json, base64; "
         f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
-        "rows = conn.execute('SELECT key, value FROM auth_kv').fetchall(); "
+        "auth_kv = conn.execute('SELECT key, value FROM auth_kv').fetchall(); "
+        "state = conn.execute(\"SELECT key, value FROM state WHERE key='api.codewhisperer.profile'\").fetchall(); "
         "conn.close(); "
-        "print(base64.b64encode(json.dumps(rows).encode()).decode())"
+        "payload = {'v': 2, 'auth_kv': auth_kv, 'state': state}; "
+        "print(base64.b64encode(json.dumps(payload).encode()).decode())"
     )
     try:
-        b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
-        if b64:
-            rows = json.loads(base64.b64decode(b64).decode())
-            if rows and any(
-                r[1] for r in rows if len(r) > 1 and r[0] not in _LOGIN_PRECURSOR_KEYS
-            ):
+        for attempt in range(_PROFILE_WAIT_RETRIES + 1):
+            b64 = podman.container_exec(container, ["python3", "-c", extract]).strip()
+            if not b64:
+                break
+            payload = json.loads(base64.b64decode(b64).decode())
+            auth_kv_rows = payload.get("auth_kv", []) if isinstance(payload, dict) else payload
+            if not (auth_kv_rows and any(
+                r[1] for r in auth_kv_rows if len(r) > 1 and r[0] not in _LOGIN_PRECURSOR_KEYS
+            )):
+                break  # no token yet — caller will retry
+            # Token is present. Wait for the profile to be set too.
+            state_rows = payload.get("state", []) if isinstance(payload, dict) else []
+            if state_rows or attempt == _PROFILE_WAIT_RETRIES:
+                if not state_rows:
+                    logger.warning(
+                        "Auth capture: api.codewhisperer.profile not set after %ds; "
+                        "proceeding without it — re-login may be needed after kiro-cli 2.37+ upgrade",
+                        _PROFILE_WAIT_RETRIES,
+                    )
                 return b64
+            logger.debug("Auth capture: profile not yet set, waiting 1s (attempt %d/%d)", attempt + 1, _PROFILE_WAIT_RETRIES)
+            time.sleep(1.0)
     except Exception as e:
         logger.warning("Auth read failed: %s", e)
     return None

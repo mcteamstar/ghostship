@@ -22,11 +22,14 @@
 # resolves correctly on amd64 (Linux) and arm64 (macOS).
 # TRN-271: bumped v0.9.0 → v0.10.0. Multi-arch index digest (2026-10-26).
 #           Resolves to amd64 on Linux, arm64 on macOS.
+# TRN-293: bumped v0.10.0 → v0.11.1. Multi-arch index digest (2026-11-02).
+#           KiroCrew version: v0.11.1 (kiro-cli 2.37.0). Resolves to amd64 on Linux, arm64 on macOS.
+#           Digest: sha256:828ad5140a050414ef5bc9dd5c27e71bb92947ec31c8d2365eee7fa5eecbc587. Verified: 2026-11-02.
 # ⚠️  The graduation-layer DB seed (crews/_base/graduation/seed_kiro_db.py) MUST
 #     be re-verified against this exact base image before release — see TRN-271
 #     tasks.md §1/§5. Bumping this pin without that verification is the silent
 #     auth-injection regression the change guards against.
-ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:b6d0b9a3a666df30d99fcadc6a71ab83cbf4ed1c6521e1b81f0333c5553f3e90
+ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:828ad5140a050414ef5bc9dd5c27e71bb92947ec31c8d2365eee7fa5eecbc587
 FROM ${KC_BASE_IMAGE}
 
 USER root
