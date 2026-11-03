@@ -8,7 +8,7 @@ Subcommands:
     install    [flags]   Install or update the transport (runs bin/install.sh)
     start      [flags]   Start the transport (runs bin/start.sh)
     stop                 Stop the transport, portal, and Podman machine/service
-    upgrade    [flags]   Rebuild and restart the transport (runs bin/install.sh); --skills also refreshes skills
+    upgrade    [flags]   Fetch latest release tag and rebuild; --yes skips prompt; --skills refreshes skills
     uninstall  [flags]   Uninstall the transport (runs bin/uninstall.sh)
     status               Show transport status (container running, port, uptime)
     setup      [flags]   Register the MCP server and install skill symlinks for agent clients
@@ -90,25 +90,118 @@ def cmd_start(args: list) -> int:
     _exec_script("bin/start.sh", args)
 
 
+# ---------------------------------------------------------------------------
+# Git helpers for cmd_upgrade version detection
+# ---------------------------------------------------------------------------
+
+def _git_current_tag(repo_dir) -> "str | None":
+    """Return the exact git tag for HEAD, or None if HEAD is not on a tag."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "describe", "--tags", "--exact-match", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _git_latest_remote_tag(repo_dir) -> "str | None":
+    """Fetch remote tags and return the latest v* tag, or None on fetch failure."""
+    try:
+        fetch = subprocess.run(
+            ["git", "-C", str(repo_dir), "fetch", "origin", "--tags", "--quiet"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if fetch.returncode != 0:
+            print(f"warning: could not fetch tags from origin: {fetch.stderr.strip()}")
+            return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        print(f"warning: could not fetch tags from origin: {exc}")
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "tag", "--list", "v*", "--sort=-version:refname"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            tags = [t.strip() for t in result.stdout.splitlines() if t.strip()]
+            return tags[0] if tags else None
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _git_is_dirty(repo_dir) -> bool:
+    """Return True if the working tree has uncommitted changes."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return bool(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
 def cmd_upgrade(args: list) -> int:
-    """Rebuild images and restart the transport (alias for install)."""
+    """Detect current and latest release tags, prompt, then rebuild the transport."""
     if "--help" in args or "-h" in args:
-        print("Usage: ghostship upgrade [--skills] [flags]\n"
-              "\nRebuild images and recreate the transport container.\n"
-              "Equivalent to 'ghostship install'. Delegates to bin/install.sh.\n"
+        print("Usage: ghostship upgrade [--skills] [--yes] [flags]\n"
+              "\nFetch the latest release tag and offer to upgrade before rebuilding.\n"
+              "If HEAD is already on the latest tag, or not on any release tag,\n"
+              "rebuilds from the current checkout without checking out a different tag.\n"
               "\n"
               "  --skills   After a successful rebuild, also run 'ghostship setup' to\n"
               "             refresh skill symlinks and re-register the MCP server for\n"
-              "             all detected agent clients (kiro-cli, Claude Code, opencode).")
+              "             all detected agent clients (kiro-cli, Claude Code, opencode).\n"
+              "  --yes      Skip the upgrade confirmation prompt (non-interactive mode).")
         return 0
+
+    yes = "--yes" in args
     skills = "--skills" in args
-    install_args = [a for a in args if a != "--skills"]
+    install_args = [a for a in args if a not in ("--skills", "--yes")]
+
+    repo_dir = _ghostship_dir()
+    current = _git_current_tag(repo_dir)
+    dirty = _git_is_dirty(repo_dir)
+
+    if current is None or dirty:
+        print("Not on a release tag — rebuilding from current checkout")
+    else:
+        latest = _git_latest_remote_tag(repo_dir)
+        if latest is None:
+            print("Could not reach origin — rebuilding from current checkout")
+        elif current == latest:
+            print(f"Already on {current} — rebuilding")
+        else:
+            print(f"{current} → {latest}")
+            if not yes:
+                try:
+                    answer = input("Upgrade? [y/N] ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    print()
+                    return 0
+                if answer not in ("y", "yes"):
+                    return 0
+            # Perform the checkout to the new tag
+            checkout = subprocess.run(
+                ["git", "-C", str(repo_dir), "checkout", f"tags/{latest}", "--quiet"],
+                capture_output=True, text=True,
+            )
+            if checkout.returncode != 0:
+                print(f"error: git checkout failed: {checkout.stderr.strip()}",
+                      file=sys.stderr)
+                return 1
+
     if not skills:
         # Fast path: replace the process entirely (original behaviour).
         _exec_script("bin/install.sh", install_args)
         return 0  # unreachable in production (execvp), needed for tests
     # --skills path: run install as a subprocess so we can chain setup after.
-    script = _ghostship_dir() / "scripts" / "install.sh"
+    script = _ghostship_dir() / "bin" / "install.sh"
     if not script.exists():
         print(f"error: script not found: {script}", file=sys.stderr)
         return 1
@@ -1088,7 +1181,7 @@ Subcommands:
   install    [flags]   Install or update the transport (runs bin/install.sh)
   start      [flags]   Start the transport (runs bin/start.sh)
   stop                 Stop the transport + portal, then the Podman machine/service (frees RAM, preserves state)
-  upgrade    [flags]   Rebuild and restart the transport (same as install); --skills also refreshes skill symlinks
+  upgrade    [flags]   Fetch latest release tag and rebuild; --yes skips prompt; --skills refreshes skill symlinks
   uninstall  [flags]   Uninstall the transport (runs bin/uninstall.sh)
   status               Show transport status
   setup      [flags]   Register MCP server + skills for agent clients (kiro, Claude Code, opencode)
