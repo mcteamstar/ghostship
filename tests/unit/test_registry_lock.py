@@ -553,3 +553,113 @@ class TestRemoveCrewSchedule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStripEphemeralFlags(unittest.TestCase):
+    """_strip_ephemeral_registry_flags and _load_registry strip _stopping from disk."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.mkdtemp()
+        self._tmp_path = Path(self._tmp)
+        self._reg, self._reg_mod, self._orig = _make_registry(self._tmp_path)
+
+    def tearDown(self):
+        orig_data_dir, orig_reg_path = self._orig
+        self._reg_mod.DATA_DIR = orig_data_dir
+        self._reg_mod.REGISTRY_PATH = orig_reg_path
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_raw(self, data: dict) -> None:
+        """Write a raw dict to the registry file without stripping."""
+        self._reg_mod.REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._reg_mod.REGISTRY_PATH.write_text(json.dumps(data))
+
+    def test_stopping_flag_stripped_by_load_registry(self):
+        """_stopping written to disk (process-crash scenario) is stripped by _load_registry."""
+        from transport.registry import _load_registry
+        self._write_raw({
+            "crews": {
+                "testcrew": {
+                    "container": "gs-testcrew",
+                    "volume": "gs-vol-testcrew",
+                    "home_volume": "gs-home-testcrew",
+                    "status": "running",
+                    "cookie": "tok",
+                    "last_used": 0.0,
+                    "_stopping": True,  # stale flag left by a crash
+                }
+            }
+        })
+        loaded = _load_registry()
+        crew = loaded["crews"]["testcrew"]
+        self.assertNotIn(
+            "_stopping", crew,
+            "_stopping must not survive _load_registry — it is an ephemeral in-flight "
+            "guard that causes permanent idle-stop bypass when stale after a restart",
+        )
+
+    def test_stopping_flag_stripped_by_crew_registry_load(self):
+        """_stopping stripped via the CrewRegistry._load path too."""
+        from transport.registry import CrewRegistry
+        reg = CrewRegistry(path=self._reg_mod.REGISTRY_PATH)
+        self._write_raw({
+            "crews": {
+                "tc2": {
+                    "container": "gs-tc2",
+                    "volume": "gs-vol-tc2",
+                    "home_volume": "gs-home-tc2",
+                    "status": "stopped",
+                    "cookie": "x",
+                    "last_used": 0.0,
+                    "_stopping": True,
+                }
+            }
+        })
+        loaded = reg._load()
+        self.assertNotIn(
+            "_stopping", loaded["crews"]["tc2"],
+            "_stopping must not survive CrewRegistry._load",
+        )
+
+    def test_strip_ephemeral_flags_is_idempotent_on_clean_registry(self):
+        """_strip_ephemeral_registry_flags is a no-op when _stopping is absent."""
+        from transport.registry import _strip_ephemeral_registry_flags
+        data = {"crews": {"c": {"status": "running", "cookie": "tok"}}}
+        import copy
+        expected = copy.deepcopy(data)
+        _strip_ephemeral_registry_flags(data)
+        self.assertEqual(data, expected)
+
+    def test_strip_ephemeral_flags_handles_empty_registry(self):
+        """_strip_ephemeral_registry_flags is safe on an empty crew map."""
+        from transport.registry import _strip_ephemeral_registry_flags
+        data = {"crews": {}}
+        _strip_ephemeral_registry_flags(data)  # must not raise
+        self.assertEqual(data, {"crews": {}})
+
+    def test_with_registry_block_does_not_persist_stopping_flag(self):
+        """_stopping written inside with registry: is stripped on the next load."""
+        reg = self._reg
+        # Simulate what the idle monitor does: set _stopping inside a with block.
+        with reg:
+            reg._reg.setdefault("crews", {})["idlecrew"] = {
+                "container": "gs-idle",
+                "volume": "gs-vol-idle",
+                "home_volume": "gs-home-idle",
+                "status": "running",
+                "cookie": "abc",
+                "last_used": 0.0,
+            }
+        # Now simulate a crash mid-stop: write _stopping directly.
+        with reg:
+            reg._reg["crews"]["idlecrew"]["_stopping"] = True
+        # At this point the registry file on disk has _stopping=True.
+        raw = json.loads(self._reg_mod.REGISTRY_PATH.read_text())
+        self.assertIn("_stopping", raw["crews"]["idlecrew"],
+                      "pre-condition: _stopping must be in the file to test stripping")
+        # On next load (simulating process restart), the flag must be gone.
+        from transport.registry import _load_registry
+        loaded = _load_registry()
+        self.assertNotIn("_stopping", loaded["crews"]["idlecrew"])
