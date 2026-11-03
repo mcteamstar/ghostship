@@ -17,4 +17,4 @@
 ## 3. Verify and commit
 
 - [x] 3.1 Smoke test: verify hash deep-link opens correct row on load, sort toggles correctly within groups
-- [ ] 3.2 Commit on `release/0.11.1`
+- [x] 3.2 Commit on `release/0.11.1`

@@ -170,7 +170,8 @@ export function renderTable(data, filter) {
       lastTaskTh.dataset.sortWired = "1";
       lastTaskTh.addEventListener("click", function () {
         state.toggleSortDir();
-        renderTable(state.lastData);
+        var filterEl = document.getElementById("fleet-filter");
+        renderTable(state.lastData, filterEl ? filterEl.value.toLowerCase() : undefined);
       });
     }
   }
