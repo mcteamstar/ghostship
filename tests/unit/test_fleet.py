@@ -409,5 +409,91 @@ class TestInternalCrewsLastCheckinAt(unittest.TestCase):
         self.assertIsNone(crew["captain"])
 
 
+class TestHandleInternalCrewAgentsGet(unittest.TestCase):
+    """GET /internal/crews/{crew_id}/agents — TRN-304.
+
+    Tests call the handler directly (bypass middleware auth) to verify payload
+    shape and status codes.
+    """
+
+    def _run_handler(self, crew_id: str, registry_info, gateway_tasks=None):
+        _s = _import_server()
+        _reg_mod = _import_registry_module()
+
+        path = f"/internal/crews/{crew_id}/agents"
+        scope = _make_scope("GET", path)
+        messages, send = _collect_send()
+
+        def _fake_get_crew(cid):
+            if registry_info is None:
+                raise KeyError(f"crew '{cid}' not found")
+            return registry_info
+
+        def _fake_get_crew_agents(info):
+            return gateway_tasks if gateway_tasks is not None else []
+
+        async def _invoke():
+            from starlette.requests import Request
+            req = Request(scope, _receive)
+            resp = await _s._handle_internal_crew_agents_get(req)
+            await resp(scope, _receive, send)
+
+        with patch("transport.server._get_crew", side_effect=_fake_get_crew), \
+             patch("transport.tools._get_crew_agents", side_effect=_fake_get_crew_agents):
+            _run(_invoke())
+        return messages, _body_of(messages)
+
+    def test_unknown_crew_returns_404(self):
+        messages, body = self._run_handler("no-such-crew", None)
+        self.assertEqual(_status_of(messages), 404)
+        data = json.loads(body)
+        self.assertIn("error", data)
+
+    def test_stopped_crew_returns_empty_agents(self):
+        info = {
+            "container": "ga-crew-stopped",
+            "status": "stopped",
+            "composition": "kirocrew",
+        }
+        messages, body = self._run_handler("stopped-crew", info)
+        self.assertEqual(_status_of(messages), 200)
+        data = json.loads(body)
+        self.assertEqual(data, {"agents": []})
+
+    def test_running_crew_returns_mapped_task_list(self):
+        info = {
+            "container": "ga-crew-alpha",
+            "status": "running",
+            "composition": "kirocrew",
+            "host": "gs-alpha",
+            "port": 5476,
+        }
+        gateway_tasks = [
+            {"task_id": "abc123", "agent": "ghost", "done": False, "elapsed_secs": 42},
+            {"task_id": "def456", "agent": "spectre", "done": True, "elapsed_secs": 120},
+        ]
+        messages, body = self._run_handler("alpha", info, gateway_tasks)
+        self.assertEqual(_status_of(messages), 200)
+        data = json.loads(body)
+        self.assertIn("agents", data)
+        self.assertEqual(len(data["agents"]), 2)
+        self.assertEqual(data["agents"][0]["task_id"], "abc123")
+        self.assertEqual(data["agents"][0]["agent"], "ghost")
+        self.assertFalse(data["agents"][0]["done"])
+        self.assertTrue(data["agents"][1]["done"])
+
+    def test_gateway_error_returns_empty_agents(self):
+        info = {
+            "container": "ga-crew-beta",
+            "status": "running",
+            "composition": "kirocrew",
+        }
+        # _get_crew_agents returns [] (e.g. gateway unreachable)
+        messages, body = self._run_handler("beta", info, [])
+        self.assertEqual(_status_of(messages), 200)
+        data = json.loads(body)
+        self.assertEqual(data, {"agents": []})
+
+
 if __name__ == "__main__":
     unittest.main()

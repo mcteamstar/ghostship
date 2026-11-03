@@ -655,6 +655,51 @@ def _build_internal_fleet_payload(podman) -> dict:
     }
 
 
+def _get_crew_agents(info: dict) -> list:
+    """Fetch live task list from a running crew's gateway (TRN-304).
+
+    GETs ``{crew_url}/api/spawn`` via :func:`_crew_api` (session-cookie auth,
+    5-second timeout) and returns the ``agents`` array mapped to
+    ``{"task_id", "agent", "done", "elapsed_secs"}`` dicts.  Returns ``[]``
+    on any network error, timeout, non-200 response, or unexpected payload.
+
+    Uses ``/api/spawn`` — the same route ``_build_crews_payload`` and the
+    ``spawn_list`` MCP tool use — not ``/api/tasks`` (the dashboard task-queue
+    UI endpoint, which has a different response shape and different auth
+    requirements).
+
+    This is intentionally a blocking (synchronous) call — the caller is either
+    a thread-pool context or a test.  It must never be called on every poll
+    tick; it is only invoked by the on-demand
+    ``GET /internal/crews/{crew_id}/agents`` route.
+    """
+    try:
+        data = _crew_api(info, "GET", "/api/spawn", timeout=5.0)
+        # /api/spawn returns either a bare list (older gateway) or a dict
+        # {"agents": [...], ...} (current gateway).  Handle both shapes, same
+        # as _build_crews_payload.
+        if isinstance(data, list):
+            agents = data
+        elif isinstance(data, dict):
+            agents = data.get("agents", [])
+        else:
+            return []
+        if not isinstance(agents, list):
+            return []
+        return [
+            {
+                "task_id": t.get("task_id") or t.get("id"),
+                "agent": t.get("agent", ""),
+                "done": bool(t.get("done", False)),
+                "elapsed_secs": int(t.get("elapsed_secs") or t.get("elapsed") or 0),
+            }
+            for t in agents
+            if isinstance(t, dict)
+        ]
+    except Exception:
+        return []
+
+
 @_registry_guard
 def crews() -> dict:
     """Situational awareness — list all crews and what's running before deciding what to do next.
