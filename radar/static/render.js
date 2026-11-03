@@ -2,6 +2,7 @@
 
 import { fmtDate, fmtUptime, statusBadge, esc, parseInterval } from "./format.js";
 import { openDetails } from "./state.js";
+import * as state from "./state.js";
 
 const bodyEl = document.getElementById("fleet-body");
 
@@ -109,6 +110,19 @@ export function renderTable(data, filter) {
   const running = crews.filter(function (c) { return c.status === "running"; });
   const stopped = crews.filter(function (c) { return c.status !== "running"; });
 
+  if (state.sortDir !== null) {
+    const sortFn = function (a, b) {
+      const at = a.last_task_at ? new Date(a.last_task_at).getTime() : null;
+      const bt = b.last_task_at ? new Date(b.last_task_at).getTime() : null;
+      if (at === null && bt === null) return 0;
+      if (at === null) return 1;
+      if (bt === null) return -1;
+      return state.sortDir === "desc" ? bt - at : at - bt;
+    };
+    running.sort(sortFn);
+    stopped.sort(sortFn);
+  }
+
   const runningRows = running.map(buildRow);
   const stoppedRows = stopped.map(buildRow);
   let html = capacityHtml + runningRows.join("");
@@ -129,6 +143,7 @@ export function renderTable(data, filter) {
         openDetails.add(crewId);
         detailTr.classList.remove("hidden");
         dataRow.classList.add("open");
+        history.replaceState(null, "", "#crew=" + crewId);
         const crew = (data.crews || []).find(function (c) {
           return c.crew_id === crewId;
         });
@@ -141,9 +156,24 @@ export function renderTable(data, filter) {
         openDetails.delete(crewId);
         detailTr.classList.add("hidden");
         dataRow.classList.remove("open");
+        history.replaceState(null, "", location.pathname);
       }
     });
   });
+
+  /* Update "Last Task" header text and wire its sort click once. */
+  const lastTaskTh = document.querySelector("#fleet-table th.sortable");
+  if (lastTaskTh) {
+    const indicator = state.sortDir === "desc" ? " ▼" : state.sortDir === "asc" ? " ▲" : "";
+    lastTaskTh.textContent = "Last Task" + indicator;
+    if (!lastTaskTh.dataset.sortWired) {
+      lastTaskTh.dataset.sortWired = "1";
+      lastTaskTh.addEventListener("click", function () {
+        state.toggleSortDir();
+        renderTable(state.lastData);
+      });
+    }
+  }
 }
 
 /* ── detail panels ───────────────────────────────────────────── */

@@ -24,6 +24,14 @@ document.addEventListener("DOMContentLoaded", function () {
   const p = fetchFleet();
   if (p && typeof p.then === "function") {
     p.then(function () {
+      /* Hash deep-link: pre-open the crew named in the fragment on first load. */
+      var hash = window.location.hash;
+      var m = hash.match(/^#crew=(.+)$/);
+      if (m) {
+        state.openDetails.add(m[1]);
+        renderTable(state.lastData);
+      }
+
       if (state.lastData && Array.isArray(state.lastData.crews) &&
           state.lastData.crews.length > 8 &&
           !document.getElementById("fleet-filter")) {
