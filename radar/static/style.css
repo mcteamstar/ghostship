@@ -135,6 +135,7 @@
     }
     .badge-stopped  { background: rgba(59,30,30,0.7); color: #fca5a5; }
     .badge-unknown  { background: rgba(30,35,48,0.7); color: #64748b; }
+    .badge-warn     { background: rgba(92,60,0,0.7); color: #fcd34d; }
 
     /* ── Crew-name pill badges ───────────────────────────────── */
     .agent-count {
@@ -199,4 +200,12 @@
     .spinner     { display: inline-block; animation: spin  1s   linear     infinite; }
     .running-dot { display: inline-block; animation: pulse 1.4s ease-in-out infinite;
                    color: #6ee7b7; }
-  
+
+    /* ── Staleness indicators ────────────────────────────────── */
+    #status.stale          { color: #fbbf24; }
+    #status.stale-critical { color: #f87171; }
+
+    /* ── Detail panel — image version ───────────────────────── */
+    .detail-image-version {
+      font-size: 0.78rem; color: #64748b; margin-bottom: 0.4rem;
+    }
