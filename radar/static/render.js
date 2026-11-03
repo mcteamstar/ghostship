@@ -259,7 +259,8 @@ export function loadCrons(crewId, container) {
 
 export function loadAgents(crewId, container) {
   /* Fetches live task list for a running crew on row expand (TRN-304).
-     On success: prepends the agents table before the captain section.
+     On success: removes the "No active tasks." placeholder and prepends the
+     agents table before the captain section.
      On error or empty agents: no-op (existing "No active tasks." placeholder remains). */
   const agentsUrl = "/api/crews/" + encodeURIComponent(crewId) + "/agents";
   fetch(agentsUrl)
@@ -268,6 +269,10 @@ export function loadAgents(crewId, container) {
     .then(function (data) {
       if (!data || !Array.isArray(data.agents) || data.agents.length === 0) return;
       const html = renderAgents(data.agents);
+      /* Remove the "No active tasks." placeholder set by the initial renderDetail call. */
+      container.querySelectorAll("em").forEach(function (em) {
+        if (em.textContent === "No active tasks.") em.remove();
+      });
       /* Insert before the captain section if present; otherwise prepend. */
       const captainSection = container.querySelector(".detail-section");
       if (captainSection) {

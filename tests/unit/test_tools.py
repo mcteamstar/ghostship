@@ -373,5 +373,86 @@ class TestEvacStoppedCrew(unittest.TestCase):
         self.assertIn("error", result)
 
 
+# ── TestGetCrewAgents ─────────────────────────────────────────────────────────
+
+class TestGetCrewAgents(unittest.TestCase):
+    """_get_crew_agents: verifies correct endpoint, mapping, and error behaviour (TRN-304).
+
+    Mocks _crew_api directly to confirm the function uses /api/spawn (not
+    /api/tasks) and produces the expected mapped dicts.
+    """
+
+    def _call(self, info: dict) -> list:
+        try:
+            from tools import _get_crew_agents  # container flat /app/
+        except ModuleNotFoundError:
+            from transport.tools import _get_crew_agents  # local dev
+        return _get_crew_agents(info)
+
+    def _fake_info(self) -> dict:
+        return {
+            "container": "gs-alpha",
+            "status": "running",
+            "host": "gs-alpha",
+            "port": 5476,
+        }
+
+    def test_uses_api_spawn_and_maps_agents_dict_response(self):
+        """Returns mapped list when /api/spawn returns {"agents": [...]}."""
+        gateway_resp = {
+            "agents": [
+                {"id": "abc123", "agent": "ghost", "done": False, "elapsed": 42},
+                {"id": "def456", "agent": "spectre", "done": True, "elapsed": 120},
+            ]
+        }
+        with patch("transport.tools._crew_api", return_value=gateway_resp) as mock_api:
+            result = self._call(self._fake_info())
+        mock_api.assert_called_once()
+        call_args = mock_api.call_args
+        # Must call /api/spawn, not /api/tasks
+        self.assertEqual(call_args[0][2], "/api/spawn")
+        # Must pass timeout kwarg (5s per spec)
+        self.assertEqual(call_args[1].get("timeout"), 5.0)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["task_id"], "abc123")
+        self.assertEqual(result[0]["agent"], "ghost")
+        self.assertFalse(result[0]["done"])
+        self.assertEqual(result[0]["elapsed_secs"], 42)
+        self.assertTrue(result[1]["done"])
+
+    def test_handles_bare_list_response(self):
+        """Returns mapped list when /api/spawn returns a bare list (older gateway shape)."""
+        gateway_resp = [
+            {"id": "xyz789", "agent": "reaper", "done": False, "elapsed": 5},
+        ]
+        with patch("transport.tools._crew_api", return_value=gateway_resp):
+            result = self._call(self._fake_info())
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["task_id"], "xyz789")
+        self.assertEqual(result[0]["agent"], "reaper")
+
+    def test_handles_task_id_field_name(self):
+        """Accepts task_id field name as well as id (defensive normalisation)."""
+        gateway_resp = {"agents": [
+            {"task_id": "norm01", "agent": "banshee", "done": True, "elapsed_secs": 60},
+        ]}
+        with patch("transport.tools._crew_api", return_value=gateway_resp):
+            result = self._call(self._fake_info())
+        self.assertEqual(result[0]["task_id"], "norm01")
+        self.assertEqual(result[0]["elapsed_secs"], 60)
+
+    def test_returns_empty_list_on_exception(self):
+        """Returns [] when _crew_api raises (gateway unreachable, auth failure, etc.)."""
+        with patch("transport.tools._crew_api", side_effect=Exception("connection refused")):
+            result = self._call(self._fake_info())
+        self.assertEqual(result, [])
+
+    def test_returns_empty_list_on_unexpected_response_shape(self):
+        """Returns [] when gateway returns an unexpected payload shape."""
+        with patch("transport.tools._crew_api", return_value="not-a-dict-or-list"):
+            result = self._call(self._fake_info())
+        self.assertEqual(result, [])
+
+
 if __name__ == "__main__":
     unittest.main()
