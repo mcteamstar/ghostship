@@ -201,7 +201,7 @@ def cmd_upgrade(args: list) -> int:
         _exec_script("bin/install.sh", install_args)
         return 0  # unreachable in production (execvp), needed for tests
     # --skills path: run install as a subprocess so we can chain setup after.
-    script = _ghostship_dir() / "scripts" / "install.sh"
+    script = _ghostship_dir() / "bin" / "install.sh"
     if not script.exists():
         print(f"error: script not found: {script}", file=sys.stderr)
         return 1

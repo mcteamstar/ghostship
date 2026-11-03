@@ -36,68 +36,68 @@ gs = _load_ghostship()
 class TestCmdUpgradeSkills(unittest.TestCase):
     """ghostship upgrade --skills: subprocess install then cmd_setup."""
 
-    def _mock_install_script(self, returncode: int):
-        """Return a mock install.sh path that exists."""
-        mock_path = MagicMock(spec=pathlib.Path)
-        mock_path.exists.return_value = True
-        mock_path.__str__ = lambda self: "/fake/bin/install.sh"
-        return mock_path
+    # Shared context manager stack used by all --skills tests.
+    # Patches git helpers directly (like TestCmdUpgradeVersionDetection) so
+    # subprocess.run only ever sees the install call, and uses a real Path for
+    # _ghostship_dir so path-construction bugs are caught.
+    def _skills_patches(self, install_rc: int = 0):
+        return (
+            patch.object(gs, "_ghostship_dir", return_value=pathlib.Path("/repo")),
+            patch.object(gs, "_git_current_tag", return_value=None),
+            patch.object(gs, "_git_is_dirty", return_value=False),
+            patch.object(pathlib.Path, "exists", return_value=True),
+            patch.object(gs.subprocess, "run",
+                         return_value=MagicMock(returncode=install_rc,
+                                                stdout="", stderr="")),
+        )
 
     def test_skills_flag_runs_install_then_setup_on_success(self):
-        """install exits 0 → cmd_setup called."""
-        with patch.object(gs, "_ghostship_dir") as mock_dir, \
-             patch.object(gs, "subprocess") as mock_subprocess, \
-             patch.object(gs, "cmd_setup", return_value=0) as mock_setup:
-            fake_dir = MagicMock(spec=pathlib.Path)
-            install_script = MagicMock(spec=pathlib.Path)
-            install_script.exists.return_value = True
-            install_script.__str__ = lambda self: "/fake/bin/install.sh"
-            fake_dir.__truediv__ = lambda self, other: install_script
-            mock_dir.return_value = fake_dir
-            mock_subprocess.run.return_value = MagicMock(returncode=0)
-
+        """install exits 0 → cmd_setup called; install script is bin/install.sh."""
+        with patch.object(gs, "_ghostship_dir", return_value=pathlib.Path("/repo")), \
+             patch.object(gs, "_git_current_tag", return_value=None), \
+             patch.object(gs, "_git_is_dirty", return_value=False), \
+             patch.object(gs, "cmd_setup", return_value=0) as mock_setup, \
+             patch.object(pathlib.Path, "exists", return_value=True), \
+             patch.object(gs.subprocess, "run",
+                          return_value=MagicMock(returncode=0)) as mock_run:
             rc = gs.cmd_upgrade(["--skills"])
 
         mock_setup.assert_called_once_with([])
         self.assertEqual(rc, 0)
+        # Verify the subprocess was invoked with bin/install.sh, not scripts/install.sh
+        install_cmd = mock_run.call_args[0][0]
+        self.assertIn("bin/install.sh", str(install_cmd[0]))
 
     def test_skills_flag_skips_setup_when_install_fails(self):
         """install exits non-zero → cmd_setup NOT called."""
-        with patch.object(gs, "_ghostship_dir") as mock_dir, \
-             patch.object(gs, "subprocess") as mock_subprocess, \
-             patch.object(gs, "cmd_setup", return_value=0) as mock_setup:
-            fake_dir = MagicMock(spec=pathlib.Path)
-            install_script = MagicMock(spec=pathlib.Path)
-            install_script.exists.return_value = True
-            install_script.__str__ = lambda self: "/fake/bin/install.sh"
-            fake_dir.__truediv__ = lambda self, other: install_script
-            mock_dir.return_value = fake_dir
-            mock_subprocess.run.return_value = MagicMock(returncode=1)
-
+        with patch.object(gs, "_ghostship_dir", return_value=pathlib.Path("/repo")), \
+             patch.object(gs, "_git_current_tag", return_value=None), \
+             patch.object(gs, "_git_is_dirty", return_value=False), \
+             patch.object(gs, "cmd_setup", return_value=0) as mock_setup, \
+             patch.object(pathlib.Path, "exists", return_value=True), \
+             patch.object(gs.subprocess, "run",
+                          return_value=MagicMock(returncode=1)):
             rc = gs.cmd_upgrade(["--skills"])
 
         mock_setup.assert_not_called()
         self.assertEqual(rc, 1)
 
     def test_skills_flag_stripped_from_install_args(self):
-        """--skills is not forwarded to install.sh."""
-        with patch.object(gs, "_ghostship_dir") as mock_dir, \
-             patch.object(gs, "subprocess") as mock_subprocess, \
-             patch.object(gs, "cmd_setup", return_value=0):
-            fake_dir = MagicMock(spec=pathlib.Path)
-            install_script = MagicMock(spec=pathlib.Path)
-            install_script.exists.return_value = True
-            install_script.__str__ = lambda self: "/fake/bin/install.sh"
-            fake_dir.__truediv__ = lambda self, other: install_script
-            mock_dir.return_value = fake_dir
-            mock_subprocess.run.return_value = MagicMock(returncode=0)
-
+        """--skills is not forwarded to install.sh; extra flags are."""
+        with patch.object(gs, "_ghostship_dir", return_value=pathlib.Path("/repo")), \
+             patch.object(gs, "_git_current_tag", return_value=None), \
+             patch.object(gs, "_git_is_dirty", return_value=False), \
+             patch.object(gs, "cmd_setup", return_value=0), \
+             patch.object(pathlib.Path, "exists", return_value=True), \
+             patch.object(gs.subprocess, "run",
+                          return_value=MagicMock(returncode=0)) as mock_run:
             gs.cmd_upgrade(["--skills", "--port", "9999"])
 
-        called_args = mock_subprocess.run.call_args[0][0]
-        self.assertNotIn("--skills", called_args)
-        self.assertIn("--port", called_args)
-        self.assertIn("9999", called_args)
+        install_cmd = mock_run.call_args[0][0]
+        self.assertNotIn("--skills", install_cmd)
+        self.assertIn("--port", install_cmd)
+        self.assertIn("9999", install_cmd)
+        self.assertIn("bin/install.sh", str(install_cmd[0]))
 
     def test_no_skills_flag_uses_exec_script(self):
         """Without --skills, _exec_script is called (original behaviour)."""
