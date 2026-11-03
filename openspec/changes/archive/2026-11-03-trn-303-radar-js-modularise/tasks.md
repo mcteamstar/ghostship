@@ -28,4 +28,4 @@
 - [x] 6.1 Open Radar in a browser — verify fleet table renders, rows are expandable, polling updates the "Refreshed at" timestamp
 - [x] 6.2 Delete `radar/static/app.js`
 - [x] 6.3 Confirm `openspec validate trn-303-radar-js-modularise` passes
-- [ ] 6.4 Commit on `release/0.11.1`
+- [x] 6.4 Commit on `release/0.11.1`
