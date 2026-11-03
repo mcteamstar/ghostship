@@ -19,11 +19,13 @@ export function fmtDate(iso) {
     const diffMins = Math.floor(diffMs / 60000);
     const diffHrs  = Math.floor(diffMs / 3600000);
     const diffDays = Math.floor(diffMs / 86400000);
-    if (diffMins < 1)   return "just now";
-    if (diffMins < 60)  return diffMins + "m ago";
-    if (diffHrs  < 24)  return diffHrs  + "h ago";
-    if (diffDays < 7)   return diffDays  + "d ago";
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    let relative;
+    if (diffMins < 1)   relative = "just now";
+    else if (diffMins < 60)  relative = diffMins + "m ago";
+    else if (diffHrs  < 24)  relative = diffHrs  + "h ago";
+    else if (diffDays < 7)   relative = diffDays  + "d ago";
+    else relative = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return "<span title=\"" + esc(iso) + "\">" + relative + "</span>";
   } catch (e) { return iso; }
 }
 
@@ -40,4 +42,12 @@ export function esc(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+export function parseInterval(scheduleStr) {
+  /* Parses "every Ns" (e.g. "every 300s") → milliseconds; null for anything else. */
+  if (!scheduleStr) return null;
+  const m = String(scheduleStr).match(/^every\s+(\d+(?:\.\d+)?)s$/i);
+  if (!m) return null;
+  return parseFloat(m[1]) * 1000;
 }
