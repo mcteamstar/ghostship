@@ -43,3 +43,11 @@ export function esc(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+export function parseInterval(scheduleStr) {
+  /* Parses "every Ns" (e.g. "every 300s") → milliseconds; null for anything else. */
+  if (!scheduleStr) return null;
+  const m = String(scheduleStr).match(/^every\s+(\d+(?:\.\d+)?)s$/i);
+  if (!m) return null;
+  return parseFloat(m[1]) * 1000;
+}

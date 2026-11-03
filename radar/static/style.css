@@ -201,9 +201,76 @@
     .running-dot { display: inline-block; animation: pulse 1.4s ease-in-out infinite;
                    color: #6ee7b7; }
 
+    /* ── Capacity bar (task 1) ───────────────────────────────── */
+    tr.capacity-row td {
+      background: rgba(8,12,20,0.85);
+      padding: 0.35rem 1rem;
+      border-bottom: 1px solid rgba(139,92,246,0.12);
+      font-size: 0.74rem;
+      color: #475569;
+      cursor: default;
+      vertical-align: middle;
+    }
+    .capacity-text { margin-right: 0.6rem; }
+    progress.capacity-progress {
+      vertical-align: middle;
+      width: 110px;
+      height: 5px;
+      accent-color: #7c3aed;
+      border-radius: 3px;
+    }
+
+    /* ── Copy crew_id button (task 3) ───────────────────────── */
+    .copy-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #334155;
+      font-size: 0.78rem;
+      padding: 0 3px;
+      margin-left: 3px;
+      vertical-align: middle;
+      transition: color 0.15s;
+      line-height: 1;
+    }
+    .copy-btn:hover { color: #818cf8; }
+
+    /* ── Fleet filter bar (task 5) ──────────────────────────── */
+    #fleet-filter {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin-bottom: 0.6rem;
+      padding: 0.45rem 0.75rem;
+      background: rgba(13,18,30,0.95);
+      border: 1px solid rgba(139,92,246,0.2);
+      border-radius: 6px;
+      color: #e2e8f0;
+      font-size: 0.82rem;
+      outline: none;
+      position: relative;
+      z-index: 1;
+    }
+    #fleet-filter:focus {
+      border-color: rgba(139,92,246,0.5);
+      box-shadow: 0 0 0 2px rgba(139,92,246,0.12);
+    }
+    #fleet-filter::placeholder { color: #475569; }
+
     /* ── Staleness indicators ────────────────────────────────── */
     #status.stale          { color: #fbbf24; }
     #status.stale-critical { color: #f87171; }
+
+    /* ── Captain staleness (task 2) ─────────────────────────── */
+    .captain-stale {
+      background: rgba(120,53,15,0.35) !important;
+      color: #fbbf24 !important;
+      border: 1px solid rgba(251,191,36,0.3) !important;
+    }
+    .captain-stale-warn {
+      color: #fbbf24;
+      font-size: 0.78rem;
+    }
 
     /* ── Detail panel — image version ───────────────────────── */
     .detail-image-version {
