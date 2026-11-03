@@ -23,9 +23,9 @@ Single-crew focus. Multiple open rows could be encoded as `#crew=a,b` but that a
 ### D3 — Sort state in `state.js`
 
 `export let sortDir = null; // null | "asc" | "desc"`  
-`null` = default order (insertion order within groups). Toggle: `null → "desc" → "asc" → null`. `renderTable()` reads `state.sortDir` and sorts the `running` and `stopped` arrays by `last_task_at` before building rows (nulls sort to end). The `<th>` click handler updates `state.sortDir` and calls `renderTable(state.lastData)` — requires `lastData` from TRN-301, or this change depends on TRN-301.
+`null` = default order (insertion order within groups). Toggle: `null → "desc" → "asc" → null`. `renderTable()` reads `state.sortDir` and sorts the `running` and `stopped` arrays by `last_task_at` before building rows (nulls sort to end). The `<th>` click handler updates `state.sortDir` and calls `renderTable(state.lastData)`.
 
-**Dependency note:** TRN-302 sort feature depends on `state.lastData` introduced in TRN-301. Implement TRN-301 first, or implement the `lastData` cache as part of this change.
+`state.lastData` and `setLastData()` were introduced by TRN-301 and are already present.
 
 ## Risks / Trade-offs
 

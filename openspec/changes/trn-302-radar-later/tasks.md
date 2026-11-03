@@ -1,6 +1,6 @@
 # Tasks
 
-**Note:** the column sort feature (T3–T4) depends on `state.lastData` introduced in TRN-301. Implement TRN-301 first, or add the `lastData` cache here if implementing standalone.
+`state.lastData` and `setLastData()` are already present from TRN-301 — no prerequisite work needed.
 
 ## 1. URL fragment deep-linking
 
