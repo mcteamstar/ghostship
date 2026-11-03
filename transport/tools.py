@@ -655,6 +655,42 @@ def _build_internal_fleet_payload(podman) -> dict:
     }
 
 
+def _get_crew_agents(info: dict) -> list:
+    """Fetch live task list from a running crew's gateway (TRN-304).
+
+    GETs ``{crew_url}/api/tasks`` with a 5-second timeout and returns the
+    ``tasks`` array mapped to ``{"task_id", "agent", "done", "elapsed_secs"}``
+    dicts.  Returns ``[]`` on any network error, timeout, or non-200 response.
+
+    This is intentionally a blocking (synchronous) call — the caller is either
+    a thread-pool context or a test.  It must never be called on every poll
+    tick; it is only invoked by the on-demand
+    ``GET /internal/crews/{crew_id}/agents`` route.
+    """
+    try:
+        crew_url = _crew_url(info)
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{crew_url}/api/tasks")
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        tasks = data.get("tasks", [])
+        if not isinstance(tasks, list):
+            return []
+        return [
+            {
+                "task_id": t.get("task_id") or t.get("id"),
+                "agent": t.get("agent", ""),
+                "done": bool(t.get("done", False)),
+                "elapsed_secs": int(t.get("elapsed_secs") or t.get("elapsed") or 0),
+            }
+            for t in tasks
+            if isinstance(t, dict)
+        ]
+    except Exception:
+        return []
+
+
 @_registry_guard
 def crews() -> dict:
     """Situational awareness — list all crews and what's running before deciding what to do next.

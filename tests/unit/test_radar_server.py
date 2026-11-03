@@ -285,5 +285,89 @@ class TestRadarStaticFiles(unittest.TestCase):
         self.assertEqual(_status_of(messages), 404)
 
 
+class TestRadarApiCrewAgents(unittest.TestCase):
+    """GET /api/crews/{crew_id}/agents — proxy to transport per-crew agents endpoint (TRN-304)."""
+
+    def _make_agents_scope(self, crew_id: str) -> dict:
+        scope = _make_scope("GET", f"/api/crews/{crew_id}/agents")
+        scope["path_params"] = {"crew_id": crew_id}
+        return scope
+
+    def _make_fake_httpx(self, response=None, request_error=False):
+        """Build a minimal httpx module replacement with a controlled AsyncClient."""
+        import types
+        from unittest.mock import AsyncMock, MagicMock
+
+        class _FakeRequestError(Exception):
+            """Stands in for httpx.RequestError inside the patched module."""
+            pass
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = response[0] if response else 200
+        fake_resp.content = (response[1] if response else b'{"agents":[]}')
+        fake_resp.text = (response[1].decode() if response and isinstance(response[1], bytes) else "")
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        if request_error:
+            mock_client.get = AsyncMock(side_effect=_FakeRequestError("connection refused"))
+        else:
+            mock_client.get = AsyncMock(return_value=fake_resp)
+
+        fake_httpx = types.ModuleType("fake_httpx")
+        fake_httpx.AsyncClient = MagicMock(return_value=mock_client)
+        fake_httpx.RequestError = _FakeRequestError
+        return fake_httpx
+
+    def _call_handler(self, crew_id: str, fake_httpx) -> tuple:
+        server = _import_radar_server()
+        scope = self._make_agents_scope(crew_id)
+        messages, send = _collect_send()
+
+        async def _invoke():
+            from starlette.requests import Request
+            req = Request(scope, _receive)
+            resp = await server.api_crew_agents(req)
+            await resp(scope, _receive, send)
+
+        with patch.object(server, "httpx", fake_httpx):
+            _run(_invoke())
+        return messages, _body_of(messages)
+
+    def test_forwards_to_transport_and_returns_payload(self):
+        """Successful proxy: returns transport's JSON response unchanged."""
+        import json as _json
+        payload = {"agents": [
+            {"task_id": "t1", "agent": "ghost", "done": False, "elapsed_secs": 10}
+        ]}
+        body_bytes = _json.dumps(payload).encode()
+        fake_httpx = self._make_fake_httpx(response=(200, body_bytes))
+        messages, body = self._call_handler("alpha", fake_httpx)
+        self.assertEqual(_status_of(messages), 200)
+        data = _json.loads(body)
+        self.assertIn("agents", data)
+        self.assertEqual(len(data["agents"]), 1)
+        self.assertEqual(data["agents"][0]["task_id"], "t1")
+
+    def test_returns_502_on_request_error(self):
+        """Transport unreachable → 502."""
+        import json as _json
+        fake_httpx = self._make_fake_httpx(request_error=True)
+        messages, body = self._call_handler("beta", fake_httpx)
+        self.assertEqual(_status_of(messages), 502)
+        data = _json.loads(body)
+        self.assertIn("error", data)
+
+    def test_returns_502_on_transport_error_status(self):
+        """Transport returns non-200 → 502."""
+        import json as _json
+        fake_httpx = self._make_fake_httpx(response=(404, b"not found"))
+        messages, body = self._call_handler("gamma", fake_httpx)
+        self.assertEqual(_status_of(messages), 502)
+        data = _json.loads(body)
+        self.assertIn("error", data)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -481,6 +481,22 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 await response(scope, receive, send)
                 return True
 
+        # Pattern match for /internal/crews/{id}/agents (TRN-304) — transport-secret-only,
+        # no bearer key required. Consumed by ga-radar.
+        if (
+            scope["method"] == "GET"
+            and len(_parts) == 4
+            and _parts[0] == "internal"
+            and _parts[1] == "crews"
+            and _parts[3] == "agents"
+        ):
+            agents_handler = self._public_routes.get(("GET", "/internal/crews/*/agents"))
+            if agents_handler is not None:
+                request = Request(scope, receive)
+                response = await agents_handler(request)
+                await response(scope, receive, send)
+                return True
+
         return False
 
     async def _dispatch_file(self, scope, receive, send) -> bool:

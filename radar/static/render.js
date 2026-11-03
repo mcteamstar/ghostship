@@ -151,6 +151,7 @@ export function renderTable(data, filter) {
         inner.innerHTML = renderDetail(crew);
         if (crew && crew.status === "running") {
           loadCrons(crewId, inner);
+          loadAgents(crewId, inner);
         }
       } else {
         openDetails.delete(crewId);
@@ -253,5 +254,26 @@ export function loadCrons(crewId, container) {
       });
       html += "</table>";
       container.innerHTML += html;
+    });
+}
+
+export function loadAgents(crewId, container) {
+  /* Fetches live task list for a running crew on row expand (TRN-304).
+     On success: prepends the agents table before the captain section.
+     On error or empty agents: no-op (existing "No active tasks." placeholder remains). */
+  const agentsUrl = "/api/crews/" + encodeURIComponent(crewId) + "/agents";
+  fetch(agentsUrl)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .catch(function () { return null; })
+    .then(function (data) {
+      if (!data || !Array.isArray(data.agents) || data.agents.length === 0) return;
+      const html = renderAgents(data.agents);
+      /* Insert before the captain section if present; otherwise prepend. */
+      const captainSection = container.querySelector(".detail-section");
+      if (captainSection) {
+        captainSection.insertAdjacentHTML("beforebegin", html);
+      } else {
+        container.insertAdjacentHTML("afterbegin", html);
+      }
     });
 }
