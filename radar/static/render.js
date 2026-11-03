@@ -1,9 +1,18 @@
 /* Radar SPA — DOM builders. */
 
-import { fmtDate, fmtUptime, statusBadge, esc } from "./format.js";
+import { fmtDate, fmtUptime, statusBadge, esc, parseInterval } from "./format.js";
 import { openDetails } from "./state.js";
 
 const bodyEl = document.getElementById("fleet-body");
+
+/* ── staleness helper ────────────────────────────────────────── */
+
+function captainIsStale(cap) {
+  if (!cap || !cap.enabled || !cap.last_checkin_at) return false;
+  const interval = parseInterval(cap.schedule);
+  if (interval === null) return false;
+  return (Date.now() - new Date(cap.last_checkin_at).getTime()) > interval * 3;
+}
 
 /* ── row builder ─────────────────────────────────────────────── */
 
@@ -21,11 +30,21 @@ export function buildRow(crew) {
 
   /* Captain state badge */
   const cap = crew.captain;
-  const captainBadge = cap
-    ? (cap.enabled
-        ? " <span class=\"captain-badge captain-on\">⚑ captain</span>"
-        : " <span class=\"captain-badge captain-off\">⚑ paused</span>")
-    : "";
+  let captainBadge = "";
+  if (cap) {
+    if (cap.enabled) {
+      const stale = captainIsStale(cap);
+      captainBadge = stale
+        ? " <span class=\"captain-badge captain-on captain-stale\">⚑ captain ⚠</span>"
+        : " <span class=\"captain-badge captain-on\">⚑ captain</span>";
+    } else {
+      captainBadge = " <span class=\"captain-badge captain-off\">⚑ paused</span>";
+    }
+  }
+
+  /* Copy crew_id button */
+  const copyBtn = "<button class=\"copy-btn\" data-copy=\"" + esc(crew.crew_id) +
+    "\" title=\"Copy crew ID\">⧉</button>";
 
   const isOpen = openDetails.has(crew.crew_id);
   const isStopped = crew.status !== "running";
@@ -33,7 +52,7 @@ export function buildRow(crew) {
   const detailClass = "detail-row" + (isOpen ? "" : " hidden");
   return (
     "<tr class=\"" + rowClass + "\" data-crew-id=\"" + esc(crew.crew_id) + "\">" +
-    "<td>" + esc(crew.crew_id) + agentBadge + captainBadge + "</td>" +
+    "<td>" + esc(crew.crew_id) + copyBtn + agentBadge + captainBadge + "</td>" +
     "<td>" + statusBadge(crew.status) + "</td>" +
     "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
     "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
@@ -50,11 +69,40 @@ export function buildRow(crew) {
 
 /* ── table render ────────────────────────────────────────────── */
 
-export function renderTable(data) {
-  const crews = data.crews || [];
+export function renderTable(data, filter) {
+  const allCrews = data.crews || [];
+
+  /* Capacity bar (shown when host capacity data is available) */
+  let capacityHtml = "";
+  if (data.max_active_crews != null) {
+    const active = data.active_crews || 0;
+    const maxCrew = data.max_active_crews;
+    const progressVal = maxCrew > 0 ? active / maxCrew : 0;
+    const memPart = data.host_memory_available_gb != null
+      ? " · " + data.host_memory_available_gb.toFixed(1) + " GB free"
+      : "";
+    capacityHtml =
+      "<tr class=\"capacity-row\"><td colspan=\"7\">" +
+      "<span class=\"capacity-text\">" +
+      active + " / " + maxCrew + " crews" + memPart +
+      "</span>" +
+      "<progress class=\"capacity-progress\" value=\"" + progressVal + "\" max=\"1\"></progress>" +
+      "</td></tr>";
+  }
+
+  /* Apply optional filter */
+  const crews = filter
+    ? allCrews.filter(function (c) {
+        return c.crew_id.toLowerCase().includes(filter) ||
+               (c.composition || "").toLowerCase().includes(filter);
+      })
+    : allCrews;
+
   if (crews.length === 0) {
-    bodyEl.innerHTML =
-      "<tr><td colspan=\"7\" class=\"empty-cell\">No crews registered.</td></tr>";
+    bodyEl.innerHTML = capacityHtml +
+      "<tr><td colspan=\"7\" class=\"empty-cell\">" +
+      (filter ? "No crews match filter." : "No crews registered.") +
+      "</td></tr>";
     return;
   }
 
@@ -63,7 +111,7 @@ export function renderTable(data) {
 
   const runningRows = running.map(buildRow);
   const stoppedRows = stopped.map(buildRow);
-  let html = runningRows.join("");
+  let html = capacityHtml + runningRows.join("");
   if (stopped.length > 0) {
     html += "<tr class=\"section-divider\"><td colspan=\"7\">Inactive</td></tr>";
     html += stoppedRows.join("");
@@ -112,12 +160,19 @@ export function renderDetail(crew) {
       ? "<tr><td colspan=\"3\"><strong>Last check-in:</strong> " +
         fmtDate(cap.last_checkin_at) + "</td></tr>"
       : "";
+    let staleWarnRow = "";
+    if (captainIsStale(cap)) {
+      const elapsedMs = Date.now() - new Date(cap.last_checkin_at).getTime();
+      const mins = Math.round(elapsedMs / 60000);
+      staleWarnRow = "<tr><td colspan=\"3\" class=\"captain-stale-warn\">" +
+        "⚠ No check-in for " + mins + "m — captain may be stalled</td></tr>";
+    }
     html += "<div class=\"detail-section\">Captain</div><table class=\"detail-table\">" +
       "<tr><th>State</th><th>Schedule</th><th>Current task</th></tr>" +
       "<tr><td>" + (cap.enabled ? "active" : "paused") + "</td>" +
       "<td>" + esc(cap.schedule || "—") + "</td>" +
       "<td class=\"mono\">" + esc((cap.current_task_id || "—").slice(0, 12)) + "</td>" +
-      "</tr>" + checkinRow + "</table>";
+      "</tr>" + checkinRow + staleWarnRow + "</table>";
   }
 
   if (crew.status !== "running") {
