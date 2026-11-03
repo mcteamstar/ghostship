@@ -5,6 +5,7 @@ import { markFetchOk, clearFetchOk, openDetails, lastFetchOk, setLastData } from
 
 const REFRESH_INTERVAL = 5000; // ms
 const statusEl = document.getElementById("status");
+const capacityEl = document.getElementById("capacity");
 
 export function fetchFleet() {
   /* Auto-pause: if a detail row is open and last fetch succeeded <25s ago, skip. */
@@ -21,6 +22,17 @@ export function fetchFleet() {
       markFetchOk();
       setLastData(data);
       document.title = "Fleet Radar (" + (data.crews || []).filter(function (c) { return c.status === "running"; }).length + " running)";
+      /* Update capacity display */
+      if (capacityEl) {
+        const active = data.active_crews || 0;
+        const maxCrew = data.max_active_crews;
+        const memPart = data.host_memory_available_gb != null
+          ? " · " + data.host_memory_available_gb.toFixed(1) + " GB free"
+          : "";
+        capacityEl.textContent = maxCrew != null
+          ? active + " / " + maxCrew + " crews" + memPart
+          : "";
+      }
       /* Fresh data — clear any staleness indicators. */
       statusEl.classList.remove("stale");
       statusEl.classList.remove("stale-critical");

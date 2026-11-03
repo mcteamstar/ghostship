@@ -73,24 +73,6 @@ export function buildRow(crew) {
 export function renderTable(data, filter) {
   const allCrews = data.crews || [];
 
-  /* Capacity bar (shown when host capacity data is available) */
-  let capacityHtml = "";
-  if (data.max_active_crews != null) {
-    const active = data.active_crews || 0;
-    const maxCrew = data.max_active_crews;
-    const progressVal = maxCrew > 0 ? active / maxCrew : 0;
-    const memPart = data.host_memory_available_gb != null
-      ? " · " + data.host_memory_available_gb.toFixed(1) + " GB free"
-      : "";
-    capacityHtml =
-      "<tr class=\"capacity-row\"><td colspan=\"7\">" +
-      "<span class=\"capacity-text\">" +
-      active + " / " + maxCrew + " crews" + memPart +
-      "</span>" +
-      "<progress class=\"capacity-progress\" value=\"" + progressVal + "\" max=\"1\"></progress>" +
-      "</td></tr>";
-  }
-
   /* Apply optional filter */
   const crews = filter
     ? allCrews.filter(function (c) {
@@ -100,7 +82,7 @@ export function renderTable(data, filter) {
     : allCrews;
 
   if (crews.length === 0) {
-    bodyEl.innerHTML = capacityHtml +
+    bodyEl.innerHTML =
       "<tr><td colspan=\"7\" class=\"empty-cell\">" +
       (filter ? "No crews match filter." : "No crews registered.") +
       "</td></tr>";
@@ -125,7 +107,7 @@ export function renderTable(data, filter) {
 
   const runningRows = running.map(buildRow);
   const stoppedRows = stopped.map(buildRow);
-  let html = capacityHtml + runningRows.join("");
+  let html = runningRows.join("");
   if (stopped.length > 0) {
     html += "<tr class=\"section-divider\"><td colspan=\"7\">Inactive</td></tr>";
     html += stoppedRows.join("");
