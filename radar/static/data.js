@@ -1,7 +1,7 @@
 /* Radar SPA — fetch and polling. */
 
 import { renderTable } from "./render.js";
-import { markFetchOk, clearFetchOk, lastFetchOk } from "./state.js";
+import { markFetchOk, lastFetchOk } from "./state.js";
 
 const REFRESH_INTERVAL = 5000; // ms
 const statusEl = document.getElementById("status");
@@ -19,20 +19,11 @@ export function fetchFleet() {
       markFetchOk();
       renderTable(data);
       document.title = "Fleet Radar (" + (data.crews || []).filter(function (c) { return c.status === "running"; }).length + " running)";
-      /* Staleness check — clears stale classes when data is fresh. */
-      if (lastFetchOk && Date.now() - lastFetchOk > 30000) {
-        statusEl.classList.add("stale-critical");
-        statusEl.classList.remove("stale");
-      } else if (lastFetchOk && Date.now() - lastFetchOk > 15000) {
-        statusEl.classList.add("stale");
-        statusEl.classList.remove("stale-critical");
-      } else {
-        statusEl.classList.remove("stale");
-        statusEl.classList.remove("stale-critical");
-      }
+      /* Fresh data — clear any staleness indicators. */
+      statusEl.classList.remove("stale");
+      statusEl.classList.remove("stale-critical");
     })
     .catch(function (err) {
-      clearFetchOk();
       let msg;
       if (err instanceof TypeError) {
         msg = "Network error — check your connection";
@@ -42,7 +33,15 @@ export function fetchFleet() {
         msg = "Fetch error: " + err.message;
       }
       statusEl.textContent = msg;
-      statusEl.className = "error";
+      /* Staleness check — lastFetchOk persists from last success so the
+         threshold accumulates across consecutive errors. */
+      if (lastFetchOk && Date.now() - lastFetchOk > 30000) {
+        statusEl.className = "error stale-critical";
+      } else if (lastFetchOk && Date.now() - lastFetchOk > 15000) {
+        statusEl.className = "error stale";
+      } else {
+        statusEl.className = "error";
+      }
     });
 }
 
