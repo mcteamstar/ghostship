@@ -619,6 +619,17 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 # KIRO_API_KEY global removed (TRN-233 task 2.1) — credentials are now resolved
 # per-launch via CredentialStore.get(backend) in tools.py.
 
+# Register env-var credential fields from cfg with the log redaction filter
+# so they are scrubbed from every log record even when the log message was
+# constructed before install_redaction_filter() ran.  The primary paths for
+# these credentials are managed by CredentialStore (which calls register_secret
+# on get()), but the env-var fallback fields in cfg are not otherwise registered.
+for _cfg_secret_field in ("kiro_api_key", "anthropic_api_key", "openai_api_key", "claude_code_oauth_token"):
+    _cfg_secret_val = getattr(cfg, _cfg_secret_field, "")
+    if _cfg_secret_val:
+        _security.register_secret(_cfg_secret_val)
+del _cfg_secret_field, _cfg_secret_val
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
