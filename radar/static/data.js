@@ -20,7 +20,9 @@ export function fetchFleet() {
       statusEl.className = "";
       markFetchOk();
       setLastData(data);
-      renderTable(data);
+      /* Re-apply any active filter so poll re-renders don't clear it. */
+      const filterEl = document.getElementById("fleet-filter");
+      renderTable(data, filterEl ? filterEl.value.toLowerCase() : undefined);
     })
     .catch(function (err) {
       clearFetchOk();
