@@ -9,7 +9,7 @@ Covers:
   - GET /api/crews with transport unreachable — returns 502 with error JSON
   - GET /  — returns HTML (index.html)
   - GET /static/style.css  — returns CSS content-type
-  - GET /static/app.js     — returns JS content-type
+  - GET /static/main.js    — returns JS content-type (TRN-303: app.js split into ES modules)
 """
 from __future__ import annotations
 
@@ -252,7 +252,11 @@ class TestRadarIndex(unittest.TestCase):
 
 
 class TestRadarStaticFiles(unittest.TestCase):
-    """GET /static/style.css and /static/app.js return correct content-types."""
+    """GET /static/style.css and /static/main.js return correct content-types.
+
+    TRN-303: app.js was split into ES modules (main.js, format.js, state.js,
+    render.js, data.js).  The canonical JS entry point is now main.js.
+    """
 
     def test_style_css_content_type(self):
         server = _import_radar_server()
@@ -263,14 +267,22 @@ class TestRadarStaticFiles(unittest.TestCase):
         self.assertIn("css", ct)
         self.assertGreater(len(body), 100)
 
-    def test_app_js_content_type(self):
+    def test_main_js_content_type(self):
+        """Entry-point module (replaces app.js after TRN-303 split)."""
         server = _import_radar_server()
-        scope = _make_scope("GET", "/static/app.js")
+        scope = _make_scope("GET", "/static/main.js")
         messages, body = _run(_call(server.app, scope))
         self.assertEqual(_status_of(messages), 200)
         ct = _headers_of(messages).get("content-type", "")
         self.assertIn("javascript", ct)
         self.assertGreater(len(body), 100)
+
+    def test_app_js_returns_404(self):
+        """app.js was deleted in TRN-303 — must not be served."""
+        server = _import_radar_server()
+        scope = _make_scope("GET", "/static/app.js")
+        messages, _body = _run(_call(server.app, scope))
+        self.assertEqual(_status_of(messages), 404)
 
 
 if __name__ == "__main__":

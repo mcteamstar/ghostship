@@ -34,9 +34,10 @@ Image: `localhost/ga-radar:latest`, built from `radar/Containerfile`.
 | `GET /api/crews` | | Proxy fleet data from `ga-transport /internal/crews` |
 | `GET /health` | | Return `{"status": "ok"}` — no auth required |
 
-Static files in `radar/static/` (`index.html`, `style.css`, `app.js`) are baked
-into the image at build time. `app.js` polls `GET /api/crews` every 5s with no
-external dependencies.
+Static files in `radar/static/` (`index.html`, `style.css`, and the ES module
+bundle: `main.js`, `format.js`, `state.js`, `render.js`, `data.js`) are baked
+into the image at build time. `main.js` is the entry point; it polls
+`GET /api/crews` every 5s with no external dependencies.
 
 #### Scenario: SPA served at root
 
@@ -46,7 +47,7 @@ external dependencies.
 
 #### Scenario: Static assets served
 
-- **WHEN** `GET /static/app.js` or `GET /static/style.css` is requested
+- **WHEN** `GET /static/main.js` or `GET /static/style.css` is requested
 - **THEN** `ga-radar` returns the asset with the correct content-type
 
 #### Scenario: Fleet API proxied to transport
