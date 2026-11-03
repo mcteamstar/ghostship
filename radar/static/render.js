@@ -34,10 +34,10 @@ export function buildRow(crew) {
   return (
     "<tr class=\"" + rowClass + "\" data-crew-id=\"" + esc(crew.crew_id) + "\">" +
     "<td>" + esc(crew.crew_id) + agentBadge + captainBadge + "</td>" +
-    "<td>" + statusBadge(crew.status) + "</td>" +
+    "<td>" + statusBadge(crew.status) + (crew.gateway_healthy === false ? " <span class=\"badge badge-warn\" title=\"Gateway unreachable\">⚠</span>" : "") + "</td>" +
     "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
     "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
-    "<td>" + fmtDate(crew.created_at) + "</td>" +
+    "<td>" + (crew.status === "running" ? fmtUptime(crew.uptime_secs) : fmtDate(crew.created_at)) + "</td>" +
     "<td>" + fmtDate(crew.last_task_at) + "</td>" +
     "<td>" + dashLink + "</td>" +
     "</tr>" +
@@ -103,7 +103,10 @@ export function renderTable(data) {
 export function renderDetail(crew) {
   if (!crew) return "<em>No data.</em>";
   const agents = Array.isArray(crew.agents) ? crew.agents : [];
-  let html = renderAgents(agents);
+  const imageHtml = crew.crew_image_version
+    ? "<div class=\"detail-image-version\">Image: <span class=\"mono\">" + esc(crew.crew_image_version) + "</span></div>"
+    : "";
+  let html = imageHtml + renderAgents(agents);
 
   /* Captain state inline */
   const cap = crew.captain;
