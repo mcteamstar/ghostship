@@ -21,4 +21,4 @@
 
 - [x] 4.1 Smoke test: open Radar on a crew with active tasks, expand the row, verify agents appear
 - [x] 4.2 Smoke test: expand a stopped crew row, verify "No active tasks." shown, no errors
-- [ ] 4.3 Commit on `release/0.11.1`
+- [x] 4.3 Commit on `release/0.11.1`
