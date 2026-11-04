@@ -32,7 +32,7 @@ The privacy Banshee SHALL scan all files in the repository for internal infrastr
 
 #### Scenario: Hostname found in source comment
 
-- **WHEN** a source file contains a comment referencing an internal hostname (e.g. `starport.penguin-piano.ts.net`)
+- **WHEN** a source file contains a comment referencing an internal hostname (e.g. `yourhost.example.ts.net`)
 - **THEN** the Banshee SHALL include it in the report with category "hostname", the file and line, and recommended action
 
 #### Scenario: RFC-1918 IP address found outside example context

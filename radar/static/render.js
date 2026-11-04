@@ -1,0 +1,266 @@
+/* Radar SPA — DOM builders. */
+
+import { fmtDate, fmtUptime, statusBadge, esc, parseInterval } from "./format.js";
+import { openDetails } from "./state.js";
+import * as state from "./state.js";
+
+const bodyEl = document.getElementById("fleet-body");
+
+/* ── staleness helper ────────────────────────────────────────── */
+
+function captainIsStale(cap) {
+  if (!cap || !cap.enabled || !cap.last_checkin_at) return false;
+  const interval = parseInterval(cap.schedule);
+  if (interval === null) return false;
+  return (Date.now() - new Date(cap.last_checkin_at).getTime()) > interval * 3;
+}
+
+/* ── row builder ─────────────────────────────────────────────── */
+
+export function buildRow(crew) {
+  const dashLink = crew.dashboard_url
+    ? "<a href=\"" + esc(crew.dashboard_url) + "\" target=\"_blank\" " +
+      "rel=\"noopener noreferrer\">open</a>"
+    : "—";
+  /* Agents from fleet payload — no extra fetch needed for basic task list. */
+  const agents = Array.isArray(crew.agents) ? crew.agents : [];
+  const activeAgents = agents.filter(function (a) { return !a.done; });
+  const agentBadge = activeAgents.length > 0
+    ? " <span class=\"agent-count\">" + activeAgents.length + " active</span>"
+    : "";
+
+  /* Captain state badge */
+  const cap = crew.captain;
+  let captainBadge = "";
+  if (cap) {
+    if (cap.enabled) {
+      const stale = captainIsStale(cap);
+      captainBadge = stale
+        ? " <span class=\"captain-badge captain-on captain-stale\">⚑ captain ⚠</span>"
+        : " <span class=\"captain-badge captain-on\">⚑ captain</span>";
+    } else {
+      captainBadge = " <span class=\"captain-badge captain-off\">⚑ paused</span>";
+    }
+  }
+
+  /* Copy crew_id button */
+  const copyBtn = "<button class=\"copy-btn\" data-copy=\"" + esc(crew.crew_id) +
+    "\" title=\"Copy crew ID\">⧉</button>";
+
+  const isOpen = openDetails.has(crew.crew_id);
+  const isStopped = crew.status !== "running";
+  const rowClass = "data-row" + (isOpen ? " open" : "") + (isStopped ? " stopped-row" : "");
+  const detailClass = "detail-row" + (isOpen ? "" : " hidden");
+  return (
+    "<tr class=\"" + rowClass + "\" data-crew-id=\"" + esc(crew.crew_id) + "\">" +
+    "<td>" + esc(crew.crew_id) + copyBtn + agentBadge + captainBadge + "</td>" +
+    "<td>" + statusBadge(crew.status) + (crew.gateway_healthy === false ? " <span class=\"badge badge-warn\" title=\"Gateway unreachable\">⚠</span>" : "") + "</td>" +
+    "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
+    "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
+    "<td>" + (crew.status === "running" ? fmtUptime(crew.uptime_secs) : fmtDate(crew.created_at)) + "</td>" +
+    "<td>" + fmtDate(crew.last_task_at) + "</td>" +
+    "<td>" + dashLink + "</td>" +
+    "</tr>" +
+    "<tr class=\"" + detailClass + "\" id=\"detail-" + esc(crew.crew_id) + "\">" +
+    "<td colspan=\"7\"><div class=\"detail-inner\">" +
+    (isOpen ? renderDetail(crew) : "") +
+    "</div></td></tr>"
+  );
+}
+
+/* ── table render ────────────────────────────────────────────── */
+
+export function renderTable(data, filter) {
+  const allCrews = data.crews || [];
+
+  /* Apply optional filter */
+  const crews = filter
+    ? allCrews.filter(function (c) {
+        return c.crew_id.toLowerCase().includes(filter) ||
+               (c.composition || "").toLowerCase().includes(filter);
+      })
+    : allCrews;
+
+  if (crews.length === 0) {
+    bodyEl.innerHTML =
+      "<tr><td colspan=\"7\" class=\"empty-cell\">" +
+      (filter ? "No crews match filter." : "No crews registered.") +
+      "</td></tr>";
+    return;
+  }
+
+  const running = crews.filter(function (c) { return c.status === "running"; });
+  const stopped = crews.filter(function (c) { return c.status !== "running"; });
+
+  if (state.sortDir !== null) {
+    const sortFn = function (a, b) {
+      const at = a.last_task_at ? new Date(a.last_task_at).getTime() : null;
+      const bt = b.last_task_at ? new Date(b.last_task_at).getTime() : null;
+      if (at === null && bt === null) return 0;
+      if (at === null) return 1;
+      if (bt === null) return -1;
+      return state.sortDir === "desc" ? bt - at : at - bt;
+    };
+    running.sort(sortFn);
+    stopped.sort(sortFn);
+  }
+
+  const runningRows = running.map(buildRow);
+  const stoppedRows = stopped.map(buildRow);
+  let html = runningRows.join("");
+  if (stopped.length > 0) {
+    html += "<tr class=\"section-divider\"><td colspan=\"7\">Inactive</td></tr>";
+    html += stoppedRows.join("");
+  }
+  bodyEl.innerHTML = html;
+
+  /* Wire up row-click to toggle detail. */
+  bodyEl.querySelectorAll("tr.data-row").forEach(function (tr) {
+    tr.addEventListener("click", function () {
+      const crewId   = tr.getAttribute("data-crew-id");
+      const detailTr = document.getElementById("detail-" + crewId);
+      if (!detailTr) return;
+      const dataRow  = tr;
+      if (detailTr.classList.contains("hidden")) {
+        openDetails.add(crewId);
+        detailTr.classList.remove("hidden");
+        dataRow.classList.add("open");
+        history.replaceState(null, "", "#crew=" + crewId);
+        const crew = (data.crews || []).find(function (c) {
+          return c.crew_id === crewId;
+        });
+        const inner = detailTr.querySelector(".detail-inner");
+        inner.innerHTML = renderDetail(crew);
+        if (crew && crew.status === "running") {
+          loadCrons(crewId, inner);
+          loadAgents(crewId, inner);
+        }
+      } else {
+        openDetails.delete(crewId);
+        detailTr.classList.add("hidden");
+        dataRow.classList.remove("open");
+        history.replaceState(null, "", location.pathname);
+      }
+    });
+  });
+
+  /* Update "Last Task" header text and wire its sort click once. */
+  const lastTaskTh = document.querySelector("#fleet-table th.sortable");
+  if (lastTaskTh) {
+    const indicator = state.sortDir === "desc" ? " ▼" : state.sortDir === "asc" ? " ▲" : "";
+    lastTaskTh.textContent = "Last Task" + indicator;
+    if (!lastTaskTh.dataset.sortWired) {
+      lastTaskTh.dataset.sortWired = "1";
+      lastTaskTh.addEventListener("click", function () {
+        state.toggleSortDir();
+        var filterEl = document.getElementById("fleet-filter");
+        renderTable(state.lastData, filterEl ? filterEl.value.toLowerCase() : undefined);
+      });
+    }
+  }
+}
+
+/* ── detail panels ───────────────────────────────────────────── */
+
+export function renderDetail(crew) {
+  if (!crew) return "<em>No data.</em>";
+  const agents = Array.isArray(crew.agents) ? crew.agents : [];
+  const imageHtml = crew.crew_image_version
+    ? "<div class=\"detail-image-version\">Image: <span class=\"mono\">" + esc(crew.crew_image_version) + "</span></div>"
+    : "";
+  let html = imageHtml + renderAgents(agents);
+
+  /* Captain state inline */
+  const cap = crew.captain;
+  if (cap) {
+    const checkinRow = cap.last_checkin_at
+      ? "<tr><td colspan=\"3\"><strong>Last check-in:</strong> " +
+        fmtDate(cap.last_checkin_at) + "</td></tr>"
+      : "";
+    let staleWarnRow = "";
+    if (captainIsStale(cap)) {
+      const elapsedMs = Date.now() - new Date(cap.last_checkin_at).getTime();
+      const mins = Math.round(elapsedMs / 60000);
+      staleWarnRow = "<tr><td colspan=\"3\" class=\"captain-stale-warn\">" +
+        "⚠ No check-in for " + mins + "m — captain may be stalled</td></tr>";
+    }
+    html += "<div class=\"detail-section\">Captain</div><table class=\"detail-table\">" +
+      "<tr><th>State</th><th>Schedule</th><th>Current task</th></tr>" +
+      "<tr><td>" + (cap.enabled ? "active" : "paused") + "</td>" +
+      "<td>" + esc(cap.schedule || "—") + "</td>" +
+      "<td class=\"mono\">" + esc((cap.current_task_id || "—").slice(0, 12)) + "</td>" +
+      "</tr>" + checkinRow + staleWarnRow + "</table>";
+  }
+
+  if (crew.status !== "running") {
+    html += "<br><em class=\"empty-cell\">Crew is stopped — live schedule data unavailable.</em>";
+  }
+  return html;
+}
+
+export function renderAgents(agents) {
+  if (!agents || agents.length === 0) {
+    return "<em>No active tasks.</em>";
+  }
+  let html = "<div class=\"detail-section\">Active tasks</div><table class=\"detail-table\">" +
+    "<tr><th>ID</th><th>Agent</th><th>Done</th><th>Elapsed</th></tr>";
+  agents.forEach(function (a) {
+    html +=
+      "<tr><td class=\"mono\">" + esc((a.task_id || a.id || "—").slice(0, 12)) + "</td>" +
+      "<td>" + esc(a.agent || "—") + "</td>" +
+      "<td>" + (a.done ? "✓" : "<span class=\"running-dot\">●</span>") + "</td>" +
+      "<td>" + (a.done && !(a.elapsed_secs || a.elapsed) ? "—" : fmtUptime(a.elapsed_secs || a.elapsed)) + "</td></tr>";
+  });
+  return html + "</table>";
+}
+
+export function loadCrons(crewId, container) {
+  /* Fetches non-captain gateway cron jobs. Captain state is rendered
+     inline by renderDetail from the fleet payload. */
+  const cronsUrl = "/crews/" + encodeURIComponent(crewId) + "/api/crons";
+  fetch(cronsUrl, { credentials: "include" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .catch(function () { return null; })
+    .then(function (cronsData) {
+      const jobs = cronsData && Array.isArray(cronsData.jobs)
+        ? cronsData.jobs.filter(function (j) { return j.type !== "captain"; })
+        : [];
+      if (jobs.length === 0) return;
+      let html = "<div class=\"detail-section\">Scheduled jobs</div><table class=\"detail-table\">" +
+        "<tr><th>Name</th><th>Agent</th><th>Schedule</th></tr>";
+      jobs.forEach(function (j) {
+        html +=
+          "<tr><td>" + esc(j.name || "—") + "</td>" +
+          "<td>" + esc(j.agent || "—") + "</td>" +
+          "<td>" + esc(j.schedule || j.cron_expr || "—") + "</td></tr>";
+      });
+      html += "</table>";
+      container.innerHTML += html;
+    });
+}
+
+export function loadAgents(crewId, container) {
+  /* Fetches live task list for a running crew on row expand (TRN-304).
+     On success: removes the "No active tasks." placeholder and prepends the
+     agents table before the captain section.
+     On error or empty agents: no-op (existing "No active tasks." placeholder remains). */
+  const agentsUrl = "/api/crews/" + encodeURIComponent(crewId) + "/agents";
+  fetch(agentsUrl)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .catch(function () { return null; })
+    .then(function (data) {
+      if (!data || !Array.isArray(data.agents) || data.agents.length === 0) return;
+      const html = renderAgents(data.agents);
+      /* Remove the "No active tasks." placeholder set by the initial renderDetail call. */
+      container.querySelectorAll("em").forEach(function (em) {
+        if (em.textContent === "No active tasks.") em.remove();
+      });
+      /* Insert before the captain section if present; otherwise prepend. */
+      const captainSection = container.querySelector(".detail-section");
+      if (captainSection) {
+        captainSection.insertAdjacentHTML("beforebegin", html);
+      } else {
+        container.insertAdjacentHTML("afterbegin", html);
+      }
+    });
+}

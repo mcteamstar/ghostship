@@ -474,22 +474,27 @@ class TestConfigRepr(unittest.TestCase):
     kiro_api_key (the transport bearer key) remains masked.
     """
 
-    def test_anthropic_api_key_not_masked_after_trn233(self):
-        # Credential fields are no longer secret in Config — CredentialStore owns them.
+    def test_anthropic_api_key_masked(self):
+        # SEC-3: these env-var credential fields are still read as legacy/fallback
+        # paths; they must be masked in repr so an accidental log call does not
+        # expose a live key. Primary path is CredentialStore (TRN-233).
         cfg = Config(anthropic_api_key="sk-real-key")
-        self.assertIn("sk-real-key", repr(cfg))
+        self.assertNotIn("sk-real-key", repr(cfg))
+        self.assertIn("anthropic_api_key='***'", repr(cfg))
 
-    def test_openai_api_key_not_masked_after_trn233(self):
+    def test_openai_api_key_masked(self):
         cfg = Config(openai_api_key="sk-openai-key")
-        self.assertIn("sk-openai-key", repr(cfg))
+        self.assertNotIn("sk-openai-key", repr(cfg))
+        self.assertIn("openai_api_key='***'", repr(cfg))
 
     def test_kiro_api_key_masked(self):
         cfg = Config(kiro_api_key="kiro-super-secret")
         self.assertNotIn("kiro-super-secret", repr(cfg))
 
-    def test_claude_code_oauth_token_not_masked_after_trn233(self):
+    def test_claude_code_oauth_token_masked(self):
         cfg = Config(claude_code_oauth_token="oauth-token")
-        self.assertIn("oauth-token", repr(cfg))
+        self.assertNotIn("oauth-token", repr(cfg))
+        self.assertIn("claude_code_oauth_token='***'", repr(cfg))
 
     def test_empty_secret_fields_not_masked(self):
         """Empty secret fields show '' not '***'."""

@@ -461,10 +461,14 @@ class Config:
     # ── Fields whose values must never appear in logs or repr ────────────────
     # SEC-3: non-empty values of these fields are masked by __repr__ so that any
     # log call including repr(cfg)/str(cfg) emits "***" instead of a live
-    # credential. Backend credentials are now managed by CredentialStore, not
-    # Config, so only the transport bearer key field remains here (TRN-233).
+    # credential. The primary credential paths are managed by CredentialStore
+    # (TRN-233), but these env-var fields are still read as legacy/fallback
+    # paths and must also be redacted from any repr-based log record.
     _SECRET_FIELDS = (
         "kiro_api_key",
+        "anthropic_api_key",
+        "openai_api_key",
+        "claude_code_oauth_token",
     )
 
     def __repr__(self) -> str:

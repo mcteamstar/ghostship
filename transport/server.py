@@ -619,6 +619,17 @@ GA_TRANSPORT_SECRET = _load_transport_secret()
 # KIRO_API_KEY global removed (TRN-233 task 2.1) — credentials are now resolved
 # per-launch via CredentialStore.get(backend) in tools.py.
 
+# Register env-var credential fields from cfg with the log redaction filter
+# so they are scrubbed from every log record even when the log message was
+# constructed before install_redaction_filter() ran.  The primary paths for
+# these credentials are managed by CredentialStore (which calls register_secret
+# on get()), but the env-var fallback fields in cfg are not otherwise registered.
+for _cfg_secret_field in ("kiro_api_key", "anthropic_api_key", "openai_api_key", "claude_code_oauth_token"):
+    _cfg_secret_val = getattr(cfg, _cfg_secret_field, "")
+    if _cfg_secret_val:
+        _security.register_secret(_cfg_secret_val)
+del _cfg_secret_field, _cfg_secret_val
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1583,6 +1594,47 @@ async def _handle_internal_crews_get(request: Request) -> Response:
     return JSONResponse(payload)
 
 
+async def _handle_internal_crew_agents_get(request: Request) -> Response:
+    """GET /internal/crews/{crew_id}/agents — on-demand task list for one crew (TRN-304).
+
+    Portside-internal; requires ``X-Transport-Token`` (enforced by
+    ``TransportSecretMiddleware``).  No bearer key required.
+
+    - 404 if ``crew_id`` is not in the registry.
+    - ``{"agents": []}`` if the crew is not running.
+    - ``{"agents": [...]}`` with the live task list if the crew is running.
+    """
+    # Extract crew_id from path: /internal/crews/{crew_id}/agents
+    parts = request.url.path.lstrip("/").split("/")
+    # parts: ["internal", "crews", "<crew_id>", "agents"]
+    if len(parts) < 4 or not parts[2]:
+        return JSONResponse({"error": "invalid path"}, status_code=400)
+    crew_id = parts[2]
+
+    try:
+        info = _get_crew(crew_id)
+    except KeyError:
+        return JSONResponse({"error": f"crew '{crew_id}' not found"}, status_code=404)
+    except Exception as exc:
+        logger.error("_handle_internal_crew_agents_get: registry error: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    if info.get("status", "unknown") != "running":
+        return JSONResponse({"agents": []})
+
+    try:
+        try:
+            from tools import _get_crew_agents  # container: flat /app/
+        except ModuleNotFoundError:
+            from transport.tools import _get_crew_agents  # local dev
+        agents = _get_crew_agents(info)
+    except Exception as exc:
+        logger.error("_handle_internal_crew_agents_get: gateway error: %s", exc)
+        agents = []
+
+    return JSONResponse({"agents": agents})
+
+
 # ── OpenAPI schema ──────────────────────────────────────────────────
 # Generated once at startup (after all routes are defined) and cached here.
 # task 2.2: handler that returns the cached schema.
@@ -1784,6 +1836,8 @@ if __name__ == "__main__":
         # Internal portside fleet data endpoint (TRN-286) — transport-secret-only,
         # no bearer key required. Consumed by ga-radar.
         ("GET",  "/internal/crews"): _handle_internal_crews_get,
+        # Per-crew on-demand agents endpoint (TRN-304) — transport-secret-only.
+        ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
     }
     _openapi_schema = _openapi.generate_schema(
         routes=_openapi_schema_routes,
@@ -1834,6 +1888,8 @@ if __name__ == "__main__":
             # Internal portside fleet data endpoint (TRN-286) — transport-secret-only,
             # no bearer key required. Consumed by ga-radar on ga-portside.
             ("GET",  "/internal/crews"): _handle_internal_crews_get,
+            # Per-crew on-demand agents endpoint (TRN-304) — transport-secret-only.
+            ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all

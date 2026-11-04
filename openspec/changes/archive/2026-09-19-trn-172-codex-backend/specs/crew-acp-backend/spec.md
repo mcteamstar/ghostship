@@ -56,7 +56,7 @@ The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=codex` 
 - **THEN** the WARNING log at launch names `api.openai.com` as the required outbound destination
 
 #### Scenario: Base URL set — custom endpoint injected
-- **WHEN** `GA_CREW_ACP_BACKEND=codex` and `GA_CREW_OPENAI_BASE_URL` is set (e.g. `http://supply.penguin-piano.ts.net:11434/v1`)
+- **WHEN** `GA_CREW_ACP_BACKEND=codex` and `GA_CREW_OPENAI_BASE_URL` is set (e.g. `http://supply.example.ts.net:11434/v1`)
 - **THEN** `OPENAI_BASE_URL` is set to that value in the crew container's environment at creation time
 - **THEN** Codex routes API calls to the configured endpoint instead of `api.openai.com`
 - **THEN** the WARNING log at launch reflects the overridden endpoint

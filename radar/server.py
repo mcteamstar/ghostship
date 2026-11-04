@@ -100,6 +100,46 @@ async def api_crews(request: Request) -> Response:
     )
 
 
+async def api_crew_agents(request: Request) -> Response:
+    """GET /api/crews/{crew_id}/agents — proxy to ga-transport per-crew agents endpoint (TRN-304).
+
+    Forwards the X-Transport-Token header to transport's
+    ``GET /internal/crews/{crew_id}/agents`` endpoint.  Returns 502 on any
+    transport error; passes through the ``{"agents": [...]}`` payload on
+    success.
+    """
+    crew_id = request.path_params.get("crew_id", "")
+    url = f"{TRANSPORT_URL}/internal/crews/{crew_id}/agents"
+    headers = {"X-Transport-Token": _TRANSPORT_SECRET}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        logger.error("Transport unreachable for crew agents %s: %s", crew_id, exc)
+        return JSONResponse(
+            {"error": "transport unreachable", "detail": str(exc)},
+            status_code=502,
+        )
+
+    if resp.status_code != 200:
+        logger.error(
+            "Transport returned %d for %s: %s",
+            resp.status_code,
+            url,
+            resp.text[:200],
+        )
+        return JSONResponse(
+            {"error": "transport error", "status_code": resp.status_code},
+            status_code=502,
+        )
+
+    return Response(
+        content=resp.content,
+        status_code=200,
+        media_type="application/json",
+    )
+
+
 async def index(request: Request) -> FileResponse:
     """GET / — serve the Radar SPA root (index.html)."""
     return FileResponse(str(_STATIC_DIR / "index.html"), media_type="text/html")
@@ -111,6 +151,7 @@ app = Starlette(
     routes=[
         Route("/health", health),
         Route("/api/crews", api_crews),
+        Route("/api/crews/{crew_id}/agents", api_crew_agents),
         Route("/", index),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

@@ -87,10 +87,32 @@ class RegistryCorruptError(RuntimeError):
     """
 
 
+def _strip_ephemeral_registry_flags(data: dict) -> None:
+    """Remove ephemeral per-crew flags that must not survive a process restart.
+
+    Called by both ``_load_registry`` and ``CrewRegistry._load`` immediately
+    after reading ``crews.json`` from disk, before any code can observe the
+    stale values.
+
+    ``_stopping`` — the idle monitor's in-flight double-stop guard.  If the
+    process crashes between the flag write (monitors.py) and its paired
+    cleanup, the flag remains on disk and would permanently prevent idle-stop
+    for the affected crew on every subsequent restart (the double-stop guard
+    fires for every idle check, so the crew is never stopped again until the
+    registry is manually repaired or the crew is nuked).
+
+    Additional ephemeral keys can be added here as the need arises.
+    """
+    for crew_entry in data.get("crews", {}).values():
+        crew_entry.pop("_stopping", None)
+
+
 def _load_registry() -> dict:
     try:
         if REGISTRY_PATH.exists():
-            return json.loads(REGISTRY_PATH.read_text())
+            data = json.loads(REGISTRY_PATH.read_text())
+            _strip_ephemeral_registry_flags(data)
+            return data
     except json.JSONDecodeError as e:
         logger.error("Registry file is corrupt and cannot be parsed: %s", e)
         # Append ".corrupt" rather than with_suffix(), which would REPLACE the
@@ -424,7 +446,9 @@ class CrewRegistry:
         """Load the registry from ``self._path``, returning ``{"crews": {}}`` when absent."""
         try:
             if self._path.exists():
-                return json.loads(self._path.read_text())
+                data = json.loads(self._path.read_text())
+                _strip_ephemeral_registry_flags(data)
+                return data
         except json.JSONDecodeError as e:
             logger.error("CrewRegistry: registry file is corrupt: %s", e)
             corrupt = self._path.with_name(self._path.name + ".corrupt")
