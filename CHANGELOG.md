@@ -2,6 +2,24 @@
 
 ## v0.11.2
 
+### Base image bump to KiroCrew v0.11.2 (TRN-307)
+
+- Crew image now extends `ghcr.io/kirodotdev/kirocrew:0.11.2` (multi-arch index
+  digest `sha256:b912fdb52f92b9d23b5189e91b44fd01b531a38a2f7dad161f2185af2c24aef9`,
+  covering amd64 and arm64). kiro-cli version inside crews: 2.36.0.
+- **KAS engine MCP server startup fix** — resolves a startup failure in the KAS
+  engine MCP server that could prevent agent tasks from starting.
+- **Crewmate broker overlay routing fix** — corrects routing in the crewmate broker
+  overlay, improving inter-crew communication reliability.
+- **MCP settings file corruption fix** — prevents settings file corruption when
+  the MCP settings JSON fails to parse; the file is now left unchanged rather than
+  overwritten with an empty or invalid result.
+- Migration schema unchanged from v0.11.1: `(6, 5)` — `seed_kiro_db.py` logic
+  unchanged; verification annotation updated to v0.11.2 / kiro-cli 2.36.0 / 2026-11-04.
+  Note: kiro-cli version moved from 2.37.0 → 2.36.0 in this hotfix (non-schema changes only).
+- Re-run `./install.sh` to rebuild the crew image and pick up KC 0.11.2. Existing
+  crews keep their current image until nuked and re-launched.
+
 ### Reduce default Podman machine memory to 8 GB (TRN-306)
 
 - `GA_MACHINE_MEMORY` default lowered from 16384 MB to 8192 MB. 8 GB comfortably

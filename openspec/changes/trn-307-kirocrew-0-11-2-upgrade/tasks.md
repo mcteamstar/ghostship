@@ -2,8 +2,8 @@
 
 ## 1. Obtain digest and verify seed
 
-- [ ] 1.1 Run `podman manifest inspect ghcr.io/kirodotdev/kirocrew:v0.11.2` and record the multi-arch index digest (wait for image to propagate to registry if not yet available)
-- [ ] 1.2 Run the migration verification command against the v0.11.2 image and record the result:
+- [x] 1.1 Run `podman manifest inspect ghcr.io/kirodotdev/kirocrew:v0.11.2` and record the multi-arch index digest (wait for image to propagate to registry if not yet available)
+- [x] 1.2 Run the migration verification command against the v0.11.2 image and record the result:
   ```bash
   podman run --rm ghcr.io/kirodotdev/kirocrew:v0.11.2 python3 -c \
     "import sqlite3; c=sqlite3.connect('/home/kirocrew/.local/share/kiro-cli/data.sqlite3'); \
@@ -13,9 +13,9 @@
 
 ## 2. Update base image pin
 
-- [ ] 2.1 `crews/_base/admission/Containerfile`: update `KC_BASE_IMAGE` default to the v0.11.2 digest; update the comment block (version `v0.11.2`, commit `31ee6e4`, date `2026-11-04`, new digest)
-- [ ] 2.2 `crews/_base/graduation/seed_kiro_db.py`: update the verification annotation comment to reference v0.11.2, the verification date, and the observed migration result (migration rows unchanged if result is `(6, 5)`)
-- [ ] 2.3 `transport/config.py`: update the comment referencing `v0.11.1 stable` → `v0.11.2 stable`
+- [x] 2.1 `crews/_base/admission/Containerfile`: update `KC_BASE_IMAGE` default to the v0.11.2 digest; update the comment block (version `v0.11.2`, commit `31ee6e4`, date `2026-11-04`, new digest)
+- [x] 2.2 `crews/_base/graduation/seed_kiro_db.py`: update the verification annotation comment to reference v0.11.2, the verification date, and the observed migration result (migration rows unchanged if result is `(6, 5)`)
+- [x] 2.3 `transport/config.py`: update the comment referencing `v0.11.1 stable` → `v0.11.2 stable`
 
 ## 3. Rebuild and smoke test
 
@@ -24,8 +24,8 @@
 
 ## 4. Changelog and version
 
-- [ ] 4.1 Add a `v0.11.3` entry to `CHANGELOG.md` describing the KiroCrew v0.11.2 base image bump
-- [ ] 4.2 Bump `VERSION`, `.claude-plugin/plugin.json`, nested `plugin.json`, and all three `SKILL.md` version fields to `0.11.3`
+- [x] 4.1 Add a `v0.11.3` entry to `CHANGELOG.md` describing the KiroCrew v0.11.2 base image bump
+- [x] 4.2 Bump `VERSION`, `.claude-plugin/plugin.json`, nested `plugin.json`, and all three `SKILL.md` version fields to `0.11.3`
 
 ## Workflow follow-up
 
