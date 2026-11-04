@@ -4,7 +4,7 @@ import { renderTable } from "./render.js";
 import { markFetchOk, clearFetchOk, openDetails, lastFetchOk, setLastData } from "./state.js";
 
 const REFRESH_INTERVAL = 5000; // ms
-const statusEl = document.getElementById("status");
+const statusEl = document.getElementById("status-left");
 const capacityEl = document.getElementById("capacity");
 
 export function fetchFleet() {

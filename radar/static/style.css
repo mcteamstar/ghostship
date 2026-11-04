@@ -66,12 +66,6 @@
       text-shadow: 0 0 20px rgba(139,92,246,0.4), 0 0 40px rgba(14,116,144,0.3);
     }
     .subtitle { font-size: 0.85rem; color: #475569; margin-top: 0.2rem; font-style: italic; }
-    #status {
-      font-size: 0.78rem; color: #64748b;
-      position: relative; z-index: 1;
-    }
-    #status-bar { margin-bottom: 0.9rem; }
-    #status.error { color: #f87171; }
 
     /* ── Fleet table ─────────────────────────────────────────── */
     .table-wrap {
@@ -203,16 +197,28 @@
                    color: #6ee7b7; }
 
     /* ── Status bar ──────────────────────────────────────────── */
+    #status-row td {
+      background: rgba(8,12,20,0.9);
+      border-bottom: 1px solid rgba(139,92,246,0.18);
+      padding: 0.45rem 1rem;
+    }
     #status-bar {
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
-      padding: 0 0 0.4rem 0;
-      font-size: 0.78rem;
+      align-items: center;
     }
+    #status-left {
+      font-size: 0.78rem;
+      color: #64748b;
+      position: relative;
+      z-index: 1;
+    }
+    #status-left.error { color: #f87171; }
+    #status-left.stale { color: #fbbf24; }
+    #status-left.stale-critical { color: #f87171; }
     #capacity {
-      color: #475569;
       font-size: 0.74rem;
+      color: #475569;
     }
 
     /* ── Copy crew_id button (task 3) ───────────────────────── */
@@ -253,8 +259,6 @@
     #fleet-filter::placeholder { color: #475569; }
 
     /* ── Staleness indicators ────────────────────────────────── */
-    #status.stale          { color: #fbbf24; }
-    #status.stale-critical { color: #f87171; }
 
     /* ── Captain staleness (task 2) ─────────────────────────── */
     .captain-stale {
