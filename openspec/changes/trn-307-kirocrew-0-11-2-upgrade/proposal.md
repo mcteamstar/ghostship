@@ -18,7 +18,7 @@ changes are required. As a hotfix release it should land quickly.
 - Update the `KC_BASE_IMAGE` comment block with the new version, digest, and date
 - Update `transport/config.py` comment referencing v0.11.1 → v0.11.2
 - Update `openspec/specs/crew-image-build/spec.md` to reflect the new pin
-- Rebuild and smoke-test the `spec-ops` image on corsair
+- Rebuild and smoke-test the `spec-ops` image on the deployment host
 
 ## Capabilities
 

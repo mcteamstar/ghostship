@@ -17,7 +17,7 @@ See proposal.md. The v0.11.2 image is a hotfix over v0.11.1 with no kiro-cli sch
 
 ## Decisions
 
-**Same process as TRN-293.** Obtain digest → verify seed → bump pin → update annotations → rebuild corsair. No architectural decisions.
+**Same process as TRN-293.** Obtain digest → verify seed → bump pin → update annotations → rebuild the deployment host. No architectural decisions.
 
 **Blocking gate: verify seed before committing.** If the migration schema changed (unlikely for a hotfix), the seed must be updated before the image can ship.
 

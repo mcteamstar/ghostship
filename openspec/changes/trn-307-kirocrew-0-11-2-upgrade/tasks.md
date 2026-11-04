@@ -19,8 +19,8 @@
 
 ## 3. Rebuild and smoke test
 
-- [ ] 3.1 Run `./install.sh` on corsair to rebuild the crew image with the new base; verify the build completes without errors
-- [ ] 3.2 Launch a test crew on corsair, dispatch a trivial ghost task, and verify the agent authenticates and runs without errors; verify `ghostship status` shows the transport healthy
+- [x] 3.1 Run `./install.sh` on the deployment host to rebuild the crew image with the new base; verify the build completes without errors
+- [x] 3.2 Launch a test crew on the deployment host, dispatch a trivial ghost task, and verify the agent authenticates and runs without errors; verify `ghostship status` shows the transport healthy
 
 ## 4. Changelog and version
 
