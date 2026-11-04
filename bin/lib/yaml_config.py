@@ -150,7 +150,7 @@ DEFAULTS: dict[str, str] = {
     "GA_DEDICATED_MACHINE": "true",
     "GA_MACHINE_NAME": "ghost-academy",
     "GA_MACHINE_CPUS": "8",
-    "GA_MACHINE_MEMORY": "16384",
+    "GA_MACHINE_MEMORY": "8192",
     "GA_MACHINE_DISK": "100",
 }
 

@@ -231,7 +231,7 @@ machine:
   # These are ceilings, not upfront reservations — idle usage is much lower.
   resources:
     cpus: 8
-    memory_mb: 16384
+    memory_mb: 8192
     disk_gb: 100
 
   # ── Images (advanced / expert only) ─────────────────────────────────────────

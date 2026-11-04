@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.11.2
+
+### Reduce default Podman machine memory to 8 GB (TRN-306)
+
+- `GA_MACHINE_MEMORY` default lowered from 16384 MB to 8192 MB. 8 GB comfortably
+  supports 3 concurrent crew containers; the previous 16 GB default caused
+  unnecessary memory pressure on hosts with 16 GB unified memory.
+- Updated in: `bin/install.sh`, `bin/lib/podman_setup.py`, `bin/lib/install_main.py`,
+  `bin/lib/yaml_config.py`, `config/ghostship.yaml.example`, `docs/configuration.md`.
+- Existing machines are unaffected — this is a new-install default only. To resize
+  an existing machine: `podman machine stop <name>` → edit `Memory` in
+  `~/.config/containers/podman/machine/applehv/<name>.json` → `podman machine start <name>`.
+  Or uninstall and reinstall.
+
 ## v0.11.0
 
 ### Base image bump to KiroCrew v0.11.1 (TRN-293)

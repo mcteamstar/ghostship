@@ -25,7 +25,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. Checked against `MemAvailable` from `/proc/meminfo` (falls back to `MemFree`), polled every 5 s for up to 60 s. Set to `0` to disable. |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) for Ghost Academy. Set to `false` to use the default socket. |
 | `GA_MACHINE_CPUS` | `8` | vCPUs for the dedicated Podman machine VM (macOS only; a cap, not a reservation). Ignored on Linux. |
-| `GA_MACHINE_MEMORY` | `16384` | Memory in MB for the dedicated Podman machine VM (macOS only). A ceiling backed on demand by Apple's Virtualization.framework; idle usage stays well below this. Ignored on Linux. |
+| `GA_MACHINE_MEMORY` | `8192` | Memory in MB for the dedicated Podman machine VM (macOS only). A ceiling backed on demand by Apple's Virtualization.framework; idle usage stays well below this. 8 GB is sufficient for 3 concurrent crew containers. Ignored on Linux. |
 | `GA_MACHINE_DISK` | `100` | Disk in GB for the dedicated Podman machine VM (macOS only). Backed by a sparse file. Ignored on Linux. |
 | `GA_SPAWN_MIN_MEMORY_GB` | `1.5` | Patched into each crew's `spawn_min_memory_gb` (KiroCrew subagent admission gate). Set lower than `GA_MIN_FREE_MEM_GB` so the transport's outer gate fires first. |
 | `GA_RESOURCE_PRESSURE_GB` | `2.0` | Patched into each crew's `resource_pressure_gb` — KiroCrew throttles subagent spawning below this threshold. |

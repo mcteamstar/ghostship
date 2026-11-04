@@ -39,7 +39,7 @@ class PodmanConfig:
 
     # macOS machine sizing
     machine_cpus: int = 8
-    machine_memory: int = 16384
+    machine_memory: int = 8192
     machine_disk: int = 100
 
     # Linux paths (computed from env when empty)
@@ -409,7 +409,7 @@ def _config_from_env() -> PodmanConfig:
         machine_name=env.get("GA_MACHINE_NAME", "ghost-academy"),
         dedicated=(env.get("GA_DEDICATED_MACHINE", "true") == "true"),
         machine_cpus=int(env.get("GA_MACHINE_CPUS", "8")),
-        machine_memory=int(env.get("GA_MACHINE_MEMORY", "16384")),
+        machine_memory=int(env.get("GA_MACHINE_MEMORY", "8192")),
         machine_disk=int(env.get("GA_MACHINE_DISK", "100")),
         xdg_runtime_dir=env.get("XDG_RUNTIME_DIR", ""),
         home_dir=str(Path.home()),
