@@ -6,7 +6,7 @@
 
 **Crew containers** — on-demand KiroCrew instances (`localhost/spec-ops:latest`), named `gs-<id>`. Each has a workspace volume (`gs-vol-<id>`) and a home volume (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join `ga-starboard` so the transport can reach them by name (`http://gs-<id>:5476`).
 
-**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.10.0`. Built locally at install time as `localhost/spec-ops:latest` in three stages:
+**Crew image** (`crews/spec-ops/Containerfile`) — extends `ghcr.io/kirodotdev/kirocrew:0.11.2`. Built locally at install time as `localhost/spec-ops:latest` in three stages:
 
 1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`.
 2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. Optional backend toolchains (`claude`, `codex`) are layered here when enabled.
@@ -159,9 +159,14 @@ See [auth.md#admiral-mail-signing](auth.md#admiral-mail-signing) for the Ed25519
 
 ```
 ghostship/
-├── install.sh             # builds images, Podman service, runs transport
-├── start.sh               # starts Podman + ga-transport after reboot/stop
-├── uninstall.sh           # tears down transport; --purge-auth removes credentials
+├── install.sh             # thin wrapper: delegates to bin/install.sh
+├── ghostship              # CLI entry point (symlinked to ~/.local/bin/ghostship)
+├── VERSION                # package version
+├── bin/                   # install/uninstall/start scripts
+│   ├── install.sh         # builds images, Podman service, runs transport
+│   ├── start.sh           # starts Podman + ga-transport after reboot/stop
+│   ├── uninstall.sh       # tears down transport; --purge-auth removes credentials
+│   └── lib/               # shared Python modules (yaml_config, podman_setup, ...)
 ├── transport/             # MCP server
 │   ├── server.py
 │   ├── constants.py       # canonical infrastructure constants
