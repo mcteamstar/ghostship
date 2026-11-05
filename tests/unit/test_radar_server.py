@@ -158,30 +158,48 @@ class TestRadarHealth(unittest.TestCase):
         self.assertEqual(data, {"status": "ok"})
 
 
-@unittest.skip("httpx/httpx2 mock incompatibility — pending test infra fix")
 class TestRadarApiCrewsSuccess(unittest.TestCase):
     """GET /api/crews proxies to transport and returns the payload."""
 
+    def _make_fake_httpx(self, response=None, request_error=False):
+        """Build a minimal httpx module replacement with a controlled AsyncClient."""
+        import types
+        from unittest.mock import AsyncMock, MagicMock
+
+        class _FakeRequestError(Exception):
+            """Stands in for httpx.RequestError inside the patched module."""
+            pass
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = response[0] if response else 200
+        fake_resp.content = (response[1] if response else b'{}')
+        fake_resp.text = (response[1].decode() if response and isinstance(response[1], bytes) else "")
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        if request_error:
+            mock_client.get = AsyncMock(side_effect=_FakeRequestError("connection refused"))
+        else:
+            mock_client.get = AsyncMock(return_value=fake_resp)
+
+        fake_httpx = types.ModuleType("fake_httpx")
+        fake_httpx.AsyncClient = MagicMock(return_value=mock_client)
+        fake_httpx.RequestError = _FakeRequestError
+        return fake_httpx
+
     def test_returns_fleet_payload(self):
         server = _import_radar_server()
-        httpx = _get_httpx()
         mock_payload = {
             "crews": [{"crew_id": "alpha", "status": "running"}],
             "active_crews": 1,
             "max_active_crews": 3,
             "host_memory_available_gb": 8.0,
         }
-        mock_resp = httpx.Response(200, json=mock_payload)
+        fake_httpx = self._make_fake_httpx(response=(200, json.dumps(mock_payload).encode()))
         scope = _make_scope("GET", "/api/crews")
 
-        with patch.object(server, "httpx") as mock_httpx_mod:
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_ctx.__aexit__ = AsyncMock(return_value=None)
-            mock_ctx.get = AsyncMock(return_value=mock_resp)
-            mock_httpx_mod.AsyncClient.return_value = mock_ctx
-            mock_httpx_mod.RequestError = httpx.RequestError
-
+        with patch.object(server, "httpx", fake_httpx):
             messages, body = _run(_call(server.app, scope))
 
         self.assertEqual(_status_of(messages), 200)
@@ -191,25 +209,42 @@ class TestRadarApiCrewsSuccess(unittest.TestCase):
         self.assertEqual(data["crews"][0]["crew_id"], "alpha")
 
 
-@unittest.skip("httpx/httpx2 mock incompatibility — pending test infra fix")
 class TestRadarApiCrewsTransportDown(unittest.TestCase):
     """GET /api/crews returns 502 when transport is unreachable."""
 
+    def _make_fake_httpx(self, response=None, request_error=False):
+        """Build a minimal httpx module replacement with a controlled AsyncClient."""
+        import types
+        from unittest.mock import AsyncMock, MagicMock
+
+        class _FakeRequestError(Exception):
+            """Stands in for httpx.RequestError inside the patched module."""
+            pass
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = response[0] if response else 200
+        fake_resp.content = (response[1] if response else b'{}')
+        fake_resp.text = (response[1].decode() if response and isinstance(response[1], bytes) else "")
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        if request_error:
+            mock_client.get = AsyncMock(side_effect=_FakeRequestError("connection refused"))
+        else:
+            mock_client.get = AsyncMock(return_value=fake_resp)
+
+        fake_httpx = types.ModuleType("fake_httpx")
+        fake_httpx.AsyncClient = MagicMock(return_value=mock_client)
+        fake_httpx.RequestError = _FakeRequestError
+        return fake_httpx
+
     def test_returns_502_on_request_error(self):
         server = _import_radar_server()
-        httpx = _get_httpx()
+        fake_httpx = self._make_fake_httpx(request_error=True)
         scope = _make_scope("GET", "/api/crews")
 
-        with patch.object(server, "httpx") as mock_httpx_mod:
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_ctx.__aexit__ = AsyncMock(return_value=None)
-            mock_ctx.get = AsyncMock(
-                side_effect=httpx.RequestError("connection refused")
-            )
-            mock_httpx_mod.AsyncClient.return_value = mock_ctx
-            mock_httpx_mod.RequestError = httpx.RequestError
-
+        with patch.object(server, "httpx", fake_httpx):
             messages, body = _run(_call(server.app, scope))
 
         self.assertEqual(_status_of(messages), 502)
@@ -219,18 +254,10 @@ class TestRadarApiCrewsTransportDown(unittest.TestCase):
 
     def test_returns_502_on_transport_error_status(self):
         server = _import_radar_server()
-        httpx = _get_httpx()
+        fake_httpx = self._make_fake_httpx(response=(500, b"Internal Server Error"))
         scope = _make_scope("GET", "/api/crews")
-        mock_resp = httpx.Response(500, text="Internal Server Error")
 
-        with patch.object(server, "httpx") as mock_httpx_mod:
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_ctx.__aexit__ = AsyncMock(return_value=None)
-            mock_ctx.get = AsyncMock(return_value=mock_resp)
-            mock_httpx_mod.AsyncClient.return_value = mock_ctx
-            mock_httpx_mod.RequestError = httpx.RequestError
-
+        with patch.object(server, "httpx", fake_httpx):
             messages, body = _run(_call(server.app, scope))
 
         self.assertEqual(_status_of(messages), 502)
