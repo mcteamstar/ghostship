@@ -50,9 +50,8 @@ verification date.
 
 - **WHEN** an operator builds the crew image after this change is applied
 - **THEN** the admission image builds from the KiroCrew v0.11.2 base image
-- **AND** the resulting crew runs the v0.11.2 gateway (KAS engine MCP server
-  startup fix, crewmate broker overlay routing fix, and MCP settings file
-  corruption fix included)
+- **AND** the resulting crew runs the v0.11.2 gateway (KAS MCP server startup fix,
+  crewmate broker overlay routing backport, MCP settings file corruption fix)
 
 ### Requirement: kiro-cli DB seed matches the base-image migration schema
 
