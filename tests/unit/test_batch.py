@@ -227,22 +227,15 @@ class TestBatchDispatch(unittest.TestCase):
     # ── D5 — batch too large ───────────────────────────────────────────────
 
     def test_d5_batch_too_large_returns_error(self):
-        """D5: GA_BATCH_MAX_TASKS=2 env, 3 tasks → error mentions 'exceeds maximum'."""
-        original = os.environ.get("GA_BATCH_MAX_TASKS")
-        os.environ["GA_BATCH_MAX_TASKS"] = "2"
-        try:
+        """D5: cfg.ga_batch_max_tasks=2, 3 tasks → error mentions 'exceeds maximum'."""
+        with patch.object(_lifecycle.cfg, "ga_batch_max_tasks", 2):
             result, _, _ = self._dispatch(["t1", "t2", "t3"])
-            self.assertTrue(result.get("error"))
-            self.assertIn("exceeds maximum", result.get("error", "").lower())
-        finally:
-            if original is None:
-                os.environ.pop("GA_BATCH_MAX_TASKS", None)
-            else:
-                os.environ["GA_BATCH_MAX_TASKS"] = original
+        self.assertTrue(result.get("error"))
+        self.assertIn("exceeds maximum", result.get("error", "").lower())
 
     def tearDown(self):
-        """Ensure GA_BATCH_MAX_TASKS is restored after each test."""
-        os.environ.pop("GA_BATCH_MAX_TASKS", None)
+        """No env cleanup needed (env mutation no longer controls batch size)."""
+        pass
 
     # ── D6 — crew not found ────────────────────────────────────────────────
 

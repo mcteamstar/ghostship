@@ -359,6 +359,16 @@ class Config:
     # ── Subagent timeouts ────────────────────────────────────────────────────
     ga_subagent_timeout_secs: int = 3600
 
+    # ── Task timestamps / batch dispatch ─────────────────────────────────────
+    # TTL for completed-task timestamp entries; evicted when older than this.
+    # No floor — operators can shrink it to reduce in-process memory on busy
+    # transports.
+    ga_task_timestamp_ttl_secs: float = 3600.0
+    # Wall-clock cap for a single _pickup_batch call (seconds).
+    ga_pickup_max_poll_secs: int = 30
+    # Maximum number of tasks accepted in a single batch dispatch.
+    ga_batch_max_tasks: int = 20
+
     # ── Crew UI port allocation ───────────────────────────────────────────────
     # Dashboard access is provided exclusively by ga-portal (Caddy). The port
     # range config is retained because Portal still uses it via the transport's
@@ -541,6 +551,9 @@ class Config:
             ga_resource_critical_gb=_env_float("GA_RESOURCE_CRITICAL_GB", "1.0"),
             ga_spawn_pressure_escalate_cycles=_env_int("GA_SPAWN_PRESSURE_ESCALATE_CYCLES", "3"),
             ga_subagent_timeout_secs=_env_int("GA_SUBAGENT_TIMEOUT_SECS", "3600"),
+            ga_task_timestamp_ttl_secs=_env_float("GA_TASK_TIMESTAMP_TTL_SECS", "3600.0"),
+            ga_pickup_max_poll_secs=_env_int("GA_PICKUP_MAX_POLL_SECS", "30"),
+            ga_batch_max_tasks=_env_int("GA_BATCH_MAX_TASKS", "20"),
             ga_dashboard_port_range_start=_env_int("GA_DASHBOARD_PORT_RANGE_START", "64058"),
             ga_dashboard_port_range_size=_env_int("GA_DASHBOARD_PORT_RANGE_SIZE", "64"),
             ga_dashboard_default=os.environ.get("GA_DASHBOARD_DEFAULT", "").lower() in ("1", "true", "yes"),
