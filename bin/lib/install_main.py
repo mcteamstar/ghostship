@@ -327,7 +327,7 @@ def main() -> None:
             machine_name=ga_machine_name,
             dedicated=ga_dedicated_machine,
             machine_cpus=int(_g("GA_MACHINE_CPUS", "8")),
-            machine_memory=int(_g("GA_MACHINE_MEMORY", "16384")),
+            machine_memory=int(_g("GA_MACHINE_MEMORY", "8192")),
             machine_disk=int(_g("GA_MACHINE_DISK", "100")),
             xdg_runtime_dir=os.environ.get("XDG_RUNTIME_DIR", ""),
         )

@@ -319,7 +319,9 @@ class Config:
     # digest — resolves correctly on amd64 (Linux) and arm64 (macOS).
     # 2026-11-02: bumped v0.10.0 → v0.11.1 stable (TRN-293). Multi-arch index
     # digest — resolves correctly on amd64 (Linux) and arm64 (macOS).
-    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:828ad5140a050414ef5bc9dd5c27e71bb92947ec31c8d2365eee7fa5eecbc587"
+    # 2026-11-04: bumped v0.11.1 → v0.11.2 stable (TRN-307). Multi-arch index
+    # digest — resolves correctly on amd64 (Linux) and arm64 (macOS).
+    kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:b912fdb52f92b9d23b5189e91b44fd01b531a38a2f7dad161f2185af2c24aef9"
 
     # ── Crew lifecycle ───────────────────────────────────────────────────────
     ga_max_crews: int = 20
@@ -522,7 +524,7 @@ class Config:
                 "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
-            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew@sha256:828ad5140a050414ef5bc9dd5c27e71bb92947ec31c8d2365eee7fa5eecbc587"),
+            kc_base_image=os.environ.get("KC_BASE_IMAGE", "ghcr.io/kirodotdev/kirocrew@sha256:b912fdb52f92b9d23b5189e91b44fd01b531a38a2f7dad161f2185af2c24aef9"),
             ga_max_crews=_env_int("GA_MAX_CREWS", "20"),
             ga_max_active_crews=_env_int("GA_MAX_ACTIVE_CREWS", "3"),
             ga_idle_timeout_secs=_env_int("GA_IDLE_TIMEOUT_SECS", "300"),
