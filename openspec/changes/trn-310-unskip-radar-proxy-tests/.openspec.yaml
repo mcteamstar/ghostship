@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-05
+x-ticket: TRN-310
+skip_specs: true
