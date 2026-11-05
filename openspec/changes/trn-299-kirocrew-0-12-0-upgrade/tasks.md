@@ -61,14 +61,14 @@
   image digest, migration schema result, and a note on security hardening changes.
   Verify: `CHANGELOG.md` has `## v0.12.0` as the first release heading.
 
-- [ ] 3.3 Run `./install.sh` on corsair to rebuild crew images against v0.12.0. Launch a test crew,
+- [x] 3.3 Run `./install.sh` on corsair to rebuild crew images against v0.12.0. Launch a test crew,
   dispatch a ghost task, and verify it completes. Check gateway logs for enrollment warnings.
   Run the e2e suite: `pytest tests/e2e/ -q`. All tests must pass.
   Verify: `pytest tests/e2e/ -q` exits 0 with no failures.
 
 ## 4. Carrier deploy
 
-- [ ] 4.1 In `mcteamstar/adjutant`, update the ghostship submodule to the release/0.12.0 branch
+- [x] 4.1 In `mcteamstar/adjutant`, update the ghostship submodule to the release/0.12.0 branch
   tip and run `./deploy.sh starport`. Verify the transport health endpoint is healthy.
   Verify: `curl http://starport.penguin-piano.ts.net/mcp` returns healthy response.
 
