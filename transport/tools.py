@@ -1447,13 +1447,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     _cleanup_crew(podman, container, vol, home_vol)
 
     with registry:
-        # Deregister from Caddy and release the port before removing the registry
-        # entry. Portal is the sole dashboard proxy.
+        # Read the dashboard port and remove the registry entry atomically.
+        # Caddy/port calls follow outside the lock (C-1 pattern).
         _ui_p = registry._reg["crews"].get(crew_id, {}).get("dashboard_port")
-        if _ui_p is not None:
-            _caddy_portal.deregister_crew(crew_id)
-            _dashboard_gate.release_port(int(_ui_p))
-            _caddy_portal.release_port(int(_ui_p))
         # Explicitly drop any batch records so no orphan batch entry
         # survives a nuke. Popping the crew entry below already removes them,
         # but clearing here keeps the intent explicit and in the same atomic
@@ -1462,6 +1458,13 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         if _crew_entry is not None:
             _crew_entry.pop("batches", None)
         registry._reg["crews"].pop(crew_id, None)
+    # Caddy deregister and port release run outside the registry lock so that
+    # concurrent registry operations (launch, crews, dispatch) are not stalled
+    # for the duration of the blocking Caddy admin HTTP call (C-1 pattern).
+    if _ui_p is not None:
+        _caddy_portal.deregister_crew(crew_id)
+        _dashboard_gate.release_port(int(_ui_p))
+        _caddy_portal.release_port(int(_ui_p))
 
     with _captain_order_locks_lock:
         _captain_order_locks.pop(crew_id, None)
