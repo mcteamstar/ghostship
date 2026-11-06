@@ -815,6 +815,11 @@ def auth_login(args: list) -> int:
         idx = args.index("--method")
         if idx + 1 < len(args):
             method = args[idx + 1]
+    profile = "default"
+    if "--profile" in args:
+        idx = args.index("--profile")
+        if idx + 1 < len(args):
+            profile = args[idx + 1]
     yes = "--yes" in args
     insecure = "--insecure" in args
     identity_provider = None
@@ -918,7 +923,7 @@ def auth_login(args: list) -> int:
         try:
             resp = _http_json(
                 f"{base_url}/login/{backend}/{method}", "POST",
-                body={"secret": secret}, api_key=api_key,
+                body={"secret": secret, "profile": profile}, api_key=api_key,
             )
         except urllib.error.HTTPError as exc:
             # best-effort: HTTP error body read; fall back to exc.reason on read failure
@@ -938,7 +943,7 @@ def auth_login(args: list) -> int:
         return 0
 
     # Flow methods (device code, oauth, etc.)
-    request_body: dict = {}
+    request_body: dict = {"profile": profile}
     if method == "identity-center":
         # Collect start_url and region — show config value as default, allow override.
         if not sys.stdin.isatty():
@@ -968,10 +973,11 @@ def auth_login(args: list) -> int:
             print("error: start_url and region are required for identity-center.",
                   file=sys.stderr)
             return 1
-        request_body = {"start_url": identity_provider, "region": region}
+        request_body = {"start_url": identity_provider, "region": region, "profile": profile}
     elif method == "chatgpt":
         print("Note: ChatGPT device code login must be enabled in your ChatGPT "
               "account or workspace security settings.")
+        request_body = {"profile": profile}
 
     # POST to start the flow
     try:
@@ -1067,8 +1073,14 @@ def auth_logout(args: list) -> int:
         return 1
 
     base_url, api_key = _discover_transport(args)
+    profile = "default"
+    if "--profile" in args:
+        idx = args.index("--profile")
+        if idx + 1 < len(args):
+            profile = args[idx + 1]
+    logout_url = f"{base_url}/logout/{backend}?profile={profile}"
     try:
-        _http_json(f"{base_url}/logout/{backend}", "POST", body={}, api_key=api_key)
+        _http_json(logout_url, "POST", body={}, api_key=api_key)
     except urllib.error.HTTPError as exc:
         # best-effort: HTTP error body read; fall back to exc.reason on read failure
         try:
@@ -1091,41 +1103,62 @@ def auth_status(args: list) -> int:
     base_url, api_key = _discover_transport(args)
     use_json = "--json" in args
 
-    results = {}
+    # For each backend, fetch the profiles list, then per-profile status.
+    # Output shape: {backend: {profile: status_dict, ...}}
+    results: dict[str, dict] = {}
     for backend in _VALID_BACKENDS:
+        # Step 1: try to get the list of profiles for this backend.
+        profile_names: list[str] = []
         try:
-            resp = _http_json(f"{base_url}/login/{backend}", "GET", api_key=api_key)
-            results[backend] = resp
-        except urllib.error.HTTPError as exc:
-            # best-effort: HTTP error body read; fall back to exc.reason on read failure
+            profiles_resp = _http_json(
+                f"{base_url}/login/{backend}/profiles", "GET", api_key=api_key
+            )
+            profile_names = profiles_resp.get("profiles", [])
+        except Exception:
+            # Older transport without profiles route — fall through to single GET.
+            profile_names = []
+
+        if profile_names:
+            # Step 2: query status for each profile.
+            results[backend] = {}
+            for p in profile_names:
+                try:
+                    resp = _http_json(
+                        f"{base_url}/login/{backend}?profile={p}", "GET",
+                        api_key=api_key,
+                    )
+                    results[backend][p] = resp
+                except Exception:
+                    results[backend][p] = {}
+        else:
+            # No profiles (empty list or route not supported) — fall back to
+            # a single GET /login/{backend} for the default profile.
             try:
-                body = exc.read().decode("utf-8", errors="replace").strip()
+                resp = _http_json(
+                    f"{base_url}/login/{backend}", "GET", api_key=api_key
+                )
+                results[backend] = {"default": resp}
             except Exception:
-                body = exc.reason
-            print(f"error: transport returned HTTP {exc.code} for {backend}: {body}",
-                  file=sys.stderr)
-            return 1
-        except urllib.error.URLError as exc:
-            print(f"error: could not reach transport at {base_url} — {exc.reason}",
-                  file=sys.stderr)
-            return 1
+                results[backend] = {}
 
     if use_json:
         print(json.dumps(results, indent=2))
         return 0
 
-    # Table output
-    print(f"{'Backend':<10}  {'Configured':<12}  {'Method':<20}  {'Stored at'}")
-    print("-" * 70)
+    # Human-readable output: one backend section, one indented line per profile.
     for backend in _VALID_BACKENDS:
-        info = results.get(backend, {})
-        configured = "yes" if info.get("configured") else "no"
-        method = info.get("method") or "not configured"
-        stored_at = info.get("stored_at") or ""
-        # Truncate ISO datetime for readability
-        if stored_at and "T" in stored_at:
-            stored_at = stored_at.split("T")[0]
-        print(f"{backend:<10}  {configured:<12}  {method:<20}  {stored_at}")
+        print(f"\n{backend}")
+        backend_profiles = results.get(backend, {})
+        if not backend_profiles:
+            print("  (no profiles)")
+            continue
+        for p, info in sorted(backend_profiles.items()):
+            configured = "yes" if info.get("configured") else "no"
+            method = info.get("method") or "not configured"
+            stored_at = info.get("stored_at") or ""
+            if stored_at and "T" in stored_at:
+                stored_at = stored_at.split("T")[0]
+            print(f"  [{p}]  configured={configured}  method={method}  stored_at={stored_at}")
     return 0
 
 
@@ -1134,7 +1167,7 @@ Usage: ghostship auth <login|logout|status> [backend] [flags]
 
   login <backend>    Store or replace a credential for kiro, claude or codex.
   logout <backend>   Clear the stored credential for kiro, claude or codex.
-  status             Show credential status for all backends.
+  status             Show credential status for all backends and profiles.
 
 Backends: kiro, claude, codex
 
@@ -1147,10 +1180,14 @@ Flags (all verbs):
 
 Flags for login:
   --method <method>          Skip method menu (methods vary by backend)
+  --profile <name>           Named profile to store under (default: default)
   --yes                      Replace existing credential without confirmation
   --insecure                 Allow sending secrets over plain HTTP to remote hosts
   --identity-provider <url>  IAM Identity Center start URL (kiro identity-center)
   --region <region>          AWS region (kiro identity-center)
+
+Flags for logout:
+  --profile <name>           Named profile to remove (default: default)
 """
 
 _AUTH_COMMANDS = {"login": auth_login, "logout": auth_logout, "status": auth_status}
