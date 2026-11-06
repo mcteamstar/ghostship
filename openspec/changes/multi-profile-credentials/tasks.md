@@ -141,6 +141,16 @@
     `kiro/default` in the store; verify invalid profile name returns 400.
   - Verify `python -m pytest tests/unit/test_credentials_routes.py` exits 0.
 
+- [ ] 2.11 In `tests/unit/test_credentials_routes.py` (or a new
+  `tests/unit/test_login_flow_profile.py`), add a test that:
+  1. Starts a kiro device flow with `profile="default"` (mock the flow initiation so no
+     real container starts).
+  2. Calls `POST /logout/kiro?profile=corp`.
+  3. Verifies the in-flight `default` flow is NOT aborted — i.e. `KIRO_FLOW._pending`
+     still contains the flow state for the `default` profile.
+  4. Verifies only `kiro/corp` is targeted for deletion (even if absent, no error is
+     raised).
+
 ## 3. launch — profile selection and registry
 
 - [ ] 3.1 Add `profile: str | None = None` to the `launch` function signature in
@@ -247,6 +257,15 @@
   call `put("claude", "api-key", "sk-ant-x")` with no `profile` arg, then call
   `get("claude")` with no `profile` arg. Confirm the payload is returned correctly
   (default-profile path).
+
+- [ ] 6.4 In `transport/login.py`, audit every `_handle_login_*_get` handler that calls
+  `_cred_store.status()` and returns its output in an HTTP response body. Confirm none
+  of them expose the `profile` keyword argument unexpectedly or break existing callers.
+  Add an inline comment at each call site where `status(profile=...)` is invoked (after
+  task 2.7 is implemented) to make the intent explicit — e.g.
+  `# profile scoped to the query-param value, defaults to "default"`.
+  Verify: existing `test_credentials_routes.py` GET status tests still pass unchanged
+  after tasks 1.7 and 2.7 are implemented.
 
 ## Workflow follow-up
 
