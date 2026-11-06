@@ -919,11 +919,15 @@ def auth_login(args: list) -> int:
         if not secret:
             print("error: empty secret — nothing stored.", file=sys.stderr)
             return 1
-        # POST to the transport
+        # POST to the transport. "default" is the server's implicit value — omit
+        # the profile key rather than sending it explicitly (the server rejects it).
+        _paste_body: dict = {"secret": secret}
+        if profile != "default":
+            _paste_body["profile"] = profile
         try:
             resp = _http_json(
                 f"{base_url}/login/{backend}/{method}", "POST",
-                body={"secret": secret, "profile": profile}, api_key=api_key,
+                body=_paste_body, api_key=api_key,
             )
         except urllib.error.HTTPError as exc:
             # best-effort: HTTP error body read; fall back to exc.reason on read failure
@@ -943,7 +947,9 @@ def auth_login(args: list) -> int:
         return 0
 
     # Flow methods (device code, oauth, etc.)
-    request_body: dict = {"profile": profile}
+    # "default" is the server's implicit value — omit it rather than sending
+    # it explicitly (the server rejects "default" when supplied in the body).
+    request_body: dict = {} if profile == "default" else {"profile": profile}
     if method == "identity-center":
         # Collect start_url and region — show config value as default, allow override.
         if not sys.stdin.isatty():
@@ -973,11 +979,13 @@ def auth_login(args: list) -> int:
             print("error: start_url and region are required for identity-center.",
                   file=sys.stderr)
             return 1
-        request_body = {"start_url": identity_provider, "region": region, "profile": profile}
+        request_body = {"start_url": identity_provider, "region": region}
+        if profile != "default":
+            request_body["profile"] = profile
     elif method == "chatgpt":
         print("Note: ChatGPT device code login must be enabled in your ChatGPT "
               "account or workspace security settings.")
-        request_body = {"profile": profile}
+        request_body = {} if profile == "default" else {"profile": profile}
 
     # POST to start the flow
     try:
@@ -1078,7 +1086,9 @@ def auth_logout(args: list) -> int:
         idx = args.index("--profile")
         if idx + 1 < len(args):
             profile = args[idx + 1]
-    logout_url = f"{base_url}/logout/{backend}?profile={profile}"
+    logout_url = f"{base_url}/logout/{backend}"
+    if profile != "default":
+        logout_url += f"?profile={profile}"
     try:
         _http_json(logout_url, "POST", body={}, api_key=api_key)
     except urllib.error.HTTPError as exc:
@@ -1123,10 +1133,14 @@ def auth_status(args: list) -> int:
             results[backend] = {}
             for p in profile_names:
                 try:
-                    resp = _http_json(
-                        f"{base_url}/login/{backend}?profile={p}", "GET",
-                        api_key=api_key,
-                    )
+                    # "default" is the server's implicit profile — omit the param
+                    # so the server does not reject it (it rejects "default" when
+                    # explicitly supplied via ?profile=).
+                    if p == "default":
+                        status_url = f"{base_url}/login/{backend}"
+                    else:
+                        status_url = f"{base_url}/login/{backend}?profile={p}"
+                    resp = _http_json(status_url, "GET", api_key=api_key)
                     results[backend][p] = resp
                 except Exception:
                     results[backend][p] = {}
