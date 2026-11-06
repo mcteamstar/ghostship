@@ -39,6 +39,7 @@ class Crew:
     status: str = "stopped"
     composition: str = "spec-ops"
     acp_backend: str = "kiro"
+    acp_profile: str = "default"
     created_at: str = ""
     last_used: float = 0.0
     # In-memory only — the ACP prewarm marker. Excluded from to_dict (D2).
@@ -95,6 +96,7 @@ class Crew:
             "admiral_secret_id": self.admiral_secret_id,
             "crew_image_version": self.crew_image_version,
             "acp_backend": self.acp_backend,
+            "acp_profile": self.acp_profile,
             "enrolled_agents": list(self.enrolled_agents),
         }
         if self.internal_cookie:
@@ -128,6 +130,7 @@ class Crew:
             status=d.get("status", "stopped"),
             composition=d.get("composition", "spec-ops"),
             acp_backend=d.get("acp_backend", "kiro"),
+            acp_profile=d.get("acp_profile", "default"),
             created_at=d.get("created_at", ""),
             last_used=d.get("last_used", 0.0),
             warm_until=0.0,

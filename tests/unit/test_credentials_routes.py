@@ -24,7 +24,8 @@ from transport.credentials import CredentialStore
 
 # ── Minimal async request/response helpers ────────────────────────────────────
 
-def _make_request(body: dict | None = None, json_body: bool = True) -> object:
+def _make_request(body: dict | None = None, json_body: bool = True,
+                  query_params: dict | None = None) -> object:
     """Build a minimal stub of starlette.requests.Request with async json()."""
     req = types.SimpleNamespace()
     if body is not None and json_body:
@@ -42,6 +43,8 @@ def _make_request(body: dict | None = None, json_body: bool = True) -> object:
 
     # For handlers that call _request_source
     req.scope = {"type": "http", "client": ("127.0.0.1", 12345)}
+    # For handlers that read profile from query params
+    req.query_params = query_params or {}
     return req
 
 
@@ -715,3 +718,180 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Task 2.10: TestProfileParam, TestProfilesRoute, TestProfileTargetedLogout ─
+
+
+class TestProfileParam(_BaseRouteTest):
+    """POST /login/{backend}/{method} with profile="corp" stores under corp profile."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import transport.login as login_mod
+        from transport.config import Config
+        self._orig_cfg = login_mod.cfg
+        login_mod.cfg = Config(ga_crew_agent="kiro,claude,codex")
+        self._login = login_mod
+
+    def tearDown(self) -> None:
+        self._login.cfg = self._orig_cfg
+        super().tearDown()
+
+    def _audit(self):
+        from unittest.mock import MagicMock
+        m = MagicMock()
+        m.audit_auth_event = lambda **kw: None
+        return m
+
+    def test_kiro_api_key_corp_profile_stored(self):
+        from transport.login import _handle_login_kiro_api_key_post
+        req = _make_request({"secret": "kiro-corp-key", "profile": "corp"})
+        with patch("transport.login._security") as ms:
+            ms.audit_auth_event = lambda **kw: None
+            resp = _run(_handle_login_kiro_api_key_post(req))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(self._store.get("kiro"))  # default not set
+        self.assertIsNotNone(self._store.get("kiro", profile="corp"))
+        self.assertEqual(self._store.get("kiro", profile="corp")["payload"], b"kiro-corp-key")
+
+    def test_kiro_api_key_no_profile_defaults_to_default(self):
+        from transport.login import _handle_login_kiro_api_key_post
+        req = _make_request({"secret": "kiro-default-key"})
+        with patch("transport.login._security") as ms:
+            ms.audit_auth_event = lambda **kw: None
+            resp = _run(_handle_login_kiro_api_key_post(req))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNotNone(self._store.get("kiro"))
+
+    def test_claude_api_key_corp_profile_stored(self):
+        from transport.login import _handle_login_claude_api_key_post
+        req = _make_request({"secret": "claude-corp-key", "profile": "corp"})
+        with patch("transport.login._security") as ms:
+            ms.audit_auth_event = lambda **kw: None
+            resp = _run(_handle_login_claude_api_key_post(req))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNotNone(self._store.get("claude", profile="corp"))
+
+    def test_codex_api_key_corp_profile_stored(self):
+        from transport.login import _handle_login_codex_api_key_post
+        req = _make_request({"secret": "codex-corp-key", "profile": "corp"})
+        with patch("transport.login._security") as ms:
+            ms.audit_auth_event = lambda **kw: None
+            resp = _run(_handle_login_codex_api_key_post(req))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNotNone(self._store.get("codex", profile="corp"))
+
+    def test_invalid_profile_name_returns_400(self):
+        from transport.login import _handle_login_kiro_api_key_post
+        req = _make_request({"secret": "kiro-key", "profile": "Bad-Profile"})
+        resp = _run(_handle_login_kiro_api_key_post(req))
+        self.assertEqual(resp.status_code, 400)
+
+    def test_reserved_default_profile_returns_400(self):
+        """Explicitly posting profile='default' is rejected — 'default' is reserved."""
+        from transport.login import _handle_login_kiro_api_key_post
+        req = _make_request({"secret": "kiro-key", "profile": "default"})
+        resp = _run(_handle_login_kiro_api_key_post(req))
+        self.assertEqual(resp.status_code, 400)
+
+
+class TestProfilesRoute(_BaseRouteTest):
+    """GET /login/{backend}/profiles returns sorted profile list."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import transport.login as login_mod
+        from transport.config import Config
+        self._orig_cfg = login_mod.cfg
+        login_mod.cfg = Config(ga_crew_agent="kiro,claude,codex")
+        self._login = login_mod
+
+    def tearDown(self) -> None:
+        self._login.cfg = self._orig_cfg
+        super().tearDown()
+
+    def test_kiro_profiles_empty(self):
+        from transport.login import _handle_login_kiro_profiles_get
+        resp = _run(_handle_login_kiro_profiles_get(_make_request()))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(_json_data(resp), {"profiles": []})
+
+    def test_kiro_profiles_sorted(self):
+        self._store.put("kiro", "api-key", "k1")
+        self._store.put("kiro", "api-key", "k2", profile="corp")
+        from transport.login import _handle_login_kiro_profiles_get
+        resp = _run(_handle_login_kiro_profiles_get(_make_request()))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(_json_data(resp), {"profiles": ["corp", "default"]})
+
+    def test_claude_profiles_empty(self):
+        from transport.login import _handle_login_claude_profiles_get
+        resp = _run(_handle_login_claude_profiles_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"profiles": []})
+
+    def test_codex_profiles_empty(self):
+        from transport.login import _handle_login_codex_profiles_get
+        resp = _run(_handle_login_codex_profiles_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"profiles": []})
+
+
+class TestProfileTargetedLogout(_LogoutHarness):
+    """POST /logout/{backend}?profile=<p> targets only the specified profile."""
+
+    def test_corp_logout_leaves_default_intact(self):
+        """Logging out corp profile does not affect the default profile credential."""
+        self._store.put("kiro", "api-key", "kiro-default-key")
+        self._store.put("kiro", "api-key", "kiro-corp-key", profile="corp")
+        import transport.login as login_mod
+        handler = getattr(login_mod, self.ROUTES["kiro"])
+        resp = _run(handler(_make_request(query_params={"profile": "corp"})))
+        self.assertEqual(resp.status_code, 200)
+        # Default profile still exists.
+        self.assertIsNotNone(self._store.get("kiro"))
+        # Corp profile is removed.
+        self.assertIsNone(self._store.get("kiro", profile="corp"))
+
+    def test_invalid_profile_name_returns_400(self):
+        import transport.login as login_mod
+        handler = getattr(login_mod, self.ROUTES["kiro"])
+        resp = _run(handler(_make_request(query_params={"profile": "Bad-Profile"})))
+        self.assertEqual(resp.status_code, 400)
+
+
+# ── Task 2.11: in-flight flow is not aborted by a different-profile logout ────
+
+
+class TestFlowNotAbortedByDifferentProfileLogout(_LogoutHarness):
+    """An in-flight kiro default flow is NOT aborted by a corp logout."""
+
+    def test_default_flow_survives_corp_logout(self):
+        import transport.login as login_mod
+        import time
+        # Start a kiro flow for the default profile.
+        login_mod.KIRO_FLOW._pending = {
+            "container": None,
+            "state": "starting",
+            "started_at": time.time(),
+            "profile": "default",
+        }
+        self.addCleanup(setattr, login_mod.KIRO_FLOW, "_pending", None)
+
+        # Logout targeting "corp" profile — should NOT abort the default flow.
+        handler = getattr(login_mod, self.ROUTES["kiro"])
+        resp = _run(handler(_make_request(query_params={"profile": "corp"})))
+        self.assertEqual(resp.status_code, 200)
+
+        # The default flow's pending dict is still intact.
+        self.assertIsNotNone(login_mod.KIRO_FLOW._pending)
+        self.assertEqual(login_mod.KIRO_FLOW._pending.get("profile"), "default")
+        # The corp abort was NOT called (abort_calls is empty for kiro).
+        self.assertNotIn("kiro", self.abort_calls)
+
+    def test_no_error_when_corp_cred_absent(self):
+        """Logging out a non-existent corp profile returns 200, no error."""
+        import transport.login as login_mod
+        handler = getattr(login_mod, self.ROUTES["kiro"])
+        resp = _run(handler(_make_request(query_params={"profile": "corp"})))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(_json_data(resp)["status"], "logged_out")

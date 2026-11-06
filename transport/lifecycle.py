@@ -1936,6 +1936,7 @@ def _finish_crew_setup(
     admiral_secret: str,
     dashboard: bool = False,
     backend: str,
+    acp_profile: str = "default",
 ) -> dict:
     """Complete crew setup after auth is confirmed.
 
@@ -1959,6 +1960,7 @@ def _finish_crew_setup(
         admiral_secret=admiral_secret,
         dashboard=dashboard,
         backend=backend,
+        acp_profile=acp_profile,
     )
 
 
@@ -2271,7 +2273,8 @@ _login_pending_lock = threading.Lock()
 
 
 def _initiate_login(
-    podman: "PodmanClient", method: str | None = None, provider: dict | None = None
+    podman: "PodmanClient", method: str | None = None, provider: dict | None = None,
+    profile: str = "default",
 ) -> dict:
     """Start a device auth flow and return login URL and code.
 
@@ -2295,7 +2298,7 @@ def _initiate_login(
     except ModuleNotFoundError:
         from transport.login import KIRO_FLOW  # local dev
     global _login_pending, _login_pending_lock
-    result = KIRO_FLOW.initiate(podman, method=method, provider=provider)
+    result = KIRO_FLOW.initiate(podman, method=method, provider=provider, profile=profile)
     with _login_pending_lock:
         _login_pending = KIRO_FLOW._pending
     return result
@@ -2334,7 +2337,7 @@ _claude_login_pending: dict | None = None
 _claude_login_pending_lock = threading.Lock()
 
 
-def _initiate_claude_login(podman: "PodmanClient") -> dict:
+def _initiate_claude_login(podman: "PodmanClient", profile: str = "default") -> dict:
     """Start a Claude OAuth device-code flow and return the login URL.
 
     Mirrors _initiate_login: acquires _claude_login_pending_lock, applies
@@ -2363,7 +2366,7 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
     except ModuleNotFoundError:
         from transport.login import CLAUDE_FLOW  # local dev
     global _claude_login_pending, _claude_login_pending_lock
-    result = CLAUDE_FLOW.initiate(podman)
+    result = CLAUDE_FLOW.initiate(podman, profile=profile)
     with _claude_login_pending_lock:
         _claude_login_pending = CLAUDE_FLOW._pending
     return result
@@ -2638,7 +2641,7 @@ _codex_login_pending: dict | None = None
 _codex_login_pending_lock = threading.Lock()
 
 
-def _initiate_codex_login(podman: "PodmanClient") -> dict:
+def _initiate_codex_login(podman: "PodmanClient", profile: str = "default") -> dict:
     """Start a Codex OAuth/device login flow and return the login URL.
 
     Mirrors _initiate_claude_login: acquires _codex_login_pending_lock, applies
@@ -2667,7 +2670,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
     except ModuleNotFoundError:
         from transport.login import CODEX_FLOW  # local dev
     global _codex_login_pending, _codex_login_pending_lock
-    result = CODEX_FLOW.initiate(podman)
+    result = CODEX_FLOW.initiate(podman, profile=profile)
     with _codex_login_pending_lock:
         _codex_login_pending = CODEX_FLOW._pending
     return result
