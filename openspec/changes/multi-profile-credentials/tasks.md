@@ -63,6 +63,26 @@
   - Add `test_validate_profile_accepts_valid` and `test_validate_profile_rejects_invalid`.
   - Verify `python -m pytest tests/unit/test_credentials_store.py` exits 0.
 
+- [ ] 1.10 Update `_validate_profile` to add `allow_default: bool = False` keyword
+  argument (see design.md D8). When `allow_default=False`, raise
+  `ValueError("'default' is a reserved profile name and may not be supplied explicitly")`
+  if `profile == "default"`. When `allow_default=True`, skip the reserved-name check.
+  Update the two internal call sites that legitimately resolve to `"default"`:
+  `_migrate_flat_file` (calls `_validate_profile` or bypasses it — pass
+  `allow_default=True`) and the `_resolve_profile` fallback in `tools.py` (same).
+  All HTTP handlers that read `profile` from a POST body or query string MUST use the
+  default `allow_default=False`; catch `ValueError` there and return HTTP 400 alongside
+  the existing invalid-format 400 path.
+  Add `test_validate_profile_rejects_default` in `tests/unit/test_credentials_store.py`.
+  Verify:
+  - `_validate_profile("default")` raises `ValueError`.
+  - `_validate_profile("default", allow_default=True)` does not raise.
+  - `POST /login/kiro/api-key {"secret": "k", "profile": "default"}` returns 400.
+  - `GET /login/kiro?profile=default` returns 400.
+  - Lazy migration and `_resolve_profile("kiro", None, store)` still resolve to
+    `"default"` without error.
+  - `python -m pytest tests/unit/test_credentials_store.py` exits 0.
+
 ## 2. LoginFlow — profile in pending state and HTTP handlers
 
 - [ ] 2.1 Add `profile: str = "default"` keyword argument to `KiroLoginFlow.initiate(podman,

@@ -178,6 +178,31 @@ crew would cause that crew's subsequent requests to fail.
 logout) are conventional; JSON body for login POST is consistent with how `secret`
 and `start_url`/`region` are already passed.
 
+### D8 — Reserved `"default"` name: `allow_default` flag on `_validate_profile`
+
+**Chosen:** `_validate_profile(profile: str, allow_default: bool = False) -> None` gains
+a boolean keyword argument. When `allow_default=False` (the default), passing `"default"`
+raises `ValueError("'default' is a reserved profile name and may not be supplied explicitly")`.
+When `allow_default=True`, `"default"` passes validation unchanged. Internal call sites that
+legitimately write the default profile — `_migrate_flat_file` and the `_resolve_profile`
+fallback in `tools.py` — call `_validate_profile(profile, allow_default=True)`. All
+user-facing call sites (HTTP handler POST-body reads, query-param reads, ghostship CLI arg
+parsing) use the default `allow_default=False`; they catch `ValueError` and return HTTP 400
+(CLI: user-visible error message).
+
+**Alternatives considered:**
+- A separate `_path_internal(backend, profile)` that skips validation entirely: would
+  duplicate the path-construction logic and make it easier to accidentally bypass validation
+  for non-internal callers.
+- Two separate functions `_validate_profile_user` / `_validate_profile_internal`: naming
+  overhead; a single function with a flag keeps the logic in one place and is a
+  well-established pattern.
+
+**Rationale:** A single function with a boolean keyword flag is the minimal change: the
+caller's intent is explicit, the validation logic is not duplicated, and the default
+(`allow_default=False`) means any new user-facing call site that omits the flag
+automatically enforces the reserved-name check without extra thought.
+
 ## Risks / Trade-offs
 
 [Risk: Lazy migration is per-process and not globally locked] → The credential

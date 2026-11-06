@@ -28,6 +28,32 @@ characters or hyphens, starting and ending with an alphanumeric character.
 - **WHEN** a credential store operation is attempted with a profile name that contains uppercase letters, spaces, or leading/trailing hyphens
 - **THEN** the operation is rejected with a clear validation error before any write occurs
 
+### Requirement: The profile name "default" is reserved and may not be supplied explicitly by users
+
+`_validate_profile` SHALL raise `ValueError` when called with the value `"default"`,
+citing it as a reserved name. HTTP handlers that receive `profile` from user-supplied
+input (POST body fields or query-string parameters) SHALL return HTTP 400 when
+`profile="default"` is explicitly provided by the caller. The value `"default"` is only
+ever written internally — by the lazy migration path and as the implicit fallback when no
+profile is specified. Internal call sites bypass the reserved-name check; see design.md D8
+for the chosen approach.
+
+#### Scenario: Explicit "default" rejected at the store layer
+- **WHEN** a user-supplied operation calls `_validate_profile("default")`
+- **THEN** a `ValueError` is raised with a message indicating `"default"` is reserved
+
+#### Scenario: Explicit "default" in HTTP POST body returns 400
+- **WHEN** `POST /login/kiro/api-key` is called with body `{"secret": "...", "profile": "default"}`
+- **THEN** the response status is 400 with a message indicating the profile name is reserved
+
+#### Scenario: Explicit "default" in HTTP query param returns 400
+- **WHEN** `GET /login/kiro?profile=default` is called
+- **THEN** the response status is 400 with a message indicating the profile name is reserved
+
+#### Scenario: Internal migration still writes to "default" without error
+- **WHEN** the lazy migration moves `credentials/kiro.json` → `credentials/kiro/default.json`
+- **THEN** no validation error is raised — the migration bypasses the reserved-name check
+
 ### Requirement: Existing flat credentials are migrated transparently
 
 When a flat `credentials/<backend>.json` file exists from a prior installation, the
