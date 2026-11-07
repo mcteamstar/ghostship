@@ -371,7 +371,7 @@ class TestAuthStatus(unittest.TestCase):
         return _side
 
     def test_status_table_no_values(self):
-        """Human-readable table shows all three backends; configured backend shows method."""
+        """Human-readable table only shows backends with at least one configured profile."""
         out_buf = io.StringIO()
         secret = "sk-ant-super-secret"
         profiles = {"kiro": ["default"], "claude": ["default"], "codex": []}
@@ -390,9 +390,10 @@ class TestAuthStatus(unittest.TestCase):
                     result = gs.auth_status([])
         self.assertEqual(result, 0)
         output = out_buf.getvalue()
-        self.assertIn("kiro", output)
+        # Only claude is configured — kiro and codex are absent from output
+        self.assertNotIn("kiro", output)
         self.assertIn("claude", output)
-        self.assertIn("codex", output)
+        self.assertNotIn("codex", output)
         # Claude shows method
         self.assertIn("api-key", output)
         # No secret value
