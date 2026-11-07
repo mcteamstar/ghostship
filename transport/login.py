@@ -1613,14 +1613,18 @@ def _logout(backend: str, request: Request) -> Response:
     # If the pending dict has no profile key, treat it as "default" (backward compat).
     # When there is no pending flow at all, fall through to abort() which handles
     # the nothing-to-abort case.
+    # Read _pending under the flow's lock to avoid a TOCTOU race where the
+    # current flow finishes and a new different-profile flow starts between the
+    # read and the abort call.
     aborted = False
     cancel_error = None
     try:
-        pending_state = flow._pending
-        should_abort = (
-            pending_state is None
-            or pending_state.get("profile", "default") == profile
-        )
+        with flow._lock:
+            pending_state = flow._pending
+            should_abort = (
+                pending_state is None
+                or pending_state.get("profile", "default") == profile
+            )
         if should_abort:
             aborted = abort_fn(_get_podman())
     except Exception as e:

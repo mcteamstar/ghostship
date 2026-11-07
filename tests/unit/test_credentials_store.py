@@ -21,6 +21,7 @@ import os
 import stat
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from transport.credentials import (
@@ -249,6 +250,31 @@ class TestCredentialStore(unittest.TestCase):
         profiles = self.store.list_profiles("kiro")
         self.assertEqual(profiles, ["beta", "corp", "default"])
 
+    def test_list_profiles_triggers_migration(self):
+        """list_profiles must trigger flat-file migration so old-layout installs
+        return ['default'] on the first call (e.g. GET /login/{backend}/profiles
+        before any get/put/delete call)."""
+        import json, base64 as _b64
+        cred_dir = Path(self.store._dir)
+        cred_dir.mkdir(parents=True, exist_ok=True)
+        flat_file = cred_dir / "kiro.json"
+        flat_file.write_text(json.dumps({
+            "backend": "kiro", "method": "api-key",
+            "stored_at": "2026-01-01T00:00:00+00:00",
+            "provider": None,
+            "payload": _b64.b64encode(b"old-secret").decode(),
+        }))
+        # No get/delete/status call before list_profiles — migration must
+        # still happen inside list_profiles itself.
+        profiles = self.store.list_profiles("kiro")
+        self.assertEqual(profiles, ["default"],
+                         "list_profiles must trigger migration and return ['default']")
+        self.assertFalse(flat_file.exists(),
+                         "old flat file must be gone after migration")
+        profile_file = cred_dir / "kiro" / "default.json"
+        self.assertTrue(profile_file.exists(),
+                        "default.json must exist in per-backend dir after migration")
+
     def test_list_profiles_empty(self):
         """list_profiles returns [] when no profiles exist."""
         profiles = self.store.list_profiles("claude")
@@ -302,6 +328,56 @@ class TestCredentialStore(unittest.TestCase):
     def test_validate_profile_allows_default_with_flag(self):
         """allow_default=True lets 'default' pass validation."""
         _validate_profile("default", allow_default=True)  # must not raise
+
+    # ── list_profiles security: symlinks and invalid stems ────────────────────
+
+    def test_list_profiles_excludes_symlinks(self):
+        """list_profiles must not return symlink entries (follow_symlinks=False)."""
+        import os
+        # Create a legitimate profile file.
+        self.store.put("kiro", "api-key", "real-key")
+        backend_dir = Path(self.store._dir) / "kiro"
+        # Create a symlink named 'linked.json' pointing to 'default.json'.
+        src = backend_dir / "default.json"
+        link = backend_dir / "linked.json"
+        link.symlink_to(src)
+        try:
+            profiles = self.store.list_profiles("kiro")
+            self.assertIn("default", profiles,
+                          "real profile 'default' must be listed")
+            self.assertNotIn("linked", profiles,
+                             "symlink 'linked.json' must NOT appear in profiles")
+        finally:
+            link.unlink(missing_ok=True)
+
+    def test_list_profiles_excludes_invalid_stems(self):
+        """list_profiles must silently skip files whose stems fail _PROFILE_RE."""
+        # Place files with invalid names directly in the backend directory.
+        backend_dir = Path(self.store._dir) / "kiro"
+        backend_dir.mkdir(parents=True, exist_ok=True)
+        invalid_names = [
+            ".hidden.json",       # leading dot
+            "UPPER.json",         # uppercase
+            "-leading.json",      # leading hyphen
+            "trailing-.json",     # trailing hyphen
+            "has space.json",     # whitespace
+        ]
+        for fn in invalid_names:
+            (backend_dir / fn).write_text('{"backend":"kiro","method":"api-key","stored_at":"x","provider":null,"payload":""}')
+        # Also create one valid profile.
+        self.store.put("kiro", "api-key", "secret")
+        profiles = self.store.list_profiles("kiro")
+        self.assertEqual(profiles, ["default"],
+                         "only the valid 'default' profile should be returned; "
+                         f"invalid-stem files must be skipped. Got: {profiles}")
+        # Cleanup.
+        for fn in invalid_names:
+            (backend_dir / fn).unlink(missing_ok=True)
+
+    def test_status_validates_profile_parameter(self):
+        """status() must raise ValueError for an invalid profile name."""
+        with self.assertRaises(ValueError):
+            self.store.status(profile="INVALID-Profile!")
 
 
 if __name__ == "__main__":

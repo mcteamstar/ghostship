@@ -295,9 +295,18 @@ class CredentialStore:
         Scans ``credentials/<backend>/`` for ``.json`` files and returns their
         stems (filenames without the ``.json`` extension). Returns ``[]`` when
         the directory does not exist or is empty.
+
+        Triggers the flat-file migration for the ``"default"`` profile before
+        scanning, so that an install upgraded from the old single-file layout
+        (``credentials/<backend>.json``) returns ``["default"]`` rather than
+        ``[]`` on the first call to this method.
         """
         if backend not in SUPPORTED_METHODS:
             raise UnsupportedCredential(f"unknown backend {backend!r}")
+        # Trigger lazy migration so old-layout installs don't show an empty
+        # list the first time this is called (e.g. GET /login/{backend}/profiles
+        # before any get/put/delete call).
+        self._migrate_flat_file(backend)
         backend_dir = self._dir / backend
         if not backend_dir.is_dir():
             return []
@@ -305,8 +314,18 @@ class CredentialStore:
         try:
             with os.scandir(str(backend_dir)) as it:
                 for entry in it:
-                    if entry.is_file() and entry.name.endswith(".json"):
-                        stems.append(entry.name[:-5])  # strip ".json"
+                    # follow_symlinks=False: exclude symlinks so an attacker who
+                    # can write to the credentials directory cannot inject profile
+                    # names via a symlink named <name>.json.
+                    if entry.is_file(follow_symlinks=False) and entry.name.endswith(".json"):
+                        stem = entry.name[:-5]  # strip ".json"
+                        # Skip stems that are not valid profile names — this
+                        # guards against crash residue, external tooling, or
+                        # a previous layout leaving unexpected files, and
+                        # prevents _resolve_profile's single-profile implicit
+                        # selection from picking an unvalidated name.
+                        if _PROFILE_RE.match(stem):
+                            stems.append(stem)
         except OSError:
             return []
         return sorted(stems)
@@ -321,6 +340,7 @@ class CredentialStore:
         ``start_url``/``region`` for identity-center, else ``None``). No payload
         or secret value ever appears.
         """
+        _validate_profile(profile, allow_default=True)
         out: dict[str, dict] = {}
         for backend in SUPPORTED_METHODS:
             if profile == "default":
