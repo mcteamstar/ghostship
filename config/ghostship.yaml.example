@@ -84,6 +84,11 @@ crew:
   # Maximum seconds a pickup poll waits before returning.
   pickup_max_poll_secs: 30
 
+  # TTL for completed-task timestamp entries (seconds). Entries older than this
+  # are evicted from in-process memory. No floor — reduce on high-throughput
+  # transports to limit memory growth.
+  task_timestamp_ttl_secs: 3600
+
   # Absolute path to a host directory of operator standing-order templates.
   # When set, merged with the built-in academy/orders/ (operator wins on name
   # collision). Bind-mounted read-only at /mnt/orders inside the transport.

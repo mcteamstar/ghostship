@@ -55,6 +55,7 @@ Response shape:
       "crew_id": "my-crew",
       "status": "running",
       "acp_backend": "kiro",
+      "acp_profile": "default",
       "composition": "spec-ops",
       "uptime_secs": 1842,
       "last_task_at": "2026-10-29T12:34:56Z",

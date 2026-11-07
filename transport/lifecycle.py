@@ -343,11 +343,10 @@ _warm_markers: dict[str, float] = {}
 _warm_markers_lock = threading.Lock()
 
 # Bounded in-process memory: _task_timestamps completed entries are evicted once
-# their completed_at is older than _TASK_TIMESTAMP_TTL_SECS (env-overridable);
+# their completed_at is older than cfg.ga_task_timestamp_ttl_secs (env-overridable);
 # _warm_markers entries are evicted once older than _WARM_MARKER_TTL_SECS.
 # The warm-marker TTL is floored at one hour via `_warm_marker_ttl_secs()`;
-# `_TASK_TIMESTAMP_TTL_SECS` has no floor.
-_TASK_TIMESTAMP_TTL_SECS = float(os.environ.get("GA_TASK_TIMESTAMP_TTL_SECS", "3600"))
+# `ga_task_timestamp_ttl_secs` has no floor.
 
 
 def _warm_marker_ttl_secs() -> float:
@@ -1937,6 +1936,7 @@ def _finish_crew_setup(
     admiral_secret: str,
     dashboard: bool = False,
     backend: str,
+    acp_profile: str = "default",
 ) -> dict:
     """Complete crew setup after auth is confirmed.
 
@@ -1960,6 +1960,7 @@ def _finish_crew_setup(
         admiral_secret=admiral_secret,
         dashboard=dashboard,
         backend=backend,
+        acp_profile=acp_profile,
     )
 
 
@@ -2272,7 +2273,8 @@ _login_pending_lock = threading.Lock()
 
 
 def _initiate_login(
-    podman: "PodmanClient", method: str | None = None, provider: dict | None = None
+    podman: "PodmanClient", method: str | None = None, provider: dict | None = None,
+    profile: str = "default",
 ) -> dict:
     """Start a device auth flow and return login URL and code.
 
@@ -2296,7 +2298,7 @@ def _initiate_login(
     except ModuleNotFoundError:
         from transport.login import KIRO_FLOW  # local dev
     global _login_pending, _login_pending_lock
-    result = KIRO_FLOW.initiate(podman, method=method, provider=provider)
+    result = KIRO_FLOW.initiate(podman, method=method, provider=provider, profile=profile)
     with _login_pending_lock:
         _login_pending = KIRO_FLOW._pending
     return result
@@ -2335,7 +2337,7 @@ _claude_login_pending: dict | None = None
 _claude_login_pending_lock = threading.Lock()
 
 
-def _initiate_claude_login(podman: "PodmanClient") -> dict:
+def _initiate_claude_login(podman: "PodmanClient", profile: str = "default") -> dict:
     """Start a Claude OAuth device-code flow and return the login URL.
 
     Mirrors _initiate_login: acquires _claude_login_pending_lock, applies
@@ -2364,7 +2366,7 @@ def _initiate_claude_login(podman: "PodmanClient") -> dict:
     except ModuleNotFoundError:
         from transport.login import CLAUDE_FLOW  # local dev
     global _claude_login_pending, _claude_login_pending_lock
-    result = CLAUDE_FLOW.initiate(podman)
+    result = CLAUDE_FLOW.initiate(podman, profile=profile)
     with _claude_login_pending_lock:
         _claude_login_pending = CLAUDE_FLOW._pending
     return result
@@ -2639,7 +2641,7 @@ _codex_login_pending: dict | None = None
 _codex_login_pending_lock = threading.Lock()
 
 
-def _initiate_codex_login(podman: "PodmanClient") -> dict:
+def _initiate_codex_login(podman: "PodmanClient", profile: str = "default") -> dict:
     """Start a Codex OAuth/device login flow and return the login URL.
 
     Mirrors _initiate_claude_login: acquires _codex_login_pending_lock, applies
@@ -2668,7 +2670,7 @@ def _initiate_codex_login(podman: "PodmanClient") -> dict:
     except ModuleNotFoundError:
         from transport.login import CODEX_FLOW  # local dev
     global _codex_login_pending, _codex_login_pending_lock
-    result = CODEX_FLOW.initiate(podman)
+    result = CODEX_FLOW.initiate(podman, profile=profile)
     with _codex_login_pending_lock:
         _codex_login_pending = CODEX_FLOW._pending
     return result
@@ -2751,10 +2753,9 @@ _schedule_monitor = _monitors._schedule_monitor
 _idle_monitor = _monitors._idle_monitor
 _captain_monitor = _monitors._captain_monitor
 # ── Batch pickup ────────────────────────────────────────────────────
-# GA_PICKUP_MAX_POLL_SECS caps the wall time of one _pickup_batch call, mirroring
-# the single-task pickup internal cap (default 30 s). Read from env so operators
-# can tune it without a config-dataclass change.
-GA_PICKUP_MAX_POLL_SECS = int(os.environ.get("GA_PICKUP_MAX_POLL_SECS", "30"))
+# cfg.ga_pickup_max_poll_secs caps the wall time of one _pickup_batch call,
+# mirroring the single-task pickup internal cap (default 30 s). Resolved from
+# cfg at startup.
 
 _BATCH_POLL_INTERVAL_SECS = 3
 
@@ -2775,7 +2776,7 @@ def _pickup_batch(
 
     Orchestrates per-round sequential calls to ``pickup_single(timeout_secs=0)``
     for each task id, aggregating into a dict keyed by task_id. The whole call
-    is capped at ``GA_PICKUP_MAX_POLL_SECS`` of wall time (each round polls all
+    is capped at ``cfg.ga_pickup_max_poll_secs`` of wall time (each round polls all
     members once, then sleeps 3 s). A task the gateway does not know about (404
     / missing) is marked ``{"done": false, "lost": true, ...}`` rather than
     raising, so the other members' results survive.
@@ -2798,9 +2799,9 @@ def _pickup_batch(
     """
     total = len(task_ids)
 
-    # Cap the batch wall time at GA_PICKUP_MAX_POLL_SECS regardless of the
+    # Cap the batch wall time at cfg.ga_pickup_max_poll_secs regardless of the
     # requested timeout — identical to the single-task internal cap contract.
-    capped_timeout = min(max(0, timeout_secs), GA_PICKUP_MAX_POLL_SECS)
+    capped_timeout = min(max(0, timeout_secs), cfg.ga_pickup_max_poll_secs)
 
     # Admiral-mail early-return baseline read before the first round.
     if capped_timeout > 0:
@@ -2920,18 +2921,8 @@ def _dispatch_batch(
     All tasks in the batch share the one resolved slot (member or headless);
     per-task slot names are not generated.
     """
-    # Size validation (task 2.3).
-    _raw_max_tasks = os.environ.get("GA_BATCH_MAX_TASKS", "20")
-    try:
-        max_tasks = int(_raw_max_tasks)
-    except ValueError:
-        try:
-            from config import ConfigError  # container: flat /app/
-        except ImportError:
-            from transport.config import ConfigError  # local dev
-        raise ConfigError(
-            f"GA_BATCH_MAX_TASKS must be an integer, got: {_raw_max_tasks!r}"
-        ) from None
+    # Size validation.
+    max_tasks = cfg.ga_batch_max_tasks
     if len(tasks) == 0 or len(tasks) == 1:
         return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
     if len(tasks) > max_tasks:
@@ -3064,7 +3055,7 @@ def _pickup_single(
             # Evict completed-task timestamp entries older than TTL so
             # _task_timestamps does not grow without bound over the process life.
             _evict_cutoff = (
-                now - timedelta(seconds=_TASK_TIMESTAMP_TTL_SECS)
+                now - timedelta(seconds=cfg.ga_task_timestamp_ttl_secs)
             ).isoformat()
             _to_evict = [
                 k
@@ -3173,7 +3164,7 @@ def _pickup_list(
             # (reading _task_timestamps), then snapshot the survivors.
             _evict_cutoff = (
                 datetime.now(timezone.utc)
-                - timedelta(seconds=_TASK_TIMESTAMP_TTL_SECS)
+                - timedelta(seconds=cfg.ga_task_timestamp_ttl_secs)
             ).isoformat()
             _to_evict = [
                 k

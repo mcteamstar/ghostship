@@ -109,6 +109,48 @@ try:
 except ImportError:
     from transport.credentials import CredentialStore  # local dev
 
+try:
+    from credentials import _validate_profile as _vp  # container: flat /app/
+except ImportError:
+    from transport.credentials import _validate_profile as _vp  # local dev
+
+
+def _parse_profile_from_body(body: dict | None) -> tuple[str, "Response | None"]:
+    """Extract and validate ``profile`` from a JSON body dict.
+
+    Returns ``(profile, None)`` when the value is absent (defaults to
+    ``"default"``) or present and valid. Returns ``("", error_response)`` when
+    the value is present but invalid (including the reserved name
+    ``"default"`` — callers must not supply it explicitly).
+    """
+    if not isinstance(body, dict):
+        return "default", None
+    raw = body.get("profile")
+    if raw is None:
+        return "default", None
+    try:
+        _vp(raw)  # allow_default=False — "default" is rejected
+        return raw, None
+    except ValueError as exc:
+        return "", JSONResponse({"error": str(exc)}, status_code=400)
+
+
+def _parse_profile_from_query(request: "Request") -> tuple[str, "Response | None"]:
+    """Extract and validate ``profile`` from the request query string.
+
+    Returns ``(profile, None)`` when the param is absent (defaults to
+    ``"default"``) or present and valid. Returns ``("", error_response)``
+    when the value is present but invalid.
+    """
+    raw = request.query_params.get("profile")
+    if raw is None:
+        return "default", None
+    try:
+        _vp(raw)  # allow_default=False — "default" is rejected
+        return raw, None
+    except ValueError as exc:
+        return "", JSONResponse({"error": str(exc)}, status_code=400)
+
 # Credential store — resolved per-call in _warn_inert_backend_settings
 # (TRN-233 task 2.1). No module-level credential globals remain.
 _cred_store = CredentialStore()
@@ -261,12 +303,19 @@ class LoginFlow(ABC):
         except Exception:
             pass
 
-    def initiate(self, podman, pending_extra: dict | None = None) -> dict:
+    def initiate(self, podman, pending_extra: dict | None = None,
+                 profile: str = "default") -> dict:
         """Start the device-flow and return the login URL/code dict.
 
         ``pending_extra`` is merged into the pending state before the login
         command is built, so subclasses can read per-flow options (e.g. the
         kiro method/provider) from ``self._pending`` in ``_login_cmd``.
+
+        ``profile`` is the credential profile this flow targets. It is stored
+        in ``pending_extra`` (under key ``"profile"``) so the completion handler
+        can write the credential to the correct profile slot. Subclasses that
+        override ``initiate`` should forward ``profile`` via their own
+        ``pending_extra`` dict.
 
         Returns one of:
           ``{"login_url": str, "code": str | None}``  — flow started
@@ -277,6 +326,12 @@ class LoginFlow(ABC):
         sentinel immediately before releasing the lock so concurrent callers
         cannot race past the pending check.
         """
+        # Merge profile into pending_extra so it travels with the flow state.
+        if pending_extra is None:
+            pending_extra = {"profile": profile}
+        elif "profile" not in pending_extra:
+            pending_extra = dict(pending_extra)
+            pending_extra["profile"] = profile
         import re
 
         with self._lock:
@@ -474,13 +529,18 @@ class KiroLoginFlow(LoginFlow):
         return "kiro-cli"
 
     def initiate(
-        self, podman, method: str | None = None, provider: dict | None = None
+        self, podman, method: str | None = None, provider: dict | None = None,
+        profile: str = "default",
     ) -> dict:
         """Start a kiro device flow for *method* (builder-id or identity-center).
 
         With no *method*, identity-center is used when KIRO_IDENTITY_PROVIDER and
         KIRO_REGION are both configured, else builder-id. For identity-center a
         missing *provider* falls back to the configured start URL and region.
+
+        *profile* is the credential profile this flow targets; recorded in
+        ``_pending`` so the completion handler stores the credential in the
+        correct profile slot.
         """
         if method is None:
             method = (
@@ -496,7 +556,8 @@ class KiroLoginFlow(LoginFlow):
         else:
             provider = None
         return super().initiate(
-            podman, pending_extra={"method": method, "provider": provider}
+            podman,
+            pending_extra={"method": method, "provider": provider, "profile": profile},
         )
 
     def _provider(self) -> dict | None:
@@ -814,7 +875,7 @@ def _warn_inert_backend_settings() -> None:
     Updated for TRN-233: checks the credential store for each disabled backend
     rather than Podman-secret-backed module-level globals.
     """
-    status = _cred_store.status()
+    status = _cred_store.status()  # default profile — checks the default credential for each backend
     enabled = frozenset(_enabled_backends())
     # Per-backend BASE_URL settings that belong only to non-kiro backends.
     _BASE_URL_SETTINGS: dict[str, str] = {
@@ -891,6 +952,11 @@ async def _handle_login_post(
 
     Delegates to _lc()._initiate_login() for the actual container start and PTY flow.
     Returns the URL and code immediately so the operator can open the browser.
+
+    Profile is communicated via ``request._kiro_profile`` (set by the builder-id
+    and identity-center handlers) rather than as a direct kwarg, so the legacy
+    ``POST /login`` route does not need to know about profiles and backward
+    compatibility with existing call-site stubs is preserved.
     """
     if _lc()._read_auth_file():
         return PlainTextResponse(
@@ -908,7 +974,9 @@ async def _handle_login_post(
     except Exception as e:
         return PlainTextResponse(str(e), status_code=500)
 
-    result = _lc()._initiate_login(podman, method=method, provider=provider)
+    profile = getattr(request, "_kiro_profile", "default")
+    result = _lc()._initiate_login(podman, method=method, provider=provider,
+                                   profile=profile)
 
     if result.get("login_pending"):
         return PlainTextResponse(
@@ -957,6 +1025,7 @@ async def _handle_login_get(request: Request) -> Response:
     # commit, so a logout that cancels this flow first stores nothing.
     _provider = pending.get("provider")
     _method = "identity-center" if _provider else "builder-id"
+    _profile = pending.get("profile", "default")
 
     def _store() -> None:
         _lc()._write_auth_file(auth_b64)
@@ -968,8 +1037,10 @@ async def _handle_login_get(request: Request) -> Response:
                 "kiro", _method,
                 auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64,
                 provider=_provider,
+                profile=_profile,  # profile scoped to the value recorded at flow start
             )
-            logger.info("Stored kiro %s credential in credential store", _method)
+            logger.info("Stored kiro %s credential in credential store (profile=%s)",
+                        _method, _profile)
         except Exception as e:
             logger.warning("Could not store kiro credential in credential store: %s", e)
 
@@ -992,15 +1063,16 @@ async def _handle_login_get(request: Request) -> Response:
         _nuke_pending_container(KIRO_FLOW, podman, pending)
         return JSONResponse({"status": "cancelled"})
 
-    # Inject into running kiro crews only. Since TRN-259 a transport can run
-    # claude and codex crews too; an entry with no acp_backend field is kiro
-    # (matches Crew.from_dict's default).
+    # Inject into running kiro crews only, scoped to the profile that was used
+    # at launch (D6). An entry with no acp_backend field is kiro (default).
+    # Entries without acp_profile default to "default".
     with registry:
         _running_crews = {
             cid: info
             for cid, info in registry._reg["crews"].items()
             if info.get("status") == "running"
             and info.get("acp_backend", "kiro") == "kiro"
+            and info.get("acp_profile", "default") == _profile
         }
     for cid, info in _running_crews.items():
         try:
@@ -1109,6 +1181,8 @@ async def _handle_claude_login_get(request: Request) -> Response:
     # ── Auth complete — store via credential store + write legacy ga-claude-auth ─
     # Both writes run inside the flow's commit, so a logout that cancels this
     # flow first stores nothing.
+    _claude_profile = pending.get("profile", "default")
+
     def _store() -> None:
         _lc()._write_claude_auth_file(tar_bytes)
         logger.info("ga-claude-auth written after Claude login completion")
@@ -1116,8 +1190,12 @@ async def _handle_claude_login_get(request: Request) -> Response:
         # storing base64 of the raw tar mirrors the existing oauth archive convention.
         try:
             import base64 as _base64
-            _cred_store.put("claude", "oauth", _base64.b64encode(tar_bytes))
-            logger.info("Stored claude OAuth credential in credential store")
+            _cred_store.put(
+                "claude", "oauth", _base64.b64encode(tar_bytes),
+                profile=_claude_profile,  # profile scoped to the query-param value, defaults to "default"
+            )
+            logger.info("Stored claude OAuth credential in credential store (profile=%s)",
+                        _claude_profile)
         except Exception as e:
             logger.warning("Could not store claude credential in credential store: %s", e)
 
@@ -1271,9 +1349,22 @@ async def _handle_codex_login_get(request: Request) -> Response:
     # ── Auth complete — write ga-codex-auth ───────────────────────────────────
     # The write runs inside the flow's commit, so a logout that cancels this
     # flow first stores nothing.
+    _codex_profile = pending.get("profile", "default")
+
     def _store() -> None:
         _lc()._write_codex_auth_file(tar_bytes)
         logger.info("ga-codex-auth written after Codex login completion")
+        # Store via the credential store (TRN-233) under the resolved profile.
+        try:
+            import base64 as _base64
+            _cred_store.put(
+                "codex", "chatgpt", _base64.b64encode(tar_bytes),
+                profile=_codex_profile,
+            )
+            logger.info("Stored codex credential in credential store (profile=%s)",
+                        _codex_profile)
+        except Exception as e:
+            logger.warning("Could not store codex credential in credential store: %s", e)
 
     try:
         committed = CODEX_FLOW.commit_if_current(pending, _store)
@@ -1316,6 +1407,10 @@ async def _handle_login_kiro_get(request: Request) -> Response:
     and stores the result via the credential store (TRN-233). Mirrors the
     original _handle_login_get polling cycle.
     """
+    # Extract and validate profile from query string (D7). Defaults to "default".
+    profile, err = _parse_profile_from_query(request)
+    if err is not None:
+        return err
     pending = KIRO_FLOW.state
     # Spec (backend-credentials §GET): for kiro, also return the configured
     # Identity Center start_url/region when set, so the CLI can offer them
@@ -1328,7 +1423,7 @@ async def _handle_login_kiro_get(request: Request) -> Response:
         }
     # No flow in progress — return credential store status
     if pending is None:
-        st = _cred_store.status().get("kiro", {})
+        st = _cred_store.status(profile=profile).get("kiro", {})  # profile scoped to the query-param value, defaults to "default"
         resp: dict = {
             "backend": "kiro",
             "configured": st.get("configured", False),
@@ -1345,7 +1440,8 @@ async def _handle_login_kiro_get(request: Request) -> Response:
     # stale flow is pending.
     poll = await _handle_login_get(request)
     if ic and isinstance(poll, JSONResponse):
-        body = json.loads(poll.body)
+        import json as _json
+        body = _json.loads(poll.body)
         body["identity_center"] = ic
         return JSONResponse(body, status_code=poll.status_code)
     return poll
@@ -1358,9 +1454,12 @@ async def _handle_login_claude_get_new(request: Request) -> Response:
     completion and stores the result. When no flow is running, returns status
     from the credential store.
     """
+    profile, err = _parse_profile_from_query(request)
+    if err is not None:
+        return err
     pending = CLAUDE_FLOW.state
     if pending is None:
-        st = _cred_store.status().get("claude", {})
+        st = _cred_store.status(profile=profile).get("claude", {})  # profile scoped to the query-param value, defaults to "default"
         return JSONResponse({
             "backend": "claude",
             "configured": st.get("configured", False),
@@ -1377,9 +1476,12 @@ async def _handle_login_codex_get_new(request: Request) -> Response:
 
     When a flow is in progress, delegates to the existing codex poll handler.
     """
+    profile, err = _parse_profile_from_query(request)
+    if err is not None:
+        return err
     pending = CODEX_FLOW.state
     if pending is None:
-        st = _cred_store.status().get("codex", {})
+        st = _cred_store.status(profile=profile).get("codex", {})  # profile scoped to the query-param value, defaults to "default"
         return JSONResponse({
             "backend": "codex",
             "configured": st.get("configured", False),
@@ -1403,12 +1505,15 @@ async def _handle_login_kiro_api_key_post(request: Request) -> Response:
     secret = body.get("secret") if isinstance(body, dict) else None
     if not isinstance(secret, str) or not secret.strip():
         return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
-    _cred_store.put("kiro", "api-key", secret.strip())
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    _cred_store.put("kiro", "api-key", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="kiro",
         source=_request_source(request), emit=logger.info,
     )
-    st = _cred_store.status().get("kiro", {})
+    st = _cred_store.status(profile=profile).get("kiro", {})  # profile scoped to the body value, defaults to "default"
     return JSONResponse({
         "status": "stored",
         "backend": "kiro",
@@ -1421,16 +1526,26 @@ async def _handle_login_kiro_builder_id_post(request: Request) -> Response:
     """POST /login/kiro/builder-id — initiate kiro Builder ID device flow."""
     if not _backend_enabled("kiro"):
         return JSONResponse({"error": _backend_not_enabled_message("kiro")}, status_code=400)
-    # Delegate to the existing kiro login initiation (PTY flow).
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    # Communicate profile via request attribute so the legacy _handle_login_post
+    # signature is not changed (preserves backward compat with test stubs).
+    request._kiro_profile = profile  # type: ignore[attr-defined]
     return await _handle_login_post(request, method="builder-id")
 
 
 async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
     """POST /login/kiro/identity-center — initiate kiro Identity Center device flow.
 
-    Accepts optional {start_url?, region?} in the request body;
+    Accepts optional {start_url?, region?, profile?} in the request body;
     falls back to KIRO_IDENTITY_PROVIDER/KIRO_REGION from config.
-    Returns 400 if no start_url or region is available.
+    Returns 400 if no start_url or region is available, or profile is invalid.
     """
     if not _backend_enabled("kiro"):
         return JSONResponse({"error": _backend_not_enabled_message("kiro")}, status_code=400)
@@ -1447,6 +1562,11 @@ async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
              "(provide in request body or set KIRO_IDENTITY_PROVIDER/KIRO_REGION)."},
             status_code=400,
         )
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    # Communicate profile via request attribute (see _handle_login_post).
+    request._kiro_profile = profile  # type: ignore[attr-defined]
     return await _handle_login_post(
         request,
         method="identity-center",
@@ -1463,45 +1583,69 @@ async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
 
 
 def _logout(backend: str, request: Request) -> Response:
-    """Cancel a pending *backend* login, then remove its stored credential.
+    """Cancel a pending *backend* login (for the targeted profile), then remove its credential.
+
+    The ``profile`` query parameter (default ``"default"``) scopes which
+    profile's credential is removed. A flow whose pending profile does not
+    match the targeted profile is NOT aborted, so a running default flow
+    survives a ``?profile=corp`` logout.
 
     Idempotent: returns 200 whether or not anything was pending or stored.
     Returns 500 when a credential could not be removed, or when podman is
     unavailable so a pending login could not be cancelled.
     """
+    profile, err = _parse_profile_from_query(request)
+    if err is not None:
+        return err
+
     lc = _lc()
     if backend == "kiro":
-        abort, legacy_path, account = lc._abort_pending_login, lc._auth_file_path(), "academy"
+        abort_fn, legacy_path, account = lc._abort_pending_login, lc._auth_file_path(), "academy"
+        flow = KIRO_FLOW
     elif backend == "claude":
-        abort, legacy_path, account = lc._abort_claude_pending_login, lc._claude_auth_file_path(), "claude"
+        abort_fn, legacy_path, account = lc._abort_claude_pending_login, lc._claude_auth_file_path(), "claude"
+        flow = CLAUDE_FLOW
     else:
-        abort, legacy_path, account = lc._abort_codex_pending_login, lc._codex_auth_file_path(), "codex"
+        abort_fn, legacy_path, account = lc._abort_codex_pending_login, lc._codex_auth_file_path(), "codex"
+        flow = CODEX_FLOW
 
-    # Abort first: a pending login must not be able to store a credential after
-    # this call removes it (see LoginFlow.commit_if_current). With podman down the
-    # abort cannot run, but no login poll can run either, so the removal still
-    # happens and the 500 below reports the pending login that was left behind.
+    # Only abort the in-progress flow when it targets the same profile.
+    # If the pending dict has no profile key, treat it as "default" (backward compat).
+    # When there is no pending flow at all, fall through to abort() which handles
+    # the nothing-to-abort case.
+    # Read _pending under the flow's lock to avoid a TOCTOU race where the
+    # current flow finishes and a new different-profile flow starts between the
+    # read and the abort call.
     aborted = False
     cancel_error = None
     try:
-        aborted = abort(_get_podman())
+        with flow._lock:
+            pending_state = flow._pending
+            should_abort = (
+                pending_state is None
+                or pending_state.get("profile", "default") == profile
+            )
+        if should_abort:
+            aborted = abort_fn(_get_podman())
     except Exception as e:
         cancel_error = str(e)
 
     store_removed = legacy_removed = failed = False
     try:
-        store_removed = _cred_store.delete(backend)
+        store_removed = _cred_store.delete(backend, profile=profile)
     except OSError as e:
         logger.error("Could not delete %s credential from store: %s", backend, e)
         failed = True
-    try:
-        legacy_path.unlink()
-        legacy_removed = True
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.error("Could not delete legacy %s auth file: %s", backend, e)
-        failed = True
+    # Legacy auth file corresponds to the default profile only; skip for others.
+    if profile == "default":
+        try:
+            legacy_path.unlink()
+            legacy_removed = True
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.error("Could not delete legacy %s auth file: %s", backend, e)
+            failed = True
 
     if failed:
         _security.audit_auth_event(
@@ -1549,12 +1693,15 @@ async def _handle_login_claude_api_key_post(request: Request) -> Response:
     secret = body.get("secret") if isinstance(body, dict) else None
     if not isinstance(secret, str) or not secret.strip():
         return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
-    _cred_store.put("claude", "api-key", secret.strip())
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    _cred_store.put("claude", "api-key", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
         source=_request_source(request), emit=logger.info,
     )
-    st = _cred_store.status().get("claude", {})
+    st = _cred_store.status(profile=profile).get("claude", {})
     return JSONResponse({
         "status": "stored",
         "backend": "claude",
@@ -1574,12 +1721,15 @@ async def _handle_login_claude_setup_token_post(request: Request) -> Response:
     secret = body.get("secret") if isinstance(body, dict) else None
     if not isinstance(secret, str) or not secret.strip():
         return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
-    _cred_store.put("claude", "setup-token", secret.strip())
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    _cred_store.put("claude", "setup-token", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
         source=_request_source(request), emit=logger.info,
     )
-    st = _cred_store.status().get("claude", {})
+    st = _cred_store.status(profile=profile).get("claude", {})
     return JSONResponse({
         "status": "stored",
         "backend": "claude",
@@ -1602,10 +1752,18 @@ async def _handle_login_claude_oauth_post(request: Request) -> Response:
             status_code=409,
         )
     try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    try:
         podman = _get_podman()
     except Exception as e:
         return PlainTextResponse(str(e), status_code=500)
-    result = _lc()._initiate_claude_login(podman)
+    result = _lc()._initiate_claude_login(podman, profile=profile)
     if result.get("login_pending"):
         return JSONResponse(
             {"error": "Claude login already in progress. Run 'ghostship auth logout claude' to cancel, or poll GET /login/claude."},
@@ -1645,12 +1803,15 @@ async def _handle_login_codex_api_key_post(request: Request) -> Response:
     secret = body.get("secret") if isinstance(body, dict) else None
     if not isinstance(secret, str) or not secret.strip():
         return JSONResponse({"error": "'secret' must be a non-empty string."}, status_code=400)
-    _cred_store.put("codex", "api-key", secret.strip())
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    _cred_store.put("codex", "api-key", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="codex",
         source=_request_source(request), emit=logger.info,
     )
-    st = _cred_store.status().get("codex", {})
+    st = _cred_store.status(profile=profile).get("codex", {})
     return JSONResponse({
         "status": "stored",
         "backend": "codex",
@@ -1672,10 +1833,18 @@ async def _handle_login_codex_chatgpt_post(request: Request) -> Response:
             status_code=409,
         )
     try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    profile, err = _parse_profile_from_body(body)
+    if err is not None:
+        return err
+    try:
         podman = _get_podman()
     except Exception as e:
         return PlainTextResponse(str(e), status_code=500)
-    result = _lc()._initiate_codex_login(podman)
+    result = _lc()._initiate_codex_login(podman, profile=profile)
     if result.get("login_pending"):
         return JSONResponse(
             {"error": "Codex login already in progress. Run 'ghostship auth logout codex' to cancel, or poll GET /login/codex."},
@@ -1695,3 +1864,24 @@ async def _handle_login_codex_chatgpt_post(request: Request) -> Response:
 async def _handle_logout_codex_post_new(request: Request) -> Response:
     """POST /logout/codex — cancel a pending codex login and remove its credential."""
     return _logout("codex", request)
+
+
+# ── GET /login/{backend}/profiles ─────────────────────────────────────────────
+
+
+async def _handle_login_kiro_profiles_get(request: Request) -> Response:
+    """GET /login/kiro/profiles — list all kiro profile names in the credential store."""
+    profiles = sorted(_cred_store.list_profiles("kiro"))
+    return JSONResponse({"profiles": profiles})
+
+
+async def _handle_login_claude_profiles_get(request: Request) -> Response:
+    """GET /login/claude/profiles — list all claude profile names in the credential store."""
+    profiles = sorted(_cred_store.list_profiles("claude"))
+    return JSONResponse({"profiles": profiles})
+
+
+async def _handle_login_codex_profiles_get(request: Request) -> Response:
+    """GET /login/codex/profiles — list all codex profile names in the credential store."""
+    profiles = sorted(_cred_store.list_profiles("codex"))
+    return JSONResponse({"profiles": profiles})

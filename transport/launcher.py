@@ -497,6 +497,7 @@ class CrewLauncher:
         admiral_secret: str,
         dashboard: bool = False,
         backend: str,
+        acp_profile: str = "default",
     ) -> dict:
         """Complete crew setup after auth is confirmed.
 
@@ -578,7 +579,7 @@ class CrewLauncher:
 
         # Auth injection (backend-specific) — resolved per-launch from the
         # credential store (TRN-233 task 2.1).
-        _cred = _cred_store.get(backend)
+        _cred = _cred_store.get(backend, acp_profile)
         if backend == "claude":
             _effective_endpoint = ANTHROPIC_BASE_URL or "api.anthropic.com"
             logger.warning(
@@ -696,6 +697,7 @@ class CrewLauncher:
             status="running",
             composition=composition,
             acp_backend=backend,
+            acp_profile=acp_profile,
             created_at=datetime.now(timezone.utc).isoformat(),
             last_used=time.time(),
             enrolled_agents=[n.removesuffix(".json") for n in copied_agents],

@@ -4,18 +4,19 @@ Baked into the crew image at build time so kiro-cli finds the DB already
 initialised — transport only needs to INSERT auth_kv rows at launch,
 with no migration wait and no restart cycle.
 
-⚠️  Migration schema for KiroCrew v0.11.2 stable / kiro-cli 2.36.0 (6 rows, versions 0-5, max_version 5).
-    Verified 2026-11-04 against ghcr.io/kirodotdev/kirocrew@sha256:b912fdb52f92b9d23b5189e91b44fd01b531a38a2f7dad161f2185af2c24aef9:
-    result (6, 5). Schema unchanged from v0.11.1 (kiro-cli 2.37.0): migrations
+⚠️  Migration schema for KiroCrew v0.12.0 stable / kiro-cli 2.27.1 (6 rows, versions 0-5, max_version 5).
+    Verified 2026-11-05 against ghcr.io/kirodotdev/kirocrew@sha256:d7eeab57ff9d4b265fcf05a2fa1352f1b238f730cfd6c65ebda4b36dcdef5d0f:
+    result (6, 5). Schema unchanged from v0.11.2 (kiro-cli 2.36.0): migrations
     000_migration_table..005_auth_table, final history columns (id, command, shell, pid,
     session_id, cwd, start_time, hostname, exit_code, end_time, duration) match this seed
-    exactly. No new migration (no 006_+) exists in kiro-cli 2.36.0.
-    Note: kiro-cli version moved 2.37.0 → 2.36.0 in this hotfix release (non-schema changes
-    only: KAS engine MCP server startup, crewmate broker overlay routing, MCP settings file
-    corruption). Migration names confirmed unchanged by static analysis of the v0.11.2 image layer.
+    exactly. No new migration (no 006_+) exists in kiro-cli 2.27.1.
+    Note: kiro-cli version is 2.27.1 in KC v0.12.0 (per dev.kirocrew.kiro-cli.version image label
+    and /usr/local/share/kirocrew/kiro-cli-version; planning docs incorrectly anticipated 3.0.0).
+    Migration names confirmed unchanged by static analysis of the v0.12.0 image layer (layer 5,
+    sha256:c2600d096e31eaa4b7dadf7326ecc39413939082da83b9fc85ed54df2c9ffc87).
     Removed vs 0.5.0 seed: conversations, conversations_v2 (+2 indexes), extracted_kas_versions.
-    Verification method (2026-11-04): migration names extracted statically from
-    /usr/local/bin/kiro-cli in the v0.11.2 stable image layer — no DB execution.
+    Verification method (2026-11-05): migration names extracted statically from
+    /usr/local/bin/kiro-cli in the v0.12.0 stable image layer — no DB execution.
     When updating the FROM pin to a newer kirocrew version, re-verify. On a Podman host:
       podman run --rm ghcr.io/kirodotdev/kirocrew:<tag> python3 -c \
         "import sqlite3; c=sqlite3.connect('/home/kirocrew/.local/share/kiro-cli/data.sqlite3'); \

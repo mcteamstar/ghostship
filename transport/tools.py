@@ -271,6 +271,35 @@ GA_GIT_AUTHOR_EMAIL = os.environ.get("GA_GIT_AUTHOR_EMAIL", "").strip()
 # module-level globals (TRN-233 task 2.1).
 _cred_store = CredentialStore()
 
+try:
+    from credentials import _validate_profile as _vp_cred  # container: flat /app/
+except ImportError:
+    from transport.credentials import _validate_profile as _vp_cred  # local dev
+
+
+def _resolve_profile(backend: str, requested: str | None, store: CredentialStore) -> str:
+    """Resolve the profile to use for a launch.
+
+    Priority (D5):
+    1. If *requested* is non-empty after stripping → use it.
+    2. Elif exactly one profile exists for *backend* → use that profile.
+    3. Else → use ``"default"``.
+
+    The resolved profile is then validated (with ``allow_default=True`` so
+    the ``"default"`` fallback is always legal).  Returns the profile string
+    or raises ``ValueError`` when it fails validation.
+    """
+    if requested and requested.strip():
+        resolved = requested.strip()
+    else:
+        profiles = store.list_profiles(backend)
+        if len(profiles) == 1:
+            resolved = profiles[0]
+        else:
+            resolved = "default"
+    _vp_cred(resolved, allow_default=True)
+    return resolved
+
 _ANTHROPIC_BASE_URL = cfg.anthropic_base_url
 _OPENAI_BASE_URL = cfg.openai_base_url
 
@@ -420,6 +449,7 @@ def _build_crews_payload(podman) -> dict:
             # acp_backend: "kiro" (default), "claude", or "codex". Defaults to "kiro" for
             # pre-TRN-167 registry entries that do not have the field.
             "acp_backend": info.get("acp_backend", "kiro"),
+            "acp_profile": info.get("acp_profile", "default"),
             "agents": [],
         }
         # Derive dashboard_url from stored dashboard_port (None if no port assigned).
@@ -585,6 +615,7 @@ def _build_internal_fleet_payload(podman) -> dict:
             "gateway_healthy": gateway_healthy,
             "crew_image_version": info.get("crew_image_version", "unknown"),
             "acp_backend": info.get("acp_backend", "kiro"),
+            "acp_profile": info.get("acp_profile", "default"),
             # agents: always [] — no gateway call made (registry-only contract)
             "agents": [],
         }
@@ -737,6 +768,7 @@ def launch(
     composition: str = "spec-ops",
     dashboard: bool | None = None,
     backend: str | None = None,
+    profile: str | None = None,
 ) -> dict:
     """Step 1: create a crew workspace — summon a new crew container into existence, with its own workspace volume.
 
@@ -779,6 +811,13 @@ def launch(
                  launch returns backend_not_enabled with the enabled list. The
                  crew keeps this backend for its whole life, including restarts;
                  authentication uses that backend's stored credential.
+        profile: Named credential profile for this crew's backend (e.g. "corp").
+                 Selects which stored credential to use when a backend has
+                 multiple profiles. Omit (or pass None) to use implicit
+                 resolution: if exactly one profile exists for the backend it is
+                 used automatically; otherwise "default" is used. The resolved
+                 profile is recorded in the crew registry as acp_profile and
+                 used to scope post-login credential injection.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """
@@ -822,8 +861,14 @@ def launch(
     # is called here and the result is used for gating and env injection below.
     auth_b64: str | None = None
 
+    # Resolve the profile for this launch (D5).
+    try:
+        resolved_profile = _resolve_profile(backend, profile, _cred_store)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
     # Resolve the crew backend's credential once per launch.
-    _cred = _cred_store.get(backend)
+    _cred = _cred_store.get(backend, resolved_profile)
 
     if backend == "claude":
         # Claude backend — require a stored credential (any method).
@@ -894,7 +939,7 @@ def launch(
                         # Commit only if the flow was not cancelled by logout while we polled.
                         _committed = login.KIRO_FLOW.commit_if_current(
                             pending,
-                            lambda: _cred_store.put("kiro", _method, auth_b64, provider=_provider),
+                            lambda: _cred_store.put("kiro", _method, auth_b64, provider=_provider, profile=resolved_profile),
                         )
                         if _committed:
                             _nuke_login_container(podman, pending["container"])
@@ -949,7 +994,10 @@ def launch(
         if len(registry._reg["crews"]) >= GA_MAX_CREWS:
             return {"error": f"Registered crew limit ({GA_MAX_CREWS}) reached. Nuke one first."}
         # Pre-insert a placeholder to prevent concurrent launches with the same id
-        registry._reg["crews"][crew_id] = {"status": "launching", "container": container}
+        registry._reg["crews"][crew_id] = {
+            "status": "launching", "container": container,
+            "acp_profile": resolved_profile,
+        }
 
     # Initialised before the try so the except block can reference it.
     dashboard_port: int | None = None
@@ -1114,7 +1162,7 @@ def launch(
                 registry._reg["crews"].pop(crew_id, None)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend, acp_profile=resolved_profile)
         # _finish_crew_setup error-dict paths have already called _cleanup_crew
         # (removing the admiral secret and Podman resources). The registry placeholder
         # entry written before the try block still exists and must be removed here.
@@ -1447,13 +1495,9 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     _cleanup_crew(podman, container, vol, home_vol)
 
     with registry:
-        # Deregister from Caddy and release the port before removing the registry
-        # entry. Portal is the sole dashboard proxy.
+        # Read the dashboard port and remove the registry entry atomically.
+        # Caddy/port calls follow outside the lock (C-1 pattern).
         _ui_p = registry._reg["crews"].get(crew_id, {}).get("dashboard_port")
-        if _ui_p is not None:
-            _caddy_portal.deregister_crew(crew_id)
-            _dashboard_gate.release_port(int(_ui_p))
-            _caddy_portal.release_port(int(_ui_p))
         # Explicitly drop any batch records so no orphan batch entry
         # survives a nuke. Popping the crew entry below already removes them,
         # but clearing here keeps the intent explicit and in the same atomic
@@ -1462,6 +1506,13 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         if _crew_entry is not None:
             _crew_entry.pop("batches", None)
         registry._reg["crews"].pop(crew_id, None)
+    # Caddy deregister and port release run outside the registry lock so that
+    # concurrent registry operations (launch, crews, dispatch) are not stalled
+    # for the duration of the blocking Caddy admin HTTP call (C-1 pattern).
+    if _ui_p is not None:
+        _caddy_portal.deregister_crew(crew_id)
+        _dashboard_gate.release_port(int(_ui_p))
+        _caddy_portal.release_port(int(_ui_p))
 
     with _captain_order_locks_lock:
         _captain_order_locks.pop(crew_id, None)

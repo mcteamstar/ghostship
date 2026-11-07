@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.12.0
+
+### Named credential profiles per backend (TRN-252)
+
+Multiple credentials can now coexist under a single backend using named profiles:
+
+```bash
+ghostship auth login kiro --profile corp        # store a second kiro credential
+ghostship auth status                           # lists all profiles per backend
+ghostship auth logout kiro --profile corp       # remove only the corp profile
+```
+
+- Credentials are stored at `DATA_DIR/credentials/<backend>/<profile>.json`. Existing flat credentials (`credentials/<backend>.json`) are migrated to `credentials/<backend>/default.json` automatically on first access — no operator action required.
+- `launch` accepts an optional `profile` parameter. If omitted: single profile is used implicitly; otherwise `default` is used.
+- The crew registry records `acp_profile` per crew; post-login credential injection is scoped to matching-profile crews only.
+- New HTTP route `GET /login/<backend>/profiles` lists stored profile names.
+- The name `default` is reserved and cannot be supplied explicitly via `--profile`.
+
+### Base image bump to KiroCrew v0.12.0 (TRN-299)
+
+- Crew image now extends `ghcr.io/kirodotdev/kirocrew:0.12.0` (multi-arch index
+  digest `sha256:d7eeab57ff9d4b265fcf05a2fa1352f1b238f730cfd6c65ebda4b36dcdef5d0f`,
+  covering amd64 and arm64). kiro-cli version inside crews: 2.27.1.
+  Note: planning documents anticipated kiro-cli 3.0.0; the released image ships
+  kiro-cli 2.27.1 per the `dev.kirocrew.kiro-cli.version` image label.
+- **Security hardening for cron governance and deny rules** — KC 0.12.0 hardened
+  policy enforcement; `inject_policy.py` output verified compatible in crew startup
+  smoke test (task 3.3). Check gateway logs after first crew launch for enrollment
+  warnings related to the "Mates → Bots" rename (UI-only per research; REST endpoint
+  unchanged).
+- Migration schema unchanged from v0.11.2: `(6, 5)` — `seed_kiro_db.py` logic
+  unchanged; verification annotation updated to v0.12.0 / kiro-cli 2.27.1 / 2026-11-05.
+  Verification performed by static layer inspection of `/usr/local/bin/kiro-cli` in
+  the v0.12.0 image (migrations: 000_migration_table..005_auth_table, no 006_+).
+- Re-run `./install.sh` to rebuild the crew image and pick up KC 0.12.0. Existing
+  crews keep their current image until nuked and re-launched.
+
 ## v0.11.2
 
 ### Base image bump to KiroCrew v0.11.2 (TRN-307)

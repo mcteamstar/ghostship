@@ -342,44 +342,79 @@ class TestAuthLogout(unittest.TestCase):
 class TestAuthStatus(unittest.TestCase):
     """auth status: table and --json, no values in output."""
 
-    def _mock_status(self, configured: bool = False, method: str | None = None):
-        """Return a side_effect list for three GET /login/{backend} calls."""
-        def _resp(backend):
-            return {
-                "backend": backend,
-                "configured": configured and backend == "claude",
-                "method": method if (configured and backend == "claude") else None,
-                "stored_at": "2026-10-17T05:00:00Z" if (configured and backend == "claude") else None,
-                "pending_flow": None,
-            }
-        return [_resp("kiro"), _resp("claude"), _resp("codex")]
+    @staticmethod
+    def _make_http_json_side_effect(profiles_by_backend, status_by_backend_profile):
+        """Build a side_effect callable for _http_json that routes by URL.
+
+        ``profiles_by_backend`` maps backend -> list of profile names.
+        ``status_by_backend_profile`` maps (backend, profile) -> status dict.
+
+        /login/{backend}/profiles  -> {"profiles": [...]}
+        /login/{backend}           -> status for (backend, "default")
+        /login/{backend}?profile=X -> status for (backend, X)
+        """
+        import re as _re
+        def _side(url, method, body=None, api_key=None):
+            m = _re.match(r".*/login/(\w+)/profiles$", url)
+            if m:
+                backend = m.group(1)
+                return {"profiles": profiles_by_backend.get(backend, [])}
+            m = _re.match(r".*/login/(\w+)\?profile=(.+)$", url)
+            if m:
+                backend, profile = m.group(1), m.group(2)
+                return status_by_backend_profile.get((backend, profile), {})
+            m = _re.match(r".*/login/(\w+)$", url)
+            if m:
+                backend = m.group(1)
+                return status_by_backend_profile.get((backend, "default"), {})
+            raise ValueError(f"Unexpected URL in mock: {url}")
+        return _side
 
     def test_status_table_no_values(self):
+        """Human-readable table only shows backends with at least one configured profile."""
         out_buf = io.StringIO()
         secret = "sk-ant-super-secret"
+        profiles = {"kiro": ["default"], "claude": ["default"], "codex": []}
+        statuses = {
+            ("kiro", "default"): {"backend": "kiro", "configured": False, "method": None,
+                                  "stored_at": None, "pending_flow": None},
+            ("claude", "default"): {"backend": "claude", "configured": True,
+                                    "method": "api-key", "stored_at": "2026-10-17T05:00:00Z",
+                                    "pending_flow": None},
+        }
+        side = self._make_http_json_side_effect(profiles, statuses)
         with patch.object(gs, "_discover_transport",
                           return_value=("http://localhost:64057", None)):
-            with patch.object(gs, "_http_json",
-                              side_effect=self._mock_status(configured=True, method="api-key")):
+            with patch.object(gs, "_http_json", side_effect=side):
                 with patch("sys.stdout", out_buf):
                     result = gs.auth_status([])
         self.assertEqual(result, 0)
         output = out_buf.getvalue()
-        # Table has all three backends
-        self.assertIn("kiro", output)
+        # Only claude is configured — kiro and codex are absent from output
+        self.assertNotIn("kiro", output)
         self.assertIn("claude", output)
-        self.assertIn("codex", output)
+        self.assertNotIn("codex", output)
         # Claude shows method
         self.assertIn("api-key", output)
         # No secret value
         self.assertNotIn(secret, output)
 
     def test_status_json_flag(self):
+        """--json outputs valid JSON with all three backend keys."""
         out_buf = io.StringIO()
+        profiles = {"kiro": [], "claude": [], "codex": []}
+        fallback = {
+            ("kiro", "default"): {"backend": "kiro", "configured": False, "method": None,
+                                  "stored_at": None, "pending_flow": None},
+            ("claude", "default"): {"backend": "claude", "configured": False, "method": None,
+                                    "stored_at": None, "pending_flow": None},
+            ("codex", "default"): {"backend": "codex", "configured": False, "method": None,
+                                   "stored_at": None, "pending_flow": None},
+        }
+        side = self._make_http_json_side_effect(profiles, fallback)
         with patch.object(gs, "_discover_transport",
                           return_value=("http://localhost:64057", None)):
-            with patch.object(gs, "_http_json",
-                              side_effect=self._mock_status()):
+            with patch.object(gs, "_http_json", side_effect=side):
                 with patch("sys.stdout", out_buf):
                     result = gs.auth_status(["--json"])
         self.assertEqual(result, 0)
@@ -387,6 +422,32 @@ class TestAuthStatus(unittest.TestCase):
         self.assertIn("kiro", data)
         self.assertIn("claude", data)
         self.assertIn("codex", data)
+
+    def test_status_default_profile_not_sent_as_param(self):
+        """auth_status must use GET /login/{backend} (no ?profile=) for the 'default' profile."""
+        calls: list = []
+        profiles = {"kiro": ["default"], "claude": [], "codex": []}
+        statuses = {
+            ("kiro", "default"): {"backend": "kiro", "configured": True, "method": "api-key",
+                                  "stored_at": "2026-11-06T10:00:00Z", "pending_flow": None},
+        }
+        base_side = self._make_http_json_side_effect(profiles, statuses)
+        def _capturing(url, method, body=None, api_key=None):
+            calls.append(url)
+            return base_side(url, method, body=body, api_key=api_key)
+        out_buf = io.StringIO()
+        with patch.object(gs, "_discover_transport", return_value=("http://localhost:64057", None)):
+            with patch.object(gs, "_http_json", side_effect=_capturing):
+                with patch("sys.stdout", out_buf):
+                    gs.auth_status([])
+        # No request must ever include ?profile=default
+        for url in calls:
+            self.assertNotIn("?profile=default", url,
+                             "'default' must not be sent as an explicit ?profile= param")
+        # The kiro status was queried without a profile param
+        kiro_status_calls = [u for u in calls if "/login/kiro" in u and "profiles" not in u]
+        self.assertTrue(kiro_status_calls, "expected at least one /login/kiro status call")
+        self.assertNotIn("?", kiro_status_calls[0], "kiro default-profile status must use no query string")
 
 
 if __name__ == "__main__":

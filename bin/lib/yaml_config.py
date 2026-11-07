@@ -96,6 +96,7 @@ DEFAULTS: dict[str, str] = {
     "GA_SUBAGENT_TIMEOUT_SECS": "3600",
     "GA_BATCH_MAX_TASKS": "20",
     "GA_PICKUP_MAX_POLL_SECS": "30",
+    "GA_TASK_TIMESTAMP_TTL_SECS": "3600",
     # ── memory gate ──
     "GA_MIN_FREE_MEM_GB": "2.0",
     "GA_SPAWN_MIN_MEMORY_GB": "1.5",
@@ -179,6 +180,7 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("crew", "subagent_timeout_secs"): "GA_SUBAGENT_TIMEOUT_SECS",
     ("crew", "batch_max_tasks"): "GA_BATCH_MAX_TASKS",
     ("crew", "pickup_max_poll_secs"): "GA_PICKUP_MAX_POLL_SECS",
+    ("crew", "task_timestamp_ttl_secs"): "GA_TASK_TIMESTAMP_TTL_SECS",
     ("crew", "orders_dir"): "GA_ORDERS_DIR",
     ("crew", "git", "author", "name"): "GA_GIT_AUTHOR_NAME",
     ("crew", "git", "author", "email"): "GA_GIT_AUTHOR_EMAIL",

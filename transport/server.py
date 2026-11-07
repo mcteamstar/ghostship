@@ -1704,6 +1704,10 @@ try:
         _handle_logout_claude_post_new,
         _handle_login_codex_api_key_post, _handle_login_codex_chatgpt_post,
         _handle_logout_codex_post_new,
+        # TRN-252 profiles routes
+        _handle_login_kiro_profiles_get,
+        _handle_login_claude_profiles_get,
+        _handle_login_codex_profiles_get,
     )
 except ModuleNotFoundError:
     from transport.login import (  # noqa: F401  local dev
@@ -1721,6 +1725,10 @@ except ModuleNotFoundError:
         _handle_logout_claude_post_new,
         _handle_login_codex_api_key_post, _handle_login_codex_chatgpt_post,
         _handle_logout_codex_post_new,
+        # TRN-252 profiles routes
+        _handle_login_kiro_profiles_get,
+        _handle_login_claude_profiles_get,
+        _handle_login_codex_profiles_get,
     )
 
 
@@ -1805,17 +1813,20 @@ if __name__ == "__main__":
     # removed; new /login/{backend}/{method} and /logout/{backend} registered.
     _openapi_schema_routes = {
         ("GET",  "/login/kiro"): _handle_login_kiro_get,
+        ("GET",  "/login/kiro/profiles"): _handle_login_kiro_profiles_get,
         ("POST", "/login/kiro/api-key"): _handle_login_kiro_api_key_post,
         ("POST", "/login/kiro/builder-id"): _handle_login_kiro_builder_id_post,
         ("POST", "/login/kiro/identity-center"): _handle_login_kiro_identity_center_post,
         ("POST", "/logout/kiro"): _handle_logout_kiro_post,
         ("GET",  "/login/claude"): _handle_login_claude_get_new,
+        ("GET",  "/login/claude/profiles"): _handle_login_claude_profiles_get,
         ("POST", "/login/claude/api-key"): _handle_login_claude_api_key_post,
         ("POST", "/login/claude/setup-token"): _handle_login_claude_setup_token_post,
         ("POST", "/login/claude/oauth"): _handle_login_claude_oauth_post,
         ("POST", "/login/claude/oauth/code"): _handle_login_claude_oauth_code_post,
         ("POST", "/logout/claude"): _handle_logout_claude_post_new,
         ("GET",  "/login/codex"): _handle_login_codex_get_new,
+        ("GET",  "/login/codex/profiles"): _handle_login_codex_profiles_get,
         ("POST", "/login/codex/api-key"): _handle_login_codex_api_key_post,
         ("POST", "/login/codex/chatgpt"): _handle_login_codex_chatgpt_post,
         ("POST", "/logout/codex"): _handle_logout_codex_post_new,
@@ -1853,17 +1864,20 @@ if __name__ == "__main__":
         file_app=_file_starlette,
         routes={
             ("GET",  "/login/kiro"): _handle_login_kiro_get,
+            ("GET",  "/login/kiro/profiles"): _handle_login_kiro_profiles_get,
             ("POST", "/login/kiro/api-key"): _handle_login_kiro_api_key_post,
             ("POST", "/login/kiro/builder-id"): _handle_login_kiro_builder_id_post,
             ("POST", "/login/kiro/identity-center"): _handle_login_kiro_identity_center_post,
             ("POST", "/logout/kiro"): _handle_logout_kiro_post,
             ("GET",  "/login/claude"): _handle_login_claude_get_new,
+            ("GET",  "/login/claude/profiles"): _handle_login_claude_profiles_get,
             ("POST", "/login/claude/api-key"): _handle_login_claude_api_key_post,
             ("POST", "/login/claude/setup-token"): _handle_login_claude_setup_token_post,
             ("POST", "/login/claude/oauth"): _handle_login_claude_oauth_post,
             ("POST", "/login/claude/oauth/code"): _handle_login_claude_oauth_code_post,
             ("POST", "/logout/claude"): _handle_logout_claude_post_new,
             ("GET",  "/login/codex"): _handle_login_codex_get_new,
+            ("GET",  "/login/codex/profiles"): _handle_login_codex_profiles_get,
             ("POST", "/login/codex/api-key"): _handle_login_codex_api_key_post,
             ("POST", "/login/codex/chatgpt"): _handle_login_codex_chatgpt_post,
             ("POST", "/logout/codex"): _handle_logout_codex_post_new,

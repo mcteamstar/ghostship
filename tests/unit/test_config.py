@@ -792,3 +792,75 @@ class TestApiKeyExposure(unittest.TestCase):
         self.assertIn("verdict = api_key_exposure(api_key, config or cfg)", src)
         self.assertIn("_enforce_api_key_requirement(GA_API_KEY)", src)
         self.assertNotIn('environ.get("HOST"', src)
+
+
+# ── New env-var fields: ga_task_timestamp_ttl_secs, ga_pickup_max_poll_secs,
+#    ga_batch_max_tasks (TRN-309) ───────────────────────────────────────────────
+
+
+class TestConfigNewLifecycleFields(unittest.TestCase):
+    """Defaults, env overrides, error handling, and direct construction for the
+    three fields moved into Config by TRN-309."""
+
+    # ── Defaults ─────────────────────────────────────────────────────────────
+
+    def test_ga_task_timestamp_ttl_secs_default(self):
+        self.assertAlmostEqual(Config().ga_task_timestamp_ttl_secs, 3600.0)
+
+    def test_ga_pickup_max_poll_secs_default(self):
+        self.assertEqual(Config().ga_pickup_max_poll_secs, 30)
+
+    def test_ga_batch_max_tasks_default(self):
+        self.assertEqual(Config().ga_batch_max_tasks, 20)
+
+    # ── from_env() overrides ──────────────────────────────────────────────────
+
+    def test_ga_task_timestamp_ttl_secs_from_env(self):
+        with patch.dict("os.environ", {"GA_TASK_TIMESTAMP_TTL_SECS": "7200"}):
+            cfg = Config.from_env()
+        self.assertAlmostEqual(cfg.ga_task_timestamp_ttl_secs, 7200.0)
+
+    def test_ga_pickup_max_poll_secs_from_env(self):
+        with patch.dict("os.environ", {"GA_PICKUP_MAX_POLL_SECS": "60"}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_pickup_max_poll_secs, 60)
+
+    def test_ga_batch_max_tasks_from_env(self):
+        with patch.dict("os.environ", {"GA_BATCH_MAX_TASKS": "50"}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_batch_max_tasks, 50)
+
+    # ── ConfigError on non-numeric values ────────────────────────────────────
+
+    def test_ga_task_timestamp_ttl_secs_bad_value_raises(self):
+        with patch.dict("os.environ", {"GA_TASK_TIMESTAMP_TTL_SECS": "notanumber"}):
+            with self.assertRaises(ConfigError) as ctx:
+                Config.from_env()
+        self.assertIn("GA_TASK_TIMESTAMP_TTL_SECS", str(ctx.exception))
+
+    def test_ga_pickup_max_poll_secs_bad_value_raises(self):
+        with patch.dict("os.environ", {"GA_PICKUP_MAX_POLL_SECS": "notanumber"}):
+            with self.assertRaises(ConfigError) as ctx:
+                Config.from_env()
+        self.assertIn("GA_PICKUP_MAX_POLL_SECS", str(ctx.exception))
+
+    def test_ga_batch_max_tasks_bad_value_raises(self):
+        with patch.dict("os.environ", {"GA_BATCH_MAX_TASKS": "notanumber"}):
+            with self.assertRaises(ConfigError) as ctx:
+                Config.from_env()
+        self.assertIn("GA_BATCH_MAX_TASKS", str(ctx.exception))
+
+    # ── Direct construction without env access ────────────────────────────────
+
+    def test_direct_construction_batch_max_tasks(self):
+        """Config(ga_batch_max_tasks=5) works without env access."""
+        cfg = Config(ga_batch_max_tasks=5)
+        self.assertEqual(cfg.ga_batch_max_tasks, 5)
+
+    def test_direct_construction_pickup_max_poll_secs(self):
+        cfg = Config(ga_pickup_max_poll_secs=10)
+        self.assertEqual(cfg.ga_pickup_max_poll_secs, 10)
+
+    def test_direct_construction_task_timestamp_ttl_secs(self):
+        cfg = Config(ga_task_timestamp_ttl_secs=120.0)
+        self.assertAlmostEqual(cfg.ga_task_timestamp_ttl_secs, 120.0)

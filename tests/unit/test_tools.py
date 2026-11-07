@@ -113,6 +113,83 @@ class TestNuke(unittest.TestCase):
         self.assertEqual(result.get("status"), "nuked")
 
 
+# ── TestNukeLockOrder ─────────────────────────────────────────────────────────
+
+class TestNukeLockOrder(unittest.TestCase):
+    """nuke(): Caddy/port calls execute after the registry entry is removed (TRN-308).
+
+    The registry write (pop crew entry, clear batch records) must complete and
+    the lock must be released *before* _caddy_portal.deregister_crew() is
+    called.  Under the old code all three happened inside a single
+    ``with registry:`` block; the fix moves the Caddy calls outside.
+    """
+
+    def setUp(self):
+        self.crew_id = "lock-order-crew"
+        self.crew_dict = dict(_fake_crew_dict(self.crew_id))
+        self.crew_dict["dashboard_port"] = 9876
+        # _patch_registry returns the live 'crews' sub-dict; the pop() that
+        # nuke() performs inside the with-registry block mutates this same
+        # object, so checking it inside the deregister_crew side-effect tells
+        # us whether the pop happened before or after the Caddy call.
+        self.crews = _patch_registry(self, {self.crew_id: dict(self.crew_dict)})
+        registry._reg = {"crews": self.crews}
+
+    def _call(self):
+        try:
+            from tools import nuke  # container flat /app/
+        except ModuleNotFoundError:
+            from transport.tools import nuke  # local dev
+        return nuke(crew_id=self.crew_id, confirm=True)
+
+    def test_deregister_called_after_registry_removal(self):
+        """deregister_crew is invoked after the crew entry has been removed.
+
+        Captures the state of the crews backing-dict at the moment
+        deregister_crew fires.  If the Caddy call is still inside the lock
+        (old behaviour), the entry is present; if it is outside (new
+        behaviour), the entry has already been popped.
+        """
+        crews = self.crews  # closure reference — same dict nuke() pops from
+
+        crew_still_in_registry: dict = {}
+
+        def _capture_registry_state(cid: str) -> None:
+            crew_still_in_registry["present"] = cid in crews
+
+        fake_caddy = MagicMock()
+        fake_caddy.deregister_crew.side_effect = _capture_registry_state
+
+        with (
+            patch("transport.tools._get_crew", return_value=self.crew_dict),
+            patch("transport.tools._get_podman", return_value=MagicMock()),
+            patch("transport.tools._to_crew", return_value=MagicMock(
+                container=f"gs-{self.crew_id}",
+                volume=f"gs-vol-{self.crew_id}",
+                home_volume=f"gs-home-{self.crew_id}",
+            )),
+            patch("transport.tools._cleanup_crew"),
+            patch("transport.tools._caddy_portal", fake_caddy),
+            patch("transport.tools._dashboard_gate", MagicMock()),
+            patch("transport.tools._read_crew_secret", return_value=None),
+            patch("transport.tools._delete_crew_secret"),
+            patch("transport.tools._captain_order_locks", {}),
+            patch("transport.tools._captain_order_locks_lock", MagicMock()),
+        ):
+            result = self._call()
+
+        # nuke must complete successfully
+        self.assertEqual(result.get("status"), "nuked")
+        # deregister_crew must have been called exactly once
+        fake_caddy.deregister_crew.assert_called_once_with(self.crew_id)
+        # The crew must be absent from the registry at the time deregister_crew ran
+        self.assertFalse(
+            crew_still_in_registry.get("present", True),
+            "deregister_crew was called while crew was still in registry "
+            "(Caddy call should execute after the registry lock is released)",
+        )
+
+
 # ── TestSchedule ─────────────────────────────────────────────────────────────
 
 class TestSchedule(unittest.TestCase):

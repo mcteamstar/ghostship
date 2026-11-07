@@ -15,12 +15,11 @@ The crew-image build SHALL pin the base image to the KiroCrew gateway version th
 crew is intended to run, expressed as an immutable tag or digest, and the pin
 default SHALL be identical in the admission build definition and the shipped
 configuration default so that a build with no override matches an install build.
-
-The pin SHALL be advanced to KiroCrew v0.11.2 (commit `31ee6e4`, released
-2026-11-04). The immutable multi-arch index digest for v0.11.2 must be obtained
-via `podman manifest inspect ghcr.io/kirodotdev/kirocrew:v0.11.2` and recorded in
+The pin SHALL be advanced to KiroCrew v0.12.0 (kiro-cli 3.0.0, released
+2026-11-05). The immutable multi-arch index digest for v0.12.0 must be obtained
+via `podman manifest inspect ghcr.io/kirodotdev/kirocrew:v0.12.0` and recorded in
 `crews/_base/admission/Containerfile` as the `KC_BASE_IMAGE` default. The comment
-block above the ARG SHALL record: KiroCrew version v0.11.2, the digest, and the
+block above the ARG SHALL record: KiroCrew version v0.12.0, the digest, and the
 verification date.
 
 #### Scenario: operator builds with the default base image
@@ -46,13 +45,12 @@ verification date.
 - **SO THAT** a later rebuild cannot float onto a different published image
   without an explicit change.
 
-#### Scenario: operator builds with the v0.11.2 base image
+#### Scenario: operator builds with the v0.12.0 base image
 
 - **WHEN** an operator builds the crew image after this change is applied
-- **THEN** the admission image builds from the KiroCrew v0.11.2 base image
-- **AND** the resulting crew runs the v0.11.2 gateway (KAS engine MCP server
-  startup fix, crewmate broker overlay routing fix, and MCP settings file
-  corruption fix included)
+- **THEN** the admission image builds from the KiroCrew v0.12.0 base image
+- **AND** the resulting crew runs the v0.12.0 gateway (security hardening for cron
+  governance and deny rules, Bot worktree isolation, kiro-cli 3.0.0)
 
 ### Requirement: kiro-cli DB seed matches the base-image migration schema
 
@@ -62,17 +60,14 @@ launch the crew only needs to insert authentication rows with no migration wait 
 restart cycle. The seed SHALL record, in a human-readable annotation, the gateway
 version it was verified against, the verification date, and the observed migration
 count and maximum version.
-
-Before the v0.11.2 image is released, `seed_kiro_db.py` MUST be re-verified
-against the v0.11.2 image's kiro-cli migration schema using:
-
+Before the v0.12.0 image is released, `seed_kiro_db.py` MUST be re-verified
+against the v0.12.0 image's kiro-cli migration schema using:
 ```bash
-podman run --rm ghcr.io/kirodotdev/kirocrew:v0.11.2 python3 -c \
+podman run --rm ghcr.io/kirodotdev/kirocrew:0.12.0 python3 -c \
   "import sqlite3; c=sqlite3.connect('/home/kirocrew/.local/share/kiro-cli/data.sqlite3'); \
-  print(c.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
+   print(c.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
 ```
-
-If the result differs from the v0.11.1 baseline of `(6, 5)`, the seed MUST be
+If the result differs from the v0.11.2 baseline of `(6, 5)`, the seed MUST be
 updated before the image is released.
 
 #### Scenario: seed verified and matching the base image
@@ -114,15 +109,15 @@ updated before the image is released.
 - The re-verification of the seed against the newly pinned base image is therefore
   a release gate, not optional.
 
-#### Scenario: migration schema unchanged from v0.11.1
+#### Scenario: migration schema unchanged from v0.11.2
 
-- **WHEN** the v0.11.2 image reports migration result `(6, 5)` (identical to v0.11.1)
+- **WHEN** the v0.12.0 image reports migration result `(6, 5)` (identical to v0.11.2)
 - **THEN** only the verification annotation in `seed_kiro_db.py` is updated
 - **AND** no migration rows or table-creation statements change
 
-#### Scenario: migration schema changed from v0.11.1
+#### Scenario: migration schema changed from v0.11.2
 
-- **WHEN** the v0.11.2 image reports a different migration count or max version
+- **WHEN** the v0.12.0 image reports a different migration count or max version
 - **THEN** `seed_kiro_db.py` migration rows and table-creation statements are updated
   to match before the image is released
 

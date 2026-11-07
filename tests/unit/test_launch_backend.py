@@ -266,3 +266,63 @@ class TestCrewsReportsBackend(_LaunchHarness):
         with patch.object(self.tools, "_get_host_memory_gb_cached", return_value=None):
             listed = {c["crew_id"]: c["acp_backend"] for c in self.tools.crews()["crews"]}
         self.assertEqual(listed, {"kiro-crew": "kiro", "claude-crew": "claude"})
+
+
+# ── Task 3.6: profile-aware launch tests ──────────────────────────────────────
+
+
+class TestProfileLaunch(_LaunchHarness):
+    """launch() with profile support (TRN-252 task 3.6)."""
+
+    def test_explicit_profile_selects_credential(self):
+        """Explicit profile="corp" uses kiro/corp credential, not kiro/default."""
+        self.store.put("kiro", "api-key", "kiro-corp-key", profile="corp")
+        result = self.launch(backend="kiro", profile="corp")
+        self.assertNotIn("error", result)
+        # finish_setup received acp_profile="corp"
+        self.assertEqual(self.finish_calls[-1]["acp_profile"], "corp")
+
+    def test_implicit_single_profile(self):
+        """When only kiro/corp exists (no default), profile is resolved implicitly."""
+        self.store.put("kiro", "api-key", "kiro-corp-key", profile="corp")
+        result = self.launch(backend="kiro")  # no profile arg
+        self.assertNotIn("error", result)
+        self.assertEqual(self.finish_calls[-1]["acp_profile"], "corp")
+
+    def test_missing_named_profile_triggers_auth(self):
+        """Explicit profile="corp" with only kiro/default triggers not_authenticated."""
+        self.store.put("kiro", "api-key", "kiro-default-key")
+        result = self.launch(backend="kiro", profile="corp")
+        self.assertEqual(result["error"], "not_authenticated")
+        self.assertFalse(self.podman.was_called("container_create"))
+
+    def test_acp_profile_in_registry(self):
+        """After a successful launch, the registry entry has the correct acp_profile."""
+        self.store.put("kiro", "api-key", "kiro-key")
+        result = self.launch(backend="kiro", profile=None)  # default
+        self.assertNotIn("error", result)
+        # finish_setup was called with acp_profile="default"
+        self.assertEqual(self.finish_calls[-1]["acp_profile"], "default")
+
+    def test_crews_output_includes_acp_profile(self):
+        """crews() output includes acp_profile for each crew entry."""
+        self.crews.update({
+            "default-crew": {
+                "container": "gs-crew-def", "status": "stopped",
+                "acp_backend": "kiro", "acp_profile": "default",
+            },
+            "corp-crew": {
+                "container": "gs-crew-corp", "status": "stopped",
+                "acp_backend": "kiro", "acp_profile": "corp",
+            },
+            "legacy-crew": {
+                "container": "gs-crew-leg", "status": "stopped",
+                "acp_backend": "kiro",  # no acp_profile — legacy entry
+            },
+        })
+        with patch.object(self.tools, "_get_host_memory_gb_cached", return_value=None):
+            listed = {c["crew_id"]: c.get("acp_profile")
+                      for c in self.tools.crews()["crews"]}
+        self.assertEqual(listed["default-crew"], "default")
+        self.assertEqual(listed["corp-crew"], "corp")
+        self.assertEqual(listed["legacy-crew"], "default")  # legacy entry defaults to "default"
