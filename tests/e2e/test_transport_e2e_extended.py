@@ -322,6 +322,8 @@ class TestResponseSchemas(unittest.TestCase):
         "crew_id", "container", "status", "composition",
         "created_at", "gateway_healthy", "crew_image_version",
         "agents", "policy_version",
+        # TRN-252: multi-profile launch support
+        "acp_profile",
     }
 
     def test_launch_response_shape(self):
@@ -331,6 +333,10 @@ class TestResponseSchemas(unittest.TestCase):
         self.assertEqual(result.get("status"), "ready")
         self.assertIn("container", result)
         self.assertIn("gateway_url", result)
+        # TRN-252: acp_profile must be present and be a non-empty string
+        self.assertIn("acp_profile", result, "acp_profile missing from launch response")
+        self.assertIsInstance(result["acp_profile"], str)
+        self.assertTrue(result["acp_profile"], "acp_profile must be a non-empty string")
 
     def test_crews_response_shape(self):
         result = _mcp_call("crews")
@@ -410,7 +416,106 @@ class TestAuthExtended(unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
-# ── 6. Captain status on stopped crew ─────────────────────────────────────────
+# ── 6. Auth profiles endpoints (TRN-252) ─────────────────────────────────────
+#
+# Regression coverage: the three new GET /login/{backend}/profiles routes added
+# in TRN-252 must be reachable and return the documented shape. These are static
+# smoke tests — they don't require any profile to be stored, so an empty list
+# is the expected result on a fresh transport.
+
+
+@unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)
+class TestAuthProfilesEndpoints(unittest.TestCase):
+    """GET /login/{backend}/profiles is registered, returns 200 + {profiles: list}."""
+
+    def _headers(self) -> dict:
+        h = {}
+        if GHOSTSHIP_API_KEY:
+            h["Authorization"] = f"Bearer {GHOSTSHIP_API_KEY}"
+        return h
+
+    def _get_profiles(self, backend: str) -> httpx.Response:
+        return httpx.get(
+            f"{GHOSTSHIP_E2E_URL}/login/{backend}/profiles",
+            headers=self._headers(),
+            timeout=10.0,
+        )
+
+    def test_kiro_profiles_route_returns_200(self):
+        resp = self._get_profiles("kiro")
+        self.assertEqual(resp.status_code, 200, f"GET /login/kiro/profiles: {resp.text[:200]}")
+
+    def test_kiro_profiles_response_shape(self):
+        resp = self._get_profiles("kiro")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("profiles", data, f"Missing 'profiles' key: {data}")
+        self.assertIsInstance(data["profiles"], list, f"Expected list: {data['profiles']!r}")
+
+    def test_claude_profiles_route_returns_200(self):
+        resp = self._get_profiles("claude")
+        self.assertEqual(resp.status_code, 200, f"GET /login/claude/profiles: {resp.text[:200]}")
+
+    def test_claude_profiles_response_shape(self):
+        resp = self._get_profiles("claude")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("profiles", data)
+        self.assertIsInstance(data["profiles"], list)
+
+    def test_codex_profiles_route_returns_200(self):
+        resp = self._get_profiles("codex")
+        self.assertEqual(resp.status_code, 200, f"GET /login/codex/profiles: {resp.text[:200]}")
+
+    def test_codex_profiles_response_shape(self):
+        resp = self._get_profiles("codex")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("profiles", data)
+        self.assertIsInstance(data["profiles"], list)
+
+    def test_profiles_list_is_sorted(self):
+        """Any profiles that exist must be returned in sorted order."""
+        for backend in ("kiro", "claude", "codex"):
+            resp = self._get_profiles(backend)
+            if resp.status_code != 200:
+                continue
+            profiles = resp.json().get("profiles", [])
+            self.assertEqual(
+                profiles,
+                sorted(profiles),
+                f"/login/{backend}/profiles not sorted: {profiles}",
+            )
+
+
+@unittest.skipUnless(
+    GHOSTSHIP_E2E_URL and GHOSTSHIP_API_KEY,
+    "GHOSTSHIP_E2E_URL and GHOSTSHIP_API_KEY both required",
+)
+class TestAuthProfilesWithApiKey(unittest.TestCase):
+    """GET /login/{backend}/profiles requires auth in keyed deployments."""
+
+    def _unauthed_get(self, backend: str) -> httpx.Response:
+        return httpx.get(
+            f"{GHOSTSHIP_E2E_URL}/login/{backend}/profiles",
+            headers={"Content-Type": "application/json"},
+            timeout=10.0,
+        )
+
+    def test_kiro_profiles_requires_auth(self):
+        resp = self._unauthed_get("kiro")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_claude_profiles_requires_auth(self):
+        resp = self._unauthed_get("claude")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_codex_profiles_requires_auth(self):
+        resp = self._unauthed_get("codex")
+        self.assertEqual(resp.status_code, 401)
+
+
+# ── 7. Captain status on stopped crew ─────────────────────────────────────────
 
 
 @unittest.skipUnless(_TRANSPORT_REACHABLE, _SKIP_REASON)

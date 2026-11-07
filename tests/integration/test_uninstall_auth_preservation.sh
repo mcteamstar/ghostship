@@ -121,4 +121,44 @@ else
   echo "    output: ${SANDBOX_OUTPUT}"
 fi
 
+# ── Test 5: multi-profile layout (TRN-252) is preserved without --purge-auth ──
+# After TRN-252 the credential store uses credentials/<backend>/<profile>.json.
+# Uninstall.sh preserves the entire credentials/ directory by excluding it from
+# the data-dir wipe; verify that the new sub-directory layout survives too.
+echo ""
+echo "--- Test 5: multi-profile layout preserved without --purge-auth ---"
+sandbox_setup
+# Seed the new per-profile layout with two profiles.
+_CREDS="${SANDBOX_HOME}/.local/share/${MACHINE}/data/credentials"
+mkdir -p "${_CREDS}/kiro"
+echo '{"backend":"kiro","method":"api-key","stored_at":"t","provider":null,"payload":""}' \
+  > "${_CREDS}/kiro/default.json"
+echo '{"backend":"kiro","method":"api-key","stored_at":"t","provider":null,"payload":""}' \
+  > "${_CREDS}/kiro/corp.json"
+echo "fake-crews" > "${SANDBOX_HOME}/.local/share/${MACHINE}/data/crews.json"
+sandbox_run_script "$UNINSTALL" --yes
+if [[ -f "${_CREDS}/kiro/default.json" && -f "${_CREDS}/kiro/corp.json" ]]; then
+  pass "multi-profile credentials/ preserved without --purge-auth"
+else
+  fail "multi-profile credentials/ was destroyed without --purge-auth"
+  echo "    output: ${SANDBOX_OUTPUT}"
+fi
+
+# ── Test 6: multi-profile layout removed by --purge-auth ──────────────────────
+echo ""
+echo "--- Test 6: multi-profile layout removed by --purge-auth ---"
+sandbox_setup
+_CREDS="${SANDBOX_HOME}/.local/share/${MACHINE}/data/credentials"
+mkdir -p "${_CREDS}/kiro" "${_CREDS}/claude"
+echo '{}' > "${_CREDS}/kiro/default.json"
+echo '{}' > "${_CREDS}/kiro/corp.json"
+echo '{}' > "${_CREDS}/claude/default.json"
+sandbox_run_script "$UNINSTALL" --yes --purge-auth
+if [[ ! -d "${_CREDS}" ]]; then
+  pass "multi-profile credentials/ tree removed by --purge-auth"
+else
+  fail "multi-profile credentials/ survived --purge-auth"
+  echo "    output: ${SANDBOX_OUTPUT}"
+fi
+
 sandbox_report
