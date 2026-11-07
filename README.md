@@ -74,11 +74,13 @@ Then authenticate each enabled backend (the wizard offers this automatically):
 
 ```bash
 ghostship auth login kiro      # or: claude, codex
-ghostship auth status          # see what is configured
+ghostship auth login kiro --profile corp  # optional: store a named profile
+ghostship auth status          # see all configured profiles per backend
 ```
 
 Credentials are stored by the transport and managed with `ghostship auth
-login|logout|status` — they are no longer set in the config file.
+login|logout|status` — they are no longer set in the config file. Each backend
+supports multiple named profiles; see [docs/auth.md](docs/auth.md) for details.
 
 Full install options — API keys, client-only installs, remote deployments, repeatable config: [docs/configuration.md](docs/configuration.md).
 

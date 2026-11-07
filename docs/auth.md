@@ -5,17 +5,19 @@
 All backend auth is driven by one CLI:
 
 ```bash
-ghostship auth login <backend>    # store or replace a credential (kiro|claude|codex)
-ghostship auth logout <backend>   # cancel any pending login and clear the stored credential
-ghostship auth status             # show what is configured for every backend
+ghostship auth login <backend>                    # store a credential (kiro|claude|codex)
+ghostship auth login <backend> --profile <name>   # store under a named profile
+ghostship auth logout <backend>                   # clear the default profile's credential
+ghostship auth logout <backend> --profile <name>  # clear a specific named profile
+ghostship auth status                             # show all profiles for every backend
 ```
 
-Credentials live in `DATA_DIR/credentials/` and are resolved per crew launch — not in the config file.
+Credentials live in `DATA_DIR/credentials/<backend>/<profile>.json` and are resolved per crew launch — not in the config file.
 
 - `login` presents a numbered method menu per backend (or pass `--method`).
 - Secrets are read from a hidden terminal prompt or stdin — never appear in `argv` or output.
 - The transport URL and bearer key are **discovered automatically** from the installed containers (Podman inspect). Override with `--url` / `--api-key`, or `GHOSTSHIP_URL` / `GHOSTSHIP_API_KEY` env vars.
-- `ghostship auth logout <backend>` cancels any pending login and clears the stored credential. It does not touch running crews — relaunch or nuke to drop a crew's credential.
+- `ghostship auth logout <backend>` cancels any pending login and clears the credential. It does not touch running crews — relaunch or nuke to drop a crew's credential.
 
 Per-backend methods:
 
@@ -25,7 +27,32 @@ Per-backend methods:
 | claude  | `oauth` (Pro/Max), `api-key`, `setup-token` |
 | codex   | `chatgpt` (ChatGPT sign-in), `api-key` |
 
-> **Credential management:** one active credential per backend. Logging in with a new method replaces the previous one. Non-secret backend base URLs (`backends.<b>.base_url`) can be set in `config/ghostship.yaml`.
+> **Credential profiles:** each backend supports multiple named credential profiles (e.g. `default`, `corp`). When `--profile` is omitted, the `default` profile is used. The name `default` is reserved — it is written internally by the implicit fallback and migration path and cannot be specified explicitly. Non-secret backend base URLs (`backends.<b>.base_url`) can be set in `config/ghostship.yaml`.
+
+### Named profiles
+
+Multiple credentials can coexist under one backend, useful for different AWS accounts, billing contexts, or org identities:
+
+```bash
+# Store a personal kiro credential (default profile)
+ghostship auth login kiro
+
+# Store a corporate kiro credential under a named profile
+ghostship auth login kiro --profile corp
+
+# Launch a crew using the corp profile
+ghostship auth status   # shows all profiles; use the MCP launch tool with profile="corp"
+
+# Remove just the corp profile
+ghostship auth logout kiro --profile corp
+```
+
+Profile resolution at `launch` time:
+1. If `profile` is explicitly specified → use it.
+2. If only one profile exists for the backend → use it implicitly.
+3. Otherwise → use `default`.
+
+If the resolved profile has no stored credential, the backend's auth flow is initiated.
 
 ## Kiro auth
 
@@ -77,10 +104,11 @@ UNAUTHENTICATED  ──[POST /login/kiro/builder-id]──►  PENDING  ──[G
                 ◄──────────────────────────────────────[POST /logout/kiro]────────────────────────────────────────┘
 ```
 
-- **`POST /login/kiro/builder-id`** / **`POST /login/kiro/identity-center`** — starts the flow, returns `login_url` and `code`.
-- **`POST /login/kiro/api-key`** — stores a pasted API key.
-- **`GET /login/kiro`** — polls completion. On success writes auth and returns `complete`.
-- **`POST /logout/kiro`** — cancels any pending flow, removes the credential. Idempotent. Running crews unaffected.
+- **`POST /login/kiro/builder-id`** / **`POST /login/kiro/identity-center`** — starts the flow, returns `login_url` and `code`. Optional `profile` field in JSON body (default: `"default"`).
+- **`POST /login/kiro/api-key`** — stores a pasted API key. Optional `profile` field in JSON body.
+- **`GET /login/kiro`** — polls completion. Optional `?profile=<name>` query param. On success writes auth and returns `complete`.
+- **`GET /login/kiro/profiles`** — returns `{"profiles": [...]}`, sorted list of stored profile names.
+- **`POST /logout/kiro`** — cancels any pending flow, removes the credential. Optional `?profile=<name>` query param (default: `"default"`). Idempotent. Running crews unaffected.
 
 ---
 
@@ -122,12 +150,13 @@ UNAUTHENTICATED  ──[POST /login/claude/oauth]──►  PENDING  ──[POST
                ◄──────────────────────────────────────────────────[POST /logout/claude]──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **`POST /login/claude/oauth`** — starts the OAuth flow. Returns `{"login_url": "..."}`. Returns 409 if a flow is already in progress.
+- **`POST /login/claude/oauth`** — starts the OAuth flow. Returns `{"login_url": "..."}`. Returns 409 if a flow is already in progress. Optional `profile` field in JSON body.
 - **`POST /login/claude/oauth/code`** — body `{"code": "<code>#<state>"}`. Returns 202. The code is never logged.
-- **`POST /login/claude/api-key`** — stores a pasted Anthropic API key.
-- **`POST /login/claude/setup-token`** — stores a pasted claude setup-token.
-- **`GET /login/claude`** — polls completion. Returns `complete` / `pending` / `410 expired`.
-- **`POST /logout/claude`** — cancels pending flow, removes credential. Idempotent. Running crews unaffected.
+- **`POST /login/claude/api-key`** — stores a pasted Anthropic API key. Optional `profile` field in JSON body.
+- **`POST /login/claude/setup-token`** — stores a pasted claude setup-token. Optional `profile` field in JSON body.
+- **`GET /login/claude`** — polls completion. Optional `?profile=<name>` query param. Returns `complete` / `pending` / `410 expired`.
+- **`GET /login/claude/profiles`** — returns `{"profiles": [...]}`, sorted list of stored profile names.
+- **`POST /logout/claude`** — cancels pending flow, removes credential. Optional `?profile=<name>` query param (default: `"default"`). Idempotent. Running crews unaffected.
 
 ---
 
@@ -152,9 +181,10 @@ UNAUTHENTICATED  ──[POST /login/codex]──►  PENDING  ──[GET /login/
               ◄──────────────────────────────────────[POST /logout/codex]───────────────────────────────┘
 ```
 
-- **`POST /login/codex`** — starts the OAuth flow. Returns `{"status": "pending", "login_url": "..."}`.
-- **`GET /login/codex`** — polls completion. Returns `complete` / `pending`.
-- **`POST /logout/codex`** — cancels pending flow, removes credential. Idempotent. Running crews unaffected.
+- **`POST /login/codex`** — starts the OAuth flow. Returns `{"status": "pending", "login_url": "..."}`. Optional `profile` field in JSON body.
+- **`GET /login/codex`** — polls completion. Optional `?profile=<name>` query param. Returns `complete` / `pending`.
+- **`GET /login/codex/profiles`** — returns `{"profiles": [...]}`, sorted list of stored profile names.
+- **`POST /logout/codex`** — cancels pending flow, removes credential. Optional `?profile=<name>` query param (default: `"default"`). Idempotent. Running crews unaffected.
 
 ---
 

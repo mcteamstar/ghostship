@@ -811,6 +811,13 @@ def launch(
                  launch returns backend_not_enabled with the enabled list. The
                  crew keeps this backend for its whole life, including restarts;
                  authentication uses that backend's stored credential.
+        profile: Named credential profile for this crew's backend (e.g. "corp").
+                 Selects which stored credential to use when a backend has
+                 multiple profiles. Omit (or pass None) to use implicit
+                 resolution: if exactly one profile exists for the backend it is
+                 used automatically; otherwise "default" is used. The resolved
+                 profile is recorded in the crew registry as acp_profile and
+                 used to scope post-login credential injection.
 
     Returns crew_id and status once the gateway is ready (~60s).
     """

@@ -877,9 +877,12 @@ def auth_login(args: list) -> int:
             print("\nerror: invalid choice", file=sys.stderr)
             return 1
 
-    # Check current credential state and warn if replacing
+    # Check current credential state and warn if replacing.
+    # Query the target profile — a named profile being added doesn't conflict
+    # with credentials stored under a different profile.
     try:
-        status_resp = _http_json(f"{base_url}/login/{backend}", "GET", api_key=api_key)
+        _check_url = f"{base_url}/login/{backend}" if profile == "default" else f"{base_url}/login/{backend}?profile={profile}"
+        status_resp = _http_json(_check_url, "GET", api_key=api_key)
         if status_resp.get("configured"):
             current_method = status_resp.get("method", "unknown")
             if not yes:
@@ -1160,19 +1163,21 @@ def auth_status(args: list) -> int:
         return 0
 
     # Human-readable output: one backend section, one indented line per profile.
+    # Only show profiles that are actually configured — absence is self-explanatory.
     for backend in _VALID_BACKENDS:
-        print(f"\n{backend}")
         backend_profiles = results.get(backend, {})
-        if not backend_profiles:
-            print("  (no profiles)")
+        configured_profiles = {
+            p: info for p, info in backend_profiles.items() if info.get("configured")
+        }
+        if not configured_profiles:
             continue
-        for p, info in sorted(backend_profiles.items()):
-            configured = "yes" if info.get("configured") else "no"
-            method = info.get("method") or "not configured"
+        print(f"\n{backend}")
+        for p, info in sorted(configured_profiles.items()):
+            method = info.get("method") or "unknown"
             stored_at = info.get("stored_at") or ""
             if stored_at and "T" in stored_at:
                 stored_at = stored_at.split("T")[0]
-            print(f"  [{p}]  configured={configured}  method={method}  stored_at={stored_at}")
+            print(f"  {p:<20}  {method:<20}  {stored_at}")
     return 0
 
 

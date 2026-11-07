@@ -2,6 +2,22 @@
 
 ## v0.12.0
 
+### Named credential profiles per backend (TRN-252)
+
+Multiple credentials can now coexist under a single backend using named profiles:
+
+```bash
+ghostship auth login kiro --profile corp        # store a second kiro credential
+ghostship auth status                           # lists all profiles per backend
+ghostship auth logout kiro --profile corp       # remove only the corp profile
+```
+
+- Credentials are stored at `DATA_DIR/credentials/<backend>/<profile>.json`. Existing flat credentials (`credentials/<backend>.json`) are migrated to `credentials/<backend>/default.json` automatically on first access — no operator action required.
+- `launch` accepts an optional `profile` parameter. If omitted: single profile is used implicitly; otherwise `default` is used.
+- The crew registry records `acp_profile` per crew; post-login credential injection is scoped to matching-profile crews only.
+- New HTTP route `GET /login/<backend>/profiles` lists stored profile names.
+- The name `default` is reserved and cannot be supplied explicitly via `--profile`.
+
 ### Base image bump to KiroCrew v0.12.0 (TRN-299)
 
 - Crew image now extends `ghcr.io/kirodotdev/kirocrew:0.12.0` (multi-arch index
