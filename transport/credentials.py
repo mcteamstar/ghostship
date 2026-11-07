@@ -295,9 +295,18 @@ class CredentialStore:
         Scans ``credentials/<backend>/`` for ``.json`` files and returns their
         stems (filenames without the ``.json`` extension). Returns ``[]`` when
         the directory does not exist or is empty.
+
+        Triggers the flat-file migration for the ``"default"`` profile before
+        scanning, so that an install upgraded from the old single-file layout
+        (``credentials/<backend>.json``) returns ``["default"]`` rather than
+        ``[]`` on the first call to this method.
         """
         if backend not in SUPPORTED_METHODS:
             raise UnsupportedCredential(f"unknown backend {backend!r}")
+        # Trigger lazy migration so old-layout installs don't show an empty
+        # list the first time this is called (e.g. GET /login/{backend}/profiles
+        # before any get/put/delete call).
+        self._migrate_flat_file(backend)
         backend_dir = self._dir / backend
         if not backend_dir.is_dir():
             return []

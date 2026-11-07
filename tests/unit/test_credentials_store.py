@@ -250,6 +250,31 @@ class TestCredentialStore(unittest.TestCase):
         profiles = self.store.list_profiles("kiro")
         self.assertEqual(profiles, ["beta", "corp", "default"])
 
+    def test_list_profiles_triggers_migration(self):
+        """list_profiles must trigger flat-file migration so old-layout installs
+        return ['default'] on the first call (e.g. GET /login/{backend}/profiles
+        before any get/put/delete call)."""
+        import json, base64 as _b64
+        cred_dir = Path(self.store._dir)
+        cred_dir.mkdir(parents=True, exist_ok=True)
+        flat_file = cred_dir / "kiro.json"
+        flat_file.write_text(json.dumps({
+            "backend": "kiro", "method": "api-key",
+            "stored_at": "2026-01-01T00:00:00+00:00",
+            "provider": None,
+            "payload": _b64.b64encode(b"old-secret").decode(),
+        }))
+        # No get/delete/status call before list_profiles — migration must
+        # still happen inside list_profiles itself.
+        profiles = self.store.list_profiles("kiro")
+        self.assertEqual(profiles, ["default"],
+                         "list_profiles must trigger migration and return ['default']")
+        self.assertFalse(flat_file.exists(),
+                         "old flat file must be gone after migration")
+        profile_file = cred_dir / "kiro" / "default.json"
+        self.assertTrue(profile_file.exists(),
+                        "default.json must exist in per-backend dir after migration")
+
     def test_list_profiles_empty(self):
         """list_profiles returns [] when no profiles exist."""
         profiles = self.store.list_profiles("claude")
