@@ -681,12 +681,6 @@ class TestModelPrecedence(unittest.TestCase):
             self.life._resolve_backend_default_model("kiro"), "fallback"
         )
 
-    def test_default_model_written_only_when_nonempty(self):
-        # When the resolved fallback is empty, the transport must NOT write
-        # agent.default_model (leaving KiroCrew's built-in intact). The
-        # resolver returning "" is what the lifecycle guard keys on.
-        self._set()
-        self.assertEqual(self.life._resolve_backend_default_model("codex"), "")
 
 
 if __name__ == "__main__":
@@ -735,12 +729,12 @@ class TestPatchFollowsCrewBackend(unittest.TestCase):
     def test_kiro_crew_under_claude_default(self):
         agent = self._agent_overrides("kiro")
         self.assertNotIn("acp_backend", agent)
-        self.assertEqual(agent["default_model"], "kiro-default")
+        self.assertEqual(agent["model"], "kiro-default")
 
     def test_claude_crew(self):
         agent = self._agent_overrides("claude")
         self.assertEqual(agent["acp_backend"], "claude")
-        self.assertEqual(agent["default_model"], "claude-default")
+        self.assertEqual(agent["model"], "claude-default")
 
     def test_codex_requires_sandbox_credential_mask(self):
         agent = self._agent_overrides("codex")
@@ -752,6 +746,19 @@ class TestPatchFollowsCrewBackend(unittest.TestCase):
         agent = self._agent_overrides("kiro")
         self.assertEqual(agent["sandbox"], "off")
         self.assertTrue(agent["sandbox_allow_unsandboxed_exec"])
+
+    def test_model_fallback_payload_for_each_backend(self):
+        for backend in ("kiro", "claude", "codex"):
+            for local, global_model, expected in (
+                ("backend-choice", "global-choice", "backend-choice"),
+                ("", "global-choice", "global-choice"),
+                ("", "", "auto"),
+            ):
+                with self.subTest(backend=backend, local=local, global_model=global_model):
+                    with patch.dict(self.life._KC_MODEL_BACKEND_DEFAULT, {backend: local}, clear=True), patch.object(self.life, "KC_MODEL_DEFAULT", global_model):
+                        agent = self._agent_overrides(backend)
+                    self.assertEqual(agent["model"], expected)
+                    self.assertNotIn("default_model", agent)
 
     def test_patch_models_uses_crew_backend(self):
         rec = _ExecRecorder()

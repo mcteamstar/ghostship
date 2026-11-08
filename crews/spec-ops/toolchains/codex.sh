@@ -1,7 +1,7 @@
 #!/bin/sh
 # Codex agent toolchain. Run by the spec-ops image build when "codex" is in
 # AGENT_TOOLCHAINS (from GA_AGENT_BACKENDS). Installs ONE package:
-#   @agentclientprotocol/codex-acp@1.12.0 — the ACP server binary that
+#   @agentclientprotocol/codex-acp@2.5.0 — the ACP server binary that
 #     KiroCrew's AcpClient spawns for acp_backend="codex" sessions.
 #
 # The adapter includes a compatible Codex CLI dependency. Expose that exact
@@ -20,7 +20,7 @@
 #     container's ~/.codex/ at launch.
 # OPENAI_BASE_URL redirects codex-acp to an OpenAI-compatible endpoint.
 set -eu
-npm install -g @agentclientprotocol/codex-acp@1.12.0
+npm install -g @agentclientprotocol/codex-acp@2.5.0
 
 ln -sf "$(npm root -g)/@agentclientprotocol/codex-acp/node_modules/.bin/codex" /usr/local/bin/codex
 codex --version

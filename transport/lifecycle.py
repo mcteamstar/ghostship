@@ -247,10 +247,10 @@ def _resolve_backend_default_model(backend: str) -> str:
 
     Applies the lower half of the TRN-257 precedence chain:
       backends.<b>.model.default > model.default > "" (KiroCrew built-in)
-    The caller writes the result as ``agent.default_model`` only when non-empty,
-    leaving KiroCrew's built-in default intact otherwise. A per-agent model in a
-    persona file still wins over this (the gateway treats default_model as a
-    fallback), as does a per-backend override resolved separately.
+    The caller writes the result as ``agent.model``, or ``auto`` when empty,
+    leaving model selection to KiroCrew/the harness when nothing is pinned.
+    A persona model still wins over this fallback, as does a per-backend
+    override resolved separately.
     """
     return _KC_MODEL_BACKEND_DEFAULT.get(backend, "") or KC_MODEL_DEFAULT
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
@@ -1722,18 +1722,9 @@ def _patch_crew_config(
         agent_overrides["acp_backend"] = "codex"
         agent_overrides["sandbox"] = "auto"
         agent_overrides["sandbox_allow_unsandboxed_exec"] = False
-    # agent.default_model — the fallback model applied when no per-agent model
-    # field overrides it. TRN-257 resolves it per backend:
-    #   backends.<b>.model.default > model.default > KiroCrew built-in
-    # Full precedence chain (high→low):
-    #   dispatch(model=) > backends.<b>.model.override > per-agent model
-    #     > backends.<b>.model.default > model.default > KiroCrew built-in
-    # The per-backend override (if any) is applied separately as a hard patch in
-    # _patch_models. Only write default_model when the resolved fallback is
-    # non-empty; omitting it leaves KiroCrew's built-in default intact.
-    _default_model = _resolve_backend_default_model(backend)
-    if _default_model:
-        agent_overrides["default_model"] = _default_model
+    # KiroCrew consumes agent.model as its global fallback, below persona pins.
+    # Always write auto when unset so reapplying config clears an earlier pin.
+    agent_overrides["model"] = _resolve_backend_default_model(backend) or "auto"
 
     # Build the full config override structure passed to patch_crew_config.py.
     # The script deep-merges every top-level key into config.local.json, so

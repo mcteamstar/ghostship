@@ -9,7 +9,9 @@ Args (argv):
     2. model      — the model value to write
 
 Skips ``._`` AppleDouble files and any agent already set to the target
-model, ``auto``, or with no explicit model. Prints ``patched: [names]``.
+model. An operator override also applies to personas with no model or
+``auto`` so backend-neutral personas still honor model locks. Prints
+``patched: [names]``.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ def patch_models(agents_dir: str, model: str) -> list[str]:
         if not p.exists() or p.name.startswith("._"):
             continue
         data = json.loads(p.read_text())
-        if data.get("model") in (model, "auto", None):
+        if data.get("model") == model:
             continue
         p.write_text(json.dumps({**data, "model": model}, indent=2))
         patched.append(p.name)

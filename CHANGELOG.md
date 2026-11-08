@@ -2,6 +2,21 @@
 
 ## v0.12.1
 
+### Fix configured model fallbacks (TRN-313)
+
+- Write backend/global model fallbacks to KiroCrew's supported `agent.model`
+  field, preserving persona, backend-override and dispatch precedence.
+- Remove the obsolete generated `agent.default_model` field and restore `auto`
+  inheritance when a configured fallback is cleared.
+- Keep shipped model defaults empty and remove model pins from the six shipped
+  personas, allowing backend/global fallback or harness selection. Apply operator
+  model overrides to unpinned personas as well.
+- Add migration tests and disposable-image checks against the actual pinned
+  KiroCrew loader and resolver across Kiro, Claude and Codex namespaces.
+
+- Upgrade Codex ACP to 2.5.0 with its bundled CLI to match KiroCrew’s tested
+  adapter family and expose current model discovery.
+
 ### Restore Codex authentication and execution (TRN-312)
 
 - Expose the Codex CLI bundled with the ACP adapter on PATH and use

@@ -12,7 +12,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_MAX_CREWS` | `20` | Maximum registered crews (running + stopped). Stopped crews cost no memory; this is a housekeeping limit. |
 | `GA_MAX_ACTIVE_CREWS` | `3` | Maximum simultaneously running crews. Enforced on restart — if the running count equals this limit, restart is refused until another crew idles out. Values ≤ 0 all disable the limit. At ~2–3 GB per running crew, the default of 3 fits an 8 GB host. |
 | `GA_IDLE_TIMEOUT_SECS` | `300` | Seconds idle before the container is stopped. |
-| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `default_model` in `config.local.json` — the **lowest**-precedence level, used only when no per-agent and no per-backend model is set. Set via `--model-default`. There is no global override; use the per-backend `KC_MODEL_<B>_OVERRIDE` vars instead. See [Model precedence](#model-precedence). |
+| `KC_MODEL_DEFAULT` | _(unset)_ | Global model fallback written as `agent.model` in `config.local.json` — the **lowest**-precedence level, used only when no per-agent and no per-backend model is set. Set via `--model-default`. There is no global override; use the per-backend `KC_MODEL_<B>_OVERRIDE` vars instead. See [Model precedence](#model-precedence). |
 | `KC_MODEL_<B>_OVERRIDE` | _(unset)_ | Per-backend model lock for backend `<B>` ∈ {`KIRO`, `CLAUDE`, `CODEX`}, from `backends.<b>.model.override`. Forces every agent on that backend to the named model, overriding per-agent config. Beaten only by a dispatch-time `model=`. |
 | `KC_MODEL_<B>_DEFAULT` | _(unset)_ | Per-backend fallback model for backend `<B>`, from `backends.<b>.model.default`. Used when an agent on that backend has no per-agent model; more specific than `KC_MODEL_DEFAULT`. |
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. On Linux uses host uid (`id -u`); on macOS uses the `podman machine` guest uid (`podman machine ssh -- id -u`), which may differ. |
@@ -95,7 +95,7 @@ dispatch(model=…)            # 1. per-call, always wins
        └─ per-agent model          # 3. the agent persona's own model field
             └─ backends.<b>.model.default   # 4. per-backend fallback
                  └─ model.default            # 5. global fallback
-                      └─ built-in default    # 6. KiroCrew's own default
+                      └─ built-in default    # 6. harness-selected default
 ```
 
 Each level, and when to reach for it:
@@ -115,12 +115,31 @@ Each level, and when to reach for it:
 5. **`model.default`** (`KC_MODEL_DEFAULT`, also `--model-default`) — the global
    fallback, applied when neither a per-backend default nor a per-agent field is
    set. The one knob that spans every backend.
-6. **KiroCrew built-in default** — used when nothing above is set.
+6. **Harness-selected default** — KiroCrew delegates to the harness when nothing above pins a model. This does not promise task-sensitive automatic routing.
 
 Within the transport, levels 2 and 4–6 are what the installer/transport resolve
 from config: the override (level 2) is hard-patched into every agent file, and
-the fallback (levels 4→5→6) is written as `default_model` only when it resolves
-to a non-empty value. Levels 1 and 3 are applied by the gateway at dispatch time.
+the fallback (levels 4→5→6) is written as `agent.model` in the generated crew
+configuration. Empty backend/global defaults write the KiroCrew `auto` sentinel,
+so clearing a previous fallback restores inheritance. Reapplying configuration
+also removes the obsolete generated `agent.default_model` field. Levels 1 and 3
+are applied by the gateway at dispatch time.
+
+All shipped model defaults are `""` (unset), and the six shipped personas omit
+their `model` field so they inherit the configured backend/global fallback or
+harness-selected default. Operator backend overrides also apply to unpinned
+personas. `backends.default` chooses the
+**agent harness**, whereas `backends.<b>.model.default` chooses that harness’s
+configured **model fallback**. A model default does not override a persona pin;
+use `backends.<b>.model.override` for an operator-level model lock.
+
+Model availability is a later decision. KiroCrew applies namespace and
+advertised-model checks; if a selected pin is unavailable, it can leave the
+session on the harness-selected default. That does not restart Ghostship’s
+precedence ladder or guarantee the configured fallback will be retried. Inspect
+the session’s actual model when verifying execution, rather than inferring it
+from the requested persona model. Existing running sessions may retain their
+selection until a new session or process starts after configuration is reapplied.
 
 > **No global override.**
 > no one model is reachable across backends with different model namespaces
