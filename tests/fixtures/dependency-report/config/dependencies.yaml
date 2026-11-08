@@ -1,0 +1,44 @@
+schema_version: 1
+review_cadence_days: 30
+review_owner: Fixture maintainers
+components:
+  - id: update-candidate
+    name: Demo package
+    category: runtime
+    declarations: [{kind: npm, path: toolchains.sh, package: demo-pkg}]
+    source: {type: npm, package: demo-pkg}
+    version_policy: Exact fixture pin.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Fixture maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: fixture}
+  - id: overdue-review
+    name: Old package
+    category: runtime
+    declarations: [{kind: requirement, path: requirements.txt, package: oldlib}]
+    source: {type: pypi, package: oldlib}
+    version_policy: Exact fixture pin.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Fixture maintainers, last_reviewed: 2026-09-01, outcome: deferred, next_review: 2026-10-01, evidence: fixture}
+  - id: unsupported
+    name: Codex adapter fixture
+    category: adapter
+    declarations: [{kind: npm, path: toolchains.sh, package: '@agentclientprotocol/codex-acp'}]
+    source: {type: npm, package: '@agentclientprotocol/codex-acp'}
+    version_policy: Exact fixture pin.
+    compatibility: {status: unsupported, evidence: Model catalogue fixture gap.}
+    review: {owner: Fixture maintainers, last_reviewed: 2026-11-08, outcome: compatibility-unsupported, next_review: 2026-12-08, evidence: fixture}
+  - id: lookup-failure
+    name: Package with failed lookup
+    category: runtime
+    declarations: [{kind: requirement, path: requirements.txt, package: brokenlib}]
+    source: {type: pypi, package: brokenlib}
+    version_policy: Exact fixture pin.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Fixture maintainers, last_reviewed: 2026-11-08, outcome: lookup-unknown, next_review: 2026-12-08, evidence: fixture}
+  - id: manual-unknown
+    name: Inherited host image packages
+    category: inherited OS inputs
+    declarations: [{kind: manual, path: README.md, term: Host image inspection pending}]
+    source: {type: manual}
+    version_policy: Installed versions need image inspection.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Fixture maintainers, last_reviewed: 2026-11-08, outcome: installed-versions-unknown, next_review: 2026-12-08, evidence: fixture}

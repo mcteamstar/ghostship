@@ -1,0 +1,336 @@
+schema_version: 1
+review_cadence_days: 30
+review_owner: Ghostship maintainers
+components:
+  - id: kirocrew-image
+    name: KiroCrew base image
+    category: inherited image
+    declarations:
+      - {kind: image_arg, path: crews/_base/admission/Containerfile, name: KC_BASE_IMAGE}
+      - {kind: python_image_default, path: transport/config.py, name: kc_base_image}
+      - {kind: manual, path: config/ghostship.yaml.example, term: 'kc_base_image:'}
+      - {kind: manual, path: bin/lib/install_main.py, term: KC_BASE_IMAGE}
+    source: {type: github_release, repository: kirodotdev/KiroCrew}
+    version_policy: Immutable GHCR digest pin. GitHub release tags are candidates only; correlate each release with the published image digest before an upgrade.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+    notes: No image build or installed-version inspection was performed for this inventory.
+  - id: kiro-cli
+    name: Kiro CLI bundled in KiroCrew
+    category: derived component
+    declarations: [{kind: derived, path: crews/_base/admission/Containerfile, parents: [kirocrew-image]}]
+    source: {type: derived, parent: kirocrew-image}
+    version_policy: Inherited; installed resolution unknown until image inspection.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: installed-resolution-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+    notes: A Containerfile comment reports 2.27.1 from a 2026-11-05 static layer inspection; this is not a current-workspace or current-built-image observation.
+  - id: codex-acp
+    name: Codex ACP adapter
+    category: agent adapter
+    declarations: [{kind: npm, path: crews/spec-ops/toolchains/codex.sh, package: '@agentclientprotocol/codex-acp'}]
+    source: {type: npm, package: '@agentclientprotocol/codex-acp'}
+    version_policy: Exact npm pin; upgrade with its bundled Codex CLI.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: codex-cli
+    name: Codex CLI supplied by Codex ACP
+    category: derived component
+    declarations: [{kind: derived, path: crews/spec-ops/toolchains/codex.sh, parents: [codex-acp]}]
+    source: {type: derived, parent: codex-acp}
+    version_policy: Adapter-supplied; installed resolution unknown. Do not install a separate CLI version.
+    compatibility: {status: unsupported, evidence: 'Known initial finding: adapter model catalogue does not cover the model set advertised by KiroCrew. Verify model support, discovery and an actual-model fresh-crew turn before release.'}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: compatibility-unsupported, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: claude-agent-acp
+    name: Claude ACP adapter
+    category: agent adapter
+    declarations: [{kind: npm, path: crews/spec-ops/toolchains/claude.sh, package: '@agentclientprotocol/claude-agent-acp'}]
+    source: {type: npm, package: '@agentclientprotocol/claude-agent-acp'}
+    version_policy: Exact npm pin; review with Claude Code.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: claude-code
+    name: Claude Code CLI
+    category: agent CLI
+    declarations: [{kind: npm, path: crews/spec-ops/toolchains/claude.sh, package: '@anthropic-ai/claude-code'}]
+    source: {type: npm, package: '@anthropic-ai/claude-code'}
+    version_policy: Exact npm pin; coupled to Claude ACP.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: openspec-cli
+    name: OpenSpec CLI
+    category: development CLI
+    declarations: [{kind: npm, path: crews/spec-ops/Containerfile, package: '@fission-ai/openspec'}]
+    source: {type: npm, package: '@fission-ai/openspec'}
+    version_policy: Exact npm pin; match generated-skill compatibility.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: shared-agent-assets
+    name: Shared .agents assets
+    category: shared assets
+    declarations:
+      - {kind: git_ref, path: crews/spec-ops/Containerfile, name: shared-agent-assets}
+      - {kind: manual, path: config/ghostship.yaml.example, term: 'agents_ref:'}
+      - {kind: manual, path: bin/lib/install_main.py, term: AGENTS_REF}
+    source: {type: github_ref, repository: mcteamstar/.agents}
+    version_policy: Moving branch; installed commit unknown until image inspection.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: openspec-skills
+    name: Generated OpenSpec skills
+    category: derived component
+    declarations: [{kind: derived, path: crews/spec-ops/Containerfile, parents: [openspec-cli, shared-agent-assets]}]
+    source: {type: derived, parent: openspec-cli}
+    version_policy: Review the CLI and shared generated skills as a coupled pair.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: installed-resolution-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: nodejs-24
+    name: Node.js 24 stream and NodeSource installer
+    category: runtime and installer
+    declarations: [{kind: node_setup, path: crews/spec-ops/Containerfile, name: nodejs-24}]
+    source: {type: nodejs_release, major: 24}
+    version_policy: Node.js 24 LTS stream; setup-script SHA-256 is an independent integrity pin.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: python-transport-image
+    name: Transport Python image
+    category: runtime image
+    declarations: [{kind: container_from, path: transport/Containerfile, name: python}]
+    source: {type: dockerhub_image, repository: library/python, tag_regex: '^3\.12\.\d+-slim$'}
+    version_policy: Exact patch tag; registry tags may be republished.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: python-worker-image
+    name: Worker Python image
+    category: runtime image
+    declarations: [{kind: container_from, path: crews/_worker/Containerfile, name: python}]
+    source: {type: dockerhub_image, repository: library/python, tag_regex: '^3\.12\.\d+-slim$'}
+    version_policy: Exact patch tag; intended to share the transport image base.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: python-radar-image
+    name: Radar Python image
+    category: runtime image
+    declarations: [{kind: container_from, path: radar/Containerfile, name: python}]
+    source: {type: dockerhub_image, repository: library/python, tag_regex: '^3\.12(?:\.\d+)?-slim$'}
+    version_policy: Floating patch tag within Python 3.12.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: caddy-image
+    name: Caddy portal image
+    category: runtime image
+    declarations: [{kind: compose_image, path: bin/lib/compose.py, name: caddy}]
+    source: {type: dockerhub_image, repository: library/caddy, tag_regex: '^2(?:\.\d+){0,2}$'}
+    version_policy: Floating major tag; installed patch unknown.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: podman-host
+    name: Podman host prerequisite
+    category: host tool
+    declarations: [{kind: manual, path: README.md, term: 'Podman >= 4.4'}]
+    source: {type: github_release, repository: containers/podman}
+    version_policy: README minimum; actual host installation is environment-specific.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-only-host-version-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: podman-compose-host
+    name: podman-compose host prerequisite
+    category: host tool
+    declarations: [{kind: manual, path: README.md, term: podman-compose}]
+    source: {type: github_release, repository: containers/podman-compose}
+    version_policy: Host installation is environment-specific; README does not pin a version.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-only-host-version-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: action-checkout
+    name: GitHub Actions checkout
+    category: CI action
+    declarations:
+      - {kind: github_action, path: .github/workflows/test.yml, name: actions/checkout}
+      - {kind: github_action, path: .github/workflows/release-gate.yml, name: actions/checkout}
+    source: {type: github_release, repository: actions/checkout}
+    version_policy: Major branch ref; review action changes before modifying workflows.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: action-setup-python
+    name: GitHub Actions setup-python
+    category: CI action
+    declarations: [{kind: github_action, path: .github/workflows/test.yml, name: actions/setup-python}]
+    source: {type: github_release, repository: actions/setup-python}
+    version_policy: Major branch ref; Python runtime version is separately declared in workflow.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: ci-python-runtime
+    name: GitHub Actions Python runtime
+    category: CI runtime
+    declarations: [{kind: github_python_runtime, path: .github/workflows/test.yml, name: python}]
+    source: {type: manual}
+    version_policy: Python 3.12 stream requested; the runner resolves the patch version.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: runtime-patch-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: action-upload-artifact
+    name: GitHub Actions upload-artifact
+    category: CI action
+    declarations: [{kind: github_action, path: .github/workflows/test.yml, name: actions/upload-artifact}]
+    source: {type: github_release, repository: actions/upload-artifact}
+    version_policy: Major branch ref; review action changes before modifying workflows.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: os-base-admission
+    name: Base admission OS package group
+    category: grouped OS inputs
+    declarations: [{kind: apt_group, path: crews/_base/admission/Containerfile}]
+    source: {type: manual}
+    version_policy: Unversioned packages resolved by inherited distribution repositories; installed versions unknown.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: installed-packages-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: os-worker
+    name: Worker OS package group
+    category: grouped OS inputs
+    declarations: [{kind: apt_group, path: crews/_worker/Containerfile}]
+    source: {type: manual}
+    version_policy: Unversioned packages resolved by distribution repositories; installed versions unknown.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: installed-packages-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: os-spec-ops
+    name: Spec-ops OS package group
+    category: grouped OS inputs
+    declarations: [{kind: apt_group, path: crews/spec-ops/Containerfile}]
+    source: {type: manual}
+    version_policy: Unversioned packages resolved by distribution and NodeSource repositories; installed versions unknown.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: installed-packages-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: os-kirocrew-inherited
+    name: KiroCrew inherited OS package set
+    category: inherited OS inputs
+    declarations: [{kind: derived, path: crews/_base/admission/Containerfile, parents: [kirocrew-image]}]
+    source: {type: derived, parent: kirocrew-image}
+    version_policy: Inherited package set; inspect image for exact installed versions.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: installed-packages-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: os-python-inherited
+    name: Python image inherited OS package set
+    category: inherited OS inputs
+    declarations: [{kind: derived, path: transport/Containerfile, parents: [python-transport-image, python-worker-image, python-radar-image]}]
+    source: {type: derived, parent: python-transport-image}
+    version_policy: Inherited package set; inspect each image for exact installed versions.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: installed-packages-unknown, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+
+  - id: transport-mcp
+    name: mcp[cli] (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: 'mcp[cli]'}]
+    source: {type: pypi, package: mcp}
+    version_policy: Exact pin; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-httpx2
+    name: httpx2 (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: httpx2}]
+    source: {type: pypi, package: httpx2}
+    version_policy: Exact pin; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-websockets
+    name: websockets (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: websockets}]
+    source: {type: pypi, package: websockets}
+    version_policy: Bounded version range; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-croniter
+    name: croniter (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: croniter}]
+    source: {type: pypi, package: croniter}
+    version_policy: Exact pin; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-pyyaml
+    name: PyYAML (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: pyyaml}]
+    source: {type: pypi, package: pyyaml}
+    version_policy: Bounded version range; direct dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-starlette
+    name: Starlette (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: starlette}]
+    source: {type: pypi, package: starlette}
+    version_policy: Bounded version range; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-uvicorn
+    name: Uvicorn (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: uvicorn}]
+    source: {type: pypi, package: uvicorn}
+    version_policy: Bounded version range; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-pytest
+    name: pytest (transport tests)
+    category: Python test dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: pytest}]
+    source: {type: pypi, package: pytest}
+    version_policy: Test-only bounded version range.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-pytest-xdist
+    name: pytest-xdist (transport tests)
+    category: Python test dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: pytest-xdist}]
+    source: {type: pypi, package: pytest-xdist}
+    version_policy: Test-only bounded version range.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-pytest-cov
+    name: pytest-cov (transport tests)
+    category: Python test dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: pytest-cov}]
+    source: {type: pypi, package: pytest-cov}
+    version_policy: Test-only bounded version range.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: transport-cryptography
+    name: cryptography (transport)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: transport/requirements.txt, package: cryptography}]
+    source: {type: pypi, package: cryptography}
+    version_policy: Bounded version range; security-sensitive direct dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: radar-starlette
+    name: Starlette (radar)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: radar/requirements.txt, package: starlette}]
+    source: {type: pypi, package: starlette}
+    version_policy: Bounded version range; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: radar-httpx2
+    name: httpx2 (radar)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: radar/requirements.txt, package: httpx2}]
+    source: {type: pypi, package: httpx2}
+    version_policy: Exact pin; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: radar-uvicorn
+    name: Uvicorn (radar)
+    category: Python runtime dependency
+    declarations: [{kind: requirement, path: radar/requirements.txt, package: uvicorn}]
+    source: {type: pypi, package: uvicorn}
+    version_policy: Exact pin; direct runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
+  - id: cryptography-base
+    name: cryptography (base admission image)
+    category: Python runtime dependency
+    declarations: [{kind: pip_install, path: crews/_base/admission/Containerfile, package: cryptography}]
+    source: {type: pypi, package: cryptography}
+    version_policy: Exact pin; deterministic base-image runtime dependency.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}

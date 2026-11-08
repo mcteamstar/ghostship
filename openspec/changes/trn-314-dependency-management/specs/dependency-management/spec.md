@@ -20,7 +20,11 @@ Ghostship SHALL provide a manually invoked, read-only dependency check command s
 
 #### Scenario: Maintainer runs a check
 - **WHEN** a maintainer invokes the documented local command
-- **THEN** it prints candidates and review status for tracked components without scheduling future checks or publishing reports
+- **THEN** it prints candidates, compatibility status and recorded compatibility evidence, and review status for tracked components without scheduling future checks or publishing reports
+
+#### Scenario: Successful lookup has no matching candidate
+- **WHEN** an upstream lookup succeeds but returns no candidate matching the configured stable or prerelease policy
+- **THEN** the component is reported as having no matching candidate, distinct from a failed lookup, and the command remains complete unless another lookup failed or was truncated
 
 #### Scenario: Registry lookup fails
 - **WHEN** an upstream source cannot be queried
