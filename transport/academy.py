@@ -600,21 +600,25 @@ class AcademyLoader:
             )
 
     def _run_setup(self) -> None:
-        """Exec .agents/setup inside the crew container.
+        """Exec .agents/setup --yolo inside the crew container.
 
         A single call after all staging is complete wires skills, steering, and
         MCP to the native paths of every harness ``.agents/setup`` detects in
         the image, not only the crew's own backend. Harness detection is left
-        to ``.agents/setup``.  Non-zero exit is logged as
+        to ``.agents/setup``. YOLO applies the shared unattended harness settings;
+        KiroCrew runtime sandbox controls remain separate. Both setup confirmation
+        prompts are answered through stdin for unattended crew provisioning.
+        Non-zero exit is logged as
         a warning; crew launch continues so agents receive no academy wiring
         rather than failing to launch (per spec: graceful degradation).
         """
         try:
-            self._podman.container_exec(
+            self._podman.container_exec_stdin(
                 self._container,
-                [_AGENTS_SETUP],
+                [_AGENTS_SETUP, "--yolo"],
+                b"y\ny\n",
             )
-            logger.info("Ran .agents/setup in %s", self._container)
+            logger.info("Ran .agents/setup --yolo in %s", self._container)
         except Exception as e:
             logger.warning(
                 "AcademyLoader: .agents/setup failed in %s: %s — "

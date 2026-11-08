@@ -17,6 +17,7 @@ class _CapturePodman(FakePodmanClient):
         super().__init__()
         self.archives: list[tuple[str, str, bytes]] = []
         self.execs: list[tuple[str, list]] = []
+        self.stdin_execs: list[tuple[str, list, bytes]] = []
 
     def container_archive_put(self, name: str, workspace_path: str, tar_body: bytes) -> None:
         self.archives.append((name, workspace_path, tar_body))
@@ -25,6 +26,11 @@ class _CapturePodman(FakePodmanClient):
     def container_exec(self, name: str, cmd: list, env=None) -> str:
         self.execs.append((name, cmd))
         return super().container_exec(name, cmd, env)
+
+    def container_exec_stdin(self, name, cmd, stdin_data):
+        self.execs.append((name, cmd))
+        self.stdin_execs.append((name, cmd, stdin_data))
+        return "Done."
 
 
 def _archive_members(archive: bytes) -> dict[str, tuple[bytes, int]]:
@@ -295,8 +301,8 @@ def test_stage_mcp_no_mcp_servers_key(tmp_path: Path) -> None:
 
 # ── _run_setup tests ──────────────────────────────────────────────────────────
 
-def test_run_setup_calls_agents_setup_without_harness_arg() -> None:
-    """_run_setup execs bare .agents/setup so it wires every detected harness."""
+def test_run_setup_calls_agents_setup_with_yolo_without_harness_arg() -> None:
+    """Setup applies unattended settings to every detected harness."""
     import transport.academy as academy
 
     podman = _CapturePodman()
@@ -304,7 +310,8 @@ def test_run_setup_calls_agents_setup_without_harness_arg() -> None:
     loader._run_setup()
 
     exec_cmds = [cmd for _, cmd in podman.execs]
-    assert ["/home/kirocrew/.agents/setup"] in exec_cmds
+    assert ["/home/kirocrew/.agents/setup", "--yolo"] in exec_cmds
+    assert podman.stdin_execs == [("gs-test", ["/home/kirocrew/.agents/setup", "--yolo"], b"y\ny\n")]
 
 
 @pytest.mark.parametrize("backend", ["kiro", "claude", "codex"])
@@ -317,7 +324,7 @@ def test_run_setup_ignores_crew_backend(backend: str) -> None:
     loader._run_setup()
 
     setup_cmds = [cmd for _, cmd in podman.execs if cmd and cmd[0] == "/home/kirocrew/.agents/setup"]
-    assert setup_cmds == [["/home/kirocrew/.agents/setup"]]
+    assert setup_cmds == [["/home/kirocrew/.agents/setup", "--yolo"]]
 
 
 def test_run_setup_logs_warning_on_failure() -> None:
@@ -325,10 +332,10 @@ def test_run_setup_logs_warning_on_failure() -> None:
     import transport.academy as academy
 
     class _FailingPodman(_CapturePodman):
-        def container_exec(self, name, cmd, env=None):
+        def container_exec_stdin(self, name, cmd, stdin_data):
             if cmd and cmd[0] == "/home/kirocrew/.agents/setup":
                 raise RuntimeError("setup script failed")
-            return super().container_exec(name, cmd, env)
+            return super().container_exec_stdin(name, cmd, stdin_data)
 
     podman = _FailingPodman()
     loader = academy.AcademyLoader(podman, "gs-test", acp_backend="kiro")

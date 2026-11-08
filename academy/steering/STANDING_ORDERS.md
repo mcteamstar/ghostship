@@ -142,8 +142,8 @@ For SDD transitions, the full dispatch-coordination pattern—including its pre-
 Before dispatching any persona task, apply this three-layer check in order:
 
 1. **Raven mailbox (primary):** Scan `raven@localhost` (`/var/mail/raven/new/` and `/var/mail/raven/cur/`) for a `dispatching <persona> <intent_id>` message for the target persona. If a pending or confirmed intent is present and the referenced task is not yet done, hold — do not dispatch.
-2. **Spawn list task descriptions (secondary):** Run `kirocrew spawn list` and scan each task's `task` description field for mention of the target persona. If a matching in-flight task is found, steer or continue it rather than spawning a duplicate.
-3. **Agent field (tertiary):** Check the `agent` field in `kirocrew spawn list` as a final confirmation only. This field is asynchronous and must not be the sole dispatch guard.
+2. **Spawn list task descriptions (secondary):** Run `~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --list` and scan each task's `task` description field for mention of the target persona. If a matching in-flight task is found, steer or continue it rather than spawning a duplicate.
+3. **Agent field (tertiary):** Check the `agent` field in `~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --list` as a final confirmation only. This field is asynchronous and must not be the sole dispatch guard.
 
 All three signals must be clear before proceeding with a new dispatch.
 
@@ -151,13 +151,13 @@ All three signals must be clear before proceeding with a new dispatch.
 
 **Timeout (`outcome=failed` with timeout error):** A task with `outcome=failed` and a timeout error ran out of time but may have made partial progress. Before dispatching a continuation, read tasks.md to identify the last checked-off item. The new dispatch should start from where the prior one left off, not from the beginning.
 
-**Stale mail is not an in-flight signal:** Unread mail in a persona's mailbox (e.g. files in `/var/mail/ghost/new/`) accumulates from prior dispatches and is only cleared by the agent reading it. The presence of unread messages is NOT evidence that a persona is currently running. The only authoritative in-flight signal is `kirocrew spawn list`.
+**Stale mail is not an in-flight signal:** Unread mail in a persona's mailbox (e.g. files in `/var/mail/ghost/new/`) accumulates from prior dispatches and is only cleared by the agent reading it. The presence of unread messages is NOT evidence that a persona is currently running. The only authoritative in-flight signal is `~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --list`.
 
 A common failure mode is a shell command with a `||` fallback where both branches succeed, spawning two tasks. Always verify before dispatching:
 
 ```bash
 # Check before dispatching
-kirocrew spawn list
+~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --list
 # Only dispatch if no task for the target persona is running
 ```
 

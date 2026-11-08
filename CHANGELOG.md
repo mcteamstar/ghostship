@@ -2,6 +2,19 @@
 
 ## v0.12.1
 
+### Captain task-state compatibility
+
+- Add a fixed `ghostship-spawn --list` gateway operation and use it for Raven's
+  task-state and duplicate-dispatch checks across backends. Avoid booting the
+  crew CLI inside Codex's required policy mask; retain fail-closed checks.
+- Clarify that Captain check-ins belong to the transport, not crew cron jobs.
+
+### Apply unattended harness settings
+
+- Run `.agents/setup --yolo` when wiring crew harnesses, applying shared
+  approval and native sandbox settings for unattended execution. KiroCrew’s
+  outer runtime sandbox controls remain separate.
+
 ### Fix configured model fallbacks (TRN-313)
 
 - Write backend/global model fallbacks to KiroCrew's supported `agent.model`
@@ -13,9 +26,19 @@
   model overrides to unpinned personas as well.
 - Add migration tests and disposable-image checks against the actual pinned
   KiroCrew loader and resolver across Kiro, Claude and Codex namespaces.
+- Upgrade Codex ACP from 1.12.0 to 2.5.0, supplying Codex CLI 0.165.0 and
+  matching KiroCrew's tested 2.x adapter family. The newer model catalogue
+  includes GPT-6 Luna, which the previous bundled CLI did not advertise.
+- Verify a fresh KiroCrew task inherits an operator-configured `gpt-6-luna`
+  default without a dispatch override; actual session metadata confirms Luna 6
+  at Max effort. Shipped defaults remain empty.
+- Validation: 391 affected unit tests and 30 disposable-image consumer cases pass.
 
-- Upgrade Codex ACP to 2.5.0 with its bundled CLI to match KiroCrew’s tested
-  adapter family and expose current model discovery.
+Re-run `ghostship install` with your existing configuration to rebuild the images.
+Launch a new crew to use the updated Codex adapter; existing crews retain their
+original image. An unavailable explicit model still follows the upstream harness's
+rejection behavior; this release does not add retries through lower-priority
+model settings.
 
 ### Restore Codex authentication and execution (TRN-312)
 

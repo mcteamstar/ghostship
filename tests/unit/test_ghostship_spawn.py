@@ -136,6 +136,7 @@ class TestGhostshipSpawn(TestCase):
 
     def test_status_steer_and_continue_paths_and_bodies(self) -> None:
         cases = [
+            (["--list"], "", "GET", "/api/spawn", {}),
             (["--status", "abc_1"], "", "GET", "/api/spawn/abc_1", {}),
             (["--steer", "abc-1"], "redirect\n", "POST", "/api/spawn/abc-1/steer", {"message": "redirect\n"}),
             (["--continue", "abc-1"], "resume\n", "POST", "/api/spawn/abc-1/continue", {"task": "resume\n"}),
@@ -157,12 +158,29 @@ class TestGhostshipSpawn(TestCase):
         self.assertEqual(_Handler.requests, [])
 
     def test_invalid_persona_and_task_id_are_rejected(self) -> None:
-        for argv in (["Ghost"], ["bad/persona"], ["--status", "bad/id"], ["--steer", ""]):
+        for argv in (["Ghost"], ["--list", "extra"], ["bad/persona"], ["--status", "bad/id"], ["--steer", ""]):
             with self.subTest(argv=argv):
                 rc, _output, error = self._run(argv, "task")
                 self.assertEqual(rc, 1)
                 self.assertIn("ghostship-spawn:", error)
         self.assertEqual(_Handler.requests, [])
+
+    def test_list_preserves_task_identity_and_dedup_state(self) -> None:
+        task = {"id": "task-1", "task": "SDD dispatch intent-" + "x" * 120,
+                "agent": "ghost", "done": False, "outcome": ""}
+        _Handler.response_body = json.dumps({"agents": [task]}).encode()
+        rc, output, error = self._run(["--list"])
+        self.assertEqual(rc, 0, error)
+        self.assertEqual(json.loads(output)["agents"], [task])
+        self.assertEqual(_Handler.requests[0]["body"], b"")
+
+    def test_list_auth_failure_is_not_an_empty_success(self) -> None:
+        _Handler.response_status = 403
+        _Handler.response_body = b"denied"
+        rc, output, error = self._run(["--list"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(output, "")
+        self.assertIn("HTTP 403", error)
 
     def test_non_2xx_reports_status_and_body_without_cookie(self) -> None:
         _Handler.response_status = 403
