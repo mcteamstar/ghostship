@@ -158,4 +158,8 @@ Registered as `ghostship`:
 - [docs/radar.md](docs/radar.md) — Radar fleet dashboard (`GET /`) and REST API
 - [docs/troubleshooting.md](docs/troubleshooting.md) — debugging guide, known workarounds
 - [docs/manual-install.md](docs/manual-install.md) — non-standard distro prerequisites
+- [docs/dependencies.md](docs/dependencies.md) — dependency inventory, manual checks and review process
+- [config/dependencies.yaml](config/dependencies.yaml) — authoritative dependency review metadata
 - [CHANGELOG.md](CHANGELOG.md) — release notes
+
+Maintainers can run `python3 scripts/dependency_check.py validate` for an offline inventory check or `python3 scripts/dependency_check.py check` for a bounded manual upstream review. See the [dependency guide](docs/dependencies.md) before considering an upgrade.

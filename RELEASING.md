@@ -34,6 +34,34 @@ Consumers:
 4. **Tag**: `git tag v<semver>` on the release commit on `main`.
 5. **Build**: `install.sh` automatically passes the version to `podman build`.
 
+## Dependency review before release
+
+Before each release, run `python3 scripts/dependency_check.py validate` and
+`python3 scripts/dependency_check.py check`. Resolve declaration drift and
+record each component's outcome, evidence and next review date in
+`config/dependencies.yaml`. A lookup candidate is not approval to upgrade or
+evidence of compatibility. Review security advisories and upstream
+compatibility warnings as soon as they are found, even between releases.
+
+For every dependency changed since the previous release, complete the
+applicable checks:
+
+| Upgrade category | Acceptance check | Rollback |
+|---|---|---|
+| ACP adapter and supplied CLI | Confirm the KiroCrew supported adapter range; exercise login/authentication, model discovery and a fresh crew turn that records the actual selected model. Codex remains unsupported until its model catalogue gap is resolved and this smoke test passes. | Restore the prior adapter pin and image; rebuild and verify the prior backend before release. |
+| KiroCrew base image and Kiro CLI | Inspect the built image's actual image/version and Kiro CLI; compare the SQLite migration count and schema with `crews/_base/graduation/seed_kiro_db.py`; run the auth injection smoke test. | Restore the previous image digest and seed script together, rebuild, and verify authentication on a fresh crew. |
+| OpenSpec CLI and generated skills | Check the installed CLI against the generated skill `metadata.generatedBy` and run the documented OpenSpec commands in a fresh crew. | Restore the previous CLI pin and matching shared skill source/ref, rebuild, and verify the OpenSpec commands. |
+| Node.js and NodeSource setup script | Verify the fetched setup script SHA-256 against the declared checksum, build the spec-ops image, and record the resolved Node version. | Restore the prior Node stream and checksum as a pair, then rebuild and verify the prior version. |
+| Python runtime or package | Run the affected transport or Radar tests, rebuild the affected image and inspect the resolved package versions. | Restore the prior image tag and package constraint, rebuild, and rerun the affected tests. |
+| Shared `.agents` source/ref or OS package group | Inspect the resolved commit or installed package list in the built image; run a fresh-crew launch smoke test for changed assets. | Restore the prior ref or package declarations and rebuild the image. |
+| GitHub Actions, Podman or podman-compose | Exercise the affected workflow or host install/build path on the supported environment. Record the installed host version where relevant. | Restore the prior action ref or host-tool version and rerun the affected workflow/build check. |
+
+After the applicable checks pass, rebuild affected images and confirm a fresh
+crew adopts the recorded versions. Preserve the previous declarations, image
+digest and review evidence so the rollback can be performed. Deployment still
+requires the normal explicit approval; reporting and review do not deploy or
+modify running crews.
+
 ## Git Tag Convention
 
 Tags follow the pattern `v<MAJOR>.<MINOR>.<PATCH>` on `main`:
