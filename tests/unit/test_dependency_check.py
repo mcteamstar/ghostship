@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import dependency_check as check
@@ -57,6 +60,20 @@ class DependencyCheckTests(unittest.TestCase):
         errors, _ = check.validate_inventory(self.root, inventory([derived]))
 
         self.assertIn("child: broken derived link to missing-parent", errors)
+
+    def test_reports_malformed_component_as_validation_error(self):
+        errors, _ = check.validate_inventory(self.root, inventory([None]))
+
+        self.assertTrue(any("invalid inventory structure" in error for error in errors))
+
+    def test_reports_missing_component_id_and_source(self):
+        malformed = component("alpha", [], {})
+        malformed.pop("id")
+
+        errors, _ = check.validate_inventory(self.root, inventory([malformed]))
+
+        self.assertTrue(any("missing or invalid id" in error for error in errors))
+        self.assertTrue(any("missing or unsupported upstream source" in error for error in errors))
 
     def test_discovers_ci_python_stream_and_ignores_local_environments(self):
         workflow = self.root / ".github" / "workflows" / "test.yml"
@@ -122,6 +139,128 @@ class DependencyCheckTests(unittest.TestCase):
         self.assertEqual((release["candidate"], release["prerelease"]), ("v1.9.0", "v2.0.0-rc.1"))
         self.assertEqual(check.newest(["v0.9.9", "0.12.0"]), "0.12.0")
 
+    def test_pypi_candidate_survives_when_only_some_release_files_are_yanked(self):
+        def fetch(url, headers=None):
+            return {"releases": {
+                "1.9.0": [{"yanked": True}, {"yanked": False}],
+                "2.0.0": [{"yanked": True}, {"yanked": True}],
+            }}
+
+        result = check.lookup_source({"type": "pypi", "package": "alpha"}, fetch=fetch)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidate"], "1.9.0")
+
+    def test_successful_lookup_without_stable_candidate_is_not_a_failure(self):
+        def fetch(url, headers=None):
+            return {"info": {"version": "2.0rc1"}, "releases": {
+                "1.0.0": [{"yanked": True}], "2.0rc1": [{"yanked": False}]}}
+
+        stable_only = check.lookup_source({"type": "pypi", "package": "alpha"}, fetch=fetch)
+        with_prerelease = check.lookup_source({"type": "pypi", "package": "alpha"},
+                                              include_prerelease=True, fetch=fetch)
+
+        self.assertEqual(stable_only["status"], "ok")
+        self.assertIsNone(stable_only["candidate"])
+        self.assertIsNone(stable_only["prerelease"])
+        self.assertIn("no matching stable candidate", stable_only["detail"])
+        self.assertEqual(with_prerelease["status"], "ok")
+        self.assertIsNone(with_prerelease["candidate"])
+        self.assertEqual(with_prerelease["prerelease"], "2.0rc1")
+
+    def test_check_reports_prerelease_only_result_as_complete(self):
+        (self.root / "requirements.txt").write_text("alpha==1.0\n", encoding="utf-8")
+        dependency = component(
+            "alpha",
+            [{"kind": "requirement", "path": "requirements.txt", "package": "alpha"}],
+            {"type": "pypi", "package": "alpha"},
+        )
+        inventory_path = self.root / "inventory.yaml"
+        inventory_path.write_text(check.yaml.safe_dump(inventory([dependency])), encoding="utf-8")
+        responses_path = self.root / "responses.json"
+        responses_path.write_text(check.json.dumps({
+            "pypi:alpha": {"status": "ok", "candidate": None, "prerelease": "2.0rc1",
+                            "detail": "no stable candidate matched"},
+        }), encoding="utf-8")
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            status = check.command_check(self.root, inventory_path, True, responses_path)
+
+        self.assertEqual(status, 0)
+        self.assertIn("no stable candidate (prerelease 2.0rc1)", output.getvalue())
+        self.assertIn("Result: complete", output.getvalue())
+
+    def test_check_reports_capped_pagination_as_incomplete(self):
+        (self.root / "requirements.txt").write_text("alpha==1.0\n", encoding="utf-8")
+        dependency = component(
+            "alpha",
+            [{"kind": "requirement", "path": "requirements.txt", "package": "alpha"}],
+            {"type": "pypi", "package": "alpha"},
+        )
+        inventory_path = self.root / "inventory.yaml"
+        inventory_path.write_text(check.yaml.safe_dump(inventory([dependency])), encoding="utf-8")
+        responses_path = self.root / "responses.json"
+        responses_path.write_text(check.json.dumps({
+            "pypi:alpha": {"status": "partial", "candidate": "1.2.0", "prerelease": None,
+                            "detail": "pagination cap reached"},
+        }), encoding="utf-8")
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            status = check.command_check(self.root, inventory_path, False, responses_path)
+
+        self.assertEqual(status, 1)
+        self.assertIn("partial scan: 1.2.0", output.getvalue())
+        self.assertIn("Result: INCOMPLETE", output.getvalue())
+
+    def test_dockerhub_and_github_releases_follow_bounded_pagination(self):
+        docker_calls = []
+
+        def docker_fetch(url):
+            docker_calls.append(url)
+            if "page=2" in url:
+                return {"results": [{"name": "2.0.0"}], "next": None}
+            return {"results": [{"name": "1.0.0"}], "next": "?page=2"}
+
+        image = check.lookup_source({"type": "dockerhub_image", "repository": "library/example",
+                                     "tag_regex": r"\d+\.\d+\.\d+"}, fetch=docker_fetch)
+        self.assertEqual(image["candidate"], "2.0.0")
+        self.assertEqual(len(docker_calls), 2)
+
+        release_calls = []
+
+        def release_fetch(url, headers=None):
+            release_calls.append(url)
+            if "page=2" in url:
+                return [{"tag_name": "v2.0.0", "draft": False, "prerelease": False}]
+            return [{"tag_name": f"v1.0.{index}", "draft": False, "prerelease": False}
+                    for index in range(check.PAGE_SIZE)]
+
+        release = check.lookup_source({"type": "github_release", "repository": "example/project"},
+                                      fetch=release_fetch)
+        self.assertEqual(release["candidate"], "v2.0.0")
+        self.assertEqual(len(release_calls), 2)
+
+        with patch.object(check, "MAX_PAGES", 1):
+            capped = check.lookup_source(
+                {"type": "github_release", "repository": "example/project"}, fetch=release_fetch)
+        self.assertEqual(capped["status"], "partial")
+
+    def test_pagination_link_cannot_change_host_or_endpoint(self):
+        with self.assertRaises(check.LookupFailure):
+            check._safe_next_page(
+                "https://hub.docker.com/v2/repositories/library/example/tags",
+                "https://example.net/collect",
+                "hub.docker.com",
+            )
+        with self.assertRaises(check.LookupFailure):
+            check._safe_next_page(
+                "https://ghcr.io/v2/example/app/tags/list",
+                "/token",
+                "ghcr.io",
+            )
+
     def test_ghcr_image_fixture_handles_anonymous_token_challenge(self):
         calls = []
 
@@ -133,16 +272,35 @@ class DependencyCheckTests(unittest.TestCase):
             if url.startswith("https://ghcr.io/token?"):
                 return {"token": "fixture-token"}
             if url.startswith("https://ghcr.io/v2/"):
-                return {"tags": ["v1.0.0", "v2.0.0-rc.1"]}
+                if "last=v1.0.0" in url:
+                    return {"tags": ["v1.1.0"]}
+                next_link = '<https://ghcr.io/v2/example/app/tags/list?n=100&last=v1.0.0>; rel="next"'
+                return {"tags": ["v1.0.0", "v2.0.0-rc.1"]}, {"Link": next_link}
             raise AssertionError("unexpected fixture URL: " + url)
 
         result = check.lookup_source({"type": "ghcr_image", "repository": "example/app",
                                      "tag_regex": r"v?\d+\.\d+\.\d+(?:-rc\.\d+)?"}, True, fetch=fetch)
 
-        self.assertEqual(result["candidate"], "v1.0.0")
+        self.assertEqual(result["candidate"], "v1.1.0")
         self.assertEqual(result["prerelease"], "v2.0.0-rc.1")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(calls[-1][1]["Authorization"], "Bearer fixture-token")
+
+    def test_check_prints_recorded_compatibility_evidence(self):
+        fixture_root = Path(__file__).resolve().parents[1] / "fixtures" / "dependency-report"
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            status = check.command_check(
+                fixture_root,
+                fixture_root / "config" / "dependencies.yaml",
+                False,
+                fixture_root / "responses.json",
+            )
+
+        self.assertEqual(status, 1)  # The fixture intentionally includes a failed lookup.
+        self.assertIn("COMPATIBILITY | EVIDENCE", output.getvalue())
+        self.assertIn("unsupported | Model catalogue fixture gap.", output.getvalue())
 
     def test_partial_lookup_failure_and_available_unsupported_and_derived_results(self):
         parent = component("adapter", [{"kind": "npm", "path": "tool.sh", "package": "@scope/adapter"}],

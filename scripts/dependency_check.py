@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "config" / "dependencies.yaml"
 TIMEOUT_SECS = 5
 MAX_LOOKUPS = 64
+MAX_PAGES = 5
+PAGE_SIZE = 100
 USER_AGENT = "GhostshipDependencyReview/1.0"
 SCAN_EXCLUDED_PARTS = {".git", "tests", "vendor", ".venv", "venv", "node_modules", ".tox", "__pycache__"}
 
@@ -199,65 +201,103 @@ def validate_inventory(root: Path, inventory: dict) -> tuple[list[str], dict[str
     errors: list[str] = []
     actual = discover_inputs(root)
     ids: set[str] = set()
+    component_ids = {component["id"] for component in inventory.get("components", [])
+                     if isinstance(component, dict) and isinstance(component.get("id"), str)}
     declared: dict[str, str] = {}
     allowed_compat = {"unknown", "supported", "unsupported"}
-    for component in inventory.get("components", []):
-        cid = component.get("id", "<missing-id>")
-        if cid in ids:
-            errors.append(f"duplicate component id: {cid}")
-        ids.add(cid)
-        review = component.get("review") or {}
-        if not review.get("owner") and not inventory.get("review_owner"):
-            errors.append(f"{cid}: missing review owner")
-        for field in ("last_reviewed", "outcome", "next_review", "evidence"):
-            if field not in review:
-                errors.append(f"{cid}: missing review field {field}")
-        for field in ("last_reviewed", "next_review"):
-            value = review.get(field)
-            if value is not None:
-                try:
-                    if isinstance(value, dt.datetime):
-                        value.date()
-                    elif isinstance(value, dt.date):
-                        pass
-                    else:
-                        dt.date.fromisoformat(str(value))
-                except ValueError:
-                    errors.append(f"{cid}: invalid review date {field}={value!r}")
-        if not review.get("outcome"):
-            errors.append(f"{cid}: missing review outcome")
-        status = component.get("compatibility", {}).get("status")
-        if status not in allowed_compat:
-            errors.append(f"{cid}: invalid compatibility status {status!r}")
-        if "installed_version" in component:
-            errors.append(f"{cid}: installed_version must only be recorded after image inspection")
-        declarations = component.get("declarations", [])
-        for declaration in declarations:
-            kind = declaration.get("kind")
-            path = declaration.get("path", "")
-            if path and not (root / path).is_file():
-                errors.append(f"{cid}: declaration path does not exist: {path}")
-            if kind == "manual":
-                if path and (root / path).is_file() and declaration.get("term", "") not in (root / path).read_text(encoding="utf-8"):
-                    errors.append(f"{cid}: manual declaration text not found in {path}: {declaration.get('term')}")
-                continue
-            if kind == "derived":
-                parents = declaration.get("parents", [])
-                if not parents:
-                    errors.append(f"{cid}: derived declaration has no parent")
-                for parent in parents:
-                    if parent not in {c.get("id") for c in inventory.get("components", [])}:
-                        errors.append(f"{cid}: broken derived link to {parent}")
-                continue
-            if kind not in EXTRACTED_KINDS:
-                errors.append(f"{cid}: unsupported declaration kind {kind!r}")
-                continue
-            key = declaration_key(declaration)
-            if key in declared:
-                errors.append(f"duplicate inventory declaration: {key} ({declared[key]}, {cid})")
-            declared[key] = cid
-            if not _source_matches(component, declaration):
-                errors.append(f"{cid}: upstream source does not match declaration package")
+    allowed_sources = {"manual", "derived", "pypi", "npm", "dockerhub_image", "ghcr_image",
+                       "github_release", "nodejs_release", "github_ref"}
+    for index, component in enumerate(inventory.get("components", []), start=1):
+        try:
+            cid = component.get("id")
+            if not isinstance(cid, str) or not cid.strip():
+                errors.append(f"component {index}: missing or invalid id")
+                cid = f"<component {index}>"
+            if cid in ids:
+                errors.append(f"duplicate component id: {cid}")
+            ids.add(cid)
+            review_value = component.get("review")
+            if review_value is None:
+                review = {}
+            elif not isinstance(review_value, dict):
+                errors.append(f"{cid}: review metadata must be a mapping")
+                review = {}
+            else:
+                review = review_value
+            if not review.get("owner") and not inventory.get("review_owner"):
+                errors.append(f"{cid}: missing review owner")
+            for field in ("last_reviewed", "outcome", "next_review", "evidence"):
+                if field not in review:
+                    errors.append(f"{cid}: missing review field {field}")
+            for field in ("last_reviewed", "next_review"):
+                value = review.get(field)
+                if value is not None:
+                    try:
+                        if isinstance(value, dt.datetime):
+                            value.date()
+                        elif isinstance(value, dt.date):
+                            pass
+                        else:
+                            dt.date.fromisoformat(str(value))
+                    except ValueError:
+                        errors.append(f"{cid}: invalid review date {field}={value!r}")
+            if not review.get("outcome"):
+                errors.append(f"{cid}: missing review outcome")
+            compatibility = component.get("compatibility")
+            if not isinstance(compatibility, dict):
+                errors.append(f"{cid}: compatibility metadata must be a mapping")
+                compatibility = {}
+            status = compatibility.get("status")
+            if status not in allowed_compat:
+                errors.append(f"{cid}: invalid compatibility status {status!r}")
+            if "installed_version" in component:
+                errors.append(f"{cid}: installed_version must only be recorded after image inspection")
+            declarations = component.get("declarations", [])
+            if not isinstance(declarations, list):
+                errors.append(f"{cid}: declarations must be a list")
+                declarations = []
+            source = component.get("source")
+            source_valid = isinstance(source, dict) and source.get("type") in allowed_sources
+            if not source_valid:
+                errors.append(f"{cid}: missing or unsupported upstream source")
+            for declaration in declarations:
+                if not isinstance(declaration, dict):
+                    errors.append(f"{cid}: declaration entry must be a mapping")
+                    continue
+                kind = declaration.get("kind")
+                path = declaration.get("path", "")
+                if not isinstance(path, str) or not path:
+                    errors.append(f"{cid}: declaration path is missing or invalid")
+                    continue
+                if path and not (root / path).is_file():
+                    errors.append(f"{cid}: declaration path does not exist: {path}")
+                if kind == "manual":
+                    term = declaration.get("term")
+                    if not isinstance(term, str):
+                        errors.append(f"{cid}: manual declaration term is missing or invalid")
+                    elif (root / path).is_file() and term not in (root / path).read_text(encoding="utf-8"):
+                        errors.append(f"{cid}: manual declaration text not found in {path}: {declaration.get('term')}")
+                    continue
+                if kind == "derived":
+                    parents = declaration.get("parents", [])
+                    if not isinstance(parents, list) or not parents:
+                        errors.append(f"{cid}: derived declaration has no parent")
+                        continue
+                    for parent in parents:
+                        if parent not in component_ids:
+                            errors.append(f"{cid}: broken derived link to {parent}")
+                    continue
+                if kind not in EXTRACTED_KINDS:
+                    errors.append(f"{cid}: unsupported declaration kind {kind!r}")
+                    continue
+                key = declaration_key(declaration)
+                if key in declared:
+                    errors.append(f"duplicate inventory declaration: {key} ({declared[key]}, {cid})")
+                declared[key] = cid
+                if source_valid and not _source_matches(component, declaration):
+                    errors.append(f"{cid}: upstream source does not match declaration package")
+        except (AttributeError, TypeError, KeyError) as exc:
+            errors.append(f"component {index}: invalid inventory structure ({type(exc).__name__}: {exc})")
 
     for key in sorted(set(actual) - set(declared)):
         errors.append(f"missing dependency input from inventory: {key} = {actual[key]}")
@@ -297,14 +337,15 @@ class RegistryAuthRequired(LookupFailure):
         super().__init__("registry requires anonymous bearer-token negotiation")
 
 
-def fetch_json(url: str, headers: dict[str, str] | None = None,
-               timeout: int = TIMEOUT_SECS) -> object:
+def fetch_json_response(url: str, headers: dict[str, str] | None = None,
+                        timeout: int = TIMEOUT_SECS) -> tuple[object, dict[str, str]]:
     request_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     request_headers.update(headers or {})
     request = urllib.request.Request(url, headers=request_headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            payload = json.loads(response.read().decode("utf-8"))
+            return payload, dict(response.headers.items())
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise RegistryAuthRequired(exc.headers.get("WWW-Authenticate", "")) from exc
@@ -312,6 +353,11 @@ def fetch_json(url: str, headers: dict[str, str] | None = None,
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         reason = getattr(exc, "reason", None)
         raise LookupFailure(f"{type(exc).__name__}: {reason or exc}") from exc
+
+
+def fetch_json(url: str, headers: dict[str, str] | None = None,
+               timeout: int = TIMEOUT_SECS) -> object:
+    return fetch_json_response(url, headers, timeout)[0]
 
 
 def is_prerelease(version: str) -> bool:
@@ -329,10 +375,11 @@ def newest(versions: list[str]) -> str | None:
 
 
 def _candidate_result(stable: str | None, prerelease: str | None = None,
-                      detail: str | None = None) -> dict:
+                      detail: str | None = None, incomplete: bool = False) -> dict:
     if stable is None and prerelease is None:
-        raise LookupFailure("source returned no matching version candidates")
-    return {"status": "ok", "candidate": stable, "prerelease": prerelease, "detail": detail}
+        detail = f"no matching stable candidate; {detail}" if detail else "no matching stable candidate"
+    return {"status": "partial" if incomplete else "ok", "candidate": stable,
+            "prerelease": prerelease, "detail": detail}
 
 
 def _pypi_candidates(package: str, include_prerelease: bool, fetch) -> dict:
@@ -340,13 +387,9 @@ def _pypi_candidates(package: str, include_prerelease: bool, fetch) -> dict:
     data = fetch(url)
     releases = data.get("releases", {})
     versions = [version for version, files in releases.items()
-                if files and not any(file.get("yanked", False) for file in files)]
+                if files and not all(file.get("yanked", False) for file in files)]
     stable = newest([v for v in versions if not is_prerelease(v)])
     pre = newest([v for v in versions if is_prerelease(v)]) if include_prerelease else None
-    if stable is None:
-        info_version = data.get("info", {}).get("version")
-        if info_version and not is_prerelease(info_version):
-            stable = info_version
     return _candidate_result(stable, pre)
 
 
@@ -363,23 +406,67 @@ def _npm_candidates(package: str, include_prerelease: bool, fetch) -> dict:
     return _candidate_result(stable, pre)
 
 
+def _safe_next_page(current_url: str, next_url: str, expected_host: str) -> str:
+    resolved = urllib.parse.urljoin(current_url, next_url)
+    parsed = urllib.parse.urlparse(resolved)
+    current = urllib.parse.urlparse(current_url)
+    if (parsed.scheme != "https" or parsed.netloc.lower() not in {expected_host, f"{expected_host}:443"}
+            or parsed.path != current.path):
+        raise LookupFailure("upstream pagination link left the expected HTTPS endpoint")
+    return resolved
+
+
+def _fetch_with_headers(fetch, url: str, headers: dict[str, str] | None = None) -> tuple[object, dict[str, str]]:
+    if fetch is fetch_json:
+        return fetch_json_response(url, headers)
+    response = fetch(url, headers)
+    if isinstance(response, tuple) and len(response) == 2 and isinstance(response[1], dict):
+        return response[0], response[1]
+    return response, {}
+
+
+def _next_link(link_header: str | None) -> str | None:
+    if not link_header:
+        return None
+    match = re.search(r'<([^>]+)>\s*;\s*rel="?next"?', link_header)
+    return match.group(1) if match else None
+
+
+def _header_value(headers: dict[str, str], name: str) -> str | None:
+    return next((value for key, value in headers.items() if key.lower() == name.lower()), None)
+
+
 def _image_candidates(source: dict, include_prerelease: bool, fetch) -> dict:
     repository = source["repository"]
     url = f"https://hub.docker.com/v2/repositories/{repository}/tags?page_size=100"
-    payload = fetch(url)
+    versions = []
+    incomplete = False
+    for page in range(MAX_PAGES):
+        payload = fetch(url)
+        versions.extend(item.get("name", "") for item in payload.get("results", []))
+        next_url = payload.get("next")
+        if not next_url:
+            break
+        if page == MAX_PAGES - 1:
+            incomplete = True
+            break
+        url = _safe_next_page(url, next_url, "hub.docker.com")
     tag_pattern = re.compile(source.get("tag_regex", ".*"))
-    versions = [item.get("name", "") for item in payload.get("results", [])
-                if tag_pattern.fullmatch(item.get("name", ""))]
+    versions = [version for version in versions if tag_pattern.fullmatch(version)]
     stable = newest([v for v in versions if not is_prerelease(v)])
     pre = newest([v for v in versions if is_prerelease(v)]) if include_prerelease else None
-    return _candidate_result(stable, pre, "Docker Hub tag; digest not resolved")
+    detail = "Docker Hub tag; digest not resolved"
+    if incomplete:
+        detail = f"Docker Hub pagination cap ({MAX_PAGES} pages) reached; candidate may be incomplete; digest not resolved"
+    return _candidate_result(stable, pre, detail, incomplete)
 
 
 def _ghcr_candidates(source: dict, include_prerelease: bool, fetch) -> dict:
     repository = source["repository"]
     url = f"https://ghcr.io/v2/{repository}/tags/list?n=100"
+    request_headers = None
     try:
-        payload = fetch(url)
+        payload, response_headers = _fetch_with_headers(fetch, url)
     except RegistryAuthRequired as exc:
         fields = dict(re.findall(r'(\w+)="([^"]+)"', exc.challenge))
         realm = fields.get("realm", "")
@@ -391,22 +478,48 @@ def _ghcr_candidates(source: dict, include_prerelease: bool, fetch) -> dict:
         token = token_payload.get("token") or token_payload.get("access_token")
         if not token:
             raise LookupFailure("GHCR token response contained no token")
-        payload = fetch(url, {"Authorization": f"Bearer {token}"})
+        request_headers = {"Authorization": f"Bearer {token}"}
+        payload, response_headers = _fetch_with_headers(fetch, url, request_headers)
+    versions = []
+    incomplete = False
+    for page in range(MAX_PAGES):
+        versions.extend(payload.get("tags", []))
+        next_url = _next_link(_header_value(response_headers, "Link"))
+        if not next_url:
+            break
+        if page == MAX_PAGES - 1:
+            incomplete = True
+            break
+        url = _safe_next_page(url, next_url, "ghcr.io")
+        payload, response_headers = _fetch_with_headers(fetch, url, request_headers)
     tag_pattern = re.compile(source.get("tag_regex", ".*"))
-    versions = [tag for tag in payload.get("tags", []) if tag_pattern.fullmatch(tag)]
+    versions = [tag for tag in versions if tag_pattern.fullmatch(tag)]
     stable = newest([v for v in versions if not is_prerelease(v)])
     pre = newest([v for v in versions if is_prerelease(v)]) if include_prerelease else None
-    return _candidate_result(stable, pre, "GHCR tag; digest not resolved")
+    detail = "GHCR tag; digest not resolved"
+    if incomplete:
+        detail = f"GHCR pagination cap ({MAX_PAGES} pages) reached; candidate may be incomplete; digest not resolved"
+    return _candidate_result(stable, pre, detail, incomplete)
 
 
 def _github_release_candidates(repository: str, include_prerelease: bool, fetch) -> dict:
-    url = f"https://api.github.com/repos/{repository}/releases?per_page=20"
-    releases = fetch(url, {"Accept": "application/vnd.github+json"})
+    releases = []
+    incomplete = False
+    for page in range(1, MAX_PAGES + 1):
+        url = f"https://api.github.com/repos/{repository}/releases?per_page={PAGE_SIZE}&page={page}"
+        page_releases = fetch(url, {"Accept": "application/vnd.github+json"})
+        releases.extend(page_releases)
+        if len(page_releases) < PAGE_SIZE:
+            break
+        if page == MAX_PAGES:
+            incomplete = True
     stable = [item.get("tag_name", "") for item in releases
               if not item.get("draft") and not item.get("prerelease") and item.get("tag_name")]
     prerelease = [item.get("tag_name", "") for item in releases
                   if not item.get("draft") and item.get("prerelease") and item.get("tag_name")]
-    return _candidate_result(newest(stable), newest(prerelease) if include_prerelease else None)
+    detail = f"GitHub releases pagination cap ({MAX_PAGES} pages) reached; candidate may be incomplete" if incomplete else None
+    return _candidate_result(newest(stable), newest(prerelease) if include_prerelease else None,
+                             detail, incomplete)
 
 
 def _node_candidates(major: int, include_prerelease: bool, fetch) -> dict:
@@ -568,6 +681,7 @@ def perform_check(inventory: dict, actual: dict[str, object],
                                                        else "inherited/derived; installed unknown"),
             "result": result or {"status": "failed", "error": "no lookup result"},
             "compatibility": component.get("compatibility", {}).get("status", "unknown"),
+            "compatibility_evidence": component.get("compatibility", {}).get("evidence"),
             "review_age": review_age,
         })
     return results
@@ -607,26 +721,39 @@ def command_check(root: Path, inventory_path: Path, include_prerelease: bool,
 
         lookup = fixture_lookup
     results = perform_check(inventory, actual, include_prerelease, lookup=lookup)
-    print("ID | DECLARED | UPSTREAM | COMPATIBILITY | REVIEW | RESULT")
-    failed = False
+    print("ID | DECLARED | UPSTREAM | COMPATIBILITY | EVIDENCE | REVIEW | RESULT")
+    incomplete = False
     for item in results:
         result = item["result"]
         status = result.get("status")
         if status == "failed":
             upstream = "unknown"
             detail = "LOOKUP FAILED: " + result.get("error", "unknown error")
-            failed = True
-        elif result.get("candidate"):
-            upstream = result["candidate"]
+            incomplete = True
+        elif status in {"ok", "partial"}:
+            if result.get("candidate"):
+                upstream = result["candidate"]
+            elif result.get("prerelease"):
+                upstream = "no stable candidate"
+            else:
+                upstream = "no matching candidate"
             if result.get("prerelease"):
-                upstream += " (pre " + result["prerelease"] + ")"
-            detail = result.get("detail") or "candidate available"
+                label = "pre " if result.get("candidate") else "prerelease "
+                upstream += " (" + label + result["prerelease"] + ")"
+            detail = result.get("detail") or ("candidate available" if result.get("candidate")
+                                                else "no candidate matched the selected policy")
+            if status == "partial":
+                upstream = "partial scan: " + upstream
+                incomplete = True
         else:
             upstream = "unknown"
             detail = result.get("detail", status or "unknown")
-        print(f"{item['id']} | {item['declared']} | {upstream} | {item['compatibility']} | {item['review_age']} | {detail}")
-    print("Result: INCOMPLETE (one or more upstream lookups failed)" if failed else "Result: complete; review compatibility and evidence before upgrades")
-    return 1 if failed else 0
+        evidence = item.get("compatibility_evidence")
+        evidence = "none recorded" if evidence in (None, "") else " ".join(str(evidence).splitlines())
+        print(f"{item['id']} | {item['declared']} | {upstream} | {item['compatibility']} | {evidence} | {item['review_age']} | {detail}")
+    print("Result: INCOMPLETE (one or more lookups failed or pagination was capped)" if incomplete
+          else "Result: complete; review compatibility and evidence before upgrades")
+    return 1 if incomplete else 0
 
 
 def main(argv: list[str] | None = None) -> int:

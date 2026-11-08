@@ -15,3 +15,8 @@
 
 - [x] 3.1 Add the pre-release review checklist to the existing release process, covering adapter/CLI support and actual-model smoke tests, Kiro DB seed migration, OpenSpec/skills, Node checksums and affected Python tests; verify each upgrade category has a concrete acceptance check and rollback guidance.
 - [x] 3.2 Exercise the documented local workflow end to end and run affected tests; preserve sample command output showing an update candidate, overdue review, unsupported/unknown compatibility and lookup failure, and verify no runtime configuration or dependency pin is changed by reporting.
+
+## 4. Independent implementation review follow-up
+
+- [x] 4.1 Correct candidate handling for yanked PyPI releases and successful lookups with no stable match; report prerelease-only results when requested, paginate registry/release sources within a fixed bound, and mark capped scans incomplete.
+- [x] 4.2 Include recorded compatibility evidence in check output, reject malformed inventory metadata with a clear validation error, and update the example output and regression coverage.

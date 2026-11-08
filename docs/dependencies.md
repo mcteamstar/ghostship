@@ -9,7 +9,7 @@ python3 scripts/dependency_check.py validate
 python3 scripts/dependency_check.py check
 ```
 
-`validate` is offline. It reports dependencies missing from the inventory, declaration drift, invalid derived-component links and review metadata errors. `check` first validates the inventory, then makes bounded, read-only requests to upstream registries and release sources. It prints the declared constraint, available candidate, compatibility status, review age and lookup result. A failed lookup is unknown, not current; partial results remain visible and the command exits nonzero. No command changes a pin, rebuilds an image, modifies a running crew, publishes a report or schedules future work. Use `--include-prerelease` only when reviewing prerelease candidates.
+`validate` is offline. It reports dependencies missing from the inventory, declaration drift, invalid derived-component links and review metadata errors. `check` first validates the inventory, then makes bounded, read-only requests to upstream registries and release sources. It prints the declared constraint, available candidate, compatibility status and recorded evidence, review age and lookup result. A successful lookup with no candidate matching the selected policy is reported separately from a lookup failure. A failed lookup is unknown, not current; partial results remain visible and the command exits nonzero. Paginated sources have a fixed page cap; a capped scan is marked incomplete and exits nonzero. No command changes a pin, rebuilds an image, modifies a running crew, publishes a report or schedules future work. Use `--include-prerelease` only when reviewing prerelease candidates.
 
 ## Version sources and what they mean
 
@@ -34,13 +34,13 @@ Dependency review (2026-11-08)
 Inventory validation: PASS (5 components)
 Candidate policy: stable only (use --include-prerelease to include prereleases)
 Available versions are candidates only; compatibility is recorded evidence, not inferred.
-ID | DECLARED | UPSTREAM | COMPATIBILITY | REVIEW | RESULT
-update-candidate | 1.0.0 [exact package constraint; installed unknown] | 1.2.0 | unknown | 0d | fixture registry response
-overdue-review | ==1.0.0 [exact constraint; installed unknown] | 2.0.0 | unknown | 68d overdue | fixture registry response
-unsupported | 2.5.0 [exact package constraint; installed unknown] | 2.5.0 | unsupported | 0d | fixture registry response
-lookup-failure | ==0.1.0 [exact constraint; installed unknown] | unknown | unknown | 0d | LOOKUP FAILED: fixture timeout after 5s
-manual-unknown | manual; installed unknown | unknown | unknown | 0d | no package-version lookup; inspect the installed image or host
-Result: INCOMPLETE (one or more upstream lookups failed)
+ID | DECLARED | UPSTREAM | COMPATIBILITY | EVIDENCE | REVIEW | RESULT
+update-candidate | 1.0.0 [exact package constraint; installed unknown] | 1.2.0 | unknown | none recorded | 0d | fixture registry response
+overdue-review | ==1.0.0 [exact constraint; installed unknown] | 2.0.0 | unknown | none recorded | 68d overdue | fixture registry response
+unsupported | 2.5.0 [exact package constraint; installed unknown] | 2.5.0 | unsupported | Model catalogue fixture gap. | 0d | fixture registry response
+lookup-failure | ==0.1.0 [exact constraint; installed unknown] | unknown | unknown | none recorded | 0d | LOOKUP FAILED: fixture timeout after 5s
+manual-unknown | manual; installed unknown | unknown | unknown | none recorded | 0d | no package-version lookup; inspect the installed image or host
+Result: INCOMPLETE (one or more lookups failed or pagination was capped)
 ```
 
 ## Review cadence and outcomes
