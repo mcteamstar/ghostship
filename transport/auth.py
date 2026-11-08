@@ -36,6 +36,27 @@ except ModuleNotFoundError:
 logger = logging.getLogger("transport.server")
 
 
+async def _deny_websocket(scope: dict, send, status_code: int = 401) -> None:
+    """Deny a WebSocket handshake without accepting or upgrading it."""
+    if "websocket.http.response" in scope.get("extensions", {}):
+        body = b"Unauthorized"
+        await send({
+            "type": "websocket.http.response.start",
+            "status": status_code,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({
+            "type": "websocket.http.response.body",
+            "body": body,
+            "more_body": False,
+        })
+        return
+    await send({"type": "websocket.close", "code": 1008})
+
+
 # ── Bearer token parse helper ─────────────────────────────────────────────────
 
 def _parse_bearer_token(header_value: str) -> str | None:
@@ -199,10 +220,10 @@ class AsyncMiddlewareBase:
 class TransportSecretMiddleware(AsyncMiddlewareBase):
     """ASGI middleware enforcing the GA_TRANSPORT_SECRET X-Transport-Token gate.
 
-    When ``transport_secret`` is non-empty, every incoming HTTP request must carry
-    an ``X-Transport-Token`` header whose value matches ``transport_secret`` exactly
-    (constant-time comparison). Requests missing the header or presenting a
-    wrong value receive HTTP 401 immediately, before any other middleware.
+    When ``transport_secret`` is non-empty, every incoming HTTP request and
+    WebSocket handshake must carry exactly one ``X-Transport-Token`` header
+    whose value matches ``transport_secret`` (constant-time comparison).
+    Invalid requests are denied before any other middleware or route handler.
 
     This middleware is the outermost gate — it runs before ``BearerAuthMiddleware``
     and ``SecurityHeadersMiddleware``. Crew containers on ``ga-starboard`` can dial
@@ -212,23 +233,39 @@ class TransportSecretMiddleware(AsyncMiddlewareBase):
     When ``transport_secret`` is empty (e.g. dev/test environment without the
     Podman secret) the middleware is a transparent pass-through.
 
-    Non-HTTP ASGI scopes (WebSocket, lifespan) pass through unchanged.
+    Lifespan scopes pass through unchanged. WebSocket scopes are authenticated
+    before the bearer middleware dispatches them to the dashboard proxy.
     """
 
     def __init__(self, app, transport_secret: str = "") -> None:
         super().__init__(app)
         self._secret = transport_secret
 
+    def _token_matches(self, scope: dict) -> bool:
+        if not self._secret:
+            return True
+        values = [
+            value.decode("latin-1") if isinstance(value, bytes) else str(value)
+            for name, value in scope.get("headers", [])
+            if name.lower() == b"x-transport-token"
+        ]
+        return len(values) == 1 and hmac.compare_digest(values[0], self._secret)
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "websocket":
+            if not self._token_matches(scope):
+                await _deny_websocket(scope, send, status_code=401)
+                return
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
     async def handle_http(self, scope, receive, send) -> None:
         if not self._secret:
             await self.app(scope, receive, send)
             return
 
-        # Extract X-Transport-Token from request headers.
-        headers = dict(scope.get("headers", []))
-        token = headers.get(b"x-transport-token", b"").decode("latin-1")
-
-        if not hmac.compare_digest(token, self._secret):
+        if not self._token_matches(scope):
             from starlette.responses import Response
             response = Response(
                 content="Unauthorized",

@@ -267,14 +267,50 @@ class TestTransportSecretMiddleware(unittest.TestCase):
         _run(mw(scope, _receive, send))
         self.assertTrue(app.called)
 
-    def test_non_http_scope_passthrough(self):
+    def test_websocket_wrong_token_is_denied_before_downstream(self):
         mw, app = self._make("s3cr3t")
-        # WebSocket scope with a wrong token must still pass through to downstream.
         scope = _make_scope("GET", "/ws", headers={"x-transport-token": "wrong"}, scope_type="websocket")
         messages, send = _collect_send()
         _run(mw(scope, _receive, send))
+        self.assertFalse(app.called)
+        self.assertEqual(messages, [{"type": "websocket.close", "code": 1008}])
+
+    def test_websocket_valid_token_passes(self):
+        mw, app = self._make("s3cr3t")
+        scope = _make_scope("GET", "/ws", headers={"x-transport-token": "s3cr3t"}, scope_type="websocket")
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
         self.assertTrue(app.called)
-        self.assertNotEqual(_status_of(messages), 401)
+        self.assertEqual(messages[0]["type"], "http.response.start")
+
+    def test_websocket_missing_token_is_denied_with_http_response_extension(self):
+        mw, app = self._make("s3cr3t")
+        scope = _make_scope("GET", "/ws", scope_type="websocket")
+        scope["extensions"] = {"websocket.http.response": {}}
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        self.assertFalse(app.called)
+        self.assertEqual(messages[0]["type"], "websocket.http.response.start")
+        self.assertEqual(messages[0]["status"], 401)
+
+    def test_websocket_duplicate_tokens_are_denied(self):
+        mw, app = self._make("s3cr3t")
+        scope = _make_scope("GET", "/ws", scope_type="websocket")
+        scope["headers"] = [
+            (b"x-transport-token", b"s3cr3t"),
+            (b"x-transport-token", b"s3cr3t"),
+        ]
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        self.assertFalse(app.called)
+        self.assertEqual(messages[0]["type"], "websocket.close")
+
+    def test_other_non_http_scope_still_passes_through(self):
+        mw, app = self._make("s3cr3t")
+        scope = _make_scope("", "/", scope_type="lifespan")
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        self.assertTrue(app.called)
 
     def test_constant_time_compare_used(self):
         mw, app = self._make("s3cr3t")

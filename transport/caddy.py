@@ -147,12 +147,23 @@ class CaddyPortal:
         _transport_token_header = {
             "X-Transport-Token": ["{file./run/secrets/ga-transport-secret}"],
         }
+        # These dedicated metadata headers are set by Caddy from the request it
+        # received, replacing client-supplied values. The transport trusts them
+        # only on traffic that also carries the portal secret.
+        _dashboard_origin_headers = {
+            "X-Portal-Dashboard-Host": ["{http.request.hostport}"],
+            "X-Portal-Dashboard-Proto": ["{http.request.scheme}"],
+        }
 
         crew_proxy_handler: dict = {
             "handler": "reverse_proxy",
             "upstreams": [{"dial": _transport_addr}],
             "rewrite": {"uri": f"/crews/{crew_id}/ui{{http.request.uri.path}}"},
-            "headers": {"request": {"set": dict(_transport_token_header)}},
+            "headers": {
+                "request": {
+                    "set": {**_transport_token_header, **_dashboard_origin_headers}
+                }
+            },
         }
 
         # forward_auth equivalent using only standard Caddy modules (no
@@ -195,10 +206,9 @@ class CaddyPortal:
         # handshake silently fails. A dedicated route matched on the
         # Connection: Upgrade header proxies straight to the transport UI proxy
         # (no forward_auth). This route is ordered BEFORE the catch-all so
-        # upgrades never fall through to the forward_auth path. No auth
-        # regression: reaching this port at all required the gs_session that
-        # forward_auth validated on the SPA's initial HTTP load, and the WS
-        # inherits that authenticated browser context.
+        # upgrades never fall through to the forward_auth path. The transport
+        # validates the original dashboard session and browser Origin before
+        # resolving the crew or opening an upstream connection.
         ws_route = {
             "match": [{"header": {"Connection": ["Upgrade"]}}],
             "handle": [crew_proxy_handler],

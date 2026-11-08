@@ -199,6 +199,22 @@ class TestCaddyPortalRegisterCrew(unittest.TestCase):
         token_header = proxy_handler["headers"]["request"]["set"]["X-Transport-Token"]
         self.assertEqual(token_header, ["{file./run/secrets/ga-transport-secret}"])
 
+    def test_websocket_route_uses_transport_token_injection(self):
+        portal = self._make_portal(api_key="secret")
+        mock_put = self._call_register(portal, crew_id="abc", port=8765)
+        body = self._get_put_body(mock_put)
+        websocket_proxy = body["routes"][0]["handle"][0]
+        token_header = websocket_proxy["headers"]["request"]["set"]["X-Transport-Token"]
+        self.assertEqual(token_header, ["{file./run/secrets/ga-transport-secret}"])
+
+    def test_websocket_route_overwrites_dashboard_origin_metadata(self):
+        portal = self._make_portal(api_key="secret")
+        mock_put = self._call_register(portal, crew_id="abc", port=8765)
+        body = self._get_put_body(mock_put)
+        headers = body["routes"][0]["handle"][0]["headers"]["request"]["set"]
+        self.assertEqual(headers["X-Portal-Dashboard-Host"], ["{http.request.hostport}"])
+        self.assertEqual(headers["X-Portal-Dashboard-Proto"], ["{http.request.scheme}"])
+
     # 4.9
     def test_ws_route_before_http_route(self):
         portal = self._make_portal()

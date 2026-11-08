@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import hmac
 import logging
+import re
 import secrets
 import threading
 import unicodedata
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -46,6 +48,81 @@ except ModuleNotFoundError:
 # Keep the original logger name — operators grep "transport.server" and tests
 # assert on it (same rationale as auth.py).
 logger = logging.getLogger("transport.server")
+
+
+def _scope_header_values(scope: dict, header_name: str) -> list[str]:
+    """Return every raw ASGI value for one header without collapsing duplicates."""
+    expected = header_name.lower().encode("ascii")
+    values = []
+    for name, value in scope.get("headers", []):
+        if name.lower() == expected:
+            values.append(value.decode("latin-1") if isinstance(value, bytes) else str(value))
+    return values
+
+
+def _normalise_hostname(hostname: str) -> str | None:
+    if not hostname or any(ch.isspace() or ord(ch) < 0x21 or ord(ch) == 0x7f for ch in hostname):
+        return None
+    try:
+        return hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return None
+
+
+def _parse_origin(value: str) -> tuple[str, str, int] | None:
+    """Parse a serialized browser origin, requiring an explicit dashboard port."""
+    if not value or value != value.strip():
+        return None
+    try:
+        parsed = urlsplit(value)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        port = parsed.port
+        if (
+            scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or hostname is None
+            or port is None
+        ):
+            return None
+    except ValueError:
+        return None
+    normalised = _normalise_hostname(hostname)
+    if normalised is None:
+        return None
+    return scheme, normalised, port
+
+
+def _parse_hostport(value: str) -> tuple[str, int] | None:
+    """Parse Caddy's trusted request hostport metadata."""
+    if not value or value != value.strip():
+        return None
+    try:
+        parsed = urlsplit(f"//{value}")
+        hostname = parsed.hostname
+        port = parsed.port
+        if (
+            parsed.netloc != value
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+            or hostname is None
+            or port is None
+        ):
+            return None
+    except ValueError:
+        return None
+    normalised = _normalise_hostname(hostname)
+    if normalised is None:
+        return None
+    return normalised, port
 
 
 # SEC-09 — open redirect guard for /dashboard/login ?next=
@@ -92,7 +169,7 @@ class DashboardGate:
     # can read it and echo it in the form body — cookie-echo pattern, H-1).
     _CSRF_COOKIE = "gs_csrf"
 
-    def __init__(self, session_ttl_secs: float, api_key: str, external_url: str, *, port_base: int = 64058, port_range_size: int = 64) -> None:
+    def __init__(self, session_ttl_secs: float, api_key: str, external_url: str, *, port_base: int = 64058, port_range_size: int = 64, portal_domain: str = "") -> None:
         # Dashboard login is guarded by security.Throttle (brute-force
         # protection) and gs_session cookies are backed by
         # security.SessionStore (bounded, revocable). Both carry their own
@@ -102,6 +179,18 @@ class DashboardGate:
         self._throttle = _security.Throttle(max_failures=5, window_secs=900)
         self._sessions = _security.SessionStore(lifetime_secs=session_ttl_secs)
         self._api_key = api_key
+        self._allowed_dashboard_hosts: set[str] = set()
+        for candidate in (external_url, portal_domain):
+            if not candidate:
+                continue
+            try:
+                parsed = urlsplit(candidate if "://" in candidate else f"//{candidate}")
+                hostname = parsed.hostname
+            except ValueError:
+                hostname = None
+            normalised = _normalise_hostname(hostname or "")
+            if normalised:
+                self._allowed_dashboard_hosts.add(normalised)
         # Secure flag on gs_session and gs_csrf cookies: set when the transport's
         # external URL uses HTTPS (L-2 / TRN-272).
         self._secure = external_url.startswith("https://")
@@ -126,6 +215,66 @@ class DashboardGate:
         """Remove a dashboard-port mapping (no-op if absent)."""
         with self._port_crew_lock:
             self._port_crew.pop(int(port), None)
+
+    def has_valid_session(self, scope: dict) -> bool:
+        """Validate the original request's dashboard session from raw headers.
+
+        Reading raw ASGI headers lets HTTP and WebSocket handshakes share the
+        same revocable session store and reject duplicate session cookies rather
+        than relying on a parser that may silently choose one value.
+        """
+        if not self._api_key:
+            return True
+
+        session_tokens: list[str] = []
+        for cookie_header in _scope_header_values(scope, "cookie"):
+            for item in cookie_header.split(";"):
+                name, separator, value = item.strip().partition("=")
+                if name.strip() != "gs_session":
+                    continue
+                if not separator or value != value.strip():
+                    return False
+                session_tokens.append(value)
+
+        if len(session_tokens) != 1:
+            return False
+        token = session_tokens[0]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+            return False
+        return self._sessions.validate(token)
+
+    def allows_websocket(self, scope: dict) -> bool:
+        """Authorize a dashboard WebSocket session and optional browser Origin."""
+        if not self.has_valid_session(scope):
+            return False
+        if not self._api_key:
+            return True
+
+        origins = _scope_header_values(scope, "origin")
+        if not origins:
+            # Authenticated non-browser clients do not send Origin.
+            return True
+        if len(origins) != 1:
+            return False
+        origin = _parse_origin(origins[0])
+        if origin is None:
+            return False
+
+        portal_hosts = _scope_header_values(scope, "x-portal-dashboard-host")
+        portal_schemes = _scope_header_values(scope, "x-portal-dashboard-proto")
+        if len(portal_hosts) != 1 or len(portal_schemes) != 1:
+            return False
+        portal_hostport = _parse_hostport(portal_hosts[0])
+        portal_scheme = portal_schemes[0].lower()
+        if portal_hostport is None or portal_scheme not in {"http", "https"}:
+            return False
+
+        host, port = portal_hostport
+        if host not in self._allowed_dashboard_hosts:
+            return False
+        if not self._port_base <= port < self._port_base + self._port_range_size:
+            return False
+        return origin == (portal_scheme, host, port)
 
     # ── Dashboard auth HTTP handlers ──────────────────────────────────────────
 
@@ -213,9 +362,7 @@ class DashboardGate:
         if not self._api_key:
             return Response(status_code=200)
 
-        # Extract gs_session cookie
-        token = request.cookies.get("gs_session", "")
-        if not token or not self._sessions.validate(token):
+        if not self.has_valid_session(request.scope):
             return Response(status_code=401)
 
         # Determine which crew this request is for by looking up the incoming
