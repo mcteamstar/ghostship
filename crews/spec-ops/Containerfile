@@ -50,6 +50,10 @@ RUN set -e; \
     rm -rf /tmp/toolchains
 LABEL org.ghostship.toolchains=$AGENT_TOOLCHAINS
 
+# Preserve the signing-key credential mask on rootless Linux (TRN-312).
+COPY patch_sandbox_seal.py /tmp/patch_sandbox_seal.py
+RUN python3 /tmp/patch_sandbox_seal.py && rm /tmp/patch_sandbox_seal.py
+
 ARG VERSION=0.0.0-dev
 LABEL org.ghostship.version=$VERSION
 

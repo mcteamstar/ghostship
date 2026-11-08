@@ -406,6 +406,7 @@ class LoginFlow(ABC):
             code_pattern=self._code_pattern(),
             deadline_secs=45.0,
             initial_bytes=leftover,
+            require_code=self.backend == "codex",
         )
 
         if not login_url:
@@ -785,10 +786,10 @@ class CodexLoginFlow(LoginFlow):
     image_key = "kc_image"
 
     def _binary_name(self) -> str:
-        return "codex-acp"
+        return "codex"
 
     def _login_cmd(self) -> list[str]:
-        return ["codex-acp", "login"]
+        return ["codex", "login", "--device-auth"]
 
     def _prompt_patterns(self) -> list:
         return []  # Codex login is non-interactive
@@ -801,7 +802,7 @@ class CodexLoginFlow(LoginFlow):
 
     def _code_pattern(self):
         import re
-        return re.compile(r"[Cc]ode[:\s]+([A-Z0-9-]{4,})")
+        return re.compile(r"[Cc]ode(?:[ \t]*\([^\r\n)]*\))?[:\s]+([A-Z0-9]{4,}-[A-Z0-9]{4,})\b")
 
     def _ttl_secs(self) -> float:
         return _CODEX_LOGIN_TTL_SECS

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.12.1
+
+### Restore Codex authentication and execution (TRN-312)
+
+- Expose the Codex CLI bundled with the ACP adapter on PATH and use
+  `codex login --device-auth` for ChatGPT subscription authentication.
+- Parse device codes across multiline, ANSI-colored output and wait for both
+  the verification URL and code before returning the login handoff.
+- Require Codex crews to use KiroCrew's sandbox credential mask, with no
+  unsandboxed fallback.
+- Apply a checked compatibility patch for the upstream signing-key mask seal
+  on rootless Linux. Descriptor-based `mount_setattr` preserves read-only
+  isolation and refuses execution if sealing fails or the upstream code changes.
+- Add login, sandbox configuration, patch drift, and disposable-container
+  isolation regression coverage. Live Codex task execution verified.
+
 ## v0.12.0
 
 ### Named credential profiles per backend (TRN-252)

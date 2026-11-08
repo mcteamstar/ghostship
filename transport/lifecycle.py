@@ -1715,11 +1715,13 @@ def _patch_crew_config(
     # kiro-cli runtime.
     if backend == "claude":
         agent_overrides["acp_backend"] = "claude"
-    # For a codex crew, route agent spawns through the Codex ACP runtime.
-    # codex-acp advertises a verified read-only mode at session/new, so
-    # ghostship's per-call kiro approval gate does not apply (see crew-governance).
+    # Codex's enforced permission route relies on KiroCrew's OS credential
+    # mask. It cannot run with the legacy unsandboxed defaults above.
+    # Require a working backend and refuse an unsandboxed fallback.
     elif backend == "codex":
         agent_overrides["acp_backend"] = "codex"
+        agent_overrides["sandbox"] = "auto"
+        agent_overrides["sandbox_allow_unsandboxed_exec"] = False
     # agent.default_model — the fallback model applied when no per-agent model
     # field overrides it. TRN-257 resolves it per backend:
     #   backends.<b>.model.default > model.default > KiroCrew built-in
@@ -2131,8 +2133,12 @@ def _run_pty_login_flow(
     code_pattern: "re.Pattern | None",
     deadline_secs: float = 45.0,
     initial_bytes: bytes = b"",
+    require_code: bool = False,
 ) -> "tuple[str | None, str | None]":
     """Run a PTY select-loop and extract a login URL and optional code.
+
+    When require_code is true, wait for both URL and code before handing
+    off to the background drain; an incomplete handoff fails on timeout.
 
     Owns the select() loop, chunk accumulation, prompt-answer dispatch,
     URL/code extraction, and background PTY drain thread.  Returns
@@ -2203,7 +2209,7 @@ def _run_pty_login_flow(
                         login_code = cm.group(1) or (
                             cm.group(2) if cm.lastindex and cm.lastindex >= 2 else None
                         )
-                return True
+                return not require_code or login_code is not None
         return False
 
     try:
@@ -2227,6 +2233,9 @@ def _run_pty_login_flow(
                         break
     except Exception as e:
         logger.warning("PTY read error in _run_pty_login_flow: %s", e)
+
+    if require_code and not login_code:
+        login_url = None
 
     if not login_url:
         # Surface what the CLI printed so a stalled prompt is diagnosable from
@@ -2646,19 +2655,12 @@ def _initiate_codex_login(podman: "PodmanClient", profile: str = "default") -> d
 
     Mirrors _initiate_claude_login: acquires _codex_login_pending_lock, applies
     TOCTOU-safe guards, starts the ephemeral ga-codex-login-* container from
-    KC_IMAGE (spec-ops with the codex toolchain), runs the codex-acp login
-    command via container_exec_pty_stdin, reads the 45-second PTY stream with
-    select(), extracts the verification URL, drains the PTY in background, and
-    stores pending state in _codex_login_pending.
-
-    Login-flow shape note (design Open Questions / task 1.2): the exact codex-acp
-    login UX (device-code vs browser sign-in, and whether a short code is
-    surfaced alongside the login_url) is confirmed against the adapter at
-    implementation time. The command is ``codex-acp login`` (headless), and the
-    URL regex accepts an OpenAI/ChatGPT auth URL first, then any https URL after
-    a "URL"/"browser" cue, then any long https URL as a last resort. The
-    codex-auth spec explicitly permits a code-less login_url response, so a
-    missing code is not an error.
+    KC_IMAGE (spec-ops with the codex toolchain), runs
+    ``codex login --device-auth`` via container_exec_pty_stdin, reads the
+    45-second PTY stream, extracts the verification URL and optional code,
+    and drains the PTY in the background while authentication completes.
+    The CLI is the compatible dependency shipped with codex-acp, exposed on
+    PATH by the image toolchain; codex-acp itself is an ACP stdio server.
 
     Returns one of:
       {"login_url": str, "code": str | None}  — flow started successfully

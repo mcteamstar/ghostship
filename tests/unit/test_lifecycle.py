@@ -742,6 +742,17 @@ class TestPatchFollowsCrewBackend(unittest.TestCase):
         self.assertEqual(agent["acp_backend"], "claude")
         self.assertEqual(agent["default_model"], "claude-default")
 
+    def test_codex_requires_sandbox_credential_mask(self):
+        agent = self._agent_overrides("codex")
+        self.assertEqual(agent["acp_backend"], "codex")
+        self.assertEqual(agent["sandbox"], "auto")
+        self.assertFalse(agent["sandbox_allow_unsandboxed_exec"])
+
+    def test_kiro_preserves_legacy_sandbox_settings(self):
+        agent = self._agent_overrides("kiro")
+        self.assertEqual(agent["sandbox"], "off")
+        self.assertTrue(agent["sandbox_allow_unsandboxed_exec"])
+
     def test_patch_models_uses_crew_backend(self):
         rec = _ExecRecorder()
         self.life._patch_models(rec, "gs-crew-x", backend="kiro")
