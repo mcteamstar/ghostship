@@ -425,6 +425,7 @@ def main() -> None:
         kc_model_codex_override=_g("KC_MODEL_CODEX_OVERRIDE"),
         kc_model_codex_default=_g("KC_MODEL_CODEX_DEFAULT"),
         ga_min_free_mem_gb=_g("GA_MIN_FREE_MEM_GB", "2.0"),
+        ga_start_mem_estimate_gb=_g("GA_START_MEM_ESTIMATE_GB", "1.0"),
         ga_spawn_min_memory_gb=_g("GA_SPAWN_MIN_MEMORY_GB", "1.5"),
         ga_resource_pressure_gb=_g("GA_RESOURCE_PRESSURE_GB", "2.0"),
         ga_resource_critical_gb=_g("GA_RESOURCE_CRITICAL_GB", "1.0"),

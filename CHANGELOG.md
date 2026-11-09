@@ -2,6 +2,16 @@
 
 ## v0.12.1
 
+### Wake cleanup and in-flight memory admission (TRN-320)
+
+- A failed wake (config patch, gateway wait or cookie mint) now stops the
+  container, releases the reservation and marks the crew stopped. A failed
+  cookie mint is a failed wake, and waiters receive the leader's error.
+- Memory admission subtracts `GA_START_MEM_ESTIMATE_GB` (default 1.0) for each
+  start in flight, and no longer holds the capacity lock while waiting for
+  memory.
+- Removed the unused `_run_restart_cycle`.
+
 ### Running crews keep launch-time credentials (TRN-319)
 
 - Running crews keep the credential they started with. Static credential

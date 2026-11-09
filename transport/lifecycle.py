@@ -254,6 +254,7 @@ def _resolve_backend_default_model(backend: str) -> str:
     """
     return _KC_MODEL_BACKEND_DEFAULT.get(backend, "") or KC_MODEL_DEFAULT
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
+GA_START_MEM_ESTIMATE_GB = cfg.ga_start_mem_estimate_gb
 GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
 GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb

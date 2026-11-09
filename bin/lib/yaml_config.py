@@ -99,6 +99,7 @@ DEFAULTS: dict[str, str] = {
     "GA_TASK_TIMESTAMP_TTL_SECS": "3600",
     # ── memory gate ──
     "GA_MIN_FREE_MEM_GB": "2.0",
+    "GA_START_MEM_ESTIMATE_GB": "1.0",
     "GA_SPAWN_MIN_MEMORY_GB": "1.5",
     "GA_RESOURCE_PRESSURE_GB": "2.0",
     "GA_RESOURCE_CRITICAL_GB": "1.0",
@@ -186,6 +187,7 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("crew", "git", "author", "email"): "GA_GIT_AUTHOR_EMAIL",
     # crew.memory
     ("crew", "memory", "min_free_mem_gb"): "GA_MIN_FREE_MEM_GB",
+    ("crew", "memory", "start_mem_estimate_gb"): "GA_START_MEM_ESTIMATE_GB",
     ("crew", "memory", "spawn_min_memory_gb"): "GA_SPAWN_MIN_MEMORY_GB",
     ("crew", "memory", "resource_pressure_gb"): "GA_RESOURCE_PRESSURE_GB",
     ("crew", "memory", "resource_critical_gb"): "GA_RESOURCE_CRITICAL_GB",
