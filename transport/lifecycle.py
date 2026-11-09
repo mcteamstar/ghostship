@@ -1303,7 +1303,7 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
 
 
 def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
-    """Re-register tracked jobs from the transport registry into the gateway.
+    """Reconcile tracked jobs with gateway state after a crew becomes available.
 
     Runs in two passes:
 
@@ -1316,6 +1316,12 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
     2. **Reseed pass** — for each enabled registry entry that has no matching
        job in the gateway (the true bootstrap case: fresh container, empty
        gateway), re-register it.
+
+    The gateway listing is also fetched when the transport has no tracked
+    entries, so gateway-only schedules are observed on the first explicit wake
+    after downtime. They remain gateway-owned and keep their existing delivery
+    semantics; the transport does not synthesize registry schedules for job
+    types it cannot represent.
     """
     try:
         from captain import _captain_jobs  # container: flat /app/
@@ -1324,9 +1330,6 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
 
     with registry:
         schedules = registry.get_schedules(crew_id)
-
-    if not schedules:
-        return
 
     # Get existing gateway jobs
     try:
@@ -1388,78 +1391,11 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
         if not sched.get("enabled", True):
             continue
 
-        # ── Captain entries use dispatch+steer, not gateway crons ─────────────
+        # Captain entries are transport-side schedules. The captain monitor
+        # wakes and dispatches only when next_fire_at is due; an unrelated wake
+        # must not start a future Captain check-in.
         if sched.get("type") == "captain":
-            current_task_id = sched.get("current_task_id")
-            if not current_task_id:
-                # No task yet — dispatch immediately
-                try:
-                    try:
-                        from captain_engine import _dispatch_captain_checkin  # container
-                    except ModuleNotFoundError:
-                        from transport.captain_engine import _dispatch_captain_checkin  # type: ignore[no-redef]
-                    new_task_id = _dispatch_captain_checkin(
-                        crew, crew_id, model=sched.get("model")
-                    )
-                    with registry:
-                        for s in registry.get_schedules(crew_id):
-                            if s.get("type") == "captain":
-                                s["current_task_id"] = new_task_id
-                                break
-                    logger.info(
-                        "Re-seeded captain check-in for crew %s (new task %s)",
-                        crew_id, new_task_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to re-seed captain check-in for crew %s: %s",
-                        crew_id, e,
-                    )
-            else:
-                # Has a task_id — verify liveness
-                try:
-                    task_info = _crew_api(crew, "GET", f"/api/spawn/{current_task_id}")
-                    # Task exists — leave it; the captain monitor will steer it
-                    logger.debug(
-                        "Captain check-in task %s still live for crew %s",
-                        current_task_id, crew_id,
-                    )
-                except Exception as e:
-                    err_str = str(e)
-                    if "conversation_gone" in err_str or "404" in err_str or "not found" in err_str:
-                        # Session gone after container restart — re-dispatch
-                        logger.info(
-                            "Captain check-in task %s gone for crew %s — re-dispatching",
-                            current_task_id, crew_id,
-                        )
-                        try:
-                            try:
-                                from captain_engine import _dispatch_captain_checkin  # container
-                            except ModuleNotFoundError:
-                                from transport.captain_engine import _dispatch_captain_checkin  # type: ignore[no-redef]
-                            new_task_id = _dispatch_captain_checkin(
-                                crew, crew_id, model=sched.get("model")
-                            )
-                            with registry:
-                                for s in registry.get_schedules(crew_id):
-                                    if s.get("type") == "captain":
-                                        s["current_task_id"] = new_task_id
-                                        break
-                            logger.info(
-                                "Re-dispatched captain check-in for crew %s (new task %s)",
-                                crew_id, new_task_id,
-                            )
-                        except Exception as e2:
-                            logger.warning(
-                                "Failed to re-dispatch captain check-in for crew %s: %s",
-                                crew_id, e2,
-                            )
-                    else:
-                        logger.warning(
-                            "Could not check captain task liveness for crew %s: %s",
-                            crew_id, e,
-                        )
-            continue  # Captain entries handled above — skip the cron reseed path
+            continue
 
         job_id = sched.get("job_id")
         if job_id in gateway_ids:
@@ -1496,9 +1432,12 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
 
 
 def _reconcile_registry() -> None:
-    """On startup: restart stopped crew containers, remove truly gone ones.
-    Also sweeps any orphaned ga-login-* containers left over from a transport
-    restart that occurred mid-login flow.
+    """On startup, reconcile registered crews with Podman without waking them.
+
+    Existing stopped containers remain registered with their schedules,
+    workspace volumes, dashboard allocations, and other metadata intact.
+    Containers confirmed absent are removed under the existing re-registration
+    guard. The login-container sweep is independent of crew recovery.
     """
     # best-effort: podman may be unavailable on startup; reconciliation is skipped, not fatal
     try:
@@ -1532,26 +1471,41 @@ def _reconcile_registry() -> None:
     except Exception as e:
         logger.warning("Login expiry sweep failed: %s", e)
 
-    # Snapshot the registry under the lock, then release it before the
-    # per-crew restart loop so the lock is not held across gateway waits
-    # (up to 30s each).  Per-crew write-backs re-acquire the lock individually.
-    # H-2 fix: also capture created_at values for all entries AT SNAPSHOT TIME
-    # under the lock, so the write-back can detect concurrent re-registrations.
-    with registry:
-        snapshot = dict(registry._reg["crews"])
-        # Capture created_at under the same lock as the snapshot. This ensures
-        # the write-back compares against the value at snapshot time, not a
-        # value that may have been mutated by a concurrent launch() in the
-        # interval between the snapshot and the write-back.
-        snapshot_created_at: dict[str, str | None] = {
-            cid: entry.get("created_at") for cid, entry in snapshot.items()
-        }
+    try:
+        from launcher import _launcher  # container: flat /app/
+    except ModuleNotFoundError:
+        from transport.launcher import _launcher  # local dev
+
+    # Capture registry state and per-crew startup generations under the same
+    # lock order used by the write-back. A wake that starts after this snapshot
+    # increments its generation before it can start the container, so stale
+    # Podman observations cannot overwrite that newer lifecycle state.
+    with _launcher._startup_events_lock:
+        startup_in_progress = set(_launcher._startup_events)
+        with registry:
+            snapshot = dict(registry._reg["crews"])
+            snapshot_created_at: dict[str, str | None] = {
+                cid: entry.get("created_at") for cid, entry in snapshot.items()
+            }
+            snapshot_containers: dict[str, str | None] = {
+                cid: entry.get("container") for cid, entry in snapshot.items()
+            }
+            snapshot_generation: dict[str, int] = {
+                cid: _launcher._startup_generation.get(cid, 0)
+                for cid in snapshot
+            }
 
     to_remove = []
     updates: dict[str, dict] = {}  # cid -> fields to merge back
 
     for cid, info in snapshot.items():
-        container = info["container"]
+        if cid in startup_in_progress:
+            logger.info("Reconcile: crew %s already has a wake in progress — skipping", cid)
+            continue
+        container = snapshot_containers[cid]
+        if not container:
+            logger.warning("Reconcile: crew %s has no container name — skipping", cid)
+            continue
         try:
             exists = podman.container_exists(container)
         except Exception as e:
@@ -1566,55 +1520,57 @@ def _reconcile_registry() -> None:
             except Exception as e:
                 logger.warning("Reconcile: transient Podman error checking running state for crew %s — skipping: %s", cid, e)
                 continue
-            if not running:
-                # Container exists but stopped (e.g. VM reboot) — restart it.
-                # Delegates to _launcher._run_restart_cycle for the
-                # patch-config → stop → start → wait-gateway → mint-cookie cycle.
-                logger.info("Restarting stopped crew on startup: %s", cid)
-                try:
-                    from launcher import _launcher  # container: flat /app/
-                except ModuleNotFoundError:
-                    from transport.launcher import _launcher  # local dev
-                cycle_result = _launcher._run_restart_cycle(info, cid)
-                updates[cid] = cycle_result
-                if cycle_result.get("status") == "running":
-                    logger.info("Crew %s restored", cid)
-                    # Re-seed gateway schedules from registry
-                    restored_crew = dict(info)
-                    if cycle_result.get("cookie"):
-                        restored_crew["cookie"] = cycle_result["cookie"]
-                    deployed = _deployed_agent_names(podman, container)
-                    _enroll_crew_members(restored_crew, cid, deployed)
-                    updates[cid]["enrolled_agents"] = [
-                        n.removesuffix(".json") for n in deployed
-                    ]
-                    try:
-                        _reseed_crew_schedules(restored_crew, cid, info)
-                    except Exception as e:
-                        logger.warning("Schedule re-seed failed for crew %s: %s", cid, e)
+            desired_status = "running" if running else "stopped"
+            if info.get("status") != desired_status:
+                logger.info(
+                    "Reconcile: correcting crew %s registry status from %r to %s",
+                    cid, info.get("status"), desired_status,
+                )
+            updates[cid] = {"status": desired_status}
 
-    # Write all changes back under the lock in one pass
+    # Apply statuses and guarded removals together. The launcher generation
+    # lock closes the observation/write race with _ensure_crew_running; no
+    # Podman or gateway operation is performed while either lock is held.
     try:
-        with registry:
-            for cid in to_remove:
-                # H-2 fix: re-read the live entry and skip deletion if its
-                # created_at differs from the snapshot value. A differing
-                # created_at means the crew was re-registered concurrently
-                # (e.g. a new launch() ran between the snapshot and here) and
-                # we must not destroy the new entry.
-                live_entry = registry._reg["crews"].get(cid)
-                if live_entry is None:
-                    continue  # already removed — nothing to do
-                if live_entry.get("created_at") != snapshot_created_at.get(cid):
-                    logger.info(
-                        "Reconcile: skipping deletion of crew %s — "
-                        "created_at changed (concurrent re-registration)", cid,
+        with _launcher._startup_events_lock:
+            with registry:
+                live_crews = registry._reg["crews"]
+
+                def _snapshot_is_current(cid: str, live_entry: dict) -> bool:
+                    return (
+                        cid not in _launcher._startup_events
+                        and _launcher._startup_generation.get(cid, 0)
+                        == snapshot_generation.get(cid, 0)
+                        and live_entry.get("container") == snapshot_containers.get(cid)
+                        and live_entry.get("created_at") == snapshot_created_at.get(cid)
                     )
-                    continue
-                del registry._reg["crews"][cid]
-            for cid, fields in updates.items():
-                if cid in registry._reg["crews"]:
-                    registry._reg["crews"][cid].update(fields)
+
+                for cid in to_remove:
+                    # H-2 fix: re-read the live entry and skip deletion if its
+                    # created_at differs from the snapshot value. A differing
+                    # created_at means the crew was re-registered concurrently
+                    # (e.g. a new launch() ran between the snapshot and here).
+                    live_entry = live_crews.get(cid)
+                    if live_entry is None:
+                        continue  # already removed — nothing to do
+                    if not _snapshot_is_current(cid, live_entry):
+                        logger.info(
+                            "Reconcile: skipping deletion of crew %s — "
+                            "entry or lifecycle generation changed during inspection", cid,
+                        )
+                        continue
+                    del live_crews[cid]
+                for cid, fields in updates.items():
+                    live_entry = live_crews.get(cid)
+                    if live_entry is None:
+                        continue
+                    if not _snapshot_is_current(cid, live_entry):
+                        logger.info(
+                            "Reconcile: skipping status update for crew %s — "
+                            "lifecycle state changed during inspection", cid,
+                        )
+                        continue
+                    live_entry.update(fields)
     except Exception as e:
         logger.error(
             "Registry I/O error during reconcile write-back — skipping write to avoid data loss: %s", e

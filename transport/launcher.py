@@ -98,6 +98,14 @@ class CrewLauncher:
         self._warm_markers: dict[str, float] = {}
         self._warm_markers_lock = threading.Lock()
 
+        # Cross-crew start admission. The capacity lock serialises the resource
+        # checks through the first Podman start, then the reservation remains
+        # until the full restart succeeds or fails. It is deliberately separate
+        # from the registry lock: Podman and gateway operations never run while
+        # holding the registry lock.
+        self._capacity_lock = threading.Lock()
+        self._start_reservations: dict[str, str] = {}
+
     def get_ensure_running_lock(self, crew_id: str) -> threading.Lock:
         """Return or create a per-crew lock for serialising recovery attempts.
 
@@ -115,6 +123,11 @@ class CrewLauncher:
     # ── Active-limit and memory-gate helpers ─────────────────────────────────
 
     def _check_active_limit(self, podman: "PodmanClient", crew_id: str) -> None:
+        """Check active crew capacity, accounting for starts in flight."""
+        with self._capacity_lock:
+            self._check_active_limit_locked(podman, crew_id)
+
+    def _check_active_limit_locked(self, podman: "PodmanClient", crew_id: str) -> None:
         """Raise RuntimeError if the active-crew limit is reached.
 
         Counts only crews whose container is actually running in Podman (not
@@ -131,24 +144,32 @@ class CrewLauncher:
         if GA_MAX_ACTIVE_CREWS <= 0:
             return
 
-        with registry:
-            running_snapshot = [
-                (cid, entry.get("container"))
-                for cid, entry in registry._reg["crews"].items()
-                if entry.get("status") == "running"
-            ]
+        with self._startup_events_lock:
+            startup_in_progress = set(self._startup_events)
+            with registry:
+                crew_snapshot = [
+                    (cid, entry.get("container"), entry.get("status"))
+                    for cid, entry in registry._reg["crews"].items()
+                ]
+                generation_snapshot = {
+                    cid: self._startup_generation.get(cid, 0)
+                    for cid, _container, _status in crew_snapshot
+                }
 
-        active = 0
+        active_ids: set[str] = set()
         corrections: list[str] = []
-        for cid, container in running_snapshot:
+        containers_by_id = {cid: container for cid, container, _ in crew_snapshot}
+        for cid, container, status in crew_snapshot:
             if not container:
-                corrections.append(cid)
+                if status == "running":
+                    corrections.append(cid)
                 continue
             try:
                 if podman.container_is_running(container):
-                    active += 1
+                    active_ids.add(cid)
                 else:
-                    corrections.append(cid)
+                    if status == "running":
+                        corrections.append(cid)
             except Exception as e:
                 # Transient Podman error — do NOT mark as stopped; the
                 # container state is unknown and we must not remove it from
@@ -157,14 +178,23 @@ class CrewLauncher:
                     "Active-limit check: transient Podman error for crew %s "
                     "— skipping correction: %s", cid, e,
                 )
-                active += 1  # assume still running to avoid under-counting
+                active_ids.add(cid)  # assume still running to avoid under-counting
 
         if corrections:
-            with registry:
-                for cid in corrections:
-                    entry = registry._reg["crews"].get(cid)
-                    if entry is not None and entry.get("status") == "running":
-                        entry["status"] = "stopped"
+            with self._startup_events_lock:
+                with registry:
+                    for cid in corrections:
+                        entry = registry._reg["crews"].get(cid)
+                        if (
+                            cid not in startup_in_progress
+                            and cid not in self._startup_events
+                            and self._startup_generation.get(cid, 0)
+                            == generation_snapshot.get(cid, 0)
+                            and entry is not None
+                            and entry.get("container") == containers_by_id.get(cid)
+                            and entry.get("status") == "running"
+                        ):
+                            entry["status"] = "stopped"
             logger.info(
                 "Active-limit check corrected %d stale running entr%s to stopped: %s",
                 len(corrections),
@@ -172,11 +202,48 @@ class CrewLauncher:
                 ", ".join(corrections),
             )
 
-        if active >= GA_MAX_ACTIVE_CREWS:
+        reserved_ids = {
+            cid for cid, container in self._start_reservations.items()
+            if cid not in active_ids and container
+        }
+        active_ids.update(reserved_ids)
+        projected = len(active_ids) if crew_id in active_ids else len(active_ids) + 1
+        if projected > GA_MAX_ACTIVE_CREWS:
             raise RuntimeError(
                 f"Active crew limit ({GA_MAX_ACTIVE_CREWS}) reached — "
                 "wait for a running crew to idle out or nuke one first"
             )
+
+    def _reserve_start_capacity(
+        self, podman: "PodmanClient", crew_id: str, container: str
+    ) -> None:
+        """Atomically admit a start and hold the memory gate through Podman start.
+
+        The active slot reservation remains in ``_start_reservations`` until
+        ensure_running completes. Serialising only the checks and initial
+        ``container_start`` lets the next start see the first container's real
+        memory use; the lock is released before config patching or any gateway
+        readiness wait.
+        """
+        self._capacity_lock.acquire()
+        reservation_added = False
+        try:
+            if crew_id in self._start_reservations:
+                raise RuntimeError(f"Crew {crew_id} already has a start reservation")
+            self._check_active_limit_locked(podman, crew_id)
+            self._check_memory_gate(podman, crew_id)
+            self._start_reservations[crew_id] = container
+            reservation_added = True
+        except BaseException:
+            if reservation_added:
+                self._start_reservations.pop(crew_id, None)
+            self._capacity_lock.release()
+            raise
+
+    def _release_start_reservation(self, crew_id: str) -> None:
+        """Release a start reservation after success, failure, or cancellation."""
+        with self._capacity_lock:
+            self._start_reservations.pop(crew_id, None)
 
     def _check_memory_gate(self, podman: "PodmanClient", crew_id: str) -> None:
         """Raise RuntimeError if available memory is below the required minimum.
@@ -233,6 +300,7 @@ class CrewLauncher:
                 _deployed_agent_names,
                 _enroll_crew_members,
                 _write_dashboard_cookie,
+                _reseed_crew_schedules,
             )
             from registry import _touch_crew  # container
         except ModuleNotFoundError:
@@ -248,6 +316,7 @@ class CrewLauncher:
                 _deployed_agent_names,
                 _enroll_crew_members,
                 _write_dashboard_cookie,
+                _reseed_crew_schedules,
             )
             from transport.registry import _touch_crew  # local dev
 
@@ -302,8 +371,19 @@ class CrewLauncher:
                     # election (where we registered the event) and this
                     # early-exit is unblocked rather than stranded for 150s.
                     with self._startup_events_lock:
+                        with registry:
+                            live_entry = registry._reg["crews"].get(crew_id)
+                            if (
+                                live_entry is not None
+                                and live_entry.get("container") == c.container
+                            ):
+                                live_entry["status"] = "running"
                         self._crew_restart_outcomes[crew_id] = (True, None)
                         self._startup_events.pop(crew_id, None)
+                    if isinstance(crew, dict):
+                        crew["status"] = "running"
+                    else:
+                        c.status = "running"
                     event.set()
                     if touch:
                         _touch_crew(crew_id)
@@ -367,13 +447,21 @@ class CrewLauncher:
             False,
             RuntimeError(f"Crew {crew_id} restart (leader) failed"),
         )
+        reservation_active = False
+        capacity_lock_held = False
         try:
             logger.info("Crew %s is stopped — restarting", crew_id)
 
-            self._check_active_limit(podman, crew_id)
-            self._check_memory_gate(podman, crew_id)
-
-            podman.container_start(c.container)
+            self._reserve_start_capacity(podman, crew_id, c.container)
+            reservation_active = True
+            capacity_lock_held = True
+            try:
+                podman.container_start(c.container)
+            finally:
+                # Resource checks and the first container start are serialized;
+                # readiness, config patching, and other gateway work are not.
+                self._capacity_lock.release()
+                capacity_lock_held = False
             crew_url = c.gateway_url()
 
             # TRN-238 QA-2: a concurrent nuke() can remove this crew's registry
@@ -466,6 +554,16 @@ class CrewLauncher:
                     registry._reg["crews"][crew_id]["enrolled_agents"] = [
                         n.removesuffix(".json") for n in deployed
                     ]
+            # On-demand recovery is also the point at which gateway state can
+            # be inspected again. This reconciles tracked schedules and
+            # re-seeds missing gateway jobs after a container restart.
+            try:
+                _reseed_crew_schedules(crew, crew_id, crew)
+            except Exception as schedule_exc:
+                logger.warning(
+                    "Schedule reconciliation failed after waking crew %s: %s",
+                    crew_id, schedule_exc,
+                )
             _touch_crew(crew_id)
             _outcome = (True, None)
             return crew
@@ -473,6 +571,10 @@ class CrewLauncher:
             _outcome = (False, exc)
             raise
         finally:
+            if capacity_lock_held:
+                self._capacity_lock.release()
+            if reservation_active:
+                self._release_start_reservation(crew_id)
             # Always unblock waiters and clean up, even on error. Publish the
             # outcome BEFORE firing the Event so a waiter that wakes immediately
             # sees it.
