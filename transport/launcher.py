@@ -112,6 +112,14 @@ except ModuleNotFoundError:
     from transport.lifecycle import _NUKED_DURING_RESTART  # local dev
 
 
+_MEMORY_WAIT_SECS = 60
+_MEMORY_POLL_SECS = 5
+
+
+class _InsufficientMemory(RuntimeError):
+    """Admission refused for lack of memory headroom (retryable)."""
+
+
 class CrewLauncher:
     """Owns the per-crew concurrency state and crew launch logic.
 
@@ -279,20 +287,40 @@ class CrewLauncher:
         memory use; the lock is released before config patching or any gateway
         readiness wait.
         """
-        self._capacity_lock.acquire()
-        reservation_added = False
         try:
-            if crew_id in self._start_reservations:
-                raise RuntimeError(f"Crew {crew_id} already has a start reservation")
-            self._check_active_limit_locked(podman, crew_id)
-            self._check_memory_gate(podman, crew_id)
-            self._start_reservations[crew_id] = container
-            reservation_added = True
-        except BaseException:
-            if reservation_added:
-                self._start_reservations.pop(crew_id, None)
+            from lifecycle import GA_MIN_FREE_MEM_GB  # container
+        except ModuleNotFoundError:
+            from transport.lifecycle import GA_MIN_FREE_MEM_GB  # local dev
+
+        deadline = time.monotonic() + _MEMORY_WAIT_SECS
+        while True:
+            # The capacity lock is held only for one check; it is released
+            # between memory polls so other crews' admission is not blocked.
+            self._capacity_lock.acquire()
+            reservation_added = False
+            try:
+                if crew_id in self._start_reservations:
+                    raise RuntimeError(f"Crew {crew_id} already has a start reservation")
+                self._check_active_limit_locked(podman, crew_id)
+                try:
+                    self._check_memory_gate(podman, crew_id)
+                except _InsufficientMemory:
+                    if GA_MIN_FREE_MEM_GB <= 0 or time.monotonic() >= deadline:
+                        raise
+                    wait_more = True
+                else:
+                    wait_more = False
+                    self._start_reservations[crew_id] = container
+                    reservation_added = True
+            except BaseException:
+                if reservation_added:
+                    self._start_reservations.pop(crew_id, None)
+                self._capacity_lock.release()
+                raise
+            if not wait_more:
+                return  # capacity lock stays held for the caller
             self._capacity_lock.release()
-            raise
+            time.sleep(_MEMORY_POLL_SECS)
 
     def _release_start_reservation(self, crew_id: str) -> None:
         """Release a start reservation after success, failure, or cancellation."""
@@ -300,24 +328,52 @@ class CrewLauncher:
             self._start_reservations.pop(crew_id, None)
 
     def _check_memory_gate(self, podman: "PodmanClient", crew_id: str) -> None:
-        """Raise RuntimeError if available memory is below the required minimum.
+        """Raise _InsufficientMemory if admission headroom is below the minimum.
 
+        Takes one live reading (no waiting) and subtracts the configured
+        estimate for every start already in flight, since those containers
+        have not yet used their memory. Callers must hold the capacity lock.
         No-op when GA_MIN_FREE_MEM_GB == 0 (disabled).
         """
         try:
-            from lifecycle import GA_MIN_FREE_MEM_GB, _wait_for_memory  # container
+            from lifecycle import (  # container
+                GA_MIN_FREE_MEM_GB, GA_START_MEM_ESTIMATE_GB, _wait_for_memory,
+            )
         except ModuleNotFoundError:
-            from transport.lifecycle import GA_MIN_FREE_MEM_GB, _wait_for_memory  # local dev
+            from transport.lifecycle import (  # local dev
+                GA_MIN_FREE_MEM_GB, GA_START_MEM_ESTIMATE_GB, _wait_for_memory,
+            )
 
         if GA_MIN_FREE_MEM_GB <= 0:
             return
 
-        free_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 60)
+        live_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 0)
+        in_flight = len(self._start_reservations)
+        free_gb = live_gb - GA_START_MEM_ESTIMATE_GB * in_flight
         if free_gb < GA_MIN_FREE_MEM_GB:
-            raise RuntimeError(
+            raise _InsufficientMemory(
                 f"Insufficient available memory to start crew {crew_id}: "
-                f"{free_gb}GB free, {GA_MIN_FREE_MEM_GB}GB required. "
-                f"Retry in a moment."
+                f"{free_gb:g}GB free ({in_flight} start(s) in flight), "
+                f"{GA_MIN_FREE_MEM_GB}GB required. Retry in a moment."
+            )
+
+    def _cleanup_failed_wake(self, podman: "PodmanClient", crew_id: str, container: str) -> None:
+        """Best-effort: stop the container and mark the registry stopped."""
+        try:
+            podman.container_stop(container)
+        except Exception as stop_exc:
+            logger.error(
+                "Crew %s: container_stop during failed-wake cleanup failed: %s",
+                crew_id, stop_exc,
+            )
+        try:
+            with registry:
+                if crew_id in registry._reg["crews"]:
+                    registry._reg["crews"][crew_id]["status"] = "stopped"
+        except Exception as reg_exc:
+            logger.error(
+                "Crew %s: registry update during failed-wake cleanup failed: %s",
+                crew_id, reg_exc,
             )
 
     # ── ensure_running ────────────────────────────────────────────────────────
@@ -517,6 +573,7 @@ class CrewLauncher:
         )
         reservation_active = False
         capacity_lock_held = False
+        post_start = False
         try:
             logger.info("Crew %s is stopped — restarting", crew_id)
 
@@ -555,6 +612,7 @@ class CrewLauncher:
                 )
                 _outcome = (True, None)
                 return _NUKED_DURING_RESTART
+            post_start = True
 
             # A stopped crew may have missed a credential rotation. Refresh its
             # own profile before the gateway starts serving again.
@@ -637,8 +695,8 @@ class CrewLauncher:
                         crew_id,
                     )
             else:
-                logger.warning(
-                    "Crew %s restarted but cookie refresh failed", crew_id
+                raise RuntimeError(
+                    f"Cookie refresh failed after restarting crew {crew_id}"
                 )
             deployed = _deployed_agent_names(podman, c.container)
             _enroll_crew_members(crew, crew_id, deployed)
@@ -662,6 +720,8 @@ class CrewLauncher:
             return crew
         except Exception as exc:
             _outcome = (False, exc)
+            if post_start:
+                self._cleanup_failed_wake(podman, crew_id, c.container)
             raise
         finally:
             if capacity_lock_held:
@@ -932,74 +992,6 @@ class CrewLauncher:
             result["pre_warm_status"] = "error"
 
         return result
-
-    # ── _run_restart_cycle ────────────────────────────────────────────────────
-
-    def _run_restart_cycle(self, crew, crew_id: str):
-        """Run the patch-config → stop → start → wait-gateway → mint-cookie cycle.
-
-        Used by ``_reconcile_registry`` for stopped crews on startup.  Mirrors
-        the restart body inside ``ensure_running``:
-            patch config → stop → start → wait_gateway → mint cookie → update registry
-
-        Returns an update-dict ``{"status": "running", ...}`` on success,
-        or ``{"status": "stopped"}`` on failure (gateway timeout, exception, …).
-
-        On success the caller is also responsible for calling
-        ``_enroll_crew_members`` and ``_reseed_crew_schedules`` — those require
-        the updated crew dict and are orchestration concerns outside this method.
-        """
-        try:
-            from lifecycle import (  # container
-                _get_podman,
-                _to_crew,
-                _patch_crew_config,
-                _wait_gateway,
-                _mint_cookie,
-                CREW_GATEWAY_PORT,
-            )
-        except ModuleNotFoundError:
-            from transport.lifecycle import (  # local dev
-                _get_podman,
-                _to_crew,
-                _patch_crew_config,
-                _wait_gateway,
-                _mint_cookie,
-                CREW_GATEWAY_PORT,
-            )
-
-        try:
-            podman = _get_podman()
-        except Exception as e:
-            logger.warning("Reconcile restart: could not get Podman client for crew %s: %s", crew_id, e)
-            return {"status": "stopped"}
-
-        c = _to_crew(crew_id, crew)
-        container = c.container
-        crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-
-        try:
-            podman.container_start(container)
-            _patch_crew_config(podman, container, backend=c.acp_backend or "kiro")
-            podman.container_stop(container)
-            podman.container_start(container)
-            if _wait_gateway(crew_url, timeout=60):
-                new_cookie = _mint_cookie(podman, container, crew_url)
-                update = {
-                    "status": "running",
-                    "last_used": time.time(),
-                    **({} if not new_cookie else {"cookie": new_cookie}),
-                }
-                return update
-            else:
-                logger.warning(
-                    "Crew %s gateway not ready after restart — leaving stopped",
-                    crew_id,
-                )
-                return {"status": "stopped"}
-        except Exception as e:
-            logger.warning("Could not restart crew %s: %s", crew_id, e)
-            return {"status": "stopped"}
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

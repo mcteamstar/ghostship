@@ -23,6 +23,7 @@ These variables are written into the transport container's environment by `insta
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. Checked against `MemAvailable` from `/proc/meminfo` (falls back to `MemFree`), polled every 5 s for up to 60 s. Set to `0` to disable. |
+| `GA_START_MEM_ESTIMATE_GB` | `1.0` | Memory (GB) assumed for each crew start still in flight. Subtracted from the live reading when admitting another start, so concurrent wakes cannot pass the `GA_MIN_FREE_MEM_GB` gate on the same free memory. Raise it for heavy crew compositions. |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) for Ghost Academy. Set to `false` to use the default socket. |
 | `GA_MACHINE_CPUS` | `8` | vCPUs for the dedicated Podman machine VM (macOS only; a cap, not a reservation). Ignored on Linux. |
 | `GA_MACHINE_MEMORY` | `8192` | Memory in MB for the dedicated Podman machine VM (macOS only). A ceiling backed on demand by Apple's Virtualization.framework; idle usage stays well below this. 8 GB is sufficient for 3 concurrent crew containers. Ignored on Linux. |
@@ -246,7 +247,7 @@ default, is documented in **`config/ghostship.yaml.example`** — copy it to
 |:--------|:-------------|:--------|
 | `network` | `port`, `host`, `host_url`, `api_key`, `tls.certfile`, `tls.keyfile` | `PORT`, `HOST`, `GA_HOST_URL`, `GA_API_KEY`, … |
 | `crew` | `max_crews`, `max_active`, `idle_timeout_secs`, `subagent_timeout_secs`, `orders_dir`, `git.author.name`/`git.author.email` | `GA_MAX_CREWS`, `GA_MAX_ACTIVE_CREWS`, … |
-| `crew.memory` | `min_free_mem_gb`, `spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb` | `GA_MIN_FREE_MEM_GB`, … |
+| `crew.memory` | `min_free_mem_gb`, `start_mem_estimate_gb`, `spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb` | `GA_MIN_FREE_MEM_GB`, … |
 | `model` | `default` | `KC_MODEL_DEFAULT` |
 | `backends` | `default` (list); `<b>.model.override`/`<b>.model.default`; `kiro.identity_center.url`/`.region`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KC_MODEL_<B>_OVERRIDE`/`_DEFAULT`, `KIRO_IDENTITY_PROVIDER`, … |
 | `portal` | `tls_mode`, `domain`, `session_ttl_secs`, `dashboard.default`, `dashboard.port_range.start`/`.size`, `rate_limit.*` | `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, … |

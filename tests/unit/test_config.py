@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -211,6 +212,13 @@ class TestConfigFromEnv(unittest.TestCase):
         with patch.dict("os.environ", {"GA_MIN_FREE_MEM_GB": "3.5"}):
             cfg = Config.from_env()
         self.assertAlmostEqual(cfg.ga_min_free_mem_gb, 3.5)
+
+    def test_ga_start_mem_estimate_gb_default_and_override(self):
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("GA_START_MEM_ESTIMATE_GB", None)
+            self.assertAlmostEqual(Config.from_env().ga_start_mem_estimate_gb, 1.0)
+        with patch.dict("os.environ", {"GA_START_MEM_ESTIMATE_GB": "2.5"}):
+            self.assertAlmostEqual(Config.from_env().ga_start_mem_estimate_gb, 2.5)
 
     def test_ga_dashboard_default_true_values(self):
         for val in ("1", "true", "yes", "True", "YES"):

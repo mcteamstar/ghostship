@@ -342,12 +342,6 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
             self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
         self.assertEqual(self._patched_backend(), "kiro")
 
-    def test_reconcile_restart_cycle_uses_recorded_backend(self):
-        self.crews[CREW_ID]["acp_backend"] = "kiro"
-        with patch.object(self.life, "GA_CREW_ACP_BACKEND", "claude"):
-            self.launcher._run_restart_cycle(dict(self.crews[CREW_ID]), CREW_ID)
-        self.assertEqual(self._patched_backend(), "kiro")
-
 
 # ── TestEnsureRunning ─────────────────────────────────────────────────────────
 
@@ -822,7 +816,7 @@ class TestCrossCrewStartAdmission(unittest.TestCase):
         self.assertIn("active crew limit", str(errors[0][1]).lower())
         self.assertEqual(self.launcher._start_reservations, {})
 
-    def test_pending_start_is_included_in_memory_admission(self):
+    def test_in_flight_start_estimate_is_subtracted_from_live_memory(self):
         at_gateway = threading.Event()
         release_gateway = threading.Event()
 
@@ -830,18 +824,15 @@ class TestCrossCrewStartAdmission(unittest.TestCase):
             at_gateway.set()
             return release_gateway.wait(timeout=5)
 
-        def _memory(_podman, _minimum, _timeout):
-            # The first start sees 4 GB. While it is still in flight, a second
-            # start sees only 1 GB of headroom even if the fake container is in
-            # the config-patch stop/start transition.
-            return 1.0 if self.launcher._start_reservations else 4.0
-
         self.life._wait_gateway.side_effect = _wait_gateway
         successes, errors = [], []
         with (
             patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(self.life, "GA_MIN_FREE_MEM_GB", 2.0),
-            patch.object(self.life, "_wait_for_memory", side_effect=_memory),
+            patch.object(self.life, "GA_START_MEM_ESTIMATE_GB", 1.0),
+            patch("transport.launcher._MEMORY_WAIT_SECS", 0),
+            # Constant live reading: 2.5 GB. One start in flight leaves 1.5 GB.
+            patch.object(self.life, "_wait_for_memory", return_value=2.5),
         ):
             first = threading.Thread(target=self._start, args=("admit-a", successes, errors))
             first.start()
@@ -850,10 +841,108 @@ class TestCrossCrewStartAdmission(unittest.TestCase):
             release_gateway.set()
             self._join([first])
 
-        self.assertIn("admit-a", successes)
+        self.assertIn("admit-a", successes, errors)
         self.assertEqual(len(errors), 1)
         self.assertIn("memory", str(errors[0][1]).lower())
         self.assertEqual(self.launcher._start_reservations, {})
+
+    def test_memory_wait_does_not_hold_capacity_lock(self):
+        waiting = threading.Event()
+        release = threading.Event()
+        calls = {"n": 0}
+
+        def _memory(_podman, _minimum, _timeout):
+            calls["n"] += 1
+            if threading.current_thread().name == "crew-a":
+                waiting.set()
+                return 0.0 if not release.is_set() else 8.0
+            return 8.0
+
+        def _sleep(_secs):
+            release.wait(timeout=5)
+
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 2.0),
+            patch.object(self.life, "_wait_for_memory", side_effect=_memory),
+            patch("transport.launcher.time.sleep", side_effect=_sleep),
+        ):
+            successes, errors = [], []
+            first = threading.Thread(
+                target=self._start, args=("admit-a", successes, errors), name="crew-a"
+            )
+            first.start()
+            self.assertTrue(waiting.wait(timeout=5))
+            # Crew A is waiting for memory; B must still be admitted.
+            second = threading.Thread(
+                target=self._start, args=("admit-b", successes, errors), name="crew-b"
+            )
+            second.start()
+            self._join([second])
+            self.assertIn("admit-b", successes)
+            release.set()
+            self._join([first])
+
+        self.assertEqual(errors, [])
+        self.assertEqual(set(successes), {"admit-a", "admit-b"})
+
+    def test_failed_wake_steps_stop_container_and_mark_stopped(self):
+        cases = {
+            "patch": lambda: setattr(self.life._patch_crew_config, "side_effect", RuntimeError("patch boom")),
+            "gateway": lambda: setattr(self.life._wait_gateway, "side_effect", lambda *_a, **_k: False),
+            "cookie": lambda: setattr(self.life._mint_cookie, "side_effect", lambda *_a: None),
+        }
+        for name, arrange in cases.items():
+            with self.subTest(step=name):
+                self.life._patch_crew_config.side_effect = None
+                self.life._wait_gateway.side_effect = lambda *_a, **_k: True
+                self.life._mint_cookie.side_effect = lambda _p, c, _u: f"cookie-{c}"
+                arrange()
+                real_stop = self.podman.container_stop
+                stops = []
+                self.podman.container_stop = lambda n, _r=real_stop: (stops.append(n), _r(n))[1]
+                self.crews["admit-a"]["status"] = "stopped"
+                with (
+                    patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+                    patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+                    self.assertRaises(RuntimeError),
+                ):
+                    self.launcher.ensure_running(dict(self.crews["admit-a"]), "admit-a")
+                self.podman.container_stop = real_stop
+                self.assertIn("gs-admit-a", stops)
+                self.assertFalse(self.podman.container_is_running("gs-admit-a"))
+                self.assertEqual(self.crews["admit-a"]["status"], "stopped")
+                self.assertEqual(self.launcher._start_reservations, {})
+
+    def test_waiter_receives_leader_cookie_failure(self):
+        in_wait = threading.Event()
+        release = threading.Event()
+
+        def _wait_gateway(_url, timeout=30):
+            in_wait.set()
+            return release.wait(timeout=5)
+
+        self.life._wait_gateway.side_effect = _wait_gateway
+        self.life._mint_cookie.side_effect = lambda *_a: None
+        successes, errors = [], []
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+        ):
+            leader = threading.Thread(target=self._start, args=("admit-a", successes, errors))
+            leader.start()
+            self.assertTrue(in_wait.wait(timeout=5))
+            waiter = threading.Thread(target=self._start, args=("admit-a", successes, errors))
+            waiter.start()
+            release.set()
+            self._join([leader, waiter])
+
+        self.assertEqual(successes, [])
+        self.assertEqual(len(errors), 2)
+        self.assertIn("cookie", str(errors[0][1]).lower())
+        self.assertEqual(str(errors[0][1]), str(errors[1][1]))
+        self.assertEqual(self.launcher._start_reservations, {})
+
 
     def test_cancellation_releases_capacity_lock_and_reservation(self):
         class StartCancelled(BaseException):

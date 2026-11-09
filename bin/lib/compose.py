@@ -70,6 +70,7 @@ class ComposeConfig:
     kc_model_codex_override: str = ""
     kc_model_codex_default: str = ""
     ga_min_free_mem_gb: str = "2.0"
+    ga_start_mem_estimate_gb: str = "1.0"
     ga_spawn_min_memory_gb: str = "1.5"
     ga_resource_pressure_gb: str = "2.0"
     ga_resource_critical_gb: str = "1.0"
@@ -172,6 +173,7 @@ def generate_compose(config: ComposeConfig) -> str:
         "KC_MODEL_CODEX_OVERRIDE": config.kc_model_codex_override,
         "KC_MODEL_CODEX_DEFAULT": config.kc_model_codex_default,
         "GA_MIN_FREE_MEM_GB": config.ga_min_free_mem_gb,
+        "GA_START_MEM_ESTIMATE_GB": config.ga_start_mem_estimate_gb,
         "GA_SPAWN_MIN_MEMORY_GB": config.ga_spawn_min_memory_gb,
         "GA_RESOURCE_PRESSURE_GB": config.ga_resource_pressure_gb,
         "GA_RESOURCE_CRITICAL_GB": config.ga_resource_critical_gb,
@@ -347,6 +349,7 @@ def _config_from_env() -> ComposeConfig:
         kc_model_codex_override=env.get("KC_MODEL_CODEX_OVERRIDE", ""),
         kc_model_codex_default=env.get("KC_MODEL_CODEX_DEFAULT", ""),
         ga_min_free_mem_gb=env.get("GA_MIN_FREE_MEM_GB", "2.0"),
+        ga_start_mem_estimate_gb=env.get("GA_START_MEM_ESTIMATE_GB", "1.0"),
         ga_spawn_min_memory_gb=env.get("GA_SPAWN_MIN_MEMORY_GB", "1.5"),
         ga_resource_pressure_gb=env.get("GA_RESOURCE_PRESSURE_GB", "2.0"),
         ga_resource_critical_gb=env.get("GA_RESOURCE_CRITICAL_GB", "1.0"),
