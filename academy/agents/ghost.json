@@ -18,6 +18,5 @@
       "autoAllowReadonly": true
     }
   },
-  "model": "claude-haiku-5.5",
   "welcomeMessage": "Ghost ready. What's the target?"
 }

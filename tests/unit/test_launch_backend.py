@@ -144,6 +144,7 @@ class TestBackendSelection(_LaunchHarness):
     def test_omitted_uses_default(self):
         result = self.launch()
         self.assertNotIn("error", result)
+        self.assertEqual(result["acp_profile"], "default")
         self.assertEqual(self.finish_calls[-1]["backend"], "claude")
 
     def test_explicit_overrides_default(self):
@@ -279,6 +280,7 @@ class TestProfileLaunch(_LaunchHarness):
         self.store.put("kiro", "api-key", "kiro-corp-key", profile="corp")
         result = self.launch(backend="kiro", profile="corp")
         self.assertNotIn("error", result)
+        self.assertEqual(result["acp_profile"], "corp")
         # finish_setup received acp_profile="corp"
         self.assertEqual(self.finish_calls[-1]["acp_profile"], "corp")
 
@@ -287,6 +289,7 @@ class TestProfileLaunch(_LaunchHarness):
         self.store.put("kiro", "api-key", "kiro-corp-key", profile="corp")
         result = self.launch(backend="kiro")  # no profile arg
         self.assertNotIn("error", result)
+        self.assertEqual(result["acp_profile"], "corp")
         self.assertEqual(self.finish_calls[-1]["acp_profile"], "corp")
 
     def test_missing_named_profile_triggers_auth(self):
@@ -301,6 +304,7 @@ class TestProfileLaunch(_LaunchHarness):
         self.store.put("kiro", "api-key", "kiro-key")
         result = self.launch(backend="kiro", profile=None)  # default
         self.assertNotIn("error", result)
+        self.assertEqual(result["acp_profile"], "default")
         # finish_setup was called with acp_profile="default"
         self.assertEqual(self.finish_calls[-1]["acp_profile"], "default")
 

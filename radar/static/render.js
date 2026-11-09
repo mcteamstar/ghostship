@@ -54,7 +54,7 @@ export function buildRow(crew) {
   return (
     "<tr class=\"" + rowClass + "\" data-crew-id=\"" + esc(crew.crew_id) + "\">" +
     "<td>" + esc(crew.crew_id) + copyBtn + agentBadge + captainBadge + "</td>" +
-    "<td>" + statusBadge(crew.status) + (crew.gateway_healthy === false ? " <span class=\"badge badge-warn\" title=\"Gateway unreachable\">⚠</span>" : "") + "</td>" +
+    "<td>" + statusBadge(crew.status) + (crew.status !== "stopped" && crew.gateway_healthy === false ? " <span class=\"badge badge-warn\" title=\"Gateway unreachable\">⚠</span>" : "") + "</td>" +
     "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
     "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
     "<td>" + (crew.status === "running" ? fmtUptime(crew.uptime_secs) : fmtDate(crew.created_at)) + "</td>" +
@@ -92,7 +92,17 @@ export function renderTable(data, filter) {
   const running = crews.filter(function (c) { return c.status === "running"; });
   const stopped = crews.filter(function (c) { return c.status !== "running"; });
 
-  if (state.sortDir !== null) {
+  if (state.sortDir === null) {
+    const newestFirst = function (a, b) {
+      const at = Date.parse(a.created_at);
+      const bt = Date.parse(b.created_at);
+      if (!Number.isFinite(at)) return Number.isFinite(bt) ? 1 : 0;
+      if (!Number.isFinite(bt)) return -1;
+      return bt - at;
+    };
+    running.sort(newestFirst);
+    stopped.sort(newestFirst);
+  } else {
     const sortFn = function (a, b) {
       const at = a.last_task_at ? new Date(a.last_task_at).getTime() : null;
       const bt = b.last_task_at ? new Date(b.last_task_at).getTime() : null;

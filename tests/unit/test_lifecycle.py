@@ -161,8 +161,10 @@ class _EnsureRunningBase(unittest.TestCase):
         import transport.lifecycle as life
         import transport.registry as reg_mod
         from transport.launcher import CrewLauncher
+        from transport.launcher import _validate_static_credential
 
         self.life = life
+        self.validate_static_credential = _validate_static_credential
         self.reg_mod = reg_mod
         self.podman = FakePodmanClient()
         # A stopped crew container present in the fake.
@@ -186,6 +188,8 @@ class _EnsureRunningBase(unittest.TestCase):
         # from transport.lifecycle, so patch.object on the module is sufficient.
         self._patchers = [
             patch.object(life, "_get_podman", return_value=self.podman),
+            patch.object(life._cred_store, "get", return_value={"method": "api-key", "payload": b"synthetic-test-key"}),
+            patch("transport.launcher._validate_static_credential"),
             patch.object(life, "_wait_gateway", return_value=True),
             patch.object(life, "_probe_gateway", return_value=True),
             patch.object(life, "_mint_cookie", return_value="test-cookie"),
@@ -194,6 +198,7 @@ class _EnsureRunningBase(unittest.TestCase):
             patch.object(life, "_deployed_agent_names", return_value=[]),
             patch.object(life, "_enroll_crew_members"),
             patch.object(life, "_write_dashboard_cookie"),
+            patch.object(life, "_reseed_crew_schedules"),
             patch.object(reg_mod, "_touch_crew"),
         ]
         for p in self._patchers:
@@ -215,6 +220,110 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
         _args, kwargs = self.life._patch_crew_config.call_args
         return kwargs["backend"]
 
+    def test_restart_injects_selected_oauth_profile(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "chatgpt", "payload": b"encoded"}
+        with patch.object(self.life._cred_store, "get", return_value=credential) as get_credential, \
+             patch("transport.launcher._oauth_archive", return_value=b"synthetic archive"), \
+             patch.object(self.life, "_inject_codex_auth") as inject:
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        get_credential.assert_called_with("codex", "work")
+        inject.assert_called_once_with(self.podman, CONTAINER, b"synthetic archive")
+
+    def test_restart_missing_named_profile_stops_provisional_container(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        with patch.object(self.life._cred_store, "get", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "No usable credential"):
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_restart_rejects_rotated_static_key_before_start(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            with self.assertRaisesRegex(RuntimeError, "static credential changed"):
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_static_rotation_is_rejected_for_all_supported_methods(self):
+        for backend, method, variable in (
+            ("kiro", "api-key", "KIRO_API_KEY"),
+            ("codex", "api-key", "OPENAI_API_KEY"),
+            ("claude", "api-key", "ANTHROPIC_API_KEY"),
+            ("claude", "setup-token", "CLAUDE_CODE_OAUTH_TOKEN"),
+        ):
+            with self.subTest(backend=backend, method=method):
+                credential = {"method": method, "payload": b"synthetic-new"}
+                with patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": [variable + "=synthetic-old"]}}):
+                    with self.assertRaisesRegex(RuntimeError, "static credential changed"):
+                        self.validate_static_credential(self.podman, CONTAINER, backend, credential)
+
+    def test_restart_accepts_unchanged_static_key(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "api-key", "payload": b"synthetic-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertTrue(self.podman.container_is_running(CONTAINER))
+
+    def test_restart_rejects_oauth_when_old_static_key_remains(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "chatgpt", "payload": b"synthetic-archive"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            with self.assertRaisesRegex(RuntimeError, "credential method changed"):
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_running_crew_survives_profile_logout(self):
+        self.podman.container_start(CONTAINER)
+        with patch.object(self.life._cred_store, "get", return_value=None):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertTrue(self.podman.container_is_running(CONTAINER))
+
+    def test_running_crew_ignores_static_rotation_without_inspect(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        self.podman.container_start(CONTAINER)
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        before = len(self.podman.calls)
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertNotIn("container_inspect", [c[0] for c in self.podman.calls[before:]])
+        self.assertTrue(self.podman.container_is_running(CONTAINER))
+
+    def test_stopped_crew_rotation_error_names_crew_and_profile(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertIn(CREW_ID, str(ctx.exception))
+        self.assertIn("work", str(ctx.exception))
+        self.assertIn("recreated", str(ctx.exception))
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_directory_evac_succeeds_on_running_crew_after_rotation(self):
+        from transport import tools
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work", "status": "running"})
+        self.podman.container_start(CONTAINER)
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential), \
+             patch("transport.launcher._launcher", self.launcher), \
+             patch("transport.tools._require_crew", return_value=dict(self.crews[CREW_ID])), \
+             patch("transport.tools._sign_file_url", return_value="http://example/evac"):
+            result = tools.evac(path="repo/out", crew_id=CREW_ID, pack=True)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["url"], "http://example/evac")
+
     def test_ensure_running_kiro_crew_under_claude_default(self):
         self.crews[CREW_ID]["acp_backend"] = "kiro"
         with patch.object(self.life, "GA_CREW_ACP_BACKEND", "claude"):
@@ -233,12 +342,6 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
             self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
         self.assertEqual(self._patched_backend(), "kiro")
 
-    def test_reconcile_restart_cycle_uses_recorded_backend(self):
-        self.crews[CREW_ID]["acp_backend"] = "kiro"
-        with patch.object(self.life, "GA_CREW_ACP_BACKEND", "claude"):
-            self.launcher._run_restart_cycle(dict(self.crews[CREW_ID]), CREW_ID)
-        self.assertEqual(self._patched_backend(), "kiro")
-
 
 # ── TestEnsureRunning ─────────────────────────────────────────────────────────
 
@@ -251,6 +354,10 @@ class TestEnsureRunning(_EnsureRunningBase):
         self.assertTrue(self.podman.was_called("container_start"))
         self.assertEqual(result["cookie"], "test-cookie")
         self.assertEqual(self.crews[CREW_ID]["status"], "running")
+        self.life._patch_crew_config.assert_called_once()
+        self.life._mint_cookie.assert_called_once()
+        self.life._enroll_crew_members.assert_called_once()
+        self.life._reseed_crew_schedules.assert_called_once()
 
     def test_running_crew_with_live_gateway_returns_immediately(self):
         # Container already running + gateway probe succeeds → no restart.
@@ -555,6 +662,315 @@ class TestMemoryGate(unittest.TestCase):
             self.launcher._check_memory_gate(self.podman, CREW_ID)  # no raise
 
 
+class TestCrossCrewStartAdmission(unittest.TestCase):
+    """Overlapping starts reserve active capacity and clean up on every exit."""
+
+    CREWS = ("admit-a", "admit-b")
+
+    def setUp(self):
+        import transport.lifecycle as life
+        import transport.registry as reg_mod
+        from transport.launcher import CrewLauncher
+
+        self.life = life
+        self.reg_mod = reg_mod
+        self.podman = FakePodmanClient()
+        self.launcher = CrewLauncher(
+            registry=reg_mod.registry, podman=self.podman, cfg=life.cfg,
+        )
+        self.crews = _patch_registry_backing(self, reg_mod, {
+            cid: {
+                "container": f"gs-{cid}", "volume": f"vol-{cid}",
+                "home_volume": f"home-{cid}", "cookie": f"old-{cid}",
+                "status": "stopped", "created_at": cid,
+            }
+            for cid in self.CREWS
+        })
+        for cid in self.CREWS:
+            self.podman.add_container(f"gs-{cid}", running=False)
+
+        self._patchers = [
+            patch.object(life, "_get_podman", return_value=self.podman),
+            patch.object(life._cred_store, "get", return_value={"method": "api-key", "payload": b"synthetic-test-key"}),
+            patch("transport.launcher._validate_static_credential"),
+            patch.object(life, "_wait_gateway", return_value=True),
+            patch.object(life, "_probe_gateway", return_value=True),
+            patch.object(life, "_mint_cookie", side_effect=lambda _p, c, _u: f"cookie-{c}"),
+            patch.object(life, "_mint_internal_cookie", return_value=None),
+            patch.object(life, "_patch_crew_config"),
+            patch.object(life, "_deployed_agent_names", return_value=[]),
+            patch.object(life, "_enroll_crew_members"),
+            patch.object(life, "_write_dashboard_cookie"),
+            patch.object(life, "_reseed_crew_schedules"),
+            patch.object(reg_mod, "_touch_crew"),
+        ]
+        for p in self._patchers:
+            p.start()
+        self.addCleanup(self._stop_all)
+
+    def _stop_all(self):
+        for p in self._patchers:
+            p.stop()
+
+    def _start(self, crew_id, successes, errors):
+        try:
+            result = self.launcher.ensure_running(dict(self.crews[crew_id]), crew_id)
+            successes.append(crew_id)
+            return result
+        except BaseException as exc:  # test captures deliberate cancellation too
+            errors.append((crew_id, exc))
+
+    @staticmethod
+    def _join(threads):
+        for thread in threads:
+            thread.join(timeout=8)
+            if thread.is_alive():
+                raise AssertionError("crew start thread did not finish")
+
+    def test_distinct_starts_overlap_under_limit_without_holding_registry_lock(self):
+        arrivals = 0
+        arrivals_lock = threading.Lock()
+        both_waiting = threading.Event()
+        release_gateway = threading.Event()
+
+        def _wait_gateway(_url, timeout=30):
+            nonlocal arrivals
+            with arrivals_lock:
+                arrivals += 1
+                if arrivals == 2:
+                    both_waiting.set()
+            if not release_gateway.wait(timeout=5):
+                return False
+            return True
+
+        self.life._wait_gateway.side_effect = _wait_gateway
+        successes, errors = [], []
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 2),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+        ):
+            threads = [
+                threading.Thread(target=self._start, args=(cid, successes, errors))
+                for cid in self.CREWS
+            ]
+            for thread in threads:
+                thread.start()
+            self.assertTrue(both_waiting.wait(timeout=5), "starts did not overlap at gateway readiness")
+
+            # The registry remains readable while both crews wait on gateway
+            # readiness, and neither the registry nor admission lock spans that
+            # wait.
+            acquired = self.reg_mod._registry_lock.acquire(timeout=1)
+            self.assertTrue(acquired, "registry lock held over gateway readiness")
+            self.reg_mod._registry_lock.release()
+            release_gateway.set()
+            self._join(threads)
+
+        self.assertEqual(set(successes), set(self.CREWS))
+        self.assertEqual(errors, [])
+        self.assertEqual(self.launcher._start_reservations, {})
+
+    def test_overlapping_starts_cannot_exceed_active_limit(self):
+        first_start_entered = threading.Event()
+        release_first_start = threading.Event()
+        real_start = self.podman.container_start
+        real_running = self.podman.container_is_running
+        second_probed = threading.Event()
+        second_thread_ref = []
+
+        def _start(name):
+            if name == "gs-admit-a":
+                first_start_entered.set()
+                if not release_first_start.wait(timeout=5):
+                    raise RuntimeError("test did not release first start")
+            real_start(name)
+
+        def _running(name):
+            if (
+                name == "gs-admit-b"
+                and second_thread_ref
+                and threading.current_thread() is second_thread_ref[0]
+            ):
+                second_probed.set()
+            return real_running(name)
+
+        self.podman.container_start = _start
+        self.podman.container_is_running = _running
+        successes, errors = [], []
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 1),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+        ):
+            first = threading.Thread(target=self._start, args=("admit-a", successes, errors))
+            second = threading.Thread(target=self._start, args=("admit-b", successes, errors))
+            second_thread_ref.append(second)
+            first.start()
+            self.assertTrue(first_start_entered.wait(timeout=5))
+            second.start()
+            self.assertTrue(second_probed.wait(timeout=5))
+            release_first_start.set()
+            self._join([first, second])
+
+        self.assertEqual(successes, ["admit-a"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("active crew limit", str(errors[0][1]).lower())
+        self.assertEqual(self.launcher._start_reservations, {})
+
+    def test_in_flight_start_estimate_is_subtracted_from_live_memory(self):
+        at_gateway = threading.Event()
+        release_gateway = threading.Event()
+
+        def _wait_gateway(_url, timeout=30):
+            at_gateway.set()
+            return release_gateway.wait(timeout=5)
+
+        self.life._wait_gateway.side_effect = _wait_gateway
+        successes, errors = [], []
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 2.0),
+            patch.object(self.life, "GA_START_MEM_ESTIMATE_GB", 1.0),
+            patch("transport.launcher._MEMORY_WAIT_SECS", 0),
+            # Constant live reading: 2.5 GB. One start in flight leaves 1.5 GB.
+            patch.object(self.life, "_wait_for_memory", return_value=2.5),
+        ):
+            first = threading.Thread(target=self._start, args=("admit-a", successes, errors))
+            first.start()
+            self.assertTrue(at_gateway.wait(timeout=5))
+            self._start("admit-b", successes, errors)
+            release_gateway.set()
+            self._join([first])
+
+        self.assertIn("admit-a", successes, errors)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("memory", str(errors[0][1]).lower())
+        self.assertEqual(self.launcher._start_reservations, {})
+
+    def test_memory_wait_does_not_hold_capacity_lock(self):
+        waiting = threading.Event()
+        release = threading.Event()
+        calls = {"n": 0}
+
+        def _memory(_podman, _minimum, _timeout):
+            calls["n"] += 1
+            if threading.current_thread().name == "crew-a":
+                waiting.set()
+                return 0.0 if not release.is_set() else 8.0
+            return 8.0
+
+        def _sleep(_secs):
+            release.wait(timeout=5)
+
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 2.0),
+            patch.object(self.life, "_wait_for_memory", side_effect=_memory),
+            patch("transport.launcher.time.sleep", side_effect=_sleep),
+        ):
+            successes, errors = [], []
+            first = threading.Thread(
+                target=self._start, args=("admit-a", successes, errors), name="crew-a"
+            )
+            first.start()
+            self.assertTrue(waiting.wait(timeout=5))
+            # Crew A is waiting for memory; B must still be admitted.
+            second = threading.Thread(
+                target=self._start, args=("admit-b", successes, errors), name="crew-b"
+            )
+            second.start()
+            self._join([second])
+            self.assertIn("admit-b", successes)
+            release.set()
+            self._join([first])
+
+        self.assertEqual(errors, [])
+        self.assertEqual(set(successes), {"admit-a", "admit-b"})
+
+    def test_failed_wake_steps_stop_container_and_mark_stopped(self):
+        cases = {
+            "patch": lambda: setattr(self.life._patch_crew_config, "side_effect", RuntimeError("patch boom")),
+            "gateway": lambda: setattr(self.life._wait_gateway, "side_effect", lambda *_a, **_k: False),
+            "cookie": lambda: setattr(self.life._mint_cookie, "side_effect", lambda *_a: None),
+        }
+        for name, arrange in cases.items():
+            with self.subTest(step=name):
+                self.life._patch_crew_config.side_effect = None
+                self.life._wait_gateway.side_effect = lambda *_a, **_k: True
+                self.life._mint_cookie.side_effect = lambda _p, c, _u: f"cookie-{c}"
+                arrange()
+                real_stop = self.podman.container_stop
+                stops = []
+                self.podman.container_stop = lambda n, _r=real_stop: (stops.append(n), _r(n))[1]
+                self.crews["admit-a"]["status"] = "stopped"
+                with (
+                    patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+                    patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+                    self.assertRaises(RuntimeError),
+                ):
+                    self.launcher.ensure_running(dict(self.crews["admit-a"]), "admit-a")
+                self.podman.container_stop = real_stop
+                self.assertIn("gs-admit-a", stops)
+                self.assertFalse(self.podman.container_is_running("gs-admit-a"))
+                self.assertEqual(self.crews["admit-a"]["status"], "stopped")
+                self.assertEqual(self.launcher._start_reservations, {})
+
+    def test_waiter_receives_leader_cookie_failure(self):
+        in_wait = threading.Event()
+        release = threading.Event()
+
+        def _wait_gateway(_url, timeout=30):
+            in_wait.set()
+            return release.wait(timeout=5)
+
+        self.life._wait_gateway.side_effect = _wait_gateway
+        self.life._mint_cookie.side_effect = lambda *_a: None
+        successes, errors = [], []
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+        ):
+            leader = threading.Thread(target=self._start, args=("admit-a", successes, errors))
+            leader.start()
+            self.assertTrue(in_wait.wait(timeout=5))
+            waiter = threading.Thread(target=self._start, args=("admit-a", successes, errors))
+            waiter.start()
+            release.set()
+            self._join([leader, waiter])
+
+        self.assertEqual(successes, [])
+        self.assertEqual(len(errors), 2)
+        self.assertIn("cookie", str(errors[0][1]).lower())
+        self.assertEqual(str(errors[0][1]), str(errors[1][1]))
+        self.assertEqual(self.launcher._start_reservations, {})
+
+
+    def test_cancellation_releases_capacity_lock_and_reservation(self):
+        class StartCancelled(BaseException):
+            pass
+
+        original_start = self.podman.container_start
+        self.podman.container_start = MagicMock(side_effect=StartCancelled())
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+            self.assertRaises(StartCancelled),
+        ):
+            self.launcher.ensure_running(dict(self.crews["admit-a"]), "admit-a")
+
+        self.assertEqual(self.launcher._start_reservations, {})
+        acquired = self.launcher._capacity_lock.acquire(blocking=False)
+        self.assertTrue(acquired, "capacity lock leaked after cancellation")
+        self.launcher._capacity_lock.release()
+
+        self.podman.container_start = original_start
+        with (
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
+        ):
+            self.launcher.ensure_running(dict(self.crews["admit-a"]), "admit-a")
+        self.assertEqual(self.crews["admit-a"]["status"], "running")
+
+
 # ── TestStateTransitions ──────────────────────────────────────────────────────
 
 class TestStateTransitions(_EnsureRunningBase):
@@ -681,12 +1097,6 @@ class TestModelPrecedence(unittest.TestCase):
             self.life._resolve_backend_default_model("kiro"), "fallback"
         )
 
-    def test_default_model_written_only_when_nonempty(self):
-        # When the resolved fallback is empty, the transport must NOT write
-        # agent.default_model (leaving KiroCrew's built-in intact). The
-        # resolver returning "" is what the lifecycle guard keys on.
-        self._set()
-        self.assertEqual(self.life._resolve_backend_default_model("codex"), "")
 
 
 if __name__ == "__main__":
@@ -735,12 +1145,36 @@ class TestPatchFollowsCrewBackend(unittest.TestCase):
     def test_kiro_crew_under_claude_default(self):
         agent = self._agent_overrides("kiro")
         self.assertNotIn("acp_backend", agent)
-        self.assertEqual(agent["default_model"], "kiro-default")
+        self.assertEqual(agent["model"], "kiro-default")
 
     def test_claude_crew(self):
         agent = self._agent_overrides("claude")
         self.assertEqual(agent["acp_backend"], "claude")
-        self.assertEqual(agent["default_model"], "claude-default")
+        self.assertEqual(agent["model"], "claude-default")
+
+    def test_codex_requires_sandbox_credential_mask(self):
+        agent = self._agent_overrides("codex")
+        self.assertEqual(agent["acp_backend"], "codex")
+        self.assertEqual(agent["sandbox"], "auto")
+        self.assertFalse(agent["sandbox_allow_unsandboxed_exec"])
+
+    def test_kiro_preserves_legacy_sandbox_settings(self):
+        agent = self._agent_overrides("kiro")
+        self.assertEqual(agent["sandbox"], "off")
+        self.assertTrue(agent["sandbox_allow_unsandboxed_exec"])
+
+    def test_model_fallback_payload_for_each_backend(self):
+        for backend in ("kiro", "claude", "codex"):
+            for local, global_model, expected in (
+                ("backend-choice", "global-choice", "backend-choice"),
+                ("", "global-choice", "global-choice"),
+                ("", "", "auto"),
+            ):
+                with self.subTest(backend=backend, local=local, global_model=global_model):
+                    with patch.dict(self.life._KC_MODEL_BACKEND_DEFAULT, {backend: local}, clear=True), patch.object(self.life, "KC_MODEL_DEFAULT", global_model):
+                        agent = self._agent_overrides(backend)
+                    self.assertEqual(agent["model"], expected)
+                    self.assertNotIn("default_model", agent)
 
     def test_patch_models_uses_crew_backend(self):
         rec = _ExecRecorder()
@@ -1237,13 +1671,45 @@ class TestEnsureRunningLeaderEarlyExitUnblocksWaiters(_EnsureRunningBase):
 # ---------------------------------------------------------------------------
 
 class TestReconcileRegistry(unittest.TestCase):
-    """_reconcile_registry: stale running entries and activity-preserved entries.
+    """Startup reconciliation inspects Podman without waking stopped crews."""
 
-    The reconcile function finds containers registered as "running" that are
-    actually stopped and attempts a restart.  When the restart fails, the
-    registry status ends up "stopped".  When the container is actually running
-    and the restart completes, status stays "running".
-    """
+    def setUp(self):
+        import transport.lifecycle as life
+        import transport.registry as reg_mod
+        from transport.launcher import _launcher
+        from tests.fakes import FakePodmanClient
+
+        self.life = life
+        self.reg_mod = reg_mod
+        self.launcher = _launcher
+        self.podman = FakePodmanClient()
+        self.podman._req = MagicMock(return_value=[])
+        with self.launcher._startup_events_lock:
+            self.launcher._startup_events.clear()
+            self.launcher._startup_generation.clear()
+            self.launcher._crew_restart_outcomes.clear()
+
+    def _seed(self, crews):
+        from transport.registry import registry
+
+        self.backing = {"crews": crews}
+        p_load = patch.object(self.reg_mod, "_load_registry", return_value=self.backing)
+        p_save = patch.object(self.reg_mod, "_save_registry")
+        p_load.start()
+        p_save.start()
+        self.addCleanup(p_load.stop)
+        self.addCleanup(p_save.stop)
+        registry._reg = self.backing
+        return crews
+
+    def _run_reconcile(self):
+        with (
+            patch.object(self.life, "_get_podman", return_value=self.podman),
+            patch.object(self.life, "_sweep_expired_logins"),
+            patch.object(self.life, "_wait_gateway") as wait_gateway,
+        ):
+            self._call()
+        return wait_gateway
 
     def _call(self):
         try:
@@ -1252,102 +1718,121 @@ class TestReconcileRegistry(unittest.TestCase):
             from transport.lifecycle import _reconcile_registry  # local dev
         _reconcile_registry()
 
-    def test_stale_running_entry_corrected_to_stopped_on_failed_restart(self):
-        """A registry entry marked 'running' whose container is stopped gets set
-        to 'stopped' when the restart cycle fails."""
-        import transport.registry as _reg_mod
-        from transport.registry import registry
-
-        crew_id = "stale-crew"
-        container = f"gs-{crew_id}"
-        backing = {"crews": {
-            crew_id: {
-                "container": container,
-                "volume": f"gs-vol-{crew_id}",
-                "home_volume": f"gs-home-{crew_id}",
-                "status": "running",
+    def test_mixed_states_are_reconciled_without_starting_stopped_crews(self):
+        crews = self._seed({
+            "stale-running": {
+                "container": "gs-stale-running", "volume": "vol-a",
+                "home_volume": "home-a", "cookie": "keep-cookie",
+                "dashboard_port": 64058, "status": "running",
+                "schedules": [{"job_id": "job-a", "enabled": True}],
             },
-        }}
-        # Container exists but is NOT running.
-        from tests.fakes import FakePodmanClient
-        podman = FakePodmanClient()
-        podman.add_container(container, running=False)
-        # Stub _req so the orphaned-login-container sweep doesn't fail
-        podman._req = MagicMock(return_value=[])
-
-        # Restart cycle fails — returns status: stopped
-        mock_launcher = MagicMock()
-        mock_launcher._run_restart_cycle.return_value = {"status": "stopped"}
-
-        try:
-            import transport.lifecycle as _life
-        except ImportError:
-            from transport import lifecycle as _life
-
-        with (
-            patch.object(_reg_mod, "_load_registry", return_value=backing),
-            patch.object(_reg_mod, "_save_registry"),
-            patch.object(_life, "_get_podman", return_value=podman),
-            patch.object(_life, "_sweep_expired_logins"),
-        ):
-            registry._reg = backing
-            # Patch _launcher inside lifecycle to return our mock
-            with patch("transport.launcher._launcher", mock_launcher):
-                try:
-                    self._call()
-                except Exception:
-                    pass  # best-effort test — we just need the registry update
-
-        # After a failed restart, the status in the registry must be "stopped"
-        crew_entry = backing["crews"].get(crew_id, {})
-        if crew_entry:
-            self.assertEqual(crew_entry.get("status"), "stopped")
-
-    def test_entry_with_recent_activity_is_preserved(self):
-        """A 'running' container that is actually running is not incorrectly modified."""
-        import transport.registry as _reg_mod
-        from transport.registry import registry
-
-        crew_id = "live-crew"
-        container = f"gs-{crew_id}"
-        backing = {"crews": {
-            crew_id: {
-                "container": container,
-                "volume": f"gs-vol-{crew_id}",
-                "home_volume": f"gs-home-{crew_id}",
-                "status": "running",
-                "last_task_at": "2099-01-01T00:00:00+00:00",
+            "stale-stopped": {
+                "container": "gs-stale-stopped", "volume": "vol-b",
+                "status": "stopped", "created_at": "same-registration",
             },
-        }}
-        from tests.fakes import FakePodmanClient
-        podman = FakePodmanClient()
-        podman.add_container(container, running=True)
+            "gone": {"container": "gs-gone", "status": "stopped"},
+            "exists-error": {"container": "gs-exists-error", "status": "running"},
+            "state-error": {"container": "gs-state-error", "status": "stopped"},
+        })
+        self.podman.add_container("gs-stale-running", running=False)
+        self.podman.add_container("gs-stale-stopped", running=True)
+        self.podman.add_container("gs-exists-error", running=True)
+        self.podman.add_container("gs-state-error", running=True)
 
-        try:
-            import transport.lifecycle as _life
-        except ImportError:
-            from transport import lifecycle as _life
+        real_exists = self.podman.container_exists
+        real_running = self.podman.container_is_running
 
-        with (
-            patch.object(_reg_mod, "_load_registry", return_value=backing),
-            patch.object(_reg_mod, "_save_registry"),
-            patch.object(_life, "_get_podman", return_value=podman),
-            patch.object(_life, "_sweep_expired_logins"),
+        def _exists(name):
+            if name == "gs-exists-error":
+                raise OSError("temporary Podman outage")
+            return real_exists(name)
+
+        def _is_running(name):
+            if name == "gs-state-error":
+                raise OSError("temporary state inspection failure")
+            return real_running(name)
+
+        self.podman.container_exists = _exists
+        self.podman.container_is_running = _is_running
+        wait_gateway = self._run_reconcile()
+
+        self.assertEqual(crews["stale-running"]["status"], "stopped")
+        self.assertEqual(crews["stale-stopped"]["status"], "running")
+        self.assertNotIn("gone", crews)
+        self.assertEqual(crews["exists-error"]["status"], "running")
+        self.assertEqual(crews["state-error"]["status"], "stopped")
+        self.assertEqual(crews["stale-running"]["volume"], "vol-a")
+        self.assertEqual(crews["stale-running"]["home_volume"], "home-a")
+        self.assertEqual(crews["stale-running"]["cookie"], "keep-cookie")
+        self.assertEqual(crews["stale-running"]["dashboard_port"], 64058)
+        self.assertEqual(crews["stale-running"]["schedules"], [{"job_id": "job-a", "enabled": True}])
+        self.assertEqual(self.podman.calls_for("container_start"), [])
+        wait_gateway.assert_not_called()
+
+    def test_repeated_reconciliation_is_idempotent(self):
+        crews = self._seed({
+            "stopped-a": {"container": "gs-stopped-a", "status": "running"},
+            "stopped-b": {"container": "gs-stopped-b", "status": "stopped"},
+            "running": {"container": "gs-running", "status": "running"},
+        })
+        for name, running in (
+            ("gs-stopped-a", False), ("gs-stopped-b", False), ("gs-running", True),
         ):
-            registry._reg = backing
-            try:
-                self._call()
-            except Exception:
-                pass
+            self.podman.add_container(name, running=running)
 
-        # Running container must NOT be modified to stopped
-        crew_entry = backing["crews"].get(crew_id, {})
-        if crew_entry:
-            self.assertNotEqual(crew_entry.get("status"), "stopped")
+        first_wait_gateway = self._run_reconcile()
+        snapshot = {cid: dict(entry) for cid, entry in crews.items()}
+        second_wait_gateway = self._run_reconcile()
+
+        self.assertEqual(crews, snapshot)
+        self.assertEqual(self.podman.calls_for("container_start"), [])
+        first_wait_gateway.assert_not_called()
+        second_wait_gateway.assert_not_called()
+
+    def test_concurrent_wake_generation_prevents_stale_stopped_write(self):
+        crew_id = "wake-race"
+        crews = self._seed({crew_id: {
+            "container": "gs-wake-race", "volume": "vol-race",
+            "status": "stopped", "created_at": "race-entry",
+        }})
+        self.podman.add_container("gs-wake-race", running=False)
+        real_state = self.podman.container_is_running
+        observed = [False]
+
+        def _observe_then_wake(name):
+            running = real_state(name)
+            if name == "gs-wake-race" and not observed[0]:
+                observed[0] = True
+                # The startup observation is already stopped. Complete a
+                # normal on-demand wake before reconciliation writes status.
+                with (
+                    patch.object(self.life, "_get_podman", return_value=self.podman),
+                    patch.object(self.life._cred_store, "get", return_value={"method": "api-key", "payload": b"synthetic-test-key"}),
+                    patch("transport.launcher._validate_static_credential"),
+                    patch.object(self.life, "_probe_gateway", return_value=True),
+                    patch.object(self.life, "_wait_gateway", return_value=True),
+                    patch.object(self.life, "_mint_cookie", return_value="fresh-cookie"),
+                    patch.object(self.life, "_mint_internal_cookie", return_value=None),
+                    patch.object(self.life, "_patch_crew_config"),
+                    patch.object(self.life, "_deployed_agent_names", return_value=[]),
+                    patch.object(self.life, "_enroll_crew_members"),
+                    patch.object(self.life, "_write_dashboard_cookie"),
+                    patch.object(self.life, "_reseed_crew_schedules"),
+                    patch.object(self.reg_mod, "_touch_crew"),
+                ):
+                    self.launcher.ensure_running(dict(crews[crew_id]), crew_id)
+            return running
+
+        self.podman.container_is_running = _observe_then_wake
+        self._run_reconcile()
+
+        self.assertTrue(observed[0])
+        self.assertEqual(crews[crew_id]["status"], "running")
+        self.assertEqual(crews[crew_id]["cookie"], "fresh-cookie")
 
 
 class TestReseedCrewSchedules(unittest.TestCase):
-    """_reseed_crew_schedules: captain schedule re-registration after restart."""
+    """_reseed_crew_schedules: wake-time gateway inspection and reseeding."""
 
     def _call(self, crew, crew_id, crew_info):
         try:
@@ -1356,8 +1841,8 @@ class TestReseedCrewSchedules(unittest.TestCase):
             from transport.lifecycle import _reseed_crew_schedules  # local dev
         return _reseed_crew_schedules(crew, crew_id, crew_info)
 
-    def test_captain_schedule_reseeded_after_restart(self):
-        """A captain schedule entry with no current_task_id dispatches immediately."""
+    def test_future_captain_schedule_stays_dormant_on_unrelated_wake(self):
+        """An unrelated wake does not dispatch a future Captain check-in."""
         import transport.registry as _reg_mod
         from transport.registry import registry
 
@@ -1398,8 +1883,37 @@ class TestReseedCrewSchedules(unittest.TestCase):
                       mock_dispatch),
             ):
                 self._call(crew_dict, crew_id, crew_dict)
-        # Dispatch was called to re-seed the captain check-in
-        mock_dispatch.assert_called_once()
+        mock_dispatch.assert_not_called()
+
+    def test_gateway_only_crons_are_listed_when_a_crew_wakes(self):
+        """Wake-time gateway inspection still runs when no tracked jobs exist."""
+        import transport.registry as _reg_mod
+        from transport.registry import registry
+
+        crew_id = "gateway-only-crew"
+        crew_dict = {
+            "container": f"gs-{crew_id}",
+            "volume": f"gs-vol-{crew_id}",
+            "home_volume": f"gs-home-{crew_id}",
+            "status": "running",
+            "schedules": [],
+        }
+        backing = {"crews": {crew_id: crew_dict}}
+        with (
+            patch.object(_reg_mod, "_load_registry", return_value=backing),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            registry._reg = backing
+            with (
+                patch("transport.lifecycle._crew_api", return_value={
+                    "jobs": [{"id": "gateway-only-job", "enabled": True}],
+                }) as crew_api,
+                patch("transport.captain._captain_jobs", side_effect=lambda payload: payload["jobs"]),
+            ):
+                self._call(crew_dict, crew_id, crew_dict)
+
+        crew_api.assert_called_once_with(crew_dict, "GET", "/api/crons")
+        self.assertEqual(crew_dict["schedules"], [])
 
     def test_missing_schedule_entry_skipped_without_error(self):
         """No schedules in registry → returns without error."""

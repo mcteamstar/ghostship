@@ -36,13 +36,16 @@ class _NoRedirect(request.HTTPRedirectHandler):
 
 def _usage_error() -> SpawnError:
     return SpawnError(
-        "usage: ghostship-spawn <persona> | --status <task_id> | "
+        "usage: ghostship-spawn <persona> | --list | --status <task_id> | "
         "--steer <task_id> | --continue <task_id>"
     )
 
 
 def _parse_args(argv: list[str]) -> tuple[str, str | None, str | None]:
     """Return ``(operation, value, path)`` after validating argv."""
+    if argv == ["--list"]:
+        return "list", None, "/api/spawn"
+
     if len(argv) == 1 and not argv[0].startswith("-"):
         persona = argv[0]
         if not _PERSONA_RE.fullmatch(persona):
@@ -164,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             # the SDD follow-up protocol work after the initial turn.
             payload = {"task": _read_task_text(), "agent": value or "", "keep": True}
             method = "POST"
-        elif operation == "status":
+        elif operation in {"list", "status"}:
             payload = None
             method = "GET"
         elif operation == "steer":

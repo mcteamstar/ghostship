@@ -63,6 +63,12 @@ def patch_config(config_path: str, full_overrides: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     cfg = json.loads(p.read_text()) if p.exists() else {}
     _deep_merge(cfg, full_overrides)
+    # TRN-313: this old generated field is not consumed by KiroCrew. Only
+    # migrate it when applying a model update; unrelated patch callers retain
+    # their existing behavior.
+    agent_updates = full_overrides.get("agent")
+    if isinstance(agent_updates, dict) and "model" in agent_updates:
+        cfg["agent"].pop("default_model", None)
     p.write_text(json.dumps(cfg, indent=2))
 
 

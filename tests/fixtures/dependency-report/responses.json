@@ -1,0 +1,6 @@
+{
+  "npm:demo-pkg": {"status": "ok", "candidate": "1.2.0", "prerelease": null, "detail": "fixture registry response"},
+  "pypi:oldlib": {"status": "ok", "candidate": "2.0.0", "prerelease": null, "detail": "fixture registry response"},
+  "npm:@agentclientprotocol/codex-acp": {"status": "ok", "candidate": "2.5.0", "prerelease": null, "detail": "fixture registry response"},
+  "pypi:brokenlib": {"status": "failed", "error": "fixture timeout after 5s"}
+}

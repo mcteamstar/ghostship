@@ -16,7 +16,7 @@ import os
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tests.fakes import FakePodmanClient
 from transport.credentials import CredentialStore
@@ -271,6 +271,20 @@ class TestKiroDeviceFlowRoutesPassMethod(_BaseRouteTest):
         calls = self._call("_handle_login_kiro_builder_id_post", {})
         self.assertEqual(calls, [{"method": "builder-id", "provider": None}])
 
+    def test_named_builder_id_login_allows_existing_default_credential(self):
+        import transport.login as login_mod
+        lc = types.SimpleNamespace(
+            _read_auth_file=lambda: "synthetic-default",
+            _initiate_login=lambda podman, **kwargs: {"login_url": "https://example.invalid", "profile": kwargs["profile"]},
+        )
+        with patch.object(login_mod, "_lc", return_value=lc), \
+             patch.object(login_mod, "_get_podman", return_value=FakePodmanClient()), \
+             patch.object(login_mod.KIRO_FLOW, "_pending", None):
+            req = _make_request({"profile": "work"})
+            response = _run(login_mod._handle_login_kiro_builder_id_post(req))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(req._kiro_profile, "work")
+
 
 class TestGetLoginStatus(_BaseRouteTest):
     """GET /login/{backend} returns status with no secret values."""
@@ -457,6 +471,102 @@ def _unlinker(path: str):
 class TestLogoutCancelsAndClears(_LogoutHarness):
     """POST /logout/{backend}: cancel any pending login, remove the credential, idempotent."""
 
+    def test_login_commit_waits_for_older_logout_to_finish(self):
+        import threading
+        flow = self._login.CODEX_FLOW
+        pending = {"container": "login-test", "state": "started", "profile": "work"}
+        flow._pending = pending
+        self.addCleanup(setattr, flow, "_pending", None)
+        entered, release, committed = threading.Event(), threading.Event(), threading.Event()
+        real_delete = self._store.delete
+
+        def delayed_delete(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return real_delete(*args, **kwargs)
+
+        def complete():
+            flow.commit_if_current(pending, lambda: self._store.put("codex", "api-key", "new-fixture", profile="work"))
+            committed.set()
+
+        with patch.object(self._store, "delete", side_effect=delayed_delete):
+            logout = threading.Thread(target=lambda: self._login._logout("codex", _make_request()))
+            logout.start()
+            self.assertTrue(entered.wait(5))
+            login = threading.Thread(target=complete)
+            login.start()
+            self.assertFalse(committed.wait(0.1))
+            release.set()
+            logout.join(5)
+            login.join(5)
+        self.assertTrue(committed.is_set())
+        self.assertEqual(self._store.get("codex", "work")["payload"], b"new-fixture")
+
+    def test_logout_cancels_same_profile_before_late_commit_for_each_backend(self):
+        import threading
+        for backend, flow in (("kiro", self._login.KIRO_FLOW),
+                              ("claude", self._login.CLAUDE_FLOW),
+                              ("codex", self._login.CODEX_FLOW)):
+            with self.subTest(backend=backend):
+                pending = {"container": None, "profile": "work"}
+                flow._pending = pending
+                entered, release = threading.Event(), threading.Event()
+                original_delete = self._store.delete
+                def delayed_delete(*args, **kwargs):
+                    entered.set()
+                    self.assertTrue(release.wait(5))
+                    return original_delete(*args, **kwargs)
+                abort_name = {"kiro": "_abort_pending_login", "claude": "_abort_claude_pending_login", "codex": "_abort_codex_pending_login"}[backend]
+                lc = self._login._lc()
+                results = []
+                with patch.object(lc, abort_name, side_effect=flow.abort), \
+                     patch.object(self._store, "delete", side_effect=delayed_delete):
+                    logout = threading.Thread(target=lambda: results.append(self._login._logout(backend, _make_request(query_params={"profile": "work"}))))
+                    logout.start()
+                    self.assertTrue(entered.wait(5))
+                    commit = threading.Thread(target=lambda: results.append(flow.commit_if_current(pending, lambda: self._store.put(backend, "api-key", "synthetic-key", profile="work"))))
+                    commit.start()
+                    release.set()
+                    logout.join(5)
+                    commit.join(5)
+                self.assertFalse(logout.is_alive())
+                self.assertFalse(commit.is_alive())
+                self.assertIn(False, results)
+                self.assertIsNone(self._store.get(backend, "work"))
+                self.assertIsNone(flow.state)
+
+    def test_same_profile_logout_waits_for_inflight_commit_for_each_backend(self):
+        import threading
+        for backend, flow in (("kiro", self._login.KIRO_FLOW),
+                              ("claude", self._login.CLAUDE_FLOW),
+                              ("codex", self._login.CODEX_FLOW)):
+            with self.subTest(backend=backend):
+                pending = {"container": None, "profile": "work"}
+                flow._pending = pending
+                entered, release, logout_done = threading.Event(), threading.Event(), threading.Event()
+                results = []
+                def store():
+                    entered.set()
+                    self.assertTrue(release.wait(5))
+                    self._store.put(backend, "api-key", "synthetic-key", profile="work")
+                def logout_call():
+                    results.append(self._login._logout(backend, _make_request(query_params={"profile": "work"})))
+                    logout_done.set()
+                commit = threading.Thread(target=lambda: results.append(flow.commit_if_current(pending, store)))
+                logout = threading.Thread(target=logout_call)
+                commit.start()
+                self.assertTrue(entered.wait(5))
+                logout.start()
+                self.assertFalse(logout_done.wait(0.1))
+                release.set()
+                commit.join(5)
+                logout.join(5)
+                self.assertFalse(commit.is_alive())
+                self.assertFalse(logout.is_alive())
+                self.assertIn(True, results)
+                self.assertTrue(logout_done.is_set())
+                self.assertIsNone(self._store.get(backend, "work"))
+
     def test_pending_flow_with_nothing_stored_is_cancelled(self):
         for backend in ("kiro", "claude", "codex"):
             with self.subTest(backend=backend):
@@ -558,6 +668,18 @@ class TestLogoutLeavesRunningCrews(_LogoutHarness):
             self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.podman.calls, [])
         self.assertEqual(self.crews, before)
+
+    def test_static_profile_rotation_and_logout_leave_other_profiles_intact(self):
+        for backend, method in (("kiro", "api-key"), ("codex", "api-key"),
+                                ("claude", "api-key"), ("claude", "setup-token")):
+            with self.subTest(backend=backend, method=method):
+                self._store.put(backend, method, "fixture-work-old", profile="work")
+                self._store.put(backend, method, "fixture-personal", profile="personal")
+                self._store.put(backend, method, "fixture-work-new", profile="work")
+                response = self._login._logout(backend, _make_request(query_params={"profile": "work"}))
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(self._store.get(backend, "work"))
+                self.assertEqual(self._store.get(backend, "personal")["payload"], b"fixture-personal")
 
 
 class TestNewLoginAfterCancel(_LogoutHarness):
@@ -699,6 +821,195 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         self.assertEqual(self._store.get("claude")["method"], "oauth")
         self.assertEqual(self.written, [("claude", b"tar-bytes")])
         self.assertIsNone(login_mod.CLAUDE_FLOW.state)
+
+    def test_named_oauth_completion_does_not_write_legacy_archive(self):
+        import base64
+        import transport.login as login_mod
+        for flow, handler, backend, method in (
+            (login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "claude", "oauth"),
+            (login_mod.CODEX_FLOW, login_mod._handle_codex_login_get, "codex", "chatgpt"),
+        ):
+            with self.subTest(backend=backend):
+                flow._pending = {**self._pending("login-container"), "profile": "work"}
+                with patch.object(flow, "poll", return_value=b"synthetic archive"):
+                    resp = _run(handler(_make_request()))
+                self.assertEqual(_json_data(resp), {"status": "complete"})
+                self.assertEqual(self._store.get(backend, "work")["method"], method)
+                self.assertEqual(base64.b64decode(self._store.get(backend, "work")["payload"]), b"synthetic archive")
+                self.assertEqual(self.written, [])
+
+    def test_oauth_store_failure_keeps_pending_flow(self):
+        import transport.login as login_mod
+        for flow, handler in (
+            (login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get),
+            (login_mod.CODEX_FLOW, login_mod._handle_codex_login_get),
+        ):
+            with self.subTest(flow=type(flow).__name__):
+                flow._pending = {**self._pending("login-container"), "profile": "work"}
+                with patch.object(flow, "poll", return_value=b"synthetic archive"), patch.object(self._store, "put", side_effect=OSError("write failed")):
+                    resp = _run(handler(_make_request()))
+                self.assertEqual(resp.status_code, 500)
+                self.assertIsNotNone(flow.state)
+                self.assertEqual(self.written, [])
+
+    def test_oauth_store_failure_does_not_expose_exception_secret(self):
+        import transport.login as login_mod
+        marker = "synthetic-sensitive-marker"
+        flow = login_mod.CODEX_FLOW
+        flow._pending = {**self._pending("login-container"), "profile": "work"}
+        with self.assertLogs(login_mod.logger, level="ERROR") as captured, \
+             patch.object(flow, "poll", return_value=b"synthetic archive"), \
+             patch.object(self._store, "put", side_effect=OSError(marker)):
+            resp = _run(login_mod._handle_codex_login_get(_make_request()))
+        self.assertEqual(resp.status_code, 500)
+        self.assertNotIn(marker, resp.body.decode())
+        self.assertNotIn(marker, " ".join(captured.output))
+
+    def test_codex_rotation_only_updates_matching_profile_crews(self):
+        import transport.login as login_mod
+        sent = []
+        self.lc._inject_codex_auth = lambda podman, container, data: sent.append((container, data))
+        self.crews.update({
+            "selected": {"status": "running", "container": "c-selected", "acp_backend": "codex", "acp_profile": "work"},
+            "other": {"status": "running", "container": "c-other", "acp_backend": "codex", "acp_profile": "personal"},
+            "stopped": {"status": "stopped", "container": "c-stopped", "acp_backend": "codex", "acp_profile": "work"},
+            "other-backend": {"status": "running", "container": "c-claude", "acp_backend": "claude", "acp_profile": "work"},
+        })
+        login_mod.CODEX_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
+        with patch.object(login_mod.CODEX_FLOW, "poll", return_value=b"synthetic archive"):
+            resp = _run(login_mod._handle_codex_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertEqual(sent, [("c-selected", b"synthetic archive")])
+
+    def test_claude_rotation_only_updates_matching_profile_crews(self):
+        import transport.login as login_mod
+        sent = []
+        self.lc._inject_claude_auth = lambda podman, container, data: sent.append((container, data))
+        self.crews.update({
+            "selected": {"status": "running", "container": "c-selected", "acp_backend": "claude", "acp_profile": "work"},
+            "other": {"status": "running", "container": "c-other", "acp_backend": "claude", "acp_profile": "personal"},
+            "stopped": {"status": "stopped", "container": "c-stopped", "acp_backend": "claude", "acp_profile": "work"},
+            "other-backend": {"status": "running", "container": "c-codex", "acp_backend": "codex", "acp_profile": "work"},
+        })
+        self._store.put("claude", "oauth", b"other-credential", profile="personal")
+        login_mod.CLAUDE_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
+        with patch.object(login_mod.CLAUDE_FLOW, "poll", return_value=b"synthetic archive"):
+            resp = _run(login_mod._handle_claude_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertEqual(sent, [("c-selected", b"synthetic archive")])
+        self.assertEqual(self._store.get("claude", "personal")["payload"], b"other-credential")
+
+    def test_oauth_propagation_failure_does_not_change_login_outcome(self):
+        import transport.login as login_mod
+        for backend, flow, handler, inject_name in (
+            ("claude", login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "_inject_claude_auth"),
+            ("codex", login_mod.CODEX_FLOW, login_mod._handle_codex_login_get, "_inject_codex_auth"),
+        ):
+            with self.subTest(backend=backend):
+                self.crews.clear()
+                self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": backend, "acp_profile": "work"}
+                flow._pending = {**self._pending("login-container"), "profile": "work"}
+                injection = MagicMock(side_effect=OSError("synthetic error"))
+                setattr(self.lc, inject_name, injection)
+                with patch.object(flow, "poll", return_value=b"synthetic archive"):
+                    resp = _run(handler(_make_request()))
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["selected"]})
+                self.assertIsNone(flow.state)
+                self.assertIsNotNone(self._store.get(backend, "work"))
+                self.assertEqual(injection.call_count, 1)
+
+    def test_one_failing_crew_does_not_stop_injection_into_next(self):
+        import transport.login as login_mod
+        sent = []
+
+        def inject(podman, container, data):
+            if container == "c-bad":
+                raise OSError("synthetic error")
+            sent.append(container)
+
+        self.lc._inject_codex_auth = inject
+        self.crews.update({
+            "bad": {"status": "running", "container": "c-bad", "acp_backend": "codex", "acp_profile": "work"},
+            "good": {"status": "running", "container": "c-good", "acp_backend": "codex", "acp_profile": "work"},
+        })
+        login_mod.CODEX_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
+        with patch.object(login_mod.CODEX_FLOW, "poll", return_value=b"synthetic archive"):
+            resp = _run(login_mod._handle_codex_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["bad"]})
+        self.assertEqual(sent, ["c-good"])
+
+    def test_propagation_skips_profile_removed_after_commit(self):
+        import transport.login as login_mod
+        sent = []
+        self.lc._inject_codex_auth = lambda podman, container, data: sent.append(container)
+        self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": "codex", "acp_profile": "work"}
+        self.assertEqual(login_mod._propagate_oauth(self.podman, "codex", "work", b"x"), [])
+        self.assertEqual(sent, [])
+
+    def test_named_kiro_completion_does_not_replace_default_archive(self):
+        import transport.login as login_mod
+        login_mod.KIRO_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
+        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        resp = _run(login_mod._handle_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
+        self.assertEqual(self.written, [])
+
+    def test_kiro_store_failure_can_retry_same_flow(self):
+        import transport.login as login_mod
+        flow = login_mod.KIRO_FLOW
+        flow._pending = {**self._pending("login-container"), "profile": "work"}
+        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        with patch.object(self._store, "put", side_effect=OSError("write failed")):
+            resp = _run(login_mod._handle_login_get(_make_request()))
+        self.assertEqual(resp.status_code, 500)
+        self.assertIsNotNone(flow.state)
+        resp = _run(login_mod._handle_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
+
+    def test_kiro_propagation_failure_does_not_change_login_outcome(self):
+        import transport.login as login_mod
+        flow = login_mod.KIRO_FLOW
+        flow._pending = {**self._pending("login-container"), "profile": "work"}
+        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": "kiro", "acp_profile": "work"}
+        injection = MagicMock(side_effect=OSError("synthetic error"))
+        self.lc._inject_auth = injection
+        resp = _run(login_mod._handle_login_get(_make_request()))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["selected"]})
+        self.assertIsNone(flow.state)
+        self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
+        self.assertEqual(injection.call_count, 1)
+
+    def test_named_kiro_completion_only_updates_matching_running_crews(self):
+        import transport.login as login_mod
+        login_mod.KIRO_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
+        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        self.crews.update({
+            "matching": {"status": "running", "container": "c-work", "acp_backend": "kiro", "acp_profile": "work"},
+            "other": {"status": "running", "container": "c-other", "acp_backend": "kiro", "acp_profile": "personal"},
+            "stopped": {"status": "stopped", "container": "c-stopped", "acp_backend": "kiro", "acp_profile": "work"},
+        })
+        resp = _run(login_mod._handle_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertEqual(self.injected, ["c-work"])
+
+    def test_codex_store_failure_can_retry_same_flow(self):
+        import transport.login as login_mod
+        flow = login_mod.CODEX_FLOW
+        flow._pending = {**self._pending("login-container"), "profile": "work"}
+        with patch.object(flow, "poll", return_value=b"synthetic archive"):
+            with patch.object(self._store, "put", side_effect=OSError("write failed")):
+                resp = _run(login_mod._handle_codex_login_get(_make_request()))
+            self.assertEqual(resp.status_code, 500)
+            self.assertIsNotNone(flow.state)
+            resp = _run(login_mod._handle_codex_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete"})
+        self.assertIsNone(flow.state)
+        self.assertIsNotNone(self._store.get("codex", "work"))
 
     def test_codex_completion_cancelled_by_logout_writes_nothing(self):
         import transport.login as login_mod

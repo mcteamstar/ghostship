@@ -614,21 +614,15 @@ Both variables SHALL be documented in `docs/configuration.md`.
 
 ### Requirement: Config patch applied on reconcile restart
 
-When the transport starts and discovers a stopped crew container in the
-registry, it SHALL apply all pending configuration patches (including
-`spawn_min_memory_gb`) to that container before marking it as running, in
-the same way patches are applied during initial crew creation.
+When a stopped crew is started on demand after a transport restart, the system SHALL apply pending configuration patches, including `spawn_min_memory_gb`, before marking it running, using the normal recovery path. Startup reconciliation SHALL NOT start a stopped container solely to apply patches.
 
 #### Scenario: Stopped crew restored after transport restart
-- **WHEN** `_reconcile_registry` restarts a stopped crew container
-- **THEN** `_patch_crew_config` is called on that container before the
-  crew is marked as running in the registry
+- **WHEN** an operation or due work wakes a stopped crew after transport restart
+- **THEN** `_patch_crew_config` is called before the crew is marked running
 
 #### Scenario: Config patch idempotent on repeated restarts
-- **WHEN** the transport is restarted multiple times and the same crew is
-  restored each time
-- **THEN** each restart applies `_patch_crew_config` without error, and
-  the crew's configuration reflects the current transport defaults
+- **WHEN** the same crew is woken after repeated transport restarts
+- **THEN** each demand-driven recovery applies `_patch_crew_config` without error and reflects current transport defaults
 
 ### Requirement: Registry reconciliation is idempotent
 

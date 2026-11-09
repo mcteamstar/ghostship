@@ -10,6 +10,7 @@ config/*.yaml
 config/*.conf.bak
 !config/*.conf.example
 !config/*.yaml.example
+!config/dependencies.yaml
 
 # Coverage
 .coverage

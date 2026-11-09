@@ -493,5 +493,38 @@ class TestCrewApiProxyUnknownCrew(unittest.TestCase):
         self.assertEqual(status, 404)
 
 
+class TestDashboardWebSocketSessionGate(unittest.TestCase):
+    def test_missing_session_is_denied_before_crew_resolution(self):
+        from unittest.mock import AsyncMock, patch
+        from transport.dashboard import DashboardGate
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+
+        gate = DashboardGate(
+            session_ttl_secs=3600,
+            api_key="keyed-installation",
+            external_url="http://localhost",
+        )
+        scope = {
+            "type": "websocket",
+            "path": "/crews/not-started/ui/ws",
+            "headers": [],
+            "extensions": {"websocket.http.response": {}},
+        }
+        messages, send = _collect_send()
+        with patch.object(_s, "_dashboard_gate", gate), patch.object(
+            _s, "_resolve_crew_for_proxy", new_callable=AsyncMock
+        ) as resolve:
+            _run(_s._handle_crew_ui_ws_proxy(scope, _receive, send))
+
+        self.assertEqual(
+            [message.get("status") for message in messages if message.get("type") == "websocket.http.response.start"],
+            [401],
+        )
+        resolve.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

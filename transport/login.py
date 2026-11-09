@@ -34,6 +34,7 @@ table; it no longer defines them itself.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -48,6 +49,10 @@ except ImportError:
     from transport.config import Config  # local dev
 
 logger = logging.getLogger(__name__)
+
+# Serialize completion and logout so a newly committed credential cannot be
+# deleted by an older logout after that logout has cancelled its own flow.
+_credential_transaction_lock = threading.RLock()
 
 cfg = Config.from_env()
 
@@ -334,16 +339,17 @@ class LoginFlow(ABC):
             pending_extra["profile"] = profile
         import re
 
-        with self._lock:
-            if self._pending is not None:
-                return {"login_pending": True}
-            pending = {
-                "container": None,
-                "started_at": time.time(),
-                "state": "starting",
-                **(pending_extra or {}),
-            }
-            self._pending = pending
+        with _credential_transaction_lock:
+            with self._lock:
+                if self._pending is not None:
+                    return {"login_pending": True}
+                pending = {
+                    "container": None,
+                    "started_at": time.time(),
+                    "state": "starting",
+                    **(pending_extra or {}),
+                }
+                self._pending = pending
 
         # Start container
         try:
@@ -406,6 +412,7 @@ class LoginFlow(ABC):
             code_pattern=self._code_pattern(),
             deadline_secs=45.0,
             initial_bytes=leftover,
+            require_code=self.backend == "codex",
         )
 
         if not login_url:
@@ -500,12 +507,13 @@ class LoginFlow(ABC):
         was captured. The caller must then discard its result and remove
         ``pending["container"]``.
         """
-        with self._lock:
-            if self._pending is not pending:
-                return False
-            store_fn()
-            self._pending = None
-            return True
+        with _credential_transaction_lock:
+            with self._lock:
+                if self._pending is not pending:
+                    return False
+                store_fn()
+                self._pending = None
+                return True
 
 
 def _nuke_pending_container(flow: LoginFlow, podman, pending: dict) -> None:
@@ -513,6 +521,56 @@ def _nuke_pending_container(flow: LoginFlow, podman, pending: dict) -> None:
     container = pending.get("container")
     if container:
         flow._nuke_container(podman, container)
+
+
+def _propagate_credential(podman, backend: str, profile: str, inject) -> list[str]:
+    """Inject a committed credential into running crews of *backend*/*profile*.
+
+    Runs after the credential is durably stored and must not change the login
+    outcome. The stored profile is re-read before each injection so a logout
+    that raced the commit is not undone, and a failure on one crew never stops
+    injection into the next. Returns the ids of crews that did not receive the
+    credential.
+    """
+    with registry:
+        targets = [
+            (crew_id, info["container"])
+            for crew_id, info in registry._reg["crews"].items()
+            if info.get("status") == "running"
+            and info.get("acp_backend", "kiro") == backend
+            and info.get("acp_profile", "default") == profile
+        ]
+    failed: list[str] = []
+    for crew_id, container in targets:
+        try:
+            if _cred_store.get(backend, profile) is None:
+                logger.info(
+                    "[%s] profile %s no longer stored; skipping injection into crew %s",
+                    backend, profile, crew_id,
+                )
+                continue
+            inject(podman, container)
+        except Exception:
+            logger.warning(
+                "[%s] could not propagate credential for profile %s to crew %s",
+                backend, profile, crew_id, exc_info=True,
+            )
+            failed.append(crew_id)
+    return failed
+
+
+def _propagate_oauth(podman, backend: str, profile: str, payload: bytes) -> list[str]:
+    """Update only running crews assigned to the OAuth credential being rotated."""
+    def _inject(pm, container):
+        getattr(_lc(), f"_inject_{backend}_auth")(pm, container, payload)
+    return _propagate_credential(podman, backend, profile, _inject)
+
+
+def _complete_response(failed: list[str]) -> JSONResponse:
+    body: dict = {"status": "complete"}
+    if failed:
+        body["propagation_failed"] = failed
+    return JSONResponse(body)
 
 
 # ── Kiro flow ─────────────────────────────────────────────────────────────────
@@ -785,10 +843,10 @@ class CodexLoginFlow(LoginFlow):
     image_key = "kc_image"
 
     def _binary_name(self) -> str:
-        return "codex-acp"
+        return "codex"
 
     def _login_cmd(self) -> list[str]:
-        return ["codex-acp", "login"]
+        return ["codex", "login", "--device-auth"]
 
     def _prompt_patterns(self) -> list:
         return []  # Codex login is non-interactive
@@ -801,7 +859,7 @@ class CodexLoginFlow(LoginFlow):
 
     def _code_pattern(self):
         import re
-        return re.compile(r"[Cc]ode[:\s]+([A-Z0-9-]{4,})")
+        return re.compile(r"[Cc]ode(?:[ \t]*\([^\r\n)]*\))?[:\s]+([A-Z0-9]{4,}-[A-Z0-9]{4,})\b")
 
     def _ttl_secs(self) -> float:
         return _CODEX_LOGIN_TTL_SECS
@@ -958,7 +1016,9 @@ async def _handle_login_post(
     ``POST /login`` route does not need to know about profiles and backward
     compatibility with existing call-site stubs is preserved.
     """
-    if _lc()._read_auth_file():
+    # The legacy bare /login route retains its existing guard. Profile-aware
+    # device routes replace the selected profile only when login completes.
+    if method is None and _lc()._read_auth_file():
         return PlainTextResponse(
             "Already authenticated. Run 'ghostship auth logout kiro' first.",
             status_code=409,
@@ -1028,28 +1088,20 @@ async def _handle_login_get(request: Request) -> Response:
     _profile = pending.get("profile", "default")
 
     def _store() -> None:
-        _lc()._write_auth_file(auth_b64)
-        logger.info("ga-kiro-auth written after login completion")
-        # Store via the credential store (TRN-233). The auth_b64 is the SQLite
-        # row data; method is builder-id (default) unless identity-center was used.
-        try:
-            _cred_store.put(
-                "kiro", _method,
-                auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64,
-                provider=_provider,
-                profile=_profile,  # profile scoped to the value recorded at flow start
-            )
-            logger.info("Stored kiro %s credential in credential store (profile=%s)",
-                        _method, _profile)
-        except Exception as e:
-            logger.warning("Could not store kiro credential in credential store: %s", e)
+        _cred_store.put(
+            "kiro", _method,
+            auth_b64.encode("utf-8") if isinstance(auth_b64, str) else auth_b64,
+            provider=_provider, profile=_profile,
+        )
+        if _profile == "default":
+            _lc()._write_auth_file(auth_b64)
 
     try:
         committed = KIRO_FLOW.commit_if_current(pending, _store)
     except Exception as e:
         # Keep the login container and pending state so the next poll can retry,
         # rather than discarding the only copy of the credential.
-        logger.error("Could not write ga-kiro-auth: %s", e)
+        logger.error("Could not persist kiro credential for profile %s", _profile)
         _security.audit_auth_event(
             action="login", outcome="failure", account="academy",
             source=_request_source(request), emit=logger.info,
@@ -1063,32 +1115,20 @@ async def _handle_login_get(request: Request) -> Response:
         _nuke_pending_container(KIRO_FLOW, podman, pending)
         return JSONResponse({"status": "cancelled"})
 
-    # Inject into running kiro crews only, scoped to the profile that was used
-    # at launch (D6). An entry with no acp_backend field is kiro (default).
-    # Entries without acp_profile default to "default".
-    with registry:
-        _running_crews = {
-            cid: info
-            for cid, info in registry._reg["crews"].items()
-            if info.get("status") == "running"
-            and info.get("acp_backend", "kiro") == "kiro"
-            and info.get("acp_profile", "default") == _profile
-        }
-    for cid, info in _running_crews.items():
-        try:
-            _lc()._inject_auth(podman, info["container"], auth_b64)
-            logger.info("Injected fresh auth into running crew %s", cid)
-        except Exception as e:
-            logger.warning("Could not inject auth into crew %s: %s", cid, e)
-
     _nuke_pending_container(KIRO_FLOW, podman, pending)
+
+    # The credential is durably stored; propagation cannot change the outcome.
+    failed = await asyncio.to_thread(
+        _propagate_credential, podman, "kiro", _profile,
+        lambda pm, container: _lc()._inject_auth(pm, container, auth_b64),
+    )
 
     _security.audit_auth_event(
         action="login", outcome="success", account="academy",
         source=_request_source(request),
         emit=logger.info,
     )
-    return JSONResponse({"status": "complete"})
+    return _complete_response(failed)
 
 
 async def _handle_claude_login_post(request: Request) -> Response:
@@ -1184,27 +1224,17 @@ async def _handle_claude_login_get(request: Request) -> Response:
     _claude_profile = pending.get("profile", "default")
 
     def _store() -> None:
-        _lc()._write_claude_auth_file(tar_bytes)
-        logger.info("ga-claude-auth written after Claude login completion")
-        # Store via the credential store (TRN-233). The payload is the tar bytes;
-        # storing base64 of the raw tar mirrors the existing oauth archive convention.
-        try:
-            import base64 as _base64
-            _cred_store.put(
-                "claude", "oauth", _base64.b64encode(tar_bytes),
-                profile=_claude_profile,  # profile scoped to the query-param value, defaults to "default"
-            )
-            logger.info("Stored claude OAuth credential in credential store (profile=%s)",
-                        _claude_profile)
-        except Exception as e:
-            logger.warning("Could not store claude credential in credential store: %s", e)
+        import base64 as _base64
+        _cred_store.put("claude", "oauth", _base64.b64encode(tar_bytes), profile=_claude_profile)
+        if _claude_profile == "default":
+            _lc()._write_claude_auth_file(tar_bytes)
 
     try:
         committed = CLAUDE_FLOW.commit_if_current(pending, _store)
     except Exception as e:
         # Keep the login container and pending state so the next poll can retry,
         # rather than discarding the only copy of the credential.
-        logger.error("Could not write ga-claude-auth: %s", e)
+        logger.error("Could not persist Claude credential for profile %s", _claude_profile)
         _security.audit_auth_event(
             action="login", outcome="failure", account="claude",
             source=_request_source(request), emit=logger.info,
@@ -1225,12 +1255,17 @@ async def _handle_claude_login_get(request: Request) -> Response:
     if not committed:
         return JSONResponse({"status": "cancelled"})
 
+    # The credential is durably stored; propagation cannot change the outcome.
+    failed = await asyncio.to_thread(
+        _propagate_oauth, podman, "claude", _claude_profile, tar_bytes,
+    )
+
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
         source=_request_source(request),
         emit=logger.info,
     )
-    return JSONResponse({"status": "complete"})
+    return _complete_response(failed)
 
 
 async def _handle_claude_login_code_post(request: Request) -> Response:
@@ -1352,26 +1387,17 @@ async def _handle_codex_login_get(request: Request) -> Response:
     _codex_profile = pending.get("profile", "default")
 
     def _store() -> None:
-        _lc()._write_codex_auth_file(tar_bytes)
-        logger.info("ga-codex-auth written after Codex login completion")
-        # Store via the credential store (TRN-233) under the resolved profile.
-        try:
-            import base64 as _base64
-            _cred_store.put(
-                "codex", "chatgpt", _base64.b64encode(tar_bytes),
-                profile=_codex_profile,
-            )
-            logger.info("Stored codex credential in credential store (profile=%s)",
-                        _codex_profile)
-        except Exception as e:
-            logger.warning("Could not store codex credential in credential store: %s", e)
+        import base64 as _base64
+        _cred_store.put("codex", "chatgpt", _base64.b64encode(tar_bytes), profile=_codex_profile)
+        if _codex_profile == "default":
+            _lc()._write_codex_auth_file(tar_bytes)
 
     try:
         committed = CODEX_FLOW.commit_if_current(pending, _store)
     except Exception as e:
         # Keep the login container and pending state so the next poll can retry,
         # rather than discarding the only copy of the credential.
-        logger.error("Could not write ga-codex-auth: %s", e)
+        logger.error("Could not persist Codex credential for profile %s", _codex_profile)
         _security.audit_auth_event(
             action="login", outcome="failure", account="codex",
             source=_request_source(request), emit=logger.info,
@@ -1385,12 +1411,17 @@ async def _handle_codex_login_get(request: Request) -> Response:
     if not committed:
         return JSONResponse({"status": "cancelled"})
 
+    # The credential is durably stored; propagation cannot change the outcome.
+    failed = await asyncio.to_thread(
+        _propagate_oauth, podman, "codex", _codex_profile, tar_bytes,
+    )
+
     _security.audit_auth_event(
         action="login", outcome="success", account="codex",
         source=_request_source(request),
         emit=logger.info,
     )
-    return JSONResponse({"status": "complete"})
+    return _complete_response(failed)
 
 
 # ── TRN-233: new /login/{backend}/{method} and /logout/{backend} routes ───────
@@ -1508,7 +1539,8 @@ async def _handle_login_kiro_api_key_post(request: Request) -> Response:
     profile, err = _parse_profile_from_body(body)
     if err is not None:
         return err
-    _cred_store.put("kiro", "api-key", secret.strip(), profile=profile)
+    with _credential_transaction_lock:
+        _cred_store.put("kiro", "api-key", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="kiro",
         source=_request_source(request), emit=logger.info,
@@ -1583,6 +1615,11 @@ async def _handle_login_kiro_identity_center_post(request: Request) -> Response:
 
 
 def _logout(backend: str, request: Request) -> Response:
+    with _credential_transaction_lock:
+        return _logout_locked(backend, request)
+
+
+def _logout_locked(backend: str, request: Request) -> Response:
     """Cancel a pending *backend* login (for the targeted profile), then remove its credential.
 
     The ``profile`` query parameter (default ``"default"``) scopes which
@@ -1696,7 +1733,8 @@ async def _handle_login_claude_api_key_post(request: Request) -> Response:
     profile, err = _parse_profile_from_body(body)
     if err is not None:
         return err
-    _cred_store.put("claude", "api-key", secret.strip(), profile=profile)
+    with _credential_transaction_lock:
+        _cred_store.put("claude", "api-key", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
         source=_request_source(request), emit=logger.info,
@@ -1724,7 +1762,8 @@ async def _handle_login_claude_setup_token_post(request: Request) -> Response:
     profile, err = _parse_profile_from_body(body)
     if err is not None:
         return err
-    _cred_store.put("claude", "setup-token", secret.strip(), profile=profile)
+    with _credential_transaction_lock:
+        _cred_store.put("claude", "setup-token", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
         source=_request_source(request), emit=logger.info,
@@ -1806,7 +1845,8 @@ async def _handle_login_codex_api_key_post(request: Request) -> Response:
     profile, err = _parse_profile_from_body(body)
     if err is not None:
         return err
-    _cred_store.put("codex", "api-key", secret.strip(), profile=profile)
+    with _credential_transaction_lock:
+        _cred_store.put("codex", "api-key", secret.strip(), profile=profile)
     _security.audit_auth_event(
         action="login", outcome="success", account="codex",
         source=_request_source(request), emit=logger.info,

@@ -247,13 +247,14 @@ def _resolve_backend_default_model(backend: str) -> str:
 
     Applies the lower half of the TRN-257 precedence chain:
       backends.<b>.model.default > model.default > "" (KiroCrew built-in)
-    The caller writes the result as ``agent.default_model`` only when non-empty,
-    leaving KiroCrew's built-in default intact otherwise. A per-agent model in a
-    persona file still wins over this (the gateway treats default_model as a
-    fallback), as does a per-backend override resolved separately.
+    The caller writes the result as ``agent.model``, or ``auto`` when empty,
+    leaving model selection to KiroCrew/the harness when nothing is pinned.
+    A persona model still wins over this fallback, as does a per-backend
+    override resolved separately.
     """
     return _KC_MODEL_BACKEND_DEFAULT.get(backend, "") or KC_MODEL_DEFAULT
 GA_MIN_FREE_MEM_GB = cfg.ga_min_free_mem_gb
+GA_START_MEM_ESTIMATE_GB = cfg.ga_start_mem_estimate_gb
 GA_SPAWN_MIN_MEMORY_GB = cfg.ga_spawn_min_memory_gb
 GA_RESOURCE_PRESSURE_GB = cfg.ga_resource_pressure_gb
 GA_RESOURCE_CRITICAL_GB = cfg.ga_resource_critical_gb
@@ -1303,7 +1304,7 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
 
 
 def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
-    """Re-register tracked jobs from the transport registry into the gateway.
+    """Reconcile tracked jobs with gateway state after a crew becomes available.
 
     Runs in two passes:
 
@@ -1316,6 +1317,12 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
     2. **Reseed pass** — for each enabled registry entry that has no matching
        job in the gateway (the true bootstrap case: fresh container, empty
        gateway), re-register it.
+
+    The gateway listing is also fetched when the transport has no tracked
+    entries, so gateway-only schedules are observed on the first explicit wake
+    after downtime. They remain gateway-owned and keep their existing delivery
+    semantics; the transport does not synthesize registry schedules for job
+    types it cannot represent.
     """
     try:
         from captain import _captain_jobs  # container: flat /app/
@@ -1324,9 +1331,6 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
 
     with registry:
         schedules = registry.get_schedules(crew_id)
-
-    if not schedules:
-        return
 
     # Get existing gateway jobs
     try:
@@ -1388,78 +1392,11 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
         if not sched.get("enabled", True):
             continue
 
-        # ── Captain entries use dispatch+steer, not gateway crons ─────────────
+        # Captain entries are transport-side schedules. The captain monitor
+        # wakes and dispatches only when next_fire_at is due; an unrelated wake
+        # must not start a future Captain check-in.
         if sched.get("type") == "captain":
-            current_task_id = sched.get("current_task_id")
-            if not current_task_id:
-                # No task yet — dispatch immediately
-                try:
-                    try:
-                        from captain_engine import _dispatch_captain_checkin  # container
-                    except ModuleNotFoundError:
-                        from transport.captain_engine import _dispatch_captain_checkin  # type: ignore[no-redef]
-                    new_task_id = _dispatch_captain_checkin(
-                        crew, crew_id, model=sched.get("model")
-                    )
-                    with registry:
-                        for s in registry.get_schedules(crew_id):
-                            if s.get("type") == "captain":
-                                s["current_task_id"] = new_task_id
-                                break
-                    logger.info(
-                        "Re-seeded captain check-in for crew %s (new task %s)",
-                        crew_id, new_task_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to re-seed captain check-in for crew %s: %s",
-                        crew_id, e,
-                    )
-            else:
-                # Has a task_id — verify liveness
-                try:
-                    task_info = _crew_api(crew, "GET", f"/api/spawn/{current_task_id}")
-                    # Task exists — leave it; the captain monitor will steer it
-                    logger.debug(
-                        "Captain check-in task %s still live for crew %s",
-                        current_task_id, crew_id,
-                    )
-                except Exception as e:
-                    err_str = str(e)
-                    if "conversation_gone" in err_str or "404" in err_str or "not found" in err_str:
-                        # Session gone after container restart — re-dispatch
-                        logger.info(
-                            "Captain check-in task %s gone for crew %s — re-dispatching",
-                            current_task_id, crew_id,
-                        )
-                        try:
-                            try:
-                                from captain_engine import _dispatch_captain_checkin  # container
-                            except ModuleNotFoundError:
-                                from transport.captain_engine import _dispatch_captain_checkin  # type: ignore[no-redef]
-                            new_task_id = _dispatch_captain_checkin(
-                                crew, crew_id, model=sched.get("model")
-                            )
-                            with registry:
-                                for s in registry.get_schedules(crew_id):
-                                    if s.get("type") == "captain":
-                                        s["current_task_id"] = new_task_id
-                                        break
-                            logger.info(
-                                "Re-dispatched captain check-in for crew %s (new task %s)",
-                                crew_id, new_task_id,
-                            )
-                        except Exception as e2:
-                            logger.warning(
-                                "Failed to re-dispatch captain check-in for crew %s: %s",
-                                crew_id, e2,
-                            )
-                    else:
-                        logger.warning(
-                            "Could not check captain task liveness for crew %s: %s",
-                            crew_id, e,
-                        )
-            continue  # Captain entries handled above — skip the cron reseed path
+            continue
 
         job_id = sched.get("job_id")
         if job_id in gateway_ids:
@@ -1496,9 +1433,12 @@ def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
 
 
 def _reconcile_registry() -> None:
-    """On startup: restart stopped crew containers, remove truly gone ones.
-    Also sweeps any orphaned ga-login-* containers left over from a transport
-    restart that occurred mid-login flow.
+    """On startup, reconcile registered crews with Podman without waking them.
+
+    Existing stopped containers remain registered with their schedules,
+    workspace volumes, dashboard allocations, and other metadata intact.
+    Containers confirmed absent are removed under the existing re-registration
+    guard. The login-container sweep is independent of crew recovery.
     """
     # best-effort: podman may be unavailable on startup; reconciliation is skipped, not fatal
     try:
@@ -1532,26 +1472,41 @@ def _reconcile_registry() -> None:
     except Exception as e:
         logger.warning("Login expiry sweep failed: %s", e)
 
-    # Snapshot the registry under the lock, then release it before the
-    # per-crew restart loop so the lock is not held across gateway waits
-    # (up to 30s each).  Per-crew write-backs re-acquire the lock individually.
-    # H-2 fix: also capture created_at values for all entries AT SNAPSHOT TIME
-    # under the lock, so the write-back can detect concurrent re-registrations.
-    with registry:
-        snapshot = dict(registry._reg["crews"])
-        # Capture created_at under the same lock as the snapshot. This ensures
-        # the write-back compares against the value at snapshot time, not a
-        # value that may have been mutated by a concurrent launch() in the
-        # interval between the snapshot and the write-back.
-        snapshot_created_at: dict[str, str | None] = {
-            cid: entry.get("created_at") for cid, entry in snapshot.items()
-        }
+    try:
+        from launcher import _launcher  # container: flat /app/
+    except ModuleNotFoundError:
+        from transport.launcher import _launcher  # local dev
+
+    # Capture registry state and per-crew startup generations under the same
+    # lock order used by the write-back. A wake that starts after this snapshot
+    # increments its generation before it can start the container, so stale
+    # Podman observations cannot overwrite that newer lifecycle state.
+    with _launcher._startup_events_lock:
+        startup_in_progress = set(_launcher._startup_events)
+        with registry:
+            snapshot = dict(registry._reg["crews"])
+            snapshot_created_at: dict[str, str | None] = {
+                cid: entry.get("created_at") for cid, entry in snapshot.items()
+            }
+            snapshot_containers: dict[str, str | None] = {
+                cid: entry.get("container") for cid, entry in snapshot.items()
+            }
+            snapshot_generation: dict[str, int] = {
+                cid: _launcher._startup_generation.get(cid, 0)
+                for cid in snapshot
+            }
 
     to_remove = []
     updates: dict[str, dict] = {}  # cid -> fields to merge back
 
     for cid, info in snapshot.items():
-        container = info["container"]
+        if cid in startup_in_progress:
+            logger.info("Reconcile: crew %s already has a wake in progress — skipping", cid)
+            continue
+        container = snapshot_containers[cid]
+        if not container:
+            logger.warning("Reconcile: crew %s has no container name — skipping", cid)
+            continue
         try:
             exists = podman.container_exists(container)
         except Exception as e:
@@ -1566,55 +1521,57 @@ def _reconcile_registry() -> None:
             except Exception as e:
                 logger.warning("Reconcile: transient Podman error checking running state for crew %s — skipping: %s", cid, e)
                 continue
-            if not running:
-                # Container exists but stopped (e.g. VM reboot) — restart it.
-                # Delegates to _launcher._run_restart_cycle for the
-                # patch-config → stop → start → wait-gateway → mint-cookie cycle.
-                logger.info("Restarting stopped crew on startup: %s", cid)
-                try:
-                    from launcher import _launcher  # container: flat /app/
-                except ModuleNotFoundError:
-                    from transport.launcher import _launcher  # local dev
-                cycle_result = _launcher._run_restart_cycle(info, cid)
-                updates[cid] = cycle_result
-                if cycle_result.get("status") == "running":
-                    logger.info("Crew %s restored", cid)
-                    # Re-seed gateway schedules from registry
-                    restored_crew = dict(info)
-                    if cycle_result.get("cookie"):
-                        restored_crew["cookie"] = cycle_result["cookie"]
-                    deployed = _deployed_agent_names(podman, container)
-                    _enroll_crew_members(restored_crew, cid, deployed)
-                    updates[cid]["enrolled_agents"] = [
-                        n.removesuffix(".json") for n in deployed
-                    ]
-                    try:
-                        _reseed_crew_schedules(restored_crew, cid, info)
-                    except Exception as e:
-                        logger.warning("Schedule re-seed failed for crew %s: %s", cid, e)
+            desired_status = "running" if running else "stopped"
+            if info.get("status") != desired_status:
+                logger.info(
+                    "Reconcile: correcting crew %s registry status from %r to %s",
+                    cid, info.get("status"), desired_status,
+                )
+            updates[cid] = {"status": desired_status}
 
-    # Write all changes back under the lock in one pass
+    # Apply statuses and guarded removals together. The launcher generation
+    # lock closes the observation/write race with _ensure_crew_running; no
+    # Podman or gateway operation is performed while either lock is held.
     try:
-        with registry:
-            for cid in to_remove:
-                # H-2 fix: re-read the live entry and skip deletion if its
-                # created_at differs from the snapshot value. A differing
-                # created_at means the crew was re-registered concurrently
-                # (e.g. a new launch() ran between the snapshot and here) and
-                # we must not destroy the new entry.
-                live_entry = registry._reg["crews"].get(cid)
-                if live_entry is None:
-                    continue  # already removed — nothing to do
-                if live_entry.get("created_at") != snapshot_created_at.get(cid):
-                    logger.info(
-                        "Reconcile: skipping deletion of crew %s — "
-                        "created_at changed (concurrent re-registration)", cid,
+        with _launcher._startup_events_lock:
+            with registry:
+                live_crews = registry._reg["crews"]
+
+                def _snapshot_is_current(cid: str, live_entry: dict) -> bool:
+                    return (
+                        cid not in _launcher._startup_events
+                        and _launcher._startup_generation.get(cid, 0)
+                        == snapshot_generation.get(cid, 0)
+                        and live_entry.get("container") == snapshot_containers.get(cid)
+                        and live_entry.get("created_at") == snapshot_created_at.get(cid)
                     )
-                    continue
-                del registry._reg["crews"][cid]
-            for cid, fields in updates.items():
-                if cid in registry._reg["crews"]:
-                    registry._reg["crews"][cid].update(fields)
+
+                for cid in to_remove:
+                    # H-2 fix: re-read the live entry and skip deletion if its
+                    # created_at differs from the snapshot value. A differing
+                    # created_at means the crew was re-registered concurrently
+                    # (e.g. a new launch() ran between the snapshot and here).
+                    live_entry = live_crews.get(cid)
+                    if live_entry is None:
+                        continue  # already removed — nothing to do
+                    if not _snapshot_is_current(cid, live_entry):
+                        logger.info(
+                            "Reconcile: skipping deletion of crew %s — "
+                            "entry or lifecycle generation changed during inspection", cid,
+                        )
+                        continue
+                    del live_crews[cid]
+                for cid, fields in updates.items():
+                    live_entry = live_crews.get(cid)
+                    if live_entry is None:
+                        continue
+                    if not _snapshot_is_current(cid, live_entry):
+                        logger.info(
+                            "Reconcile: skipping status update for crew %s — "
+                            "lifecycle state changed during inspection", cid,
+                        )
+                        continue
+                    live_entry.update(fields)
     except Exception as e:
         logger.error(
             "Registry I/O error during reconcile write-back — skipping write to avoid data loss: %s", e
@@ -1715,23 +1672,16 @@ def _patch_crew_config(
     # kiro-cli runtime.
     if backend == "claude":
         agent_overrides["acp_backend"] = "claude"
-    # For a codex crew, route agent spawns through the Codex ACP runtime.
-    # codex-acp advertises a verified read-only mode at session/new, so
-    # ghostship's per-call kiro approval gate does not apply (see crew-governance).
+    # Codex's enforced permission route relies on KiroCrew's OS credential
+    # mask. It cannot run with the legacy unsandboxed defaults above.
+    # Require a working backend and refuse an unsandboxed fallback.
     elif backend == "codex":
         agent_overrides["acp_backend"] = "codex"
-    # agent.default_model — the fallback model applied when no per-agent model
-    # field overrides it. TRN-257 resolves it per backend:
-    #   backends.<b>.model.default > model.default > KiroCrew built-in
-    # Full precedence chain (high→low):
-    #   dispatch(model=) > backends.<b>.model.override > per-agent model
-    #     > backends.<b>.model.default > model.default > KiroCrew built-in
-    # The per-backend override (if any) is applied separately as a hard patch in
-    # _patch_models. Only write default_model when the resolved fallback is
-    # non-empty; omitting it leaves KiroCrew's built-in default intact.
-    _default_model = _resolve_backend_default_model(backend)
-    if _default_model:
-        agent_overrides["default_model"] = _default_model
+        agent_overrides["sandbox"] = "auto"
+        agent_overrides["sandbox_allow_unsandboxed_exec"] = False
+    # KiroCrew consumes agent.model as its global fallback, below persona pins.
+    # Always write auto when unset so reapplying config clears an earlier pin.
+    agent_overrides["model"] = _resolve_backend_default_model(backend) or "auto"
 
     # Build the full config override structure passed to patch_crew_config.py.
     # The script deep-merges every top-level key into config.local.json, so
@@ -1937,6 +1887,7 @@ def _finish_crew_setup(
     dashboard: bool = False,
     backend: str,
     acp_profile: str = "default",
+    credential: dict | None = None,
 ) -> dict:
     """Complete crew setup after auth is confirmed.
 
@@ -1961,6 +1912,7 @@ def _finish_crew_setup(
         dashboard=dashboard,
         backend=backend,
         acp_profile=acp_profile,
+        credential=credential,
     )
 
 
@@ -2074,12 +2026,11 @@ def _write_claude_auth_file(data: bytes, _path: Path | None = None) -> None:
     _write_secret_file(path, data)
 
 
-def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
+def _inject_claude_auth(podman: "PodmanClient", container: str, tar_bytes: bytes | None = None) -> None:
     """Inject the ga-claude-auth tar archive into container's ~/.claude/.
 
-    Reads the host-side ga-claude-auth file (a tar of ~/.claude/) and untars it
-    into /home/kirocrew/.claude/ inside the crew container, matching the path
-    that the claude-agent-acp server reads for OAuth credentials.
+    Inject the selected profile archive when supplied. The legacy host-side
+    archive is retained only for callers using the implicit default profile.
 
     Injection strategy (SEC-1): the host-side ga-claude-auth file is already a
     tar of ``~/.claude/``, so its bytes are streamed straight into the container
@@ -2089,7 +2040,7 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
     future non-base64 payload can open a shell-injection surface.
     """
     auth_path = _claude_auth_file_path()
-    if not auth_path.is_file():
+    if tar_bytes is None and not auth_path.is_file():
         raise RuntimeError("ga-claude-auth not found — Claude login required first")
 
     # Ensure the target directory exists in the container
@@ -2097,7 +2048,8 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
 
     # The auth file is a tar of ~/.claude/ — hand the raw tar bytes to the
     # archive-put endpoint, which untars them directly at the target path.
-    tar_bytes = auth_path.read_bytes()
+    if tar_bytes is None:
+        tar_bytes = auth_path.read_bytes()
     podman.container_archive_put(container, "/home/kirocrew/.claude/", tar_bytes)
     logger.info("Injected Claude OAuth credentials into crew container %s", container)
 
@@ -2131,8 +2083,12 @@ def _run_pty_login_flow(
     code_pattern: "re.Pattern | None",
     deadline_secs: float = 45.0,
     initial_bytes: bytes = b"",
+    require_code: bool = False,
 ) -> "tuple[str | None, str | None]":
     """Run a PTY select-loop and extract a login URL and optional code.
+
+    When require_code is true, wait for both URL and code before handing
+    off to the background drain; an incomplete handoff fails on timeout.
 
     Owns the select() loop, chunk accumulation, prompt-answer dispatch,
     URL/code extraction, and background PTY drain thread.  Returns
@@ -2203,7 +2159,7 @@ def _run_pty_login_flow(
                         login_code = cm.group(1) or (
                             cm.group(2) if cm.lastindex and cm.lastindex >= 2 else None
                         )
-                return True
+                return not require_code or login_code is not None
         return False
 
     try:
@@ -2227,6 +2183,9 @@ def _run_pty_login_flow(
                         break
     except Exception as e:
         logger.warning("PTY read error in _run_pty_login_flow: %s", e)
+
+    if require_code and not login_code:
+        login_url = None
 
     if not login_url:
         # Surface what the CLI printed so a stalled prompt is diagnosable from
@@ -2604,13 +2563,11 @@ def _write_codex_auth_file(data: bytes, _path: Path | None = None) -> None:
     _write_secret_file(path, data)
 
 
-def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
+def _inject_codex_auth(podman: "PodmanClient", container: str, tar_bytes: bytes | None = None) -> None:
     """Inject the ga-codex-auth tar archive into container's ~/.codex/.
 
-    Reads the host-side ga-codex-auth file (a tar of ~/.codex/, holding
-    auth.json) and untars it into /home/kirocrew/.codex/ inside the crew
-    container, matching the path that codex-acp reads for OAuth credentials
-    (relocatable via CODEX_HOME, but ghostship uses the default location).
+    Inject the selected profile archive when supplied. The legacy host-side
+    archive is retained only for callers using the implicit default profile.
 
     Injection strategy mirrors _inject_claude_auth (SEC-1): the host-side
     ga-codex-auth file is already a tar of ``~/.codex/``, so its bytes stream
@@ -2620,13 +2577,14 @@ def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
     shell.
     """
     auth_path = _codex_auth_file_path()
-    if not auth_path.is_file():
+    if tar_bytes is None and not auth_path.is_file():
         raise RuntimeError("ga-codex-auth not found — Codex login required first")
 
     # Ensure the target directory exists in the container
     podman.container_exec(container, ["mkdir", "-p", "/home/kirocrew/.codex"])
 
-    tar_bytes = auth_path.read_bytes()
+    if tar_bytes is None:
+        tar_bytes = auth_path.read_bytes()
     podman.container_archive_put(container, "/home/kirocrew/.codex/", tar_bytes)
     logger.info("Injected Codex OAuth credentials into crew container %s", container)
 
@@ -2646,19 +2604,12 @@ def _initiate_codex_login(podman: "PodmanClient", profile: str = "default") -> d
 
     Mirrors _initiate_claude_login: acquires _codex_login_pending_lock, applies
     TOCTOU-safe guards, starts the ephemeral ga-codex-login-* container from
-    KC_IMAGE (spec-ops with the codex toolchain), runs the codex-acp login
-    command via container_exec_pty_stdin, reads the 45-second PTY stream with
-    select(), extracts the verification URL, drains the PTY in background, and
-    stores pending state in _codex_login_pending.
-
-    Login-flow shape note (design Open Questions / task 1.2): the exact codex-acp
-    login UX (device-code vs browser sign-in, and whether a short code is
-    surfaced alongside the login_url) is confirmed against the adapter at
-    implementation time. The command is ``codex-acp login`` (headless), and the
-    URL regex accepts an OpenAI/ChatGPT auth URL first, then any https URL after
-    a "URL"/"browser" cue, then any long https URL as a last resort. The
-    codex-auth spec explicitly permits a code-less login_url response, so a
-    missing code is not an error.
+    KC_IMAGE (spec-ops with the codex toolchain), runs
+    ``codex login --device-auth`` via container_exec_pty_stdin, reads the
+    45-second PTY stream, extracts the verification URL and optional code,
+    and drains the PTY in the background while authentication completes.
+    The CLI is the compatible dependency shipped with codex-acp, exposed on
+    PATH by the image toolchain; codex-acp itself is an ACP stdio server.
 
     Returns one of:
       {"login_url": str, "code": str | None}  — flow started successfully

@@ -351,6 +351,7 @@ class Config:
 
     # ── Memory gate / thresholds ─────────────────────────────────────────────
     ga_min_free_mem_gb: float = 2.0
+    ga_start_mem_estimate_gb: float = 1.0
     ga_spawn_min_memory_gb: float = 1.5
     ga_resource_pressure_gb: float = 2.0
     ga_resource_critical_gb: float = 1.0
@@ -548,6 +549,7 @@ class Config:
             kc_model_codex_override=os.environ.get("KC_MODEL_CODEX_OVERRIDE", ""),
             kc_model_codex_default=os.environ.get("KC_MODEL_CODEX_DEFAULT", ""),
             ga_min_free_mem_gb=_env_float("GA_MIN_FREE_MEM_GB", "2.0"),
+            ga_start_mem_estimate_gb=_env_float("GA_START_MEM_ESTIMATE_GB", "1.0"),
             ga_spawn_min_memory_gb=_env_float("GA_SPAWN_MIN_MEMORY_GB", "1.5"),
             ga_resource_pressure_gb=_env_float("GA_RESOURCE_PRESSURE_GB", "2.0"),
             ga_resource_critical_gb=_env_float("GA_RESOURCE_CRITICAL_GB", "1.0"),

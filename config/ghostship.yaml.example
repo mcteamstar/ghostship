@@ -105,6 +105,8 @@ crew:
   memory:
     # Minimum free host memory (GB) required to launch a new crew. 0 = off.
     min_free_mem_gb: 2.0
+    # Memory (GB) assumed per crew start still in flight during admission.
+    start_mem_estimate_gb: 1.0
 
     # Minimum free memory (GB) required to accept a new subagent spawn.
     spawn_min_memory_gb: 1.5

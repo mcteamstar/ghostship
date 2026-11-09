@@ -68,6 +68,14 @@ nuke(crew_id, confirm=True)
   └── stop container, remove container + both volumes, deregister (run evac first if you need to preserve workspace data)
 ```
 
+### Transport restart and on-demand recovery
+
+When the transport starts, it checks registered crew containers against Podman and corrects their running/stopped status. A stopped crew stays stopped; startup does not start it to patch config, mint cookies, or wait for its gateway. Its registry entry, schedules, workspace and home volumes, and dashboard port remain available, so transport health can become ready without waiting for every crew gateway.
+
+The first operation that needs a stopped crew wakes it through the normal recovery path. Recovery applies current transport config, refreshes gateway session cookies, enrolls crew members, and reconciles tracked schedules before serving the operation. UI, API, and WebSocket proxy requests wake their target crew as well.
+
+Recovery starts the existing container from its existing image. It does not recreate the container from the latest `KC_IMAGE`; use `nuke` and `launch` when a crew must adopt a rebuilt image.
+
 ### Shared OpenSpec store
 
 Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. `launch` seeds a shared OpenSpec store one level above at the workspace root (`openspec init --force`), so all agents resolve to the same store automatically.
@@ -80,7 +88,7 @@ Call `supply(path="repo", crew_id="<id>", bundle=True)` and POST a git bundle to
 
 ## Captain supervision
 
-`captain(crew_id, action="order", ...)` creates a recurring cron job that dispatches Raven each tick. When `interval` is set, Raven is dispatched immediately by default.
+`captain(crew_id, action="order", ...)` stores a recurring check-in in the transport registry. The Captain monitor wakes a stopped crew when that check-in is due, then continues or dispatches Raven using the existing task state. Future or disabled check-ins do not wake crews.
 
 Built-in templates:
 
@@ -111,7 +119,9 @@ Every `dispatch` requests a retained run (`keep=true`). Tasks run as isolated su
 
 Crews stop after `GA_IDLE_TIMEOUT_SECS` (default 300 s) of no activity. Active dispatches and cron executions refresh the timestamp. An enabled Captain schedule alone does not pin a crew alive.
 
-`_ensure_crew_running` transparently restarts a stopped container before forwarding any `dispatch`, `pickup`, `steer`, `evac`, `supply`, or `schedule` call. Concurrent restart races are serialised per-crew.
+`_ensure_crew_running` transparently restarts a stopped container before forwarding `dispatch`, `pickup`, `steer`, `evac`, `supply`, and `schedule` calls. Crew UI/API/WebSocket proxy requests use the same wake path. Concurrent starts are coordinated per crew and admitted against shared active-crew and memory limits.
+
+Ghostship-tracked schedules and Captain check-ins can wake a stopped crew once their enabled work is due. Future or disabled tracked entries remain dormant. A cron job created only inside a crew gateway is invisible to the transport while that crew is stopped, so it cannot wake the crew. After an explicit wake, the gateway's cron state is queried again and gateway-owned jobs retain their gateway delivery behavior. Use Ghostship's `schedule()` tool when a job must wake a stopped crew automatically.
 
 ## Networking
 

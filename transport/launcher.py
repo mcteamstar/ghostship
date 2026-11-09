@@ -24,11 +24,65 @@ Design notes (design.md):
 from __future__ import annotations
 
 import logging
+import base64
+import hmac
+import io
 import threading
 import time
+import tarfile
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _oauth_archive(credential: dict) -> bytes:
+    """Decode the profile-scoped archive without exposing payloads in errors."""
+    try:
+        payload = credential["payload"]
+        if isinstance(payload, str):
+            payload = payload.encode("ascii")
+        # Existing envelopes can contain raw tar bytes or the older
+        # base64-encoded tar representation.
+        try:
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
+                if archive.getmembers():
+                    return payload
+        except tarfile.TarError:
+            pass
+        payload = base64.b64decode(payload, validate=True)
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
+            if not archive.getmembers():
+                raise ValueError("empty archive")
+    except (KeyError, TypeError, ValueError, UnicodeError, tarfile.TarError) as exc:
+        raise ValueError("OAuth profile credential is not a valid archive") from exc
+    return payload
+
+
+def _validate_static_credential(podman, container: str, backend: str, credential: dict) -> None:
+    """Refuse to start an existing container with a rotated static credential."""
+    variable = {
+        ("kiro", "api-key"): "KIRO_API_KEY",
+        ("codex", "api-key"): "OPENAI_API_KEY",
+        ("claude", "api-key"): "ANTHROPIC_API_KEY",
+        ("claude", "setup-token"): "CLAUDE_CODE_OAUTH_TOKEN",
+    }.get((backend, credential.get("method")))
+    env = podman.container_inspect(container).get("Config", {}).get("Env", []) or []
+    if not variable:
+        static_variables = {
+            "kiro": ("KIRO_API_KEY",),
+            "codex": ("OPENAI_API_KEY",),
+            "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        }.get(backend, ())
+        if any(item.startswith(name + "=") and item.split("=", 1)[1]
+               for name in static_variables for item in env):
+            raise RuntimeError("Selected credential method changed; the crew container must be recreated with its workspace preserved")
+        return
+    values = [item.split("=", 1)[1] for item in env if item.startswith(variable + "=")]
+    expected = credential["payload"]
+    if isinstance(expected, str):
+        expected = expected.encode("utf-8")
+    if len(values) != 1 or not hmac.compare_digest(values[0].encode("utf-8"), expected):
+        raise RuntimeError("Selected static credential changed; the crew container must be recreated with its workspace preserved")
 
 try:
     from config import Config  # container: flat /app/
@@ -56,6 +110,14 @@ try:
     from lifecycle import _NUKED_DURING_RESTART  # container: flat /app/
 except ModuleNotFoundError:
     from transport.lifecycle import _NUKED_DURING_RESTART  # local dev
+
+
+_MEMORY_WAIT_SECS = 60
+_MEMORY_POLL_SECS = 5
+
+
+class _InsufficientMemory(RuntimeError):
+    """Admission refused for lack of memory headroom (retryable)."""
 
 
 class CrewLauncher:
@@ -98,6 +160,14 @@ class CrewLauncher:
         self._warm_markers: dict[str, float] = {}
         self._warm_markers_lock = threading.Lock()
 
+        # Cross-crew start admission. The capacity lock serialises the resource
+        # checks through the first Podman start, then the reservation remains
+        # until the full restart succeeds or fails. It is deliberately separate
+        # from the registry lock: Podman and gateway operations never run while
+        # holding the registry lock.
+        self._capacity_lock = threading.Lock()
+        self._start_reservations: dict[str, str] = {}
+
     def get_ensure_running_lock(self, crew_id: str) -> threading.Lock:
         """Return or create a per-crew lock for serialising recovery attempts.
 
@@ -115,6 +185,11 @@ class CrewLauncher:
     # ── Active-limit and memory-gate helpers ─────────────────────────────────
 
     def _check_active_limit(self, podman: "PodmanClient", crew_id: str) -> None:
+        """Check active crew capacity, accounting for starts in flight."""
+        with self._capacity_lock:
+            self._check_active_limit_locked(podman, crew_id)
+
+    def _check_active_limit_locked(self, podman: "PodmanClient", crew_id: str) -> None:
         """Raise RuntimeError if the active-crew limit is reached.
 
         Counts only crews whose container is actually running in Podman (not
@@ -131,24 +206,32 @@ class CrewLauncher:
         if GA_MAX_ACTIVE_CREWS <= 0:
             return
 
-        with registry:
-            running_snapshot = [
-                (cid, entry.get("container"))
-                for cid, entry in registry._reg["crews"].items()
-                if entry.get("status") == "running"
-            ]
+        with self._startup_events_lock:
+            startup_in_progress = set(self._startup_events)
+            with registry:
+                crew_snapshot = [
+                    (cid, entry.get("container"), entry.get("status"))
+                    for cid, entry in registry._reg["crews"].items()
+                ]
+                generation_snapshot = {
+                    cid: self._startup_generation.get(cid, 0)
+                    for cid, _container, _status in crew_snapshot
+                }
 
-        active = 0
+        active_ids: set[str] = set()
         corrections: list[str] = []
-        for cid, container in running_snapshot:
+        containers_by_id = {cid: container for cid, container, _ in crew_snapshot}
+        for cid, container, status in crew_snapshot:
             if not container:
-                corrections.append(cid)
+                if status == "running":
+                    corrections.append(cid)
                 continue
             try:
                 if podman.container_is_running(container):
-                    active += 1
+                    active_ids.add(cid)
                 else:
-                    corrections.append(cid)
+                    if status == "running":
+                        corrections.append(cid)
             except Exception as e:
                 # Transient Podman error — do NOT mark as stopped; the
                 # container state is unknown and we must not remove it from
@@ -157,14 +240,23 @@ class CrewLauncher:
                     "Active-limit check: transient Podman error for crew %s "
                     "— skipping correction: %s", cid, e,
                 )
-                active += 1  # assume still running to avoid under-counting
+                active_ids.add(cid)  # assume still running to avoid under-counting
 
         if corrections:
-            with registry:
-                for cid in corrections:
-                    entry = registry._reg["crews"].get(cid)
-                    if entry is not None and entry.get("status") == "running":
-                        entry["status"] = "stopped"
+            with self._startup_events_lock:
+                with registry:
+                    for cid in corrections:
+                        entry = registry._reg["crews"].get(cid)
+                        if (
+                            cid not in startup_in_progress
+                            and cid not in self._startup_events
+                            and self._startup_generation.get(cid, 0)
+                            == generation_snapshot.get(cid, 0)
+                            and entry is not None
+                            and entry.get("container") == containers_by_id.get(cid)
+                            and entry.get("status") == "running"
+                        ):
+                            entry["status"] = "stopped"
             logger.info(
                 "Active-limit check corrected %d stale running entr%s to stopped: %s",
                 len(corrections),
@@ -172,31 +264,116 @@ class CrewLauncher:
                 ", ".join(corrections),
             )
 
-        if active >= GA_MAX_ACTIVE_CREWS:
+        reserved_ids = {
+            cid for cid, container in self._start_reservations.items()
+            if cid not in active_ids and container
+        }
+        active_ids.update(reserved_ids)
+        projected = len(active_ids) if crew_id in active_ids else len(active_ids) + 1
+        if projected > GA_MAX_ACTIVE_CREWS:
             raise RuntimeError(
                 f"Active crew limit ({GA_MAX_ACTIVE_CREWS}) reached — "
                 "wait for a running crew to idle out or nuke one first"
             )
 
-    def _check_memory_gate(self, podman: "PodmanClient", crew_id: str) -> None:
-        """Raise RuntimeError if available memory is below the required minimum.
+    def _reserve_start_capacity(
+        self, podman: "PodmanClient", crew_id: str, container: str
+    ) -> None:
+        """Atomically admit a start and hold the memory gate through Podman start.
 
+        The active slot reservation remains in ``_start_reservations`` until
+        ensure_running completes. Serialising only the checks and initial
+        ``container_start`` lets the next start see the first container's real
+        memory use; the lock is released before config patching or any gateway
+        readiness wait.
+        """
+        try:
+            from lifecycle import GA_MIN_FREE_MEM_GB  # container
+        except ModuleNotFoundError:
+            from transport.lifecycle import GA_MIN_FREE_MEM_GB  # local dev
+
+        deadline = time.monotonic() + _MEMORY_WAIT_SECS
+        while True:
+            # The capacity lock is held only for one check; it is released
+            # between memory polls so other crews' admission is not blocked.
+            self._capacity_lock.acquire()
+            reservation_added = False
+            try:
+                if crew_id in self._start_reservations:
+                    raise RuntimeError(f"Crew {crew_id} already has a start reservation")
+                self._check_active_limit_locked(podman, crew_id)
+                try:
+                    self._check_memory_gate(podman, crew_id)
+                except _InsufficientMemory:
+                    if GA_MIN_FREE_MEM_GB <= 0 or time.monotonic() >= deadline:
+                        raise
+                    wait_more = True
+                else:
+                    wait_more = False
+                    self._start_reservations[crew_id] = container
+                    reservation_added = True
+            except BaseException:
+                if reservation_added:
+                    self._start_reservations.pop(crew_id, None)
+                self._capacity_lock.release()
+                raise
+            if not wait_more:
+                return  # capacity lock stays held for the caller
+            self._capacity_lock.release()
+            time.sleep(_MEMORY_POLL_SECS)
+
+    def _release_start_reservation(self, crew_id: str) -> None:
+        """Release a start reservation after success, failure, or cancellation."""
+        with self._capacity_lock:
+            self._start_reservations.pop(crew_id, None)
+
+    def _check_memory_gate(self, podman: "PodmanClient", crew_id: str) -> None:
+        """Raise _InsufficientMemory if admission headroom is below the minimum.
+
+        Takes one live reading (no waiting) and subtracts the configured
+        estimate for every start already in flight, since those containers
+        have not yet used their memory. Callers must hold the capacity lock.
         No-op when GA_MIN_FREE_MEM_GB == 0 (disabled).
         """
         try:
-            from lifecycle import GA_MIN_FREE_MEM_GB, _wait_for_memory  # container
+            from lifecycle import (  # container
+                GA_MIN_FREE_MEM_GB, GA_START_MEM_ESTIMATE_GB, _wait_for_memory,
+            )
         except ModuleNotFoundError:
-            from transport.lifecycle import GA_MIN_FREE_MEM_GB, _wait_for_memory  # local dev
+            from transport.lifecycle import (  # local dev
+                GA_MIN_FREE_MEM_GB, GA_START_MEM_ESTIMATE_GB, _wait_for_memory,
+            )
 
         if GA_MIN_FREE_MEM_GB <= 0:
             return
 
-        free_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 60)
+        live_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 0)
+        in_flight = len(self._start_reservations)
+        free_gb = live_gb - GA_START_MEM_ESTIMATE_GB * in_flight
         if free_gb < GA_MIN_FREE_MEM_GB:
-            raise RuntimeError(
+            raise _InsufficientMemory(
                 f"Insufficient available memory to start crew {crew_id}: "
-                f"{free_gb}GB free, {GA_MIN_FREE_MEM_GB}GB required. "
-                f"Retry in a moment."
+                f"{free_gb:g}GB free ({in_flight} start(s) in flight), "
+                f"{GA_MIN_FREE_MEM_GB}GB required. Retry in a moment."
+            )
+
+    def _cleanup_failed_wake(self, podman: "PodmanClient", crew_id: str, container: str) -> None:
+        """Best-effort: stop the container and mark the registry stopped."""
+        try:
+            podman.container_stop(container)
+        except Exception as stop_exc:
+            logger.error(
+                "Crew %s: container_stop during failed-wake cleanup failed: %s",
+                crew_id, stop_exc,
+            )
+        try:
+            with registry:
+                if crew_id in registry._reg["crews"]:
+                    registry._reg["crews"][crew_id]["status"] = "stopped"
+        except Exception as reg_exc:
+            logger.error(
+                "Crew %s: registry update during failed-wake cleanup failed: %s",
+                crew_id, reg_exc,
             )
 
     # ── ensure_running ────────────────────────────────────────────────────────
@@ -233,6 +410,11 @@ class CrewLauncher:
                 _deployed_agent_names,
                 _enroll_crew_members,
                 _write_dashboard_cookie,
+                _reseed_crew_schedules,
+                _cred_store,
+                _inject_auth,
+                _inject_claude_auth,
+                _inject_codex_auth,
             )
             from registry import _touch_crew  # container
         except ModuleNotFoundError:
@@ -248,6 +430,11 @@ class CrewLauncher:
                 _deployed_agent_names,
                 _enroll_crew_members,
                 _write_dashboard_cookie,
+                _reseed_crew_schedules,
+                _cred_store,
+                _inject_auth,
+                _inject_claude_auth,
+                _inject_codex_auth,
             )
             from transport.registry import _touch_crew  # local dev
 
@@ -257,6 +444,12 @@ class CrewLauncher:
             raise RuntimeError(str(e))
 
         c = _to_crew(crew_id, crew)
+
+        # Running crews keep their launch-time credential; static credential
+        # validation happens only on the path that starts a stopped container.
+        profile = c.acp_profile or "default"
+        backend = c.acp_backend or "kiro"
+        credential = _cred_store.get(backend, profile)
 
         # H-3 fix (D3): Consolidate the early in-progress check and the leader
         # election under a single lock acquisition. The previous two-step
@@ -302,8 +495,19 @@ class CrewLauncher:
                     # election (where we registered the event) and this
                     # early-exit is unblocked rather than stranded for 150s.
                     with self._startup_events_lock:
+                        with registry:
+                            live_entry = registry._reg["crews"].get(crew_id)
+                            if (
+                                live_entry is not None
+                                and live_entry.get("container") == c.container
+                            ):
+                                live_entry["status"] = "running"
                         self._crew_restart_outcomes[crew_id] = (True, None)
                         self._startup_events.pop(crew_id, None)
+                    if isinstance(crew, dict):
+                        crew["status"] = "running"
+                    else:
+                        c.status = "running"
                     event.set()
                     if touch:
                         _touch_crew(crew_id)
@@ -367,13 +571,32 @@ class CrewLauncher:
             False,
             RuntimeError(f"Crew {crew_id} restart (leader) failed"),
         )
+        reservation_active = False
+        capacity_lock_held = False
+        post_start = False
         try:
             logger.info("Crew %s is stopped — restarting", crew_id)
 
-            self._check_active_limit(podman, crew_id)
-            self._check_memory_gate(podman, crew_id)
+            if credential is None:
+                raise RuntimeError(f"No usable credential for {backend} profile {profile!r}")
 
-            podman.container_start(c.container)
+            try:
+                _validate_static_credential(podman, c.container, backend, credential)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Cannot wake crew {crew_id} (profile {profile!r}): {exc}"
+                ) from exc
+
+            self._reserve_start_capacity(podman, crew_id, c.container)
+            reservation_active = True
+            capacity_lock_held = True
+            try:
+                podman.container_start(c.container)
+            finally:
+                # Resource checks and the first container start are serialized;
+                # readiness, config patching, and other gateway work are not.
+                self._capacity_lock.release()
+                capacity_lock_held = False
             crew_url = c.gateway_url()
 
             # TRN-238 QA-2: a concurrent nuke() can remove this crew's registry
@@ -389,6 +612,22 @@ class CrewLauncher:
                 )
                 _outcome = (True, None)
                 return _NUKED_DURING_RESTART
+            post_start = True
+
+            # A stopped crew may have missed a credential rotation. Refresh its
+            # own profile before the gateway starts serving again.
+            try:
+                if credential:
+                    method = credential.get("method")
+                    if backend == "codex" and method == "chatgpt":
+                        _inject_codex_auth(podman, c.container, _oauth_archive(credential))
+                    elif backend == "claude" and method == "oauth":
+                        _inject_claude_auth(podman, c.container, _oauth_archive(credential))
+                    elif backend == "kiro" and method in ("builder-id", "identity-center"):
+                        _inject_auth(podman, c.container, credential["payload"].decode("utf-8"))
+            except Exception:
+                podman.container_stop(c.container)
+                raise
 
             # TRN-259: re-patch from the crew's recorded backend, not the
             # current transport default.
@@ -456,8 +695,8 @@ class CrewLauncher:
                         crew_id,
                     )
             else:
-                logger.warning(
-                    "Crew %s restarted but cookie refresh failed", crew_id
+                raise RuntimeError(
+                    f"Cookie refresh failed after restarting crew {crew_id}"
                 )
             deployed = _deployed_agent_names(podman, c.container)
             _enroll_crew_members(crew, crew_id, deployed)
@@ -466,13 +705,29 @@ class CrewLauncher:
                     registry._reg["crews"][crew_id]["enrolled_agents"] = [
                         n.removesuffix(".json") for n in deployed
                     ]
+            # On-demand recovery is also the point at which gateway state can
+            # be inspected again. This reconciles tracked schedules and
+            # re-seeds missing gateway jobs after a container restart.
+            try:
+                _reseed_crew_schedules(crew, crew_id, crew)
+            except Exception as schedule_exc:
+                logger.warning(
+                    "Schedule reconciliation failed after waking crew %s: %s",
+                    crew_id, schedule_exc,
+                )
             _touch_crew(crew_id)
             _outcome = (True, None)
             return crew
         except Exception as exc:
             _outcome = (False, exc)
+            if post_start:
+                self._cleanup_failed_wake(podman, crew_id, c.container)
             raise
         finally:
+            if capacity_lock_held:
+                self._capacity_lock.release()
+            if reservation_active:
+                self._release_start_reservation(crew_id)
             # Always unblock waiters and clean up, even on error. Publish the
             # outcome BEFORE firing the Event so a waiter that wakes immediately
             # sees it.
@@ -498,6 +753,7 @@ class CrewLauncher:
         dashboard: bool = False,
         backend: str,
         acp_profile: str = "default",
+        credential: dict | None = None,
     ) -> dict:
         """Complete crew setup after auth is confirmed.
 
@@ -579,7 +835,9 @@ class CrewLauncher:
 
         # Auth injection (backend-specific) — resolved per-launch from the
         # credential store (TRN-233 task 2.1).
-        _cred = _cred_store.get(backend, acp_profile)
+        _cred = credential if credential is not None else _cred_store.get(backend, acp_profile)
+        if _cred is None and backend in ("claude", "codex"):
+            raise RuntimeError(f"No usable credential for {backend} profile {acp_profile!r}")
         if backend == "claude":
             _effective_endpoint = ANTHROPIC_BASE_URL or "api.anthropic.com"
             logger.warning(
@@ -589,14 +847,8 @@ class CrewLauncher:
             # oauth method: inject ~/.claude/ archive; api-key and setup-token
             # were already injected as env vars at container_create time.
             if _cred and _cred["method"] == "oauth":
-                try:
-                    _inject_claude_auth(podman, container)
-                except Exception as e:
-                    logger.warning(
-                        "Claude OAuth auth injection failed for crew %s: %s — "
-                        "crew may be unable to authenticate against "
-                        "api.anthropic.com", crew_id, e,
-                    )
+                payload = _oauth_archive(_cred)
+                _inject_claude_auth(podman, container, payload)
         elif backend == "codex":
             _effective_endpoint = OPENAI_BASE_URL or "api.openai.com"
             logger.warning(
@@ -606,14 +858,8 @@ class CrewLauncher:
             # chatgpt method: inject ~/.codex/ archive; api-key was already
             # injected as env var at container_create time.
             if _cred and _cred["method"] == "chatgpt":
-                try:
-                    _inject_codex_auth(podman, container)
-                except Exception as e:
-                    logger.warning(
-                        "Codex OAuth auth injection failed for crew %s: %s — "
-                        "crew may be unable to authenticate against "
-                        "api.openai.com", crew_id, e,
-                    )
+                payload = _oauth_archive(_cred)
+                _inject_codex_auth(podman, container, payload)
         else:
             # kiro path: api-key credential was already injected as KIRO_API_KEY
             # env var at container_create time. For device flows (builder-id,
@@ -726,6 +972,7 @@ class CrewLauncher:
             "container": container,
             "gateway_url": crew_url,
             "status": "ready",
+            "acp_profile": acp_profile,
         }
         if policy_version is not None:
             result["policy_version"] = policy_version
@@ -745,74 +992,6 @@ class CrewLauncher:
             result["pre_warm_status"] = "error"
 
         return result
-
-    # ── _run_restart_cycle ────────────────────────────────────────────────────
-
-    def _run_restart_cycle(self, crew, crew_id: str):
-        """Run the patch-config → stop → start → wait-gateway → mint-cookie cycle.
-
-        Used by ``_reconcile_registry`` for stopped crews on startup.  Mirrors
-        the restart body inside ``ensure_running``:
-            patch config → stop → start → wait_gateway → mint cookie → update registry
-
-        Returns an update-dict ``{"status": "running", ...}`` on success,
-        or ``{"status": "stopped"}`` on failure (gateway timeout, exception, …).
-
-        On success the caller is also responsible for calling
-        ``_enroll_crew_members`` and ``_reseed_crew_schedules`` — those require
-        the updated crew dict and are orchestration concerns outside this method.
-        """
-        try:
-            from lifecycle import (  # container
-                _get_podman,
-                _to_crew,
-                _patch_crew_config,
-                _wait_gateway,
-                _mint_cookie,
-                CREW_GATEWAY_PORT,
-            )
-        except ModuleNotFoundError:
-            from transport.lifecycle import (  # local dev
-                _get_podman,
-                _to_crew,
-                _patch_crew_config,
-                _wait_gateway,
-                _mint_cookie,
-                CREW_GATEWAY_PORT,
-            )
-
-        try:
-            podman = _get_podman()
-        except Exception as e:
-            logger.warning("Reconcile restart: could not get Podman client for crew %s: %s", crew_id, e)
-            return {"status": "stopped"}
-
-        c = _to_crew(crew_id, crew)
-        container = c.container
-        crew_url = f"http://{container}:{CREW_GATEWAY_PORT}"
-
-        try:
-            podman.container_start(container)
-            _patch_crew_config(podman, container, backend=c.acp_backend or "kiro")
-            podman.container_stop(container)
-            podman.container_start(container)
-            if _wait_gateway(crew_url, timeout=60):
-                new_cookie = _mint_cookie(podman, container, crew_url)
-                update = {
-                    "status": "running",
-                    "last_used": time.time(),
-                    **({} if not new_cookie else {"cookie": new_cookie}),
-                }
-                return update
-            else:
-                logger.warning(
-                    "Crew %s gateway not ready after restart — leaving stopped",
-                    crew_id,
-                )
-                return {"status": "stopped"}
-        except Exception as e:
-            logger.warning("Could not restart crew %s: %s", crew_id, e)
-            return {"status": "stopped"}
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

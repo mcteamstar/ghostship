@@ -15,13 +15,40 @@ Covers:
 from __future__ import annotations
 
 import base64
+import io
 import os
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from tests.fakes import FakePodmanClient
 from transport.credentials import CredentialStore
+
+
+class TestOAuthProfileArchive(unittest.TestCase):
+    def test_distinct_profile_payloads_and_invalid_archive(self):
+        from transport.launcher import _oauth_archive
+
+        def archive(value):
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as tar:
+                member = tarfile.TarInfo("auth.json")
+                member.size = len(value)
+                tar.addfile(member, io.BytesIO(value))
+            return buffer.getvalue()
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = CredentialStore(directory)
+            first, second = archive(b"synthetic-one"), archive(b"synthetic-two")
+            store.put("codex", "chatgpt", base64.b64encode(first), profile="one")
+            store.put("codex", "chatgpt", base64.b64encode(second), profile="two")
+            self.assertEqual(_oauth_archive(store.get("codex", "one")), first)
+            self.assertEqual(_oauth_archive(store.get("codex", "two")), second)
+            store.put("claude", "oauth", first, profile="raw")
+            self.assertEqual(_oauth_archive(store.get("claude", "raw")), first)
+            with self.assertRaisesRegex(ValueError, "not a valid archive"):
+                _oauth_archive({"payload": base64.b64encode(b"not an archive")})
 
 
 def _make_store(tmp_dir: str) -> CredentialStore:

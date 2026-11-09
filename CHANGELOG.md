@@ -1,5 +1,122 @@
 # Changelog
 
+## v0.12.1
+
+### Wake cleanup and in-flight memory admission (TRN-320)
+
+- A failed wake (config patch, gateway wait or cookie mint) now stops the
+  container, releases the reservation and marks the crew stopped. A failed
+  cookie mint is a failed wake, and waiters receive the leader's error.
+- Memory admission subtracts `GA_START_MEM_ESTIMATE_GB` (default 1.0) for each
+  start in flight, and no longer holds the capacity lock while waiting for
+  memory.
+- Removed the unused `_run_restart_cycle`.
+
+### Record shared agent assets (TRN-321)
+
+- Crew images fetch shared agent assets by branch, tag or full commit SHA and
+  record the commit they baked in at `/home/kirocrew/.agents-commit`. The default
+  still tracks the maintainer-controlled `main`; set `machine.images.agents_ref`
+  to a tag or SHA for a reproducible build.
+
+### Preserve running crews during credential rotation (TRN-319)
+
+- Running crews keep the static credential they started with. Static
+  credential validation now applies only when a stopped crew is woken, so
+  dispatch, evac and other calls on a running crew no longer fail after a
+  rotation. A wake after an incompatible rotation names the crew and profile.
+- OAuth login success depends only on durable storage. Propagation to running
+  crews with the matching backend and profile runs after the commit, off the
+  event loop, per crew; failures are logged and listed as
+  `propagation_failed` instead of failing the login.
+
+### Improve Radar crew status and ordering (TRN-318)
+
+- Hide the unreachable gateway warning for stopped crews while retaining it
+  for unhealthy running crews.
+- Show newest crews first within the running and inactive sections by default;
+  the Last Task sort control remains available.
+
+### Secure dashboard WebSockets (TRN-315)
+
+- Validate dashboard sessions, browser origins and the portal transport secret
+  before proxying WebSocket handshakes. Open installations retain open access.
+- Cover real Caddy handshakes and verify authenticated live dashboard updates.
+
+### Recover crews on demand (TRN-316)
+
+- Leave stopped crews stopped during transport startup and wake them for
+  requested or due tracked work, with coordinated capacity admission.
+- Preserve existing crew images and document gateway-only schedule limits.
+
+### Review dependencies manually (TRN-314)
+
+- Add a dependency inventory, manual check command and release review guidance.
+
+### Captain task-state compatibility
+
+- Add a fixed `ghostship-spawn --list` gateway operation and use it for Raven's
+  task-state and duplicate-dispatch checks across backends. Avoid booting the
+  crew CLI inside Codex's required policy mask; retain fail-closed checks.
+- Clarify that Captain check-ins belong to the transport, not crew cron jobs.
+- Restore Raven's instruction not to use `kirocrew spawn list`, which a bulk
+  rename had turned into an instruction to avoid its own task-list helper.
+
+### Isolate credential profiles (TRN-317)
+
+- Inject the selected backend profile at launch, wake and post-login
+  propagation, and return `acp_profile` in launch responses.
+- Only use a legacy `ga-claude-auth` or `ga-codex-auth` archive as the default
+  identity when no profile is stored for that backend. Older releases wrote the
+  archive on every OAuth login, so it may hold a named profile's identity. If
+  you use named profiles without a `default` one, run
+  `ghostship auth login <backend>` once before launching without `--profile`.
+
+### Apply unattended harness settings
+
+- Run `.agents/setup --yolo` when wiring crew harnesses, applying shared
+  approval and native sandbox settings for unattended execution. KiroCrew’s
+  outer runtime sandbox controls remain separate.
+
+### Fix configured model fallbacks (TRN-313)
+
+- Write backend/global model fallbacks to KiroCrew's supported `agent.model`
+  field, preserving persona, backend-override and dispatch precedence.
+- Remove the obsolete generated `agent.default_model` field and restore `auto`
+  inheritance when a configured fallback is cleared.
+- Keep shipped model defaults empty and remove model pins from the six shipped
+  personas, allowing backend/global fallback or harness selection. Apply operator
+  model overrides to unpinned personas as well.
+- Add migration tests and disposable-image checks against the actual pinned
+  KiroCrew loader and resolver across Kiro, Claude and Codex namespaces.
+- Upgrade Codex ACP from 1.12.0 to 2.5.0, supplying Codex CLI 0.165.0 and
+  matching KiroCrew's tested 2.x adapter family. The newer model catalogue
+  includes GPT-6 Luna, which the previous bundled CLI did not advertise.
+- Verify a fresh KiroCrew task inherits an operator-configured `gpt-6-luna`
+  default without a dispatch override; actual session metadata confirms Luna 6
+  at Max effort. Shipped defaults remain empty.
+- Validation: 391 affected unit tests and 30 disposable-image consumer cases pass.
+
+Re-run `ghostship install` with your existing configuration to rebuild the images.
+Launch a new crew to use the updated Codex adapter; existing crews retain their
+original image. An unavailable explicit model still follows the upstream harness's
+rejection behavior; this release does not add retries through lower-priority
+model settings.
+
+### Restore Codex authentication and execution (TRN-312)
+
+- Expose the Codex CLI bundled with the ACP adapter on PATH and use
+  `codex login --device-auth` for ChatGPT subscription authentication.
+- Parse device codes across multiline, ANSI-colored output and wait for both
+  the verification URL and code before returning the login handoff.
+- Require Codex crews to use KiroCrew's sandbox credential mask, with no
+  unsandboxed fallback.
+- Apply a checked compatibility patch for the upstream signing-key mask seal
+  on rootless Linux. Descriptor-based `mount_setattr` preserves read-only
+  isolation and refuses execution if sealing fails or the upstream code changes.
+- Add login, sandbox configuration, patch drift, and disposable-container
+  isolation regression coverage. Live Codex task execution verified.
+
 ## v0.12.0
 
 ### Named credential profiles per backend (TRN-252)

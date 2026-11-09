@@ -23,7 +23,7 @@ Ghostship runs each crew in its own container with a dedicated Podman volume. Ea
 
 As **Admiral**, command your crews over MCP from any agent. Delegate to the crew's **Captain** or be the captain yourself. All ships in your *fleet* run side-by-side without colliding and can be tailored to your tactical needs.
 
-The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Agents default to `claude-haiku-5.5` (configurable and overridable; see [docs/configuration.md](docs/configuration.md)).
+The built-in `spec-ops` loadout is designed for **Spec-Driven Development** using [OpenSpec](https://github.com/Fission-AI/OpenSpec). Shipped personas leave the model unset so each backend uses its configured fallback or harness-selected default; see [docs/configuration.md](docs/configuration.md).
 
 ![Ghostship demo: launch three crews, close the session, come back later, pick up results, nuke](docs/images/demo.gif)
 
@@ -48,7 +48,7 @@ The built-in `spec-ops` loadout is designed for **Spec-Driven Development** usin
 
 Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup v2 and Podman rootless. Verified on Ubuntu 22.04+.
 
-> **Model access:** Default model is `claude-haiku-5.5` (kiro backend, Pro subscription or higher). See [docs/configuration.md#model-precedence](docs/configuration.md#model-precedence) for overrides.
+> **Model access:** Model availability depends on the selected backend and account. Shipped personas do not pin a model. See [docs/configuration.md#model-precedence](docs/configuration.md#model-precedence) for defaults and overrides.
 
 ### Setup
 
@@ -158,4 +158,8 @@ Registered as `ghostship`:
 - [docs/radar.md](docs/radar.md) — Radar fleet dashboard (`GET /`) and REST API
 - [docs/troubleshooting.md](docs/troubleshooting.md) — debugging guide, known workarounds
 - [docs/manual-install.md](docs/manual-install.md) — non-standard distro prerequisites
+- [docs/dependencies.md](docs/dependencies.md) — dependency inventory, manual checks and review process
+- [config/dependencies.yaml](config/dependencies.yaml) — authoritative dependency review metadata
 - [CHANGELOG.md](CHANGELOG.md) — release notes
+
+Maintainers can run `python3 scripts/dependency_check.py validate` for an offline inventory check or `python3 scripts/dependency_check.py check` for a bounded manual upstream review. See the [dependency guide](docs/dependencies.md) before considering an upgrade.

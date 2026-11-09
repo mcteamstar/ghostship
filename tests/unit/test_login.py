@@ -75,7 +75,7 @@ class TestLoginFlowBinaryNames(unittest.TestCase):
 
     def test_codex_binary(self):
         from transport.login import CodexLoginFlow
-        self.assertEqual(CodexLoginFlow()._binary_name(), "codex-acp")
+        self.assertEqual(CodexLoginFlow()._binary_name(), "codex")
 
 
 class TestLoginFlowLoginCmds(unittest.TestCase):
@@ -99,7 +99,7 @@ class TestLoginFlowLoginCmds(unittest.TestCase):
         from transport.login import CodexLoginFlow
         cmd = CodexLoginFlow()._login_cmd()
         self.assertIsInstance(cmd, list)
-        self.assertEqual(cmd[0], "codex-acp")
+        self.assertEqual(cmd, ["codex", "login", "--device-auth"])
 
 
 class TestLoginFlowTTL(unittest.TestCase):
@@ -1032,3 +1032,50 @@ class TestWarnInertBackendSettings(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCodexDeviceLoginOutput(unittest.TestCase):
+    def _parse(self, chunks, require_code=True):
+        import socket
+        from transport.lifecycle import _run_pty_login_flow
+        from transport.login import CodexLoginFlow
+        reader, writer = socket.socketpair()
+        reader.setblocking(False)
+        flow = CodexLoginFlow()
+
+        def feed():
+            try:
+                for chunk in chunks:
+                    writer.sendall(chunk)
+                    time.sleep(0.02)
+            finally:
+                writer.close()
+
+        thread = threading.Thread(target=feed)
+        thread.start()
+        try:
+            return _run_pty_login_flow(
+                reader, [], flow._url_patterns(), flow._code_pattern(),
+                deadline_secs=1, require_code=require_code,
+            )
+        finally:
+            thread.join()
+            reader.close()
+
+    def test_colored_multiline_device_output_split_after_url(self):
+        url, code = self._parse([
+            b"1. Open this link\r\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\r\n",
+            b"2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\r\n",
+            b"   \x1b[94mABCD-12345\x1b[0m\r\n",
+        ])
+        self.assertEqual(url, "https://auth.openai.com/codex/device")
+        self.assertEqual(code, "ABCD-12345")
+
+    def test_url_without_required_code_fails(self):
+        self.assertEqual(self._parse([b"https://auth.openai.com/codex/device\n"]), (None, None))
+
+    def test_optional_code_flows_still_return_url(self):
+        self.assertEqual(
+            self._parse([b"https://auth.openai.com/codex/device\n"], require_code=False),
+            ("https://auth.openai.com/codex/device", None),
+        )
