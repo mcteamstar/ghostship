@@ -187,7 +187,17 @@ class CredentialStore:
             # implicit default can consume them; a named profile never falls
             # back to another identity. A present but corrupt profile envelope
             # also never falls back to the legacy archive.
-            if profile == "default" and backend in ("claude", "codex"):
+            #
+            # Before profiles were isolated, every OAuth completion (named or
+            # not) overwrote the shared archive, so once any profile envelope
+            # exists for this backend the archive may hold a named profile's
+            # identity. Only trust it when the backend has no envelopes at
+            # all; otherwise the operator must log in the default profile.
+            if (
+                profile == "default"
+                and backend in ("claude", "codex")
+                and not self.list_profiles(backend)
+            ):
                 legacy = self._dir.parent / f"ga-{backend}-auth"
                 try:
                     archive = legacy.read_bytes()

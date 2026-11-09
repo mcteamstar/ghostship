@@ -24,6 +24,18 @@
   task-state and duplicate-dispatch checks across backends. Avoid booting the
   crew CLI inside Codex's required policy mask; retain fail-closed checks.
 - Clarify that Captain check-ins belong to the transport, not crew cron jobs.
+- Restore Raven's instruction not to use `kirocrew spawn list`, which a bulk
+  rename had turned into an instruction to avoid its own task-list helper.
+
+### Isolate credential profiles (TRN-317)
+
+- Inject the selected backend profile at launch, wake and post-login
+  propagation, and return `acp_profile` in launch responses.
+- Only use a legacy `ga-claude-auth` or `ga-codex-auth` archive as the default
+  identity when no profile is stored for that backend. Older releases wrote the
+  archive on every OAuth login, so it may hold a named profile's identity. If
+  you use named profiles without a `default` one, run
+  `ghostship auth login <backend>` once before launching without `--profile`.
 
 ### Apply unattended harness settings
 

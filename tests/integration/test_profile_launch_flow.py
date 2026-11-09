@@ -59,11 +59,28 @@ def test_finish_setup_injects_the_selected_profile(tmp_path, monkeypatch, backen
         assert result["acp_profile"] == profile
         assert inject.call_args.args == (podman, f"gs-{profile}", expected)
 
+    # A pre-isolation archive written by the last named login must never be
+    # served as the default identity while named profiles exist.
     (tmp_path / f"ga-{backend}-auth").write_bytes(first)
+    assert store.get(backend, "default") is None
+    with pytest.raises(RuntimeError, match="No usable credential"):
+        service.finish_setup(
+            podman, "crew-default", "gs-default", "workspace", "home", "",
+            admiral_secret="test", backend=backend, acp_profile="default",
+            credential=None,
+        )
+
+    # With no profile envelopes at all, the legacy archive still supplies the
+    # implicit default for installs upgraded from the single-archive layout.
+    legacy_root = tmp_path / "legacy-only"
+    legacy_root.mkdir()
+    (legacy_root / f"ga-{backend}-auth").write_bytes(first)
+    legacy_store = CredentialStore(legacy_root)
+    monkeypatch.setattr(lifecycle, "_cred_store", legacy_store)
     result = service.finish_setup(
         podman, "crew-default", "gs-default", "workspace", "home", "",
         admiral_secret="test", backend=backend, acp_profile="default",
-        credential=store.get(backend, "default"),
+        credential=legacy_store.get(backend, "default"),
     )
     assert result["acp_profile"] == "default"
     assert inject.call_args.args == (podman, "gs-default", first)
