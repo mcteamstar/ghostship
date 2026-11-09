@@ -15,4 +15,4 @@
 ## 3. Integration and verification
 
 - [x] 3.1 Run focused credential, login, launcher and profile tests with synthetic payloads and verify logs and responses contain no credential values.
-- [ ] 3.2 Run the existing E2E launch response test against an isolated instance and exercise two-profile selection with a non-production fixture; record test outcomes and any deployment requirements.
+- [x] 3.2 Run the existing E2E launch response test on Corsair and exercise two-profile selection with a non-production fixture in an isolated transport; record test outcomes and any deployment requirements.
