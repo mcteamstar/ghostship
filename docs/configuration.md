@@ -73,7 +73,7 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 |:---------|:--------|:------------|
 | `KC_IMAGE` | `localhost/spec-ops:latest` | Crew container image. Set when building or tagging the image under a different name. |
 | `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine/service name. Only needed when running two ghostship instances side-by-side on the same host. |
-| `images.agents_ref` | _(unset, uses `main`)_ | Pin for `mcteamstar/.agents` baked into the crew image (`machine.images.agents_ref`). Academy content is staged via `.agents/setup <backend>` at crew launch. Set to a specific tag or SHA for reproducible builds. A changed value forces a crew image rebuild. |
+| `images.agents_ref` | _(unset, uses the commit pinned in `crews/spec-ops/Containerfile`)_ | Pin for `mcteamstar/.agents` baked into the crew image (`machine.images.agents_ref`). Academy content is staged via `.agents/setup <backend>` at crew launch. Set to a specific tag or SHA for reproducible builds. A changed value forces a crew image rebuild. |
 
 > **Network topology:** Two static Podman networks:
 > - **`ga-portside`** — `ga-portal` ↔ `ga-transport` only. Crew containers are not on this network.
