@@ -981,7 +981,9 @@ async def _handle_login_post(
     ``POST /login`` route does not need to know about profiles and backward
     compatibility with existing call-site stubs is preserved.
     """
-    if _lc()._read_auth_file():
+    # The legacy bare /login route retains its existing guard. Profile-aware
+    # device routes replace the selected profile only when login completes.
+    if method is None and _lc()._read_auth_file():
         return PlainTextResponse(
             "Already authenticated. Run 'ghostship auth logout kiro' first.",
             status_code=409,

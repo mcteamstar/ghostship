@@ -247,6 +247,19 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
                 self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
         self.assertFalse(self.podman.container_is_running(CONTAINER))
 
+    def test_static_rotation_is_rejected_for_all_supported_methods(self):
+        for backend, method, variable in (
+            ("kiro", "api-key", "KIRO_API_KEY"),
+            ("codex", "api-key", "OPENAI_API_KEY"),
+            ("claude", "api-key", "ANTHROPIC_API_KEY"),
+            ("claude", "setup-token", "CLAUDE_CODE_OAUTH_TOKEN"),
+        ):
+            with self.subTest(backend=backend, method=method):
+                credential = {"method": method, "payload": b"synthetic-new"}
+                with patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": [variable + "=synthetic-old"]}}):
+                    with self.assertRaisesRegex(RuntimeError, "static credential changed"):
+                        self.validate_static_credential(self.podman, CONTAINER, backend, credential)
+
     def test_restart_accepts_unchanged_static_key(self):
         self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
         credential = {"method": "api-key", "payload": b"synthetic-key"}
