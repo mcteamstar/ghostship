@@ -108,7 +108,9 @@ class DependencyCheckTests(unittest.TestCase):
         branch = actual["git_ref:Containerfile:shared-agent-assets"]
         self.assertEqual(requirement, ">=1,<2")
         self.assertEqual(check.classify_declaration("requirement", requirement), "range")
-        self.assertEqual(check.classify_declaration("git_ref", branch), "branch or tag ref")
+        self.assertEqual(check.classify_declaration("git_ref", branch), "unpinned branch or tag ref")
+        self.assertEqual(check.classify_declaration(
+            "git_ref", {"ref": "3ca5a8822a9622012a7cad9a2383e88e7919ab1d"}), "commit ref")
         self.assertTrue(all("installed_version" not in item for item in components))
 
     def test_registry_fixtures_cover_npm_pypi_image_and_release_candidates(self):

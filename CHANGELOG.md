@@ -2,6 +2,11 @@
 
 ## v0.12.1
 
+### Pin shared agent assets (TRN-321)
+
+- Crew images now pin shared agent assets by commit instead of tracking `main`.
+  The installer warns when `agents_ref` is not a commit SHA or `v*` tag.
+
 ### Running crews keep launch-time credentials (TRN-319)
 
 - Running crews keep the credential they started with. Static credential
