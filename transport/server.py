@@ -119,6 +119,7 @@ try:
         RateLimitMiddleware,
         BearerAuthMiddleware,
         SecurityHeadersMiddleware,
+        _deny_websocket,
         _parse_bearer_token,
         _request_source,
         _parse_rate_limit_var,
@@ -132,6 +133,7 @@ except ModuleNotFoundError:
         RateLimitMiddleware,
         BearerAuthMiddleware,
         SecurityHeadersMiddleware,
+        _deny_websocket,
         _parse_bearer_token,
         _request_source,
         _parse_rate_limit_var,
@@ -916,6 +918,8 @@ _dashboard_gate = DashboardGate(
     external_url=cfg.public_base_url(),
     port_base=cfg.ga_dashboard_port_range_start,
     port_range_size=cfg.ga_dashboard_port_range_size,
+    portal_domain=cfg.ga_portal_domain,
+    portal_tls_mode=cfg.ga_portal_tls_mode,
 )
 
 # Per-crew asyncio lock registry serialising concurrent _ensure_crew_running
@@ -1241,6 +1245,12 @@ async def _handle_crew_ui_ws_proxy(scope: dict, receive, send) -> None:
     injected on the upstream handshake so the gateway accepts the connection
     from ga-transport's IP. A disconnect on either side tears down the other.
     """
+    # This must run before crew lookup, cookie refresh, or an upstream dial.
+    # Reuse the same session store and validation path as /dashboard/auth.
+    if not _dashboard_gate.allows_websocket(scope):
+        await _deny_websocket(scope, send, status_code=401)
+        return
+
     if _StarletteWebSocket is None or _websockets is None:
         # No WS support available (dependency-free test env) — reject cleanly.
         await send({"type": "websocket.close", "code": 1011})

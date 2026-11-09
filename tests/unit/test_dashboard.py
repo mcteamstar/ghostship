@@ -99,9 +99,14 @@ class FakeRequest:
         cookies: dict | None = None,
         query_params: dict | None = None,
     ) -> None:
-        self.scope = scope or _HTTP_SCOPE
+        self.scope = dict(scope or _HTTP_SCOPE)
         self._form = form_data or {}
         self.cookies = cookies or {}
+        raw_headers = list(self.scope.get("headers", []))
+        if self.cookies and not any(name.lower() == b"cookie" for name, _ in raw_headers):
+            cookie_header = "; ".join(f"{name}={value}" for name, value in self.cookies.items())
+            raw_headers.append((b"cookie", cookie_header.encode("latin-1")))
+        self.scope["headers"] = raw_headers
         self.client = None  # throttle source falls back to None gracefully
         self.headers = type(
             "_Headers",
@@ -383,7 +388,7 @@ class TestDashboardGateCookieFlags(unittest.TestCase):
 
     _CSRF_TOKEN = "b" * 64
 
-    def _gate(self, external_url: str):
+    def _gate(self, external_url: str, portal_tls_mode: str = "off"):
         try:
             import dashboard as _d
         except ModuleNotFoundError:
@@ -392,6 +397,7 @@ class TestDashboardGateCookieFlags(unittest.TestCase):
             session_ttl_secs=3600,
             api_key="testkey",
             external_url=external_url,
+            portal_tls_mode=portal_tls_mode,
         )
 
     def _login(self, gate):
@@ -431,6 +437,12 @@ class TestDashboardGateCookieFlags(unittest.TestCase):
         self.assertEqual(_status_of(msgs), 200)
         cookie = _set_cookie_of(msgs)
         self.assertIn("Secure", cookie)
+
+    def test_secure_present_when_portal_owns_tls(self):
+        gate = self._gate("http://example.com", portal_tls_mode="acme")
+        msgs = self._login(gate)
+        self.assertEqual(_status_of(msgs), 200)
+        self.assertIn("Secure", _set_cookie_of(msgs))
 
     def test_httponly_present(self):
         gate = self._gate("http://localhost")
@@ -609,6 +621,52 @@ class TestDashboardGateAuth(unittest.TestCase):
         msgs = self._run_auth(gate, "totally-not-a-real-token")
         self.assertEqual(_status_of(msgs), 401)
 
+    def test_malformed_session_cookie_returns_401(self):
+        gate = self._gate()
+        req = FakeRequest(scope=_HTTP_SCOPE, cookies={"gs_session": "not a session"})
+        async def run():
+            response = await gate.handle_auth(req)
+            return await _collect_response(response)
+        self.assertEqual(_status_of(_run(run())), 401)
+
+    def test_duplicate_session_cookies_return_401(self):
+        gate = self._gate()
+        token = gate._sessions.issue()
+        scope = dict(_HTTP_SCOPE)
+        scope["headers"] = [
+            (b"cookie", f"gs_session={token}".encode("ascii")),
+            (b"cookie", f"gs_session={token}".encode("ascii")),
+        ]
+        req = FakeRequest(scope=scope)
+        async def run():
+            response = await gate.handle_auth(req)
+            return await _collect_response(response)
+        self.assertEqual(_status_of(_run(run())), 401)
+
+    def test_shared_session_validator_rejects_missing_expired_and_revoked(self):
+        import time as _time
+        gate = self._gate()
+        self.assertFalse(gate.has_valid_session({"headers": []}))
+
+        expired_gate = self._gate()
+        expired = expired_gate._sessions.issue(now=_time.time() - 4000)
+        self.assertFalse(expired_gate.has_valid_session({
+            "headers": [(b"cookie", f"gs_session={expired}".encode("ascii"))]
+        }))
+
+        revoked = gate._sessions.issue()
+        gate._sessions.revoke(revoked)
+        self.assertFalse(gate.has_valid_session({
+            "headers": [(b"cookie", f"gs_session={revoked}".encode("ascii"))]
+        }))
+
+    def test_shared_session_validator_accepts_valid_cookie(self):
+        gate = self._gate()
+        token = gate._sessions.issue()
+        self.assertTrue(gate.has_valid_session({
+            "headers": [(b"cookie", f"gs_session={token}".encode("ascii"))]
+        }))
+
     def test_expired_session_returns_401(self):
         """A token whose TTL has elapsed → handle_auth returns 401.
 
@@ -655,6 +713,132 @@ class TestDashboardGateAuth(unittest.TestCase):
         # If logout returned 200, the token must now be revoked → auth 401.
         if _status_of(logout_msgs) == 200:
             self.assertEqual(_status_of(auth_msgs_after), 401)
+
+
+class TestDashboardGateWebSocketOrigin(unittest.TestCase):
+    def _gate(self, external_url="https://dashboard.example:64057", api_key="testkey", portal_tls_mode="off"):
+        try:
+            import dashboard as _d
+        except ModuleNotFoundError:
+            from transport import dashboard as _d
+        return _d.DashboardGate(
+            session_ttl_secs=3600,
+            api_key=api_key,
+            external_url=external_url,
+            port_base=64058,
+            port_range_size=4,
+            portal_domain="portal.example",
+            portal_tls_mode=portal_tls_mode,
+        )
+
+    def _scope(self, gate, origin="https://dashboard.example:64058", hostport="dashboard.example:64058", proto="https", extra_headers=()):
+        token = gate._sessions.issue()
+        headers = [(b"cookie", f"gs_session={token}".encode("ascii"))]
+        if origin is not None:
+            headers.append((b"origin", origin.encode("latin-1")))
+        if hostport is not None:
+            headers.append((b"x-portal-dashboard-host", hostport.encode("latin-1")))
+        if proto is not None:
+            # This client-controlled header is deliberately ignored by the gate.
+            headers.append((b"x-forwarded-proto", proto.encode("latin-1")))
+        headers.extend(extra_headers)
+        return {"type": "websocket", "headers": headers}
+
+    def test_matching_https_origin_is_allowed(self):
+        gate = self._gate()
+        self.assertTrue(gate.allows_websocket(self._scope(gate)))
+
+    def test_matching_http_origin_is_allowed(self):
+        gate = self._gate(external_url="http://dashboard.example:64057")
+        scope = self._scope(
+            gate,
+            origin="http://dashboard.example:64058",
+            proto="http",
+        )
+        self.assertTrue(gate.allows_websocket(scope))
+
+    def test_configured_portal_domain_is_allowed(self):
+        gate = self._gate()
+        scope = self._scope(
+            gate,
+            origin="https://portal.example:64058",
+            hostport="portal.example:64058",
+        )
+        self.assertTrue(gate.allows_websocket(scope))
+
+    def test_upstream_tls_termination_uses_configured_public_scheme(self):
+        gate = self._gate(external_url="https://dashboard.example")
+        # Caddy sees plain HTTP behind the TLS terminator. The public URL is
+        # trusted configuration; an incoming forwarded-proto value is ignored.
+        scope = self._scope(gate, origin="https://dashboard.example:64058", proto="http")
+        self.assertTrue(gate.allows_websocket(scope))
+
+    def test_managed_tls_mode_requires_https_even_if_public_url_defaults_to_http(self):
+        gate = self._gate(
+            external_url="http://dashboard.example:64057",
+            portal_tls_mode="acme",
+        )
+        self.assertTrue(gate.allows_websocket(self._scope(gate)))
+        self.assertFalse(gate.allows_websocket(self._scope(
+            gate, origin="http://dashboard.example:64058", proto="http"
+        )))
+
+    def test_host_port_and_scheme_mismatches_are_rejected(self):
+        gate = self._gate()
+        for origin in (
+            "https://attacker.example:64058",
+            "https://dashboard.example:64059",
+            "http://dashboard.example:64058",
+        ):
+            with self.subTest(origin=origin):
+                self.assertFalse(gate.allows_websocket(self._scope(gate, origin=origin)))
+
+    def test_malformed_and_duplicate_origins_are_rejected(self):
+        gate = self._gate()
+        for origin in ("null", "https://dashboard.example:64058/path", "https://dashboard.example"):
+            with self.subTest(origin=origin):
+                self.assertFalse(gate.allows_websocket(self._scope(gate, origin=origin)))
+
+        scope = self._scope(gate)
+        scope["headers"].append((b"origin", b"https://dashboard.example:64058"))
+        self.assertFalse(gate.allows_websocket(scope))
+
+    def test_missing_duplicate_or_malformed_portal_metadata_is_rejected(self):
+        gate = self._gate()
+        missing = self._scope(gate, hostport=None)
+        self.assertFalse(gate.allows_websocket(missing))
+
+        duplicate = self._scope(gate)
+        duplicate["headers"].append((b"x-portal-dashboard-host", b"dashboard.example:64058"))
+        self.assertFalse(gate.allows_websocket(duplicate))
+
+        malformed = self._scope(gate, hostport="dashboard.example/path:64058")
+        self.assertFalse(gate.allows_websocket(malformed))
+
+    def test_untrusted_forwarded_headers_do_not_override_portal_metadata(self):
+        gate = self._gate()
+        scope = self._scope(
+            gate,
+            origin="https://attacker.example:64058",
+            extra_headers=[
+                (b"x-forwarded-host", b"attacker.example:64058"),
+                (b"x-forwarded-proto", b"https"),
+            ],
+        )
+        self.assertFalse(gate.allows_websocket(scope))
+
+    def test_authenticated_client_without_origin_is_allowed(self):
+        gate = self._gate()
+        self.assertTrue(gate.allows_websocket(self._scope(gate, origin=None)))
+
+    def test_open_installation_keeps_origin_unrestricted(self):
+        gate = self._gate(api_key="")
+        self.assertTrue(gate.allows_websocket(self._scope(
+            gate,
+            origin="null",
+            hostport=None,
+            proto=None,
+        )))
 
 
 if __name__ == "__main__":
