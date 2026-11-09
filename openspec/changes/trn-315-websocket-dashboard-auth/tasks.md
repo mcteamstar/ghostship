@@ -10,12 +10,12 @@
 
 ## 2. Verify the actual proxy path
 
-- [x] 2.1 Add integration coverage through Caddy and the transport demonstrating that an ordinary unauthenticated HTTP request and cookie-free WebSocket upgrade are denied when keyed, and that an authenticated same-origin WebSocket exchanges frames with a disposable gateway.
+- [ ] 2.1 Add integration coverage through Caddy and the transport demonstrating that an ordinary unauthenticated HTTP request and cookie-free WebSocket upgrade are denied when keyed, and that an authenticated same-origin WebSocket exchanges frames with a disposable gateway.
 - [x] 2.2 Verify the no-key dashboard handshake and frame relay and confirm bad credentials never cause crew startup or an upstream connection; run affected tests and record results.
 - [ ] 2.3 With explicit deployment authorization, install on a dev instance and reproduce the original 401/101 check as 401/denied, then verify authenticated live dashboard updates; record deployment and rollback evidence.
 
 ## Verification
 
 - Full repository unit suite via `bash scripts/run.sh --unit`: 1,518 passed, 1 skipped. This includes dashboard, auth, Caddy, server, and WebSocket integration coverage.
-- The WebSocket integration coverage inspects generated Caddy route configuration and exercises the transport ASGI path with a disposable gateway double. No live Caddy process or dev instance was used.
+- The current WebSocket harness inspects generated Caddy route configuration and exercises the transport ASGI path with a disposable gateway double, but it does not send traffic through a Caddy process. Task 2.1 remains pending until that proxy path is exercised; no local Caddy runtime was available, and no dev instance was used.
 - Task 2.3 remains gated because explicit deployment authorization was not provided.
