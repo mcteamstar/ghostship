@@ -2,6 +2,22 @@
 
 ## v0.12.1
 
+### Secure dashboard WebSockets (TRN-315)
+
+- Validate dashboard sessions, browser origins and the portal transport secret
+  before proxying WebSocket handshakes. Open installations retain open access.
+- Cover real Caddy handshakes and verify authenticated live dashboard updates.
+
+### Recover crews on demand (TRN-316)
+
+- Leave stopped crews stopped during transport startup and wake them for
+  requested or due tracked work, with coordinated capacity admission.
+- Preserve existing crew images and document gateway-only schedule limits.
+
+### Review dependencies manually (TRN-314)
+
+- Add a dependency inventory, manual check command and release review guidance.
+
 ### Captain task-state compatibility
 
 - Add a fixed `ghostship-spawn --list` gateway operation and use it for Raven's
