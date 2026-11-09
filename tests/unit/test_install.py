@@ -338,3 +338,15 @@ class TestEvalElimination:
                 "eval \"$_RESOLVED\" still present:\n" + "\n".join(matches)
             )
 
+
+
+def test_agents_ref_warning_for_unpinned_refs() -> None:
+    import sys
+    sys.path.insert(0, str(REPO_ROOT / "bin" / "lib"))
+    import install_main
+
+    assert install_main._agents_ref_warning("main")
+    assert install_main._agents_ref_warning("abc123")
+    assert not install_main._agents_ref_warning("")
+    assert not install_main._agents_ref_warning("v1.0.0")
+    assert not install_main._agents_ref_warning("3ca5a8822a9622012a7cad9a2383e88e7919ab1d")

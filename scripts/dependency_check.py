@@ -77,7 +77,7 @@ def classify_declaration(kind: str, value) -> str:
         return "range" if re.search(r"(?:^|,)\s*(?:~=|!=|>=|<=|>|<)", str(value)) else "exact constraint"
     if kind == "git_ref":
         ref = value.get("ref", "") if isinstance(value, dict) else str(value)
-        return "commit ref" if re.fullmatch(r"[0-9a-fA-F]{40}", ref) else "branch or tag ref"
+        return "commit ref" if re.fullmatch(r"[0-9a-fA-F]{40}", ref) else "unpinned branch or tag ref"
     if kind in {"container_from", "image_arg", "python_image_default", "compose_image"}:
         return "digest" if "@sha256:" in str(value) else "image tag"
     if kind == "npm":

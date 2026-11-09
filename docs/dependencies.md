@@ -18,7 +18,7 @@ python3 scripts/dependency_check.py check
 - The KiroCrew base image is digest-pinned in the admission Containerfile, with a matching default in `transport/config.py`. Kiro CLI and base OS packages are inherited. Check the actual image before claiming installed versions.
 - Python, Radar and Caddy images use their declared image tags. A tag is a candidate selector, not proof of an immutable image digest or installed package set.
 - Node.js follows the Node 24 stream. The NodeSource setup script SHA-256 in the spec-ops Containerfile is an independent integrity check and must be updated only after reviewing the fetched script.
-- Shared `.agents` content is cloned from a moving `main` branch by default. Its resolved commit and the generated OpenSpec skills need image inspection.
+- Shared `.agents` content is fetched at the exact commit in `AGENTS_REF` (default in the spec-ops Containerfile). The resolved SHA is in `/home/kirocrew/.agents-commit` and the `org.ghostship.agents_ref` image label. To bump it, review the `.agents` changes, replace the default `AGENTS_REF` SHA in `crews/spec-ops/Containerfile` and the version policy in `config/dependencies.yaml`, then run `python3 scripts/dependency_check.py validate`. A branch override via `machine.images.agents_ref` is unpinned and the installer warns about it.
 - APT package groups are unpinned and resolved by the repositories in the parent image. Their installed package versions remain unknown until an image is inspected.
 - GitHub Actions use major-version refs. CI requests Python 3.12 and the runner resolves its patch version. Host Podman and podman-compose versions depend on the maintainer's machine.
 
