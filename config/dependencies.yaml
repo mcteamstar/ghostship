@@ -72,7 +72,7 @@ components:
       - {kind: manual, path: config/ghostship.yaml.example, term: 'agents_ref:'}
       - {kind: manual, path: bin/lib/install_main.py, term: AGENTS_REF}
     source: {type: github_ref, repository: mcteamstar/.agents}
-    version_policy: Exact commit 3ca5a8822a9622012a7cad9a2383e88e7919ab1d; bump deliberately.
+    version_policy: Tracks maintainer-controlled main by default; operators may select a tag or commit. The baked commit is recorded in /home/kirocrew/.agents-commit.
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: docs/dependency-review-2026-11-08.md}
   - id: openspec-skills

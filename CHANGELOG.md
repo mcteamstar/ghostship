@@ -12,10 +12,12 @@
   memory.
 - Removed the unused `_run_restart_cycle`.
 
-### Pin shared agent assets (TRN-321)
+### Record shared agent assets (TRN-321)
 
-- Crew images now pin shared agent assets by commit instead of tracking `main`.
-  The installer warns when `agents_ref` is not a commit SHA or `v*` tag.
+- Crew images fetch shared agent assets by branch, tag or full commit SHA and
+  record the commit they baked in at `/home/kirocrew/.agents-commit`. The default
+  still tracks the maintainer-controlled `main`; set `machine.images.agents_ref`
+  to a tag or SHA for a reproducible build.
 
 ### Running crews keep launch-time credentials (TRN-319)
 

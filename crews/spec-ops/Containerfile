@@ -60,12 +60,13 @@ LABEL org.ghostship.version=$VERSION
 # Bake mcteamstar/.agents into the image so AcademyLoader can exec
 # `.agents/setup` at launch time without any network call.
 # Fetch runs as root then chowns to kirocrew (D5 in design.md: kirocrew-owned).
-# AGENTS_REF pins the commit baked into the image. Bump it deliberately for each
-# .agents update (see docs/dependencies.md); a changed value triggers a cache-less
-# rebuild via the org.ghostship.agents_ref label. git fetch accepts a full commit
-# SHA, a branch or a tag, so machine.images.agents_ref can still override it.
+# AGENTS_REF defaults to the maintainer-controlled main branch. git fetch accepts
+# a branch, a tag or a full commit SHA, so machine.images.agents_ref can select a
+# versioned tag or exact commit. The commit actually baked in is recorded in
+# /home/kirocrew/.agents-commit; a changed AGENTS_REF value triggers a cache-less
+# rebuild via the org.ghostship.agents_ref label.
 ARG AGENTS_URL="https://github.com/mcteamstar/.agents.git"
-ARG AGENTS_REF="3ca5a8822a9622012a7cad9a2383e88e7919ab1d"
+ARG AGENTS_REF="main"
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends git && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \

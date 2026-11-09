@@ -604,14 +604,6 @@ def _ensure_networks(podman_cmd: list[str], dedicated: bool, machine_name: str) 
         print("✓ ga-portside and ga-starboard networks ready")
 
 
-def _agents_ref_warning(agents_ref: str) -> str:
-    """Return a warning when an AGENTS_REF override is not a SHA or v* tag."""
-    if not agents_ref or re.fullmatch(r"[0-9a-fA-F]{40}|v.+", agents_ref):
-        return ""
-    return (f"  Warning: AGENTS_REF '{agents_ref}' is not a 40-character commit SHA or v* tag; "
-            "the crew image will not be reproducible.")
-
-
 def _build_images(
     ghostship_dir: str,
     podman_cmd: list[str],
@@ -621,9 +613,6 @@ def _build_images(
     version: str,
 ) -> None:
     """Build all container images."""
-    warning = _agents_ref_warning(agents_ref)
-    if warning:
-        print(warning)
     # Stale-image detection for transport
     transport_build_flags: list[str] = []
     source_hash = _compute_transport_hash(ghostship_dir)
