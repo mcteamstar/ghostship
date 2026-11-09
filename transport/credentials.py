@@ -135,10 +135,15 @@ class CredentialStore:
         except OSError:
             pass
         if profile_file.exists():
-            # Both exist — profile file wins; remove the stale flat file.
+            # Do not discard the only usable legacy copy when the newer
+            # envelope is unreadable or corrupt.
             try:
+                envelope = json.loads(profile_file.read_text())
+                _validate(backend, envelope["method"])
+                if not base64.b64decode(envelope["payload"], validate=True):
+                    return
                 flat.unlink()
-            except OSError:
+            except (OSError, ValueError, TypeError, KeyError):
                 pass
         else:
             # Move the flat file atomically into the per-profile slot.
@@ -178,6 +183,21 @@ class CredentialStore:
         try:
             raw = path.read_text()
         except FileNotFoundError:
+            # Legacy OAuth archives predate the profile store. Only the
+            # implicit default can consume them; a named profile never falls
+            # back to another identity. A present but corrupt profile envelope
+            # also never falls back to the legacy archive.
+            if profile == "default" and backend in ("claude", "codex"):
+                legacy = self._dir.parent / f"ga-{backend}-auth"
+                try:
+                    archive = legacy.read_bytes()
+                except (FileNotFoundError, OSError):
+                    return None
+                if archive:
+                    payload = base64.b64encode(archive)
+                    method = "oauth" if backend == "claude" else "chatgpt"
+                    _security.register_secret(payload.decode("ascii"))
+                    return {"backend": backend, "method": method, "stored_at": None, "provider": None, "payload": payload}
             return None
         except OSError:
             return None

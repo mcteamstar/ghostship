@@ -1886,6 +1886,7 @@ def _finish_crew_setup(
     dashboard: bool = False,
     backend: str,
     acp_profile: str = "default",
+    credential: dict | None = None,
 ) -> dict:
     """Complete crew setup after auth is confirmed.
 
@@ -1910,6 +1911,7 @@ def _finish_crew_setup(
         dashboard=dashboard,
         backend=backend,
         acp_profile=acp_profile,
+        credential=credential,
     )
 
 
@@ -2023,12 +2025,11 @@ def _write_claude_auth_file(data: bytes, _path: Path | None = None) -> None:
     _write_secret_file(path, data)
 
 
-def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
+def _inject_claude_auth(podman: "PodmanClient", container: str, tar_bytes: bytes | None = None) -> None:
     """Inject the ga-claude-auth tar archive into container's ~/.claude/.
 
-    Reads the host-side ga-claude-auth file (a tar of ~/.claude/) and untars it
-    into /home/kirocrew/.claude/ inside the crew container, matching the path
-    that the claude-agent-acp server reads for OAuth credentials.
+    Inject the selected profile archive when supplied. The legacy host-side
+    archive is retained only for callers using the implicit default profile.
 
     Injection strategy (SEC-1): the host-side ga-claude-auth file is already a
     tar of ``~/.claude/``, so its bytes are streamed straight into the container
@@ -2038,7 +2039,7 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
     future non-base64 payload can open a shell-injection surface.
     """
     auth_path = _claude_auth_file_path()
-    if not auth_path.is_file():
+    if tar_bytes is None and not auth_path.is_file():
         raise RuntimeError("ga-claude-auth not found — Claude login required first")
 
     # Ensure the target directory exists in the container
@@ -2046,7 +2047,8 @@ def _inject_claude_auth(podman: "PodmanClient", container: str) -> None:
 
     # The auth file is a tar of ~/.claude/ — hand the raw tar bytes to the
     # archive-put endpoint, which untars them directly at the target path.
-    tar_bytes = auth_path.read_bytes()
+    if tar_bytes is None:
+        tar_bytes = auth_path.read_bytes()
     podman.container_archive_put(container, "/home/kirocrew/.claude/", tar_bytes)
     logger.info("Injected Claude OAuth credentials into crew container %s", container)
 
@@ -2560,13 +2562,11 @@ def _write_codex_auth_file(data: bytes, _path: Path | None = None) -> None:
     _write_secret_file(path, data)
 
 
-def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
+def _inject_codex_auth(podman: "PodmanClient", container: str, tar_bytes: bytes | None = None) -> None:
     """Inject the ga-codex-auth tar archive into container's ~/.codex/.
 
-    Reads the host-side ga-codex-auth file (a tar of ~/.codex/, holding
-    auth.json) and untars it into /home/kirocrew/.codex/ inside the crew
-    container, matching the path that codex-acp reads for OAuth credentials
-    (relocatable via CODEX_HOME, but ghostship uses the default location).
+    Inject the selected profile archive when supplied. The legacy host-side
+    archive is retained only for callers using the implicit default profile.
 
     Injection strategy mirrors _inject_claude_auth (SEC-1): the host-side
     ga-codex-auth file is already a tar of ``~/.codex/``, so its bytes stream
@@ -2576,13 +2576,14 @@ def _inject_codex_auth(podman: "PodmanClient", container: str) -> None:
     shell.
     """
     auth_path = _codex_auth_file_path()
-    if not auth_path.is_file():
+    if tar_bytes is None and not auth_path.is_file():
         raise RuntimeError("ga-codex-auth not found — Codex login required first")
 
     # Ensure the target directory exists in the container
     podman.container_exec(container, ["mkdir", "-p", "/home/kirocrew/.codex"])
 
-    tar_bytes = auth_path.read_bytes()
+    if tar_bytes is None:
+        tar_bytes = auth_path.read_bytes()
     podman.container_archive_put(container, "/home/kirocrew/.codex/", tar_bytes)
     logger.info("Injected Codex OAuth credentials into crew container %s", container)
 

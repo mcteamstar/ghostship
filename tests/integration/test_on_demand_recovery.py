@@ -165,6 +165,8 @@ class TestOnDemandRecoveryRestartExercise(unittest.TestCase):
             patch.object(self.reg_mod, "_load_registry", return_value=self.backing),
             patch.object(self.reg_mod, "_save_registry"),
             patch.object(self.life, "_get_podman", return_value=self.podman),
+            patch.object(self.life._cred_store, "get", return_value={"method": "api-key", "payload": b"synthetic-test-key"}),
+            patch("transport.launcher._validate_static_credential"),
             patch.object(self.life, "_sweep_expired_logins"),
             patch.object(self.life, "_probe_gateway", return_value=True),
             patch.object(self.life, "_wait_gateway", return_value=True),

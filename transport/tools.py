@@ -870,6 +870,13 @@ def launch(
     # Resolve the crew backend's credential once per launch.
     _cred = _cred_store.get(backend, resolved_profile)
 
+    # A requested named profile must never start or consume the default flow.
+    if not _cred and resolved_profile != "default":
+        return {
+            "error": "not_authenticated",
+            "instructions": f"No usable credential for {backend} profile {resolved_profile!r}. Log in to that profile first.",
+        }
+
     if backend == "claude":
         # Claude backend — require a stored credential (any method).
         # If no credential is present, initiate the Claude login flow and return
@@ -927,7 +934,7 @@ def launch(
             # the user may have just completed the device flow but GET /login
             # hasn't been called yet to store the credential.
             pending = login.KIRO_FLOW.state
-            if pending is not None:
+            if pending is not None and pending.get("profile", "default") == resolved_profile:
                 _poll_consumed = False
                 _cancelled = False
                 try:
@@ -1162,7 +1169,7 @@ def launch(
                 registry._reg["crews"].pop(crew_id, None)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend, acp_profile=resolved_profile)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend, acp_profile=resolved_profile, credential=_cred)
         # _finish_crew_setup error-dict paths have already called _cleanup_crew
         # (removing the admiral secret and Podman resources). The registry placeholder
         # entry written before the try block still exists and must be removed here.
@@ -1182,6 +1189,7 @@ def launch(
                 except Exception:
                     pass
             return result
+        result["acp_profile"] = resolved_profile
         # Persist dashboard_port in registry and register with Caddy.
         # Portal is the sole dashboard proxy.
         if dashboard_port is not None and "error" not in result:

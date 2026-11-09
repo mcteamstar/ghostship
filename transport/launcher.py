@@ -24,11 +24,65 @@ Design notes (design.md):
 from __future__ import annotations
 
 import logging
+import base64
+import hmac
+import io
 import threading
 import time
+import tarfile
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _oauth_archive(credential: dict) -> bytes:
+    """Decode the profile-scoped archive without exposing payloads in errors."""
+    try:
+        payload = credential["payload"]
+        if isinstance(payload, str):
+            payload = payload.encode("ascii")
+        # Existing envelopes can contain raw tar bytes or the older
+        # base64-encoded tar representation.
+        try:
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
+                if archive.getmembers():
+                    return payload
+        except tarfile.TarError:
+            pass
+        payload = base64.b64decode(payload, validate=True)
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
+            if not archive.getmembers():
+                raise ValueError("empty archive")
+    except (KeyError, TypeError, ValueError, UnicodeError, tarfile.TarError) as exc:
+        raise ValueError("OAuth profile credential is not a valid archive") from exc
+    return payload
+
+
+def _validate_static_credential(podman, container: str, backend: str, credential: dict) -> None:
+    """Refuse to start an existing container with a rotated static credential."""
+    variable = {
+        ("kiro", "api-key"): "KIRO_API_KEY",
+        ("codex", "api-key"): "OPENAI_API_KEY",
+        ("claude", "api-key"): "ANTHROPIC_API_KEY",
+        ("claude", "setup-token"): "CLAUDE_CODE_OAUTH_TOKEN",
+    }.get((backend, credential.get("method")))
+    env = podman.container_inspect(container).get("Config", {}).get("Env", []) or []
+    if not variable:
+        static_variables = {
+            "kiro": ("KIRO_API_KEY",),
+            "codex": ("OPENAI_API_KEY",),
+            "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        }.get(backend, ())
+        if any(item.startswith(name + "=") and item.split("=", 1)[1]
+               for name in static_variables for item in env):
+            raise RuntimeError("Selected credential method changed; the crew container must be recreated with its workspace preserved")
+        return
+    values = [item.split("=", 1)[1] for item in env if item.startswith(variable + "=")]
+    expected = credential["payload"]
+    if isinstance(expected, str):
+        expected = expected.encode("utf-8")
+    if len(values) != 1 or not hmac.compare_digest(values[0].encode("utf-8"), expected):
+        raise RuntimeError("Selected static credential changed; the crew container must be recreated with its workspace preserved")
 
 try:
     from config import Config  # container: flat /app/
@@ -301,6 +355,10 @@ class CrewLauncher:
                 _enroll_crew_members,
                 _write_dashboard_cookie,
                 _reseed_crew_schedules,
+                _cred_store,
+                _inject_auth,
+                _inject_claude_auth,
+                _inject_codex_auth,
             )
             from registry import _touch_crew  # container
         except ModuleNotFoundError:
@@ -317,6 +375,10 @@ class CrewLauncher:
                 _enroll_crew_members,
                 _write_dashboard_cookie,
                 _reseed_crew_schedules,
+                _cred_store,
+                _inject_auth,
+                _inject_claude_auth,
+                _inject_codex_auth,
             )
             from transport.registry import _touch_crew  # local dev
 
@@ -326,6 +388,15 @@ class CrewLauncher:
             raise RuntimeError(str(e))
 
         c = _to_crew(crew_id, crew)
+
+        # Check static credentials before either returning a healthy running
+        # crew or starting a stopped one. Container environment values cannot
+        # be changed in place after a profile rotation.
+        profile = c.acp_profile or "default"
+        backend = c.acp_backend or "kiro"
+        credential = _cred_store.get(backend, profile)
+        if credential is not None:
+            _validate_static_credential(podman, c.container, backend, credential)
 
         # H-3 fix (D3): Consolidate the early in-progress check and the leader
         # election under a single lock acquisition. The previous two-step
@@ -452,6 +523,9 @@ class CrewLauncher:
         try:
             logger.info("Crew %s is stopped — restarting", crew_id)
 
+            if credential is None:
+                raise RuntimeError(f"No usable credential for {backend} profile {profile!r}")
+
             self._reserve_start_capacity(podman, crew_id, c.container)
             reservation_active = True
             capacity_lock_held = True
@@ -477,6 +551,21 @@ class CrewLauncher:
                 )
                 _outcome = (True, None)
                 return _NUKED_DURING_RESTART
+
+            # A stopped crew may have missed a credential rotation. Refresh its
+            # own profile before the gateway starts serving again.
+            try:
+                if credential:
+                    method = credential.get("method")
+                    if backend == "codex" and method == "chatgpt":
+                        _inject_codex_auth(podman, c.container, _oauth_archive(credential))
+                    elif backend == "claude" and method == "oauth":
+                        _inject_claude_auth(podman, c.container, _oauth_archive(credential))
+                    elif backend == "kiro" and method in ("builder-id", "identity-center"):
+                        _inject_auth(podman, c.container, credential["payload"].decode("utf-8"))
+            except Exception:
+                podman.container_stop(c.container)
+                raise
 
             # TRN-259: re-patch from the crew's recorded backend, not the
             # current transport default.
@@ -600,6 +689,7 @@ class CrewLauncher:
         dashboard: bool = False,
         backend: str,
         acp_profile: str = "default",
+        credential: dict | None = None,
     ) -> dict:
         """Complete crew setup after auth is confirmed.
 
@@ -681,7 +771,9 @@ class CrewLauncher:
 
         # Auth injection (backend-specific) — resolved per-launch from the
         # credential store (TRN-233 task 2.1).
-        _cred = _cred_store.get(backend, acp_profile)
+        _cred = credential if credential is not None else _cred_store.get(backend, acp_profile)
+        if _cred is None and backend in ("claude", "codex"):
+            raise RuntimeError(f"No usable credential for {backend} profile {acp_profile!r}")
         if backend == "claude":
             _effective_endpoint = ANTHROPIC_BASE_URL or "api.anthropic.com"
             logger.warning(
@@ -691,14 +783,8 @@ class CrewLauncher:
             # oauth method: inject ~/.claude/ archive; api-key and setup-token
             # were already injected as env vars at container_create time.
             if _cred and _cred["method"] == "oauth":
-                try:
-                    _inject_claude_auth(podman, container)
-                except Exception as e:
-                    logger.warning(
-                        "Claude OAuth auth injection failed for crew %s: %s — "
-                        "crew may be unable to authenticate against "
-                        "api.anthropic.com", crew_id, e,
-                    )
+                payload = _oauth_archive(_cred)
+                _inject_claude_auth(podman, container, payload)
         elif backend == "codex":
             _effective_endpoint = OPENAI_BASE_URL or "api.openai.com"
             logger.warning(
@@ -708,14 +794,8 @@ class CrewLauncher:
             # chatgpt method: inject ~/.codex/ archive; api-key was already
             # injected as env var at container_create time.
             if _cred and _cred["method"] == "chatgpt":
-                try:
-                    _inject_codex_auth(podman, container)
-                except Exception as e:
-                    logger.warning(
-                        "Codex OAuth auth injection failed for crew %s: %s — "
-                        "crew may be unable to authenticate against "
-                        "api.openai.com", crew_id, e,
-                    )
+                payload = _oauth_archive(_cred)
+                _inject_codex_auth(podman, container, payload)
         else:
             # kiro path: api-key credential was already injected as KIRO_API_KEY
             # env var at container_create time. For device flows (builder-id,
@@ -828,6 +908,7 @@ class CrewLauncher:
             "container": container,
             "gateway_url": crew_url,
             "status": "ready",
+            "acp_profile": acp_profile,
         }
         if policy_version is not None:
             result["policy_version"] = policy_version

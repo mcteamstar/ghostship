@@ -161,8 +161,10 @@ class _EnsureRunningBase(unittest.TestCase):
         import transport.lifecycle as life
         import transport.registry as reg_mod
         from transport.launcher import CrewLauncher
+        from transport.launcher import _validate_static_credential
 
         self.life = life
+        self.validate_static_credential = _validate_static_credential
         self.reg_mod = reg_mod
         self.podman = FakePodmanClient()
         # A stopped crew container present in the fake.
@@ -186,6 +188,8 @@ class _EnsureRunningBase(unittest.TestCase):
         # from transport.lifecycle, so patch.object on the module is sufficient.
         self._patchers = [
             patch.object(life, "_get_podman", return_value=self.podman),
+            patch.object(life._cred_store, "get", return_value={"method": "api-key", "payload": b"synthetic-test-key"}),
+            patch("transport.launcher._validate_static_credential"),
             patch.object(life, "_wait_gateway", return_value=True),
             patch.object(life, "_probe_gateway", return_value=True),
             patch.object(life, "_mint_cookie", return_value="test-cookie"),
@@ -215,6 +219,58 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
     def _patched_backend(self):
         _args, kwargs = self.life._patch_crew_config.call_args
         return kwargs["backend"]
+
+    def test_restart_injects_selected_oauth_profile(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "chatgpt", "payload": b"encoded"}
+        with patch.object(self.life._cred_store, "get", return_value=credential) as get_credential, \
+             patch("transport.launcher._oauth_archive", return_value=b"synthetic archive"), \
+             patch.object(self.life, "_inject_codex_auth") as inject:
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        get_credential.assert_called_with("codex", "work")
+        inject.assert_called_once_with(self.podman, CONTAINER, b"synthetic archive")
+
+    def test_restart_missing_named_profile_stops_provisional_container(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        with patch.object(self.life._cred_store, "get", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "No usable credential"):
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_restart_rejects_rotated_static_key_before_start(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            with self.assertRaisesRegex(RuntimeError, "static credential changed"):
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_restart_accepts_unchanged_static_key(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "api-key", "payload": b"synthetic-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertTrue(self.podman.container_is_running(CONTAINER))
+
+    def test_restart_rejects_oauth_when_old_static_key_remains(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "chatgpt", "payload": b"synthetic-archive"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            with self.assertRaisesRegex(RuntimeError, "credential method changed"):
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_running_crew_survives_profile_logout(self):
+        self.podman.container_start(CONTAINER)
+        with patch.object(self.life._cred_store, "get", return_value=None):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertTrue(self.podman.container_is_running(CONTAINER))
 
     def test_ensure_running_kiro_crew_under_claude_default(self):
         self.crews[CREW_ID]["acp_backend"] = "kiro"
@@ -589,6 +645,8 @@ class TestCrossCrewStartAdmission(unittest.TestCase):
 
         self._patchers = [
             patch.object(life, "_get_podman", return_value=self.podman),
+            patch.object(life._cred_store, "get", return_value={"method": "api-key", "payload": b"synthetic-test-key"}),
+            patch("transport.launcher._validate_static_credential"),
             patch.object(life, "_wait_gateway", return_value=True),
             patch.object(life, "_probe_gateway", return_value=True),
             patch.object(life, "_mint_cookie", side_effect=lambda _p, c, _u: f"cookie-{c}"),
@@ -1608,6 +1666,8 @@ class TestReconcileRegistry(unittest.TestCase):
                 # normal on-demand wake before reconciliation writes status.
                 with (
                     patch.object(self.life, "_get_podman", return_value=self.podman),
+                    patch.object(self.life._cred_store, "get", return_value={"method": "api-key", "payload": b"synthetic-test-key"}),
+                    patch("transport.launcher._validate_static_credential"),
                     patch.object(self.life, "_probe_gateway", return_value=True),
                     patch.object(self.life, "_wait_gateway", return_value=True),
                     patch.object(self.life, "_mint_cookie", return_value="fresh-cookie"),

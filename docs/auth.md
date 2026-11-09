@@ -13,6 +13,8 @@ ghostship auth status                             # show all profiles for every 
 ```
 
 Credentials live in `DATA_DIR/credentials/<backend>/<profile>.json` and are resolved per crew launch — not in the config file.
+Successful `launch` responses include `acp_profile`, the resolved profile recorded for the crew.
+Static API keys and Claude setup tokens are stored in a crew container's environment at creation. After rotating one or switching that profile to OAuth, operations on the old container are rejected so it cannot silently use the old value; create a new crew and transfer its workspace to use the new credential. Logging out alone does not interrupt an already-running crew.
 
 - `login` presents a numbered method menu per backend (or pass `--method`).
 - Secrets are read from a hidden terminal prompt or stdin — never appear in `argv` or output.
