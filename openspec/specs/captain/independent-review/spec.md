@@ -1,6 +1,10 @@
 # Spec Delta
 
-## MODIFIED Requirements
+## Purpose
+
+The `independent-review` Captain template dispatches isolated reviewers, collects their reports, and sends a consolidated findings report to the Admiral.
+
+## Requirements
 
 ### Requirement: independent-review template dispatches four concurrent, isolated reviewers
 
@@ -39,7 +43,6 @@ When the captain `independent-review` template is ordered, the system SHALL disp
 - **WHEN** Raven receives a reviewer's report
 - **THEN** Raven SHALL NOT send the consolidated findings to the Admiral until reports from all seven reviewers (docs, security, quality, test-coverage-a, test-coverage-b, test-coverage-c, privacy) have been received
 
-## MODIFIED Requirements
 
 ### Requirement: independent-review consolidates findings and mails admiral@localhost
 
@@ -66,7 +69,6 @@ After receiving all seven reviewer reports, Raven SHALL produce a single consoli
 - **WHEN** all seven reviewers report no findings of substance
 - **THEN** Raven SHALL still send a consolidated document to `admiral@localhost` summarizing the clean state across all seven review tracks
 
-## ADDED Requirements
 
 ### Requirement: independent-review fans out test-coverage review across multiple parallel Banshees
 

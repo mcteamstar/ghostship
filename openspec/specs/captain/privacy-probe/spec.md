@@ -7,7 +7,7 @@ dispatches a Banshee to scan the whole codebase for internal infrastructure
 references that should not appear in a public repository, and mails a
 self-contained findings report to the Admiral.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: privacy template dispatches a single Banshee privacy reviewer
 
