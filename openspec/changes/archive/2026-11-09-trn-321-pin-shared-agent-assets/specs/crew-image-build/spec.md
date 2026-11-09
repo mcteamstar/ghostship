@@ -1,5 +1,7 @@
 # Spec Delta
 
+> Historical delta: superseded by commit `9ca4735e`; the main `crew-image-build` spec records the accepted `main` default and resolved-commit behavior.
+
 ## ADDED Requirements
 
 ### Requirement: Shared agent assets are pinned to an immutable commit

@@ -1,5 +1,7 @@
 # Design
 
+> Historical design: the final decision retains `main` as the default. The build records the resolved commit, and operators can select a tag or SHA; commit `9ca4735e` supersedes the default-pin and warning decisions below.
+
 ## Context
 
 `crews/spec-ops/Containerfile` runs `git clone --depth 1 --branch "${AGENTS_REF}"`, which accepts only branch and tag names. `AGENTS_REF` defaults to `main` and can be overridden through `machine.images.agents_ref` (`bin/lib/yaml_config.py`), passed as a build arg by `bin/lib/install_main.py`. `.agents` has one tag, `v1.0.0`, which predates the commit 0.12.1 was tested with.

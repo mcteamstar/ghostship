@@ -1,5 +1,7 @@
 # Proposal
 
+> Final decision: retain `main` as the default ref and record the commit baked into each image. Commit `9ca4735e` supersedes the default-pinning and warning proposals below; see the main `crew-image-build` specification for the accepted behavior.
+
 ## Why
 
 The crew image clones `mcteamstar/.agents` from the moving `main` branch, although the Containerfile comment says it pins a commit. Since 0.12.1, crews run `.agents/setup --yolo`, which applies that repository's harness approval and permission settings. Any push to `.agents` main therefore changes crew permissions at the next image build without a Ghostship review.

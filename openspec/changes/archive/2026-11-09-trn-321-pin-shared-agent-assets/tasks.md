@@ -1,5 +1,7 @@
 # Tasks
 
+> Historical completion record: commit `9ca4735e` subsequently restored `main` as the default and removed the moving-ref warning. The baked commit is recorded inside the image; the image label records the requested ref.
+
 ## 1. Pin the image
 
 - [x] 1.1 Change `crews/spec-ops/Containerfile` to fetch `AGENTS_REF` by commit with `git init`/`git fetch --depth 1`/`git checkout FETCH_HEAD`, default `AGENTS_REF` to `3ca5a8822a9622012a7cad9a2383e88e7919ab1d`, write the resolved SHA into the image, and correct the comment; verify with `ghostship install` and `podman image inspect localhost/spec-ops:latest` showing the SHA label.
