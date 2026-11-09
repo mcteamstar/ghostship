@@ -389,14 +389,11 @@ class CrewLauncher:
 
         c = _to_crew(crew_id, crew)
 
-        # Check static credentials before either returning a healthy running
-        # crew or starting a stopped one. Container environment values cannot
-        # be changed in place after a profile rotation.
+        # Running crews keep their launch-time credential; static credential
+        # validation happens only on the path that starts a stopped container.
         profile = c.acp_profile or "default"
         backend = c.acp_backend or "kiro"
         credential = _cred_store.get(backend, profile)
-        if credential is not None:
-            _validate_static_credential(podman, c.container, backend, credential)
 
         # H-3 fix (D3): Consolidate the early in-progress check and the leader
         # election under a single lock acquisition. The previous two-step
@@ -525,6 +522,13 @@ class CrewLauncher:
 
             if credential is None:
                 raise RuntimeError(f"No usable credential for {backend} profile {profile!r}")
+
+            try:
+                _validate_static_credential(podman, c.container, backend, credential)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Cannot wake crew {crew_id} (profile {profile!r}): {exc}"
+                ) from exc
 
             self._reserve_start_capacity(podman, crew_id, c.container)
             reservation_active = True

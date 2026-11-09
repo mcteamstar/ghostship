@@ -34,6 +34,7 @@ table; it no longer defines them itself.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -522,20 +523,54 @@ def _nuke_pending_container(flow: LoginFlow, podman, pending: dict) -> None:
         flow._nuke_container(podman, container)
 
 
-def _propagate_oauth(podman, backend: str, profile: str, payload: bytes) -> None:
-    """Update only running crews assigned to the credential being rotated."""
+def _propagate_credential(podman, backend: str, profile: str, inject) -> list[str]:
+    """Inject a committed credential into running crews of *backend*/*profile*.
+
+    Runs after the credential is durably stored and must not change the login
+    outcome. The stored profile is re-read before each injection so a logout
+    that raced the commit is not undone, and a failure on one crew never stops
+    injection into the next. Returns the ids of crews that did not receive the
+    credential.
+    """
     with registry:
-        containers = [
-            info["container"] for info in registry._reg["crews"].values()
+        targets = [
+            (crew_id, info["container"])
+            for crew_id, info in registry._reg["crews"].items()
             if info.get("status") == "running"
             and info.get("acp_backend", "kiro") == backend
             and info.get("acp_profile", "default") == profile
         ]
-    if not containers:
-        return
-    inject = getattr(_lc(), f"_inject_{backend}_auth")
-    for container in containers:
-        inject(podman, container, payload)
+    failed: list[str] = []
+    for crew_id, container in targets:
+        try:
+            if _cred_store.get(backend, profile) is None:
+                logger.info(
+                    "[%s] profile %s no longer stored; skipping injection into crew %s",
+                    backend, profile, crew_id,
+                )
+                continue
+            inject(podman, container)
+        except Exception:
+            logger.warning(
+                "[%s] could not propagate credential for profile %s to crew %s",
+                backend, profile, crew_id, exc_info=True,
+            )
+            failed.append(crew_id)
+    return failed
+
+
+def _propagate_oauth(podman, backend: str, profile: str, payload: bytes) -> list[str]:
+    """Update only running crews assigned to the OAuth credential being rotated."""
+    def _inject(pm, container):
+        getattr(_lc(), f"_inject_{backend}_auth")(pm, container, payload)
+    return _propagate_credential(podman, backend, profile, _inject)
+
+
+def _complete_response(failed: list[str]) -> JSONResponse:
+    body: dict = {"status": "complete"}
+    if failed:
+        body["propagation_failed"] = failed
+    return JSONResponse(body)
 
 
 # ── Kiro flow ─────────────────────────────────────────────────────────────────
@@ -1060,15 +1095,6 @@ async def _handle_login_get(request: Request) -> Response:
         )
         if _profile == "default":
             _lc()._write_auth_file(auth_b64)
-        with registry:
-            containers = [
-                info["container"] for info in registry._reg["crews"].values()
-                if info.get("status") == "running"
-                and info.get("acp_backend", "kiro") == "kiro"
-                and info.get("acp_profile", "default") == _profile
-            ]
-        for crew_container in containers:
-            _lc()._inject_auth(podman, crew_container, auth_b64)
 
     try:
         committed = KIRO_FLOW.commit_if_current(pending, _store)
@@ -1091,12 +1117,18 @@ async def _handle_login_get(request: Request) -> Response:
 
     _nuke_pending_container(KIRO_FLOW, podman, pending)
 
+    # The credential is durably stored; propagation cannot change the outcome.
+    failed = await asyncio.to_thread(
+        _propagate_credential, podman, "kiro", _profile,
+        lambda pm, container: _lc()._inject_auth(pm, container, auth_b64),
+    )
+
     _security.audit_auth_event(
         action="login", outcome="success", account="academy",
         source=_request_source(request),
         emit=logger.info,
     )
-    return JSONResponse({"status": "complete"})
+    return _complete_response(failed)
 
 
 async def _handle_claude_login_post(request: Request) -> Response:
@@ -1196,7 +1228,6 @@ async def _handle_claude_login_get(request: Request) -> Response:
         _cred_store.put("claude", "oauth", _base64.b64encode(tar_bytes), profile=_claude_profile)
         if _claude_profile == "default":
             _lc()._write_claude_auth_file(tar_bytes)
-        _propagate_oauth(podman, "claude", _claude_profile, tar_bytes)
 
     try:
         committed = CLAUDE_FLOW.commit_if_current(pending, _store)
@@ -1224,12 +1255,17 @@ async def _handle_claude_login_get(request: Request) -> Response:
     if not committed:
         return JSONResponse({"status": "cancelled"})
 
+    # The credential is durably stored; propagation cannot change the outcome.
+    failed = await asyncio.to_thread(
+        _propagate_oauth, podman, "claude", _claude_profile, tar_bytes,
+    )
+
     _security.audit_auth_event(
         action="login", outcome="success", account="claude",
         source=_request_source(request),
         emit=logger.info,
     )
-    return JSONResponse({"status": "complete"})
+    return _complete_response(failed)
 
 
 async def _handle_claude_login_code_post(request: Request) -> Response:
@@ -1355,7 +1391,6 @@ async def _handle_codex_login_get(request: Request) -> Response:
         _cred_store.put("codex", "chatgpt", _base64.b64encode(tar_bytes), profile=_codex_profile)
         if _codex_profile == "default":
             _lc()._write_codex_auth_file(tar_bytes)
-        _propagate_oauth(podman, "codex", _codex_profile, tar_bytes)
 
     try:
         committed = CODEX_FLOW.commit_if_current(pending, _store)
@@ -1376,12 +1411,17 @@ async def _handle_codex_login_get(request: Request) -> Response:
     if not committed:
         return JSONResponse({"status": "cancelled"})
 
+    # The credential is durably stored; propagation cannot change the outcome.
+    failed = await asyncio.to_thread(
+        _propagate_oauth, podman, "codex", _codex_profile, tar_bytes,
+    )
+
     _security.audit_auth_event(
         action="login", outcome="success", account="codex",
         source=_request_source(request),
         emit=logger.info,
     )
-    return JSONResponse({"status": "complete"})
+    return _complete_response(failed)
 
 
 # ── TRN-233: new /login/{backend}/{method} and /logout/{backend} routes ───────

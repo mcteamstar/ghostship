@@ -899,7 +899,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         self.assertEqual(sent, [("c-selected", b"synthetic archive")])
         self.assertEqual(self._store.get("claude", "personal")["payload"], b"other-credential")
 
-    def test_oauth_propagation_failure_retains_flow_and_retries(self):
+    def test_oauth_propagation_failure_does_not_change_login_outcome(self):
         import transport.login as login_mod
         for backend, flow, handler, inject_name in (
             ("claude", login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "_inject_claude_auth"),
@@ -909,16 +909,43 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
                 self.crews.clear()
                 self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": backend, "acp_profile": "work"}
                 flow._pending = {**self._pending("login-container"), "profile": "work"}
-                injection = MagicMock(side_effect=[OSError("synthetic error"), None])
+                injection = MagicMock(side_effect=OSError("synthetic error"))
                 setattr(self.lc, inject_name, injection)
                 with patch.object(flow, "poll", return_value=b"synthetic archive"):
-                    first = _run(handler(_make_request()))
-                    self.assertEqual(first.status_code, 500)
-                    self.assertIsNotNone(flow.state)
-                    second = _run(handler(_make_request()))
-                self.assertEqual(_json_data(second), {"status": "complete"})
+                    resp = _run(handler(_make_request()))
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["selected"]})
                 self.assertIsNone(flow.state)
-                self.assertEqual(injection.call_count, 2)
+                self.assertIsNotNone(self._store.get(backend, "work"))
+                self.assertEqual(injection.call_count, 1)
+
+    def test_one_failing_crew_does_not_stop_injection_into_next(self):
+        import transport.login as login_mod
+        sent = []
+
+        def inject(podman, container, data):
+            if container == "c-bad":
+                raise OSError("synthetic error")
+            sent.append(container)
+
+        self.lc._inject_codex_auth = inject
+        self.crews.update({
+            "bad": {"status": "running", "container": "c-bad", "acp_backend": "codex", "acp_profile": "work"},
+            "good": {"status": "running", "container": "c-good", "acp_backend": "codex", "acp_profile": "work"},
+        })
+        login_mod.CODEX_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
+        with patch.object(login_mod.CODEX_FLOW, "poll", return_value=b"synthetic archive"):
+            resp = _run(login_mod._handle_codex_login_get(_make_request()))
+        self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["bad"]})
+        self.assertEqual(sent, ["c-good"])
+
+    def test_propagation_skips_profile_removed_after_commit(self):
+        import transport.login as login_mod
+        sent = []
+        self.lc._inject_codex_auth = lambda podman, container, data: sent.append(container)
+        self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": "codex", "acp_profile": "work"}
+        self.assertEqual(login_mod._propagate_oauth(self.podman, "codex", "work", b"x"), [])
+        self.assertEqual(sent, [])
 
     def test_named_kiro_completion_does_not_replace_default_archive(self):
         import transport.login as login_mod
@@ -942,21 +969,20 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         self.assertEqual(_json_data(resp), {"status": "complete"})
         self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
 
-    def test_kiro_propagation_failure_can_retry_same_flow(self):
+    def test_kiro_propagation_failure_does_not_change_login_outcome(self):
         import transport.login as login_mod
         flow = login_mod.KIRO_FLOW
         flow._pending = {**self._pending("login-container"), "profile": "work"}
         self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
         self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": "kiro", "acp_profile": "work"}
-        injection = MagicMock(side_effect=[OSError("synthetic error"), None])
+        injection = MagicMock(side_effect=OSError("synthetic error"))
         self.lc._inject_auth = injection
-        first = _run(login_mod._handle_login_get(_make_request()))
-        self.assertEqual(first.status_code, 500)
-        self.assertIsNotNone(flow.state)
-        second = _run(login_mod._handle_login_get(_make_request()))
-        self.assertEqual(_json_data(second), {"status": "complete"})
+        resp = _run(login_mod._handle_login_get(_make_request()))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["selected"]})
         self.assertIsNone(flow.state)
-        self.assertEqual(injection.call_count, 2)
+        self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
+        self.assertEqual(injection.call_count, 1)
 
     def test_named_kiro_completion_only_updates_matching_running_crews(self):
         import transport.login as login_mod

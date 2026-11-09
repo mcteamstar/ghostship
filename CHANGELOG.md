@@ -2,6 +2,16 @@
 
 ## v0.12.1
 
+### Running crews keep launch-time credentials (TRN-319)
+
+- Running crews keep the credential they started with. Static credential
+  validation now applies only when a stopped crew is woken, so dispatch,
+  evac and other calls on a running crew no longer fail after a rotation.
+  A wake after an incompatible rotation names the crew and profile.
+- OAuth login success depends only on durable storage. Propagation to running
+  crews runs after the commit, off the event loop, per crew; failures are
+  logged and listed as `propagation_failed` instead of failing the login.
+
 ### Secure dashboard WebSockets (TRN-315)
 
 - Validate dashboard sessions, browser origins and the portal transport secret

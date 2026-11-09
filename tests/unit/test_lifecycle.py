@@ -285,6 +285,45 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
             self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
         self.assertTrue(self.podman.container_is_running(CONTAINER))
 
+    def test_running_crew_ignores_static_rotation_without_inspect(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        self.podman.container_start(CONTAINER)
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        before = len(self.podman.calls)
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertNotIn("container_inspect", [c[0] for c in self.podman.calls[before:]])
+        self.assertTrue(self.podman.container_is_running(CONTAINER))
+
+    def test_stopped_crew_rotation_error_names_crew_and_profile(self):
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        self.assertIn(CREW_ID, str(ctx.exception))
+        self.assertIn("work", str(ctx.exception))
+        self.assertIn("recreated", str(ctx.exception))
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+
+    def test_directory_evac_succeeds_on_running_crew_after_rotation(self):
+        from transport import tools
+        self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work", "status": "running"})
+        self.podman.container_start(CONTAINER)
+        credential = {"method": "api-key", "payload": b"synthetic-new-key"}
+        with patch.object(self.life._cred_store, "get", return_value=credential), \
+             patch.object(self.podman, "container_inspect", return_value={"Config": {"Env": ["OPENAI_API_KEY=synthetic-old-key"]}}), \
+             patch("transport.launcher._validate_static_credential", side_effect=self.validate_static_credential), \
+             patch("transport.launcher._launcher", self.launcher), \
+             patch("transport.tools._require_crew", return_value=dict(self.crews[CREW_ID])), \
+             patch("transport.tools._sign_file_url", return_value="http://example/evac"):
+            result = tools.evac(path="repo/out", crew_id=CREW_ID, pack=True)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["url"], "http://example/evac")
+
     def test_ensure_running_kiro_crew_under_claude_default(self):
         self.crews[CREW_ID]["acp_backend"] = "kiro"
         with patch.object(self.life, "GA_CREW_ACP_BACKEND", "claude"):
