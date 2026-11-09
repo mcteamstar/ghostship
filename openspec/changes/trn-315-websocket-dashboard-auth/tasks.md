@@ -17,5 +17,5 @@
 ## Verification
 
 - Full repository unit suite via `bash scripts/run.sh --unit`: 1,518 passed, 1 skipped. This includes dashboard, auth, Caddy, server, and WebSocket integration coverage.
-- The current WebSocket harness inspects generated Caddy route configuration and exercises the transport ASGI path with a disposable gateway double, but it does not send traffic through a Caddy process. Task 2.1 remains pending until that proxy path is exercised; no local Caddy runtime was available, and no dev instance was used.
+- Focused `tests/unit/test_dashboard_websocket_integration.py`: 6 passed, 1 skipped. Added a process-level Caddy test that loads the generated per-crew route, sends keyed HTTP and WebSocket requests through Caddy to a Uvicorn-hosted transport, and relays frames through a disposable WebSocket gateway. The Caddy executable is unavailable in the current environment, so the new test is skipped and task 2.1 remains pending until the proxy path is exercised; no dev instance was used.
 - Task 2.3 remains gated because explicit deployment authorization was not provided.
