@@ -13,9 +13,11 @@ import json
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from http.client import HTTPConnection
 from pathlib import Path
 from types import SimpleNamespace
@@ -265,7 +267,16 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
         caddy_binary = shutil.which("caddy")
         if caddy_binary is None:
             self.skipTest("Caddy executable is required for the process-level proxy test")
-        _run(self._exercise_actual_caddy_proxy(caddy_binary))
+        # The unit conftest installs network-library stubs. Use a clean Python
+        # process so this integration case exercises real ASGI and WebSockets.
+        code = (
+            "from tests.unit.test_dashboard_websocket_integration import "
+            "TestDashboardWebSocketIntegration, _run; "
+            "import shutil; "
+            "_run(TestDashboardWebSocketIntegration()._exercise_actual_caddy_proxy(shutil.which('caddy')))"
+        )
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     async def _exercise_actual_caddy_proxy(self, caddy_binary):
         import uvicorn
@@ -412,8 +423,6 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
                                 "run",
                                 "--config",
                                 str(config_path),
-                                "--adapter",
-                                "json",
                             ],
                             stdout=caddy_log,
                             stderr=caddy_log,
@@ -447,9 +456,9 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
                             )
                             dashboard_gate_patcher.start()
 
-                            with HTTPConnection(
+                            with closing(HTTPConnection(
                                 "127.0.0.1", caddy_port, timeout=3
-                            ) as client:
+                            )) as client:
                                 client.request("GET", "/")
                                 response = client.getresponse()
                                 response.read()
@@ -530,7 +539,7 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
                                     connect_disposable_gateway,
                                 ),
                             ):
-                                async with websockets.connect(
+                                async with real_connect(
                                     ws_url,
                                     origin=ws_origin,
                                     additional_headers={

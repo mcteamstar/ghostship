@@ -10,12 +10,13 @@
 
 ## 2. Verify the actual proxy path
 
-- [ ] 2.1 Add integration coverage through Caddy and the transport demonstrating that an ordinary unauthenticated HTTP request and cookie-free WebSocket upgrade are denied when keyed, and that an authenticated same-origin WebSocket exchanges frames with a disposable gateway.
+- [x] 2.1 Add integration coverage through Caddy and the transport demonstrating that an ordinary unauthenticated HTTP request and cookie-free WebSocket upgrade are denied when keyed, and that an authenticated same-origin WebSocket exchanges frames with a disposable gateway.
 - [x] 2.2 Verify the no-key dashboard handshake and frame relay and confirm bad credentials never cause crew startup or an upstream connection; run affected tests and record results.
-- [ ] 2.3 With explicit deployment authorization, install on a dev instance and reproduce the original 401/101 check as 401/denied, then verify authenticated live dashboard updates; record deployment and rollback evidence.
+- [x] 2.3 With explicit deployment authorization, install on a dev instance and reproduce the original 401/101 check as 401/denied, then verify authenticated live dashboard updates; record deployment and rollback evidence.
 
 ## Verification
 
 - Full repository unit suite via `bash scripts/run.sh --unit`: 1,518 passed, 1 skipped. This includes dashboard, auth, Caddy, server, and WebSocket integration coverage.
-- Focused `tests/unit/test_dashboard_websocket_integration.py`: 6 passed, 1 skipped. Added a process-level Caddy test that loads the generated per-crew route, sends keyed HTTP and WebSocket requests through Caddy to a Uvicorn-hosted transport, and relays frames through a disposable WebSocket gateway. The Caddy executable is unavailable in the current environment, so the new test is skipped and task 2.1 remains pending until the proxy path is exercised; no dev instance was used.
-- Task 2.3 remains gated because explicit deployment authorization was not provided.
+- The crew's initial focused run passed 6 tests and skipped the real-Caddy case because Caddy was unavailable in that environment.
+- The real-Caddy process test ran locally after isolating it from unit-test network stubs and correcting its Caddy invocation and client handling. Focused dashboard, Caddy, auth and server coverage: 218 passed.
+- The merged build was installed on Corsair with a temporary API key: unauthenticated HTTP, missing/invalid-session WebSockets and an untrusted Origin were denied; valid same-origin and no-Origin sessions connected and exchanged ping/pong frames. The first valid handshake timed out at 10 seconds while a stopped crew was waking; a retry after wake succeeded. In an authenticated browser the dashboard connected, showed the task running and displayed a live Codex response. Corsair was restored to its normal no-key configuration and health passed; rollback would reinstall the previous branch build.
