@@ -19,15 +19,23 @@
   still tracks the maintainer-controlled `main`; set `machine.images.agents_ref`
   to a tag or SHA for a reproducible build.
 
-### Running crews keep launch-time credentials (TRN-319)
+### Preserve running crews during credential rotation (TRN-319)
 
-- Running crews keep the credential they started with. Static credential
-  validation now applies only when a stopped crew is woken, so dispatch,
-  evac and other calls on a running crew no longer fail after a rotation.
-  A wake after an incompatible rotation names the crew and profile.
+- Running crews keep the static credential they started with. Static
+  credential validation now applies only when a stopped crew is woken, so
+  dispatch, evac and other calls on a running crew no longer fail after a
+  rotation. A wake after an incompatible rotation names the crew and profile.
 - OAuth login success depends only on durable storage. Propagation to running
-  crews runs after the commit, off the event loop, per crew; failures are
-  logged and listed as `propagation_failed` instead of failing the login.
+  crews with the matching backend and profile runs after the commit, off the
+  event loop, per crew; failures are logged and listed as
+  `propagation_failed` instead of failing the login.
+
+### Improve Radar crew status and ordering (TRN-318)
+
+- Hide the unreachable gateway warning for stopped crews while retaining it
+  for unhealthy running crews.
+- Show newest crews first within the running and inactive sections by default;
+  the Last Task sort control remains available.
 
 ### Secure dashboard WebSockets (TRN-315)
 
