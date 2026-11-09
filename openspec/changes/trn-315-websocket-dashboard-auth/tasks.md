@@ -6,6 +6,7 @@
 - [x] 1.2 Enforce the portal transport secret for WebSocket scopes where configured; verify missing, incorrect and forged headers cannot reach the crew, and valid portal traffic works.
 - [x] 1.3 Implement external dashboard origin validation for keyed installations using trusted configuration and portal metadata; verify matching HTTP/HTTPS origins, mismatches, malformed and duplicate headers, spoofed forwarding headers, supported proxy setups, and authenticated clients with no Origin.
 - [x] 1.4 Preserve no-key operation and document the keyed, no-key and non-browser behavior; verify existing dashboard, login, logout and proxy unit tests and new open-mode cases.
+- [x] 1.5 Preserve Origin validation when TLS is terminated before Caddy by deriving the external scheme from trusted portal configuration; cover managed TLS, plain HTTP, and upstream TLS termination without trusting client forwarding headers.
 
 ## 2. Verify the actual proxy path
 
@@ -15,6 +16,6 @@
 
 ## Verification
 
-- Dashboard, login/logout, auth, Caddy, server, and WebSocket integration suites: 309 tests passed using the repository's unittest-compatible tests and dependency stubs. The Python environment does not include pytest.
+- Full repository unit suite via `bash scripts/run.sh --unit`: 1,518 passed, 1 skipped. This includes dashboard, auth, Caddy, server, and WebSocket integration coverage.
 - The WebSocket integration coverage inspects generated Caddy route configuration and exercises the transport ASGI path with a disposable gateway double. No live Caddy process or dev instance was used.
 - Task 2.3 remains gated because explicit deployment authorization was not provided.

@@ -161,15 +161,25 @@ class DashboardGate:
     Constructor dependencies (previously implicit module globals):
       - ``session_ttl_secs`` — gs_session lifetime (``cfg.ga_portal_session_ttl_secs``).
       - ``api_key``          — ``GA_API_KEY``; empty means open-access dashboard.
-      - ``external_url``     — transport's public base URL (``cfg.public_base_url()``);
-                               Secure cookie flag is set when scheme is ``https://``.
+      - ``external_url``     — transport's public base URL (``cfg.public_base_url()``).
+      - ``portal_tls_mode``  — Caddy TLS mode; selects HTTPS when Caddy owns TLS.
     """
 
     # Cookie name for the CSRF token (SameSite=Strict, HttpOnly=False so JS
     # can read it and echo it in the form body — cookie-echo pattern, H-1).
     _CSRF_COOKIE = "gs_csrf"
 
-    def __init__(self, session_ttl_secs: float, api_key: str, external_url: str, *, port_base: int = 64058, port_range_size: int = 64, portal_domain: str = "") -> None:
+    def __init__(
+        self,
+        session_ttl_secs: float,
+        api_key: str,
+        external_url: str,
+        *,
+        port_base: int = 64058,
+        port_range_size: int = 64,
+        portal_domain: str = "",
+        portal_tls_mode: str = "off",
+    ) -> None:
         # Dashboard login is guarded by security.Throttle (brute-force
         # protection) and gs_session cookies are backed by
         # security.SessionStore (bounded, revocable). Both carry their own
@@ -191,9 +201,20 @@ class DashboardGate:
             normalised = _normalise_hostname(hostname or "")
             if normalised:
                 self._allowed_dashboard_hosts.add(normalised)
-        # Secure flag on gs_session and gs_csrf cookies: set when the transport's
-        # external URL uses HTTPS (L-2 / TRN-272).
-        self._secure = external_url.startswith("https://")
+        try:
+            configured_scheme = urlsplit(external_url).scheme.lower()
+        except ValueError:
+            configured_scheme = ""
+        self._dashboard_scheme = (
+            "https"
+            if portal_tls_mode in {"internal", "tailscale", "acme"}
+            else configured_scheme if configured_scheme in {"http", "https"}
+            else "http"
+        )
+        # Session cookies follow the externally visible dashboard scheme. When
+        # Caddy owns TLS, its mode is authoritative; with TLS off, external_url
+        # carries the configured scheme for an upstream TLS terminator.
+        self._secure = self._dashboard_scheme == "https"
         # Port range for forward_auth validation (H-2 / TRN-279).
         self._port_base = port_base
         self._port_range_size = port_range_size
@@ -261,12 +282,10 @@ class DashboardGate:
             return False
 
         portal_hosts = _scope_header_values(scope, "x-portal-dashboard-host")
-        portal_schemes = _scope_header_values(scope, "x-portal-dashboard-proto")
-        if len(portal_hosts) != 1 or len(portal_schemes) != 1:
+        if len(portal_hosts) != 1:
             return False
         portal_hostport = _parse_hostport(portal_hosts[0])
-        portal_scheme = portal_schemes[0].lower()
-        if portal_hostport is None or portal_scheme not in {"http", "https"}:
+        if portal_hostport is None:
             return False
 
         host, port = portal_hostport
@@ -274,7 +293,7 @@ class DashboardGate:
             return False
         if not self._port_base <= port < self._port_base + self._port_range_size:
             return False
-        return origin == (portal_scheme, host, port)
+        return origin == (self._dashboard_scheme, host, port)
 
     # ── Dashboard auth HTTP handlers ──────────────────────────────────────────
 
@@ -331,7 +350,7 @@ class DashboardGate:
         token = self._sessions.issue()
         # Build Set-Cookie header manually — avoids starlette version
         # differences and is more explicit about the exact cookie attributes.
-        # The Secure flag is set when the external URL scheme is https:// (L-2).
+        # The Secure flag follows the externally visible dashboard scheme (L-2).
         secure_attr = "; Secure" if self._secure else ""
         cookie_value = (
             f"gs_session={token}; HttpOnly; SameSite=Lax{secure_attr}; Path=/"

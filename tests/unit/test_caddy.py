@@ -213,7 +213,7 @@ class TestCaddyPortalRegisterCrew(unittest.TestCase):
         body = self._get_put_body(mock_put)
         headers = body["routes"][0]["handle"][0]["headers"]["request"]["set"]
         self.assertEqual(headers["X-Portal-Dashboard-Host"], ["{http.request.hostport}"])
-        self.assertEqual(headers["X-Portal-Dashboard-Proto"], ["{http.request.scheme}"])
+        self.assertNotIn("X-Portal-Dashboard-Proto", headers)
 
     # 4.9
     def test_ws_route_before_http_route(self):

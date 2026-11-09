@@ -388,7 +388,7 @@ class TestDashboardGateCookieFlags(unittest.TestCase):
 
     _CSRF_TOKEN = "b" * 64
 
-    def _gate(self, external_url: str):
+    def _gate(self, external_url: str, portal_tls_mode: str = "off"):
         try:
             import dashboard as _d
         except ModuleNotFoundError:
@@ -397,6 +397,7 @@ class TestDashboardGateCookieFlags(unittest.TestCase):
             session_ttl_secs=3600,
             api_key="testkey",
             external_url=external_url,
+            portal_tls_mode=portal_tls_mode,
         )
 
     def _login(self, gate):
@@ -436,6 +437,12 @@ class TestDashboardGateCookieFlags(unittest.TestCase):
         self.assertEqual(_status_of(msgs), 200)
         cookie = _set_cookie_of(msgs)
         self.assertIn("Secure", cookie)
+
+    def test_secure_present_when_portal_owns_tls(self):
+        gate = self._gate("http://example.com", portal_tls_mode="acme")
+        msgs = self._login(gate)
+        self.assertEqual(_status_of(msgs), 200)
+        self.assertIn("Secure", _set_cookie_of(msgs))
 
     def test_httponly_present(self):
         gate = self._gate("http://localhost")
@@ -709,7 +716,7 @@ class TestDashboardGateAuth(unittest.TestCase):
 
 
 class TestDashboardGateWebSocketOrigin(unittest.TestCase):
-    def _gate(self, external_url="https://dashboard.example:64057", api_key="testkey"):
+    def _gate(self, external_url="https://dashboard.example:64057", api_key="testkey", portal_tls_mode="off"):
         try:
             import dashboard as _d
         except ModuleNotFoundError:
@@ -721,6 +728,7 @@ class TestDashboardGateWebSocketOrigin(unittest.TestCase):
             port_base=64058,
             port_range_size=4,
             portal_domain="portal.example",
+            portal_tls_mode=portal_tls_mode,
         )
 
     def _scope(self, gate, origin="https://dashboard.example:64058", hostport="dashboard.example:64058", proto="https", extra_headers=()):
@@ -731,7 +739,8 @@ class TestDashboardGateWebSocketOrigin(unittest.TestCase):
         if hostport is not None:
             headers.append((b"x-portal-dashboard-host", hostport.encode("latin-1")))
         if proto is not None:
-            headers.append((b"x-portal-dashboard-proto", proto.encode("latin-1")))
+            # This client-controlled header is deliberately ignored by the gate.
+            headers.append((b"x-forwarded-proto", proto.encode("latin-1")))
         headers.extend(extra_headers)
         return {"type": "websocket", "headers": headers}
 
@@ -756,6 +765,23 @@ class TestDashboardGateWebSocketOrigin(unittest.TestCase):
             hostport="portal.example:64058",
         )
         self.assertTrue(gate.allows_websocket(scope))
+
+    def test_upstream_tls_termination_uses_configured_public_scheme(self):
+        gate = self._gate(external_url="https://dashboard.example")
+        # Caddy sees plain HTTP behind the TLS terminator. The public URL is
+        # trusted configuration; an incoming forwarded-proto value is ignored.
+        scope = self._scope(gate, origin="https://dashboard.example:64058", proto="http")
+        self.assertTrue(gate.allows_websocket(scope))
+
+    def test_managed_tls_mode_requires_https_even_if_public_url_defaults_to_http(self):
+        gate = self._gate(
+            external_url="http://dashboard.example:64057",
+            portal_tls_mode="acme",
+        )
+        self.assertTrue(gate.allows_websocket(self._scope(gate)))
+        self.assertFalse(gate.allows_websocket(self._scope(
+            gate, origin="http://dashboard.example:64058", proto="http"
+        )))
 
     def test_host_port_and_scheme_mismatches_are_rejected(self):
         gate = self._gate()

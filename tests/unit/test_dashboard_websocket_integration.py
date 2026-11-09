@@ -57,10 +57,7 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
         if origin is not None:
             headers.append((b"origin", origin.encode("latin-1")))
         if origin is not None:
-            headers.extend([
-                (b"x-portal-dashboard-host", b"dashboard.example:64058"),
-                (b"x-portal-dashboard-proto", b"https"),
-            ])
+            headers.append((b"x-portal-dashboard-host", b"dashboard.example:64058"))
         return {
             "type": "websocket",
             "method": "GET",
@@ -178,7 +175,7 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
         headers = ws_proxy["headers"]["request"]["set"]
         self.assertEqual(headers["X-Transport-Token"], ["{file./run/secrets/ga-transport-secret}"])
         self.assertEqual(headers["X-Portal-Dashboard-Host"], ["{http.request.hostport}"])
-        self.assertEqual(headers["X-Portal-Dashboard-Proto"], ["{http.request.scheme}"])
+        self.assertNotIn("X-Portal-Dashboard-Proto", headers)
 
     def test_keyed_http_and_cookie_free_websocket_are_denied(self):
         _, _, _, server = self._modules()

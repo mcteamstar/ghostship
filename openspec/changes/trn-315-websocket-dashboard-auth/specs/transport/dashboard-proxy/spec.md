@@ -40,7 +40,7 @@ The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the tra
 
 ### Requirement: Authenticate dashboard WebSocket clients
 
-When dashboard API-key authentication is enabled, the transport SHALL validate the original client's unexpired and unrevoked dashboard session before connecting to the crew gateway. Browser-origin handshakes SHALL also require an origin matching the externally visible dashboard origin; untrusted forwarded headers SHALL NOT establish that origin. Reject malformed or conflicting origins and do not forward upstream on rejection. Non-browser clients without an Origin MAY connect with a valid session. When API-key authentication is disabled, the existing open access behavior SHALL remain available.
+When dashboard API-key authentication is enabled, the transport SHALL validate the original client's unexpired and unrevoked dashboard session before connecting to the crew gateway. Browser-origin handshakes SHALL also require an origin matching the externally visible dashboard origin. The origin's host and dashboard port SHALL match portal metadata received with the portal transport secret; its scheme SHALL match trusted portal configuration (managed Caddy TLS mode, or the configured public URL scheme when Caddy TLS is off). Untrusted forwarded headers SHALL NOT establish the origin. Reject malformed or conflicting origins and do not forward upstream on rejection. Non-browser clients without an Origin MAY connect with a valid session. When API-key authentication is disabled, the existing open access behavior SHALL remain available.
 
 #### Scenario: Missing or invalid session
 - **WHEN** a client on a keyed installation opens a dashboard WebSocket with no, invalid, expired, or revoked session
@@ -53,6 +53,11 @@ When dashboard API-key authentication is enabled, the transport SHALL validate t
 #### Scenario: Cross-origin browser request
 - **WHEN** a client presents a valid session with an untrusted, malformed, or conflicting Origin
 - **THEN** the handshake is denied before the upstream connection
+
+#### Scenario: TLS terminated before the portal
+- **WHEN** dashboard TLS is terminated by an upstream proxy while Caddy TLS mode is `off` and the configured public URL uses HTTPS
+- **THEN** an HTTPS Origin matching the authenticated portal host and dashboard port is accepted
+- **THEN** client-supplied forwarded-scheme headers do not change the expected origin scheme
 
 #### Scenario: Valid non-browser client
 - **WHEN** a non-browser client presents a valid session without an Origin

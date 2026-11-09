@@ -919,6 +919,7 @@ _dashboard_gate = DashboardGate(
     port_base=cfg.ga_dashboard_port_range_start,
     port_range_size=cfg.ga_dashboard_port_range_size,
     portal_domain=cfg.ga_portal_domain,
+    portal_tls_mode=cfg.ga_portal_tls_mode,
 )
 
 # Per-crew asyncio lock registry serialising concurrent _ensure_crew_running

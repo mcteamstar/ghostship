@@ -152,7 +152,6 @@ class CaddyPortal:
         # only on traffic that also carries the portal secret.
         _dashboard_origin_headers = {
             "X-Portal-Dashboard-Host": ["{http.request.hostport}"],
-            "X-Portal-Dashboard-Proto": ["{http.request.scheme}"],
         }
 
         crew_proxy_handler: dict = {
