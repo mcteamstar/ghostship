@@ -7,6 +7,17 @@
 - Create the Ghostship-scoped `containers.conf` before starting the dedicated
   Podman service, so Podman can load its configuration and create its socket.
 
+### Base image bump to KiroCrew v0.12.2 (TRN-324)
+
+- Pin the crew base image to the verified multi-arch index digest
+  `sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e`
+  for Linux amd64 and arm64. The image label reports Kiro CLI 2.27.1.
+- Update the pre-seeded CLI database to migrations 0–10, including the BLOB
+  state schema and conversation/version tables found in the v0.12.2 chat runtime.
+- The release-note review and static image evidence are recorded in
+  `docs/dependency-review-2026-11-14.md`; runtime compatibility remains
+  unverified until the local image build and fresh-crew checks run.
+
 ## v0.12.1
 
 ### Wake cleanup and in-flight memory admission (TRN-320)
