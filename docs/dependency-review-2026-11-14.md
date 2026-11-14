@@ -114,3 +114,20 @@ Compatibility outcome: image digest, labels, embedded migration definitions,
 and release-note integration points were reviewed. Runtime compatibility is
 unknown until a Podman host completes the build and fresh-crew startup,
 authentication, enrollment, and dispatch checks.
+
+## Runtime validation attempt — 2026-11-14
+
+- `scripts/run.sh --unit --integration --e2e` completed successfully: unit suite
+  1,566 passed and 2 skipped; all six integration scripts passed; all 39 E2E
+  tests skipped because the default local transport at
+  `http://localhost:64057` was not reachable.
+- Image build and disposable-crew smoke checks remain blocked. Podman, Docker,
+  Buildah, nerdctl, and Skopeo are unavailable, and no rootless Podman socket is
+  present. No image was built, and gateway readiness, auth injection,
+  enrollment, dispatch, or runtime versions were not verified.
+- `openspec validate trn-324-upgrade-kirocrew-0-12-2 --type change --store repo`
+  passed. OpenSpec emitted its existing warning that `.openspec.yaml` contains
+  the unrecognized metadata key `ticket`.
+
+Tasks 4.1–4.3 remain unchecked because these suites did not run against a rebuilt
+local image and no fresh-crew runtime smoke test was possible.
