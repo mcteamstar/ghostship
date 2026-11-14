@@ -318,6 +318,12 @@ def main() -> None:
     print(f"✓ Agent backend: {ga_crew_agent} (runtime default: {ga_crew_agent.split(',')[0]})")
 
     # ── Podman provisioning ───────────────────────────────────────────────────
+    # The dedicated Linux service starts with CONTAINERS_CONF pointing at this
+    # file, so create it before starting Podman (setup_podman_linux waits for
+    # the service socket to become available).
+    if _OS == "Linux":
+        _write_containers_conf(ga_machine_name)
+
     # PODMAN_SOCK and DATA_DIR are set by the shim for non-client-only installs.
     # If not set (e.g. called directly without the shim), run setup here.
     podman_sock = os.environ.get("PODMAN_SOCK", "")
@@ -367,10 +373,6 @@ def main() -> None:
 
     # ── Network setup ─────────────────────────────────────────────────────────
     _ensure_networks(_podman_cmd, ga_dedicated_machine, ga_machine_name)
-
-    # ── WSL2 containers.conf (moved from podman_setup to here for non-dedicated) ─
-    if _OS == "Linux":
-        _write_containers_conf(ga_machine_name)
 
     # ── Pre-warm + build images ───────────────────────────────────────────────
     _build_images(ghostship_dir, _podman_cmd, agent_toolchains, _g("AGENTS_REF"),
