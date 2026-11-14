@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.12.2
+
+### Fix dedicated Linux Podman startup
+
+- Create the Ghostship-scoped `containers.conf` before starting the dedicated
+  Podman service, so Podman can load its configuration and create its socket.
+
 ## v0.12.1
 
 ### Wake cleanup and in-flight memory admission (TRN-320)
