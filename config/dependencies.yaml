@@ -14,7 +14,7 @@ components:
     version_policy: Immutable GHCR digest pin. GitHub release tags are candidates only; correlate each release with the published image digest before an upgrade.
     compatibility: {status: unknown, evidence: docs/dependency-review-2026-11-14.md}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-14, outcome: image-and-schema-verified-runtime-unverified, next_review: 2026-12-14, evidence: docs/dependency-review-2026-11-14.md}
-    notes: KiroCrew v0.12.2 is pinned to GHCR index sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e; runtime validation remains pending.
+    notes: KiroCrew v0.12.2 is pinned to GHCR index sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e; Corsair build, startup, and Codex E2E passed. Kiro auth was accepted, but generation was blocked by exhausted monthly credit.
   - id: kiro-cli
     name: Kiro CLI bundled in KiroCrew
     category: derived component
@@ -23,7 +23,7 @@ components:
     version_policy: Inherited from the pinned KiroCrew image; verify the installed label and migration schema at each image upgrade.
     compatibility: {status: unknown, evidence: docs/dependency-review-2026-11-14.md}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-14, outcome: image-version-and-schema-verified-runtime-unverified, next_review: 2026-12-14, evidence: docs/dependency-review-2026-11-14.md}
-    notes: Image label reports Kiro CLI 2.27.1; static image inspection found chat migrations through version 10. Runtime validation remains pending.
+    notes: Image label reports Kiro CLI 2.27.1; schema inspection, Corsair startup, and Kiro auth injection passed. Kiro generation remains unverified because the account exhausted its monthly credit.
   - id: codex-acp
     name: Codex ACP adapter
     category: agent adapter

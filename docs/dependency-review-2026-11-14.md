@@ -11,10 +11,12 @@ migrations through version 10; the seed has been updated to match.
 The release-note review found no required change to Ghostship's login command,
 credential-injection interface, or configured gateway update policy. Image
 inspection did find a database-schema change in the chat runtime, which is
-covered by the seed update below. Runtime compatibility remains unverified:
-Podman, Docker, and Buildah are not installed in this environment, so image
-build, fresh-crew startup, authentication, and dispatch checks remain pending.
-The dependency inventory retains compatibility status unknown.
+covered by the seed update below. Corsair built the image and launched fresh
+crews successfully. Kiro authentication was accepted, but its smoke request
+could not complete because the account had exhausted its monthly credit. A
+Codex smoke dispatch and the live Codex E2E suite passed. The dependency
+inventory retains compatibility status unknown until a Kiro dispatch can
+complete with available credit.
 
 ## Release-note review
 
@@ -111,11 +113,12 @@ definitions, and indexes. The seed was statically compared against the image's
 embedded migration SQL; no live database query was possible without Podman.
 
 Compatibility outcome: image digest, labels, embedded migration definitions,
-and release-note integration points were reviewed. Runtime compatibility is
-unknown until a Podman host completes the build and fresh-crew startup,
-authentication, enrollment, and dispatch checks.
+release-note integration points, local image build, fresh gateway startup,
+Kiro authentication, and Codex E2E behavior were verified. Overall
+compatibility remains unknown until a Kiro task completes with available
+credit.
 
-## Runtime validation attempt — 2026-11-14
+## Initial Carrier validation attempt — 2026-11-14
 
 - `scripts/run.sh --unit --integration --e2e` completed successfully: unit suite
   1,566 passed and 2 skipped; all six integration scripts passed; all 39 E2E
@@ -129,5 +132,36 @@ authentication, enrollment, and dispatch checks.
   passed. OpenSpec emitted its existing warning that `.openspec.yaml` contains
   the unrecognized metadata key `ticket`.
 
-Tasks 4.1–4.3 remain unchecked because these suites did not run against a rebuilt
-local image and no fresh-crew runtime smoke test was possible.
+At the end of the Carrier run, tasks 4.1–4.3 remained unchecked because no
+container builder or live transport was available there.
+
+## Corsair validation — 2026-11-14
+
+- `ghostship upgrade --yes` rebuilt Corsair from the clean `release/0.12.2`
+  checkout using its dedicated `ghost-academy` Podman machine. The crew image
+  build completed with the pinned base digest
+  `sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e`.
+- The built `localhost/spec-ops:latest` labels report KiroCrew 0.12.2 and Kiro
+  CLI 2.27.1. Running the image's seeded database query returned 11 migrations
+  (versions 0–10); `state.value` has BLOB affinity, and all expected tables are
+  present.
+- Corsair `/health` returned `ok` and `/version` returned transport 0.12.2.
+  Fresh Kiro and Codex crews both launched ready on image `0.12.2-spec-ops`;
+  Corsair reported both gateways healthy and their Ghost slots warmed.
+- The Kiro smoke dispatch received a provider response stating the account had
+  reached its monthly usage limit. The user confirmed the account was logged
+  in and out of credit. Authentication injection therefore passed; no task
+  result was returned because the provider rejected generation for quota.
+- The Codex smoke dispatch completed with the expected response. This verifies
+  a trivial dispatch on the rebuilt image through the Codex backend.
+- `scripts/run.sh --unit --integration` passed: 1,567 unit tests passed, 1 was
+  skipped, and all six integration scripts passed. The dedicated-transport
+  integration script performed path checks only because `socat` is unavailable.
+- `GHOSTSHIP_E2E_URL=http://localhost:64057 scripts/run.sh --e2e` passed: 30
+  passed and 9 skipped. Corsair's configured default backend was Codex; the
+  suite's named E2E crews were cleaned up after explicit approval.
+- `openspec validate trn-324-upgrade-kirocrew-0-12-2 --type change` passed with
+  the existing warning about the `.openspec.yaml` `ticket` metadata key.
+
+Tasks 4.1–4.3 are complete. Kiro authentication passed; only successful Kiro
+generation remains unverified because the account had no monthly credit.

@@ -8,14 +8,15 @@ The crew-image build SHALL pin the base image to the KiroCrew gateway version th
 crew is intended to run, expressed as an immutable tag or digest, and the pin
 default SHALL be identical in the admission build definition and the shipped
 configuration default so that a build with no override matches an install build.
-The pin SHALL be advanced to KiroCrew v0.12.2, released 2026-11-12. The actual
-bundled Kiro CLI version SHALL be verified from the image rather than inferred
-from the gateway release number. The immutable multi-arch index digest for
-v0.12.2 must be obtained via `podman manifest inspect
-ghcr.io/kirodotdev/kirocrew:0.12.2` and recorded in
-`crews/_base/admission/Containerfile` as the `KC_BASE_IMAGE` default. The comment
-block above the ARG SHALL record: KiroCrew version v0.12.2, the digest, and the
-verification date.
+The pin SHALL be KiroCrew v0.12.2, released 2026-11-12, at immutable multi-arch
+index digest
+`sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e`.
+The image contains Kiro CLI 2.27.1; this version SHALL be verified from the image
+rather than inferred from the gateway release number. The digest SHALL be
+recorded as the `KC_BASE_IMAGE` default in
+`crews/_base/admission/Containerfile`. The comment block above the ARG SHALL
+record the KiroCrew version, actual Kiro CLI version, digest, and verification
+date.
 
 #### Scenario: operator builds with the default base image
 
@@ -40,31 +41,30 @@ verification date.
 - **SO THAT** a later rebuild cannot float onto a different published image
   without an explicit change.
 
-#### Scenario: operator builds with the v0.12.0 base image
+#### Scenario: operator builds with an explicit base-image override
 
-- **WHEN** an operator explicitly overrides `KC_BASE_IMAGE` with the v0.12.0
-  image after this change is applied
-- **THEN** that build uses the explicit v0.12.0 override
+- **WHEN** an operator explicitly overrides `KC_BASE_IMAGE` after this change is
+  applied
+- **THEN** that build uses the explicit override
 - **AND** a build without an override continues to use the v0.12.2 default.
 
 ### Requirement: kiro-cli DB seed matches the base-image migration schema
 
-The build-time kiro-cli database seed SHALL pre-seed the exact migration rows and
-table schema present in the pinned base image's kiro-cli database, so that at
-launch the crew only needs to insert authentication rows with no migration wait or
-restart cycle. The seed SHALL record, in a human-readable annotation, the gateway
-version and actual bundled Kiro CLI version it was verified against, the
-verification date, and the observed migration count and maximum version.
-Before the v0.12.2 image is released, `seed_kiro_db.py` MUST be re-verified
-against the v0.12.2 image's kiro-cli migration schema using:
-```bash
-podman run --rm ghcr.io/kirodotdev/kirocrew:0.12.2 python3 -c \
-  "import sqlite3; c=sqlite3.connect('/home/kirocrew/.local/share/kiro-cli/data.sqlite3'); \
-   print(c.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
-```
-If the migration rows, migration result, or SQLite table/auth schema differs
-from the verified v0.12.0 baseline, the seed MUST be updated before the image
-is released.
+The build-time kiro-cli database seed SHALL pre-seed the migration rows and
+resulting SQLite schema used by the pinned image's active Kiro CLI chat runtime,
+so that at launch the crew only needs to insert authentication rows with no
+migration wait or restart cycle. The seed SHALL record, in a human-readable
+annotation, the gateway version and actual bundled Kiro CLI version it was
+verified against, the verification date, and the observed migration count and
+maximum version. The v0.12.2 image contains Kiro CLI 2.27.1 and the active chat
+runtime has 11 migration rows, versions 0 through 10 (maximum 10). Its schema
+includes `auth_kv` with `key TEXT PRIMARY KEY, value TEXT`, `state` with
+`value BLOB`, the `conversations` and `conversations_v2` tables and indexes, and
+the `extracted_kas_versions` and `pinned_bin_versions` tables. The seed SHALL
+match those migration rows and definitions; verification MAY inspect and query
+the image directly or inspect its published layers when direct execution is
+unavailable. A future base-image upgrade SHALL re-verify both migration rows and
+the resulting table/auth schema before release.
 
 #### Scenario: seed verified and matching the base image
 
@@ -105,16 +105,9 @@ is released.
 - The re-verification of the seed against the newly pinned base image is therefore
   a release gate, not optional.
 
-#### Scenario: migration schema unchanged from v0.11.2
+#### Scenario: v0.12.2 chat schema is fully pre-seeded
 
-- **WHEN** the v0.12.2 image reports the same migration rows, result `(6, 5)`,
-  and SQLite table schema as the v0.11.2 baseline (also verified for v0.12.0)
-- **THEN** only the verification annotation in `seed_kiro_db.py` is updated
-- **AND** no migration rows or table-creation statements change.
-
-#### Scenario: migration schema changed from v0.11.2
-
-- **WHEN** the v0.12.2 image reports different migration rows, migration count,
-  maximum version, or SQLite table/auth schema from the v0.11.2 baseline
-- **THEN** `seed_kiro_db.py` migration rows and table-creation statements are
-  updated to match before the image is released.
+- **WHEN** the pinned v0.12.2 image's active chat runtime is initialized
+- **THEN** the seed contains 11 migration rows for versions 0 through 10
+- **AND** its `state`, conversation, version, and authentication table
+  definitions match the image schema.

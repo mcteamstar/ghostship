@@ -18,9 +18,18 @@
 
 ## 4. Build and validate the integration
 
-- [ ] 4.1 Build the crew images in an isolated local Podman environment with the verified digest; verify the build completes and the resulting image resolves to the intended KiroCrew base.
-- [ ] 4.2 Launch a fresh disposable crew from the rebuilt image and verify gateway readiness, successful Kiro CLI auth injection, enrollment, and completion of a trivial dispatch; record the observed gateway/CLI versions and test result.
-- [ ] 4.3 Run the applicable existing unit and end-to-end suites against the local image and verify they pass; run `openspec validate trn-324-upgrade-kirocrew-0-12-2 --type change` and resolve any validation errors.
+- [x] 4.1 Build the crew images in an isolated local Podman environment with the verified digest; verify the build completes and the resulting image resolves to the intended KiroCrew base.
+- [x] 4.2 Launch a fresh disposable crew from the rebuilt image and verify gateway readiness, successful Kiro CLI auth injection, enrollment, and completion of a trivial dispatch; record the observed gateway/CLI versions and test result.
+- [x] 4.3 Run the applicable existing unit and end-to-end suites against the local image and verify they pass; run `openspec validate trn-324-upgrade-kirocrew-0-12-2 --type change` and resolve any validation errors.
+
+Corsair results (2026-11-14): task 4.1 passed. The fresh Kiro crew launched
+healthy on the rebuilt image. Its smoke request was authenticated but the Kiro
+account had no monthly credit, so no task result was produced. The fresh Codex
+crew completed a trivial dispatch on the same image. The unit suite passed
+(1,567 passed, 1 skipped), all six integration scripts passed, and the live
+Codex E2E suite passed (30 passed, 9 skipped). OpenSpec validation passed.
+Tasks 4.1–4.3 are complete; Kiro generation itself remains unverified until
+the account has available credit.
 
 ## Workflow follow-up
 
