@@ -15,8 +15,30 @@
 - Update the pre-seeded CLI database to migrations 0–10, including the BLOB
   state schema and conversation/version tables found in the v0.12.2 chat runtime.
 - The release-note review and static image evidence are recorded in
-  `docs/dependency-review-2026-11-14.md`; runtime compatibility remains
-  unverified until the local image build and fresh-crew checks run.
+  `docs/dependency-review-2026-11-14.md`.
+- Verified on arm64 (macOS): the local image build seeds the database, and a
+  fresh kiro crew completed a task and continued its session with no schema
+  errors. Not yet verified: amd64 at runtime, and kiro-cli writes to
+  `conversations_v2` (the table stayed empty in headless dispatch).
+
+### Comp terminology (TRN-325)
+
+- `comp` is now the canonical name for a crew composition. `launch` takes
+  `comp`, `crews/registry.json` uses a `comps` key, crew records and the crews
+  payload carry `comp`, and the comp list is published at `transport://comps`.
+- The legacy names stay as aliases: the `composition` launch argument, the
+  `compositions` registry key, the `composition` field in records and payloads,
+  and the `transport://compositions` resource.
+- `comp` is authoritative. When both spellings are present with different
+  values, the canonical one wins and a warning is logged (once per crew for
+  persisted records); a launch or registry conflict no longer fails.
+- An unknown comp returns a readable `error` that lists the available comps.
+
+### Fixes
+
+- A stopped crew restarted on demand now re-patches its config from its own
+  recorded comp, not the spec-ops default.
+- The kiro-cli database seed closes its SQLite connection explicitly.
 
 ## v0.12.1
 
